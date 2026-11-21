@@ -1,0 +1,525 @@
+From bee7256b3b89e6bc5cd48d3d452ca294541ee501 Mon Sep 17 00:00:00 2001
+From: Prakash Sanker <307704256+prakash-oai@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 15:28:53 -0800
+Subject: [PATCH 1/2] feat(plugins): add a metadata-only hook before turn
+ dispatch
+
+A plugin can need to save a record before the model or worker starts.
+Await before_turn_start with the session ID and run ID after the turn
+leaves the queue. An error or timeout stops dispatch and model fallback.
+
+An operator can require one plugin by ID in the service environment.
+Each dispatch then needs a successful call to that plugin, including
+after a plugin reload.
+---
+ docs/plugins/hooks/prompt-and-session.md      |  15 +++
+ docs/plugins/hooks/reference.md               |   2 +
+ .../session-placement-admission.test.ts       | 125 ++++++++++++++++++
+ src/agents/session-placement-admission.ts     |  60 ++++++---
+ src/plugins/hook-types.ts                     |   5 +
+ src/plugins/hooks.ts                          |  17 +++
+ 6 files changed, 207 insertions(+), 17 deletions(-)
+
+diff --git a/docs/plugins/hooks/prompt-and-session.md b/docs/plugins/hooks/prompt-and-session.md
+index 1c14edf4b..a182016a8 100644
+--- a/docs/plugins/hooks/prompt-and-session.md
++++ b/docs/plugins/hooks/prompt-and-session.md
+@@ -259,6 +259,21 @@ installs or updates. Do not publish a package that uses this option while
+ claiming compatibility with an older plugin API; an older host may otherwise
+ treat an unknown option as an ordinary pre-policy hook.
+ 
++Use `before_turn_start` to complete a required check before the Gateway
++dispatches a turn to the embedded harness, a Codex app server, or a paired
++worker. The event contains only `sessionId` and `runId`. OpenClaw resolves
++these IDs after the turn leaves the queue. A retry that enters the queue
++again can have the same IDs.
++
++Return from the handler to allow dispatch. A thrown error or a timeout stops
++dispatch and model fallback. The default timeout is 15 seconds. To require
++a specific plugin, set `OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN` to its ID
++in the Gateway service environment. Each dispatch requires a successful call
++to that plugin, including after a plugin reload. The hook covers dispatch
++through session placement, including direct CLI turns. Commands that return
++before dispatch and individual model requests within a turn are outside
++this check.
++
+ On the embedded and CLI runners, `before_agent_run` runs after prompt
+ construction and before model submission, including `llm_input` observation.
+ It receives the current user input as `prompt`, loaded session history in
+diff --git a/docs/plugins/hooks/reference.md b/docs/plugins/hooks/reference.md
+index c05c605f1..862b41495 100644
+--- a/docs/plugins/hooks/reference.md
++++ b/docs/plugins/hooks/reference.md
+@@ -91,6 +91,7 @@ The standard runner applies these defaults **per handler**:
+ | Hooks                                                                                                          | Default timeout                     | On thrown error or timeout                                       |
+ | -------------------------------------------------------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------- |
+ | `before_agent_run`, `before_tool_call`, `before_install`                                                       | 15 seconds                          | Block the run, tool call, or install                             |
++| `before_turn_start`                                                                                            | 15 seconds                          | Stop the turn before local or worker execution                   |
+ | `before_model_request`                                                                                         | 10 seconds                          | Fail the model request; the original payload is not sent         |
+ | `before_channel_ingress`                                                                                       | 15 seconds                          | Refuse durable intake without logging policy exception contents  |
+ | `before_agent_finalize`, `before_prompt_build`, `message_sending`, `reply_payload_sending`, `resolve_exec_env` | 15 seconds                          | Log and skip the failed handler; retain other successful results |
+@@ -132,6 +133,7 @@ contracts above; a modifying hook is not an observation hook.
+ | `agent_turn_prepare`            | Modify  | Inspect drained plugin turn injections and add context before prompt hooks                                                      |
+ | `before_prompt_build`           | Modify  | Add prompt context, narrow the current turn's submitted tools, or perform authorized post-policy enrichment                     |
+ | `before_agent_run`              | Gate    | Inspect prompt and session messages before model submission; node turns gate Gateway input before worker-local context assembly |
++| `before_turn_start`             | Gate    | Check the session and run IDs before the Gateway dispatches a turn to a local harness or a worker                               |
+ | `before_model_request`          | Modify  | Rewrite or withhold the final provider request body, or the prompt text handed to a CLI runtime                                 |
+ | `before_agent_reply`            | Claim   | Short-circuit the model turn with a synthetic reply or silence                                                                  |
+ | `before_agent_finalize`         | Modify  | Inspect the natural final answer and request one more model pass                                                                |
+diff --git a/src/agents/session-placement-admission.test.ts b/src/agents/session-placement-admission.test.ts
+index c0144723b..b4e2cc22d 100644
+--- a/src/agents/session-placement-admission.test.ts
++++ b/src/agents/session-placement-admission.test.ts
+@@ -4,6 +4,10 @@ import {
+   setRuntimeConfigSnapshot,
+ } from "../config/runtime-snapshot.js";
+ import { rotateAgentEventLifecycleGeneration } from "../infra/agent-events.js";
++import {
++  initializeGlobalHookRunner,
++  resetGlobalHookRunner,
++} from "../plugins/hook-runner-global.js";
+ import { withSessionTurn } from "../sessions/session-controller.admission.js";
+ import { getCurrentSessionControllerOwner } from "../sessions/session-controller.lifecycle.js";
+ import { getExistingSessionControllerMailbox } from "../sessions/session-controller.mailbox.js";
+@@ -148,6 +152,127 @@ describe("local turn placement admission", () => {
+       async () => localResult(),
+     );
+ 
++  describe("before_turn_start", () => {
++    const identity = { sessionId: "session-1", runId: "run-1" };
++    const start = (execute = async () => localResult()) =>
++      withTestRunAdmission(turnParams, (admittedRunContext) =>
++        withSessionPlacementTurnAdmission(identity, { ...turnParams, admittedRunContext }, execute),
++      );
++    const register = (
++      handlers: Array<() => Promise<void>>,
++      pluginId = "admission",
++      timeoutMs?: number,
++    ) =>
++      initializeGlobalHookRunner({
++        hooks: [],
++        plugins: [],
++        typedHooks: handlers.map((handler) => ({
++          hookName: "before_turn_start" as const,
++          pluginId,
++          handler,
++          source: "test",
++          timeoutMs,
++        })),
++      });
++
++    afterEach(() => {
++      resetGlobalHookRunner();
++      vi.unstubAllEnvs();
++    });
++
++    it("waits for the selected plugin before dispatching the resolved turn", async () => {
++      vi.stubEnv("OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN", "admission");
++      const entered = createDeferredCore();
++      const release = createDeferredCore();
++      const handler = vi.fn(async () => {
++        entered.resolve();
++        await release.promise;
++      });
++      register([handler]);
++      const dispatch = vi.fn(async () => localResult("ready"));
++      installProvider({ executeTurn: dispatch });
++      const running = start();
++      try {
++        await Promise.race([entered.promise, running]);
++        expect(handler).toHaveBeenCalledWith(identity, {});
++        expect(dispatch).not.toHaveBeenCalled();
++      } finally {
++        release.resolve();
++        await running;
++      }
++      expect(dispatch).toHaveBeenCalledOnce();
++
++      // Reloading a different plugin with the same hook must not satisfy the requirement.
++      register([handler], "other");
++      await expect(start()).rejects.toMatchObject({
++        name: "AgentHarnessPreflightError",
++      });
++      expect(dispatch).toHaveBeenCalledOnce();
++    });
++
++    it("stops a local turn before the required plugin has loaded", async () => {
++      vi.stubEnv("OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN", "admission");
++      const execute = vi.fn(async () => localResult());
++      await expect(start(execute)).rejects.toMatchObject({ name: "AgentHarnessPreflightError" });
++      await expect(
++        withLocalSessionPlacementTurnSettlement(identity, execute),
++      ).rejects.toMatchObject({
++        name: "AgentHarnessPreflightError",
++      });
++      expect(execute).not.toHaveBeenCalled();
++    });
++
++    it.each(["returns", "throws"])(
++      "stops on cancellation when the pending handler %s",
++      async (settlement) => {
++        const controller = new AbortController();
++        const reason = new Error("turn cancelled");
++        const next = vi.fn();
++        const execute = vi.fn(async () => localResult());
++        register([
++          async () => {
++            controller.abort(reason);
++            if (settlement === "throws") {
++              throw new Error("handler failed");
++            }
++          },
++          next,
++        ]);
++        await expect(
++          withLocalSessionPlacementTurnSettlement(identity, execute, {
++            abortSignal: controller.signal,
++          }),
++        ).rejects.toBe(reason);
++        expect(next).not.toHaveBeenCalled();
++        expect(execute).not.toHaveBeenCalled();
++      },
++    );
++
++    it.each(["throw", "timeout"])(
++      "treats a handler %s as a terminal preflight error",
++      async (mode) => {
++        register(
++          [
++            async () => {
++              if (mode === "throw") {
++                throw new Error("storage unavailable");
++              }
++              await new Promise<never>(() => {});
++            },
++          ],
++          "admission",
++          20,
++        );
++        const dispatch = vi.fn(async () => localResult());
++        installProvider({ executeTurn: dispatch });
++        await expect(start()).rejects.toMatchObject({
++          name: "AgentHarnessPreflightError",
++        });
++        expect(dispatch).not.toHaveBeenCalled();
++      },
++    );
++  });
++
+   it.each(["local CLI", "embedded"])(
+     "queues a CLI follow-up until the active %s session turn releases its placement",
+     async (runtime) => {
+diff --git a/src/agents/session-placement-admission.ts b/src/agents/session-placement-admission.ts
+index 421832350..ffb24a05e 100644
+--- a/src/agents/session-placement-admission.ts
++++ b/src/agents/session-placement-admission.ts
+@@ -15,6 +15,7 @@ import {
+   captureAgentRunLifecycleGeneration,
+ } from "../infra/agent-events.js";
+ import { retainQueuedAgentRunContext } from "../infra/agent-run-registry.js";
++import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+ import { withSessionTurn } from "../sessions/session-controller.admission.js";
+ import type { ReplyOperation } from "../sessions/session-controller.contracts.js";
+ import { registerReplyOperationSuccessorBarrier } from "../sessions/session-controller.js";
+@@ -29,6 +30,7 @@ import type { RunEmbeddedAgentInternalParams } from "./embedded-agent-runner/run
+ import { resolveEmbeddedRunSessionLanePolicy } from "./embedded-agent-runner/run/lane-runtime.js";
+ import type { RunEmbeddedAgentParams } from "./embedded-agent-runner/run/params.js";
+ import type { EmbeddedAgentRunResult } from "./embedded-agent-runner/types.js";
++import { AgentHarnessPreflightError } from "./harness/errors.js";
+ import { settleRequesterRun } from "./requester-run-settlement.js";
+ import { createSessionPlacementSettlementClosedAbortError } from "./run-termination.js";
+ import type { SandboxContext } from "./sandbox/types.js";
+@@ -219,16 +221,44 @@ export function captureSessionPlacementCompactionSuccessorAssertion(): SessionPl
+ // Placement can register a cancellation proxy before runtime/tool preparation.
+ // Only an exact continuation retains caller fences; independently admitted work
+ // must enter its own runtime scope instead of borrowing its launching tool's.
+-function withPlacementTurnCallerScope<T>(
++function dispatchPlacementTurn(
++  claim: LocalTurnPlacementClaim,
+   params: Pick<RunEmbeddedAgentParams, "admittedRunContext" | "preparedRunAdmission">,
+-  task: () => T,
+-): T {
++  assertCurrent: SessionSourceAssertion,
++  task: () => Promise<EmbeddedAgentRunResult>,
++): Promise<EmbeddedAgentRunResult> {
++  const dispatch = () =>
++    withoutSessionPlacementForcedTerminalSettlement(async () => {
++      const required = process.env.OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN?.trim();
++      const runner = getGlobalHookRunner();
++      if (required || runner?.hasHooks("before_turn_start")) {
++        assertCurrent();
++        let admitted: boolean | undefined;
++        try {
++          admitted = await runner?.runBeforeTurnStart(
++            { sessionId: claim.sessionId, runId: claim.runId },
++            assertCurrent,
++            required,
++          );
++        } catch (cause) {
++          assertCurrent();
++          throw new AgentHarnessPreflightError("Turn admission failed.", { cause });
++        }
++        if (!admitted) {
++          throw new AgentHarnessPreflightError(
++            `Required turn admission plugin "${required}" is unavailable.`,
++          );
++        }
++        assertCurrent();
++      }
++      return task();
++    });
+   const instance =
+     params.admittedRunContext?.operationalRunInstance ??
+     params.preparedRunAdmission?.operationalRunInstance;
+   return instance && getGatewayToolCallerIdentity()?.operationalRunInstance === instance
+-    ? task()
+-    : withoutGatewayToolCallerIdentity(() => runWithoutOwnedSessionTranscriptWrites(task));
++    ? dispatch()
++    : withoutGatewayToolCallerIdentity(() => runWithoutOwnedSessionTranscriptWrites(dispatch));
+ }
+ 
+ export async function withSessionPlacementTurnAdmission(
+@@ -330,12 +360,10 @@ async function executeAdmittedSessionPlacementTurn(
+       }
+     },
+   );
+-  const result = await withPlacementTurnCallerScope(params, () =>
+-    withoutSessionPlacementForcedTerminalSettlement(() =>
+-      provider
+-        ? provider.executeTurn(claim, params, runAdmittedLocalTurn, admitTurn, assertCurrent)
+-        : runAdmittedLocalTurn(),
+-    ),
++  const result = await dispatchPlacementTurn(claim, params, assertCurrent, () =>
++    provider
++      ? provider.executeTurn(claim, params, runAdmittedLocalTurn, admitTurn, assertCurrent)
++      : runAdmittedLocalTurn(),
+   );
+   if (result.meta.executionTrace?.runner === "cli" && params.isFinalFallbackAttempt === undefined) {
+     // Standalone CLI completion releases placement before admitting a successor;
+@@ -442,12 +470,10 @@ export async function withLocalSessionPlacementTurnSettlement(
+             open = false;
+           }
+         };
+-        const result = await withPlacementTurnCallerScope(options, () =>
+-          withoutSessionPlacementForcedTerminalSettlement(() =>
+-            provider
+-              ? provider.executeLocalTurn(claim, runLocal, assertAdmissionCurrent)
+-              : runLocal(),
+-          ),
++        const result = await dispatchPlacementTurn(claim, options, assertAdmissionCurrent, () =>
++          provider
++            ? provider.executeLocalTurn(claim, runLocal, assertAdmissionCurrent)
++            : runLocal(),
+         );
+         if (options.isFinalFallbackAttempt === undefined) {
+           // Candidate classification is provisional until the outer entry accepts it.
+diff --git a/src/plugins/hook-types.ts b/src/plugins/hook-types.ts
+index 1010f39b1..83ef80f92 100644
+--- a/src/plugins/hook-types.ts
++++ b/src/plugins/hook-types.ts
+@@ -122,6 +122,7 @@ type PluginHookMetadata = {
+ };
+ 
+ export const PLUGIN_HOOK_METADATA: Readonly<Record<PluginHookName, PluginHookMetadata>> = {
++  before_turn_start: { modifyingTimeoutMs: 15_000 },
+   before_model_resolve: { conversationAccess: true },
+   ...MODEL_HOOK_METADATA,
+   agent_turn_prepare: { conversationAccess: true, promptInjection: true },
+@@ -754,6 +755,10 @@ export type PluginHookResolveExecEnvContext = PluginHookAgentContext;
+ type RuntimeHooks = PluginMessageHookHandlerMap & ModelRequestHooks;
+ 
+ export type PluginHookHandlerMap = RuntimeHooks & {
++  before_turn_start: AsyncPluginHook<
++    Readonly<{ sessionId: string; runId: string }>,
++    Readonly<Record<string, never>>
++  >;
+   agent_turn_prepare: AsyncPluginHook<
+     PluginAgentTurnPrepareEvent,
+     PluginHookAgentContext,
+diff --git a/src/plugins/hooks.ts b/src/plugins/hooks.ts
+index 7ce73588c..bf22e0a4d 100644
+--- a/src/plugins/hooks.ts
++++ b/src/plugins/hooks.ts
+@@ -136,6 +136,7 @@ export function createHookRunner(
+   const logger = options.logger;
+   const catchErrors = options.catchErrors ?? true;
+   const failurePolicyByHook = {
++    before_turn_start: "fail-closed",
+     before_agent_run: "fail-closed",
+     before_channel_ingress: "fail-closed",
+     before_model_request: "fail-closed",
+@@ -1008,6 +1009,22 @@ export function createHookRunner(
+         runModifyingHook("before_channel_ingress", event, context, policy),
+     }),
+     runBeforeAgentRun,
++    async runBeforeTurnStart(
++      event: HookEvent<"before_turn_start">,
++      assertCurrent: () => void,
++      requiredPluginId?: string,
++    ) {
++      let admitted = !requiredPluginId;
++      await runModifyingHook("before_turn_start", Object.freeze(event), Object.freeze({}), {
++        assertHandlerBoundaryActive: assertCurrent,
++        onHandlerResult({ hook }) {
++          if (hook.pluginId === requiredPluginId) {
++            admitted = true;
++          }
++        },
++      });
++      return admitted;
++    },
+     runInboundClaim: bindClaimingHook("inbound_claim"),
+     runInboundClaimForPlugin,
+     runInboundClaimForPluginOutcome,
+
+From 5228382663f97e436c7a485c2a940f74e54cdb4c Mon Sep 17 00:00:00 2001
+From: Prakash Sanker <307704256+prakash-oai@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 15:36:12 -0800
+Subject: [PATCH 2/2] feat(plugins): report committed session creation to
+ listeners
+
+Let a plugin subscribe to new session IDs through runtime.events.onSessionCreated. Publish the agent and session IDs after the store commits a creation or replaces a session ID. A listener can observe an empty session before the first turn.
+
+Extend the Gateway test for repeated sessions.create calls to check that the listener receives one notification.
+---
+ docs/plugins/sdk-runtime/state-and-system.md       |  9 ++++++++-
+ src/gateway/server.sessions.create-notices.test.ts |  9 ++++++++-
+ src/plugin-sdk/test-helpers/plugin-runtime-mock.ts |  1 +
+ src/plugins/runtime/index.ts                       |  4 ++--
+ src/plugins/runtime/session-changes.ts             | 12 ++++++++++++
+ src/plugins/runtime/types-core.ts                  |  4 ++++
+ 6 files changed, 35 insertions(+), 4 deletions(-)
+
+diff --git a/docs/plugins/sdk-runtime/state-and-system.md b/docs/plugins/sdk-runtime/state-and-system.md
+index 76b25154a..8ca349f1a 100644
+--- a/docs/plugins/sdk-runtime/state-and-system.md
++++ b/docs/plugins/sdk-runtime/state-and-system.md
+@@ -129,12 +129,19 @@ keep the existing synchronous fallback.
+ 
+   </Accordion>
+   <Accordion title="api.runtime.events">
+-    Event subscriptions.
++    Use `onSessionCreated` to observe a session as soon as the host saves its
++    ID. It covers empty sessions and sessions created by the first chat
++    message. A reset that assigns a new ID also triggers the callback. Moving
++    or updating a session with the same ID does not. Call the returned
++    function to unsubscribe when your service stops.
+ 
+     ```typescript
+     api.runtime.events.onAgentEvent((event) => {
+       /* ... */
+     });
++    const unsubscribe = api.runtime.events.onSessionCreated(({ agentId, sessionId }) => {
++      /* ... */
++    });
+     api.runtime.events.onSessionTranscriptUpdate((update) => {
+       /* ... */
+     });
+diff --git a/src/gateway/server.sessions.create-notices.test.ts b/src/gateway/server.sessions.create-notices.test.ts
+index 5abde927c..3e95cc8f8 100644
+--- a/src/gateway/server.sessions.create-notices.test.ts
++++ b/src/gateway/server.sessions.create-notices.test.ts
+@@ -1,8 +1,9 @@
+ import { expectDefined } from "@openclaw/normalization-core";
+-import { expect, test } from "vitest";
++import { expect, onTestFinished, test } from "vitest";
+ import { loadSessionEntry } from "../config/sessions/session-accessor.js";
+ import type { SessionEntry } from "../config/sessions/types.js";
+ import { drainSystemEvents, peekSystemEvents } from "../infra/system-events.js";
++import { createPluginRuntime } from "../plugins/runtime/index.js";
+ import { listSessionStateEventsSince } from "../sessions/session-state-events.js";
+ import { ensureProfileForEmail } from "../state/user-profiles.js";
+ import {
+@@ -43,6 +44,11 @@ test("sessions.create preserves creation and notices after an unknown signal out
+       internal: { syntheticClient: true, sessionCreation },
+     } as never,
+   });
++  const creations: Array<{ agentId: string; sessionId: string }> = [];
++  const unsubscribe = createPluginRuntime().events.onSessionCreated((event) => {
++    creations.push(event);
++  });
++  onTestFinished(unsubscribe);
+   const signal = loseSessionSignalAcknowledgement();
+   const created = await create({
+     agentId: "main",
+@@ -76,6 +82,7 @@ test("sessions.create preserves creation and notices after an unknown signal out
+ 
+   const existing = await create({ key });
+   expect(existing.ok).toBe(true);
++  expect(creations).toEqual([{ agentId: "main", sessionId: created.payload?.entry?.sessionId }]);
+   expect(peekSystemEvents("agent:main:main")).toEqual([]);
+   expect((await listSessionStateEventsSince(key, "main", 0, 20)).events).toHaveLength(1);
+   const described = await directSessionReq("sessions.describe", { key }, operator);
+diff --git a/src/plugin-sdk/test-helpers/plugin-runtime-mock.ts b/src/plugin-sdk/test-helpers/plugin-runtime-mock.ts
+index 5311979a9..abdbafa62 100644
+--- a/src/plugin-sdk/test-helpers/plugin-runtime-mock.ts
++++ b/src/plugin-sdk/test-helpers/plugin-runtime-mock.ts
+@@ -536,6 +536,7 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides =
+     },
+     events: {
+       onAgentEvent: vi.fn<PluginRuntime["events"]["onAgentEvent"]>(() => () => {}),
++      onSessionCreated: vi.fn<PluginRuntime["events"]["onSessionCreated"]>(() => () => {}),
+       onSessionTranscriptUpdate: vi.fn<PluginRuntime["events"]["onSessionTranscriptUpdate"]>(
+         () => () => {},
+       ),
+diff --git a/src/plugins/runtime/index.ts b/src/plugins/runtime/index.ts
+index c4efb2eac..cd85cbc7c 100644
+--- a/src/plugins/runtime/index.ts
++++ b/src/plugins/runtime/index.ts
+@@ -35,7 +35,7 @@ import { createRuntimeBase } from "./runtime-base.js";
+ import { createRuntimeChannel } from "./runtime-channel.js";
+ import { createRuntimeLogging } from "./runtime-logging.js";
+ import { createRuntimeMedia } from "./runtime-media.js";
+-import { subscribeRuntimeSessionChanges } from "./session-changes.js";
++import { onSessionCreated, subscribeRuntimeSessionChanges } from "./session-changes.js";
+ import type { PluginRuntimeFactory, PluginRuntime } from "./types.js";
+ 
+ // The host loader resolves this synchronous operation only when a plugin enqueues a turn.
+@@ -360,7 +360,7 @@ export const createPluginRuntime: PluginRuntimeFactory = (
+         ? { dispatchReplyFromConfig: _options.dispatchReplyFromConfig }
+         : undefined,
+     ),
+-    events: { onAgentEvent, onSessionTranscriptUpdate },
++    events: { onAgentEvent, onSessionCreated, onSessionTranscriptUpdate },
+     logging: createRuntimeLogging(),
+     state: base.state,
+ 
+diff --git a/src/plugins/runtime/session-changes.ts b/src/plugins/runtime/session-changes.ts
+index cbf20524f..c01ecdf8e 100644
+--- a/src/plugins/runtime/session-changes.ts
++++ b/src/plugins/runtime/session-changes.ts
+@@ -1,7 +1,19 @@
+ import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
++import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
+ import { sessionChanges } from "../../sessions/session-row-changes.js";
+ import type { PluginRuntime } from "./types.js";
+ 
++export const onSessionCreated: PluginRuntime["events"]["onSessionCreated"] = (listener) =>
++  onSessionIdentityMutation((mutation) => {
++    if (mutation.kind === "delete" || mutation.kind === "move") {
++      return;
++    }
++    const { sessionId } = mutation.current;
++    if (sessionId && sessionId !== mutation.previous.sessionId) {
++      listener({ agentId: mutation.agentId, sessionId });
++    }
++  });
++
+ export const subscribeRuntimeSessionChanges: PluginRuntime["gateway"]["subscribeSessionChanges"] = (
+   listener,
+ ) =>
+diff --git a/src/plugins/runtime/types-core.ts b/src/plugins/runtime/types-core.ts
+index 00e0ce906..b1e86a90c 100644
+--- a/src/plugins/runtime/types-core.ts
++++ b/src/plugins/runtime/types-core.ts
+@@ -421,6 +421,10 @@ export type PluginRuntimeCore = {
+   };
+   events: {
+     onAgentEvent: typeof import("../../infra/agent-events.js").onAgentEvent;
++    /** Observe a committed session row with a new ID. The caller owns unsubscribe. */
++    onSessionCreated: (
++      listener: (event: { agentId: string; sessionId: string }) => void,
++    ) => () => void;
+     onSessionTranscriptUpdate: typeof import("../../sessions/transcript-events.js").onSessionTranscriptUpdate;
+   };
+   logging: {
