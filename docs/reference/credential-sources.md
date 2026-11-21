@@ -31,8 +31,6 @@ OpenShell is a development integration. See the
 
 ## Register a source
 
-Managed static POST returns `501 NOT_IMPLEMENTED` after authorization.
-
 1. Wait for the Namespace to become `ready`.
 2. For a Secret-backed source, [create a Secret](drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and keep its `ref`.
 3. Send `POST /namespaces/:namespaceId/credential-sources`. The caller needs
@@ -161,10 +159,6 @@ ready static Harness model source from the selected Gateway as the Agent’s onl
 credential source. Kubernetes [rechecks its lifecycle before release](../flows/credential-source-lifecycle.md#6-resolve-the-source-at-dispatch).
 
 ## Update a source
-
-Managed static PATCH returns `501 NOT_IMPLEMENTED` after authorization.
-When enabled, changing or removing `provider_preset` while replacing material returns
-`409 RESOURCE_CONFLICT`; send separate requests. Repeating the current preset is allowed.
 
 Device-authorized sources reject PATCH with `409` before reading Secrets or
 changing refresh state. Sign in again and replace the Agent binding instead.
