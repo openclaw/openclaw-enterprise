@@ -118,7 +118,7 @@ CREATE FUNCTION occ.check_connection_template_version_mode() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
   PERFORM 1 FROM occ.connection_templates WHERE id = NEW.template_id
-    AND static_key = (TG_TABLE_NAME = 'static_key_template_versions') FOR KEY SHARE;
+    AND static_key = (TG_TABLE_NAME = 'static_key_template_versions');
   IF NOT FOUND THEN
     RAISE EXCEPTION 'connection template version has the wrong authentication method' USING ERRCODE = '23514';
   END IF;
