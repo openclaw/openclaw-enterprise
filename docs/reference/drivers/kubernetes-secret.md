@@ -220,6 +220,16 @@ reads the current CP source and delivers the admitted fields into the DP runtime
 Secret before starting the Harness. An unchanged Configuration or Secret reference
 does not remove the need to deploy again.
 
+If a [credential source](../credential-sources.md) holds the key as a Gateway
+copy, also run `occ credential-source update ID` after updating the Secret and
+before deploying. A deployment alone starts the new version with the old copy.
+See [Update a source](../credential-sources.md#update-a-source).
+
+With OpenShell, that source update briefly disconnects the workspace node of
+every running Agent that uses the source, even when nothing changed. A turn
+starting meanwhile can fail with HTTP 500, and a running native OpenClaw turn is
+lost. Update the source while those Agents are idle.
+
 Recreating a Harness Pod or running `kubectl rollout restart` only reads its
 existing revision projection; neither is a credential-delivery operation.
 Embedded Gateway bindings also use revision projections and require explicit
