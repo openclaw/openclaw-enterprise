@@ -17,7 +17,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import {
-  OpenShellCredentialProxyDriver,
+  OpenShellLegacyEgressProxyDriver,
   openShellEgressConfiguration,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import * as releaseFixture from "../fixtures/driver-packages/protected-execution-driver/index.ts";
@@ -110,7 +110,7 @@ const owners: readonly {
   {
     capability: "credential_proxy",
     implementation: "openshell",
-    definition: OpenShellCredentialProxyDriver,
+    definition: OpenShellLegacyEgressProxyDriver,
     valid: {
       middlewareName: "credential-proxy",
       authorityScope: "execution",
@@ -276,7 +276,7 @@ test("OpenShell direct construction and policy rendering still enforce configura
   ]) {
     // Malformed runtime input must fail before selection or route rendering.
     assert.throws(
-      () => Reflect.construct(OpenShellCredentialProxyDriver, [options, undefined]),
+      () => Reflect.construct(OpenShellLegacyEgressProxyDriver, [options, undefined]),
       redactedConfigurationError,
     );
     assert.throws(
@@ -325,7 +325,7 @@ test("OpenShell discovery and policy use the installed configuration after calle
     authorityScope: "execution" as const,
     observedHookPreviewWorkspace: "preview-1",
   };
-  const proxy = new OpenShellCredentialProxyDriver(options, {
+  const proxy = new OpenShellLegacyEgressProxyDriver(options, {
     id: "proxy",
     backend: {
       id: "openshell",

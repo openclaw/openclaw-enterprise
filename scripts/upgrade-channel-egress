@@ -20,24 +20,64 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def private(path):
-    info = Path(path).lstat()
+def require_private_regular_file(info):
     require(stat.S_ISREG(info.st_mode) and info.st_mode & 0o077 == 0,
             "inputs and receipts must be private regular files")
 
 
-def command(args, *, data=None):
-    result = subprocess.run(args, input=data, capture_output=True, text=True, timeout=120)
+def private(path):
+    require_private_regular_file(Path(path).lstat())
+
+
+def command(args, *, data=None, failure_hint=""):
+    result = subprocess.run(args, input=data, capture_output=True, text=data is None, timeout=120)
     # Native diagnostics can contain Installation configuration or credentials.
-    require(result.returncode == 0, f"{Path(args[0]).name} failed; inspect the selected resource with the operator tools")
-    return result.stdout
+    require(result.returncode == 0, f"{Path(args[0]).name} failed; inspect the selected resource with the operator tools{failure_hint}")
+    return result.stdout if data is None else result.stdout.decode("utf-8")
 
 
-def yaml(path):
-    private(path)
-    result = json.loads(command(["yq", "-o=json", ".", str(path)]))
+def yaml(path, *, data=None):
+    if data is None:
+        private(path)
+    result = json.loads(command(["yq", "-o=json", ".", str(path)], data=data))
     require(isinstance(result, dict), "configuration must be a YAML object")
     return result
+
+
+def helm_values(path, option):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        require_private_regular_file(os.fstat(descriptor))
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            data = source.read()
+    finally:
+        os.close(descriptor)
+    line_end = data.find(b"\n")
+    first_line = (data if line_end == -1 else data[:line_end]).rstrip(b" \t\r")
+    if first_line in (b"USER-SUPPLIED VALUES:", b"COMPUTED VALUES:"):
+        heading = first_line[:-1].decode("ascii")
+        recapture = (
+            "recapture with 'helm get values RELEASE --output yaml' using the same kubeconfig, "
+            "context, namespace, and revision. Write to a new private .yaml file and prepare the candidate again."
+        )
+        # Classify the first entry as YAML even if the filename selects another format.
+        # An implicit null is on the key's line. An indented value starts later.
+        expression = r"""
+          select(document_index == 0 and tag == "!!map") | to_entries | .[0]
+          | select((.value | tag) == "!!null" and (.value | line) == (.key | line)) | .key
+        """
+        display = command(
+            ["yq", "-p=yaml", "-r", expression, "-"],
+            data=data,
+            failure_hint=f". If {option} came from Helm display output, {recapture}",
+        )
+        require(display.strip() != heading, f"{option} contains Helm's {heading} display header. To recover, {recapture}")
+    with tempfile.TemporaryDirectory(prefix="oce-channel-values-") as directory:
+        # Let yq infer the format from the original basename while reading the
+        # checked bytes through stdin. The temporary directory holds only a symlink.
+        input_path = Path(directory) / Path(path).name
+        input_path.symlink_to("/dev/stdin")
+        return yaml(input_path, data=data)
 
 
 def sync_parent(path):
@@ -152,7 +192,7 @@ def validate(before_values, before_installation, values, installation, namespace
 
 
 def prepare(args):
-    values, installation = yaml(args.values), yaml(args.installation)
+    values, installation = helm_values(args.values, "--values"), yaml(args.installation)
     before_values, before_installation = copy.deepcopy(values), copy.deepcopy(installation)
     enabled = source(values, installation, args.namespace, args.release)
     values.pop("slackProxy", None)
@@ -326,7 +366,11 @@ def main():
     if args.action == "prepare":
         prepare(args)
     elif args.action == "validate":
-        print(str(validate(yaml(args.before_values), yaml(args.before_installation), yaml(args.values), yaml(args.installation), args.namespace, args.release)).lower())
+        enabled = validate(
+            helm_values(args.before_values, "--before-values"), yaml(args.before_installation),
+            helm_values(args.values, "--values"), yaml(args.installation), args.namespace, args.release,
+        )
+        print(str(enabled).lower())
     elif args.action == "check-stopped-inventory":
         stopped_inventory(json.loads(Path(args.before).read_text()), json.loads(Path(args.after).read_text()))
     else:

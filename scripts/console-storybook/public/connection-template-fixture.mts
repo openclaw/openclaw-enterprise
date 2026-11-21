@@ -223,6 +223,11 @@ export function createConnectionTemplateFixture(
           version: template.current.version + 1,
           createdAt,
         };
+        if (mode === "unconfirmed-save" && isRecord(template.current)) {
+          const current = { ...template.current };
+          delete current.version;
+          return response({ ...template, current });
+        }
         return response(template);
       }
       if (path === "/connection-templates" && method === "POST") {

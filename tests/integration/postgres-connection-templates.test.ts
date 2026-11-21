@@ -101,15 +101,28 @@ test(
     const catalog = await inject("GET", "/connection-templates");
     assert.equal(catalog.statusCode, 200, catalog.body);
     assert.ok(catalog.json().data.some((entry: { id: string }) => entry.id === scopedId));
+    const oauthDraft = catalog
+      .json()
+      .data.find((entry: ConnectionTemplate) => entry.displayName === "Google OAuth");
+    assert.ok(oauthDraft);
+    const oauthId = await createManualDraft(inject, namespaceId);
+    const registered = await inject("POST", "/oauth-clients", clientInput(oauthId));
+    assert.equal(registered.statusCode, 201, registered.body);
     const usable = async (id: string) => {
       const result = await inject("GET", `/namespaces/${id}/connection-templates`);
       assert.equal(result.statusCode, 200, result.body);
       return result.json().data.map((entry: { id: string }) => entry.id);
     };
-    assert.ok((await usable(namespaceId)).includes(shared.id));
-    assert.ok((await usable(namespaceId)).includes(scopedId));
-    assert.ok((await usable(peerId)).includes(shared.id));
-    assert.ok(!(await usable(peerId)).includes(scopedId));
+    // Namespace consumers see eligible templates of both modes, but no unregistered OAuth draft.
+    const ownerTemplates = await usable(namespaceId);
+    const peerTemplates = await usable(peerId);
+    assert.ok(ownerTemplates.includes(shared.id));
+    assert.ok(ownerTemplates.includes(scopedId));
+    assert.ok(ownerTemplates.includes(oauthId));
+    assert.ok(!ownerTemplates.includes(oauthDraft.id));
+    assert.ok(peerTemplates.includes(shared.id));
+    assert.ok(!peerTemplates.includes(scopedId));
+    assert.ok(!peerTemplates.includes(oauthId));
 
     const member = { email: `reader-${randomUUID()}@example.test`, password: randomUUID() };
     const auth = await createPostgresControllerAuth({

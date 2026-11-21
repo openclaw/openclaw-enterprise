@@ -27,6 +27,7 @@ SSH recovery depends on the operator-installed native runtime.
 | Redeployment with retained state and a supported Harness | Eligible work can continue in the same session.                             |
 | Gateway replacement, alone or with the Harness           | Eligible work can continue after reconnection.                              |
 | Replacement of only the Harness (dedicated Codex)        | The turn ends and does not resume; send the request again.                  |
+| OpenShell Gateway service restart (dedicated Codex)      | The turn ends for its caller; its running command can still finish.         |
 | [Stop](deployment.md#stop-and-resume), then deployment   | Stop shuts down the workload; the later startup may continue eligible work. |
 | Harmless configuration change                            | No OCE compatibility filter prevents recovery. Native checks still apply.   |
 | Explicit native `chat.abort`                             | Cancelled work does not become eligible on startup.                         |
@@ -55,6 +56,53 @@ still apply.
 Changing Harnesses does not make an incompatible saved session usable. Retained
 storage, native state validity, current authority, and Harness support remain
 prerequisites. Deletion removes resources according to the Agent deletion contract.
+
+### Native OpenClaw with the OpenShell SandboxDriver
+
+On this development configuration, whose
+[production qualification](../drivers/openshell-sandbox.md#qualification-contract)
+remains open, the pinned runtime does not continue an interrupted turn after a
+Gateway replacement or a redeployment. The resume fails when the new Gateway
+starts. The same conversation then answers `500` with `internal error` until
+about one minute after the new Gateway is ready, and then works again. Files
+that the turn wrote with relative paths are no longer in the session's working
+directory; send the task again.
+
+When the Sandbox is lost, a request in flight gets no answer until the
+[HTTP chat deadline](../agent-http-chat.md#availability-and-failures): `504`, or
+a closed connection without `[DONE]` if its stream had already started. After
+you deploy the Agent again, the same `user` label can keep answering `500`; use
+a new label.
+
+An HTTP chat request that ends, at its deadline or by a disconnect, while the
+turn runs a command can leave its conversation unable to answer. Each later
+request with the same `user` label then gets no bytes until its own deadline; a
+stream gets `200`, then a closed connection without `[DONE]`. A new label
+answers normally, and the Agent stays active with ready Pods. The Gateway log
+repeats, about once a minute,
+`Worker disk-space check failed (<session>): node worker environment stop failed (UNAVAILABLE)`.
+This does not clear by itself, and a Gateway replacement does not help: deploy
+the Agent again, and the same label answers.
+
+### Dedicated Codex with the OpenShell SandboxDriver
+
+On the same development configuration, the Gateway of a dedicated Codex Agent
+reaches the Codex app server through the
+[exposure](../drivers/openshell-sandbox/harness-providers.md#create-time-app-server-exposure)
+that the OpenShell Gateway service provides. A restart of that service ends the
+running turn for its caller, although the Agent's Gateway and Harness keep
+running. An HTTP chat request in flight gets `500` with `internal error` within
+a second. A stream that already started gets the same error as an event, then
+`[DONE]`.
+
+The command that the turn was running is not stopped. In testing, a 40-second
+command finished in the Sandbox about half a minute after the restart, and the
+same conversation then reported it as completed. New turns can also fail with
+`500` for a few seconds after the service is ready again; in testing they worked
+again about 12 seconds after the restart. Before you send the request again,
+ask the same conversation (the same `user` label) what its last command did, or
+check for its effects: sending it again can run the work twice. The running
+turn of a native OpenClaw Agent is not interrupted by this restart.
 
 ## HTTP chat callers
 

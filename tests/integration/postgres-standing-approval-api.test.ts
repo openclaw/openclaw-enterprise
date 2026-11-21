@@ -45,7 +45,7 @@ import {
   STANDING_APPROVAL_ONE_BINDING,
   STANDING_APPROVAL_POLICY_CHANGED,
   STANDING_APPROVAL_SCOPE_CHANGED,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-admission.ts";
 
 const authSecret = "standing-approval-source-test-auth-secret-32";
 // Proves registered HTTP/IAM/State behavior with controlled Compute credential preparation.

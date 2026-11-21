@@ -31,9 +31,11 @@
     "tests/conformance/occ-runtime-logs-security.test.ts",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
+    "tests/integration/installation-preflight-render.test.ts",
     "tests/conformance/kubernetes-secret-driver.test.ts",
     "tests/docs/docs-site.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/external-sandbox-registration.test.ts",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
@@ -57,9 +59,9 @@
     "tests/conformance/runtime-logs-sandbox.test.ts",
     "tests/integration/device-authorization-api.test.ts",
     "tests/integration/device-authorization-denial-audit.test.ts",
-    "tests/integration/openshell-device-authorization-api.test.mjs",
+    "tests/integration/openshell-device-authorization-api.test.ts",
     "tests/integration/dependency-unavailable-log.test.ts",
-    "tests/integration/git-hooks.test.mjs",
+    "tests/integration/git-hooks.test.ts",
     "tests/integration/profile-renderer.test.ts",
     "tests/integration/production-keycloak-profile.test.ts",
     "tests/integration/database-snapshot-ordering.test.ts",
@@ -75,6 +77,7 @@
     "tests/conformance/workspace-files-configuration.test.ts",
     "tests/integration/common-logging.test.ts",
     "tests/docs/docs-length.test.mjs",
+    "tests/integration/eks-address-inventory.test.ts",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.ts",
@@ -84,6 +87,7 @@
     "tests/integration/production-controller-security.test.ts",
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
     "tests/conformance/openshell-gateway-wire.test.ts",
+    "tests/conformance/openshell-staged-credential-proxy.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-managed-bootstrap.test.ts",
@@ -273,6 +277,13 @@
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
     },
     {
+      "path": "tests/conformance/external-sandbox-registration.test.ts",
+      "expectedTests": [
+        "production startup selects an installed external Sandbox package",
+        "production startup refuses malformed installed Sandbox declarations"
+      ]
+    },
+    {
       "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"
     },
     {
@@ -354,6 +365,9 @@
     },
     {
       "path": "tests/conformance/openshell-gateway-wire.test.ts"
+    },
+    {
+      "path": "tests/conformance/openshell-staged-credential-proxy.test.ts"
     },
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
@@ -490,6 +504,10 @@
       "path": "tests/integration/installation-change-preflight.test.mjs"
     },
     {
+      "path": "tests/integration/installation-preflight-render.test.ts",
+      "expectedTests": ["a separate database deployment requires current history only on upgrade"]
+    },
+    {
       "path": "tests/integration/console-api.test.ts"
     },
     {
@@ -505,7 +523,7 @@
       "path": "tests/integration/driver-plugin-installation.test.ts"
     },
     {
-      "path": "tests/integration/git-hooks.test.mjs"
+      "path": "tests/integration/git-hooks.test.ts"
     },
     {
       "path": "tests/integration/occ-api.test.mjs"
@@ -620,6 +638,9 @@
       "path": "tests/integration/production-healthcheck.test.ts"
     },
     {
+      "path": "tests/integration/eks-address-inventory.test.ts"
+    },
+    {
       "path": "tests/integration/production-image-upgrade.test.ts"
     },
     {
@@ -653,7 +674,7 @@
       "path": "tests/integration/device-authorization-denial-audit.test.ts"
     },
     {
-      "path": "tests/integration/openshell-device-authorization-api.test.mjs"
+      "path": "tests/integration/openshell-device-authorization-api.test.ts"
     },
     {
       "path": "tests/integration/dependency-unavailable-log.test.ts"

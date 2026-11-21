@@ -5,7 +5,7 @@ import test from "node:test";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
-import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
+import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";

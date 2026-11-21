@@ -173,7 +173,7 @@ test(
       "--state",
       states[0]!.path,
       "--file",
-      "tests/integration/native-admin-session-postgres.test.mjs",
+      "tests/integration/native-admin-session-postgres.test.ts",
       "--github-env",
       envFile,
     ]);
