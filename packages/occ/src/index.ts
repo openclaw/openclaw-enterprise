@@ -75,7 +75,6 @@ export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-st
 import {
   CONTROLLER_WORK_AUDIT_ACTIONS,
   isSourceProviderPresetId,
-  MAX_AGENT_CREDENTIAL_SOURCES,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
@@ -355,7 +354,6 @@ import { readDeploymentInventory } from "./deployment-inventory.ts";
 import { readInstallationCapabilities } from "./installation-capabilities.ts";
 import {
   AGENT_NAME_CONFLICT,
-  AgentCredentialSourceBindingError,
   AgentDeletingError,
   AuthorizationDeniedError,
   CallerStateDeniedError,
@@ -446,6 +444,12 @@ import {
   createControllerTransactions,
   type ControllerTransactions,
 } from "./controller-transactions.ts";
+import {
+  parseAgentCredentialSources,
+  assertHarnessSourceListed,
+  createAgentCredentialAccess,
+  type AgentCredentialAccess,
+} from "./agent-credential-access.ts";
 import { exactAgent, exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 export type {
@@ -1785,6 +1789,7 @@ export class OpenClawController {
 
   private readonly sandboxPolicyOperations: ReturnType<typeof createSandboxPolicyOperations>;
   private readonly iamPolicy: IAMPolicyOperations;
+  private readonly agentCredentialAccess: AgentCredentialAccess;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly deviceLoginCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   private readonly clock: () => Date;
@@ -1962,6 +1967,24 @@ export class OpenClawController {
       throw new ScopeViolationError("The native worker support declaration is invalid.");
     }
     this.nativeWorkers = nativeWorkerSupportSource(options.nativeWorkerSupport);
+    this.agentCredentialAccess = createAgentCredentialAccess({
+      authority: this.authority,
+      iamPolicy: this.iamPolicy,
+      drivers: this.drivers,
+      installationId: this.installation.id,
+      timestamp: () => this.timestamp(),
+      isManagedTokenServiceSource,
+      assertCredentialSourceOwnerSelected: () => this.assertCredentialSourceOwnerSelected(),
+      requireTokenServiceOwner: (instanceId) => {
+        this.ownedTokenServiceDriver(instanceId);
+      },
+      credentialSourceOwner: (source) => this.credentialSourceOwner(source),
+      offersProtectedType: (type) =>
+        this.protectedSourceTypes().some((offer) => offer.type.type === type),
+      credentialSourceType: (driver, type) => this.credentialSourceType(driver, type),
+      validatePluginCredentialSources: (driver, plugins, sources, harnessAuth) =>
+        this.validatePluginCredentialSources(driver, plugins, sources, harnessAuth),
+    });
     const capacity = resolveCredentialProxyCapacity(
       { ...options.credentialProxyCapacity },
       "Credential Proxy capacity",
@@ -3540,12 +3563,6 @@ export class OpenClawController {
       });
       return namespace;
     });
-  }
-
-  private occBindingDriver(
-    method: "createOwnerBinding" | "applyConfiguredPolicy" | "createNamespaceAccessBinding",
-  ): IAMDriver | undefined {
-    return this.iamPolicy.occBindingDriver(method);
   }
 
   /**
@@ -10399,42 +10416,14 @@ export class OpenClawController {
   private agentCredentialSources(
     value: unknown,
   ): readonly AgentCredentialSourceBinding[] | undefined {
-    if (value === undefined) {
-      return undefined;
-    }
-    const seen = new Set<string>();
-    if (!Array.isArray(value) || value.length > MAX_AGENT_CREDENTIAL_SOURCES) {
-      throw new ScopeViolationError("The Agent credential sources are invalid.");
-    }
-    return Object.freeze(
-      value.map((entry: unknown) => {
-        if (
-          typeof entry !== "object" ||
-          entry === null ||
-          Object.keys(entry).length !== 1 ||
-          !isNonEmptyString((entry as { sourceId?: unknown }).sourceId) ||
-          seen.has((entry as { sourceId: string }).sourceId)
-        ) {
-          throw new ScopeViolationError("The Agent credential sources are invalid.");
-        }
-        const sourceId = (entry as { sourceId: string }).sourceId;
-        seen.add(sourceId);
-        return Object.freeze({ sourceId });
-      }),
-    );
+    return parseAgentCredentialSources(value);
   }
 
-  /** `credentialSources` lists every source; `harnessAuth` names the one the Harness uses. */
   private assertHarnessSourceListed(
     bindings: readonly AgentCredentialSourceBinding[],
     harnessAuth: HarnessAuthBinding | null | undefined,
   ): void {
-    if (
-      harnessAuth?.method === "credential_source" &&
-      !bindings.some(({ sourceId }) => sourceId === harnessAuth.sourceId)
-    ) {
-      throw new AgentCredentialSourceBindingError();
-    }
+    assertHarnessSourceListed(bindings, harnessAuth);
   }
 
   /**
@@ -10492,69 +10481,27 @@ export class OpenClawController {
     namespaceId: string,
     bindings: readonly AgentCredentialSourceBinding[],
   ): Promise<void> {
-    for (const { sourceId } of bindings) {
-      await this.authorize(principalId, "operate", {
-        kind: "credential_source",
-        namespaceId,
-        id: sourceId,
-      });
-    }
+    return this.agentCredentialAccess.authorizeBoundCredentialSources(
+      principalId,
+      namespaceId,
+      bindings,
+    );
   }
 
-  /**
-   * Namespace lock serializes binding, source deletion, and admission. The listing rule is
-   * checked after every source authorization and lookup, so it never answers before a 403.
-   */
-  private async authorizeAgentCredentialSources(
+  private authorizeAgentCredentialSources(
     state: PlatformUnitOfWork,
     principalId: string,
     namespaceId: string,
     bindings: readonly AgentCredentialSourceBinding[],
     harnessAuth: HarnessAuthBinding | null | undefined,
   ): Promise<readonly CredentialSource[]> {
-    const sources: CredentialSource[] = [];
-    for (const { sourceId } of bindings) {
-      await this.authorize(principalId, "operate", {
-        kind: "credential_source",
-        namespaceId,
-        id: sourceId,
-      });
-      const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
-      if (!isManagedTokenServiceSource(source)) {
-        this.assertCredentialSourceOwnerSelected();
-      }
-      if (source === undefined || source.state !== "ready") {
-        throw new ScopeViolationError(
-          "The credential source is unavailable in the exact Namespace.",
-        );
-      }
-      if (
-        source.ownerCapability === "credential_proxy" &&
-        !this.drivers.hasSelection("credential_proxy")
-      ) {
-        // An Installation change dropped the Proxy that owns this source, so Agent save and
-        // deploy cannot bind it. The caller holds this source's operate grant, and the text names
-        // no source (finding 2536); resolving the missing owner answered a 500.
-        throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
-      }
-      if (isManagedTokenServiceSource(source)) {
-        this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
-        if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
-          throw new ResourceStateConflictError(
-            "This TokenService source must authenticate the selected Agent Harness.",
-          );
-        }
-      } else {
-        // TODO(Agent connection attachment): admit a saved account after verifying this Agent's grant.
-        if (source.ownerCapability === "token_service") {
-          throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
-        }
-        this.credentialSourceOwner(source);
-      }
-      sources.push(source);
-    }
-    this.assertHarnessSourceListed(bindings, harnessAuth);
-    return sources;
+    return this.agentCredentialAccess.authorizeAgentCredentialSources(
+      state,
+      principalId,
+      namespaceId,
+      bindings,
+      harnessAuth,
+    );
   }
 
   private async validatePluginCredentialSources(
@@ -10572,11 +10519,7 @@ export class OpenClawController {
     }
   }
 
-  /**
-   * Freezes every source the Agent lists, including the one `harnessAuth` names. Each needs the
-   * Agent principal's `operate` and a ready record; any catalog type may be listed.
-   */
-  private async admitCredentialSources(
+  private admitCredentialSources(
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
@@ -10585,52 +10528,15 @@ export class OpenClawController {
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
   ): Promise<readonly CredentialSourceSnapshot[]> {
-    const bindings = agent.credentialSources ?? [];
-    if (bindings.length === 0) {
-      await this.validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
-      return [];
-    }
-    // A state refusal, so HTTP keeps the message instead of the generic "already exists".
-    if (sandbox === undefined) {
-      throw new ResourceStateConflictError(
-        "Agent credential sources require a selected Sandbox Driver.",
-      );
-    }
-    const sources = await this.authorizeAgentCredentialSources(
+    return this.agentCredentialAccess.admitCredentialSources(
       state,
       principalId,
-      agent.namespaceId,
-      bindings,
-      agent.harnessAuth,
+      agent,
+      sandbox,
+      driver,
+      harness,
+      compute,
     );
-    await this.validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
-    const snapshots: CredentialSourceSnapshot[] = [];
-    for (const { sourceId } of bindings) {
-      await this.authorizeAgentPrincipal(principalId, agent, "operate", {
-        kind: "credential_source",
-        namespaceId: agent.namespaceId,
-        id: sourceId,
-      });
-      const source = await state.credentialSources.lockCredentialSource(
-        agent.namespaceId,
-        sourceId,
-      );
-      if (source === undefined || source.state !== "ready") {
-        throw new ScopeViolationError("The credential source is unavailable.");
-      }
-      compute.validateHarnessCredentialSources?.(harness, [source]);
-      const owner = this.credentialSourceOwner(source);
-      if (owner.kind === "proxy") {
-        if (!this.protectedSourceTypes().some((p) => p.type.type === source.type)) {
-          throw new CredentialSourceTypeNotOfferedError("proxy");
-        }
-        snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
-      } else {
-        await this.credentialSourceType(owner.driver, source.type);
-        snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
-      }
-    }
-    return immutableCopy(snapshots);
   }
 
   /**
@@ -11045,154 +10951,21 @@ export class OpenClawController {
     agent: Readonly<Agent>,
     sources: readonly (SecretReference | CredentialSourceReference)[],
   ): Promise<readonly Readonly<AccessBinding>[]> {
-    const created: Readonly<AccessBinding>[] = [];
-    if (sources.length === 0) {
-      return created;
-    }
-    const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
-    if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
-      throw new DependencyUnavailableError(
-        "The selected IAM Driver does not support provisioning policy transactions.",
-      );
-    }
-    for (const resourceKind of ["secret", "credential_source"] as const) {
-      const matching = sources.filter((source) => source.kind === resourceKind);
-      if (matching.length === 0) {
-        continue;
-      }
-      const displayName = resourceKind === "secret" ? "Secret" : "credential source";
-      const roleId = `role_${namespaceId}_agent_${resourceKind}_operate`;
-      const existingRole = await state.iamPolicy.getRole(namespaceId, roleId);
-      if (
-        existingRole !== undefined &&
-        (existingRole.namespaceId !== namespaceId ||
-          existingRole.permissions.length !== 1 ||
-          existingRole.permissions[0]?.action !== "operate" ||
-          existingRole.permissions[0]?.resourceKind !== resourceKind)
-      ) {
-        throw new ResourceConflictError(
-          `The provisioning Role does not have the exact Namespace and ${displayName} permission.`,
-        );
-      }
-      if (existingRole === undefined) {
-        await this.iamPolicyOperation(() =>
-          driver.createNamespaceRole!(
-            { policy: state.iamPolicy },
-            {
-              id: roleId,
-              namespaceId,
-              name: `Agent ${displayName} operate`,
-              permissions: [{ action: "operate", resourceKind }],
-            },
-          ),
-        );
-      }
-      const bindings = await state.iamPolicy.listAccessBindings(namespaceId);
-      for (const source of matching) {
-        const exists = bindings.some(
-          (binding) =>
-            binding.subjectKind === "identity" &&
-            binding.subjectId === agent.servicePrincipalId &&
-            binding.roleId === roleId &&
-            binding.resourceKind === resourceKind &&
-            binding.resourceId === source.id,
-        );
-        if (exists) {
-          continue;
-        }
-        created.push(
-          await this.iamPolicyOperation(() =>
-            driver.createNamespaceAccessBinding!(
-              { policy: state.iamPolicy },
-              {
-                id: `binding_${agent.id}_${source.id}_operate`,
-                namespaceId,
-                subjectKind: "identity",
-                subjectId: agent.servicePrincipalId,
-                roleId,
-                resourceKind,
-                resourceId: source.id,
-              },
-            ),
-          ),
-        );
-      }
-    }
-    return created;
+    return this.agentCredentialAccess.ensureAgentOperateGrants(state, namespaceId, agent, sources);
   }
 
-  /**
-   * A caller allowed to deploy the Agent gives its ServicePrincipal the exact operate grant it
-   * lacks on each referenced Secret and credential source that the caller can operate, in the
-   * deploy unit (RFC-0026). A source the caller cannot operate gets no grant; the Agent principal
-   * checks that follow then refuse the deploy.
-   */
-  private async grantDeployedAgentSources(
+  private grantDeployedAgentSources(
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
     secretBindings: SecretBindings,
   ): Promise<void> {
-    if (this.occBindingDriver("createNamespaceAccessBinding") === undefined) {
-      return;
-    }
-    const referenced = new Map<string, SecretReference | CredentialSourceReference>();
-    const add = (kind: "secret" | "credential_source", id: string): void => {
-      referenced.set(`${kind}\u0000${id}`, { kind, namespaceId: agent.namespaceId, id });
-    };
-    for (const binding of Object.values(secretBindings)) {
-      add("secret", binding.source.id);
-    }
-    if (isSecretHarnessAuth(agent.harnessAuth)) {
-      add("secret", agent.harnessAuth.source.id);
-    } else if (agent.harnessAuth?.method === "credential_source") {
-      add("credential_source", agent.harnessAuth.sourceId);
-    }
-    for (const { sourceId } of agent.credentialSources ?? []) {
-      add("credential_source", sourceId);
-    }
-    const missing: (SecretReference | CredentialSourceReference)[] = [];
-    for (const source of referenced.values()) {
-      const caller = (await this.authorizationDecision(principalId, "operate", source)).decision;
-      if (!caller.allowed) {
-        continue;
-      }
-      const current = await this.authorizationDecision(agent.servicePrincipalId, "operate", source);
-      if (!current.decision.allowed) {
-        missing.push(source);
-      }
-    }
-    for (const binding of await this.ensureAgentOperateGrants(
+    return this.agentCredentialAccess.grantDeployedAgentSources(
       state,
-      agent.namespaceId,
+      principalId,
       agent,
-      missing,
-    )) {
-      await state.audit.append({
-        id: `aud_${crypto.randomUUID()}`,
-        installationId: this.installation.id,
-        namespaceId: agent.namespaceId,
-        occurredAt: this.timestamp(),
-        kind: "mutation",
-        actorId: principalId,
-        source: "occ",
-        action: "openclaw.iam.access_bindings.create",
-        resource: {
-          kind: binding.resourceKind as "secret" | "credential_source",
-          id: binding.resourceId as string,
-          namespaceId: agent.namespaceId,
-        },
-        outcome: "success",
-        details: {
-          bindingId: binding.id,
-          subjectKind: binding.subjectKind,
-          subjectId: binding.subjectId,
-          roleId: binding.roleId,
-          reason: "agent_deploy",
-          agentId: agent.id,
-        },
-      });
-    }
+      secretBindings,
+    );
   }
 
   private async authorizeProvisioningSources(
