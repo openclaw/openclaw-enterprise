@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./workspace-node-launch": "./src/drivers/compute/workspace-node-launch.ts"
   },
   "types": "./src/index.ts",
   "files": [

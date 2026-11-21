@@ -447,6 +447,26 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       DriverSelectionError,
     );
   }
+  // Every optional provider-owned Harness member is refused at registration when malformed.
+  for (const member of [
+    "harnessEndpoint",
+    "harnessStatus",
+    "enrollHarness",
+    "withdrawHarnessExposure",
+    "harnessResource",
+    "workspaceNodePeerLabels",
+    "observeHeldRepositoryGitPreview",
+  ]) {
+    assert.throws(
+      () =>
+        controller.registerDriver({
+          ...createSandboxDriver({ id: `invalid-${member}` }),
+          [member]: "invalid",
+        }),
+      DriverSelectionError,
+      member,
+    );
+  }
   for (const hook of ["validateWorkspaceSetup", "ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>
