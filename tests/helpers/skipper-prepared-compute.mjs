@@ -774,7 +774,9 @@ export async function inGateway(prompt, sessionKey, invocationId, measureNativeG
           });
           gatewayListener = "responding";
         } catch (probeError) {
-          if (probeError?.cause?.code === "ECONNREFUSED") gatewayListener = "unreachable";
+          if (probeError?.cause?.code === "ECONNREFUSED") {
+            gatewayListener = "unreachable";
+          }
         } finally {
           probe.abort();
         }
