@@ -267,7 +267,6 @@ import type {
   NamespaceEnsureResult,
   LoggingLevel,
   OpenClawConfigurationDocument,
-  Permission,
   Preset,
   PresetSummary,
   PresetDraftDefinition,
