@@ -72,9 +72,9 @@ stale or mismatched deployment snapshots before Compute effects.
 
 ### 2. Create the account and private Backend binding
 
-`packages/occ/src/index.ts:OpenClawController.createServiceAccount`
+`packages/occ/src/service-account-operations.ts:createServiceAccount`
 
-`OpenClawController.createServiceAccount` authorizes the exact Namespace and
+`createServiceAccount` authorizes the exact Namespace and
 allocates its `sa_*` identity. `ChatGPTServiceAccountDriver.create` creates the
 upstream account, registers rollback, and persists its private Backend binding
 in the same PostgreSQL transaction, including Backend, Driver, Namespace,
@@ -112,7 +112,7 @@ force is ignored and revocation runs.
 
 `apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver.createCredential`
 
-`OpenClawController.createServiceAccountCredential` authorizes account `update`
+`createServiceAccountCredential` authorizes account `update`
 before `ChatGPTServiceAccountDriver.createCredential` issues a Codex-scoped
 token and registers one rollback callback. The callback first confirms revocation
 of that exact provider credential, then removes only the account-owned Secret

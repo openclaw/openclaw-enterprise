@@ -73,9 +73,9 @@ graph TD
 
 ### 1. Authorize storage without requiring a gateway
 
-`packages/occ/src/index.ts:OpenClawController.createSecret`
+`packages/occ/src/secret-operations.ts:createSecret`
 
-[OpenClawController.createSecret](../../packages/occ/src/index.ts) validates
+[createSecret](../../packages/occ/src/secret-operations.ts) validates
 nonempty UTF-8 input of at most 65,536 bytes and locks the Namespace. The caller needs `create`
 on the Namespace's Secret collection. The Namespace must already be ready; an
 Agent record does not need to exist. OCC selects the
@@ -266,9 +266,9 @@ project namespace Secrets, so controller compromise remains outside workload iso
 
 ### 6. Update, restart, or remove
 
-`packages/occ/src/index.ts:OpenClawController.updateSecret`
+`packages/occ/src/secret-operations.ts:updateSecret`
 
-[updateSecret](../../packages/occ/src/index.ts) serializes the write and uses
+[updateSecret](../../packages/occ/src/secret-operations.ts) serializes the write and uses
 Kubernetes concurrency/ownership checks. It changes only the stored value; the
 response retains the same ref. No Agent revision, binding, or running environment is
 updated, and no controller automatically restarts the gateway. A successful update
@@ -291,7 +291,7 @@ Dedicated Gateway infrastructure restarts read canonical channel Secrets
 directly. Failed cutover does not restore old source values. Revoking `operate`
 blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
-[deleteSecret](../../packages/occ/src/index.ts) rejects current Configuration,
+[deleteSecret](../../packages/occ/src/secret-operations.ts) rejects current Configuration,
 Agent harness-binding draft, selected version, and pending-work dependencies under the same serialization
 boundary. One `listReferences` query returns at most 50 of them, ordered by kind and ID;
 `secretConsumers` checks `read` on each referencing resource, names the readable ones in
