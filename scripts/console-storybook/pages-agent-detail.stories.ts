@@ -59,6 +59,7 @@ export const PluginsToolRefusal = story("pluginsToolRefusal");
 export const PluginsDetailIdentityRefused = story("pluginsDetailIdentityRefused");
 export const PluginsCatalogConflict = story("pluginsCatalogConflict");
 export const PluginsDetailsConflict = story("pluginsDetailsConflict");
+export const PluginsAgentDeleting = story("pluginsAgentDeleting");
 export const PluginApproversInherited = story("pluginApproversInherited");
 export const PluginApproversOverrides = story("pluginApproversOverrides");
 export const PluginApproversLookup = story("pluginApproversLookup");

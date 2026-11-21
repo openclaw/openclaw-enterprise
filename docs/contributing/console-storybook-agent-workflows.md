@@ -181,7 +181,8 @@ do not prove installation, invocation access, runtime enforcement, or live Agent
 turns.
 
 In **Pages/Agent detail → Choose tools for a connected Slack account**, select the
-simulated account and load tools. Retry after the simulated permission error.
+simulated account and load tools. After the simulated permission error, choose
+**Recheck access**, then **Load plugins**. Reopen Slack and load its tools.
 Enable a tool, open **Tool policy**, and set **Require approval for** to **Every
 action**. Confirm unsupported settings are disabled. Save, reopen, and verify the
 selection. Disable the tool to remove its approval setting. The displayed note
@@ -225,6 +226,11 @@ In **Pages/Agent detail → Plugin catalog changed while loading**, confirm stal
 entries are gone, then use **Load plugins**. In **Plugin details changed while
 loading**, confirm **Add** is disabled, then use **Retry tools** for the selected
 plugin. Both stories show the request ID and keep draft selections unchanged.
+
+In **Plugin discovery during Agent deletion**, wait for Calendar’s tools and
+choose **Load plugins**. Check that both tabs show the deletion message and
+request ID, and that discovery is disabled. Choose **Done** and check that
+**Plugin selections JSON** still contains the unsaved Project tracker selection.
 
 ## Update
 

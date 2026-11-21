@@ -47,6 +47,7 @@ import {
   calendarPlugin,
   pluginCapabilities,
   pluginDetailIdentityRefusal,
+  pluginDiscoveryAgentDeleting,
   pluginDiscoveryConflict,
   pluginSetup,
 } from "./plugin-scenario-data.mts";
@@ -1009,6 +1010,15 @@ const authoredScenarios = {
   ...credentialsOAuthScenarios({ draft }),
   ...createAgentOutcomeScenarios,
   ...agentDetailScenarios.configuration,
+  slackMcpTools: {
+    ...agentDetailScenarios.configuration.slackMcpTools,
+    steps: [
+      "Open Slack, select Slack search connection (simulated), and choose Load tools for Slack.",
+      "After the refusal, check that the notice shows the request ID and Recheck access. Choose Recheck access and wait for the confirmation.",
+      "Choose Load plugins, reopen Slack, and choose Load tools for Slack. Check that slack_search_public appears.",
+      "Choose Done and expand Plugin selections JSON to confirm the selected account remains in the draft.",
+    ],
+  } satisfies LocalScenario,
   pluginsDetailIdentityRefused: {
     ...agentDetailScenarios.configuration.pluginsDraft,
     name: "Plugin details for a different plugin",
@@ -1054,6 +1064,20 @@ const authoredScenarios = {
       "Choose Done. Check that Plugin selections JSON contains only the unsaved Project tracker selection and that Save plugin selections is still available.",
     ],
     gap: "The saved Agent and tool details are simulated.",
+  } satisfies LocalScenario,
+  pluginsAgentDeleting: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin discovery during Agent deletion",
+    agentPlugins: {},
+    actions: pluginDiscoveryConflict.actions,
+    rules: [pluginDiscoveryAgentDeleting],
+    description: "A catalog refresh finds that the saved Agent is being deleted.",
+    steps: [
+      "Wait for List events and enabled Add Calendar. Choose Load plugins to simulate the deletion refusal.",
+      "Check that Calendar and its tools disappear. In Available and Configured, read the deletion message and request ID. Load plugins is disabled, and Recheck access is absent.",
+      "Choose Done. Check that Plugin selections JSON still contains the unsaved Project tracker selection.",
+    ],
+    gap: "The saved Agent and deletion response are simulated.",
   } satisfies LocalScenario,
   ...pluginApproverScenarios(draft),
   ...agentDetailScenarios.versions,
