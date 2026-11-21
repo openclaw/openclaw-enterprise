@@ -59,6 +59,25 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         typeof candidate.readCredentialInput === "function")
     );
   }
+  if (driver.capability === "token_service") {
+    return [
+      "registerSource",
+      "updateSource",
+      "resolveCredential",
+      "forceRefresh",
+      "getRefreshStatus",
+      "removeSource",
+    ].every((operation) => typeof candidate[operation] === "function");
+  }
+  if (driver.capability === "credential_proxy_delivery") {
+    return (
+      ["deployProxy", "configureDeployment", "getDeploymentStatus", "removeDeployment"].every(
+        (operation) => typeof candidate[operation] === "function",
+      ) &&
+      (candidate.notifyCredentialUpdated === undefined ||
+        typeof candidate.notifyCredentialUpdated === "function")
+    );
+  }
   if (driver.capability === "credential_proxy") {
     const control = asRecord(candidate.sourceControl);
     const reduction = asRecord(candidate.policyReduction);
@@ -192,8 +211,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     typeof candidate.deleteNamespace === "function" &&
     typeof candidate.prepareRevision === "function" &&
     typeof candidate.retireRevision === "function" &&
-    (candidate.getGatewayChatEndpoint === undefined ||
-      typeof candidate.getGatewayChatEndpoint === "function") &&
+    (candidate.getGatewayBrowserRequest === undefined ||
+      typeof candidate.getGatewayBrowserRequest === "function") &&
     (candidate.getRuntimeImages === undefined ||
       typeof candidate.getRuntimeImages === "function") &&
     (candidate.resolveSandboxNamespace === undefined ||

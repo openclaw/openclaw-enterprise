@@ -1,6 +1,5 @@
 import {
-  compileOpenShellGitNetworkPolicy,
-  type OpenShellGitNetworkInput,
+  openShellGitEndpoints,
   type OpenShellGitNetworkTarget,
 } from "../sandbox/openshell-git-network-policy.ts";
 import type { RepositoryGitRecipient } from "@openclaw-enterprise/contracts";
@@ -24,13 +23,19 @@ import {
 /** Operator-owned scope; never populate this from a workload request. */
 export type OpenShellPreparedGitDelivery = OpenShellGitNetworkTarget;
 
-export type OpenShellPreparedGitScope = OpenShellGitNetworkInput & {
+export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
   readonly workspace: string;
   readonly workspaceId: string;
   /** Only the v6 operator-isolated preview requires a known, completed stock receipt. */
   readonly observedHookPreview?: true;
   readonly sandbox: string;
   readonly executionId: string;
+  /** Exact HTTPS origins, including controlled origins used for qualification. */
+  readonly gitOrigin: string;
+  readonly apiOrigin: string;
+  readonly binaries: readonly string[];
+  /** Supply the credential to explicitly bound Sandbox endpoints. */
+  readonly nativeGit?: "v1";
 };
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
@@ -154,6 +159,22 @@ function readFailure(
   return undefined;
 }
 
+function origin(value: string): URL {
+  const url = new URL(value);
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.pathname !== "/" ||
+    !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(url.hostname)
+  ) {
+    refuse();
+  }
+  return url;
+}
+
 /**
  * Private operator-plane provisioning, prior to Sandbox attachment/admission. The supplied
  * client must use the installation's authenticated gateway connection; never expose it to
@@ -175,28 +196,35 @@ export class OpenShellPreparedGitProvider {
   private readonly provider: string;
 
   constructor(client: OpenShellGatewayClient, scope: OpenShellPreparedGitScope) {
-    scope = { ...scope };
     if (
       !/^[a-z0-9](?:[a-z0-9-]{0,17}[a-z0-9])?$/.test(scope.workspace) ||
       !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(scope.sandbox) ||
       !scope.workspaceId ||
-      !scope.executionId
+      !scope.executionId ||
+      (scope.installationId !== undefined
+        ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
+          scope.repository !== undefined ||
+          scope.apiOrigin !== "https://api.github.com" ||
+          scope.gitOrigin !== "https://github.com"
+        : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
+          scope.repository.split("/").some((part) => part === "." || part === "..")) ||
+      scope.binaries.length === 0 ||
+      scope.binaries.some(
+        (path) => !/^\/[A-Za-z0-9_./-]+$/.test(path) || path.split("/").includes(".."),
+      )
     ) {
       refuse();
     }
-    let network: ReturnType<typeof compileOpenShellGitNetworkPolicy>;
-    try {
-      network = compileOpenShellGitNetworkPolicy(scope);
-    } catch {
+    if (
+      scope.nativeGit !== undefined &&
+      (scope.nativeGit !== "v1" || scope.installationId === undefined)
+    ) {
       refuse();
     }
-    const repositoryNetworkPolicy = network.grants;
+    const git = origin(scope.gitOrigin);
+    const api = origin(scope.apiOrigin);
     this.client = client;
-    this.scope = Object.freeze({
-      ...scope,
-      binaries: network.binaries,
-      ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
-    });
+    this.scope = Object.freeze({ ...scope, binaries: Object.freeze([...scope.binaries]) });
     this.fingerprint = createHash("sha256")
       .update(
         JSON.stringify([
@@ -205,12 +233,10 @@ export class OpenShellPreparedGitProvider {
           scope.sandbox,
           scope.executionId,
           scope.installationId ? ["github-installation", scope.installationId] : scope.repository,
-          network.gitOrigin,
-          network.apiOrigin,
-          this.scope.binaries,
-          ...(repositoryNetworkPolicy === undefined
-            ? []
-            : [["repository-network-policy", repositoryNetworkPolicy]]),
+          git.origin,
+          api.origin,
+          scope.binaries,
+          ...(scope.nativeGit ? [["sandbox-credential-binding", scope.nativeGit]] : []),
         ]),
       )
       .digest("hex")
@@ -235,8 +261,8 @@ export class OpenShellPreparedGitProvider {
       ],
       // This profile bounds transport, not credential placement or GitHub permissions. Release
       // must independently verify the mandatory request phase, verified TLS and sole recipient.
-      endpoints: network.endpoints,
-      binaries: this.scope.binaries,
+      endpoints: scope.nativeGit ? [] : openShellGitEndpoints(git, api, scope),
+      binaries: scope.nativeGit ? [] : this.scope.binaries,
       inferenceCapable: false,
       annotations: { [OWNER]: this.fingerprint, [GIT_REVISION]: scope.executionId },
     };
@@ -296,8 +322,8 @@ export class OpenShellPreparedGitProvider {
       credentials[0]?.header_name !== "authorization" ||
       credentials[0]?.refresh !== undefined ||
       !isDeepStrictEqual(
-        definition.binaries,
-        this.scope.binaries.map((path) => ({ path })),
+        this.scope.nativeGit ? (definition.binaries ?? []) : definition.binaries,
+        this.profile.binaries.map((path) => ({ path })),
       ) ||
       !isDeepStrictEqual(endpoints, this.profile.endpoints.map(openShellProfileEndpoint))
     ) {

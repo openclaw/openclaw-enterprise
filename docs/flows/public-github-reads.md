@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
-updated: 2026-11-14
-last_updated_session: authoring-run/b8058a93-be93-46c4-a823-6c9397935811
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Public GitHub read flow
@@ -42,7 +42,7 @@ graph TD
 
 ### 1. Compose a private Service and an eligible Agent revision
 
-`packages/occ/src/index.ts` asks the selected Compute Driver for side-effect-free
+`packages/occ/src/deployment-revision.ts:prepareComputeRevision` asks the selected Compute Driver for side-effect-free
 admission facts before storing the Agent revision. Kubernetes Compute freezes a digest of
 the configured reader peer only for a dedicated Codex Agent revision with an explicit
 IP allow in its authored proxy. A deny that might match withholds the capability.
@@ -122,6 +122,7 @@ durable decision. Protected revisions still cannot select the anonymous reader.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-14 13:26: Point profile rendering to its strict TypeScript owner in the accompanying change. (authoring-run/b8058a93-be93-46c4-a823-6c9397935811 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
 
 - 2026-11-12 10:58: Preserve unprotected admission when a Credential Proxy is selected. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)

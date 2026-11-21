@@ -4,11 +4,8 @@ import test from "node:test";
 import type { Page } from "playwright";
 import type { RuntimeLogRecord, SandboxNetworkGrant } from "../../packages/contracts/src/index.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
-import {
-  callerDenied,
-  DEPLOY_SANDBOX_POLICY_READ_DENIED,
-  PLACEHOLDER_DESTINATION,
-} from "../helpers/refusal-text.mjs";
+import { callerDenied, PLACEHOLDER_DESTINATION } from "../helpers/refusal-text.mjs";
+import { DEPLOY_SANDBOX_POLICY_READ_DENIED } from "../helpers/refusal-access.ts";
 import { openShellSandboxRecords } from "../helpers/runtime-logs.ts";
 
 import {

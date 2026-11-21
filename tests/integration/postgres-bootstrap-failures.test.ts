@@ -27,7 +27,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
-import { injectJson } from "../helpers/inject-json.mjs";
+import { injectJson } from "../helpers/inject-json.ts";
 import { jsonLines as parseJsonLines } from "../helpers/json-lines.mjs";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";

@@ -1,25 +1,11 @@
-import { deepFreeze } from "@openclaw-enterprise/utils";
-
-import type { OpenShellProviderProfileEndpoint } from "./openshell-gateway-client.ts";
+import {
+  openShellProfileEndpoint,
+  type OpenShellProviderProfileEndpoint,
+} from "./openshell-gateway-client.ts";
 
 export type OpenShellGitNetworkTarget =
   | { readonly repository: string; readonly installationId?: never }
   | { readonly repository?: never; readonly installationId: string };
-
-interface RepositoryNetworkGrant {
-  readonly repository: string;
-  readonly access: "read" | "write";
-}
-
-export type OpenShellGitNetworkInput = OpenShellGitNetworkTarget & {
-  readonly gitOrigin: string;
-  readonly apiOrigin: string;
-  readonly binaries: readonly string[];
-  readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
-};
-
-const gitOrigin = "https://github.com";
-const apiOrigin = "https://api.github.com";
 
 const binaries = Object.freeze([
   "/usr/bin/git",
@@ -32,29 +18,65 @@ const binaries = Object.freeze([
   "/usr/bin/node",
 ]);
 
-/** Git origins and permitted binary paths for the Agent runtime. */
 export function openShellGitNetworkDefaults(target: OpenShellGitNetworkTarget) {
   return {
-    gitOrigin,
-    apiOrigin,
     binaries: target.installationId ? [...binaries, "/usr/bin/gh", "/usr/local/bin/gh"] : binaries,
+    gitOrigin: "https://github.com",
+    apiOrigin: "https://api.github.com",
   };
 }
 
-function origin(value: string): URL {
-  const url = new URL(value);
-  if (
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    url.pathname !== "/" ||
-    !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(url.hostname)
-  ) {
-    throw new Error("Invalid Git transport origin.");
-  }
-  return url;
+/** OpenShell imports these endpoints into the Sandbox policy when attaching the Git Provider. */
+export function openShellGitEndpoints(
+  git: URL,
+  api: URL,
+  target: OpenShellGitNetworkTarget,
+): readonly OpenShellProviderProfileEndpoint[] {
+  return target.installationId
+    ? [
+        {
+          host: git.hostname,
+          port: 443,
+          protocol: "rest",
+          rules: [
+            { allow: { method: "GET", path: "/**/info/refs" } },
+            { allow: { method: "POST", path: "/**/git-upload-pack" } },
+            { allow: { method: "POST", path: "/**/git-receive-pack" } },
+          ],
+        },
+        {
+          host: api.hostname,
+          port: 443,
+          protocol: "rest",
+          access: "NETWORK_ACCESS_PRESET_FULL",
+        },
+        {
+          host: api.hostname,
+          port: 443,
+          protocol: "graphql",
+          path: "/graphql",
+          access: "NETWORK_ACCESS_PRESET_FULL",
+        },
+      ]
+    : [
+        {
+          host: git.hostname,
+          port: Number(git.port || 443),
+          protocol: "rest",
+          path: "/" + target.repository + ".git/**",
+        },
+        {
+          host: api.hostname,
+          port: Number(api.port || 443),
+          protocol: "rest",
+          path: "/repos/" + target.repository + "/pulls",
+        },
+      ];
+}
+
+interface RepositoryNetworkGrant {
+  readonly repository: string;
+  readonly access: "read" | "write";
 }
 
 function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryNetworkGrant[] {
@@ -92,54 +114,6 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
   return policy.sort((left, right) => (left.repository < right.repository ? -1 : 1));
 }
 
-/** OpenShell imports these endpoints into the Sandbox policy when attaching the Git Provider. */
-function legacyEndpoints(
-  git: URL,
-  api: URL,
-  repository: string | undefined,
-): readonly OpenShellProviderProfileEndpoint[] {
-  return repository === undefined
-    ? [
-        {
-          host: git.hostname,
-          port: 443,
-          protocol: "rest",
-          rules: [
-            { allow: { method: "GET", path: "/**/info/refs" } },
-            { allow: { method: "POST", path: "/**/git-upload-pack" } },
-            { allow: { method: "POST", path: "/**/git-receive-pack" } },
-          ],
-        },
-        {
-          host: api.hostname,
-          port: 443,
-          protocol: "rest",
-          access: "NETWORK_ACCESS_PRESET_FULL",
-        },
-        {
-          host: api.hostname,
-          port: 443,
-          protocol: "graphql",
-          path: "/graphql",
-          access: "NETWORK_ACCESS_PRESET_FULL",
-        },
-      ]
-    : [
-        {
-          host: git.hostname,
-          port: Number(git.port || 443),
-          protocol: "rest",
-          path: "/" + repository + ".git/**",
-        },
-        {
-          host: api.hostname,
-          port: Number(api.port || 443),
-          protocol: "rest",
-          path: "/repos/" + repository + "/pulls",
-        },
-      ];
-}
-
 function repositoryNetworkRules(
   policy: readonly RepositoryNetworkGrant[],
 ): NonNullable<OpenShellProviderProfileEndpoint["rules"]> {
@@ -160,61 +134,39 @@ function repositoryNetworkRules(
   });
 }
 
-/** OpenShell unions matching allows. A repository ACL replaces every legacy Git and API endpoint. */
-export function compileOpenShellGitNetworkPolicy(input: OpenShellGitNetworkInput) {
-  const { installationId, repository, repositoryNetworkPolicy } = input;
-  if (installationId !== undefined) {
-    if (
-      typeof installationId !== "string" ||
-      !/^[1-9][0-9]*$/.test(installationId) ||
-      repository !== undefined ||
-      input.gitOrigin !== gitOrigin ||
-      input.apiOrigin !== apiOrigin
-    ) {
-      throw new Error("Invalid GitHub installation transport.");
-    }
-  } else if (
-    repositoryNetworkPolicy !== undefined ||
-    typeof repository !== "string" ||
-    !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(repository) ||
-    repository.endsWith("/.") ||
-    repository.endsWith("/..")
-  ) {
-    throw new Error("Invalid single-repository transport.");
+/** The Sandbox owns the grants. The attached Provider supplies only the credential. */
+export function compileOpenShellBoundGitRule(
+  grants: readonly RepositoryNetworkGrant[],
+  provider: string,
+  binaries: readonly string[],
+) {
+  if (typeof provider !== "string" || !/^oce-github-installation-[a-f0-9]{32}$/.test(provider)) {
+    throw new Error("Expected an installation Git Provider.");
   }
-
-  const git = origin(input.gitOrigin);
-  const api = origin(input.apiOrigin);
-  const binaries = [...input.binaries];
-  if (
-    binaries.length === 0 ||
-    binaries.some(
-      (path) =>
-        typeof path !== "string" ||
-        !/^\/[A-Za-z0-9_./-]+$/.test(path) ||
-        path.split("/").includes(".."),
-    )
-  ) {
+  if (!Array.isArray(binaries) || binaries.length === 0) {
     throw new Error("Expected exact Git transport binary paths.");
   }
-  const grants =
-    repositoryNetworkPolicy === undefined ? undefined : canonicalGrants(repositoryNetworkPolicy);
-  const endpoints: readonly OpenShellProviderProfileEndpoint[] =
-    grants === undefined
-      ? legacyEndpoints(git, api, repository)
-      : [
-          {
-            host: git.hostname,
-            port: 443,
-            protocol: "rest",
-            rules: repositoryNetworkRules(grants),
-          },
-        ];
-  return deepFreeze({
-    gitOrigin: git.origin,
-    apiOrigin: api.origin,
-    binaries,
-    grants,
-    endpoints,
+  for (const path of binaries) {
+    if (
+      typeof path !== "string" ||
+      !/^\/[A-Za-z0-9_./-]+$/.test(path) ||
+      path
+        .slice(1)
+        .split("/")
+        .some((part) => part === "" || part === "." || part === "..")
+    ) {
+      throw new Error("Expected exact Git transport binary paths.");
+    }
+  }
+  const endpoint = openShellProfileEndpoint({
+    host: "github.com",
+    port: 443,
+    protocol: "rest",
+    rules: repositoryNetworkRules(canonicalGrants(grants)),
   });
+  return {
+    name: "repository-git-network",
+    binaries: binaries.map((path) => ({ path })),
+    endpoints: [{ ...endpoint, credential_binding: { provider } }],
+  };
 }

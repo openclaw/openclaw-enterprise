@@ -10,16 +10,27 @@ import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
+  AgentRepository,
+  AgentRevisionRepository,
   SandboxPolicyRepository,
+  WorkspaceSetupRepository,
+} from "../ports/agents.ts";
+import type {
+  CredentialSourceRepository,
   StoredCredentialWithdrawal,
-  PredecessorReplacement,
-} from "./platform-state.ts";
+} from "../ports/credential-sources.ts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
 
-import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+import {
+  CREDENTIAL_WITHDRAWAL_TARGET,
+  credentialWithdrawalOperationId,
+  credentialWithdrawalWorkKey,
+} from "../controller-work.ts";
 import { REPOSITORY_CLEANUP_KEY_SEPARATOR } from "../repository-withdrawal.ts";
+import type { PresetRepository } from "../ports/presets.ts";
 import type { AgentAuditSelection } from "../ports/agent-audit.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
@@ -34,7 +45,7 @@ import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
-} from "./repository-credential-state.ts";
+} from "../repository-credential-validation.ts";
 import type {
   AccessBinding,
   Agent,
@@ -49,6 +60,7 @@ import type {
   AgentRevision,
   AuditEvent,
   CredentialSource,
+  TokenServiceRegistration,
   Group,
   GroupMembership,
   Identity,
@@ -98,6 +110,7 @@ import {
   IAMRoleInUseError,
   NAMESPACE_NAME_CONFLICT,
   PRESET_NAME_CONFLICT,
+  PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
   SECRET_NAME_CONFLICT,
@@ -106,27 +119,20 @@ import {
   RepositorySessionWithdrawnError,
   WorkClaimLostError,
 } from "../errors.ts";
-import type {
-  AgentRepository,
-  WorkspaceSetupRepository,
-  AgentRevisionRepository,
-  ConfigurationOwnership,
-  ConfigurationRepository,
-  CredentialSourceRepository,
-  InstallationRepository,
-  IAMPolicyRepository,
-  NamespaceRepository,
-  PersistedNamespace,
-  PresetRepository,
-  PlatformAuditSink,
-  PlatformOperation,
-  PlatformReadView,
-  PlatformStateStore,
-  PlatformUnitOfWork,
-  SecretReferenceKind,
-  SecretRepository,
-  ServiceAccountRepository,
-} from "./platform-state.ts";
+
+import type { ConfigurationOwnership, ConfigurationRepository } from "../ports/configurations.ts";
+
+import type { InstallationRepository } from "../ports/installations.ts";
+import type { IAMPolicyRepository } from "@openclaw-enterprise/contracts";
+import type { NamespaceRepository, PersistedNamespace } from "../ports/namespaces.ts";
+import type { PlatformAuditSink } from "./platform-state.ts";
+import type { PlatformOperation } from "../ports/platform-operations.ts";
+import type { PlatformReadView } from "../ports/platform-read-view.ts";
+import type { PlatformStateStore } from "../ports/platform-state-store.ts";
+import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
+import type { SecretReferenceKind, SecretRepository } from "../ports/secrets.ts";
+import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
+import type { TokenServiceInstance } from "../ports/token-service.ts";
 import {
   copyProvisioningRecord,
   phaseAtLeast,
@@ -135,12 +141,14 @@ import {
   validateProvisioningEffectSettlement,
   validateProvisioningFailure,
   validateProvisioningReplay,
-  type AgentProvisioningCheckpoint,
-  type AgentProvisioningEffectSettlement,
-  type AgentProvisioningFailure,
-  type AgentProvisioningRecord,
-  type CreateAgentProvisioningRecord,
 } from "./agent-provisioning.ts";
+import type {
+  AgentProvisioningCheckpoint,
+  AgentProvisioningEffectSettlement,
+  AgentProvisioningFailure,
+  AgentProvisioningRecord,
+  CreateAgentProvisioningRecord,
+} from "../ports/agent-provisioning.ts";
 import {
   assertHarnessAuthAvailable,
   assertRevisionAuthAvailable,
@@ -160,7 +168,6 @@ import {
   type PostgresWorkQueueOptions,
 } from "./postgres-work-queue.ts";
 import { beginProvisioningEffectProgress } from "../provisioning-effects.ts";
-import { credentialWithdrawalOperationId, credentialWithdrawalWorkKey } from "./controller-work.ts";
 
 type PostgresRow = Record<string, unknown>;
 
@@ -230,12 +237,7 @@ export interface PersistedNativeIAMPrincipalSeed {
   readonly groupIds?: readonly string[];
 }
 
-export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
-  constructor() {
-    super("The PostgreSQL transaction commit outcome is unknown.");
-    this.name = "PostgresCommitOutcomeUnknownError";
-  }
-}
+export { PostgresCommitOutcomeUnknownError };
 
 /**
  * Node and OpenSSL codes for a server certificate that failed identity or chain validation.
@@ -616,6 +618,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
+  cs.token_service_instance_id, cs.registration, cs.registration_dispatched_at,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -690,7 +693,18 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
       ]),
     ),
     ...(ownerCapability === "token_service"
-      ? { ownerCapability }
+      ? {
+          ownerCapability,
+          ...(row.token_service_instance_id == null
+            ? {}
+            : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
+          ...(row.registration == null
+            ? {}
+            : { registration: jsonObject(row.registration) as TokenServiceRegistration }),
+          ...(row.registration_dispatched_at == null
+            ? {}
+            : { registrationDispatchedAt: timestamp(row, "registration_dispatched_at") }),
+        }
       : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
     createdAt: timestamp(row, "created_at"),
@@ -2186,6 +2200,58 @@ export class PostgresPlatformState implements PlatformStateStore {
         const installation = await this.currentInstallation(context);
         return installation === undefined ? undefined : immutableCopy(installation);
       },
+      selectTokenServiceInstance: async (candidate: TokenServiceInstance) => {
+        const installation = await this.requireInitialized(context);
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          "token_service_instance:" + installation.id,
+        ]);
+        const [row] = rows(
+          (
+            await client.query(
+              "SELECT id, driver_id, store_identity FROM occ.token_service_instances WHERE installation_id=$1",
+              [installation.id],
+            )
+          ).rows,
+        );
+        if (
+          row &&
+          text(row, "driver_id") === candidate.driverId &&
+          text(row, "store_identity") === candidate.storeIdentity
+        ) {
+          return immutableCopy({
+            id: text(row, "id"),
+            driverId: text(row, "driver_id"),
+            storeIdentity: text(row, "store_identity"),
+          });
+        }
+        if (row) {
+          const id = text(row, "id");
+          if (id === candidate.id) {
+            throw new ResourceStateConflictError(
+              "The TokenService instance still has registrations.",
+            );
+          }
+          try {
+            await client.query("DELETE FROM occ.token_service_instances WHERE id=$1", [id]);
+          } catch (error) {
+            const failure = asRecord(error);
+            if (
+              (failure?.code === "23001" || failure?.code === "23503") &&
+              failure.constraint === "credential_sources_token_service_instance_id_fkey"
+            ) {
+              throw new ResourceStateConflictError(
+                "The TokenService instance still has registrations.",
+              );
+            }
+            throw error;
+          }
+        }
+        await client.query(
+          "INSERT INTO occ.token_service_instances (installation_id,id,driver_id,store_identity) VALUES ($1,$2,$3,$4)",
+          [installation.id, candidate.id, candidate.driverId, candidate.storeIdentity],
+        );
+        return immutableCopy(candidate);
+      },
       createInstallation: async (installation) => {
         if ((await this.currentInstallation(context)) !== undefined) {
           throw new ResourceConflictError("An Installation has already been bootstrapped.");
@@ -3168,8 +3234,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await client.query(
           `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10)`,
+           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, registration, registration_dispatched_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12::jsonb, $13)`,
           [
             source.id,
             source.namespaceId,
@@ -3181,6 +3247,15 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.createdAt,
             source.egress === undefined ? null : JSON.stringify(source.egress),
             source.ownerCapability,
+            source.ownerCapability === "token_service"
+              ? (source.tokenServiceInstanceId ?? null)
+              : null,
+            source.ownerCapability === "token_service" && source.registration !== undefined
+              ? JSON.stringify(source.registration)
+              : null,
+            source.ownerCapability === "token_service"
+              ? (source.registrationDispatchedAt ?? null)
+              : null,
           ],
         );
         if (secretInputs.length > 0) {
@@ -3235,13 +3310,46 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         return findCredentialSource(namespaceId, credentialSourceId);
       },
-      markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
+      setCredentialSourceRegistrationDispatch: async (
+        namespaceId,
+        credentialSourceId,
+        dispatchedAt,
+      ) => {
+        const result = await client.query(
+          `UPDATE occ.credential_sources SET registration_dispatched_at=$3
+          WHERE namespace_id=$1 AND id=$2 AND token_service_instance_id IS NOT NULL AND registration IS NULL AND state=$4
+            AND (($3::timestamptz IS NULL AND registration_dispatched_at IS NOT NULL)
+              OR ($3::timestamptz IS NOT NULL AND registration_dispatched_at IS NULL))`,
+          [
+            namespaceId,
+            credentialSourceId,
+            dispatchedAt ?? null,
+            dispatchedAt === undefined ? "deleting" : "registering",
+          ],
+        );
+        return result.rowCount === 1;
+      },
+      updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
+        const result = await client.query(
+          "UPDATE occ.credential_sources SET config=$3::jsonb WHERE namespace_id=$1 AND id=$2 AND state='ready' AND token_service_instance_id IS NOT NULL",
+          [namespaceId, credentialSourceId, JSON.stringify(config)],
+        );
+        return result.rowCount === 1
+          ? findCredentialSource(namespaceId, credentialSourceId)
+          : undefined;
+      },
+      markCredentialSourceReady: async (namespaceId, credentialSourceId, registration, config) => {
         const updated = await client.query(
-          `UPDATE occ.credential_sources AS cs SET state = 'ready'
+          `UPDATE occ.credential_sources AS cs SET state = 'ready', registration=$3::jsonb, config=COALESCE($4::jsonb,cs.config)
            FROM occ.namespaces AS n
            WHERE cs.namespace_id = $1 AND cs.id = $2 AND cs.state = 'registering'
              AND n.id = cs.namespace_id AND n.deleted_at IS NULL`,
-          [namespaceId, credentialSourceId],
+          [
+            namespaceId,
+            credentialSourceId,
+            registration === undefined ? null : JSON.stringify(registration),
+            config === undefined ? null : JSON.stringify(config),
+          ],
         );
         return updated.rowCount === 1
           ? findCredentialSource(namespaceId, credentialSourceId)

@@ -1,4 +1,4 @@
-import { registerManagedOpenShellStartupCases } from "./sandbox-driver-managed-startup-cases.mjs";
+import { registerManagedOpenShellStartupCases } from "./sandbox-driver-managed-startup-cases.ts";
 import {
   registerDedicatedCodexProviderCase,
   registerInitialWorkspaceCases,

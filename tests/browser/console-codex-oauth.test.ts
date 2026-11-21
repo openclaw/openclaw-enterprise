@@ -14,7 +14,7 @@ import {
   createDeviceCredentialDrivers,
   DEVICE_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
-} from "../helpers/device-credential-gateway.mjs";
+} from "../helpers/device-credential-gateway.ts";
 import {
   MEMBER_WRITE,
   apiRequests,
@@ -314,7 +314,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   // A later version uses the same saved source. No second login, Secret grant, or
   // authentication mutation is needed merely to configure plugins.
   const loginsBeforeBrowse = gateway.calls.filter(
-    (call: unknown) => jsonObject(call).operation === "startDeviceAuthorization",
+    (call) => call.operation === "startDeviceAuthorization",
   ).length;
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal(
@@ -335,9 +335,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     originalAuth,
   );
   assert.equal(
-    gateway.calls.filter(
-      (call: unknown) => jsonObject(call).operation === "startDeviceAuthorization",
-    ).length,
+    gateway.calls.filter((call) => call.operation === "startDeviceAuthorization").length,
     loginsBeforeBrowse,
   );
   const sourceGrants = requests.filter(
@@ -415,7 +413,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   );
   assert.equal(oldSource.status, 200);
   assert.equal(
-    gateway.calls.some((call: unknown) => jsonObject(call).operation === "removeSource"),
+    gateway.calls.some((call) => call.operation === "removeSource"),
     false,
   );
   const replacementGrants = requests.filter(

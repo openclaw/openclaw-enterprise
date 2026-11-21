@@ -6,7 +6,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "../errors.ts";
 import type { StoredOAuthClient } from "../ports/oauth-client.ts";
-import type { ConnectionTemplateRepository } from "./platform-state.ts";
+import type { ConnectionTemplateRepository } from "../ports/connection-templates.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 type Row = Record<string, unknown>;
