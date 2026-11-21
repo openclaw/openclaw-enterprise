@@ -13,7 +13,7 @@ import type {
   SecretBindings,
   SecretMetadata,
 } from "../../packages/contracts/src/index.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -46,7 +46,6 @@ import {
   CHANNEL_BINDING_CREDENTIALS_REMEDY,
   CONFIGURATION_EDITS_PENDING,
   DEPENDENCY_UNAVAILABLE,
-  DEPLOY_CLUSTER_RBAC_REFUSED,
   READ_UNAVAILABLE,
   namespaceListDenied,
   secretAccessConfirmed,
@@ -255,6 +254,8 @@ test("draft Agent offers deployment without a generated-credential step", async 
   fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
 
   // A missing tenant RoleBinding refuses the credential check before admission (D396).
+  const DEPLOY_CLUSTER_RBAC_REFUSED =
+    "Deployment refused: the cluster denied the control plane access to this Agent's connection credentials. Ask an operator to grant the control plane the Kubernetes RoleBindings this Namespace needs, then deploy again.";
   const deployUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
   await page.route(deployUrl, (route) =>
     route.fulfill(

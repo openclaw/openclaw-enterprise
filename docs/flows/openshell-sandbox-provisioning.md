@@ -1,14 +1,14 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-20"
-last_updated_session: "authoring-run/275abc15-117c-45f0-920d-9ff2e08084c9"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-For service integration, see [managed provisioning](openshell-managed-workload.md).
+See [managed service provisioning](openshell-managed-workload.md).
 
 ## Entry Points
 
@@ -135,9 +135,9 @@ See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
 
 ### 0.1. Check Harness mode support
 
-Before Agent writes transform Configuration, `packages/occ/src/index.ts:admitsOpenClawExecutionMode`
-checks `supportsHarnessExecutionMode` from `apps/controller/src/drivers/sandbox/openshell.ts:constructor`,
-native-worker support and provisioning requirements. Status reads the deployed revision's stored result.
+Agent saves check Sandbox mode in `packages/occ/src/agent-harness-topology.ts:validateSavedAgentTopology`.
+Provisioning and deployment call `packages/occ/src/agent-harness-topology.ts:requireDedicatedNativeSupport`.
+Status reads the stored revision result.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
@@ -423,6 +423,7 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 08:39: Stop native workspace preparation at a full Pod quota and report the pending quota reason. (authoring-run/275abc15-117c-45f0-920d-9ff2e08084c9 - e54145b9772eb083b2cb9a33ffef6274d99eb269)
 
 - 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)

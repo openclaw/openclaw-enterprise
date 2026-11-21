@@ -1,8 +1,11 @@
 import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.ts";
-import { emitOpenShellReplacementCheckpoint } from "../../scripts/ci/openshell-progress.mjs";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
+import {
+  assertOpenShellModelId,
+  normalizeOpenShellModelId,
+} from "../../scripts/ci/openshell-model-inputs.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
   openShellGatewayGrpcChannel,
@@ -102,7 +105,10 @@ import {
   keycloakUserClient,
 } from "./keycloak-issuer-material.ts";
 import { defaultKeycloakImage, startKeycloak } from "./keycloak-real.mjs";
-import { pollReplacementActivation } from "./openshell-replacement-activation.ts";
+import {
+  pollReplacementActivation,
+  redeployOpenShellReplacement,
+} from "./openshell-replacement-activation.ts";
 import {
   diagnosticQuery,
   diagnosticQueryTimeoutMs,
@@ -160,9 +166,8 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
-  /^(?:openai|codex)\//,
-  "",
+const providerModel = normalizeOpenShellModelId(
+  process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel,
 );
 const openShellModelBaseUrl = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim() || undefined;
 const modelCredentialVariable =
@@ -1968,6 +1973,9 @@ async function prepareProductionInstallation(
     enableCompatibilityBridges = harnessId === "openclaw",
   } = {},
 ) {
+  if (process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1") {
+    assertOpenShellModelId(providerModel);
+  }
   const kubeconfig = await validateOpenShellPrerequisites();
   const policyFixtureUrl = process.env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL;
   if (harnessId === "codex") {
@@ -7765,9 +7773,9 @@ async function replacementActivationDiagnostic(topology, revision, worker) {
 }
 
 /**
- * Makes the model provider unreachable: cluster DNS sends the model host to a Service with no
- * endpoints, so OpenShell's connection to it is refused. The turn must fail without exposing
- * the key, and the same running Harness must complete a turn once the provider is back.
+ * Point the model hostname at a Service intended to have no endpoints and require the
+ * Gateway turn request to reject. After DNS restoration, require a matching reply
+ * and the original active revision.
  */
 async function assertModelProviderOutageFailsClosed(topology) {
   if (!modelEndpointSupportsDnsProofs()) {
@@ -7778,9 +7786,15 @@ async function assertModelProviderOutageFailsClosed(topology) {
   }
   const { request, namespaceId, untrustedTls } = topology;
   const agentPath = `/namespaces/${namespaceId}/agents/${topology.agent.id}`;
-  const current = await request("GET", agentPath);
-  assert.equal(current.status, 200, JSON.stringify(current.error));
+  const current = await request("GET", agentPath).catch(() => {
+    throw new Error("Could not read the Agent before the model outage.");
+  });
+  assert.equal(current.status, 200, "Could not read the Agent before the model outage.");
   const revisionId = current.data.activeRevisionId;
+  assert.ok(
+    typeof revisionId === "string" && revisionId.trim(),
+    "model outage requires an active revision",
+  );
   // `kubectl create service clusterip` selects app=<name>, which no Pod carries.
   await kubectl(
     "create",
@@ -7790,32 +7804,55 @@ async function assertModelProviderOutageFailsClosed(topology) {
     "--namespace",
     untrustedTls.namespace,
     ...[...new Set([443, modelPort])].map((port) => `--tcp=${port}:${port}`),
-  );
-  const outage = await resource("service", "model-outage", untrustedTls.namespace);
+  ).catch(() => {
+    throw new Error("Could not create the model outage Service.");
+  });
+  let restoreDns = false;
   let rejected = false;
   let observation;
   let failure;
+  let stage = "Service read";
   try {
-    await setModelProviderDns(topology, outage.spec.clusterIP);
+    const outage = await resource("service", "model-outage", untrustedTls.namespace);
+    const address = outage.spec.clusterIP;
+    assert.ok(isIP(address), "model outage requires a Service address");
+    restoreDns = true;
+    stage = "DNS override";
+    await setModelProviderDns(topology, address);
+    stage = "Gateway Pod lookup";
+    const gatewayPod = await currentGatewayPod(topology);
+    assert.ok(gatewayPod, "model outage requires a Gateway Pod");
+    stage = "turn observation";
+    const turnRequest = {
+      namespace: topology.gatewayPlacement,
+      gatewayPod,
+      providerModel,
+      prompt: `Reply with exactly OCC-OPENSHELL-OUTAGE-${randomUUID()}.`,
+    };
+    // A rejected request still cannot distinguish a provider outage from a client
+    // deadline or transport failure. Never count failed setup or serialization as rejection.
+    let result;
     try {
-      observation = JSON.stringify(
-        await requestCodexTurnFromGatewayPod({
-          namespace: topology.gatewayPlacement,
-          gatewayPod: await currentGatewayPod(topology),
-          providerModel,
-          prompt: `Reply with exactly OCC-OPENSHELL-OUTAGE-${randomUUID()}.`,
-        }),
-      );
+      result = await requestCodexTurnFromGatewayPod(turnRequest);
     } catch (error) {
       rejected = true;
       observation = error instanceof Error ? error.message : String(error);
     }
-  } catch (error) {
-    failure = error;
+    if (!rejected) {
+      observation = JSON.stringify(result);
+    }
+  } catch {
+    failure = new Error(`Model outage ${stage} failed.`);
   }
-  // Restore DNS before any assertion; keep the first error if both steps fail.
+  // Restore DNS first and attempt Service deletion even if restoration fails.
+  if (restoreDns) {
+    try {
+      await setModelProviderDns(topology, undefined);
+    } catch {
+      failure ??= new Error("Model outage DNS restoration failed.");
+    }
+  }
   try {
-    await setModelProviderDns(topology, undefined);
     await kubectl(
       "delete",
       "service",
@@ -7824,8 +7861,8 @@ async function assertModelProviderOutageFailsClosed(topology) {
       untrustedTls.namespace,
       "--ignore-not-found",
     );
-  } catch (error) {
-    failure ??= error;
+  } catch {
+    failure ??= new Error("Model outage Service deletion failed.");
   }
   if (failure !== undefined) {
     throw failure;
@@ -7833,11 +7870,18 @@ async function assertModelProviderOutageFailsClosed(topology) {
   const nonce = `OCC-OPENSHELL-RECOVERED-${randomUUID()}`;
   const recovered = await requestCodexTurnFromGatewayPod({
     namespace: topology.gatewayPlacement,
-    gatewayPod: await currentGatewayPod(topology),
+    gatewayPod: await currentGatewayPod(topology).catch(() => {
+      throw new Error("Model outage recovery Pod lookup failed.");
+    }),
     providerModel,
     prompt: `Reply with exactly ${nonce}.`,
+  }).catch(() => {
+    throw new Error("Model outage recovery turn failed.");
   });
-  const after = await request("GET", agentPath);
+  const after = await request("GET", agentPath).catch(() => {
+    throw new Error("Could not read the Agent after the model outage.");
+  });
+  assert.equal(after.status, 200, "Could not read the Agent after the model outage.");
   const observed = {
     turnRejected: rejected,
     recoveredTurn: new RegExp(nonce).test(String(record(recovered).assistant)),
@@ -7849,13 +7893,17 @@ async function assertModelProviderOutageFailsClosed(topology) {
   assert.equal(
     String(observation).includes(modelCredential),
     false,
-    "a failed model turn must not expose the model key",
+    "the outage request must not expose the model key",
   );
   assert.equal(JSON.stringify(recovered).includes(modelCredential), false);
-  assert.equal(rejected, true, "a model turn must fail while the provider is unreachable.");
-  // The outage is the provider's, not the Harness's: the same revision serves the next turn.
-  assert.equal(observed.recoveredTurn, true, "the running Harness must recover with the provider.");
-  assert.equal(observed.sameRevision, true, "recovery must not need a redeploy.");
+  assert.equal(
+    rejected,
+    true,
+    "the outage turn request must reject while the DNS override is active.",
+  );
+  // Recovery must succeed on the original revision.
+  assert.equal(observed.recoveredTurn, true, "the recovery turn must return the expected reply.");
+  assert.equal(observed.sameRevision, true, "the active revision must match its pre-outage value.");
 }
 
 /**
@@ -8400,34 +8448,6 @@ export async function waitForReplacementActivation(
   }
 }
 
-export async function redeployOpenShellReplacement(
-  topology,
-  testContext,
-  reportProgress,
-  diagnose,
-) {
-  if (reportProgress) {
-    emitOpenShellReplacementCheckpoint("redeploy-request");
-  }
-  const redeployed = await topology.request(
-    "POST",
-    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
-  );
-  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
-  assert.notEqual(redeployed.data.id, topology.revision.id);
-  const revisionId = redeployed.data.id;
-  const observedAcceptance =
-    reportProgress && typeof revisionId === "string" && revisionId.length > 0;
-  if (observedAcceptance) {
-    emitOpenShellReplacementCheckpoint("activation");
-  }
-  await waitForReplacementActivation(topology, redeployed, testContext, undefined, diagnose);
-  if (observedAcceptance) {
-    emitOpenShellReplacementCheckpoint("reconciliation");
-  }
-  return redeployed;
-}
-
 async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(
   topology,
   testContext,
@@ -8463,7 +8483,9 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(
   );
   assert.equal(suspendedSandbox.spec.operatingMode, "Suspended");
 
-  const redeployed = await redeployOpenShellReplacement(topology, testContext, reportProgress);
+  const redeployed = await redeployOpenShellReplacement(topology, reportProgress, (response) =>
+    waitForReplacementActivation(topology, response, testContext),
+  );
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
   await waitForProviderHarnessPod(topology.placement, redeployed.data);

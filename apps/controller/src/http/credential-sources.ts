@@ -4,6 +4,7 @@ import type {
   CredentialWithdrawalStatus,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
+import { failure } from "./errors.ts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 function clientCredentialSource(
@@ -52,6 +53,11 @@ export const credentialSourceHandlers = {
     namespaceId,
     mutationEvent,
   }) {
+    // TODO: Replace this refusal when managed Source enrollment is wired to its recorded owner.
+    if (body && "secret" in body) {
+      await controller.authorizeCredentialSourceWrite(context.actorId, namespaceId);
+      throw failure(501, "NOT_IMPLEMENTED", "Managed credential source enrollment is unavailable.");
+    }
     // Registration spans a gateway write, so the core commits the audit with its final step.
     const created = await controller.createCredentialSource(
       context.actorId,
@@ -104,6 +110,15 @@ export const credentialSourceHandlers = {
     namespaceId,
     mutationEvent,
   }) {
+    // TODO: Replace this refusal when managed Source updates dispatch by the persisted owner.
+    if (body && ("secret" in body || "config" in body)) {
+      await controller.authorizeCredentialSourceWrite(
+        context.actorId,
+        namespaceId,
+        params.credentialSourceId,
+      );
+      throw failure(501, "NOT_IMPLEMENTED", "Managed credential source enrollment is unavailable.");
+    }
     const credentialSourceId = params.credentialSourceId as string;
     const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
     // The gateway write cannot roll back, so a failed request after it still records a failure.
