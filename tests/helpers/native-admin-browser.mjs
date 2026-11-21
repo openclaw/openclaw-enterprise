@@ -893,6 +893,24 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
       deniedProbes.push(await nativeProbe(page, 403, siblingTarget.origin));
       const nativePage = await openNativeAdminConsole(page, status.origin, "chat");
       const profile = await nativeProfile(nativePage, "operator.sessions.write");
+      // Load the bookmarked main chat before the operator starts their first session.
+      const mainChat = new URL("/chat/main", status.origin);
+      const response = await nativePage.goto(mainChat.href);
+      assert.equal(response?.status(), 200, "authenticated main chat document");
+      assert.equal(response?.url(), mainChat.href, "main chat document URL");
+      await waitForStockUi(nativePage);
+      await nativePage.waitForFunction(
+        () => {
+          const { routeReady, sessionKey } = globalThis.openclawControlUi.snapshot();
+          return routeReady && sessionKey === "agent:main:main";
+        },
+        undefined,
+        { timeout: 60_000 },
+      );
+      const composer = nativePage.locator(".agent-chat__composer-combobox > textarea").first();
+      await composer.fill("", { timeout: 60_000 });
+      assert.equal(new URL(nativePage.url()).pathname, mainChat.pathname);
+
       const marker = `operator-chat-${randomUUID()}`;
       const terminal = await submitChatTurnWithAssistantProof(nativePage, marker, frames, waitFor);
       await assertNativeAttribution(nativePage, terminal, profile.id, marker);
