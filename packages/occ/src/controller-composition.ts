@@ -72,6 +72,7 @@ import type {
   ComputeDriver,
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
+  CredentialProxyDriver,
   Installation,
   InstallationDeploymentInventory,
   Namespace,
@@ -91,6 +92,10 @@ import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createAgentQueries, type ActiveAgentRevisionSelection } from "./agent-queries.ts";
 import { createDeploymentChannelChecks } from "./deployment-channels.ts";
 import { createAgentDeploymentOperations } from "./agent-deployment-requests.ts";
+import type {
+  CredentialDeploymentCapabilities,
+  ModelCredentialPreset,
+} from "./agent-deployment-admission.ts";
 import type { DeployAgentInput } from "./deployment-authorization.ts";
 import { createAgentDraftOperations } from "./agent-drafts.ts";
 import {
@@ -178,6 +183,16 @@ export interface ControllerOptions {
     readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
   };
   readonly preparedTokens?: TokenService | undefined;
+  readonly modelCredentialPreset?: (input: {
+    readonly presetId: string;
+    readonly configuration: Readonly<Record<string, unknown>>;
+    readonly harness: RevisionHarnessDescriptor;
+  }) => ModelCredentialPreset | undefined;
+  /** Qualification of the selected enforcing Sandbox and delivery Proxy; absent means unsupported. */
+  readonly credentialDeploymentCapabilities?: (input: {
+    readonly sandbox: SandboxDriver;
+    readonly proxy: CredentialProxyDriver;
+  }) => CredentialDeploymentCapabilities | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
@@ -985,6 +1000,8 @@ export function createControllerComposition(
     secrets: secretOperations,
     isManagedTokenServiceSource,
     hasCredentialGateway: () => drivers.hasSelection("credential_gateway"),
+    hasCredentialProxyDelivery: () => drivers.hasSelection("credential_proxy_delivery"),
+    selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     assertCredentialGatewaySelected: credentialSourceDrivers.assertCredentialGatewaySelected,
     ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
     ownedCredentialGatewayDriver: (source) =>
@@ -1096,6 +1113,11 @@ export function createControllerComposition(
     configuration: configurationOperations,
     driverOperation,
     modelPolicyAgent,
+    modelCredentialPreset: options.modelCredentialPreset,
+    credentialDeploymentCapabilities: options.credentialDeploymentCapabilities,
+    sandboxNetworkPolicyCeiling,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     credentialAccess: agentCredentialAccess,
     secretDriver: secretOperations.secretDriver,
     validateComputeConfiguration,

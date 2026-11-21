@@ -505,6 +505,15 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         );
       }
       if (
+        ownerUpdate !== undefined &&
+        (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
+      ) {
+        // TODO(C6 source-update delivery): admit bound updates after source-scoped notification and retry can settle every delivery.
+        throw new ResourceStateConflictError(
+          "Bound credential source updates require supported delivery notification and retry.",
+        );
+      }
+      if (
         lockSource &&
         presetChanges &&
         (await state.credentialSources.hasReferences(ref.namespaceId, source.id))

@@ -36,7 +36,7 @@ async function credentialStoreIdentity(
 /** Install the selected owner after the private Secret store is available. */
 export async function installTokenServiceDriver(
   controller: OpenClawController,
-  drivers: InstallationRuntimeDrivers | undefined,
+  drivers: Pick<InstallationRuntimeDrivers, "installation" | "secretDriver"> | undefined,
 ): Promise<void> {
   const selection = drivers?.installation.drivers.token_service;
   if (!selection || !drivers) {

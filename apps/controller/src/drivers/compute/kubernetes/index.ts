@@ -48,6 +48,10 @@ import {
   computeReleasePublicKey,
   signComputeExecutionRelease,
 } from "../egress-enrollment.ts";
+import {
+  CREDENTIAL_DEPLOYMENT_RELEASE_PUBLIC_KEY,
+  signCredentialDeploymentRelease,
+} from "../credential-deployment-release.ts";
 import { forwardMethod } from "../../../backends/token-service/forward-method.ts";
 import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
 import {
@@ -153,6 +157,8 @@ import type {
   ConfigurationValidationOptions,
   CredentialAttachmentStatus,
   CredentialGatewayDriver,
+  CredentialDeploymentContext,
+  CredentialProxyDriver,
   CredentialSource,
   CredentialSourceAttachment,
   CredentialSourceType,
@@ -175,6 +181,8 @@ import type {
   SandboxEnvironmentVariable,
   SandboxNamespaceContext,
   SandboxResourceRef,
+  CredentialDeploymentConfiguration,
+  HarnessStartupRef,
   SandboxWorkloadFile,
   SecretBindings,
   SecretEnvironmentProjection,
@@ -1125,12 +1133,38 @@ interface NativeRuntimeSnapshot {
   readonly configuration: string;
 }
 
+/** Match the admitted model binding to the exact model selection rendered by this Harness. */
+function stagedModelCredentialBinding(revision: Readonly<AgentRevision>) {
+  const deployment = revision.credentialDeployment;
+  const auth = revision.harnessAuth;
+  const binding = deployment?.bindings[0];
+  const selected = harnessModelAuthentication(revision.configuration);
+  if (
+    !deployment ||
+    deployment.bindings.length !== 1 ||
+    auth.method !== "credential_source" ||
+    !auth.tokenServiceInstanceId ||
+    binding?.consumer.kind !== "model" ||
+    binding.consumer.providerId !== selected.providerId ||
+    binding.sourceRef.kind !== "credential_source" ||
+    binding.sourceRef.namespaceId !== revision.namespaceId ||
+    binding.sourceRef.id !== auth.sourceId ||
+    binding.projection.environment !== selected.environmentName ||
+    binding.projection.presentation !== "bearer"
+  ) {
+    throw new DependencyUnavailableError(
+      "The staged model binding does not match the configured Harness model operation.",
+    );
+  }
+  return binding;
+}
+
 /** One rendering step; neither credential values nor backend lookups belong here. */
 function prepareHarnessAuth(
-  harness: RevisionHarnessDescriptor,
+  revision: Readonly<AgentRevision>,
   resolvedAuth: ResolvedHarnessAuth,
-  configuration: OpenClawConfigurationDocument,
 ): PreparedHarnessAuth {
+  const { harness, configuration } = revision;
   const secret = (
     name: string,
     reference: { readonly name: string; readonly key: string },
@@ -1151,6 +1185,20 @@ function prepareHarnessAuth(
     );
   } else if (
     resolvedAuth.method === "credential_source" &&
+    resolvedAuth.tokenServiceInstanceId !== undefined &&
+    harness.mode === "dedicated" &&
+    (harness.id === "codex" || harness.id === "openclaw")
+  ) {
+    stagedModelCredentialBinding(revision);
+    // This is the concrete launcher's presentation mode, derived from the admitted binding.
+    const loginMode = "api_key";
+    if (harness.id === "codex") {
+      environment.push({ name: "CODEX_LOGIN_MODE", value: loginMode });
+    }
+    return { loginMode, environment };
+  } else if (
+    resolvedAuth.method === "credential_source" &&
+    resolvedAuth.credentialGatewayId !== undefined &&
     harness.mode === "dedicated" &&
     (harness.id === "codex" || harness.id === "openclaw")
   ) {
@@ -1216,6 +1264,16 @@ const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
 ]);
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
+const CREDENTIAL_DEPLOYMENT_TARGET_ANNOTATION = "openclaw.dev/credential-deployment-target";
+type CredentialDeploymentTargetState =
+  | { readonly state: "provisioning" }
+  | { readonly state: "provisioned"; readonly sandboxId: string }
+  | {
+      readonly state: "release-dispatched";
+      readonly sandboxId: string;
+      readonly processInstanceId: string;
+      readonly startupId: string;
+    };
 const APPLY_CONTENT_TYPE = "application/apply-patch+yaml";
 const MERGE_PATCH_CONTENT_TYPE = "application/merge-patch+json";
 const GATEWAY_API_VERSION = "gateway.networking.k8s.io/v1";
@@ -3630,6 +3688,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
   private readonly openShellAttachments: OpenShellCredentialAttachments | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
+  private readonly credentialDeliveryRegistration: SelectedDriverRegistration | undefined;
+
+  private get credentialDeploymentProxyDriver(): CredentialProxyDriver | undefined {
+    return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
+  }
 
   private get proxyDriver() {
     return this.protectedExecution?.proxy;
@@ -4241,6 +4304,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly preparedTokens?: TokenService;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialGatewayDriver?: CredentialGatewayDriver;
+      readonly credentialDeliveryRegistration?: SelectedDriverRegistration;
       /** Internal composition data for the exact built-in same-Backend pair. */
       readonly openShellAttachments?: {
         readonly sandboxDriver: SandboxDriver;
@@ -4281,6 +4345,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.protectedExecution =
       selection.protectedDriver && new ProtectedExecutionDriver(selection.protectedDriver);
+    this.credentialDeliveryRegistration = selection.credentialDeliveryRegistration;
     if (
       this.protectedExecution &&
       selection.sandboxDriver &&
@@ -4291,6 +4356,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.sandboxDriver = this.protectedExecution?.sandbox ?? selection.sandboxDriver;
+    if (
+      this.credentialDeliveryRegistration !== undefined &&
+      this.credentialDeliveryRegistration.require("sandbox") !== this.sandboxDriver
+    ) {
+      throw new ConfigurationFailure(
+        "Staged credential delivery requires the selected Sandbox owner.",
+      );
+    }
     const harnessResources: HarnessResources<ManagedKubernetesObject> = {
       ensureWorkspace: (owner, namespace) =>
         this.reconcile(
@@ -4949,20 +5022,38 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (auth.method === "credential_source") {
-      // The paired Sandbox injects the credential, so this path never projects a model Secret.
-      if (
-        this.sandboxDriver === undefined ||
-        this.credentialGatewayDriver === undefined ||
-        auth.credentialGatewayId !== this.credentialGatewayDriver.id ||
-        credentialSourceType?.type !== auth.sourceType ||
-        credentialSourceType.harnessAuth?.loginMode !== auth.loginMode ||
-        credentialSourceType.harnessAuth.modelProvider !== "openai" ||
-        (auth.loginMode !== "api_key" &&
-          !(codex && (auth.loginMode === "codex_pat" || auth.loginMode === "chatgptAuthTokens")))
-      ) {
-        throw new ConfigurationFailure(
-          "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
-        );
+      if (auth.tokenServiceInstanceId !== undefined) {
+        const proxy = this.credentialDeploymentProxyDriver;
+        if (
+          !dedicated ||
+          this.sandboxDriver?.provisionHarness === undefined ||
+          this.sandboxDriver?.credentialDeployment === undefined ||
+          proxy?.capability !== "credential_proxy_delivery" ||
+          proxy.deployProxy === undefined ||
+          proxy.configureDeployment === undefined ||
+          proxy.getDeploymentStatus === undefined ||
+          proxy.removeDeployment === undefined
+        ) {
+          throw new ConfigurationFailure(
+            "TokenService Harness authentication requires the staged Sandbox and Credential Proxy operations.",
+          );
+        }
+      } else {
+        // The paired Sandbox injects the credential, so this path never projects a model Secret.
+        if (
+          this.sandboxDriver === undefined ||
+          this.credentialGatewayDriver === undefined ||
+          auth.credentialGatewayId !== this.credentialGatewayDriver.id ||
+          credentialSourceType?.type !== auth.sourceType ||
+          credentialSourceType.harnessAuth?.loginMode !== auth.loginMode ||
+          credentialSourceType.harnessAuth.modelProvider !== "openai" ||
+          (auth.loginMode !== "api_key" &&
+            !(codex && (auth.loginMode === "codex_pat" || auth.loginMode === "chatgptAuthTokens")))
+        ) {
+          throw new ConfigurationFailure(
+            "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
+          );
+        }
       }
     }
     // Configuration save keeps a draft that selects no model yet, and no topology here runs
@@ -6714,11 +6805,38 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   validateExecutionAdmission(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan"> &
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan" | "credentialDeployment"> &
       Partial<Pick<AgentRevision, "harnessAuth" | "credentialSources" | "repositoryCredentials">>,
     source?: SelectedDriverRegistration | "stored",
   ): void {
     assertExecutionAdmission(revision);
+    if (revision.executionAdmission.mode === "standalone") {
+      const proxy = this.credentialDeploymentProxyDriver;
+      if (
+        (source !== "stored" && source !== this.credentialDeliveryRegistration) ||
+        !isDeepStrictEqual(
+          revision.credentialDeployment?.driver,
+          this.credentialDeliveryRegistration?.ref,
+        ) ||
+        revision.executionAdmission.version !== 8 ||
+        this.options.runtime === undefined ||
+        revision.egressPlan !== undefined ||
+        revision.credentialDeployment === undefined ||
+        proxy?.capability !== "credential_proxy_delivery" ||
+        revision.credentialDeployment.proxyDriverId !== proxy.id ||
+        proxy.deployProxy === undefined ||
+        proxy.configureDeployment === undefined ||
+        proxy.getDeploymentStatus === undefined ||
+        proxy.removeDeployment === undefined ||
+        this.sandboxDriver?.provisionHarness === undefined ||
+        this.sandboxDriver?.credentialDeployment === undefined
+      ) {
+        throw new DependencyUnavailableError(
+          "The admitted staged credential composition is unavailable.",
+        );
+      }
+      return;
+    }
     const plan = revision.egressPlan;
     const auth = revision.harnessAuth;
     const binding = revision.credentialSources?.[0];
@@ -6774,6 +6892,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.validateExecutionAdmission(revision, "stored");
+    if (revision.executionAdmission.mode === "standalone") {
+      stagedModelCredentialBinding(revision);
+      if (
+        revision.harness.mode !== "dedicated" ||
+        revision.sandboxDriverId !== this.sandboxDriver?.id ||
+        revision.repositoryCredentials !== undefined ||
+        context?.existingHarnessOnly === true ||
+        context?.configureCredentialDeployment === undefined ||
+        context.verifyCredentialDeploymentRelease === undefined
+      ) {
+        throw new DependencyUnavailableError("The staged credential revision cannot be released.");
+      }
+      return;
+    }
     const plan = revision.egressPlan;
     if (!plan) {
       return;
@@ -7418,7 +7550,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // A provider-owned Harness gets the transport token's verifier only: Codex
         // authenticates its app-server with it, and both Codex and the dedicated
         // OpenClaw worker serve a held startup failure to the token holder.
-        (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
+        (revision.egressPlan !== undefined ||
+          revision.credentialDeployment !== undefined ||
+          sandboxDriver?.implementation === "openshell") &&
           (revision.harness.id === "codex" || revision.harness.id === "openclaw")
           ? "verifier"
           : "secret",
@@ -7547,7 +7681,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ),
       );
       await this.prepareRevisionStage("gateway_route", () =>
-        this.reconcileGatewayRoute(revision, gatewayOwnership, gatewayNamespace),
+        this.reconcileGatewayRoute(
+          revision,
+          gatewayOwnership,
+          gatewayNamespace,
+          revision.credentialDeployment === undefined,
+        ),
       );
       if (inactiveEmbeddedGateway) {
         const gateway = await this.getOwned(
@@ -7668,6 +7807,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       const harnessRuntime = this.harnessForRevision(revision);
       if (harnessRuntime.kind === "sandbox") {
         const sandboxDriver = harnessRuntime.sandbox;
+        const staged = revision.credentialDeployment;
+        const proxy = staged === undefined ? undefined : this.credentialDeploymentProxyDriver!;
         const sandboxContext = await this.sandboxNamespaceContext(
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
@@ -7677,7 +7818,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ...credentialSources,
         ];
         const directAttachments = this.staticOpenAiAttachmentsForRevision(revision, boundSources);
-        const sources = boundSources.filter((source) => source.egress === undefined);
+        const sources =
+          staged === undefined ? boundSources.filter((source) => source.egress === undefined) : [];
         const credentialContext =
           sources.length === 0
             ? undefined
@@ -7762,23 +7904,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
           attachments,
           this.scratchAdmission(revision).binding,
         );
-        const releaseKey =
-          proxyWiring === undefined
+        const releaseNamespace =
+          proxyWiring === undefined && staged === undefined
             ? undefined
-            : await this.executionReleaseKey(
-                revision,
-                await this.controlNamespace(revision.namespaceId),
-              );
+            : await this.controlNamespace(revision.namespaceId);
+        const releaseKey =
+          releaseNamespace === undefined
+            ? undefined
+            : await this.executionReleaseKey(revision, releaseNamespace);
         const requirements = {
           ...preparedRequirements,
           ...(proxyWiring === undefined ? {} : { proxyWiring }),
           environment: [
             ...preparedRequirements.environment,
-            ...this.credentialSourceEnvironment(
-              revision,
-              attachments,
-              harnessAuth.credentialSource,
-            ),
+            ...(staged === undefined
+              ? this.credentialSourceEnvironment(
+                  revision,
+                  attachments,
+                  harnessAuth.credentialSource,
+                )
+              : []),
             ...(proxyWiring === undefined
               ? []
               : [
@@ -7786,12 +7931,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   { name: "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID", value: revision.id },
                   { name: COMPUTE_RELEASE_PUBLIC_KEY, value: computeReleasePublicKey(releaseKey!) },
                 ]),
+            ...(staged === undefined
+              ? []
+              : [
+                  {
+                    name: CREDENTIAL_DEPLOYMENT_RELEASE_PUBLIC_KEY,
+                    value: computeReleasePublicKey(releaseKey!),
+                  },
+                ]),
           ],
         };
         // Whether the node has ever enrolled, read before provisioning: a dedicated OpenClaw
         // worker's exposure serves only Compute's status read before its first enrollment,
         // and the provider withdraws it from a Sandbox adopted after that (finding 1657).
         const nodeEnrolled = await this.workspaceNodeEnrolled(revision, namespace);
+        if (staged !== undefined && context?.existingHarnessOnly) {
+          throw new DependencyUnavailableError(
+            "Staged Sandbox provisioning cannot preserve this existing Harness lifecycle state.",
+          );
+        }
         const harnessContext = {
           ...sandboxContext,
           revision,
@@ -7799,12 +7957,166 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ...(context?.existingHarnessOnly ? { existingHarnessOnly: true as const } : {}),
           workspaceNodeEnrolled: nodeEnrolled,
         };
-        let sandbox: SandboxResourceRef;
-        try {
-          sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
-            harnessRuntime.prepare(harnessContext),
+        const transientProviderFailure = (error: unknown, message: string): unknown =>
+          error instanceof DependencyUnavailableError
+            ? new TransientDependencyError("sandbox_gateway", "unavailable", message, {
+                cause: error,
+              })
+            : error;
+        // The node has enrolled: the worker is past its checks, and from now on agent-run
+        // code may bind the worker's transport port, so the exposure Compute's read used
+        // must go before the revision is ready (finding 1657). A withdrawal that fails
+        // keeps the revision unready; the provider completes it on the next adoption.
+        const withdrawProviderExposure = async (): Promise<void> => {
+          if (nativeRuntime === undefined || sandboxDriver.withdrawHarnessExposure === undefined) {
+            return;
+          }
+          await this.prepareRevisionStage("sandbox_provision", async () => {
+            try {
+              await sandboxDriver.withdrawHarnessExposure!({
+                ...harnessContext,
+                workspaceNodeEnrolled: true,
+              });
+            } catch (error) {
+              throw transientProviderFailure(
+                error,
+                "The Sandbox provider did not answer the Harness exposure withdrawal.",
+              );
+            }
+          });
+        };
+        const deployment = {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+        };
+        const proxyContext: CredentialDeploymentContext = {
+          namespace: sandboxContext.namespace,
+          revision,
+          signal: sandboxContext.signal,
+        };
+        const stagedSandbox =
+          staged === undefined
+            ? undefined
+            : sandboxDriver.credentialDeployment!({
+                namespace: sandboxContext.namespace,
+                revision,
+                kubernetes: sandboxContext.kubernetes,
+                transportToken: await this.prepareRevisionStage("harness_auth", () =>
+                  this.sandboxTransportTokenText(revision),
+                ),
+              });
+        let sandbox: SandboxResourceRef | undefined;
+        let expected: CredentialDeploymentConfiguration | undefined;
+        let retainedTarget: CredentialDeploymentTargetState | undefined;
+        if (
+          staged !== undefined &&
+          nodeEnrolled &&
+          nativeRuntime !== undefined &&
+          sandboxDriver.withdrawHarnessExposure === undefined
+        ) {
+          throw new DependencyUnavailableError(
+            "The staged Sandbox cannot withdraw the enrolled Harness exposure.",
           );
+        }
+        let mayHaveUnboundProxy = false;
+        try {
+          if (staged === undefined) {
+            sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
+              harnessRuntime.prepare(harnessContext),
+            );
+          } else {
+            // A released process can still be pending before enrollment. Never provision its
+            // target again: the provider could reopen a startup route already closed at release.
+            if (nodeEnrolled) {
+              await withdrawProviderExposure();
+            }
+            const target = await this.credentialDeploymentTargetState(revision, releaseNamespace!);
+            retainedTarget = target;
+            if (target?.state === "provisioning") {
+              throw new DependencyUnavailableError(
+                "The staged Sandbox provisioning outcome is uncertain.",
+              );
+            }
+            if (target?.state === "provisioned" || target?.state === "release-dispatched") {
+              expected = {
+                targetRef: { ...deployment, sandboxId: target.sandboxId },
+                configurationId: revision.configurationId,
+              };
+            } else {
+              if (nodeEnrolled) {
+                throw new DependencyUnavailableError(
+                  "The enrolled staged Sandbox has no retained deployment target.",
+                );
+              }
+              mayHaveUnboundProxy = true;
+              const stagedProxy = await this.prepareRevisionStage("sandbox_provision", () =>
+                proxy!.deployProxy(proxyContext, {
+                  deployment,
+                  networkAccessPolicy: staged.networkAccessPolicy,
+                  injectionPolicies: staged.injectionPolicies,
+                }),
+              );
+              if (stagedProxy.proxyRouting !== undefined) {
+                throw new DependencyUnavailableError(
+                  "Staged proxy routing requires qualified mandatory-route enforcement.",
+                );
+              }
+              const {
+                credentialAttachments: _attachments,
+                proxyWiring: _wiring,
+                ...workload
+              } = requirements;
+              // A lost provision reply leaves no trustworthy incarnation to observe. Record
+              // dispatch before the provider call and refuse to repeat that uncertain call.
+              await this.credentialDeploymentTargetState(revision, releaseNamespace!, {
+                expected: undefined,
+                desired: { state: "provisioning" },
+              });
+              // From dispatch onward the Sandbox may exist and the Proxy may be bound, even
+              // when the provider's reply is lost. Unbound cleanup is no longer justified.
+              mayHaveUnboundProxy = false;
+              const targetRef = await this.prepareRevisionStage("sandbox_provision", () =>
+                stagedSandbox!.provisionHarness(
+                  {
+                    deployment,
+                    workload,
+                    restrictions: [
+                      {
+                        role: "harness",
+                        image: workload.image,
+                        mounts: workload.workspaceMounts.map(({ mountPath, readOnly }) => ({
+                          path: mountPath,
+                          readOnly,
+                        })),
+                      },
+                    ],
+                  },
+                  sandboxContext.signal,
+                ),
+              );
+              if (
+                targetRef.namespaceId !== deployment.namespaceId ||
+                targetRef.agentId !== deployment.agentId ||
+                targetRef.revisionId !== deployment.revisionId ||
+                !isNonEmptyString(targetRef.sandboxId)
+              ) {
+                throw new OwnershipFailure(
+                  "The staged Sandbox returned another deployment target.",
+                );
+              }
+              expected = { targetRef, configurationId: revision.configurationId };
+              await this.credentialDeploymentTargetState(revision, releaseNamespace!, {
+                expected: { state: "provisioning" },
+                desired: { state: "provisioned", sandboxId: targetRef.sandboxId },
+              });
+              retainedTarget = { state: "provisioned", sandboxId: targetRef.sandboxId };
+            }
+          }
         } catch (error) {
+          if (mayHaveUnboundProxy && expected === undefined) {
+            await proxy!.removeDeployment(proxyContext, { unboundDeployment: deployment });
+          }
           if (sandboxDriver.repositoryAccess?.isRouteBlockedError(error)) {
             // The worker closed this revision's prepared Git route for good (a replaced
             // execution or supervisor, an unknown provider write, a withdrawal): no pass can
@@ -7836,7 +8148,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           const enrolled = await this.prepareRevisionStage("sandbox_provision", () =>
             this.protectedExecution!.enroll(
               egressContext,
-              sandbox.proxyWiring,
+              sandbox!.proxyWiring,
               context!,
               () => this.preparedEgressReady(egressContext),
               async () => ({
@@ -7857,6 +8169,128 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
           heldForRepositoryGitMaterial = enrolled === "held";
+        }
+        if (staged !== undefined) {
+          const configuration = expected!;
+          const signal = sandboxContext.signal;
+          const observeReadiness = async (): Promise<boolean> => {
+            const [network, injection] = await Promise.all([
+              stagedSandbox!.getNetworkStatus(configuration, signal),
+              proxy!.getDeploymentStatus(proxyContext, configuration),
+            ]);
+            if (network.state === "failed" || injection.state === "failed") {
+              throw new DependencyUnavailableError("The staged credential deployment failed.");
+            }
+            return network.state === "ready" && injection.state === "ready";
+          };
+          const validStartup = (value: HarnessStartupRef): boolean =>
+            isDeepStrictEqual(value.targetRef, configuration.targetRef) &&
+            value.configurationId === configuration.configurationId &&
+            isNonEmptyString(value.processInstanceId) &&
+            isNonEmptyString(value.startupId);
+          // A release reply may have been lost. Observe the authenticated process before
+          // retrying configuration or attempting activation for this target.
+          let startup = await stagedSandbox!.getHarnessProcessStatus(configuration, signal);
+          if (startup.state === "failed") {
+            throw new DependencyUnavailableError("The staged Harness startup failed.");
+          }
+          if (startup.state === "pending") {
+            return retainedTarget?.state === "release-dispatched"
+              ? { ...result, pendingReason: "CREDENTIAL_ACTIVATION_PENDING" }
+              : incomplete();
+          }
+          if (!validStartup(startup.startup)) {
+            throw new OwnershipFailure("The staged Harness reported another startup.");
+          }
+          if (nodeEnrolled && startup.state !== "serving") {
+            throw new DependencyUnavailableError(
+              "Staged Sandbox provisioning cannot preserve this existing Harness lifecycle state.",
+            );
+          }
+          if (startup.state === "serving") {
+            if (
+              retainedTarget?.state !== "release-dispatched" ||
+              startup.startup.processInstanceId !== retainedTarget.processInstanceId ||
+              startup.startup.startupId !== retainedTarget.startupId
+            ) {
+              throw new OwnershipFailure("The staged Harness is not the released startup.");
+            }
+            if (!(await observeReadiness())) {
+              return incomplete();
+            }
+          } else {
+            if (retainedTarget?.state === "release-dispatched") {
+              if (
+                startup.startup.processInstanceId !== retainedTarget.processInstanceId ||
+                startup.startup.startupId !== retainedTarget.startupId
+              ) {
+                throw new OwnershipFailure("The staged Harness is not the released startup.");
+              }
+              return { ...result, pendingReason: "CREDENTIAL_ACTIVATION_PENDING" };
+            }
+            const { credentialProjections } = await context!.configureCredentialDeployment!(
+              configuration,
+              signal,
+            );
+            if (
+              credentialProjections.length !== staged.bindings.length ||
+              new Set(credentialProjections.map(({ bindingRef }) => bindingRef)).size !==
+                credentialProjections.length ||
+              credentialProjections.some((projection) => {
+                const binding = staged.bindings.find(
+                  ({ bindingRef }) => bindingRef === projection.bindingRef,
+                );
+                return (
+                  binding === undefined ||
+                  binding.projection.environment !== projection.environment ||
+                  (projection.placeholder.kind !== "runtime" &&
+                    (projection.placeholder.kind !== "proxy" ||
+                      !isNonEmptyString(projection.placeholder.value)))
+                );
+              })
+            ) {
+              throw new OwnershipFailure(
+                "The staged proxy returned invalid credential projections.",
+              );
+            }
+            await stagedSandbox!.configureNetwork(
+              {
+                ...configuration,
+                networkAccessPolicy: staged.networkAccessPolicy,
+              },
+              signal,
+            );
+            if (!(await observeReadiness())) {
+              return incomplete();
+            }
+            startup = await stagedSandbox!.getHarnessProcessStatus(configuration, signal);
+            if (startup.state !== "held" || !validStartup(startup.startup)) {
+              return incomplete();
+            }
+            const held = startup.startup;
+            startup = await stagedSandbox!.prepareHarnessProcess(
+              held,
+              credentialProjections,
+              signal,
+            );
+            if (
+              startup.state !== "held" ||
+              startup.projections !== "installed" ||
+              !isDeepStrictEqual(startup.startup, held)
+            ) {
+              throw new OwnershipFailure(
+                "The staged Harness did not acknowledge this startup's projections.",
+              );
+            }
+            if (!(await observeReadiness())) {
+              return incomplete();
+            }
+            return {
+              ...result,
+              preparedForCredentialActivation: true,
+              pendingReason: "CREDENTIAL_ACTIVATION_PENDING",
+            };
+          }
         }
         if (this.options.runtime !== undefined) {
           // The Sandbox, and with it the supervisor's exact peer labels, exists only
@@ -7895,12 +8329,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // rechecked until the deployment deadline (finding 1658). A Driver's own transient
         // class is not a DependencyUnavailableError and passes through; refusals and invalid
         // data keep their classes.
-        const transientProviderFailure = (error: unknown, message: string): unknown =>
-          error instanceof DependencyUnavailableError
-            ? new TransientDependencyError("sandbox_gateway", "unavailable", message, {
-                cause: error,
-              })
-            : error;
         const observeProviderHarness = async (): Promise<SandboxHarnessStatus> =>
           this.prepareRevisionStage("sandbox_provision", async () => {
             const transportToken = await this.prepareRevisionStage("harness_auth", () =>
@@ -7915,28 +8343,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
               );
             }
           });
-        // The node has enrolled: the worker is past its checks, and from now on agent-run
-        // code may bind the worker's transport port, so the exposure Compute's read used
-        // must go before the revision is ready (finding 1657). A withdrawal that fails
-        // keeps the revision unready; the provider completes it on the next adoption.
-        const withdrawProviderExposure = async (): Promise<void> => {
-          if (nativeRuntime === undefined || sandboxDriver.withdrawHarnessExposure === undefined) {
-            return;
-          }
-          await this.prepareRevisionStage("sandbox_provision", async () => {
-            try {
-              await sandboxDriver.withdrawHarnessExposure!({
-                ...harnessContext,
-                workspaceNodeEnrolled: true,
-              });
-            } catch (error) {
-              throw transientProviderFailure(
-                error,
-                "The Sandbox provider did not answer the Harness exposure withdrawal.",
-              );
-            }
-          });
-        };
         const heldProviderHarnessFailure = (
           harness: SandboxHarnessStatus,
         ): ComputeReadiness | undefined => {
@@ -8012,6 +8418,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           await withdrawProviderExposure();
         }
         if (credentialContext !== undefined) {
+          if (sandbox === undefined) {
+            throw new OwnershipFailure("Credential attachments require the prepared Sandbox.");
+          }
           const statuses = await (
             directAttachments ?? this.requireCredentialGateway()
           ).attachmentStatus({
@@ -8274,6 +8683,133 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  private async activateCredentialDeployment(
+    revision: AgentRevision,
+    context: ComputeRevisionContext,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const sandboxDriver = this.sandboxDriverForRevision(revision)!;
+    const proxy = this.credentialDeploymentProxyDriver!;
+    const releaseNamespace = await this.controlNamespace(revision.namespaceId);
+    const target = await this.credentialDeploymentTargetState(revision, releaseNamespace);
+    if (target?.state !== "provisioned" && target?.state !== "release-dispatched") {
+      throw new DependencyUnavailableError("The staged credential activation has no exact target.");
+    }
+    const configuration: CredentialDeploymentConfiguration = {
+      targetRef: {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        sandboxId: target.sandboxId,
+      },
+      configurationId: revision.configurationId,
+    };
+    const sandboxContext = await this.sandboxNamespaceContext(
+      this.sandboxNamespaceForRevision(revision, namespace),
+      namespace,
+    );
+    const signal = sandboxContext.signal;
+    const sandbox = sandboxDriver.credentialDeployment!({
+      namespace: sandboxContext.namespace,
+      revision,
+      kubernetes: sandboxContext.kubernetes,
+      transportToken: await this.sandboxTransportTokenText(revision),
+    });
+    const pending = (): never => {
+      throw new ActivationPendingError(
+        "CREDENTIAL_ACTIVATION_PENDING",
+        "The exact staged credential startup has not confirmed serving.",
+      );
+    };
+    const validStartup = (startup: HarnessStartupRef): boolean =>
+      isDeepStrictEqual(startup.targetRef, configuration.targetRef) &&
+      startup.configurationId === configuration.configurationId &&
+      isNonEmptyString(startup.processInstanceId) &&
+      isNonEmptyString(startup.startupId);
+    let startup = await sandbox.getHarnessProcessStatus(configuration, signal);
+    if (startup.state === "failed") {
+      throw new DependencyUnavailableError("The staged Harness startup failed.");
+    }
+    if (startup.state === "pending") {
+      return pending();
+    }
+    if (!validStartup(startup.startup)) {
+      throw new OwnershipFailure("The staged Harness reported another startup.");
+    }
+    if (target.state === "release-dispatched") {
+      if (
+        startup.startup.processInstanceId !== target.processInstanceId ||
+        startup.startup.startupId !== target.startupId
+      ) {
+        throw new OwnershipFailure("The staged Harness is not the released startup.");
+      }
+      if (startup.state !== "serving") {
+        return pending();
+      }
+    } else {
+      if (startup.state !== "held" || startup.projections !== "installed") {
+        throw new OwnershipFailure("The staged Harness did not acknowledge its projections.");
+      }
+      const [network, injection] = await Promise.all([
+        sandbox.getNetworkStatus(configuration, signal),
+        proxy.getDeploymentStatus(
+          { namespace: sandboxContext.namespace, revision, signal },
+          configuration,
+        ),
+      ]);
+      if (network.state === "failed" || injection.state === "failed") {
+        throw new DependencyUnavailableError("The staged credential deployment failed.");
+      }
+      if (network.state !== "ready" || injection.state !== "ready") {
+        return pending();
+      }
+      const held = startup.startup;
+      const releaseKey = await this.executionReleaseKey(revision, releaseNamespace);
+      // A lost dispatch acknowledgement cannot justify another release or a new process.
+      const dispatched: CredentialDeploymentTargetState = {
+        state: "release-dispatched",
+        sandboxId: target.sandboxId,
+        processInstanceId: held.processInstanceId,
+        startupId: held.startupId,
+      };
+      await this.credentialDeploymentTargetState(revision, releaseNamespace, {
+        expected: target,
+        desired: dispatched,
+      });
+      let release: ReturnType<typeof signCredentialDeploymentRelease>;
+      try {
+        release = signCredentialDeploymentRelease(releaseKey, held);
+        await context.verifyCredentialDeploymentRelease!(held, signal);
+        signal.throwIfAborted();
+      } catch (error) {
+        // No provider call was made. A confirmed CAS rollback permits a later authorized
+        // retry; failure to persist the rollback keeps the dispatch fence closed.
+        throw await failureAfterCleanup(
+          error,
+          "Staged release verification and fence rollback failed.",
+          [
+            () =>
+              this.credentialDeploymentTargetState(revision, releaseNamespace, {
+                expected: dispatched,
+                desired: target,
+              }).then(() => undefined),
+          ],
+        );
+      }
+      await sandbox.releaseHarnessProcess(held, release, signal);
+      startup = await sandbox.getHarnessProcessStatus(configuration, signal);
+      if (startup.state === "failed") {
+        throw new DependencyUnavailableError("The staged Harness startup failed.");
+      }
+      if (startup.state !== "serving") {
+        return pending();
+      }
+      if (!isDeepStrictEqual(startup.startup, held)) {
+        throw new OwnershipFailure("The staged Harness is not the released startup.");
+      }
+    }
+  }
+
   private async activateRevisionWorkloads(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
@@ -8340,6 +8876,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
     const sandboxDriver = this.sandboxDriverForRevision(revision);
     const providerOwnsHarnessEndpoint = sandboxDriver?.harnessEndpoint !== undefined;
+    if (revision.credentialDeployment !== undefined) {
+      await this.activateCredentialDeployment(revision, context!, namespace);
+      // Enrollment and the Gateway's node binding depend on the launched Harness. Reconcile
+      // them after release while keeping public Agent routes unpublished.
+      const observation = await this.prepareRevision(revision, context);
+      if (!observation.ready) {
+        throw new ActivationPendingError(
+          observation.pendingReason === "WORKSPACE_NODE_PENDING"
+            ? "WORKSPACE_NODE_PENDING"
+            : "CREDENTIAL_ACTIVATION_PENDING",
+          "The staged credential revision is not ready after activation.",
+        );
+      }
+    }
     if (revision.harness.mode === "embedded") {
       if (sandboxDriver !== undefined) {
         throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
@@ -8497,7 +9047,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new Error("The exact AgentRevision workspace node is not enrolled.");
     }
     const activatedHarnessAuth =
-      (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
+      (revision.egressPlan !== undefined ||
+        revision.credentialDeployment !== undefined ||
+        sandboxDriver?.implementation === "openshell") &&
       (revision.harness.id === "codex" || revision.harness.id === "openclaw")
         ? {
             ...harnessAuth,
@@ -8705,7 +9257,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayOwnership,
       gatewayNamespace,
     );
-    await this.reconcileGatewayRoute(revision, gatewayOwnership, gatewayNamespace);
+    if (revision.credentialDeployment === undefined) {
+      await this.reconcileGatewayRoute(revision, gatewayOwnership, gatewayNamespace);
+    }
     await this.reconcile(
       this.service(
         agentName,
@@ -8769,6 +9323,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new DependencyUnavailableError(
         "The exact repository credential runtime generation is not ready.",
       );
+    }
+    if (revision.credentialDeployment !== undefined) {
+      await this.reconcileGatewayRoute(revision, gatewayOwnership, gatewayNamespace);
     }
     if (channels?.binding && this.channelEgress) {
       await this.channelEgress.retire(revision, channels.binding.id);
@@ -9609,7 +10166,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         gatewayNamespace,
       );
     }
-    if (revision.egressPlan !== undefined) {
+    if (revision.egressPlan !== undefined || revision.credentialDeployment !== undefined) {
       await this.deleteOwnedNamespacedResource(
         "Secret",
         this.executionReleaseSecretName(revision),
@@ -11110,6 +11667,44 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
   }
 
+  /** Internal composition seam for the worker's authenticated staged startup observation. */
+  async resolveCredentialDeploymentContext(
+    namespace: Readonly<Namespace>,
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ) {
+    if (
+      namespace.id !== revision.namespaceId ||
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation ||
+      revision.executionAdmission.mode !== "standalone" ||
+      revision.sandboxDriverId !== this.sandboxDriver?.id ||
+      this.sandboxDriver?.credentialDeployment === undefined
+    ) {
+      throw new OwnershipFailure("The staged startup does not belong to this Compute Driver.");
+    }
+    return withComputeAbortSignal(signal, async () => {
+      const placement = await this.resolveNamespace(namespace.id, namespace.existingNamespace);
+      if (placement.external && namespace.existingNamespace === undefined) {
+        throw new OwnershipFailure("An external Kubernetes namespace must be explicitly selected.");
+      }
+      const observed = await this.getNamespace(placement.name);
+      if (observed === undefined || observed.status?.phase !== "Active") {
+        throw new DependencyUnavailableError("The staged startup Namespace is unavailable.");
+      }
+      this.verifyNamespaceOwnership(observed, { namespaceId: namespace.id }, placement.external);
+      const { objects: kubernetes } = await this.clients(placement.name.plane);
+      const transportToken = await this.sandboxTransportTokenText(revision);
+      signal.throwIfAborted();
+      return {
+        namespace: Object.freeze({ ...namespace, name: placement.name.name }),
+        revision,
+        kubernetes,
+        transportToken,
+      };
+    });
+  }
+
   private sandboxNamespaceContext(
     namespace: Readonly<Namespace>,
     namespaceName: KubernetesNamespaceAddress,
@@ -11153,6 +11748,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (revision.sandboxDriverId !== driver.id) {
       throw new ConfigurationFailure("AgentRevision is pinned to another SandboxDriver.");
+    }
+    if (
+      revision.executionAdmission.mode === "standalone" &&
+      (!this.credentialDeliveryRegistration ||
+        !isDeepStrictEqual(
+          revision.credentialDeployment?.driver,
+          this.credentialDeliveryRegistration.ref,
+        ))
+    ) {
+      throw new ConfigurationFailure(
+        "AgentRevision is pinned to another staged Driver registration.",
+      );
     }
     return driver;
   }
@@ -11921,6 +12528,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
   ): Promise<CredentialSourceType | undefined> {
     if (revision.harnessAuth.method !== "credential_source") {
+      return undefined;
+    }
+    if (revision.harnessAuth.tokenServiceInstanceId !== undefined) {
       return undefined;
     }
     const gateway = this.requireCredentialGateway();
@@ -14942,6 +15552,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
+    publishAgentRoutes = true,
   ): Promise<void> {
     if (this.options.gatewayRouting === undefined) {
       return;
@@ -14952,7 +15563,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       return;
     }
     const chatEndpoint = this.getChatCompletionsEndpoint(revision);
-    if (chatEndpoint.status === "available") {
+    if (publishAgentRoutes && chatEndpoint.status === "available") {
       const chatName = `chat-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
       const chatOwnership = { ...ownership, revisionId: revision.id };
       const chatService = this.service(chatName, chatOwnership, namespace, {
@@ -15024,9 +15635,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         namespace,
       );
     }
-    const route = this.gatewayRoute(revision, ownership, namespace, service);
-    if (route !== undefined) {
-      await this.reconcile(route, ownership, namespace);
+    if (publishAgentRoutes) {
+      const route = this.gatewayRoute(revision, ownership, namespace, service);
+      if (route !== undefined) {
+        await this.reconcile(route, ownership, namespace);
+      }
     }
     if (this.options.runtime === undefined || revision.harness.mode !== "dedicated") {
       return;
@@ -15223,7 +15836,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   ): boolean {
     return (
       (auth.method === "api_key" ||
-        (auth.method === "credential_source" && auth.loginMode === "api_key")) &&
+        (auth.method === "credential_source" &&
+          (auth.tokenServiceInstanceId !== undefined || auth.loginMode === "api_key"))) &&
       (harness.id === "codex" ||
         (harness.id === "openclaw" &&
           nativeOpenAiModelSelections(configuration)?.[0]?.provider === "openai"))
@@ -15251,6 +15865,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     if (!applicable) {
       return {};
+    }
+    if (auth.method === "credential_source" && auth.tokenServiceInstanceId !== undefined) {
+      const selected = harnessModelAuthentication(configuration);
+      const configured = asRecord(
+        asRecord(asRecord(configuration.models)?.providers)?.[selected.providerId],
+      );
+      const provider =
+        overrides.modelProvider ??
+        normalizeHarnessSettings({
+          modelProvider: { protocol: configured?.api, baseUrl: configured?.baseUrl },
+        }).modelProvider!;
+      modelProviderConfiguration(configuration, harness, provider);
+      return { modelProvider: provider };
     }
     const native = asRecord(asRecord(asRecord(configuration.models)?.providers)?.openai);
     const protocol =
@@ -15294,14 +15921,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         (revision.harness.id === "codex" &&
           (revision.harnessAuth.method === "api_key" ||
             (revision.harnessAuth.method === "credential_source" &&
-              revision.harnessAuth.loginMode === "api_key")) !==
+              (revision.harnessAuth.tokenServiceInstanceId !== undefined ||
+                revision.harnessAuth.loginMode === "api_key"))) !==
             (provider !== undefined)) ||
         (revision.harness.id === "codex" &&
           provider !== undefined &&
           provider.protocol !== "openai-responses") ||
         (requested.modelProvider !== undefined &&
           (revision.harnessAuth.method !== "credential_source" ||
-            revision.harnessAuth.loginMode !== "api_key" ||
+            (revision.harnessAuth.tokenServiceInstanceId === undefined &&
+              revision.harnessAuth.loginMode !== "api_key") ||
             !isDeepStrictEqual(requested.modelProvider, provider)))
       ) {
         throw new Error("Inconsistent saved Harness settings");
@@ -16782,6 +17411,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "Harness authentication Secret does not match the admitted source.",
         );
       }
+    } else if (auth.method === "credential_source" && auth.tokenServiceInstanceId !== undefined) {
+      if (auth.source !== undefined || !isDeepStrictEqual(auth, revision.harnessAuth)) {
+        throw new OwnershipFailure(
+          "Staged Harness authentication does not match the admitted source.",
+        );
+      }
     } else if (auth.method === "credential_source") {
       const { source, ...snapshot } = auth;
       if (
@@ -16816,7 +17451,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             loginMode: "runtime",
             environment: [{ name: "CODEX_LOGIN_MODE", value: "protected-no-inference" }],
           }
-        : prepareHarnessAuth(revision.harness, auth, revision.configuration);
+        : prepareHarnessAuth(revision, auth);
     const embedded = revision.harness.id === "openclaw" && revision.harness.mode === "embedded";
     const native = harnessModelAuthentication(revision.configuration, embedded);
     return {
@@ -17073,6 +17708,101 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.operationSignal().throwIfAborted();
       throw privateWriteFailure("Compute execution release key is unavailable.", error);
     }
+  }
+
+  /** The revision-owned signer Secret is never projected. Its immutable data keeps the key;
+   * CAS-protected metadata records dispatch and then the provider's exact incarnation. */
+  private async credentialDeploymentTargetState(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    update?: {
+      readonly expected: CredentialDeploymentTargetState | undefined;
+      readonly desired: CredentialDeploymentTargetState;
+    },
+  ): Promise<CredentialDeploymentTargetState | undefined> {
+    const name = this.executionReleaseSecretName(revision);
+    const ownership = this.pluginRuntimeOwnership(revision);
+    const secret = await this.getOwned("Secret", name, namespace, ownership);
+    if (
+      secret?.immutable !== true ||
+      !secret.metadata.uid ||
+      !secret.metadata.resourceVersion ||
+      secret.metadata.deletionTimestamp ||
+      !secret.data?.signer
+    ) {
+      throw new DependencyUnavailableError("The Compute execution release Secret is unavailable.");
+    }
+    const encoded = secret.metadata.annotations?.[CREDENTIAL_DEPLOYMENT_TARGET_ANNOTATION];
+    let retained: CredentialDeploymentTargetState | undefined;
+    if (encoded !== undefined) {
+      let value: Record<string, unknown> | undefined;
+      try {
+        value = asRecord(JSON.parse(encoded));
+      } catch {
+        throw new OwnershipFailure("The retained staged Sandbox target is invalid.");
+      }
+      if (value?.state === "provisioning" && Object.keys(value).length === 1) {
+        retained = { state: "provisioning" };
+      } else if (
+        value?.state === "provisioned" &&
+        Object.keys(value).length === 2 &&
+        isNonEmptyString(value.sandboxId)
+      ) {
+        retained = { state: "provisioned", sandboxId: value.sandboxId };
+      } else if (
+        value?.state === "release-dispatched" &&
+        Object.keys(value).length === 4 &&
+        isNonEmptyString(value.sandboxId) &&
+        isNonEmptyString(value.processInstanceId) &&
+        isNonEmptyString(value.startupId)
+      ) {
+        retained = {
+          state: "release-dispatched",
+          sandboxId: value.sandboxId,
+          processInstanceId: value.processInstanceId,
+          startupId: value.startupId,
+        };
+      } else {
+        throw new OwnershipFailure("The retained staged Sandbox target is invalid.");
+      }
+    }
+    if (update === undefined) {
+      return retained;
+    }
+    if (!isDeepStrictEqual(retained, update.expected)) {
+      throw new OwnershipFailure("The staged Sandbox provisioning state changed.");
+    }
+    const desired = JSON.stringify(update.desired);
+    const clients = await this.clients(namespace.plane);
+    await this.request(
+      () =>
+        clients.core.replaceNamespacedSecret({
+          name,
+          namespace: namespace.name,
+          body: {
+            ...secret,
+            metadata: {
+              ...secret.metadata,
+              annotations: {
+                ...secret.metadata.annotations,
+                [CREDENTIAL_DEPLOYMENT_TARGET_ANNOTATION]: desired,
+              },
+            },
+          },
+        }),
+      { mutating: true },
+    );
+    const observed = await this.getOwned("Secret", name, namespace, ownership);
+    if (
+      observed?.metadata.uid !== secret.metadata.uid ||
+      observed.metadata.resourceVersion === secret.metadata.resourceVersion ||
+      observed.immutable !== true ||
+      observed.data?.signer !== secret.data.signer ||
+      observed.metadata.annotations?.[CREDENTIAL_DEPLOYMENT_TARGET_ANNOTATION] !== desired
+    ) {
+      throw new DependencyUnavailableError("The staged Sandbox target state was not retained.");
+    }
+    return update.desired;
   }
 
   private executionReleaseSecretName(revision: AgentRevision): string {

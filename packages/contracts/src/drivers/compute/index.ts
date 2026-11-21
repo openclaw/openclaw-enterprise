@@ -6,6 +6,11 @@ import type {
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
 import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
 import type {
+  CredentialDeploymentConfiguration,
+  CredentialProjection,
+} from "../../credential-deployment.ts";
+import type { HarnessStartupRef } from "../sandbox/deployment.ts";
+import type {
   CredentialPolicyWithdrawalOptions,
   EgressInstallation,
 } from "../credential-proxy/index.ts";
@@ -53,6 +58,16 @@ export type AgentChatCompletionsResolution =
   | { readonly status: "unsupported" };
 
 export interface ComputeRevisionContext {
+  /** Worker configures the exact staged target without exposing source resolution to Compute. */
+  readonly configureCredentialDeployment?: (
+    expected: CredentialDeploymentConfiguration,
+    signal: AbortSignal,
+  ) => Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
+  /** Reauthorize this exact acknowledged held startup immediately before Compute signs release. */
+  readonly verifyCredentialDeploymentRelease?: (
+    startup: HarnessStartupRef,
+    signal: AbortSignal,
+  ) => Promise<void>;
   /** An active provider's maintenance pass may update its existing Harness only. */
   readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
@@ -121,6 +136,8 @@ export type ComputePendingReason =
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_SETUP_RETRYING"
   | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"
+  /** Staged credential activation is prepared, pending, or awaiting a confirmed startup outcome. */
+  | "CREDENTIAL_ACTIVATION_PENDING"
   /** The worker has not yet verified the Sandbox's prepared Git route (OpenShell). */
   | "REPOSITORY_GIT_ROUTE_PENDING";
 
@@ -129,6 +146,8 @@ export interface ComputeReadiness extends Scope {
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
+  /** Only v8: credentials, effective network policy, and projections are ready while startup remains held. */
+  readonly preparedForCredentialActivation?: true;
   /** Only v6: select this execution for material while its launcher and user work remain held. */
   readonly heldForRepositoryGitMaterial?: true;
   readonly warnings?: readonly PluginDeploymentWarning[];
@@ -234,7 +253,7 @@ export interface ComputeDriver extends Driver {
   ): Promise<SandboxHarnessObservation>;
   /** Admission capability check, not release authority. Missing support fails closed. */
   validateExecutionAdmission?(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan" | "credentialDeployment">,
     /** Only the release of a revision already in durable custody can use its historical contract. */
     source?: SelectedDriverRegistration | "stored",
   ): void;

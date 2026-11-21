@@ -815,8 +815,12 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     sandbox: SandboxDriver | undefined,
     executionAdmission: ExecutionAdmission,
     repositoryCredentials: boolean,
+    preauthorized?: { readonly policy: Readonly<SandboxPolicy> | undefined },
   ): Promise<SandboxPolicySnapshot | undefined> {
-    const policy = await state.sandboxPolicies.find(agent.namespaceId, agent.id);
+    const policy =
+      preauthorized === undefined
+        ? await state.sandboxPolicies.find(agent.namespaceId, agent.id)
+        : preauthorized.policy;
     const policyScope = { repositoryCredentials };
     // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
     // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
@@ -825,11 +829,13 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     // ceiling, the Driver) comes after SandboxPolicy read, so a deployer without it learns nothing.
     const protectedExecution = executionAdmission.mode === "protected";
     if (policy !== undefined && policy.additions.length > 0) {
-      await dependencies.authority.authorize(principalId, "read", {
-        kind: "sandbox_policy",
-        id: policy.id,
-        namespaceId: agent.namespaceId,
-      });
+      if (preauthorized === undefined) {
+        await dependencies.authority.authorize(principalId, "read", {
+          kind: "sandbox_policy",
+          id: policy.id,
+          namespaceId: agent.namespaceId,
+        });
+      }
       if (protectedExecution) {
         throw new ProtectedExecutionNetworkPolicyError("deploy");
       }

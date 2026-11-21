@@ -156,6 +156,7 @@ import {
   harnessAuthMatches,
   credentialSourcesMatch,
   validCredentialSourceSnapshots,
+  validStandaloneCredentialDeployment,
   namespaceRoleGrantsBeyondRead,
   assertBindingSubjectNotEmail,
   validHarnessAuthSnapshot,
@@ -775,6 +776,7 @@ function revisionFromRow(
     sandbox_policy?: AgentRevision["sandboxPolicy"];
     harness_auth: AgentRevision["harnessAuth"] & { readonly protectedExecutionVersion?: number };
     credential_sources?: AgentRevision["credentialSources"];
+    credential_deployment?: AgentRevision["credentialDeployment"];
     egress_plan?: AgentRevision["egressPlan"];
     execution_admission: AgentRevision["executionAdmission"];
     secret_driver_id?: AgentRevision["secretDriverId"];
@@ -783,10 +785,20 @@ function revisionFromRow(
     plugin_approvers?: AgentRevision["pluginApprovers"];
     repository_credentials?: AgentRevision["repositoryCredentials"];
   };
+  // The protected marker fences old readers; standalone is fenced by its distinct
+  // execution admission and TokenService snapshot shape instead.
+  const { protectedExecutionVersion, ...harnessAuth } = admitted.harness_auth ?? {};
   try {
     assertExecutionAdmission({
       executionAdmission: admitted.execution_admission,
       ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
+      ...(admitted.credential_deployment === undefined
+        ? {}
+        : { credentialDeployment: admitted.credential_deployment }),
+      harnessAuth,
+      ...(admitted.credential_sources === undefined
+        ? {}
+        : { credentialSources: admitted.credential_sources }),
     });
   } catch {
     throw new SavedConfigurationReadError(
@@ -796,7 +808,6 @@ function revisionFromRow(
   }
   // Older readers require an exact Harness-auth shape, rejecting the protected
   // reader version before handing a revision to Compute. It grants no authority.
-  const { protectedExecutionVersion, ...harnessAuth } = admitted.harness_auth ?? {};
   const protectedAdmission = admitted.execution_admission.mode === "protected";
   if (
     Object.hasOwn(admitted, "service_account") ||
@@ -813,6 +824,24 @@ function revisionFromRow(
     throw new SavedConfigurationReadError(
       "credentialSources",
       "Persisted AgentRevision credential sources are invalid.",
+    );
+  }
+  if (
+    !validStandaloneCredentialDeployment({
+      namespaceId: metadata.namespaceId,
+      executionAdmission: admitted.execution_admission,
+      harnessAuth,
+      ...(admitted.credential_deployment === undefined
+        ? {}
+        : { credentialDeployment: admitted.credential_deployment }),
+      ...(admitted.credential_sources === undefined
+        ? {}
+        : { credentialSources: admitted.credential_sources }),
+    })
+  ) {
+    throw new SavedConfigurationReadError(
+      "configuration",
+      "Persisted AgentRevision standalone credential binding is inconsistent.",
     );
   }
   const secretBindings =
@@ -869,6 +898,9 @@ function revisionFromRow(
     harnessAuth,
     executionAdmission: admitted.execution_admission,
     ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
+    ...(admitted.credential_deployment === undefined
+      ? {}
+      : { credentialDeployment: admitted.credential_deployment }),
     ...(admitted.credential_sources === undefined
       ? {}
       : { credentialSources: admitted.credential_sources }),
@@ -4275,7 +4307,8 @@ export class PostgresPlatformState implements PlatformStateStore {
             rows(
               (
                 await client.query(
-                  `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability, cs.driver_id
+                  `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability,
+                          cs.driver_id, cs.token_service_instance_id
                    FROM occ.credential_sources AS cs
                    JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
                    WHERE cs.namespace_id = $1 AND cs.id = ANY($2::text[])
@@ -4289,7 +4322,10 @@ export class PostgresPlatformState implements PlatformStateStore {
               type: text(row, "type"),
               state: text(row, "state") as CredentialSource["state"],
               ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
-              driverId: text(row, "driver_id"),
+              ...(row.driver_id == null ? {} : { driverId: text(row, "driver_id") }),
+              ...(row.token_service_instance_id == null
+                ? {}
+                : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
             })),
         );
         const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
@@ -4361,6 +4397,9 @@ export class PostgresPlatformState implements PlatformStateStore {
                   : revision.harnessAuth,
               execution_admission: revision.executionAdmission,
               ...(revision.egressPlan === undefined ? {} : { egress_plan: revision.egressPlan }),
+              ...(revision.credentialDeployment === undefined
+                ? {}
+                : { credential_deployment: revision.credentialDeployment }),
               ...(revision.credentialSources === undefined
                 ? {}
                 : { credential_sources: revision.credentialSources }),

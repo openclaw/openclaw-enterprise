@@ -14,7 +14,8 @@ import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, verify } from "node:crypto";
+import { signCredentialDeploymentRelease } from "../../apps/controller/src/drivers/compute/credential-deployment-release.ts";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -38,7 +39,10 @@ import {
   SandboxWorkspaceSetupRefusedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { captureNamespaceHint } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  captureNamespaceHint,
+  withYieldingComputeStop,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
@@ -314,6 +318,47 @@ import {
 } from "./kubernetes-workspace-storage-cases.ts";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
+test("staged release signs every startup identity field and omits unsigned Driver fields", () => {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const targetRef = {
+    namespaceId: "ns",
+    agentId: "agent",
+    revisionId: "revision",
+    sandboxId: "sandbox",
+  };
+  const startup = {
+    targetRef: { ...targetRef, supplierField: "private" },
+    configurationId: "config",
+    processInstanceId: "process",
+    startupId: "startup",
+    supplierField: "private",
+  };
+  const release = signCredentialDeploymentRelease(privateKey, startup);
+  assert.deepEqual(release.startup, {
+    targetRef,
+    configurationId: "config",
+    processInstanceId: "process",
+    startupId: "startup",
+  });
+  const transcript = (startupId) =>
+    Buffer.from(
+      JSON.stringify([
+        "oce-credential-deployment-release-v1",
+        "ns",
+        "agent",
+        "revision",
+        "sandbox",
+        "config",
+        "process",
+        startupId,
+        release.expiresAt,
+      ]),
+    );
+  const signature = Buffer.from(release.signature, "base64url");
+  assert.equal(verify(null, transcript("startup"), publicKey, signature), true);
+  assert.equal(verify(null, transcript("replacement"), publicKey, signature), false);
+});
+
 test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
   // Node selectors reach the API server only in a deployment's Deployment, after a dedicated
   // deployment stopped its predecessors (finding 2357).
@@ -573,6 +618,7 @@ function dedicatedFirstDeployFixture({
   sandboxDriver,
   openShellGit,
   credentialGatewayDriver,
+  credentialDeliveryRegistration,
   context,
   splitCluster = false,
   revision: revisionOverrides = {},
@@ -604,6 +650,7 @@ function dedicatedFirstDeployFixture({
       sandboxDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
       credentialGatewayDriver,
+      credentialDeliveryRegistration,
       nodeEnrollment,
     },
   );
@@ -726,6 +773,429 @@ function dedicatedFirstDeployFixture({
     },
   };
 }
+
+test("staged Compute prepares a held startup and releases it once only during post-commit activation", async () => {
+  // Controlled Drivers supply observations and a controlled callback stands in for the
+  // Worker verifier. The real Compute driver gates release and adoption on their results.
+  const auth = {
+    method: "credential_source",
+    sourceId: "cs_staged_model",
+    tokenServiceInstanceId: "tokens",
+    sourceType: "static",
+  };
+  const request = {
+    binary: "/usr/bin/node",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+  };
+  const binding = {
+    bindingRef: "model",
+    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: auth.sourceId },
+    consumer: { kind: "model", providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+  };
+  const projection = {
+    bindingRef: binding.bindingRef,
+    environment: binding.projection.environment,
+    placeholder: { kind: "runtime" },
+  };
+  let currentProjection = projection;
+  const events = [];
+  let networkReady = true;
+  let proxyReady = false;
+  let acknowledgeExactStartup = false;
+  let verifyAllowed = false;
+  let startup;
+  let observation;
+  let workloadLabels;
+  let installedProjections;
+  let startupExposure = false;
+  let withdrawalFailure;
+  let provisionFailure;
+  const stagedSandbox = {
+    async provisionHarness({ deployment, workload }) {
+      // The staged contract does not communicate previous enrollment to its provider.
+      events.push("provision");
+      startupExposure = true;
+      if (provisionFailure !== undefined) {
+        throw provisionFailure;
+      }
+      workloadLabels = workload.labels;
+      const targetRef = { ...deployment, sandboxId: "sandbox-1" };
+      startup ??= {
+        targetRef,
+        configurationId: "cfg_00000000-0000-4000-8000-000000000009",
+        processInstanceId: "process-1",
+        startupId: "startup-1",
+      };
+      observation ??= { state: "held", startup, projections: "pending" };
+      return targetRef;
+    },
+    async configureNetwork() {},
+    async getNetworkStatus() {
+      return { state: networkReady ? "ready" : "pending" };
+    },
+    async getHarnessProcessStatus() {
+      events.push(`status:${observation.state}`);
+      return observation;
+    },
+    async prepareHarnessProcess(held, projections) {
+      events.push("prepare");
+      assert.deepEqual(projections, [currentProjection]);
+      if (installedProjections !== undefined) {
+        assert.deepEqual(
+          projections,
+          installedProjections,
+          "conflicting projections for held startup",
+        );
+      }
+      const acknowledged = acknowledgeExactStartup
+        ? held
+        : { ...held, processInstanceId: "replacement-process" };
+      const result = { state: "held", startup: acknowledged, projections: "installed" };
+      if (acknowledgeExactStartup) {
+        installedProjections = structuredClone(projections);
+        observation = result;
+      }
+      return result;
+    },
+    async releaseHarnessProcess(held, signedRelease) {
+      events.push("release");
+      assert.deepEqual(held, startup);
+      assert.deepEqual(signedRelease.startup, held);
+      // A provider may close its startup exposure when releasing the process, before its
+      // authenticated serving observation or workspace enrollment becomes visible.
+      startupExposure = false;
+      observation = { state: "pending" };
+      throw new Error("release acknowledgement was lost");
+    },
+  };
+  const sandboxDriver = {
+    ...nativeSandboxIdentity(),
+    async workspaceNodePeerLabels({ revision }) {
+      return startup === undefined ? undefined : supervisorPeerLabels(revision.id);
+    },
+    async provisionHarness() {
+      assert.fail("a staged deployment cannot use ordinary Sandbox provisioning");
+    },
+    async cleanup() {
+      events.push("sandbox-cleanup");
+    },
+    async withdrawHarnessExposure({ workspaceNodeEnrolled }) {
+      assert.equal(workspaceNodeEnrolled, true);
+      events.push("withdraw");
+      if (withdrawalFailure !== undefined) {
+        throw withdrawalFailure;
+      }
+      startupExposure = false;
+    },
+    credentialDeployment() {
+      return stagedSandbox;
+    },
+  };
+  const proxyDriver = {
+    id: sandboxDriver.id,
+    implementation: sandboxDriver.implementation,
+    capability: "credential_proxy_delivery",
+    async deployProxy() {
+      events.push("deploy");
+      return {};
+    },
+    async configureDeployment() {
+      assert.fail("only the Worker may configure credential bindings");
+    },
+    async getDeploymentStatus() {
+      return { state: proxyReady ? "ready" : "pending" };
+    },
+    async removeDeployment(_context, removal) {
+      if (removal.unboundDeployment !== undefined) {
+        events.push("remove-unbound");
+      }
+    },
+  };
+  const selectedOwner = {
+    ref: {
+      id: sandboxDriver.id,
+      implementation: sandboxDriver.implementation,
+      configurationId: "a".repeat(64),
+    },
+    require(capability) {
+      return capability === "sandbox" ? sandboxDriver : proxyDriver;
+    },
+  };
+  const context = {
+    harnessAuth: auth,
+    async configureCredentialDeployment() {
+      events.push("configure");
+      return { credentialProjections: [currentProjection] };
+    },
+    async verifyCredentialDeploymentRelease(held) {
+      events.push("verify");
+      assert.deepEqual(held, startup);
+      const fenced = read("Secret", driver.executionReleaseSecretName(revision));
+      assert.equal(
+        JSON.parse(fenced.metadata.annotations["openclaw.dev/credential-deployment-target"]).state,
+        "release-dispatched",
+        "the final source verifier must run after the awaited dispatch CAS",
+      );
+      if (!verifyAllowed) {
+        throw new Error("Worker authority withdrawn");
+      }
+    },
+  };
+  const stagedRevision = {
+    ...nativeSandboxRevision(sandboxDriver.id),
+    harnessAuth: auth,
+    executionAdmission: { version: 8, mode: "standalone" },
+    credentialDeployment: {
+      proxyDriverId: proxyDriver.id,
+      driver: selectedOwner.ref,
+      networkAccessPolicy: { allowed: [request] },
+      bindings: [binding],
+      injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
+    },
+  };
+  // The admitted consumer must identify the provider selected in the frozen Harness config.
+  const mismatched = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: selectedOwner,
+    context,
+    revision: {
+      ...stagedRevision,
+      credentialDeployment: {
+        ...stagedRevision.credentialDeployment,
+        bindings: [{ ...binding, consumer: { kind: "model", providerId: "unselected" } }],
+      },
+    },
+  });
+  await assert.rejects(mismatched.prepare(), /staged model binding does not match/);
+
+  // The same capability IDs under a different registered configuration cannot adopt this policy.
+  // Reject before Proxy deployment or the Worker configuration callback that can resolve a source.
+  const replacementOwner = {
+    ...selectedOwner,
+    ref: { ...selectedOwner.ref, configurationId: "b".repeat(64) },
+  };
+  const replacement = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: replacementOwner,
+    context,
+    revision: stagedRevision,
+  });
+  await assert.rejects(
+    replacement.prepare(),
+    /admitted staged credential composition is unavailable/,
+  );
+  assert.equal(events.includes("deploy"), false);
+  assert.equal(events.includes("configure"), false);
+  await assert.rejects(
+    withYieldingComputeStop(() => replacement.driver.stopRevision(replacement.revision)),
+    /pinned to another staged Driver registration/,
+  );
+  await assert.rejects(
+    replacement.driver.retireRevision(replacement.revision),
+    /pinned to another staged Driver registration/,
+  );
+  assert.equal(events.includes("sandbox-cleanup"), false);
+
+  const {
+    driver,
+    gatewayName,
+    key,
+    markReady,
+    namespace,
+    objects,
+    prepare,
+    read,
+    revision,
+    save,
+    state,
+  } = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: selectedOwner,
+    context,
+    revision: stagedRevision,
+  });
+  assert.doesNotThrow(() => driver.validateExecutionAdmission(revision, selectedOwner));
+  assert.throws(
+    () =>
+      driver.validateExecutionAdmission(revision, {
+        ...selectedOwner,
+        require: () => sandboxDriver,
+      }),
+    /admitted staged credential composition is unavailable/,
+  );
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+
+  // Neither independent pending observation permits projection handoff or release.
+  assert.equal((await prepare()).ready, false);
+  networkReady = false;
+  proxyReady = true;
+  assert.equal((await prepare()).ready, false);
+  assert.equal(events.includes("prepare"), false);
+  assert.equal(events.includes("verify"), false);
+  assert.equal(events.includes("release"), false);
+
+  networkReady = true;
+  await assert.rejects(prepare(), /did not acknowledge this startup/);
+  assert.equal(events.includes("verify"), false);
+  assert.equal(events.includes("release"), false);
+
+  acknowledgeExactStartup = true;
+  const prepared = await prepare();
+  assert.equal(prepared.ready, false);
+  assert.equal(prepared.preparedForCredentialActivation, true);
+  assert.equal(prepared.pendingReason, "CREDENTIAL_ACTIVATION_PENDING");
+  assert.equal(events.includes("verify"), false, "preparation must not authorize release");
+  assert.equal(events.includes("release"), false);
+  assert.equal(
+    objects.has(key("HTTPRoute", gatewayName)),
+    false,
+    "preparation must not expose the Agent route",
+  );
+  await assert.rejects(driver.activateRevision(revision, context), /Worker authority withdrawn/);
+  assert.equal(events.includes("release"), false);
+  assert.equal(
+    JSON.parse(
+      read("Secret", driver.executionReleaseSecretName(revision)).metadata.annotations[
+        "openclaw.dev/credential-deployment-target"
+      ],
+    ).state,
+    "provisioned",
+    "a known verifier denial before dispatch rolls the fence back for an authorized retry",
+  );
+
+  verifyAllowed = true;
+  currentProjection = {
+    ...projection,
+    placeholder: { kind: "proxy", value: "replacement-placeholder" },
+  };
+  // The provider contract refuses a conflicting projection for the same held startup.
+  // Compute must reconcile the current projection and must not release an old acknowledgement.
+  await assert.rejects(prepare(), /conflicting projections/);
+  assert.equal(events.includes("release"), false);
+  currentProjection = projection;
+  assert.equal((await prepare()).preparedForCredentialActivation, true);
+  await assert.rejects(
+    driver.activateRevision(revision, context),
+    /release acknowledgement was lost/,
+  );
+  assert.deepEqual(events.slice(-2), ["verify", "release"]);
+  const configured = events.filter((event) => event === "configure").length;
+  const provisionsAtRelease = events.filter((event) => event === "provision").length;
+  const deploysAtRelease = events.filter((event) => event === "deploy").length;
+  const pending = await prepare();
+  assert.equal(pending.ready, false, "pending release remains unready before enrollment");
+  assert.equal(pending.preparedForCredentialActivation, undefined);
+  assert.equal(pending.pendingReason, "CREDENTIAL_ACTIVATION_PENDING");
+  await assert.rejects(driver.activateRevision(revision, context), {
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  // Even if an uncertain provider still reports the same held startup, the retained dispatch
+  // fence forbids sending release again. Recovery must observe that startup serving instead.
+  observation = { state: "held", startup, projections: "installed" };
+  await assert.rejects(driver.activateRevision(revision, context), {
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  observation = { state: "pending" };
+  assert.equal(
+    events.filter((event) => event === "provision").length,
+    provisionsAtRelease,
+    "a pending-release retry must observe the saved target without provisioning",
+  );
+  assert.equal(events.filter((event) => event === "deploy").length, deploysAtRelease);
+  assert.equal(events.filter((event) => event === "configure").length, configured);
+  assert.equal(events.filter((event) => event === "release").length, 1);
+  assert.equal(startupExposure, false, "the retry must not restore the closed startup exposure");
+  observation = { state: "serving", startup };
+  state.providerPod = readyNativeHarnessPod(namespace, workloadLabels);
+  state.connected = true;
+  assert.equal((await prepare()).ready, false, "node enrollment leaves Gateway binding pending");
+  await assert.rejects(driver.activateRevision(revision, context), {
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  assert.equal(
+    objects.has(key("HTTPRoute", gatewayName)),
+    false,
+    "a serving Harness cannot publish its Agent route before the Gateway binding is ready",
+  );
+  const enrolled = read("Secret", driver.workspaceNodeName(revision));
+  assert.equal(
+    Buffer.from(enrolled.data.enrolledRevisionId, "base64").toString("utf8"),
+    revision.id,
+  );
+  assert.equal(startupExposure, false, "first enrollment withdraws the startup exposure");
+  const provisionsAtEnrollment = events.filter((event) => event === "provision").length;
+  // A provider that is asked to provision again would reopen the startup route before throwing.
+  // Enrolled retries must use the exact saved incarnation without calling it at all.
+  provisionFailure = new Error("provider failed after recreating exposure");
+  const releaseSecret = read("Secret", driver.executionReleaseSecretName(revision));
+  const annotation = "openclaw.dev/credential-deployment-target";
+  assert.deepEqual(JSON.parse(releaseSecret.metadata.annotations[annotation]), {
+    state: "release-dispatched",
+    sandboxId: startup.targetRef.sandboxId,
+    processInstanceId: startup.processInstanceId,
+    startupId: startup.startupId,
+  });
+  const missingTarget = structuredClone(releaseSecret);
+  delete missingTarget.metadata.annotations[annotation];
+  save(missingTarget);
+  await assert.rejects(prepare(), /no retained deployment target/);
+  const mismatchedTarget = structuredClone(releaseSecret);
+  mismatchedTarget.metadata.annotations[annotation] = JSON.stringify({
+    state: "provisioned",
+    sandboxId: "another-sandbox",
+  });
+  save(mismatchedTarget);
+  await assert.rejects(prepare(), /reported another startup/);
+  save(releaseSecret);
+  proxyReady = false;
+  withdrawalFailure = new Error("exposure withdrawal did not confirm");
+  await assert.rejects(prepare(), /exposure withdrawal did not confirm/);
+  assert.equal(startupExposure, false, "a retry never restored the withdrawn startup route");
+  assert.equal(events.includes("remove-unbound"), false, "withdrawal failure preserves the Proxy");
+  withdrawalFailure = undefined;
+  assert.equal((await prepare()).ready, false, "pending Proxy status keeps the retry unready");
+  assert.equal(startupExposure, false, "an enrolled retry never restores startup exposure");
+  proxyReady = true;
+  markReady(gatewayName);
+  state.gatewayWorkspaceNodeId = "node-1";
+  assert.equal((await prepare()).ready, true, "a serving retry adopts the enrolled node");
+  await driver.activateRevision(revision, context);
+  assert.equal(
+    objects.has(key("HTTPRoute", gatewayName)),
+    true,
+    "activation publishes the Agent route only after readiness",
+  );
+  assert.equal(events.filter((event) => event === "provision").length, provisionsAtEnrollment);
+  assert.equal(events.filter((event) => event === "configure").length, configured);
+  assert.equal(events.filter((event) => event === "release").length, 1);
+
+  // A provider can create its target and lose the reply. A later worker has no exact
+  // incarnation to observe, so the dispatch fence must prevent another provision attempt.
+  const uncertain = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: selectedOwner,
+    context,
+    revision: stagedRevision,
+  });
+  assert.equal((await uncertain.prepare()).ready, false);
+  uncertain.markReady(uncertain.gatewayName);
+  const removalsBeforeFailure = events.filter((event) => event === "remove-unbound").length;
+  await assert.rejects(uncertain.prepare(), /provider failed after recreating exposure/);
+  assert.equal(
+    events.filter((event) => event === "remove-unbound").length,
+    removalsBeforeFailure,
+    "a lost provision reply does not prove the Proxy is unbound",
+  );
+  const provisionsAfterFailure = events.filter((event) => event === "provision").length;
+  const deploysAfterFailure = events.filter((event) => event === "deploy").length;
+  await assert.rejects(uncertain.prepare(), /provisioning outcome is uncertain/);
+  assert.equal(events.filter((event) => event === "provision").length, provisionsAfterFailure);
+  assert.equal(events.filter((event) => event === "deploy").length, deploysAfterFailure);
+});
 
 test("shared providers render OpenClaw adapters and refuse unsupported Codex protocols", async () => {
   for (const protocol of ["openai-responses", "openai-completions"]) {

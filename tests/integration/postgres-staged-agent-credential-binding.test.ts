@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
+import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
+import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import type { CredentialSourceReference } from "../../packages/contracts/src/index.ts";
 import {
@@ -13,14 +16,16 @@ import {
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
+import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 
 test(
-  "Agent drafts authorize the staged source and refuse unsupported revision delivery",
+  "Agent drafts authorize staged sources and refuse unqualified model credential delivery",
   { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to a migrated PostgreSQL fixture." },
   async (t) => {
     const { app, controller, createApp, inject, pool, principal, state, adminAccount } =
@@ -28,6 +33,7 @@ test(
         label: "staged-agent-credential-binding",
         authSecret: "staged-agent-credential-binding-session-secret",
         controllerOptions: {
+          ...installationControllerOptions(undefined),
           iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()),
           recordOperations: true,
         },
@@ -45,9 +51,10 @@ test(
     // The selected owner and Secret Driver are concrete; only the Kubernetes API transport is simulated.
     const { driver } = useInstallationSecretDriver(controller);
     assert.ok(driver.installationSecrets);
+    const storeIdentity = randomUUID();
     const instanceId = await controller.activateTokenServiceInstance(
       "selected-owner",
-      randomUUID(),
+      storeIdentity,
     );
     const owner = new OCCTokenServiceDriver(
       "selected-owner",
@@ -117,28 +124,48 @@ test(
       await unit.secrets.deleteSecret(namespaceId, gatewaySecretId);
     });
 
-    const source = await controller.createManagedCredentialSource(
-      principal.id,
-      namespaceId,
-      {
-        name: "Private source",
-        lifecycleConfig: { type: "static", settings: {} },
-        secret: { opaque: randomUUID() },
-        providerPreset: "openai",
-      },
-      (ref, phase) => ({
-        ...auditEvent(
-          controller.installation.id,
-          namespaceId,
-          principal.id,
-          phase
-            ? "openclaw.credential_sources.create.started"
-            : "openclaw.credential_sources.create",
-          ref,
-        ),
-        ...(phase ? { details: { phase } } : {}),
-      }),
-    );
+    const createManagedSource = (name: string, providerPreset?: "openai") =>
+      controller.createManagedCredentialSource(
+        principal.id,
+        namespaceId,
+        {
+          name,
+          lifecycleConfig: { type: "static", settings: {} },
+          secret: { opaque: randomUUID() },
+          ...(providerPreset === undefined ? {} : { providerPreset }),
+        },
+        (ref, phase) => ({
+          ...auditEvent(
+            controller.installation.id,
+            namespaceId,
+            principal.id,
+            phase
+              ? "openclaw.credential_sources.create.started"
+              : "openclaw.credential_sources.create",
+            ref,
+          ),
+          ...(phase ? { details: { phase } } : {}),
+        }),
+      );
+    const retireManagedSource = (id: string) =>
+      controller.deleteManagedCredentialSource(
+        principal.id,
+        namespaceId,
+        id,
+        (_removed, phase) => ({
+          ...auditEvent(
+            controller.installation.id,
+            namespaceId,
+            principal.id,
+            phase
+              ? "openclaw.credential_sources.delete.started"
+              : "openclaw.credential_sources.delete",
+            { kind: "credential_source", namespaceId, id },
+          ),
+          ...(phase ? { details: { phase } } : {}),
+        }),
+      );
+    const source = await createManagedSource("Private source", "openai");
     const sourceId = source.id;
     const sourceRef: CredentialSourceReference = {
       kind: "credential_source",
@@ -285,15 +312,48 @@ test(
         }),
       );
 
-    // The actual Agent draft now references this source. A policy reduction must wait for
-    // withdrawal, while a no-op approval and ordinary material replacement remain available.
+    // A bound source cannot change custody until delivery notification and retry exist. The
+    // failed owner updates must leave private material, version, and update audits untouched.
     await assert.rejects(updateSource({ providerPreset: null }), ResourceStateConflictError);
     assert.deepEqual((await updateSource({ providerPreset: "openai" })).config, {
       provider_preset: "openai",
     });
-    assert.deepEqual((await updateSource({ secret: { opaque: randomUUID() } })).config, {
-      provider_preset: "openai",
-    });
+    const storedSource = await controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(namespaceId, sourceId),
+    );
+    assert.ok(storedSource?.ownerCapability === "token_service" && storedSource.registration);
+    const registeredSource = {
+      sourceRef,
+      tokenServiceInstanceId: instanceId,
+      registration: storedSource.registration,
+    };
+    const resolveMaterial = () =>
+      owner.resolveCredential(registeredSource, AbortSignal.timeout(5000));
+    const updateAuditCount = async () =>
+      Number(
+        (
+          await pool.query(
+            "SELECT count(*) FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2 AND action IN ('openclaw.credential_sources.update', 'openclaw.credential_sources.update.started')",
+            [namespaceId, sourceId],
+          )
+        ).rows[0].count,
+      );
+    const beforeBoundUpdate = await resolveMaterial();
+    const beforeUpdateAudits = await updateAuditCount();
+    for (const input of [
+      { secret: { opaque: randomUUID() } },
+      { lifecycleConfig: { type: "static", settings: {} } },
+    ]) {
+      await assert.rejects(updateSource(input), {
+        name: "ResourceStateConflictError",
+        message:
+          "Bound credential source updates require supported delivery notification and retry.",
+      });
+    }
+    const afterBoundUpdate = await resolveMaterial();
+    assert.equal(afterBoundUpdate.version, beforeBoundUpdate.version);
+    assert.ok(afterBoundUpdate.credential === beforeBoundUpdate.credential);
+    assert.equal(await updateAuditCount(), beforeUpdateAudits);
 
     // Keeping the selected source and the existing list remains a valid update.
     const retained = await inject("PATCH", `${base}/agents/${agent.id}`, {
@@ -345,7 +405,7 @@ test(
       }
     }
 
-    const deploymentEffects = async () =>
+    const deploymentEffects = async (selectedSourceId = sourceId, selectedAgent = agent) =>
       (
         await pool.query(
           `SELECT
@@ -356,15 +416,140 @@ test(
           (SELECT count(*)::int FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND revision_id IS NOT NULL) AS work`,
           [
             namespaceId,
-            agent.id,
-            sourceId,
-            agent.servicePrincipalId,
+            selectedAgent.id,
+            selectedSourceId,
+            selectedAgent.servicePrincipalId,
             `role_${namespaceId}_agent_credential_source_operate`,
           ],
         )
       ).rows[0];
     const noDeploymentEffects = { roles: 0, bindings: 0, grant_audits: 0, revisions: 0, work: 0 };
     assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
+
+    // The production C5 composition selects native delivery and Sandbox from the same owner.
+    // Controlled qualification metadata lets OCC inspect those real selections; it is not native
+    // proof. Real Compute must still refuse before C2 because the Sandbox has no staged recipient.
+    const grant = {
+      id: "model-egress",
+      binary: "/app/bin/model-client",
+      host: "api.openai.com",
+      ports: [{ from: 443, to: 443 }],
+    };
+    const installation = buildSandboxInstallation();
+    Reflect.deleteProperty(installation.drivers, "credential_gateway");
+    Reflect.deleteProperty(installation.backend[0]!.drivers, "credential_gateway");
+    Object.assign(installation.drivers, { token_service: { id: "occ", configuration: {} } });
+    installation.drivers.compute.id = controller.selectedDriver("compute").id;
+    const baseline = installation.drivers.sandbox.configuration.policy.networkPolicies[0]!;
+    baseline.name = "baseline";
+    baseline.endpoints[0]!.host = "baseline.example.test";
+    const runtime = await loadInstallationFile(t, installation);
+    assert.ok(runtime);
+    const credentialDeliveryRegistration = runtime.credentialDeliveryRegistration;
+    assert.ok(credentialDeliveryRegistration);
+    const sandbox = credentialDeliveryRegistration.require("sandbox");
+    const proxy = credentialDeliveryRegistration.require("credential_proxy_delivery");
+    assert.ok(proxy instanceof OpenShellCredentialProxyDriver);
+    assert.equal(sandbox, runtime.sandboxDriver);
+    let qualificationCalls = 0;
+    const nativeController = new OpenClawController(controller.installation, {
+      state,
+      ...installationControllerOptions(runtime.installation),
+      nativeWorkerSupport: "custom-image",
+      sandboxNetworkPolicyCeiling: [grant],
+      namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
+      backends: runtime.installation.backend,
+      credentialDeploymentCapabilities: (selected) => {
+        qualificationCalls += 1;
+        assert.equal(selected.sandbox, sandbox);
+        assert.equal(selected.proxy, proxy);
+        return {
+          binary: grant.binary,
+          sandbox: { wildcards: false, portRanges: false, supportsNetworkPolicy: () => false },
+          proxy: {
+            distinguishesExecutable: true,
+            distinguishesPort: true,
+            rejectsStaleAndMisplacedPlaceholders: true,
+            supportsBindingRequest: () => true,
+          },
+        };
+      },
+      recordOperations: true,
+    });
+    for (const capability of ["iam", "configuration", "secret", "token_service"] as const) {
+      const selected = controller.selectedDriver(capability);
+      nativeController.registerDriver(selected);
+      nativeController.selectDriver(capability, selected.id);
+    }
+    nativeController.registerDriver(runtime.computeDriver);
+    nativeController.selectDriver("compute", runtime.computeDriver.id);
+    assert.equal(
+      await nativeController.activateTokenServiceInstance(owner.id, storeIdentity),
+      instanceId,
+    );
+    installSelectedSandboxDrivers(nativeController, runtime);
+    assert.equal(nativeController.selectedDriver("credential_proxy_delivery"), proxy);
+    const nativeApp = createApp(nativeController);
+    const dedicated = await inject(
+      "POST",
+      `${base}/agents`,
+      {
+        name: `Native saved grant ${randomUUID()}`,
+        configurationId,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId },
+        credentialSources: [{ sourceId }],
+      },
+      nativeApp,
+    );
+    assert.equal(dedicated.statusCode, 201, dedicated.body);
+    const dedicatedAgent = dedicated.json().data;
+    const dedicatedId = dedicatedAgent.id;
+    assert.deepEqual(dedicatedAgent.credentialSources, [{ sourceId }]);
+    const networking = `${base}/agents/${dedicatedId}/sandbox-policy/networking`;
+    const editing = await inject("PATCH", `${networking}/editing`, { enabled: true }, nativeApp);
+    assert.equal(editing.statusCode, 200, editing.body);
+    const savedGrant = await inject(
+      "PUT",
+      networking,
+      { expectedVersion: 1, additions: [grant] },
+      nativeApp,
+    );
+    assert.equal(savedGrant.statusCode, 200, savedGrant.body);
+    const persistedPolicy = await pool.query(
+      "SELECT document->'additions' AS additions FROM occ.sandbox_policies WHERE namespace_id=$1 AND agent_id=$2",
+      [namespaceId, dedicatedId],
+    );
+    assert.deepEqual(persistedPolicy.rows[0]?.additions, [grant]);
+    const refusedGrant = await inject(
+      "POST",
+      `${base}/agents/${dedicatedId}/deploy`,
+      {},
+      nativeApp,
+    );
+    assert.equal(refusedGrant.statusCode, 409, refusedGrant.body);
+    assert.equal(
+      refusedGrant.json().error.message,
+      "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
+      refusedGrant.body,
+    );
+    assert.equal(qualificationCalls, 1);
+    assert.deepEqual(await deploymentEffects(sourceId, dedicatedAgent), noDeploymentEffects);
+    const persistedDedicated = await inject(
+      "GET",
+      `${base}/agents/${dedicatedId}`,
+      undefined,
+      nativeApp,
+    );
+    assert.equal(persistedDedicated.statusCode, 200, persistedDedicated.body);
+    assert.deepEqual(persistedDedicated.json().data.credentialSources, [{ sourceId }]);
+    const detachedDedicated = await inject(
+      "PATCH",
+      `${base}/agents/${dedicatedId}`,
+      { configurationId, harnessAuth: null, credentialSources: [] },
+      nativeApp,
+    );
+    assert.equal(detachedDedicated.statusCode, 200, detachedDedicated.body);
 
     // A deployer who loses exact source authority is denied before the staged-delivery refusal.
     assert.equal(
@@ -374,15 +559,95 @@ test(
     );
     const deniedDeploy = await memberRequest("POST", `${base}/agents/${agent.id}/deploy`, {});
     assert.equal(deniedDeploy.statusCode, 403, deniedDeploy.body);
-    // The administrator's deploy must grant the previously ungranted Agent principal to reach
-    // the delivery refusal. That same transaction must roll back its Role, binding, and audit.
-    const authorizedDeploy = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
-    assert.equal(authorizedDeploy.statusCode, 409, authorizedDeploy.body);
-    assert.match(
-      authorizedDeploy.json().error.message,
-      /select supported Harness authentication and remove this staged source/i,
+    // An independently created source without a preset has no provider authority. Swap the
+    // draft through the real Agent route; failed admission must roll back the source grant.
+    const noPresetSource = await createManagedSource("No preset");
+    const swap = await inject("PATCH", `${base}/agents/${agent.id}`, {
+      configurationId,
+      harnessAuth: { method: "credential_source", sourceId: noPresetSource.id },
+      credentialSources: [{ sourceId: noPresetSource.id }],
+    });
+    assert.equal(swap.statusCode, 200, swap.body);
+    const noPreset = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
+    assert.equal(noPreset.statusCode, 409, noPreset.body);
+    assert.equal(
+      noPreset.json().error.message,
+      "The Harness credential source has no permitted model provider preset.",
     );
-    assert.match(authorizedDeploy.json().error.message, /revision delivery.*not available/i);
+    assert.deepEqual(await deploymentEffects(noPresetSource.id), noDeploymentEffects);
+    const restoreSource = await inject("PATCH", `${base}/agents/${agent.id}`, {
+      configurationId,
+      harnessAuth: { method: "credential_source", sourceId },
+      credentialSources: [{ sourceId }],
+    });
+    assert.equal(restoreSource.statusCode, 200, restoreSource.body);
+    await retireManagedSource(noPresetSource.id);
+
+    const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+    const unknownModel = "unknown/gpt-4.1";
+    const unknown = await inject("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: {
+        ...values,
+        agents: {
+          ...values.agents,
+          defaults: {
+            ...values.agents.defaults,
+            model: unknownModel,
+            models: { [unknownModel]: { agentRuntime: { id: "openclaw" } } },
+          },
+        },
+        // Keep the approved OpenAI route present. Configuration validation forbids an
+        // unselected catalog row, so only that row is removed from the retained route.
+        models: {
+          providers: { openai: { ...values.models.providers.openai, models: [] } },
+        },
+      },
+    });
+
+    // A selected OpenAI model still cannot send its credential to a different valid HTTPS
+    // endpoint. This reaches the production composition's approved destination check.
+    const hostileEndpoint = await inject("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: {
+        ...values,
+        models: {
+          ...values.models,
+          providers: {
+            ...values.models.providers,
+            openai: {
+              ...values.models.providers.openai,
+              baseUrl: "https://unapproved.example.test/v1",
+            },
+          },
+        },
+      },
+    });
+    for (const configuration of [unknown, hostileEndpoint]) {
+      assert.equal(configuration.statusCode, 201, configuration.body);
+      const selected = await inject("PATCH", `${base}/agents/${agent.id}`, {
+        configurationId: configuration.json().data.id,
+      });
+      assert.equal(selected.statusCode, 200, selected.body);
+      const mismatch = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
+      assert.equal(mismatch.statusCode, 409, mismatch.body);
+      assert.equal(
+        mismatch.json().error.message,
+        "The selected model has no matching approved source preset and explicit inference route.",
+      );
+      assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
+    }
+
+    // The approved preset and explicit route still cannot substitute for genuinely qualified
+    // Sandbox and Credential Proxy enforcement. This fixture has neither staged Driver.
+    const restoreConfig = await inject("PATCH", `${base}/agents/${agent.id}`, { configurationId });
+    assert.equal(restoreConfig.statusCode, 200, restoreConfig.body);
+    const enforcement = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
+    assert.equal(enforcement.statusCode, 409, enforcement.body);
+    assert.equal(
+      enforcement.json().error.message,
+      "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
+    );
     assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
 
     // Explicitly dropping both bindings remains possible when the previously selected owner is unavailable.
@@ -401,22 +666,12 @@ test(
     });
     assert.equal(detached.statusCode, 200, detached.body);
     controller.selectDriver("token_service", owner.id);
-    await controller.deleteManagedCredentialSource(
-      principal.id,
-      namespaceId,
-      sourceId,
-      (_removed, phase) => ({
-        ...auditEvent(
-          controller.installation.id,
-          namespaceId,
-          principal.id,
-          phase
-            ? "openclaw.credential_sources.delete.started"
-            : "openclaw.credential_sources.delete",
-          sourceRef,
-        ),
-        ...(phase ? { details: { phase } } : {}),
-      }),
-    );
+    // After both Agent drafts release the source, the same owner update is supported again.
+    const unboundMaterial = randomUUID();
+    await updateSource({ secret: { opaque: unboundMaterial } });
+    const afterUnboundUpdate = await resolveMaterial();
+    assert.notEqual(afterUnboundUpdate.version, beforeBoundUpdate.version);
+    assert.ok(afterUnboundUpdate.credential === unboundMaterial);
+    await retireManagedSource(sourceId);
   },
 );
