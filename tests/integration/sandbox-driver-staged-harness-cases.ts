@@ -5,7 +5,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
-import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  NATIVE_WORKER_ENTRYPOINT,
+  RUNTIME_WRAPPER_COMMAND,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/qa-wait.ts";
@@ -52,9 +55,14 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
     { name: "CODEX_SESSIONS_DIR", value: "/home/node/.codex/sessions" },
     { name: "MARKER", value: marker },
   );
-  fixture.requirements.command = harnessRuntimeCommand(
-    'require("node:fs").writeFileSync(process.env.MARKER, JSON.stringify({ credential: process.env.OPENAI_API_KEY })); setInterval(() => {}, 1000);',
-  );
+  // Keep the real native worker program in the rendered launch command. The controlled
+  // entrypoint records activation first, instead of requiring a complete OpenClaw runtime.
+  fixture.requirements.command = harnessRuntimeCommand(`(() => {
+require("node:fs").writeFileSync(process.env.MARKER, JSON.stringify({ credential: process.env.OPENAI_API_KEY }));
+setInterval(() => {}, 1000);
+return;
+${NATIVE_WORKER_ENTRYPOINT}
+})();`);
   const base = completeSandboxRevision(fixture.revision);
   const grant = {
     id: "model",
@@ -151,11 +159,17 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
   // The controlled gateway runs the exact rendered programs as local subprocesses. It adapts
   // the unavailable container init binary and Sandbox HOME; it does not emulate their logic.
   gateway.createSandbox = async (request) => {
-    validateBindings(request.spec.policy, (request.spec.providers ?? []) as string[]);
-    events.push("create-idle");
     const command = request.spec.command as readonly string[];
     const environment = request.spec.environment as Record<string, string>;
-    const launch = JSON.parse(environment.OPENCLAW_STAGED_HARNESS_COMMAND!) as string[];
+    // The pinned OpenShell server validates these limits before it creates a Sandbox.
+    assert.ok(Object.values(environment).every((value) => Buffer.byteLength(value) <= 8192));
+    assert.ok(command.length <= 256 && command[0] !== "");
+    assert.ok(
+      command.every((argument) => Buffer.byteLength(argument) <= 32768 && !argument.includes("\0")),
+    );
+    assert.ok(command.reduce((size, argument) => size + Buffer.byteLength(argument), 0) <= 262144);
+    validateBindings(request.spec.policy, (request.spec.providers ?? []) as string[]);
+    events.push("create-idle");
     const local = localNodeCommand(command);
     supervisor = spawn(local[0]!, local.slice(1), {
       env: {
@@ -163,7 +177,6 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
         ...environment,
         HOME: directory,
         OPENCLAW_WORKSPACE_DIR: directory,
-        OPENCLAW_STAGED_HARNESS_COMMAND: JSON.stringify(localNodeCommand(launch)),
       },
       stdio: "ignore",
     });
@@ -182,6 +195,15 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
         interval: 10,
       },
     );
+    const planPath = join(directory, ".oce-staged-harness.json");
+    const plan = JSON.parse(readFileSync(planPath, "utf8")) as {
+      state: string;
+      command: string[];
+    };
+    assert.equal(plan.state, "idle");
+    assert.ok(Buffer.byteLength(JSON.stringify(plan.command)) > 8192);
+    // Adapt only the container's unavailable tini binary for the local Harness child.
+    writeFileSync(planPath, JSON.stringify({ ...plan, command: localNodeCommand(plan.command) }));
     return record;
   };
   gateway.execSandbox = async (request) => {
