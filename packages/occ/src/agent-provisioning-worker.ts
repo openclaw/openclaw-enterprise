@@ -59,6 +59,8 @@ import {
 import type {
   AgentProvisioningCheckpoint,
   AgentProvisioningRecord,
+  ProvisioningEffectReceipt,
+  ProvisioningEffectTarget,
 } from "./ports/agent-provisioning.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
@@ -69,8 +71,6 @@ import {
   unrecordedProvisioningConfiguration as readUnrecordedProvisioningConfiguration,
   withUnrecordedProvisioningConfiguration,
   withoutUnrecordedProvisioningConfiguration,
-  type ProvisioningEffectReceipt,
-  type ProvisioningEffectTarget,
 } from "./provisioning-effects.ts";
 
 export type HarnessResolver = (
