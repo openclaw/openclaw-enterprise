@@ -36,7 +36,6 @@ import {
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
-import { startGitHubFixture } from "../fixtures/repository-credentials/github.ts";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
@@ -304,19 +303,35 @@ function discoverNativeBearer(
   ca: Buffer,
   bearer: string,
 ): Promise<number | undefined> {
+  return nativeBrokerStatus(
+    port,
+    ca,
+    bearer,
+    "/fixture/repository.git/info/refs?service=git-upload-pack",
+  );
+}
+
+function nativeBrokerStatus(
+  port: number,
+  ca: Buffer,
+  bearer: string,
+  path: string,
+  { method = "GET", headers, body }: BrokerRequest = {},
+): Promise<number | undefined> {
   return new Promise((resolve, reject) => {
     const outgoing = request(
       {
         hostname: "127.0.0.1",
         port,
-        path: "/fixture/repository.git/info/refs?service=git-upload-pack",
-        method: "GET",
+        path,
+        method,
         ca,
         agent: false,
         timeout: 8000,
         headers: {
           host: "credentials.example.test",
           authorization: `Basic ${Buffer.from(`gateway-session:${bearer}`).toString("base64")}`,
+          ...headers,
         },
       },
       (incoming) => {
@@ -327,7 +342,7 @@ function discoverNativeBearer(
     );
     outgoing.once("timeout", () => outgoing.destroy(new Error("Git discovery timed out")));
     outgoing.once("error", reject);
-    outgoing.end();
+    outgoing.end(body);
   });
 }
 
@@ -338,6 +353,7 @@ for (const outcome of [
   "custody read recovers",
   "unexpected custody family",
   "settled draft-capable transport",
+  "unsettled draft receipt",
   "unissued draft-capable transport",
   "stored execution admission incompatible",
   "model account changes",
@@ -366,6 +382,7 @@ for (const outcome of [
       const f = await setupNativeWithdrawal(t, { backends: [...modelBackends, gitBackend] });
       const draftTransport =
         outcome === "settled draft-capable transport" ||
+        outcome === "unsettled draft receipt" ||
         outcome === "unissued draft-capable transport";
       const withoutFamily = outcome === "unissued draft-capable transport";
       const clock = createControlledClock();
@@ -406,20 +423,7 @@ for (const outcome of [
       });
       t.after(() => receipts.close());
       const subject = git.byRef.get("repo-a")!;
-      // The default registry origin admits only the built-in fixture permission maps.
-      // Exercise the original draft grant with an issuer that accepts its exact scope.
-      const provider =
-        draftTransport && !withoutFamily
-          ? await startGitHubFixture(t, {
-              clock: git.clock,
-              tls: git.tls,
-              repository: subject.repository,
-              repositoryId: subject.repositoryId,
-              additionalPermissions: [
-                { metadata: "read", contents: "write", pull_requests: "write" },
-              ],
-            })
-          : subject.github;
+      const provider = subject.github;
       const keyDirectory = await temporaryDirectory(t, "native-withdrawal-owner-");
       const privateKeyPath = join(keyDirectory, "app.pem");
       const custodyKeyPath = join(keyDirectory, "custody");
@@ -474,7 +478,15 @@ for (const outcome of [
         namespaceId: f.namespace.id,
         bindings: selections,
       }).bindings;
+      const disposableDeployer =
+        outcome === "model account lookup fault cannot mask lost actor authority"
+          ? "deployer-" + randomUUID()
+          : undefined;
+      if (disposableDeployer) {
+        await f.copyActorGrants(disposableDeployer);
+      }
       const candidate = await f.revision(owner, 1, {
+        ...(disposableDeployer && { actorId: disposableDeployer }),
         repositoryCredentials: {
           driver: { id: driver.id, implementation: driver.implementation },
           deadlineWallMs: Date.now() + 55_000,
@@ -671,6 +683,23 @@ for (const outcome of [
       );
       const origin = subject.git;
       const initial = origin.traffic().requests;
+      const draftPath = "/repos/" + subject.repository + "/pulls";
+      const draft = () =>
+        nativeBrokerStatus(git.listeners.address.port, git.tls.ca, admit.files.bearer, draftPath, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer " + admit.files.bearer,
+            "content-type": "application/json",
+            "x-oce-operation-id": randomUUID(),
+          },
+          body: JSON.stringify({
+            title: "Fixture review",
+            head: "agent-repo-a",
+            base: "main",
+            body: "Finite binding witness",
+            draft: true,
+          }),
+        });
       if (!draftTransport) {
         assert.equal(
           await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
@@ -678,9 +707,33 @@ for (const outcome of [
         );
         assert.equal(origin.traffic().requests, initial + 1);
       }
-      if (draftTransport && !withoutFamily) {
-        // Let the genuine prepared owner settle the provider before the first cleanup pass.
-        await worker.stop();
+      const issuedDraft = draftTransport && !withoutFamily;
+      const hold = issuedDraft ? origin.holdNextFetch({ beforeHeaders: true }) : undefined;
+      const held =
+        hold &&
+        nativeBrokerStatus(
+          git.listeners.address.port,
+          git.tls.ca,
+          admit.files.bearer,
+          "/" + subject.repository + ".git/git-upload-pack",
+          {
+            method: "POST",
+            headers: {
+              "git-protocol": "version=2",
+              "content-type": "application/x-git-upload-pack-request",
+            },
+            body: "0014command=ls-refs\n00010000",
+          },
+        ).catch((error: unknown) => error);
+      if (hold) {
+        t.after(() => hold.release());
+        await Promise.race([
+          hold.observed,
+          held?.then(() => assert.fail("the admitted upload never reached the held origin")),
+          delay(5000).then(() => assert.fail("the admitted upload did not start")),
+        ]);
+        assert.equal(await draft(), 201, "the original exact ref and base allow draft creation");
+        assert.equal(provider.pulls.size, 1);
       }
       const removed = await f.controller.updateAgent(f.actor.id, {
         namespaceId: owner.namespaceId,
@@ -689,9 +742,9 @@ for (const outcome of [
         repositoryBindings: [],
       });
       assert.equal(removed.activeRevisionId, candidate.id);
-      if (draftTransport && !withoutFamily) {
-        await prepared.maintain();
-        worker = await startWorker(f.createWorkerPool());
+      if (hold) {
+        hold.release();
+        await held;
       }
       const key = repositoryRemovalWorkKey(candidate.id);
       const readWork = async () =>
@@ -737,20 +790,17 @@ for (const outcome of [
       );
       assert.equal(
         origin.traffic().requests,
-        initial + (draftTransport ? 0 : 1),
+        initial + (withoutFamily ? 0 : 1),
         "fresh old-bearer request never reaches Git origin",
       );
-      if (draftTransport) {
+      if (withoutFamily) {
         const readback = await f.observerPool.query(
           `SELECT source#>>'{grant,profile}' AS profile,
                   (SELECT custody FROM occ.prepared_github_attempts WHERE source_id=f.source_id) AS custody
            FROM occ.prepared_github_families f WHERE source_id=$1`,
           ["repository-git:" + receipt.admissionId],
         );
-        assert.deepEqual(
-          readback.rows,
-          withoutFamily ? [] : [{ profile: "git-ref-draft-pr", custody: "revoked" }],
-        );
+        assert.deepEqual(readback.rows, []);
         assert.equal(first.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
         await waitFor(
           "terminal work to stop the exact draft-capable revision",
@@ -795,6 +845,36 @@ for (const outcome of [
           10_000,
         );
       };
+      if (issuedDraft) {
+        const apiCalls = provider.trace.filter(
+          ({ method, target }) => method === "POST" && target === draftPath,
+        ).length;
+        assert.equal(apiCalls, 1);
+        assert.equal(
+          await draft(),
+          401,
+          "removal refuses even a syntactically valid draft before its origin",
+        );
+        assert.equal(
+          provider.trace.filter(({ method, target }) => method === "POST" && target === draftPath)
+            .length,
+          apiCalls,
+        );
+        const readback = await f.observerPool.query(
+          "SELECT outcome, settled_at IS NOT NULL AS settled FROM occ.prepared_repository_draft_pulls WHERE admission_id=$1",
+          [receipt.admissionId],
+        );
+        assert.deepEqual(readback.rows, [{ outcome: "created", settled: true }]);
+        if (outcome === "unsettled draft receipt") {
+          // A broker crash after the provider reply can leave the original authorization
+          // committed with no final receipt. Reproduce that exact persisted boundary.
+          const unresolved = await f.observerPool.query(
+            "UPDATE occ.prepared_repository_draft_pulls SET outcome='outcome_unknown', projection=NULL, settled_at=NULL WHERE admission_id=$1",
+            [receipt.admissionId],
+          );
+          assert.equal(unresolved.rowCount, 1);
+        }
+      }
       if (outcome === "stored execution admission incompatible") {
         // The replacement configuration admits a protected pair. The stock validator
         // consequently refuses a saved unprotected native repository revision.
@@ -840,7 +920,17 @@ for (const outcome of [
         } else if (outcome === "model account binding revoked") {
           await revokeModelBinding();
         } else if (outcome === "model account lookup fault cannot mask lost actor authority") {
-          await removeAccessBindings(f, f.actor.id);
+          const original = await f.state.read((view) => view.operations.findWork(key));
+          assert.ok(original);
+          assert.equal(original.actorId, disposableDeployer);
+          const revoked = await removeAccessBindings(f, original.actorId);
+          assert.ok(revoked.rowCount && revoked.rowCount > 0);
+          const refusal = await new NativeIAMDriver(f.state).authorize({
+            principalId: original.actorId,
+            action: "deploy",
+            resource: { kind: "agent", namespaceId: owner.namespaceId, id: owner.id },
+          });
+          assert.equal(refusal.allowed, false, "Native IAM denies the exact recorded deployer");
           failFinalModelRead = true;
         } else if (outcome === "model account Backend missing") {
           await worker.stop();
@@ -949,9 +1039,18 @@ for (const outcome of [
       );
       assert.equal(origin.traffic().requests, initial + 1);
       assert.equal(subject.github.issuesOfTokens.length, 1);
+      if (issuedDraft) {
+        assert.equal(await draft(), 401);
+        assert.equal(
+          provider.trace.filter(({ method, target }) => method === "POST" && target === draftPath)
+            .length,
+          1,
+        );
+      }
       if (
         outcome === "inference unavailable" ||
         outcome === "unexpected custody family" ||
+        outcome === "unsettled draft receipt" ||
         outcome === "model account binding revoked during observation" ||
         outcome === "model account final IAM fault with revoked binding"
       ) {
@@ -978,7 +1077,9 @@ for (const outcome of [
       }
       assert.equal(
         runtimeObservations,
-        outcome === "unconfirmed revocation" || outcome === "unexpected custody family"
+        outcome === "unconfirmed revocation" ||
+          outcome === "unexpected custody family" ||
+          outcome === "unsettled draft receipt"
           ? 0
           : outcome === "model account final read recovers"
             ? 2

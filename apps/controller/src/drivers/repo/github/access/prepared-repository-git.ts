@@ -585,7 +585,14 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
        SELECT s.admission_id AS "admissionId", b.session_id AS "sessionId",
          b.generation::text AS generation,
          (f.source->>'adoption'=$4 AND f.admission->>'issuerAuthority'=$5
-           AND f.source#>>'{grant,profile}'='git-ref-write'
+           AND nullif(f.source#>>'{grant,pushRef}','') LIKE 'refs/heads/_%'
+           AND (
+             (f.source#>>'{grant,profile}'='git-ref-write'
+               AND f.source#>'{grant,pullRequestBase}' IS NULL)
+             OR (f.source#>>'{grant,profile}'='git-ref-draft-pr'
+               AND nullif(f.source#>>'{grant,pullRequestBase}','') IS NOT NULL
+               AND f.source#>>'{grant,pushRef}' <> 'refs/heads/' || (f.source#>>'{grant,pullRequestBase}'))
+           )
            AND f.source#>>'{grant,id}'=s.cleanup_context#>>'{binding,grant,grantId}'
            AND f.admission->'grant'=f.source->'grant'
            AND ${repositoryGitBrokerOwnerPredicate}
@@ -599,7 +606,34 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
          ) IS TRUE AS "ownerMatches",
          NOT f.enabled AND NOT EXISTS (
            SELECT FROM ${attempts} a WHERE a.source_id=f.source_id
-             AND NOT ${preparedAttemptSettled("a")}) AS settled
+             AND NOT ${preparedAttemptSettled("a")}) AS settled,
+         NOT EXISTS (
+           SELECT FROM ${pulls} p
+           LEFT JOIN occ.prepared_repository_git_uses u ON u.exchange_id=p.receipt_id
+             AND u.admission_id=p.admission_id AND u.attempt_id=p.attempt_id
+             AND u.material_version=p.material_version
+             AND u.request_digest_sha256=p.request_digest_sha256
+             AND u.send_start_by=p.send_start_by AND u.operation='create-draft-pull'
+           WHERE p.admission_id=s.admission_id
+             AND (
+               f.source#>>'{grant,profile}' IS DISTINCT FROM 'git-ref-draft-pr'
+               OR u.exchange_id IS NULL
+               OR p.grant_id IS DISTINCT FROM f.source#>>'{grant,id}'
+               OR p.scope->>'operationId' IS DISTINCT FROM p.operation_id::text
+               OR p.scope->>'repository' IS DISTINCT FROM f.source#>>'{grant,repository}'
+               OR p.scope->>'repositoryId' IS DISTINCT FROM f.source#>>'{grant,repositoryId}'
+               OR ('refs/heads/' || (p.scope->>'head')) IS DISTINCT FROM f.source#>>'{grant,pushRef}'
+               OR p.scope->>'base' IS DISTINCT FROM f.source#>>'{grant,pullRequestBase}'
+               OR p.scope->>'apiOrigin' IS DISTINCT FROM split_part($5,'#',1)
+               OR p.send_start_by IS NULL OR p.settled_at IS NULL
+             )
+         ) AND NOT EXISTS (
+           SELECT FROM occ.prepared_repository_git_uses u
+           LEFT JOIN ${pulls} p ON p.receipt_id=u.exchange_id
+             AND p.admission_id=u.admission_id
+           WHERE u.admission_id=s.admission_id AND u.operation='create-draft-pull'
+             AND p.receipt_id IS NULL
+         ) AS "draftSettled"
        FROM scoped_attempts s
        JOIN occ.repository_broker_receipts b USING(admission_id)
        JOIN ${families} f ON f.source_id='repository-git:' || s.admission_id
@@ -625,15 +659,16 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         ],
       ),
     );
-    // The admitted git-write binding is shared by Git-only and draft PR transport. Require
-    // the original prepared grant as positive proof even when no provider token was issued.
-    // The removal fence prevents any later family from filling a gap in the evidence.
+    // Both native transports share the broker session and issuer token. Require their original
+    // prepared grant and account for draft uses before retaining the runtime. The removal
+    // fence prevents a later family or permit from filling a gap in this proof.
     const observed = rows as {
       admissionId: string;
       sessionId: string;
       generation: string;
       ownerMatches: boolean;
       settled: boolean;
+      draftSettled: boolean;
     }[];
     if (
       observed.length !== requested.size ||
@@ -649,7 +684,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     ) {
       return "unsafe";
     }
-    return observed.every(({ settled }) => settled === true) ? "disposed" : "pending";
+    if (observed.some(({ settled }) => settled !== true)) {
+      return "pending";
+    }
+    return observed.every(({ draftSettled }) => draftSettled === true) ? "disposed" : "unsafe";
   }
 
   /** This port exists only on a selected Driver. It carries no issuer, connection or maintenance authority. */

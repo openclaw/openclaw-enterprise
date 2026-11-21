@@ -126,10 +126,11 @@ an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
 
 The Worker keeps the same Agent revision running when the broker confirms session
-disposal, the original prepared grant proves Git-only transport, token custody is
-settled, and the Gateway and Harness are ready with current model authority.
+disposal, the original prepared grant proves the native transport, and token
+custody and any draft PR receipts have settled. The Gateway and Harness must
+be ready with current model authority.
 The committed removal blocks new Git requests while settlement is pending.
-The Worker queues retirement for draft PR transport, missing grant proof,
+The Worker queues retirement for missing grant or draft settlement proof,
 incompatible stored admission, or an inference runtime it cannot verify.
 
 ## Read broker refusals

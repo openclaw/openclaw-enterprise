@@ -307,7 +307,7 @@ missing session IDs. An unconfirmed locked read stays pending. An initial lookup
 without a terminal receipt uses the original sender.
 
 PostgreSQL fences finite native removal. The Worker matches disposed sessions to original
-Git-only grants and settled custody. Kubernetes verifies the existing Gateway, Harness
+native grants and settled token and draft custody. Kubernetes verifies the existing Gateway, Harness
 and workspace node. The Worker rechecks model authority before retaining the revision.
 
 Only committed observations survive restart. The original issuer owns unresolved
