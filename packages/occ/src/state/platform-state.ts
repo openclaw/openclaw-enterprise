@@ -19,6 +19,12 @@ import type {
   EgressInstallation,
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
+import type {
+  AgentReadRepository,
+  AgentRevisionReadRepository,
+  PredecessorReplacement,
+  AgentDeploymentWorkReader,
+} from "../ports/agent-reads.ts";
 import type { StoredOAuthClient } from "../ports/oauth-client.ts";
 import type { TokenServiceInstance } from "../ports/token-service.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
@@ -29,7 +35,6 @@ import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   RepositorySessionAttempt,
-  RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
   RepositoryStandingApproval,
   RepositorySessionReadRepository,
@@ -48,15 +53,10 @@ import type {
   SavedConnection,
   AccessBinding,
   Agent,
-  AgentRead,
-  AgentRevisionMetadata,
-  AgentRevisionSummaryPage,
-  AgentRevisionRead,
   WorkspaceSetup,
   AgentDesiredRuntimeState,
   AgentStatus,
   AgentRevision,
-  FirstDeploymentReceipt,
   AuditEvent,
   CredentialSource,
   TokenServiceRegistration,
@@ -123,8 +123,6 @@ import {
   CREDENTIAL_WITHDRAWAL_TARGET,
   credentialWithdrawalWorkKey,
   type ControllerWork,
-  type ControllerWorkAttempt,
-  type ControllerWorkLookup,
 } from "./controller-work.ts";
 import type {
   AgentProvisioningReadRepository,
@@ -217,30 +215,6 @@ export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
   ): Promise<Readonly<SandboxPolicy> | undefined>;
 }
 
-export interface AgentReadRepository {
-  findPredecessorReplacement(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<PredecessorReplacement> | undefined>;
-  findAgentForBrowsing(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<AgentRead> | undefined>;
-  listAgentsForBrowsing(namespaceId: string): Promise<readonly Readonly<AgentRead>[]>;
-  findAgent(namespaceId: string, agentId: string): Promise<Readonly<Agent> | undefined>;
-  listAgents(namespaceId: string): Promise<readonly Readonly<Agent>[]>;
-  /**
-   * Whether an Agent in the Namespace has exactly this name: the names the unique name
-   * constraint covers, Agents being deleted included. Reads no Agent settings.
-   */
-  hasAgentNamed(namespaceId: string, name: string): Promise<boolean>;
-  /**
-   * The identity of every Agent in every live Namespace, in one read that decodes no saved
-   * settings, for callers that resolve an opaque Agent address before authorizing it.
-   */
-  listAgentReferences(): Promise<readonly Readonly<Pick<Agent, "id" | "namespaceId">>[]>;
-}
-
 export interface AgentRepository extends AgentReadRepository {
   /** Caller holds the Namespace and Agent locks. Never reopens a committed stop. */
   recordPredecessorReplacement(
@@ -307,56 +281,6 @@ export interface AgentRepository extends AgentReadRepository {
     expected: AgentStatus | readonly AgentStatus[],
     next: AgentStatus,
   ): Promise<Readonly<Agent> | undefined>;
-}
-
-/** One Agent lifecycle fact, superseded when a different predecessor is replaced. */
-export interface PredecessorReplacement {
-  readonly predecessorRevisionId: string;
-  readonly candidateRevisionId: string;
-  readonly phase: "pre-stop" | "stopping";
-  readonly startedAt: string;
-  readonly stoppingAt?: string;
-}
-
-export interface AgentRevisionReadRepository {
-  findFirstDeploymentReceipt(
-    namespaceId: string,
-    agentId: string,
-    digest: string,
-  ): Promise<Readonly<FirstDeploymentReceipt> | undefined>;
-  findRevisionForBrowsing(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-  ): Promise<Readonly<AgentRevisionRead> | undefined>;
-  listRevisionsForBrowsing(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<readonly Readonly<AgentRevisionRead>[]>;
-  findRevision(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-  ): Promise<Readonly<AgentRevision> | undefined>;
-  listRevisions(namespaceId: string, agentId: string): Promise<readonly Readonly<AgentRevision>[]>;
-  /**
-   * The Agent's revisions in revision order, as listRevisions returns them but without their
-   * saved settings, so a caller that counts or picks revisions decodes only the one it uses.
-   */
-  listRevisionMetadata(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<readonly Readonly<AgentRevisionMetadata>[]>;
-  /**
-   * One page of the Agent's revision summaries, newest first: at most `limit` revisions numbered
-   * below `before` (from the newest when omitted). It decodes no saved settings, so a list route
-   * costs about the same whatever the admitted snapshots weigh (finding 1323).
-   */
-  pageRevisionSummaries(
-    namespaceId: string,
-    agentId: string,
-    page: { readonly before?: number; readonly limit: number },
-  ): Promise<Readonly<AgentRevisionSummaryPage>>;
 }
 
 export interface AgentRevisionRepository extends AgentRevisionReadRepository {
@@ -1182,13 +1106,8 @@ export type PlatformOperation =
       readonly operationId?: never;
     });
 
-export interface PlatformOperationReadRepository {
+export interface PlatformOperationReadRepository extends AgentDeploymentWorkReader {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
-  findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
-  findWorkByKeys(idempotencyKeys: readonly string[]): Promise<ControllerWorkLookup>;
-  findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
-  /** Whether this revision completed maintenance requiring fresh repository execution. */
-  hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean>;
   /** True while credential withdrawal work for the revision is queued or claimed. */
   hasOutstandingCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
 }
@@ -1226,6 +1145,11 @@ export interface PlatformOperationRepository extends PlatformOperationReadReposi
 export type { AgentProvisioningRecord } from "./agent-provisioning.ts";
 
 export type { IAMPolicyReadRepository, IAMPolicyRepository } from "@openclaw-enterprise/contracts";
+export type {
+  AgentReadRepository,
+  AgentRevisionReadRepository,
+  PredecessorReplacement,
+} from "../ports/agent-reads.ts";
 
 export interface PlatformReadView {
   readonly sandboxPolicies: SandboxPolicyReadRepository;
