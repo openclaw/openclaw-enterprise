@@ -2568,9 +2568,19 @@ function verifiedKubernetesNamespace(
   return { name, external };
 }
 
+class InactiveKubernetesNamespace extends OwnershipFailure {
+  readonly namespaceName: string;
+
+  constructor(namespaceName: string) {
+    super(`Existing Kubernetes namespace ${namespaceName} must be active.`);
+    this.namespaceName = namespaceName;
+  }
+}
+
 export async function resolveKubernetesNamespace(
   client: CoreV1Api,
   namespaceId: string,
+  requireActiveManagedNamespace = false,
 ): Promise<{ readonly name: string; readonly external: boolean }> {
   const observed = await client.listNamespace({
     labelSelector: `openclaw.dev/namespace=${namespaceId}`,
@@ -2582,16 +2592,32 @@ export async function resolveKubernetesNamespace(
   if (observed.items.length > 1) {
     throw new OwnershipFailure(`Multiple Kubernetes namespaces claim tenant ${namespaceId}.`);
   }
+  let namespace = observed.items[0];
   if (observed.items.length === 0) {
-    return { name: kubernetesNamespaceName(namespaceId), external: false };
+    const name = kubernetesNamespaceName(namespaceId);
+    const fallback = { name, external: false };
+    if (!requireActiveManagedNamespace) {
+      return fallback;
+    }
+    // A namespace without the tenant label is invisible to discovery.
+    try {
+      namespace = await client.readNamespace({ name });
+    } catch (error) {
+      if (numericErrorStatus(error) === 404) {
+        return fallback;
+      }
+      throw error;
+    }
+    if (namespace?.metadata?.name !== name) {
+      throw new OwnershipFailure("Kubernetes namespace discovery returned invalid resources.");
+    }
   }
-  const namespace = observed.items[0];
   const placement = verifiedKubernetesNamespace(namespace?.metadata, namespaceId);
   if (
-    placement.external &&
+    (placement.external || requireActiveManagedNamespace) &&
     (namespace?.status?.phase !== "Active" || namespace.metadata?.deletionTimestamp !== undefined)
   ) {
-    throw new OwnershipFailure(`Existing Kubernetes namespace ${placement.name} must be active.`);
+    throw new InactiveKubernetesNamespace(placement.name);
   }
   return placement;
 }
@@ -4482,6 +4508,87 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return { warnings };
   }
 
+  /** Forecast the direct-egress guard for saved channel drafts before the upgrade stops Agents. */
+  async verifyUpgradeChannelDirectEgressGuard(
+    drafts: readonly Readonly<{
+      namespaceId: string;
+      agentId: string;
+      executionMode: AgentRevision["harness"]["mode"];
+      values: OpenClawConfigurationDocument;
+    }>[],
+  ): Promise<void> {
+    if (!this.channelEgress) {
+      return;
+    }
+    const targets = new Map<string, { namespaceId: string; agentId: string }[]>();
+    for (const { namespaceId, agentId, executionMode, values } of drafts) {
+      if (
+        executionMode !== "dedicated" ||
+        !this.enabledChannels({
+          configuration: values,
+          harness: { mode: executionMode },
+        })
+      ) {
+        continue;
+      }
+      const agents = targets.get(namespaceId) ?? [];
+      agents.push({ namespaceId, agentId });
+      targets.set(namespaceId, agents);
+    }
+    for (const [namespaceId, agents] of targets) {
+      let gateway: KubernetesNamespaceAddress | undefined;
+      try {
+        const { name, external } = await this.resolveNamespace(
+          namespaceId,
+          undefined,
+          this.options.executionCluster !== undefined,
+        );
+        gateway = this.gatewayNamespace({ namespaceId, harness: { mode: "dedicated" } }, name);
+        const readiness = await this.gatewayNamespaceReadiness(gateway, namespaceId, external);
+        if (readiness === "absent") {
+          // Namespace provisioning will check ownership before creating any Gateway policies.
+          continue;
+        }
+        if (readiness === "inactive") {
+          throw new ConfigurationFailure(
+            `Channel Gateway Kubernetes Namespace ${gateway.name} must be active.`,
+          );
+        }
+        await this.channelEgress.verifyProspectiveGatewayDirectEgressGuard(gateway.name, agents);
+      } catch (error) {
+        if (error instanceof InactiveKubernetesNamespace) {
+          const name = isKubernetesNamespaceName(error.namespaceName)
+            ? ` ${error.namespaceName}`
+            : "";
+          const placement =
+            this.options.executionCluster === undefined ? "Channel Gateway" : "Execution";
+          throw new ConfigurationFailure(
+            `${placement} Kubernetes Namespace${name} must be active.`,
+          );
+        }
+        if (error instanceof OwnershipFailure) {
+          throw new ConfigurationFailure(
+            gateway
+              ? `Channel Gateway Kubernetes Namespace ${gateway.name} is not owned by the expected tenant.`
+              : "Could not resolve an owned Kubernetes Namespace for the saved Agent drafts.",
+          );
+        }
+        if (error instanceof ChannelPublicEgressPolicyConflict && gateway) {
+          const reason =
+            error.peerKind === "unspecified-destinations"
+              ? "an egress rule has unspecified destinations"
+              : "an egress IP block falls outside the allowed ranges";
+          throw new ConfigurationFailure(
+            error.operatorMessage(
+              `Candidate Worker would refuse channel activation at its direct-egress guard in Kubernetes Namespace ${gateway.name}: ${reason}.`,
+            ),
+          );
+        }
+        throw error;
+      }
+    }
+  }
+
   /**
    * Upgrade-only check for the experimental two-cluster profile; startup does not run it.
    * The openclaw-execution chart, a separate Helm release, holds the tenant grants this
@@ -6174,7 +6281,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   private gatewayNamespace(
-    revision: AgentRevision,
+    revision: Pick<AgentRevision, "namespaceId"> & {
+      harness: Pick<AgentRevision["harness"], "mode">;
+    },
     harnessNamespace: KubernetesNamespaceAddress,
   ): KubernetesNamespaceAddress {
     return revision.harness.mode === "embedded" || this.options.executionCluster === undefined
@@ -6309,15 +6418,31 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure(DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED);
     }
-    const observed = await this.getNamespace(namespace);
-    if (observed === undefined) {
-      throw new DependencyUnavailableError("The control-plane Gateway namespace is unavailable.");
-    }
-    this.verifyGatewayNamespace(observed, { namespaceId: revision.namespaceId });
-    if (observed.status?.phase !== "Active" || observed.metadata.deletionTimestamp !== undefined) {
+    if (
+      (await this.gatewayNamespaceReadiness(namespace, revision.namespaceId, false)) !== "ready"
+    ) {
       throw new DependencyUnavailableError("The control-plane Gateway namespace is unavailable.");
     }
     return namespace;
+  }
+
+  private async gatewayNamespaceReadiness(
+    namespace: KubernetesNamespaceAddress,
+    namespaceId: string,
+    external: boolean,
+  ): Promise<"absent" | "inactive" | "ready"> {
+    const observed = await this.getNamespace(namespace);
+    if (observed === undefined) {
+      return "absent";
+    }
+    if (this.options.executionCluster === undefined) {
+      this.verifyNamespaceOwnership(observed, { namespaceId }, external);
+    } else {
+      this.verifyGatewayNamespace(observed, { namespaceId });
+    }
+    return observed.status?.phase === "Active" && observed.metadata.deletionTimestamp === undefined
+      ? "ready"
+      : "inactive";
   }
 
   private async prepareNamespaceInfrastructure(
@@ -10064,6 +10189,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async resolveNamespace(
     namespaceId: string,
     selection?: string,
+    requireActiveManagedNamespace = false,
   ): Promise<{ readonly name: KubernetesNamespaceAddress; readonly external: boolean }> {
     const binding = this.preprovisionedNamespace;
     if (selection !== undefined) {
@@ -10077,7 +10203,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const clients = await this.clients("execution");
     const resolved = binding
       ? { ...(await this.request(() => binding.read(clients.core, namespaceId))), external: false }
-      : await this.request(() => resolveKubernetesNamespace(clients.core, namespaceId));
+      : await this.request(() =>
+          resolveKubernetesNamespace(clients.core, namespaceId, requireActiveManagedNamespace),
+        );
     return { ...resolved, name: { name: resolved.name, plane: "execution" } };
   }
 
@@ -16017,7 +16145,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
-  private enabledChannels(revision: AgentRevision): PreparedChannelRouting | undefined {
+  private enabledChannels(
+    revision: Pick<AgentRevision, "configuration"> & {
+      harness: Pick<AgentRevision["harness"], "mode">;
+    },
+  ): PreparedChannelRouting | undefined {
     const providers = enabledChannelProviders(
       revision.configuration,
       this.channelDrivers.map(({ provider }) => provider),

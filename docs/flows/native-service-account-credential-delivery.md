@@ -62,8 +62,7 @@ graph TD
 
 ### 1. Acquire or select one credential source
 
-`packages/occ/src/index.ts:OpenClawController.startAgentDeviceAuthorization`,
-`pollAgentDeviceAuthorization`, `cancelAgentDeviceAuthorization`
+`packages/occ/src/device-authorization-flow.ts:createDeviceAuthorizationFlow` handles start, poll, and cancel.
 
 Device login creates a credential source and asks its Credential Refresh Driver
 to start and poll authorization. OCC binds the login to the actor, Namespace,
@@ -332,6 +331,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 ## Changelog
 
 - 2026-11-20 16:33: Point Harness binding and snapshot checks to their source module. (authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1 - 56b116735a3a38a48eff35bf36152d3032b1d7d3)
+
+- 2026-11-20 16:18: Update source pointers for the device login workflow. (authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15 - c77f4a6376b5412d0544e7dc69194877d755e2f7)
 
 - 2026-11-20 06:28: Trace retained Harness source checks and failed deploy grant rollback. (authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd - 0d220dfad528032b978eaa8e9cb55885686add44)
 

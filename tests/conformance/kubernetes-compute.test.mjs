@@ -255,6 +255,7 @@ import {
   checkProviderActivationBeforeRouting,
   checkProviderReadinessErrorsAndCancellation,
 } from "./kubernetes-provider-observation-cases.ts";
+import * as providerObservation from "./kubernetes-provider-observation-cases.ts";
 import {
   checkCountedQuotaPrecision,
   checkGatewayAndHarnessStorage,
@@ -6517,19 +6518,15 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
       provider: true,
     });
   const requirements = launch(driver);
-  assert.equal(requirements.loginMode, "api_key");
-  // Backend requirements must carry readable identities unchanged into Pod labels and selectors.
-  for (const [key, value] of Object.entries({
-    "openclaw.dev/namespace": ownership.namespaceId,
-    "openclaw.dev/agent": ownership.agentId,
-    "openclaw.dev/revision": ownership.revisionId,
-    "openclaw.dev/service-account": ownership.serviceAccountId,
-    "openclaw.dev/service-principal": ownership.servicePrincipalId,
-  })) {
-    assert.equal(workload.metadata.labels[key], value);
-    assert.equal(workload.spec.template.metadata.labels[key], value);
-    assert.equal(requirements.labels[key], value);
-  }
+  /** @type {unknown} */
+  const observedWorkload = workload;
+  /** @type {unknown} */
+  const observedRequirements = requirements;
+  providerObservation.checkProviderProjectedLabels(
+    ownership,
+    observedWorkload,
+    observedRequirements,
+  );
   assert.deepEqual(requirements.workloadIdentity, {
     serviceAccountName: workload.spec.template.spec.serviceAccountName,
     token: {
@@ -6544,25 +6541,6 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
   const withoutProjection = createKubernetesComputeDriver(options({ runtime }));
   assert.equal(launch(withoutProjection).workloadIdentity, undefined);
 });
-
-// The pinned OpenShell gateway's allowed_pod_labels check, ported from NVIDIA/OpenShell
-// bdb956f2cd65a635f1294fccf1d138d263bf650f crates/openshell-driver-kubernetes/src/config.rs
-// (pod_metadata_key_allowed): an entry is an exact key or `<domain>/*`, and the openshell.ai
-// and agents.x-k8s.io domains (and their subdomains) are never admitted.
-function openShellPodLabelAllowed(allowlist, key) {
-  const domain = key.includes("/") ? key.slice(0, key.indexOf("/")) : undefined;
-  if (
-    domain !== undefined &&
-    ["openshell.ai", "agents.x-k8s.io"].some(
-      (reserved) => domain === reserved || domain.endsWith(`.${reserved}`),
-    )
-  ) {
-    return false;
-  }
-  return allowlist.some((entry) =>
-    entry.endsWith("/*") ? domain === entry.slice(0, -2) : entry === key,
-  );
-}
 
 test("the OpenShell gateway allowlist admits every label Compute puts on a Harness Pod", () => {
   const driver = createKubernetesComputeDriver(
@@ -6593,87 +6571,19 @@ test("the OpenShell gateway allowlist admits every label Compute puts on a Harne
     auth: preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
     provider: true,
   });
+  /** @type {unknown} */
   const requirements = driver.sandboxRequirements(launch, agentId);
-  // The OpenShell Sandbox Driver forwards these labels as CreateSandbox template.labels. A key
-  // the gateway does not admit fails every create, as app.kubernetes.io/managed-by once did.
-  const refused = Object.keys(requirements.labels).filter(
-    (key) => !openShellPodLabelAllowed(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST, key),
+  providerObservation.checkOpenShellHarnessLabelAdmission(
+    requirements,
+    OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST,
   );
-  assert.deepEqual(refused, []);
-  assert.ok(Object.keys(requirements.labels).includes("app.kubernetes.io/managed-by"));
 });
 
-test("provider Harness readiness requires exactly one live matching Pod", async (t) => {
-  const fixture = providerReadinessFixture();
-  const ready = fixture.pod("harness-ready");
-  const unready = fixture.pod("harness-starting", "False");
-  const terminating = fixture.pod("harness-terminating");
-  terminating.metadata.deletionTimestamp = new Date("2026-08-25T00:00:00Z");
-  const cases = [
-    ["no Pods", [], false],
-    ["one Ready Pod", [ready], true],
-    ["one unready Pod", [unready], false],
-    ["one unknown Pod", [fixture.pod("harness-unknown", "Unknown")], false],
-    ["two Ready Pods", [ready, fixture.pod("harness-other")], false],
-    ["Ready then unready", [ready, unready], false],
-    ["unready then Ready", [unready, ready], false],
-    ["two unready Pods", [unready, fixture.pod("harness-other", "False")], false],
-    ["repeated Pod entry", [ready, ready], false],
-    ["only terminating", [terminating], false],
-    ["Ready plus terminating", [ready, terminating], true],
-    ["unready plus terminating", [unready, terminating], false],
-    ["all terminating", [terminating, terminating], false],
-  ];
-  for (const missing of ["status", "conditions"]) {
-    const waiting = fixture.pod(`harness-no-${missing}`);
-    if (missing === "status") {
-      delete waiting.status;
-    } else {
-      delete waiting.status.conditions;
-    }
-    cases.push([`missing optional ${missing}`, [waiting], false]);
-  }
-  for (const [field, value] of [
-    ["namespace", "another-namespace"],
-    ["openclaw.dev/agent", "another-agent"],
-    ["openclaw.dev/revision", "another-revision"],
-    ["openclaw.dev/workload-role", "gateway"],
-  ]) {
-    const unrelated = fixture.pod("unrelated");
-    if (field === "namespace") {
-      unrelated.metadata.namespace = value;
-    } else {
-      unrelated.metadata.labels[field] = value;
-    }
-    cases.push([`wrong ${field}`, [unrelated], false]);
-    cases.push([`Ready plus wrong ${field}`, [ready, unrelated], true]);
-  }
-  const unlabeled = fixture.pod("unlabeled");
-  delete unlabeled.metadata.labels;
-  cases.push(["no labels", [unlabeled], false]);
-  const noTypeMetadata = fixture.pod("typed-sdk-pod");
-  delete noTypeMetadata.apiVersion;
-  delete noTypeMetadata.kind;
-  cases.push(["optional Pod type metadata omitted", [noTypeMetadata], true]);
-  const stringTimestamp = structuredClone(terminating);
-  stringTimestamp.metadata.deletionTimestamp = "2026-08-25T00:00:00Z";
-  cases.push(["serialized deletion timestamp", [ready, stringTimestamp], true]);
-  for (const fraction of [".5", ".123456", ".123456789"]) {
-    const fractional = structuredClone(terminating);
-    fractional.metadata.deletionTimestamp = `2026-08-25T00:00:00${fraction}Z`;
-    cases.push([
-      `serialized deletion timestamp with ${fraction} fraction`,
-      [ready, fractional],
-      true,
-    ]);
-  }
+/** @type {unknown} */
+const providerObservationFactory = providerReadinessFixture;
 
-  for (const [name, items, expected] of cases) {
-    await t.test(name, async () => {
-      fixture.setObservation({ apiVersion: "v1", kind: "PodList", items });
-      assert.equal(await fixture.ready(), expected);
-    });
-  }
+test("provider Harness readiness requires exactly one live matching Pod", async (t) => {
+  await providerObservation.checkExactProviderHarnessReadiness(t, providerObservationFactory);
 });
 
 test(
@@ -6687,29 +6597,7 @@ test(
 );
 
 test("provider Harness requires its assigned network profile before readiness and activation", async () => {
-  const fixture = providerReadinessFixture();
-  // The provider receives the provider-fenced profile, derived from the ordinary template.
-  assert.equal(fixture.labels["openclaw.dev/network-profile"], "provider-fenced-v1");
-  fixture.setObservation({ items: [fixture.pod("approved")] });
-  assert.equal(await fixture.ready(), true);
-
-  // A provider may preserve identity and report Ready while losing the network
-  // classification, or gaining the ordinary one and with it Compute's egress grants.
-  // Reject that candidate before activation can change routing.
-  for (const profile of [undefined, "", "unknown-profile", "broad-egress-v1"]) {
-    const pod = fixture.pod("unapproved");
-    if (profile === undefined) {
-      delete pod.metadata.labels["openclaw.dev/network-profile"];
-    } else {
-      pod.metadata.labels["openclaw.dev/network-profile"] = profile;
-    }
-    fixture.setObservation({ items: [pod] });
-    await assert.rejects(fixture.ready(), /invalid or incomplete provider Harness Pod list/);
-    await assert.rejects(
-      fixture.driver.activateRevision(fixture.revision, authContext(fixture.revision)),
-      /invalid or incomplete provider Harness Pod list/,
-    );
-  }
+  await providerObservation.checkProviderAssignedNetworkProfile(providerObservationFactory);
 });
 
 test("provider Harness public trust rejects invalid material and composes with execution trust", async (t) => {
@@ -8378,31 +8266,16 @@ test("Namespace provider routing grants exact revision ingress peers and retires
     },
   );
   driver.apiClients = Promise.resolve({ objects: {} });
-  const revision = routedRevision(driver, {
-    id: "new-revision",
-    agentId: "namespace-agent",
-    sandboxDriverId: "namespace-provider",
-  });
+  const revision = routedRevision(driver, providerObservation.namespaceProviderRevisionOverrides);
   const namespace = { name: kubernetesNamespaceName(revision.namespaceId), plane: "control" };
   const render = async (preparation) =>
     (await driver.agentNetworkPoliciesWithPeers(revision, namespace, preparation)).find(
       ({ resource }) =>
         resource.metadata.name === `allow-gateway-agent-${digest(revision.agentId)}`,
     ).resource.spec.egress;
+  /** @type {unknown} */
   const grants = await render({ predecessorRevisionId: "old-revision" });
-  assert.equal(grants.length, 2);
-  assert.deepEqual(
-    new Set(grants.map((rule) => rule.to[0].podSelector.matchLabels["openclaw.dev/revision"])),
-    new Set(["new-revision", "old-revision"]),
-  );
-  for (const rule of grants) {
-    assert.equal(
-      rule.to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
-      namespace.name,
-    );
-    assert.equal(rule.to[0].podSelector.matchLabels["openclaw.dev/agent"], revision.agentId);
-    assert.deepEqual(rule.ports, [{ protocol: "TCP", port: 8080 }]);
-  }
+  providerObservation.checkNamespaceProviderGrants(grants, namespace.name, revision.agentId);
   assert.equal((await render()).length, 1, "activation removes the predecessor grant");
   missing = revision.id;
   // The predecessor alone cannot authorize switching the Gateway to the candidate.
