@@ -1,5 +1,5 @@
 import { selectsModel } from "./agent-harness-topology.ts";
-import { defaultDeploymentSandboxPolicy } from "./sandbox-policy.ts";
+import { defaultDeploymentSandboxPolicy } from "./sandbox-policy-admission.ts";
 import { types } from "node:util";
 import {
   admitRepositoryNetworkPolicy,

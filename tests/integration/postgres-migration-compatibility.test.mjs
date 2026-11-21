@@ -2485,6 +2485,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [86, "CREATE FUNCTION"],
                 [85, "CREATE TRIGGER"],
                 [84, "GRANT"],
                 [83, "GRANT"],
@@ -2520,6 +2521,10 @@ test(
             SELECT 1 FROM pg_constraint WHERE conrelid='occ.agent_revisions'::regclass
             AND conname='agent_revisions_repository_policy_reader_version'
           ) THEN RETURN; END IF;`;
+        } else if (prefix === 86) {
+          // Abort 0087's final function replacement after the validator and constraint exist.
+          failAt =
+            "IF to_regprocedure('occ.repository_git_network_admission_is_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix >= 58) {
           failAt =
             "IF to_regclass('occ.credential_delivery_reductions') IS NULL THEN RETURN; END IF;";
