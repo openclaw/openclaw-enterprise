@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-11-15
-last_updated_session: authoring-run/bfa808f8-e7f0-4a19-ba6d-00a3972ac541
+updated: 2026-11-20
+last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
 ---
 
 # Agent runtime logs flow
@@ -17,7 +17,7 @@ Authorized reads return size-limited, redacted Compute records; downloads stay l
   `occ agent runtime|logs` (`internal/occcli/agent_runtime.go`) or API. See
   [CLI reference](../reference/cli.md#runtime-status-and-logs).
 - Source: `apps/controller/src/index.ts:createFastifyApp`,
-  `packages/occ/src/index.ts:OpenClawController.describeAgentRuntime` and
+  `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.describeAgentRuntime` and
   `readAgentRuntimeLogs`, `packages/occ/src/runtime-logs/`, and
   `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.describeAgentRuntime`
   and `readAgentRuntimeLogs`.
@@ -73,9 +73,10 @@ requests; default: `text`.
 
 `packages/contracts/src/api/routes.ts:occApiRoutes` declares closed GET query schemas.
 `apps/controller/src/index.ts:perform` returns `501` for disabled `agentRuntimeLogs`.
-`OpenClawController.runtimeLogTarget` authorizes the tier action, Agent `read`,
-and Agent revision `read` for status, resolves that exact Agent's version,
-and rejects Drivers without `describeAgentRuntime` or with `runtimeLogging: "driver"`.
+`AgentRuntimeObservations.describeAgentRuntime` checks revision `read` and Agent
+`operate`. `readAgentRuntimeLogs` checks the caller's log grant on the Agent.
+Both require Agent `read`, resolve the exact revision, and reject unavailable
+Compute or Drivers that manage their own logs.
 `apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` admits reads;
 audited denials spend no token; buckets ignore clock changes.
 Before Driver I/O, the handler aborts its signal if identity lookup outlives
@@ -258,6 +259,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 
 - 2026-11-15 10:15: Condense Console and CLI return descriptions. (authoring-run/bfa808f8-e7f0-4a19-ba6d-00a3972ac541 - 0c8d829040492a70031f4b4e3b1581945884c231)
 
