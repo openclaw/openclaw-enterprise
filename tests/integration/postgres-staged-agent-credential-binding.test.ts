@@ -21,6 +21,7 @@ import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 
 test(
@@ -60,6 +61,9 @@ test(
     const privateStore = driver.installationSecrets;
     assert.ok(privateStore);
     let controlledStoreFailure: Error | undefined;
+    let pauseSourceCreate = false;
+    const createPaused = Promise.withResolvers<{ id: string; pid: number }>();
+    const resumeSourceCreate = Promise.withResolvers<void>();
     const sourceCountsBeforeCustody: number[] = [];
     const ownerStore: InstallationSecretStore = {
       create: async (ref, value) => {
@@ -70,6 +74,18 @@ test(
         );
         sourceCountsBeforeCustody.push(existing.rows[0].count);
         await privateStore.create(ref, value);
+        if (pauseSourceCreate) {
+          const identity: unknown = JSON.parse(ref.id);
+          assert.ok(Array.isArray(identity) && typeof identity[4] === "string");
+          const holding = await pool.query(
+            `SELECT pid FROM pg_stat_activity WHERE datname=current_database()
+               AND usename=current_user AND state='idle in transaction'
+               AND query LIKE '%INSERT INTO occ.credential_sources%'`,
+          );
+          assert.equal(holding.rowCount, 1);
+          createPaused.resolve({ id: identity[4], pid: holding.rows[0].pid });
+          await resumeSourceCreate.promise;
+        }
       },
       update: async (ref, value) => {
         if (controlledStoreFailure !== undefined) {
@@ -91,7 +107,7 @@ test(
       controller.installation.id,
       ownerStore,
       instanceId,
-      (work) => controller.transact(({ credentialSources }) => work(credentialSources)),
+      state,
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);
@@ -608,7 +624,7 @@ test(
       controller.installation.id,
       driver.installationSecrets,
       instanceId,
-      (work) => controller.transact(({ credentialSources }) => work(credentialSources)),
+      state,
     );
     controller.registerDriver(replacement);
     controller.selectDriver("token_service", replacement.id);
@@ -624,8 +640,49 @@ test(
       [sourceId],
     );
     assert.equal(metadata.rowCount, 1);
+    // A failed owner removal leaves the admitted Source deleting. New IAM grants must
+    // not target that Source while an authorized retry can still finish retirement.
+    controlledStoreFailure = new Error("Controlled retirement failure");
+    const retirementFailed = remember(await inject("DELETE", sourcePath));
+    assert.equal(retirementFailed.statusCode, 503, retirementFailed.body);
+    assert.equal((await inject("GET", sourcePath)).json().data.state, "deleting");
+    const sourceBindingCount = async () =>
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM occ.iam_access_bindings WHERE namespace_id=$1 AND resource_kind='credential_source' AND resource_id=$2",
+          [namespaceId, sourceId],
+        )
+      ).rows[0].count as number;
+    const bindingsBeforeRejectedGrant = await sourceBindingCount();
+    const grantWhileDeleting = await grantSource(authorId);
+    assert.equal(grantWhileDeleting.statusCode, 400, grantWhileDeleting.body);
+    assert.equal(grantWhileDeleting.json().error.code, "INVALID_REQUEST");
+    assert.equal(await sourceBindingCount(), bindingsBeforeRejectedGrant);
+    const actualBindingsRemoved = (
+      await pool.query(
+        `SELECT id FROM occ.iam_access_bindings WHERE namespace_id=$1
+           AND resource_kind='credential_source' AND resource_id=$2 ORDER BY id`,
+        [namespaceId, sourceId],
+      )
+    ).rows;
     const retired = remember(await inject("DELETE", sourcePath));
     assert.equal(retired.statusCode, 204, retired.body);
+    const deletionAudit = (
+      await pool.query(
+        "SELECT details->'removedAccessBindings' AS removed FROM occ.audit_events WHERE action='openclaw.credential_sources.delete' AND resource_id=$1 AND outcome='success'",
+        [sourceId],
+      )
+    ).rows[0];
+    assert.deepEqual(
+      deletionAudit.removed.map((binding: { id: string }) => binding.id).sort(),
+      actualBindingsRemoved.map((binding) => binding.id),
+    );
+    assert.ok(
+      deletionAudit.removed.every(
+        (binding: { resourceKind: string; resourceId: string }) =>
+          binding.resourceKind === "credential_source" && binding.resourceId === sourceId,
+      ),
+    );
     // Once retirement removes the Source, a retry must report absence without selecting a legacy owner.
     const retried = remember(await inject("DELETE", sourcePath));
     assert.equal(retried.statusCode, 404, retried.body);
@@ -653,6 +710,43 @@ test(
       [namespaceId],
     );
     assert.ok(requestAudit.rows[0].count > 0, "durable HTTP request audit must be enabled");
+    // Queue an authorized administrator's DELETE behind TokenService's uncommitted create.
+    // Deletion admission wins the Namespace lock before OCC can finalize creator access.
+    pauseSourceCreate = true;
+    const creating = Promise.resolve(
+      inject("POST", `${base}/credential-sources`, {
+        name: "Source retired before creator finalization",
+        type: "static",
+        secret: { opaque: randomUUID() },
+      }),
+    );
+    let deleting: Promise<Awaited<ReturnType<typeof inject>>> | undefined;
+    let racedId: string | undefined;
+    try {
+      const paused = await createPaused.promise;
+      racedId = paused.id;
+      deleting = Promise.resolve(inject("DELETE", `${base}/credential-sources/${paused.id}`));
+      await waitForLockWaiter(pool, paused.pid, "administrator DELETE waiting for Source create", {
+        queryLike: "%FROM occ.namespaces%",
+      });
+      resumeSourceCreate.resolve();
+      const [createdAfterDelete, deleted] = await Promise.all([creating, deleting]);
+      assert.equal(deleted.statusCode, 204, deleted.body);
+      assert.equal(createdAfterDelete.statusCode, 409, createdAfterDelete.body);
+      assert.equal(createdAfterDelete.json().error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS count FROM occ.iam_access_bindings WHERE namespace_id=$1 AND resource_kind='credential_source' AND resource_id=$2",
+            [namespaceId, racedId],
+          )
+        ).rows[0].count,
+        0,
+      );
+    } finally {
+      resumeSourceCreate.resolve();
+      await Promise.allSettled([creating, ...(deleting === undefined ? [] : [deleting])]);
+    }
     for (const value of material) {
       assert.equal(
         publicResponses.some((body) => body.includes(value)),

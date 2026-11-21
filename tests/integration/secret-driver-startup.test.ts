@@ -96,7 +96,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     // Substitute only the Core API transport; ownership checks remain in the real Driver.
     Reflect.set(drivers.secretDriver, "client", Promise.resolve(core));
     const controller = new OpenClawController(installation, { state });
-    await installTokenServiceDriver(controller, drivers);
+    await installTokenServiceDriver(controller, drivers, state);
     return controller;
   }
 
@@ -135,7 +135,9 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     sourceRef: { kind: "credential_source" as const, namespaceId, id: source.id },
     tokenServiceInstanceId: initialInstance,
   };
-  await owner.prepareSourceRetirement(sourceInstance, AbortSignal.timeout(5_000));
+  await state.transact(({ credentialSources }) =>
+    credentialSources.markCredentialSourceDeleting(namespaceId, source.id),
+  );
   await owner.removeSource(sourceInstance, AbortSignal.timeout(5_000));
 
   const replacement = await start("secret-b");

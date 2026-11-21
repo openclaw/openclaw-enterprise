@@ -19,7 +19,9 @@ grant destination authority. OCC stores no Namespace Secret reference for this
 Source. The optional `config.provider_preset` permits the exact approved preset
 `openai`; omitting it grants no provider authority. If a private-store write is
 unconfirmed, POST can fail without creating a Source while leaving orphaned
-credential material. The current store cannot list orphaned material.
+credential material. An authorized request already in flight may finish after IAM
+revocation. A failure after TokenService commits can instead leave a Source
+without creator access. The current store cannot list orphaned material.
 
 Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId`
 with exact `credential_source:update`. Supply `secret`, `config`, or both.
@@ -39,8 +41,9 @@ readiness.
 
 DELETE requires exact `credential_source:delete` and refuses a referenced
 Source with `409`. TokenService retires the Source and its credential. DELETE
-returns `204` after Source removal and completion audit. Until then, the Source
-blocks Namespace deletion and cleanup can be retried.
+returns `204` after Source removal and completion audit. An uncertain removal can
+leave a `deleting` Source for retry. If removal succeeds but completion audit
+fails, the Source is already gone and another DELETE returns `404`.
 
 An authorized Agent draft can bind the Source for Harness authentication.
 Deployment currently returns `409` before creating an Agent revision or work;

@@ -264,7 +264,7 @@ export const credentialSourceHandlers = {
     reply.send({ data: clientCredentialWithdrawal(withdrawal), meta: { requestId: request.id } });
   },
   async deleteCredentialSource({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    // Deletion commits in two steps around the owner call; audit commits with removal.
+    // Managed removal and completion audit commit independently.
     const credentialSourceId = params.credentialSourceId as string;
     await controller.deleteCredentialSource(
       context.actorId,

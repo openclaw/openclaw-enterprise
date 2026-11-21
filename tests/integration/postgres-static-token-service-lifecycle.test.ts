@@ -93,7 +93,7 @@ test(
       controller.installation.id,
       driver.installationSecrets,
       instanceId,
-      (work) => controller.transact(({ credentialSources }) => work(credentialSources)),
+      state,
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);
@@ -239,6 +239,47 @@ test(
       ).rows.at(-1),
       { actor_id: principal.id, resource_id: namespaceId, phase: "registration_started" },
     );
+
+    // TokenService commits the Source and credential before OCC grants creator IAM and appends
+    // completion audit. A failure in OCC leaves a real dangling Source; the prior intent remains.
+    const createIntentCount = async () =>
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM occ.audit_events WHERE action='openclaw.credential_sources.create.started' AND resource_id=$1 AND actor_id=$2",
+          [namespaceId, principal.id],
+        )
+      ).rows[0].count as number;
+    const createIntentsBeforeDangling = await createIntentCount();
+    const danglingKey = randomUUID();
+    await withRejectedAuditRows(migrator, "openclaw.credential_sources.create", async () => {
+      await assert.rejects(
+        createSource("Dangling after audit failure", danglingKey),
+        AuditAppendUnavailableError,
+      );
+    });
+    const dangling = (
+      await pool.query(
+        `SELECT id,state FROM occ.credential_sources WHERE namespace_id=$1 AND name=$2`,
+        [namespaceId, "Dangling after audit failure"],
+      )
+    ).rows[0];
+    assert.equal(dangling.state, "ready");
+    assert.deepEqual(await custodyRows(), [{ sources: 1, bindings: 0 }]);
+    assert.equal(
+      (
+        await owner.resolveCredential(
+          {
+            sourceRef: { kind: "credential_source", namespaceId, id: dangling.id },
+            tokenServiceInstanceId: instanceId,
+          },
+          AbortSignal.timeout(5_000),
+        )
+      ).credential,
+      danglingKey,
+    );
+    assert.equal(await createIntentCount(), createIntentsBeforeDangling + 1);
+    await retire(dangling.id);
+    assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
 
     // Static custody accepts no settings. Successful registration proves OCC did not forward the approval.
     const approved = await createSource("Approved provider", randomUUID(), "openai");
@@ -449,7 +490,8 @@ test(
       [{ recorded: true, preset: null }],
     );
 
-    // Revocation cannot pass a source update that already acquired the policy fence while waiting on its row.
+    // Revocation waits for the owner's Namespace lock. An update authorized before
+    // revocation may finish; later requests must be denied.
     const lock = await pool.connect();
     let open = false;
     const requests: Promise<unknown>[] = [];
@@ -460,6 +502,14 @@ test(
         "SELECT pg_backend_pid() AS pid FROM occ.credential_sources WHERE id=$1 FOR UPDATE",
         [sourceId],
       );
+      const memberSuccessCount = async () =>
+        (
+          await pool.query(
+            "SELECT count(*)::int AS count FROM occ.audit_events WHERE action='openclaw.credential_sources.update' AND resource_id=$1 AND actor_id=$2 AND outcome='success'",
+            [sourceId, memberId],
+          )
+        ).rows[0].count as number;
+      const successesBeforeUpdate = await memberSuccessCount();
       const concurrentKey = randomUUID();
       const patching = update(memberId, concurrentKey);
       requests.push(patching);
@@ -483,9 +533,10 @@ test(
       );
       await lock.query("ROLLBACK");
       open = false;
-      await patching;
       assert.equal((await revoking).statusCode, 204);
+      assert.equal((await patching).id, sourceId);
       assert.equal(await resolve(), concurrentKey);
+      assert.equal(await memberSuccessCount(), successesBeforeUpdate + 1);
       await assert.rejects(update(memberId, randomUUID()), AuthorizationDeniedError);
     } finally {
       if (open) {
@@ -509,17 +560,21 @@ test(
         .state,
       "ready",
     );
-    // A failed completion audit must not commit Source metadata or creator-IAM removal.
-    // Custody may already be removed; retaining deleting state permits an authorized retry.
+    // TokenService already removed the Source, custody, and its IAM bindings when OCC's
+    // completion audit fails. The separately committed retirement intent remains attributable.
     await withRejectedAuditRows(migrator, "openclaw.credential_sources.delete", async () => {
       await assert.rejects(retire(sourceId), AuditAppendUnavailableError);
     });
+    assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
     assert.equal(
-      (await pool.query("SELECT state FROM occ.credential_sources WHERE id=$1", [sourceId])).rows[0]
-        .state,
-      "deleting",
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM occ.audit_events WHERE action='openclaw.credential_sources.delete.started' AND resource_id=$1 AND actor_id=$2",
+          [sourceId, principal.id],
+        )
+      ).rows[0].count,
+      1,
     );
-    assert.deepEqual(await custodyRows(), [{ sources: 1, bindings: 1 }]);
     assert.equal(
       (
         await pool.query(
@@ -529,16 +584,7 @@ test(
       ).rows[0].count,
       0,
     );
-    await retire(sourceId);
-    assert.equal(
-      (
-        await pool.query(
-          "SELECT count(*)::int AS count FROM occ.audit_events WHERE action='openclaw.credential_sources.delete' AND resource_id=$1 AND outcome='success'",
-          [sourceId],
-        )
-      ).rows[0].count,
-      1,
-    );
+    await assert.rejects(retire(sourceId), ScopeViolationError);
     assert.equal(core.secrets.size, 1, "only the accepted orphan from the lost write remains");
     assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
     assert.equal(

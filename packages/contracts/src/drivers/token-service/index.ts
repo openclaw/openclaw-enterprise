@@ -1,4 +1,4 @@
-import type { CredentialSource, CredentialSourceReference } from "../../index.ts";
+import type { AccessBinding, CredentialSource, CredentialSourceReference } from "../../index.ts";
 import type { Driver } from "../index.ts";
 
 export type TokenServiceSourceRef = CredentialSourceReference | InstallationClientSecretRef;
@@ -39,17 +39,10 @@ export type SourceUpdate =
   | {
       readonly secret: SecretFields;
       readonly lifecycleConfig?: SourceLifecycleConfig;
-      readonly config?: SourceConfig;
     }
   | {
       readonly lifecycleConfig: SourceLifecycleConfig;
       readonly secret?: SecretFields;
-      readonly config?: SourceConfig;
-    }
-  | {
-      readonly config: SourceConfig;
-      readonly secret?: SecretFields;
-      readonly lifecycleConfig?: SourceLifecycleConfig;
     };
 
 export interface ResolvedCredential {
@@ -97,6 +90,8 @@ export interface TokenServiceDriver extends Omit<Driver, "capability"> {
     operation: SourceRefreshOperation,
     signal: AbortSignal,
   ): Promise<CredentialRefreshStatus>;
-  prepareSourceRetirement(source: TokenServiceSourceInstance, signal: AbortSignal): Promise<void>;
-  removeSource(source: TokenServiceSourceInstance, signal: AbortSignal): Promise<void>;
+  removeSource(
+    source: TokenServiceSourceInstance,
+    signal: AbortSignal,
+  ): Promise<readonly AccessBinding[]>;
 }

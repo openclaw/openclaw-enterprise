@@ -66,7 +66,6 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       "resolveCredential",
       "forceRefresh",
       "getRefreshStatus",
-      "prepareSourceRetirement",
       "removeSource",
     ].every((operation) => typeof candidate[operation] === "function");
   }

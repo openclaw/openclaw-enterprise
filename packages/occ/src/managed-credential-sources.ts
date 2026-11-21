@@ -29,7 +29,6 @@ import {
   credentialSourceRef,
   isManagedTokenServiceSource,
 } from "./credential-source-metadata.ts";
-import { auditUncommittedCredentialEffect } from "./credential-source-operations.ts";
 import {
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
@@ -39,7 +38,11 @@ import {
   RetryLaterError,
   ScopeViolationError,
 } from "./errors.ts";
-import { accessBindingsTargeting, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
+import {
+  accessBindingsTargeting,
+  removedAccessBinding,
+  type RemovedAccessBinding,
+} from "./iam-policy-cleanup.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
@@ -75,11 +78,7 @@ function managedSourceConfig(
   source: Readonly<CredentialSource>,
   input: UpdateManagedCredentialSourceInput,
 ): Readonly<Record<string, string>> {
-  const config = { ...(input.lifecycleConfig?.settings ?? source.config) };
-  const approved = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
-  if (input.lifecycleConfig !== undefined && approved !== undefined) {
-    config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] = approved;
-  }
+  const config = { ...source.config };
   if (input.providerPreset === null) {
     delete config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
   } else if (input.providerPreset !== undefined) {
@@ -89,10 +88,7 @@ function managedSourceConfig(
 }
 
 interface ManagedCredentialSourceDependencies {
-  readonly transactions: Pick<
-    ControllerTransactions,
-    "transact" | "registerRollback" | "requireIndependentMutation"
-  >;
+  readonly transactions: Pick<ControllerTransactions, "transact" | "requireIndependentMutation">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
   readonly sourceDrivers: Pick<
     CredentialSourceDrivers,
@@ -198,44 +194,54 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       }
       return ownedTokenServiceDriver();
     };
-    // Audit the authorized request before private custody can change. No Source is reserved.
-    await dependencies.transactions.transact(async (state) => {
-      await authorize(state);
-      await state.audit.append(audit(collection, "registration_started"));
-    });
-    return dependencies.transactions.transact(async (state) => {
+    const owner = await dependencies.transactions.transact(async (state) => {
       const owner = await authorize(state);
-      const config =
-        input.providerPreset === undefined
-          ? {}
-          : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: input.providerPreset };
-      const created = await dependencies.driverOperation(() =>
-        owner.createSource(
-          {
-            namespaceId,
-            name: input.name,
-            lifecycleConfig: input.lifecycleConfig,
-            secret: input.secret,
-            config,
-          },
-          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
-        ),
+      await state.audit.append(audit(collection, "registration_started"));
+      return owner;
+    });
+    const config =
+      input.providerPreset === undefined
+        ? {}
+        : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: input.providerPreset };
+    const created = await dependencies.driverOperation(() =>
+      owner.createSource(
+        {
+          namespaceId,
+          name: input.name,
+          lifecycleConfig: input.lifecycleConfig,
+          secret: input.secret,
+          config,
+        },
+        AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+      ),
+    );
+    if (
+      !isManagedTokenServiceSource(created) ||
+      created.namespaceId !== namespaceId ||
+      created.tokenServiceInstanceId !== currentTokenServiceInstanceId() ||
+      created.state !== "ready" ||
+      created.type !== input.lifecycleConfig.type ||
+      created.name !== input.name ||
+      Object.keys(created.secrets).length !== 0 ||
+      JSON.stringify(created.config) !== JSON.stringify(config)
+    ) {
+      throw new ResourceStateConflictError(
+        "The TokenService returned an invalid credential source.",
       );
+    }
+    return dependencies.transactions.transact(async (state) => {
+      await lockNamespace(state, namespaceId);
+      const current = await state.credentialSources.lockCredentialSource(namespaceId, created.id);
       if (
-        !isManagedTokenServiceSource(created) ||
-        created.namespaceId !== namespaceId ||
-        created.tokenServiceInstanceId !== currentTokenServiceInstanceId() ||
-        created.state !== "ready" ||
-        created.type !== input.lifecycleConfig.type ||
-        created.name !== input.name ||
-        Object.keys(created.secrets).length !== 0 ||
-        JSON.stringify(created.config) !== JSON.stringify(config)
+        !isManagedTokenServiceSource(current) ||
+        current.state !== "ready" ||
+        current.tokenServiceInstanceId !== created.tokenServiceInstanceId
       ) {
         throw new ResourceStateConflictError(
-          "The TokenService returned an invalid credential source.",
+          "The credential source changed before creator access was granted.",
         );
       }
-      const ref = credentialSourceRef(created);
+      const ref = credentialSourceRef(current);
       await dependencies.bindCreator(state, principalId, ref);
       const completed = audit(ref);
       await state.audit.append(
@@ -246,7 +252,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
               details: { ...completed.details, providerPreset: input.providerPreset },
             },
       );
-      return credentialSourceMetadata(created);
+      return credentialSourceMetadata(current);
     });
   }
 
@@ -265,7 +271,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       id: ref.credentialSourceId,
     };
     const changesCredential = input.secret !== undefined || input.lifecycleConfig !== undefined;
-    const authorize = async (state: PlatformUnitOfWork, lockSource: boolean) => {
+    const authorize = async (state: PlatformUnitOfWork) => {
       await dependencies.authority.authorize(principalId, "update", resource);
       await dependencies.authority.holdAuthority(state);
       const namespace = await lockNamespace(state, ref.namespaceId);
@@ -284,15 +290,10 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "A source update requires a provider preset or owner update.",
         );
       }
-      const source = lockSource
-        ? await state.credentialSources.lockCredentialSource(
-            ref.namespaceId,
-            ref.credentialSourceId,
-          )
-        : await state.credentialSources.findCredentialSource(
-            ref.namespaceId,
-            ref.credentialSourceId,
-          );
+      const source = await state.credentialSources.lockCredentialSource(
+        ref.namespaceId,
+        ref.credentialSourceId,
+      );
       if (!source) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
@@ -303,7 +304,6 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "This credential source cannot be updated through the selected TokenService.",
         );
       }
-      const owner = ownedTokenServiceDriver(source.tokenServiceInstanceId);
       const presetChanges =
         input.providerPreset !== undefined &&
         (input.providerPreset ?? undefined) !== source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
@@ -313,40 +313,61 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         );
       }
       if (
-        lockSource &&
         presetChanges &&
         (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
       ) {
         throw new ResourceStateConflictError("Provider preset changes require an unbound source.");
       }
-      return { source, owner };
+      return source;
     };
-    if (changesCredential) {
-      await dependencies.transactions.transact(async (state) => {
-        await authorize(state, false);
-        await state.audit.append(audit(resource, "update_started"));
+    const completedAudit = () => {
+      const completed = audit(resource);
+      return input.providerPreset === undefined
+        ? completed
+        : {
+            ...completed,
+            details: { ...completed.details, providerPreset: input.providerPreset },
+          };
+    };
+    if (!changesCredential) {
+      return dependencies.transactions.transact(async (state) => {
+        const source = await authorize(state);
+        const updated = await state.credentialSources.updateCredentialSourceConfig(
+          ref.namespaceId,
+          source.id,
+          managedSourceConfig(source, input),
+        );
+        if (!updated) {
+          throw new ResourceStateConflictError("The credential source changed during update.");
+        }
+        await state.audit.append(completedAudit());
+        return credentialSourceMetadata(updated);
       });
     }
-    return dependencies.transactions.transact(async (state) => {
-      const { source, owner } = await authorize(state, true);
-      if (changesCredential) {
-        auditUncommittedCredentialEffect(
-          dependencies.transactions,
-          failureAudit,
-          "CREDENTIAL_SOURCE_UPDATE_FAILED",
-        );
-      }
-      const config = managedSourceConfig(source, input);
+    const { source, owner } = await dependencies.transactions.transact(async (state) => {
+      const source = await authorize(state);
+      const owner = ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      await state.audit.append(audit(resource, "update_started"));
+      return { source, owner };
+    });
+    let update: SourceUpdate;
+    if (input.secret !== undefined) {
+      update = {
+        secret: input.secret,
+        ...(input.lifecycleConfig === undefined ? {} : { lifecycleConfig: input.lifecycleConfig }),
+      };
+    } else if (input.lifecycleConfig !== undefined) {
+      update = { lifecycleConfig: input.lifecycleConfig };
+    } else {
+      throw new ScopeViolationError(
+        "A credential update requires credential material or lifecycle settings.",
+      );
+    }
+    try {
       const updated = await dependencies.driverOperation(() =>
         owner.updateSource(
           { sourceRef: resource, tokenServiceInstanceId: source.tokenServiceInstanceId },
-          {
-            config,
-            ...(input.secret === undefined ? {} : { secret: input.secret }),
-            ...(input.lifecycleConfig === undefined
-              ? {}
-              : { lifecycleConfig: input.lifecycleConfig }),
-          },
+          update,
           AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
         ),
       );
@@ -354,24 +375,24 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         !isManagedTokenServiceSource(updated) ||
         updated.id !== source.id ||
         updated.namespaceId !== source.namespaceId ||
-        updated.tokenServiceInstanceId !== source.tokenServiceInstanceId ||
-        JSON.stringify(updated.config) !== JSON.stringify(config)
+        updated.tokenServiceInstanceId !== source.tokenServiceInstanceId
       ) {
         throw new ResourceStateConflictError(
           "The TokenService returned an invalid credential source.",
         );
       }
-      const completed = audit(resource);
-      await state.audit.append(
-        input.providerPreset === undefined
-          ? completed
-          : {
-              ...completed,
-              details: { ...completed.details, providerPreset: input.providerPreset },
-            },
-      );
+      await dependencies.transactions.transact((state) => state.audit.append(completedAudit()));
       return credentialSourceMetadata(updated);
-    });
+    } catch (error) {
+      try {
+        await dependencies.transactions.transact((state) =>
+          state.audit.append(failureAudit("CREDENTIAL_SOURCE_UPDATE_FAILED")),
+        );
+      } catch {
+        // Preserve the original failure when audit storage is unavailable.
+      }
+      throw error;
+    }
   }
 
   /**
@@ -449,22 +470,16 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
             ? undefined
             : dependencies.sourceDrivers.credentialSourceOwner(found);
         if (isManagedTokenServiceSource(found)) {
-          const owner = ownedTokenServiceDriver(found.tokenServiceInstanceId);
-          await dependencies.driverOperation(() =>
-            owner.prepareSourceRetirement(
-              {
-                sourceRef: credentialSourceRef(found),
-                tokenServiceInstanceId: found.tokenServiceInstanceId,
-              },
-              AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
-            ),
-          );
+          ownedTokenServiceDriver(found.tokenServiceInstanceId);
+          const deleting =
+            found.state === "deleting"
+              ? found
+              : await state.credentialSources.markCredentialSourceDeleting(locked.id, found.id);
+          if (!deleting) {
+            throw new ResourceStateConflictError("The credential source changed during deletion.");
+          }
           await state.audit.append(audit!([], "retirement_started"));
-          return {
-            namespace: locked,
-            source: found,
-            gateway: undefined,
-          };
+          return { namespace: locked, source: deleting, gateway: undefined };
         }
         const deleting =
           found.state === "deleting"
@@ -486,23 +501,12 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         sourceRef: credentialSourceRef(source),
         tokenServiceInstanceId: source.tokenServiceInstanceId,
       };
-      await dependencies.transactions.transact(async (state) => {
-        await dependencies.lockNamespaceForPolicyDelete(state, principalId, {
-          kind: "credential_source",
-          id: source.id,
-          namespaceId: namespace.id,
-        });
-        const removed = await accessBindingsTargeting(
-          state,
-          namespace.id,
-          "credential_source",
-          source.id,
-        );
-        await dependencies.driverOperation(() =>
-          owner.removeSource(identity, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
-        );
-        await state.audit.append(audit!(removed));
-      });
+      const removed = await dependencies.driverOperation(() =>
+        owner.removeSource(identity, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
+      );
+      await dependencies.transactions.transact((state) =>
+        state.audit.append(audit!(removed.map(removedAccessBinding))),
+      );
       return;
     }
     await retireCredentialSourceMaterial(namespace, source, gateway);

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-21
-last_updated_session: authoring-run/8bfb022d-2367-4ffc-b161-e5ea19cb7a80
+last_updated_session: authoring-run/e9a8f5b4-f521-4f22-ab7b-1639413a47a4
 ---
 
 # Credential source lifecycle flow
@@ -39,9 +39,9 @@ Solid arrows show implemented enrollment and draft binding. The dashed edge mark
 
 `apps/controller/src/http/credential-sources.ts:createCredentialSource`, `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-The caller sends the credential in the write-only `secret` field of Source POST. OCC authorizes `credential_source:create` on the ready Namespace, validates approved destination policy, and records the request audit. It calls `TokenServiceDriver.createSource`; TokenService assigns the ID, creates the canonical Source and credential, and returns the ready Source. OCC grants the creator access and records success. Responses contain sanitized metadata and never return the credential.
+The caller sends the credential in the write-only `secret` field of Source POST. OCC authorizes `credential_source:create` on the ready Namespace, validates approved destination policy, and records the request audit. It calls `TokenServiceDriver.createSource`; TokenService assigns the ID, creates the canonical Source and credential, and returns the ready Source. TokenService commits independently; OCC grants the creator access and records success in a separate transaction. Responses contain sanitized metadata and never return the credential.
 
-A failure after a private-store write can leave orphaned credential material without a committed Source. OCC reports failure and retains the request audit; the current private Secret store does not provide orphan inventory. See the [managed static reference](../reference/credential-sources/managed-static.md) for inputs and the [custody flow](token-service-static-custody.md) for execution.
+A failure can leave orphaned credential material or a committed Source without its creator IAM grant. OCC reports failure and retains the request audit; the current private Secret store does not provide orphan inventory. See the [managed static reference](../reference/credential-sources/managed-static.md) for inputs and the [custody flow](token-service-static-custody.md) for execution.
 
 The deprecated `CredentialGatewayDriver` and transitional protected Source forms are deferred to separate cutovers.
 
@@ -49,7 +49,7 @@ The deprecated `CredentialGatewayDriver` and transitional protected Source forms
 
 `packages/occ/src/credential-source-operations.ts:credentialSourceUpdateIdentity`, `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`
 
-OCC authorizes exact `credential_source:update` and dispatches PATCH by the locked Source owner. For a managed static Source, TokenService replaces material from the write-only `secret` field; omitted fields retain their values. A provider-preset change or removal requires an unbound Source and a separate request from credential replacement. TokenService updates the Source and any credential material; OCC records audit after confirming the authorized policy change. See the [managed static reference](../reference/credential-sources/managed-static.md) for PATCH rules.
+OCC authorizes exact `credential_source:update` and dispatches PATCH by the locked Source owner. For a managed static Source, TokenService replaces material from the write-only `secret` field; omitted fields retain their values. A provider-preset change or removal requires an unbound Source and a separate request from credential replacement. OCC commits policy-only changes itself; credential updates go through TokenService in its own transaction before OCC records completion. See the [managed static reference](../reference/credential-sources/managed-static.md) for PATCH rules.
 
 ### 3. Bind and admit an Agent revision
 
@@ -71,7 +71,7 @@ The staged native Proxy can accept an admitted binding and deliver a credential 
 
 `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
-DELETE requires exact `credential_source:delete` and rejects blocking Agent, revision, deployment, provisioning, or withdrawal references. OCC records retirement intent and calls the recorded TokenService. TokenService rechecks references and commits `deleting`. OCC then calls TokenService removal inside the transaction that deletes the canonical Source and its IAM bindings and records completion. Uncertain removal leaves the Source available for an authorized DELETE retry.
+DELETE requires exact `credential_source:delete` and rejects blocking Agent, revision, deployment, provisioning, or withdrawal references. OCC commits `deleting` and retirement intent, then calls TokenService without holding a transaction. TokenService independently removes custody, the Source, and its IAM bindings. OCC records completion separately. Uncertain removal can leave `deleting` for retry; if removal committed, a later audit failure cannot restore the Source.
 
 ## Debugging and Verification
 
@@ -89,6 +89,8 @@ Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 21:14: Describe independently committed TokenService operations and partial outcomes. (authoring-run/e9a8f5b4-f521-4f22-ab7b-1639413a47a4 - f7a5c4b60d7902f6d13a41faaf13386931648795)
 
 - 2026-11-21 20:34: Move Source creation and lifecycle ownership to TokenService. (authoring-run/8bfb022d-2367-4ffc-b161-e5ea19cb7a80 - 55c444f3735a372e9f76a8f7e85a8ec4396ef7c7)
 
