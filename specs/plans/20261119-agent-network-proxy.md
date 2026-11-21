@@ -61,8 +61,12 @@ hostname for SNI and certificate verification. Reuse the installation's public
 CA Secret pattern: optional chart inputs
 `channelEgress.proxyTrust.caSecretName` and `caKey` select a PEM bundle of
 public CA certificates, with the same reference in Compute configuration.
-Combine that bundle with public roots for Envoy; do not mount it into Gateway
-or Harness Pods. A missing or invalid bundle fails installation or admission.
+The Secret resides in the Envoy namespace and contains the complete trust
+bundle, including public roots and the required private CA. Mount it read-only
+in the Envoy fleet through EnvoyProxy and reference the mounted file from TLS
+validation. Without this input, use the Envoy image's public root bundle. Do
+not mount either bundle into Gateway or Harness Pods. A missing or invalid
+bundle fails installation or admission.
 
 ## Owners and implementation order
 
@@ -94,8 +98,14 @@ or Harness Pods. A missing or invalid bundle fails installation or admission.
    Stage one binding-owned Kubernetes Secret in the Gateway configuration
    namespace with key `credential`; Envoy Gateway becomes a trusted reader of
    that credential. Use a binding-specific Secret name and SDS reference.
-   Activate the injector on the patched binding listener; Envoy Gateway's
-   generated route filter is disabled until a route enables it.
+   Generate SDS through a binding-specific HTTPRoute that matches a reserved
+   path and returns 503 through the existing deny filter; attach no forwarding
+   backend. Include the source Secret UID and resource version in the binding
+   identity. Refuse a retry if that material version changed; a new deployment
+   can select the new version.
+   Activate the injector in that listener's router upstream filter chain,
+   after CONNECT and proxy-address enforcement and before the upstream codec;
+   Envoy Gateway's generated route filter is disabled until a route enables it.
    Overwrite any downstream `Proxy-Authorization` header. Remove the Secret
    only after the deny chain is installed and old tunnels have drained.
    Preserve capacity limits, retries, stop, deletion, and port-release fences.
@@ -154,16 +164,42 @@ through the real caller; register new cases in CI.
   reference from a Kubernetes Secret and HTTPRouteFilter. Its generated
   injector had `disabled: true`; copying it unchanged forwarded a supplied
   authorization header. Activating the injector in the binding's patched
-  listener corrected this failure. With an egress NetworkPolicy scoped to the
+  listener corrected this failure. A further installed probe placed the
+  injector in the router's upstream HTTP filter chain, before the upstream
+  codec. This is the selected placement: the listener authorizes CONNECT
+  first, and the injector runs only for the selected proxy cluster. With an
+  egress NetworkPolicy scoped to the
   controlled proxy's private `/32` and port, CONNECT returned 200, tunnel bytes
   passed, the selected credential replaced the supplied header, forbidden
   authority returned 404, and proxy outage returned 503. Credential bytes were
   absent from the patch, Envoy inspection, Envoy logs, and controller logs.
   The cluster was removed. This proves an installed Envoy path, not OCE
   admission, audit, revision lifecycle, or a real Gateway channel connection.
-- Installation CA delivery, inspection through OCE, shipped Gateway
-  compatibility, and the real Agent acceptance journey remain unqualified.
-  Runtime implementation is gated on that evidence.
+- A deny-only route with credential injection also generated ADS/SDS without a
+  forwarding backend. The patched listener then completed authenticated
+  CONNECT and tunnel bytes through a private HTTPS proxy, using a CA read from
+  a Kubernetes Secret. A second installed probe mounted the installation CA
+  Secret read-only through EnvoyProxy and used its filename for TLS validation;
+  authenticated CONNECT and tunnel bytes passed. Forbidden authority and outage
+  remained closed.
+- The exact generated OCE read-only inspection chain returned the SDS Secret
+  reference but no credential bytes from `/config_dump` on Envoy 1.39.4.
+- The published stable Gateway runtime connected in Socket Mode to a controlled
+  Slack-compatible provider using synthetic tokens and `SLACK_API_URL`. The
+  provider recorded `auth.test`, `apps.connections.open`, and a WebSocket
+  handshake. Both CONNECT requests passed through the assigned Envoy listener
+  and authenticated upstream proxy. This proves genuine Gateway plugin and
+  tunnel execution against a stand-in. It does not prove Slack or normal OCE
+  Agent admission: OCE's installed Channel Driver permits Slack-owned hosts.
+- A local image built from the exact current source pin has image ID
+  `sha256:3acacc337adcb9be49ec55408997fa3299b289e4b16918011ed358faf5660c69`,
+  OpenClaw 2026.11.5, proxyline 0.4.1, and matching packaged provenance. Its
+  Gateway completed the same controlled Socket Mode connection: two
+  authenticated CONNECT requests, both API calls, and one WebSocket handshake.
+  The Gateway could not read the proxy Secret file, and its logs contained no
+  proxy credential. This satisfies the pre-implementation Gateway and Envoy
+  qualification for the selected design. It is a local build and stand-in
+  provider, not a published image or live Slack acceptance.
 - The published `ghcr.io/openclaw/openclaw-enterprise-runtime:stable` index
   resolves to `sha256:6d0af87f6b2b803975cba47305bf69cd59aef69427290f0490da31f488855cb9`.
   Its OpenClaw package is 2026.10.8 and uses `@openclaw/proxyline` 0.4.0;
@@ -175,7 +211,8 @@ through the real caller; register new cases in CI.
   `OCC_TEST_SLACK_SENDER_BOT_TOKEN`, and `OCC_TEST_SLACK_CHANNEL_ID`.
   No local credential set is configured. The [Slack test guide](../../docs/testing/slack.md#slack)
   requires an authorized non-DM channel and distinct sender bot. Without those
-  inputs, the real Gateway channel qualification and AC journey cannot run.
+  inputs, the live Slack Agent QA journey cannot run. The controlled provider
+  does not satisfy that acceptance requirement.
 
 ## Manual Notes
 
@@ -183,3 +220,5 @@ through the real caller; register new cases in CI.
 
 - 2026-11-21 UTC: Create the implementation plan from main `c25e2879` and
   record the standalone Envoy probe.
+- 2026-11-21 UTC: Settle deny-only SDS staging, upstream injection, mounted
+  trust, and exact source-pinned Gateway qualification at `c25e2879`.
