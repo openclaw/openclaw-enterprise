@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { failureSecrets, redactedOutputTail } from "../failure-redaction.ts";
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 export const occ = join(root, "bin", "occ");
@@ -133,7 +134,11 @@ export function run(
         return;
       }
       const error = new Error(
-        `${command} ${args.slice(0, 3).join(" ")} exited ${code ?? signal}\n${result.stderr.slice(-4000)}`,
+        `${command} ${args.slice(0, 3).join(" ")} exited ${code ?? signal}\n${redactedOutputTail(
+          result.stderr,
+          4000,
+          failureSecrets([process.env, env]),
+        )}`,
       );
       Object.assign(error, { result });
       reject(error);
