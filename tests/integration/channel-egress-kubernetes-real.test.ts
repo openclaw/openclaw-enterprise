@@ -997,6 +997,26 @@ test(
       true,
     );
     assert.ok(proxy.observations.some((item) => item.authority === "slack.com:443"));
+    topology.gatewayPod = pod;
+    topology.revision = revision.data;
+    const harnesses = rows(
+      record(
+        JSON.parse(
+          await kubectl(
+            "get",
+            "pods",
+            "-n",
+            topology.placement,
+            "-l",
+            `openclaw.dev/agent=${agentId},openclaw.dev/revision=${deployed.data.id},openclaw.dev/workload-role=agent`,
+            "-o",
+            "json",
+          ),
+        ),
+      ).items,
+    );
+    assert.equal(harnesses.length, 1);
+    topology.harnessPod = harnesses[0];
     await assertActualModelTurn(topology);
 
     // A second real Agent selects a different endpoint and credential on the same Envoy fleet.

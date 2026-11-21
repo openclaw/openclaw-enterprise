@@ -111,6 +111,22 @@ test(
     const revision = await topology.request("GET", `${agentPath}/revisions/${deploy.data.id}`);
     assert.deepEqual(revision.data.networkProxy, { url, credentialSecretId: secretId });
     assert.equal(JSON.stringify(revision).includes(authorization), false);
+    // Model-turn diagnostics must inspect the active revision, not the retired predecessor.
+    const pods = JSON.parse(
+      await kubectl(
+        "get",
+        "pods",
+        "-n",
+        topology.gatewayPlacement,
+        "-l",
+        `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${deploy.data.id},openclaw.dev/workload-role=gateway`,
+        "-o",
+        "json",
+      ),
+    );
+    assert.equal(pods.items.length, 1);
+    topology.gatewayPod = pods.items[0];
+    topology.revision = revision.data;
     await assertActualModelTurn(topology);
 
     // No enabled Channel Driver means no binding, no private proxy grant, and no proxy connection.
