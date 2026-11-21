@@ -42,6 +42,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     oauthCatalog?: string;
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
+    navigationAgentHistory?: true;
     namespaceStatus?: string;
     sessionUser?: unknown;
     extraSecrets?: readonly { id: string; name: string }[];
@@ -242,8 +243,8 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           },
           {
             id: "ns_00000000-0000-4000-8000-000000000002",
-            name: "Research",
-            status: "provisioning",
+            name: scenario.navigationAgentHistory ? "A history default" : "Research",
+            status: scenario.navigationAgentHistory ? "ready" : "provisioning",
             createdAt,
           },
         ];
@@ -403,6 +404,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     credentials,
     deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
   });
+  let delayHistoryLookup = scenario.navigationAgentHistory === true;
   const templates = createConnectionTemplateFixture(
     scenario.oauthCatalog,
     createdAt,
@@ -1352,6 +1354,17 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         const reply = await lifecycle.serve(resource, method, body, url);
         if (reply !== undefined) {
+          if (
+            delayHistoryLookup &&
+            method === "GET" &&
+            suffix === "" &&
+            id === lifecycle.seedAgent().id &&
+            reply.status === 200
+          ) {
+            // Let the completed reply arrive after the user leaves the lookup.
+            delayHistoryLookup = false;
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
+          }
           return reply;
         }
       }
