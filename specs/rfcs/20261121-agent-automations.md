@@ -32,7 +32,7 @@ Immediate execution, run-history APIs, selection of result-delivery recipients, 
 
 ## Proposal
 
-The API changes live Gateway state. A job edit does not deploy an Agent revision. The caller needs an active human session and `administer` on the exact Agent in the requested Namespace. OCC resolves the selected, running Agent revision and its private Gateway endpoint. It refuses access when the Agent is stopped, unavailable, or undergoing a replacement that prevents safe access.
+The API changes live Gateway state. A job edit does not deploy an Agent revision. The caller needs an active human session and `administer` on the exact Agent in the requested Namespace. OCC resolves the selected, running Agent revision and its private Gateway endpoint. This first version honors Installation native-admin enablement and Agent native-access opt-in. OCC checks the selected revision's Compute Driver ID and implementation and requires delegated-profile support. It refuses access when disabled, unsupported, stopped, unavailable, or undergoing a replacement that prevents safe access. Delegation failure cannot fall back to machine-admin authority.
 
 OCC delegates the same server-derived human subject and `operator.admin` authority used by native administration. It refuses caller-supplied subjects, scopes, Gateway addresses, native Agent IDs, and ownership fields. The pinned Gateway requires administrator authority for direct `cron.add`. Operator-created jobs can retain operator execution authority after creation. Native job attribution and execution authority must remain bound to the admitted human. [OCE delegation](../../docs/reference/agent-native-admin.md#native-authority-and-drift), [native authorization](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/method-authorization.ts#L132-L152), [scheduled authority](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/docs/automation/cron-jobs/managing-jobs.md#L103-L126)
 
@@ -93,7 +93,7 @@ All paths start with `/namespaces/{namespaceId}/agents/{agentId}/automations`.
 | PATCH `/{id}`   | `cron.update`  | 200 and updated job   |
 | DELETE `/{id}`  | `cron.remove`  | 204                   |
 
-PATCH accepts one or more of `name`, `enabled`, `schedule`, and `prompt`, plus required `expectedConfigRevision`. DELETE requires the revision as a query parameter. For PATCH, OCC reads and validates the current full job, then forwards the caller's same revision to the native atomic update. OCC forwards the native revision check atomically and returns 409 on conflict. Job revision and Agent revision are distinct. Use the existing OCC response and error envelopes. Return 400 for invalid input, 403 for denied authority, 404 for an absent exact Agent or job, 409 for an unsupported job, and 503 for an unavailable Gateway or indeterminate mutation, with distinct machine-readable error codes.
+PATCH accepts one or more of `name`, `enabled`, `schedule`, and `prompt`, plus required `expectedConfigRevision`. DELETE requires the revision as a query parameter. For PATCH, OCC reads and validates the current full job, requires that the revision from that same read equals the caller's expected revision, then forwards that revision to the native atomic update. OCC forwards the native revision check atomically and returns 409 on conflict. Job revision and Agent revision are distinct. Use the existing OCC response and error envelopes. Return 400 for invalid input, 403 for denied authority, 404 for an absent exact Agent or job, 409 for an unsupported job, and 503 for an unavailable Gateway or indeterminate mutation, with distinct machine-readable error codes.
 
 ### IAM
 
@@ -114,8 +114,8 @@ The existing native Automations UI meets the browser task for administrators. Th
 ## Acceptance Criteria
 
 - **AC1. Scheduling.** Create and inspect all three schedule types on a deployed Agent. Observe one scheduled turn execute in its Harness and inspect the native result.
-- **AC2. Lifecycle.** Pause, resume, edit, and delete a job. A stale edit or delete returns 409 without changing it. PATCH cannot edit or resume an unsupported job.
-- **AC3. Authority.** A denied caller, service key, forged owner, wrong Namespace, or peer Agent cannot read or mutate the job. Verify human attribution and the scheduled tool and result-delivery restrictions. On dedicated Codex, attempt harmless shell, file, dynamic-tool, and configured MCP/app operations with the empty tool selection; refuse runtimes that cannot enforce it. With a configured failure destination, fail a job and verify the native alert behavior.
+- **AC2. Lifecycle.** Pause, resume, edit, and delete a job. A stale edit or delete returns 409 without changing it, including a concurrent native-admin edit. PATCH cannot edit or resume an unsupported job.
+- **AC3. Authority.** A denied caller, service key, forged owner, wrong Namespace, or peer Agent cannot read or mutate the job. Disabled access, a mismatched Driver, or failed delegation refuses the operation. Verify human attribution and the scheduled tool and result-delivery restrictions. On dedicated Codex, attempt harmless shell, file, dynamic-tool, and configured MCP/app operations with the empty tool selection; refuse runtimes that cannot enforce it. With a configured failure destination, fail a job and verify the native alert behavior.
 - **AC4. Recovery.** Replace the Gateway Pod and deploy a new Agent revision. Confirm job identity, schedule, paused state, and history retention. Exercise a lost create reply and replacement during mutation without duplicate dispatch.
 - **AC5. Audit.** Verify attributable mutation, denial, and indeterminate records with sensitive job content absent.
 
