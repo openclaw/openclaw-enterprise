@@ -90,32 +90,31 @@ else
 fi
 ```
 
-Run a short smoke against the selected image, then prepare the runtime lane's
-[required dependencies](../../testing/docker.md#check-published-images). Lane preparation
-builds a separate runtime; override its selector so the suite checks `RUNTIME_IMAGE`:
+Qualify the selected image with the lane's [prepared dependencies](../../testing/docker.md#check-published-images).
+Override the runtime built by preparation. Build and push the controller only after
+smoke, preparation, suite and cleanup succeed:
 
 ```bash
-(
-  set -e
-  docker run --rm --platform "$OCC_IMAGE_PLATFORM" "$RUNTIME_IMAGE" codex --version
-  trap 'node scripts/ci/cleanup.ts --state "$OCC_IMAGE_METADATA/runtime-check.json"' EXIT
+RUNTIME_CHECK_STATUS=0
+[[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
+  docker run --rm --platform "$OCC_IMAGE_PLATFORM" "$RUNTIME_IMAGE" codex --version &&
   node scripts/ci/prepare.ts --lane images-runtime-startup \
-    --state "$OCC_IMAGE_METADATA/runtime-check.json" --github-env "$OCC_IMAGE_METADATA/runtime-check.env"
-  set -a
-  . "$OCC_IMAGE_METADATA/runtime-check.env"
-  set +a
-  DOCKER_DEFAULT_PLATFORM="$OCC_IMAGE_PLATFORM" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
-    OPENCLAW_ENTERPRISE_CI_STATE="$OCC_IMAGE_METADATA/runtime-check.json" \
-    node --test tests/integration/runtime-image-startup.test.ts \
-      tests/integration/runtime-image-gateway-workspace.test.ts
-)
-```
-
-Then assemble the production controller:
-
-```bash
+    --state "$OCC_IMAGE_METADATA/runtime-check.json" --github-env "$OCC_IMAGE_METADATA/runtime-check.env" &&
+  (
+    set -a &&
+      . "$OCC_IMAGE_METADATA/runtime-check.env" &&
+      set +a &&
+      DOCKER_DEFAULT_PLATFORM="$OCC_IMAGE_PLATFORM" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+        OPENCLAW_ENTERPRISE_CI_STATE="$OCC_IMAGE_METADATA/runtime-check.json" \
+        node --test tests/integration/runtime-image-startup.test.ts \
+          tests/integration/runtime-image-gateway-workspace.test.ts
+  ) || RUNTIME_CHECK_STATUS=$?
+if [[ -f "$OCC_IMAGE_METADATA/runtime-check.json" ]]; then
+  node scripts/ci/cleanup.ts --state "$OCC_IMAGE_METADATA/runtime-check.json" || RUNTIME_CHECK_STATUS=$?
+fi
 CONTROLLER_PUSH_DIGEST_PATTERN=': digest: (sha256:[a-f0-9]{64}) size: [0-9]+'
 if unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT &&
+  (( RUNTIME_CHECK_STATUS == 0 )) &&
   [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
   node scripts/build-controller.ts docker --platform "$OCC_IMAGE_PLATFORM" --target runtime \
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
@@ -126,8 +125,8 @@ if unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT &&
   [[ "$CONTROLLER_PUSH_OUTPUT" =~ $CONTROLLER_PUSH_DIGEST_PATTERN ]]; then
   export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@${BASH_REMATCH[1]}"
 else
-  unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT
-  printf '%s\n' 'Runtime digest, controller build, push, or digest extraction failed.' >&2
+  unset RUNTIME_DIGEST RUNTIME_IMAGE CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT
+  printf '%s\n' 'Runtime qualification or controller publication failed.' >&2
   false
 fi
 ```
