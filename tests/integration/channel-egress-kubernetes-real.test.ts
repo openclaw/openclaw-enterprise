@@ -913,18 +913,18 @@ test(
       }),
       { mode: 0o600 },
     );
-    let caUid: unknown;
+    const caIdentity: { uid?: unknown } = {};
     context.after(async () => {
-      if (!caUid) {
+      if (!caIdentity.uid) {
         return;
       }
       const current = await resource("secret", caName, envoyNamespace).catch(() => undefined);
-      if (current && record(record(current).metadata).uid === caUid) {
+      if (current && record(record(current).metadata).uid === caIdentity.uid) {
         await kubectl("delete", "secret", caName, "-n", envoyNamespace, "--wait=false");
       }
     });
     await kubectl("apply", "-f", caManifest);
-    caUid = record(record(await resource("secret", caName, envoyNamespace)).metadata).uid;
+    caIdentity.uid = record(record(await resource("secret", caName, envoyNamespace)).metadata).uid;
     const proxy = await createControlledChannelProxy(context);
     const peerProxy = await createControlledChannelProxy(context, {
       tls: (address) =>
