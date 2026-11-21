@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-19
-last_updated_session: authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676
+updated: "2026-11-20"
+last_updated_session: "authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39"
 ---
 
 # Agent Native Admin UI Flow
@@ -84,16 +84,12 @@ graph TD
 `apps/controller/src/console/agents/create.mts:renderCreateAgent`
 `apps/controller/src/http/agents.ts:createAgentHandlers`
 `apps/controller/src/gateway/native-admin.ts:prepareNativeAdminConfiguration`
-`packages/occ/src/index.ts:createAgent`
+`packages/occ/src/agent-drafts.ts:createAgent`
 `packages/occ/src/index.ts:provisionAgent`
 
-**Enable browser chat** sends `nativeAdmin: true`. The adapter derives the origin
-from Installation settings, refuses conflicting policy, and limits the normalized
-Agent suffix to 214 characters.
+**Enable browser chat** sends `nativeAdmin: true`. The adapter derives the Installation origin, rejects conflicting policy, and limits the normalized Agent suffix to 214 characters.
 
-`createAgent` authorizes Agent creation and Configuration update, checks
-`expectedConfigurationGeneration` and absence of Agent references, then prepares
-policy. Configuration and Agent save atomically; the caller deploys normally.
+`createAgent` requires Agent create, Configuration update, `expectedConfigurationGeneration` and an unreferenced Configuration. It saves the prepared policy and Agent atomically. Deploy the saved Agent.
 
 Guided provisioning authorizes and prepares policy before queueing. Retries
 reuse its fingerprinted plan and identity. The worker creates and deploys.
@@ -340,6 +336,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 
 - 2026-11-19 06:03: Add the **Agent unavailable** page. (authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676 - 4c2da280f8ee1c143ac1d34c63b6e7fac6a3ac83)
 

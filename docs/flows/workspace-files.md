@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-11-11
-last_updated_session: authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19
+updated: "2026-11-20"
+last_updated_session: "authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39"
 ---
 
 # Agent Workspace Files Flow
@@ -25,9 +25,9 @@ See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for
 - `apps/controller/src/index.ts:createFastifyApp` accepts initial contents through
   `POST /namespaces/:namespaceId/agents` and handles live `GET` and
   `PUT /namespaces/:namespaceId/agents/:agentId/workspace/files/:name`.
-- `packages/occ/src/index.ts:createAgent` authorizes creation and persists private
-  setup state; `deployAgentWithAuthorization` rechecks it, completed too, before
-  each revision.
+- `packages/occ/src/agent-drafts.ts:createAgent` authorizes creation and saves private
+  setup. `packages/occ/src/index.ts:deployAgentWithAuthorization` rechecks setup before each
+  revision, even after completion.
 
 Live access requires the Agent's private HTTPRoute and native gateway. Configure
 Envoy Gateway, trust, and network restrictions through
@@ -78,14 +78,11 @@ rejects unknown names, invalid Unicode, NUL, and values above 16 KiB UTF-8.
 An absent or empty map follows ordinary startup without setup state; see
 the [create body limit](../reference/agents.md#initial-contents-at-creation).
 
-`packages/occ/src/index.ts:createAgent` checks Namespace-scoped Agent creation,
-exact Configuration read, and existing binding permissions. Its transaction
-creates a stopped Agent and, when keys were supplied, a private `workspaceSetups`
-record keyed by exact Namespace/Agent. No AgentRevision is created. Inputs do
+`packages/occ/src/agent-drafts.ts:createAgent` checks Namespace Agent create, exact Configuration read, and binding permissions. One transaction creates the stopped Agent and a private `workspaceSetups` record for supplied keys, keyed by Namespace and Agent. Deployment creates the first Agent revision. Inputs do
 not enter the Agent, Configuration, Agent revision snapshot, public response, or
 metadata-only create audit. API strings are preserved; Console textareas use LF newlines.
 
-`packages/occ/src/index.ts:updateAgent` keeps an omitted Configuration ID.
+`packages/occ/src/agent-drafts.ts:updateAgent` keeps an omitted Configuration ID.
 Completed setup is rechecked when the resolved Configuration ID or execution
 mode changes. Saving Gateway managed mode alone keeps both. Pending setup is
 checked on each update.
@@ -375,6 +372,8 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 
 - 2026-11-11 23:39: Preserve safe initializer error codes and earlier setup errors. (authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19 - 707390bb16f132b70addcf3079a81bf493387712)
 
