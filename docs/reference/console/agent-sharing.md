@@ -44,6 +44,12 @@ grants exact-Agent `operate`. A Role name or read grant does not determine the
 label. A binding whose Role is not listed remains visible. These labels are not
 an effective-access report and do not confirm that the Agent UI is available.
 
+For a human Principal, a Role that grants only `agent:read` shows **View Agent in
+OCC**. This grant lets the person read the Agent's OCC record, not open native
+chat or the Agent UI. Listing the Agent also requires Namespace read access.
+Expand **Technical details** to see the raw permission and the Role and binding
+IDs. Other Roles keep their permissions visible in the expanded Principal row.
+
 **Remove binding** deletes only the selected binding and preserves Namespace
 discovery. Other grants, groups, and Installation administration can still
 provide access; accounts, Roles, and Agents are retained.

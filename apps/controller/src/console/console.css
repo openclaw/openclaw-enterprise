@@ -3869,7 +3869,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-top: 1px solid var(--color-border);
 }
 
-.agent-access-roster summary {
+.agent-access-roster > li > details > summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto 10px;
   align-items: center;
@@ -3880,11 +3880,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   cursor: pointer;
 }
 
-.agent-access-roster summary::-webkit-details-marker {
+.agent-access-roster > li > details > summary::-webkit-details-marker {
   display: none;
 }
 
-.agent-access-roster summary::after {
+.agent-access-roster > li > details > summary::after {
   content: "";
   grid-column: 3;
   justify-self: center;
@@ -3895,16 +3895,16 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   transform: rotate(-45deg);
 }
 
-.agent-access-roster details[open] > summary::after {
+.agent-access-roster > li > details[open] > summary::after {
   transform: translateY(-2px) rotate(45deg);
 }
 
-.agent-access-roster summary:hover,
-.agent-access-roster details[open] > summary {
+.agent-access-roster > li > details > summary:hover,
+.agent-access-roster > li > details[open] > summary {
   background: var(--color-surface-hover);
 }
 
-.agent-access-roster summary > span:first-child {
+.agent-access-roster > li > details > summary > span:first-child {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -3944,18 +3944,26 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   margin-block: var(--space-1);
 }
 
+.agent-access-binding-details > summary {
+  min-height: var(--control-h-sm);
+  width: fit-content;
+  cursor: pointer;
+  color: var(--color-link);
+  font-size: var(--text-sm);
+}
+
 @media (max-width: 520px) {
-  .agent-access-roster summary {
+  .agent-access-roster > li > details > summary {
     grid-template-columns: minmax(0, 1fr) 10px;
     row-gap: var(--space-1);
   }
 
-  .agent-access-roster summary > .badge {
+  .agent-access-roster > li > details > summary > .badge {
     grid-column: 1;
     justify-self: start;
   }
 
-  .agent-access-roster summary::after {
+  .agent-access-roster > li > details > summary::after {
     grid-area: 1 / 2;
   }
 

@@ -59,7 +59,18 @@ function subjectLabel({ subjectKind, subjectId }: PolicyBinding) {
   return "Identity";
 }
 
-function directBrowserGrant(grants: readonly DirectGrant[]) {
+const viewAgentLabel = "View Agent in OCC";
+
+function isReadOnlyAgentRole(role: PolicyRole | undefined) {
+  return (
+    role?.permissions.length === 1 &&
+    role.permissions.some(
+      ({ resourceKind, action }) => resourceKind === "agent" && action === "read",
+    )
+  );
+}
+
+function directGrantLabel(grants: readonly DirectGrant[]) {
   const has = (action: "administer" | "operate") =>
     grants.some(({ role }) =>
       role?.permissions.some(
@@ -73,6 +84,9 @@ function directBrowserGrant(grants: readonly DirectGrant[]) {
   }
   if (has("operate")) {
     return "Open chat · operate";
+  }
+  if (grants.every(({ role }) => isReadOnlyAgentRole(role))) {
+    return viewAgentLabel;
   }
   return grants.some(({ role }) => role === undefined)
     ? "Browser grant unknown"
@@ -183,7 +197,7 @@ export function renderAgentAccess(
       element(
         "p",
         { className: "hint" },
-        "These are explicit bindings to this Agent. Browser labels describe direct grants, not whether someone can open the Agent now. Other policy can still affect access.",
+        "These are explicit bindings to this Agent. Labels describe direct grants, not what someone can do now. Other policy can still affect access.",
       ),
       grants,
       refresh,
@@ -231,14 +245,20 @@ export function renderAgentAccess(
     }
     const openRows = new Set(
       Array.from(
-        grants.querySelectorAll<HTMLDetailsElement>("details[open]"),
+        grants.querySelectorAll<HTMLDetailsElement>("details[open][data-subject]"),
         (row) => row.dataset.subject,
+      ),
+    );
+    const openBindingDetails = new Set(
+      Array.from(
+        grants.querySelectorAll<HTMLDetailsElement>("details[open][data-binding-details]"),
+        (details) => details.dataset.bindingDetails,
       ),
     );
     const active = document.activeElement;
     const focusedSubject =
       active instanceof HTMLElement && grants.contains(active)
-        ? active.closest("details")?.dataset.subject
+        ? active.closest<HTMLElement>("details[data-subject]")?.dataset.subject
         : undefined;
     grants.replaceChildren();
     if (!state.loaded) {
@@ -269,7 +289,7 @@ export function renderAgentAccess(
       }
       return;
     }
-    renderRoster(direct, openRows, focusedSubject, blocked);
+    renderRoster(direct, openRows, openBindingDetails, focusedSubject, blocked);
   }
 
   function directBindings() {
@@ -284,6 +304,7 @@ export function renderAgentAccess(
   function renderRoster(
     direct: readonly PolicyBinding[],
     openRows: ReadonlySet<string | undefined>,
+    openBindingDetails: ReadonlySet<string | undefined>,
     focusedSubject: string | undefined,
     blocked: boolean,
   ) {
@@ -333,7 +354,7 @@ export function renderAgentAccess(
               ),
         ),
         ...(isPrincipal
-          ? [element("span", { className: "badge" }, directBrowserGrant(entries))]
+          ? [element("span", { className: "badge" }, directGrantLabel(entries))]
           : []),
       );
       const row = element(
@@ -349,7 +370,13 @@ export function renderAgentAccess(
         element(
           "ul",
           { className: "agent-access-bindings", role: "list", "aria-label": "Direct bindings" },
-          ...entries.map(({ binding, role }) => renderBinding(binding, role, blocked)),
+          ...entries.map(({ binding, role }) =>
+            renderBinding(binding, role, {
+              blocked,
+              compact: isPrincipal && isReadOnlyAgentRole(role),
+              detailsOpen: openBindingDetails.has(binding.id),
+            }),
+          ),
         ),
       );
       row.open = openRows.has(key);
@@ -442,7 +469,11 @@ export function renderAgentAccess(
     }
   }
 
-  function renderBinding(binding: PolicyBinding, role: PolicyRole | undefined, blocked: boolean) {
+  function renderBinding(
+    binding: PolicyBinding,
+    role: PolicyRole | undefined,
+    { blocked, compact, detailsOpen }: { blocked: boolean; compact: boolean; detailsOpen: boolean },
+  ) {
     const title = role ? (role.name ?? "Unnamed role") : "Role unavailable";
     const permissions = role?.permissions
       .map(({ resourceKind, action }) => `${resourceKind}: ${action}`)
@@ -454,29 +485,35 @@ export function renderAgentAccess(
       disabled: blocked,
     });
     remove.setAttribute("aria-describedby", descriptionId);
-    return element(
-      "li",
-      { className: "agent-access-grant" },
+    const metadata = [
+      ...(permissions ? [element("p", { className: "hint" }, permissions)] : []),
       element(
-        "div",
-        {},
-        element("strong", { id: descriptionId }, title),
-        ...(permissions ? [element("p", { className: "hint" }, permissions)] : []),
-        element(
-          "p",
-          { className: "hint" },
-          "Role ID: ",
-          element("code", { className: "resource-id" }, binding.roleId),
-        ),
-        element(
-          "p",
-          { className: "hint" },
-          "Binding ID: ",
-          element("code", { className: "resource-id" }, binding.id),
-        ),
+        "p",
+        { className: "hint" },
+        "Role ID: ",
+        element("code", { className: "resource-id" }, binding.roleId),
       ),
-      remove,
-    );
+      element(
+        "p",
+        { className: "hint" },
+        "Binding ID: ",
+        element("code", { className: "resource-id" }, binding.id),
+      ),
+    ];
+    const content = element("div", {}, element("strong", { id: descriptionId }, title));
+    if (compact) {
+      const details = element(
+        "details",
+        { className: "agent-access-binding-details", "data-binding-details": binding.id },
+        element("summary", {}, "Technical details"),
+        ...metadata,
+      );
+      details.open = detailsOpen;
+      content.append(element("p", { className: "hint" }, viewAgentLabel), details);
+    } else {
+      content.append(...metadata);
+    }
+    return element("li", { className: "agent-access-grant" }, content, remove);
   }
 
   // The two lists are read one at a time: a reader whose administration ended is refused, and

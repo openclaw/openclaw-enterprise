@@ -608,6 +608,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Compare Morgan Chen's chat grant to Avery Patel's administration grant.",
           "Open Morgan Chen's row to read the complete Principal ID, Role permissions, and each binding.",
+          "Research support says View Agent in OCC. Expand Technical details to inspect the exact permission and identifiers.",
           "The read-only Principal has no account name and falls back to the full ID. The Service Principal is listed separately.",
           "Remove only the Research support binding from the Principal with two bindings. The Open chat label and the Research chat binding remain.",
         ],

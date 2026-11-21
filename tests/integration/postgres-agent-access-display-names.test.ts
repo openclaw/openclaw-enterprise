@@ -123,15 +123,21 @@ test(
     const unnamed = await person();
     const unrelated = await person("Unrelated Person");
     const policy = `${namespacePath}/iam`;
-    const roleId = text(
-      (
-        await create(`${policy}/roles`, {
-          permissions: [{ action: "read", resourceKind: "agent" }],
-        })
-      ).id,
-    );
+    async function role(name: string, actions: readonly ("read" | "operate" | "administer")[]) {
+      return text(
+        (
+          await create(`${policy}/roles`, {
+            name,
+            permissions: actions.map((action) => ({ action, resourceKind: "agent" })),
+          })
+        ).id,
+      );
+    }
+    const readRole = await role("Research support", ["read"]);
+    const chatRole = await role("Research chat", ["operate"]);
+    const adminRole = await role("Agent native administration", ["read", "administer"]);
     const service = await create(`${policy}/service-principals`, {});
-    async function bind(principalId: string, resourceId: string) {
+    async function bind(principalId: string, resourceId: string, roleId = readRole) {
       return text(
         (
           await create(`${policy}/access-bindings`, {
@@ -144,8 +150,9 @@ test(
         ).id,
       );
     }
-    await bind(first.principalId, agentId);
-    await bind(second.principalId, agentId);
+    const readBinding = await bind(first.principalId, agentId);
+    await bind(second.principalId, agentId, chatRole);
+    await bind(second.principalId, agentId, adminRole);
     await bind(unnamed.principalId, agentId);
     await bind(unrelated.principalId, siblingId);
     await bind(text(service.id), agentId);
@@ -260,6 +267,41 @@ test(
     );
     assert.equal(await firstId.evaluate((element) => getComputedStyle(element).userSelect), "text");
 
+    const rowFor = (principalId: string) =>
+      roster.locator(":scope > li > details").filter({
+        has: page.locator(".agent-access-subject-id code").getByText(principalId, { exact: true }),
+      });
+    const firstRow = rowFor(first.principalId);
+    await firstRow
+      .locator(":scope > summary")
+      .getByText("View Agent in OCC", { exact: true })
+      .waitFor();
+    const support = firstRow.getByRole("listitem").filter({ hasText: "Research support" });
+    await support.getByText("View Agent in OCC", { exact: true }).waitFor();
+    assert.equal(await support.getByText("agent: read", { exact: true }).isVisible(), false);
+    assert.equal(await support.getByText(readBinding, { exact: true }).isVisible(), false);
+    await support.getByText("Technical details", { exact: true }).click();
+    await support.getByText("agent: read", { exact: true }).waitFor();
+    await support.getByText(readRole, { exact: true }).waitFor();
+    await support.getByText(readBinding, { exact: true }).waitFor();
+    const removeReadBinding = support.getByRole("button", { name: "Remove binding", exact: true });
+    assert.equal(
+      await removeReadBinding.evaluate(
+        (button) =>
+          document.getElementById(button.getAttribute("aria-describedby") ?? "")?.textContent,
+      ),
+      "Research support",
+    );
+
+    const secondRow = rowFor(second.principalId);
+    await secondRow
+      .locator(":scope > summary")
+      .getByText("Open Agent UI · administer", { exact: true })
+      .waitFor();
+    await secondRow.getByText("agent: operate", { exact: true }).waitFor();
+    await secondRow.getByText("agent: read, agent: administer", { exact: true }).waitFor();
+    assert.equal(await secondRow.getByText("Technical details", { exact: true }).count(), 0);
+
     // A failure of the second (name-only) read must not discard bindings or disable removal.
     await page.route(`${origin}${url}`, (route) => route.fulfill({ status: 503 }));
     const failed = page.waitForResponse(
@@ -268,17 +310,13 @@ test(
     await page.getByRole("button", { name: "Refresh sharing" }).click();
     await failed;
     await roster.locator("summary").getByText(first.principalId, { exact: true }).waitFor();
-    const firstRow = roster.locator("details[open]").filter({
-      has: page
-        .locator(".agent-access-subject-id code")
-        .getByText(first.principalId, { exact: true }),
-    });
+    await support.getByText(readBinding, { exact: true }).waitFor();
     const removed = page.waitForResponse(
       (response) =>
         response.request().method() === "DELETE" &&
-        response.url().includes("/iam/access-bindings/"),
+        response.url() === `${origin}${policy}/access-bindings/${readBinding}`,
     );
-    await firstRow.getByRole("button", { name: "Remove binding", exact: true }).click();
+    await removeReadBinding.click();
     assert.equal((await removed).status(), 204);
     assert.deepEqual(await readNames(), [
       { principalId: second.principalId, displayName: "Morgan Chen" },

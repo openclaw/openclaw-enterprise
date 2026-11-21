@@ -2436,7 +2436,7 @@ test("Access groups exact Agent grants and removes only the selected binding", a
   assert.equal(await principals.locator(":scope > li").count(), 2, "one row per Principal");
   const summary = principals.locator("summary").filter({ hasText: "Open Agent UI · administer" });
   assert.equal(await summary.count(), 1);
-  await principals.locator("summary").filter({ hasText: "No direct browser grant" }).waitFor();
+  await principals.locator("summary").filter({ hasText: "View Agent in OCC" }).waitFor();
   const otherSubjects = panel.getByRole("list", { name: "Other binding subjects", exact: true });
   const serviceRow = otherSubjects.locator("summary").filter({ hasText: "Service Principal" });
   await serviceRow.waitFor();
@@ -2445,7 +2445,10 @@ test("Access groups exact Agent grants and removes only the selected binding", a
   await summary.focus();
   await page.keyboard.press("Enter");
   const row = principals.locator("details[open]");
-  await row.getByText(person.principal.id, { exact: true }).waitFor();
+  await row
+    .locator(".agent-access-subject-id code")
+    .getByText(person.principal.id, { exact: true })
+    .waitFor();
   const bindingRows = row.getByRole("list", { name: "Direct bindings", exact: true });
   assert.equal(
     await bindingRows.getByRole("listitem").count(),
