@@ -756,10 +756,12 @@ async function fakeCommand({
     const node = args[0] === "exec" ? clusterNode(args[1]) : undefined;
     if (node) {
       const alias = state.aliases?.[node];
-      if (equals(args.slice(2), ["ip", "route", "get", "10.42.3.34"])) {
+      if (
+        scenario?.startsWith("slack-helm-") &&
+        equals(args.slice(2), ["ip", "route", "get", "10.42.3.34"])
+      ) {
         assert.equal(node, "server-0");
-        state.routeLookups = (state.routeLookups ?? 0) + 1;
-        if (scenario === "slack-helm-delayed-route" && state.routeLookups === 1) {
+        if (scenario === "slack-helm-default-route") {
           return finish("10.42.3.34 via 172.19.0.1 dev eth0 src 172.19.0.2\n");
         }
         if (scenario === "slack-helm-no-route") {
@@ -1051,15 +1053,6 @@ async function fakeCommand({
     }
   }
   if (command === "kubectl") {
-    if (
-      scenario?.startsWith("slack-helm-") &&
-      equals(args.slice(6, 8), ["create", "namespace"]) &&
-      args[8]?.startsWith("openclaw-ci-seccomp-")
-    ) {
-      stderr("synthetic seccomp preparation stop\n");
-      return exit(1);
-    }
-
     if (equals(args, ["version", "--client=true"])) {
       return finish("{}\n");
     }
@@ -1082,8 +1075,7 @@ async function fakeCommand({
         // refuse the first listing.
         state.nodeListings = (state.nodeListings ?? 0) + 1;
         const worker =
-          ((state.agents ?? 0) > 0 && !(scenario === "late-worker" && state.nodeListings <= 2)) ||
-          (scenario === "slack-helm-extra-node" && state.nodeListings > 1);
+          (state.agents ?? 0) > 0 && !(scenario === "late-worker" && state.nodeListings <= 2);
         commitState();
         if (scenario === "late-worker" && state.nodeListings === 1) {
           stderr("The connection to the server 127.0.0.1:6443 was refused\n");
@@ -1121,11 +1113,6 @@ async function fakeCommand({
         );
       }
       if (
-        equals(args.slice(4), ["get", "node", "k3d-" + state.cluster + "-server-0", "-o", "json"])
-      ) {
-        return finish(JSON.stringify({ spec: { podCIDR: "10.42.3.32/28" } }));
-      }
-      if (
         equals(args.slice(4), ["get", "node", "k3d-" + state.cluster + "-agent-0", "-o", "json"])
       ) {
         // The node IPAM controller can assign a Ready worker's Pod CIDR late (finding 1666).
@@ -1154,6 +1141,22 @@ async function fakeCommand({
       }
       if (equals(args.slice(4), ["get", "nodes", "-o", "json"])) {
         assert.ok(typeof scenario === "string", "the kubectl fixture requires CI_FIXTURE_SCENARIO");
+        if (scenario.startsWith("slack-helm-")) {
+          const server = {
+            metadata: { name: `k3d-${state.cluster}-server-0` },
+            spec: {
+              podCIDR: scenario === "slack-helm-invalid-cidr" ? "10.42.3.33/28" : "10.42.3.32/28",
+            },
+          };
+          const items = scenario === "slack-helm-missing-node" ? [] : [server];
+          if (scenario === "slack-helm-extra-node") {
+            items.push({
+              metadata: { name: `k3d-${state.cluster}-agent-0` },
+              spec: { podCIDR: "10.42.7.0/24" },
+            });
+          }
+          return finish(JSON.stringify({ items }));
+        }
         if (scenario.startsWith("nodes-unready")) {
           return finish(
             JSON.stringify({
