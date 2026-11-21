@@ -1,31 +1,12 @@
+import type {
+  ProvisioningEffectTarget,
+  ProvisioningPendingEffect,
+  ProvisioningEffectReceipt,
+} from "./ports/agent-provisioning.ts";
 import { randomUUID } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
-import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
-
-export type ProvisioningEffectKind = "configuration" | "transport";
-
-export interface ProvisioningEffectTarget {
-  readonly kind: ProvisioningEffectKind;
-  readonly targetId?: string;
-}
-
-export interface ProvisioningPendingEffect extends ProvisioningEffectTarget {
-  readonly owner?: string;
-  readonly targetId: string;
-  /**
-   * When the effect was recorded, on the database clock (the repository stamps it). Effects
-   * recorded before it existed have none.
-   */
-  readonly startedAt?: Date;
-  readonly targetMatches: boolean;
-  readonly ownerPresent: boolean;
-}
-
-export interface ProvisioningEffectReceipt extends ProvisioningEffectTarget {
-  readonly owner: string;
-  readonly targetId: string;
-}
+import type { AgentProvisioningRecord } from "./ports/agent-provisioning.ts";
 
 function targetIdFor(
   record: Pick<AgentProvisioningRecord, "agentId" | "configurationId">,

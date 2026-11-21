@@ -1,3 +1,4 @@
+import type { ControllerWorkAttempt } from "../controller-work.ts";
 import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contracts";
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
@@ -25,8 +26,6 @@ export type {
 export { WorkClaimLostError } from "../errors.ts";
 
 export type { RuntimeFailureCause, RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
-
-export type ControllerWorkLookup = Pick<ReadonlyMap<string, Readonly<ControllerWork>>, "get">;
 
 export type DeploymentStatus = "queued" | "running" | "succeeded" | "failed";
 
@@ -56,13 +55,6 @@ export interface DeploymentStatusResult {
     readonly status: DeploymentStatus;
     readonly nextAttemptAt: string | null;
   } | null;
-}
-
-export interface ControllerWorkAttempt {
-  readonly at: Date;
-  readonly code: string;
-  /** The refusal a `REFUSED_CANDIDATE_STOP_PENDING` deferral waits to publish. */
-  readonly refusal?: string;
 }
 
 const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
@@ -289,11 +281,6 @@ export interface EnqueueWork {
   readonly agentTarget?:
     "stopped" | "deleted" | "provisioned" | "sandbox_policy" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
   readonly availableAt?: Date | string;
-}
-
-export interface WorkClaim {
-  readonly idempotencyKey: string;
-  readonly claimToken: string;
 }
 
 export interface WorkResult {

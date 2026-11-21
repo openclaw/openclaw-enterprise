@@ -1,3 +1,16 @@
+export type ControllerWorkLookup = Pick<ReadonlyMap<string, Readonly<ControllerWork>>, "get">;
+
+export interface ControllerWorkAttempt {
+  readonly at: Date;
+  readonly code: string;
+  /** The refusal a `REFUSED_CANDIDATE_STOP_PENDING` deferral waits to publish. */
+  readonly refusal?: string;
+}
+
+export interface WorkClaim {
+  readonly idempotencyKey: string;
+  readonly claimToken: string;
+}
 export type ControllerWorkState = "queued" | "claimed" | "succeeded" | "failed_permanent";
 
 export type ControllerWorkKind = "lifecycle" | "provisioning";
