@@ -31,7 +31,7 @@ import {
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
-import { waitForStockSupervisor } from "../helpers/openshell-stock-supervisor-readiness.ts";
+import { waitForStockSupervisor } from "../helpers/openshell-stock-supervisor-image.ts";
 import { ownFirstAgentWork } from "../helpers/local-first-agent-stack.mjs";
 import {
   createFiniteGitConversation,

@@ -200,7 +200,6 @@ export {
   RepositorySessionWithdrawnError,
   ScopeViolationError,
   TokenServiceSourceInputError,
-  TokenServiceRegistrationRefusedError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
   ServiceAccountCredentialSecretExistsError,

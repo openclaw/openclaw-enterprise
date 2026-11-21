@@ -246,24 +246,6 @@ export function auditUncommittedCredentialEffect(
 }
 
 export function createCredentialSourceOperations(dependencies: CredentialSourceDependencies) {
-  // TODO: Remove this staging-only check when managed Source HTTP handlers invoke the manager.
-  async function authorizeCredentialSourceWrite(
-    principalId: string,
-    namespaceId: string,
-    credentialSourceId?: string,
-  ): Promise<void> {
-    namespaceIdentity(namespaceId);
-    await dependencies.authority.authorize(
-      principalId,
-      credentialSourceId === undefined ? "create" : "update",
-      {
-        kind: "credential_source",
-        id: credentialSourceId ?? namespaceId,
-        namespaceId,
-      },
-    );
-  }
-
   /**
    * Registration records the source as `registering` before the gateway write, so an uncertain
    * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
@@ -968,6 +950,31 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     }
   }
 
+  /** Resolve the immutable Source identity for an exact update without requiring a read grant. */
+  async function credentialSourceUpdateIdentity(
+    principalId: string,
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<{ readonly managed: boolean; readonly type: string }> {
+    namespaceIdentity(namespaceId);
+    return dependencies.transactions.transact(async (state) => {
+      const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
+      await dependencies.authority.authorize(principalId, "update", resource);
+      await exactNamespace(state, namespaceId);
+      const source = await state.credentialSources.lockCredentialSource(
+        namespaceId,
+        credentialSourceId,
+      );
+      await dependencies.authority.authorize(principalId, "update", resource);
+      if (!source) {
+        throw new ScopeViolationError(
+          "The credential source does not belong to the exact Namespace.",
+        );
+      }
+      return { managed: isManagedTokenServiceSource(source), type: source.type };
+    });
+  }
+
   async function readCredentialSource(
     principalId: string,
     namespaceId: string,
@@ -984,13 +991,16 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         namespaceId,
         credentialSourceId,
       );
-      if (!found || isManagedTokenServiceSource(found)) {
+      if (!found) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
       }
       return { namespace: exact, source: found };
     });
+    if (isManagedTokenServiceSource(source)) {
+      return credentialSourceMetadata(source);
+    }
     if (source.ownerCapability === "token_service") {
       const refresh = await dependencies.readConnectionStatus(namespaceId, source.id);
       return credentialSourceMetadata(source, {
@@ -1053,24 +1063,22 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     namespaceId: string,
   ): Promise<readonly Readonly<CredentialSourceMetadata>[]> {
     const namespace = await dependencies.getNamespace(principalId, namespaceId);
-    return dependencies.transactions.read(async (state) => {
-      const readable: Readonly<CredentialSourceMetadata>[] = [];
-      for (const source of await state.credentialSources.listCredentialSources(namespace.id)) {
-        if (isManagedTokenServiceSource(source)) {
-          continue;
-        }
-        if (
-          await dependencies.authority.canRead(principalId, {
-            kind: "credential_source",
-            id: source.id,
-            namespaceId: namespace.id,
-          })
-        ) {
-          readable.push(credentialSourceMetadata(source));
-        }
+    const catalog = await dependencies.transactions.read((state) =>
+      state.credentialSources.listCredentialSources(namespace.id),
+    );
+    const readable: Readonly<CredentialSourceMetadata>[] = [];
+    for (const source of catalog) {
+      if (
+        await dependencies.authority.canRead(principalId, {
+          kind: "credential_source",
+          id: source.id,
+          namespaceId: namespace.id,
+        })
+      ) {
+        readable.push(credentialSourceMetadata(source));
       }
-      return Object.freeze(readable);
-    });
+    }
+    return Object.freeze(readable);
   }
 
   async function authorizedCredentialSource(
@@ -1108,7 +1116,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
   }
 
   return {
-    authorizeCredentialSourceWrite,
+    credentialSourceUpdateIdentity,
     createCredentialSource,
     updateCredentialSource,
     rotateCredentialSource,
