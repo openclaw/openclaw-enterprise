@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-11-16"
-last_updated_session: "authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -32,8 +32,7 @@ Credential issuance and provider internals are outside this flow.
   [OpenClawController](../../packages/occ/src/index.ts), and
   [KubernetesSecretDriver](../../apps/controller/src/drivers/secret/kubernetes/index.ts).
 - The console and [OCC CLI](../guides/cli.md#provision-integration-secrets)
-  call these HTTP operations. They initiate OCC-authorized mutations; neither
-  writes directly to SQL, Kubernetes, or credential backends.
+  use these HTTP operations for OCC-authorized writes.
 
 ## Flow
 
@@ -73,15 +72,13 @@ graph TD
 
 ### 1. Authorize storage without requiring a gateway
 
-`packages/occ/src/index.ts:OpenClawController.createSecret`
+`packages/occ/src/secret-operations.ts:createSecret`
 
-[OpenClawController.createSecret](../../packages/occ/src/index.ts) validates
-nonempty UTF-8 input of at most 65,536 bytes and locks the Namespace. The caller needs `create`
-on the Namespace's Secret collection. The Namespace must already be ready; an
-Agent record does not need to exist. OCC selects the
-Installation SecretDriver, generates the Secret identity, and prevents the
-caller from choosing Kubernetes backend identity. The value stays in protected
-request/driver memory, never in the reconciliation queue or resource metadata.
+[createSecret](../../packages/occ/src/secret-operations.ts) validates
+nonempty UTF-8 input of at most 65,536 bytes. OCC checks Secret `create` before
+and after locking the Namespace, which must be ready. This can run before Agent
+creation. OCC generates the Secret ID and the selected Driver supplies its backend
+reference. The value stays in request and Driver memory.
 
 ### 2. Store material and commit safe identity
 
@@ -266,9 +263,9 @@ project namespace Secrets, so controller compromise remains outside workload iso
 
 ### 6. Update, restart, or remove
 
-`packages/occ/src/index.ts:OpenClawController.updateSecret`
+`packages/occ/src/secret-operations.ts:updateSecret`
 
-[updateSecret](../../packages/occ/src/index.ts) serializes the write and uses
+[updateSecret](../../packages/occ/src/secret-operations.ts) serializes the write and uses
 Kubernetes concurrency/ownership checks. It changes only the stored value; the
 response retains the same ref. No Agent revision, binding, or running environment is
 updated, and no controller automatically restarts the gateway. A successful update
@@ -291,7 +288,7 @@ Dedicated Gateway infrastructure restarts read canonical channel Secrets
 directly. Failed cutover does not restore old source values. Revoking `operate`
 blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
-[deleteSecret](../../packages/occ/src/index.ts) rejects current Configuration,
+[deleteSecret](../../packages/occ/src/secret-operations.ts) rejects current Configuration,
 Agent harness-binding draft, selected version, and pending-work dependencies under the same serialization
 boundary. One `listReferences` query returns at most 50 of them, ordered by kind and ID;
 `secretConsumers` checks `read` on each referencing resource, names the readable ones in
@@ -339,6 +336,7 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-11-20 16:31: Update OCC Secret operation source pointers. (authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c - 8eb97c71e0aa0b84779e19f9bbacc2d37f22fa14)
 - 2026-11-16 14:46: Bind the first-Agent helper to confirmed Installation state and use authenticated IAM operations for exact model credential grants. (authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822 - 6255bbe8fe564e52941b311a7ce8ce8699d1f236)
 
 - 2026-11-11 08:41: Compensate confirmed but refused Installation-private Secret creation without changing ordinary ownership or cleanup custody. (authoring-run/ed486d39-4be4-45b1-a9ac-46e7f93d38bc - 228632a152f96c22a4d7c9aa7554c6ba22911bd4)
