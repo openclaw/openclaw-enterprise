@@ -234,8 +234,9 @@ export function gatewaySafetyControls({
   }));
   const node = element(
     "section",
-    { className: "gateway-safety", "aria-labelledby": "gateway-safety-heading" },
-    element("h3", { id: "gateway-safety-heading" }, "Collaboration and safety"),
+    // A card of its own on the Configuration tab; its heading is the card's.
+    { className: "agent-card gateway-safety", "aria-labelledby": "gateway-safety-heading" },
+    element("h2", { id: "gateway-safety-heading" }, "Collaboration and safety"),
     element("p", { className: "hint" }, INTRO),
     strict.node,
     element("div", { className: "gateway-safety-settings" }, ...rows.map((row) => row.node)),

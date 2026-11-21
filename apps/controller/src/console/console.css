@@ -4247,14 +4247,51 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .plugin-toggle input {
   width: auto;
 }
-/* Collaboration and safety toggles above the Configuration JSON editor. */
+/* The Agent Configuration tab is a stack of cards: the summary, Settings, Collaboration and
+   safety, and Gateway managed mode. The summary is a grid of label-over-value cells, a few to a
+   row; a long value takes a whole row. */
+.configuration-summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: var(--space-4) var(--space-6);
+  margin-block: 0;
+}
+.configuration-summary-grid > div {
+  min-width: 0;
+}
+.configuration-summary-wide {
+  grid-column: 1 / -1;
+}
+.configuration-summary-grid dt {
+  margin-bottom: var(--space-1);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.configuration-summary-grid dd {
+  margin: 0;
+}
+.configuration-summary-grid + .hint {
+  margin-top: var(--space-4);
+}
+/* Phone: two cells to a row instead of one long column. */
+@media (max-width: 760px) {
+  .configuration-summary-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+    gap: var(--space-4);
+  }
+}
+/* The Settings card ends at its last line, with no band below it. */
+.configuration-document > div > .hint:last-child {
+  margin-bottom: 0;
+}
+/* Collaboration and safety toggles: their own card below the Settings card. */
 .gateway-safety {
   display: grid;
   gap: var(--space-3);
-  margin-block: var(--space-4) var(--space-6);
+}
+.gateway-safety > * {
   max-width: var(--prose-max);
 }
-.gateway-safety h3,
+.gateway-safety > h2,
 .gateway-safety > p {
   margin: 0;
 }

@@ -448,17 +448,31 @@ function errorPanel(
   );
 }
 
+// Summary values longer than this many characters take a whole row of the grid.
+const SUMMARY_WIDE_VALUE = 48;
+
 function summary(
   values: OpenClawConfigurationDocument,
   details: [string, string | Node | null | undefined][],
 ) {
   const primary = configuredModel(values);
-  const list = element("dl", { className: "configuration-summary" });
-  for (const [name, value] of [
+  // A grid of label-over-value cells, a few to a row. A long value (a JSON document, many
+  // repositories) takes a whole row so it does not wrap in a narrow cell.
+  const list = element("dl", { className: "configuration-summary configuration-summary-grid" });
+  const rows: typeof details = [
     ["Model", typeof primary === "string" ? primary : "Not specified"],
     ...details,
-  ]) {
-    list.append(element("dt", {}, name), element("dd", {}, value ?? "None"));
+  ];
+  for (const [name, value] of rows) {
+    const wide = typeof value === "string" && value.length > SUMMARY_WIDE_VALUE;
+    list.append(
+      element(
+        "div",
+        wide ? { className: "configuration-summary-wide" } : {},
+        element("dt", {}, name),
+        element("dd", {}, value ?? "None"),
+      ),
+    );
   }
   return list;
 }
@@ -4321,11 +4335,18 @@ export async function renderAgentDetail(
         },
         { disabled: true },
       );
+      // Its own card on the Configuration tab, below the collaboration and safety card. The
+      // button is described by the hint, which says what turning managed mode off allows.
+      action.setAttribute("aria-describedby", "gateway-managed-mode-hint");
       const control = element(
         "section",
-        { hidden: true },
-        element("h3", {}, "Gateway managed mode"),
-        element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_HINT),
+        { className: "agent-card", hidden: true },
+        element("h2", {}, "Gateway managed mode"),
+        element(
+          "p",
+          { className: "hint", id: "gateway-managed-mode-hint" },
+          GATEWAY_MANAGED_MODE_HINT,
+        ),
         element("div", { className: "form-actions" }, action, reload),
         feedback,
       );
@@ -4652,10 +4673,13 @@ export async function renderAgentDetail(
     }
     savedNotice = saved;
     // A save lands well after its click, and the rebuilt tab is usually shorter than the editor
-    // it replaces. When the cards below the version layout are in view, scroll by the layout's
-    // change, so they keep their place and the summary takes the editor's (finding 1482).
-    const bottomBefore = versionLayout.getBoundingClientRect().bottom;
-    const anchorBelow = bottomBefore < globalThis.innerHeight;
+    // it replaces. Scroll by what the version layout's end rose into or within the window, so
+    // the cards below it keep their place, or stay out of view, and the summary takes the
+    // editor's (finding 1482).
+    const bottomBefore = Math.min(
+      versionLayout.getBoundingClientRect().bottom,
+      globalThis.innerHeight,
+    );
     try {
       await renderTab();
     } finally {
@@ -4667,7 +4691,7 @@ export async function renderAgentDetail(
     // The permission reread can land after the rebuilt tab was drawn.
     redrawConfigurationAccessViews();
     const shrunk = versionLayout.getBoundingClientRect().bottom - bottomBefore;
-    if (anchorBelow && shrunk < 0) {
+    if (shrunk < 0) {
       globalThis.scrollBy({ top: shrunk, behavior: "instant" });
     }
     // `focus` may list fallbacks; the first enabled, shown match in the tab takes focus. A
@@ -5930,6 +5954,8 @@ export async function renderAgentDetail(
         });
         currentConfigurationEntry = entry;
       }
+      // One card for each part of the tab: the summary, the native document, and on a draft the
+      // collaboration and safety toggles and Gateway managed mode.
       content.append(
         element(
           "section",
@@ -5939,20 +5965,30 @@ export async function renderAgentDetail(
           repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
             : null,
-          draft
-            ? renderDraftConfigurationEditor(context, data)
-            : element(
-                "div",
-                {},
-                element("div", { className: "form-actions" }, currentConfigurationEntry),
-                nativeDocument(values, "View admitted native configuration"),
-              ),
-          draft
-            ? (data.managedMode.control ??
-                element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY))
-            : null,
         ),
       );
+      if (draft) {
+        content.append(
+          renderDraftConfigurationEditor(context, data),
+          data.managedMode.control ??
+            element(
+              "section",
+              { className: "agent-card" },
+              element("h2", {}, "Gateway managed mode"),
+              element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY),
+            ),
+        );
+      } else {
+        content.append(
+          element(
+            "section",
+            { className: "agent-card configuration-document" },
+            element("h2", {}, "Settings"),
+            element("div", { className: "form-actions" }, currentConfigurationEntry),
+            nativeDocument(values, "View admitted native configuration"),
+          ),
+        );
+      }
     }
   }
 
@@ -6257,6 +6293,8 @@ export async function renderAgentDetail(
 
   function renderDraftConfigurationEditor(context: DetailContext, data: DraftDetails) {
     const { snapshot, values, setDraftEditorState } = data;
+    // Holds the Settings card and the collaboration and safety card: a managed mode save makes
+    // both inert, and a save outcome keeps focus that is in either.
     const container = element("div", { className: "configuration-draft-editor" });
     // The JSON editor and its actions. The collaboration and safety toggles below it stay in
     // place while it rerenders, so a toggle keeps focus; the editor keeps its place at the top,
@@ -6277,7 +6315,15 @@ export async function renderAgentDetail(
         }
       },
     });
-    container.append(body, safety.node);
+    container.append(
+      element(
+        "section",
+        { className: "agent-card configuration-document" },
+        element("h2", {}, "Settings"),
+        body,
+      ),
+      safety.node,
+    );
     const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
