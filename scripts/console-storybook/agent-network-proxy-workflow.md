@@ -8,7 +8,7 @@ save it, and inspect the current version. The current version must keep its
 saved selection. Deploy the draft to inspect the new revision summary.
 
 Use **Gateway channel proxy saved** to clear the draft selection. Use the
-validation, save error, permission, Secrets loading, and Secrets error stories
+validation, save error, enforcement unavailable, permission, Secrets loading, and Secrets error stories
 to inspect each refusal or pending state. Focus the proxy credential field to
 load available Secrets. Deploy must remain unavailable while
 proxy edits are unsaved or the save outcome is unknown.

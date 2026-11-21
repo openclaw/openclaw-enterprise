@@ -463,7 +463,7 @@ export function createAgentDetailScenarios({
             status: 400,
             code: "INVALID_REQUEST",
             message:
-              "The Network proxy selection is not supported by the selected Compute configuration.",
+              "The Network proxy endpoint is not configured by the Installation. Select an installed endpoint.",
           },
         ],
         actions: [
@@ -473,6 +473,29 @@ export function createAgentDetailScenarios({
         description:
           "A refused save keeps the edit visible and leaves Deploy blocked until it is fixed or canceled.",
         gap: "Simulated UI refusal; no Compute admission runs.",
+      },
+      networkProxyEnforcementUnavailable: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy enforcement unavailable",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+            method: "PATCH",
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+            message:
+              "Gateway channel proxy enforcement is unavailable. Retry; if the problem continues, ask an Installation administrator to check the Envoy fleet, trust bundle, and DNS.",
+          },
+        ],
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "http://proxy.example:8080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description:
+          "An enforcement outage shows safe recovery guidance and requires a draft reload before another save.",
+        gap: "Simulated UI refusal; no Envoy fleet is stopped.",
       },
       networkProxyPermission: {
         group: "Pages/Agent detail",
