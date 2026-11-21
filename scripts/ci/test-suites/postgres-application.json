@@ -102,6 +102,9 @@
       "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
       "expectedTests": [
         "standalone activation rechecks the Agent's exact source grant after committing the active revision",
+        "standalone activation commits a prepared pointer and adopts an uncertain release before completion",
+        "a pending staged first deployment blocks competing admissions and can finish after a failed attempt",
+        "staged managed credential replacement is refused before touching the active predecessor",
         "credential withdrawal work revokes from the active revision without redeploying it",
         "a withdrawal that outlasts its attempts in a gateway outage is retried later and revoked without a replay",
         "a withdrawal in a long outage backs off to 5 minutes, stops after its last retry, and a replay starts again",

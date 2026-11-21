@@ -169,7 +169,12 @@ the resolved namespace carries the Agent ID, Agent revision ID, and `agent` work
 labels used by the active Service selector, plus all supplied Harness
 requirement labels, and reports `Ready=True`. Zero candidates, multiple live
 candidates (including one Ready and one unready), or a single unready candidate
-leave preparation at `ready: false` and prevent activation. Pods with a valid
+leave preparation at `ready: false`. For a staged credential revision, Compute
+can report `preparedForCredentialActivation` while the exact startup remains held.
+Worker selects the revision and reauthorizes the source before activation releases
+that startup. Compute publishes the Agent route after the Harness is serving and
+the node is ready. Staged managed-credential replacement is unsupported. Other
+unready revisions cannot activate. Pods with a valid
 deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or
 role do not count.
 
