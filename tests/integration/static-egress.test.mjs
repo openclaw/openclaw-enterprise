@@ -10,7 +10,7 @@ import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-sta
 import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import { CredentialProxy, egressInjectionDigest } from "../../packages/occ/src/credential-proxy.ts";
-import { deploymentErrorForWork } from "../../packages/occ/src/state/controller-work.ts";
+import { deploymentErrorForWork } from "../../packages/occ/src/deployment-work-status.ts";
 import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
 import {
   pluginRuntimeSpecForRevision,

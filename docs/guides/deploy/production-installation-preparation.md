@@ -98,6 +98,38 @@ The build mounts it only during dependency installation and mounts
 `corepack-env` only during bootstrap. Omitting `corepack-env` keeps Corepack's
 default registry selection.
 
+## Use a Terraform-managed EKS cluster
+
+For a dedicated Amazon Elastic Kubernetes Service (EKS) cluster, complete the
+[AWS EKS Terraform target](https://github.com/freeqaz-openai/oce-terraform/tree/main/targets/aws-eks)
+through its foundation check and kubeconfig staging. Continue in the same Bash
+session from the matching OCE checkout. Keep the checked `KUBECONFIG_FILE`,
+`OCC_INPUT_DIRECTORY`, `CONTEXT`, and `TF_TARGET_DIR` values from that handoff. `TF_TARGET_DIR` must identify the
+`targets/aws-eks` directory in the Terraform checkout.
+
+Use the checked kubeconfig for the linked EKS commands, then refresh the
+[API and webhook addresses](eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join):
+
+```bash
+export KUBECONFIG="${KUBECONFIG_FILE:?Use the checked Terraform kubeconfig}"
+: "${CONTEXT:?Use the Terraform context}"
+cluster=$(terraform -chdir="${TF_TARGET_DIR:?Use the AWS EKS Terraform target directory}" output -json oce_cluster)
+EKS_CLUSTER_ARN=$(jq -er '.arn' <<<"$cluster")
+AWS_REGION=$(jq -er '.region' <<<"$cluster")
+EKS_CLUSTER=$(jq -er '.name' <<<"$cluster")
+export EKS_CLUSTER_ARN AWS_REGION EKS_CLUSTER
+```
+
+Inspect the target's placement fields, then use them when generating the profile.
+Set `controlPlane.clusterCidrs` separately from the refreshed `API_CIDRS`.
+
+```bash
+terraform -chdir="$TF_TARGET_DIR" output -json oce_placement
+```
+
+Continue with [configuration](#configure-the-installation).
+Run prerequisite diagnosis after [creating the controller Namespace](#prepare-workspace-access).
+
 ## Configure the Installation
 
 This runbook uses Helm
@@ -400,6 +432,12 @@ Create the controller Namespace (`--namespace`: DNS-1123 label, maximum 63 chara
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
 ```
+
+For EKS, run [prerequisite diagnosis](prerequisite-diagnosis.md) now. Set the plan's
+`namespace` to `openclaw-system`, select the same kubeconfig and context, use
+`EKS_CLUSTER_ARN` for `eks.clusterArn`, and set `peakAdditional` from the
+candidate chart and concurrent rollouts. Use the reviewed API and webhook CIDRs.
+Resolve failed or unknown checks before installing.
 
 Complete [Configure private routing](workspace-routing.md#configure-private-routing):
 create `occ-private-gateway-key` and match the Helm and Installation routing

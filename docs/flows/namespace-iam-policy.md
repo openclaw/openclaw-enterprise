@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
 updated: "2026-11-20"
-last_updated_session: "authoring-run/5e3917d4-e775-43a5-9016-4f8ba744675e"
+last_updated_session: "authoring-run/fda3d531-de1b-4732-984e-f4c3f1c19868"
 ---
 
 # Namespace IAM Policy Flow
@@ -245,12 +245,11 @@ behavior.
   they loaded, or the route's Agent in `getRevision`. A sandbox policy's parent
   derives from its ID, which migration 0058 ties to the Agent ID. The native
   Driver's `sameResource` then matches an exact binding on that Agent.
-- **Deployment.** `deployAgentWithAuthorization` calls
-  `grantDeployedAgentSources`, which collects the Agent's Secret and credential
-  source references. For each reference that the caller can `operate` and the
-  Agent ServicePrincipal cannot, `ensureAgentOperateGrants` writes the exact
-  binding, audited with `reason: "agent_deploy"`. A failed deploy rolls back
-  the grants.
+- **Deployment.** `packages/occ/src/agent-credential-access.ts:grantDeployedAgentSources`
+  collects the Agent's Secret and credential source references. For each source
+  that the caller can `operate` and the Agent ServicePrincipal cannot,
+  `ensureAgentOperateGrants` writes an exact AccessBinding. OCC audits it with
+  `reason: "agent_deploy"`. A failed deploy rolls back these grants.
 
 ## Debugging and Verification
 
@@ -302,6 +301,7 @@ behavior.
 
 ## Changelog
 
+- 2026-11-20 17:01: Point to deployment grant creation in the Agent credential access module. (authoring-run/fda3d531-de1b-4732-984e-f4c3f1c19868 - 91d5a4bc0ddd450d83d4ec939dd9c377cc145f8e)
 - 2026-11-20 16:40: Update source pointers for Namespace policy commands and configured grants. (authoring-run/5e3917d4-e775-43a5-9016-4f8ba744675e - dde01a7334a51ced932f1eb0ea6a4561c3e97581)
 - 2026-11-20 16:23: Point to the shared authority fence used by OCC transactions. (authoring-run/44d201ec-ee79-4633-aebb-a4ae8e9cd904 - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
 - 2026-11-17 19:20: Order Connection ownership, standing repository approval, and startup Preset ownership against configured-policy changes. (authoring-run/01a1bfc4-452e-7521-a7b2-2e1c44f855df - ecf6a80b605ec64c9d68a150cb07dbda5055d2a8)
