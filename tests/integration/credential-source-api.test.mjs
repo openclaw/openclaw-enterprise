@@ -335,14 +335,14 @@ test("source API rejects routing inputs and registers independently authorized d
   ]);
 });
 
-test("managed Source requests fail closed before the legacy Gateway handler", async (t) => {
+test("managed Source requests fail closed without an owner and preserve Gateway routing", async (t) => {
   const f = await fixture(t);
   const material = "synthetic-managed-material";
   const refused = await f.request("POST", f.path, {
     body: { name: "Managed", type: "static", secret: { opaque: material } },
   });
-  assert.equal(refused.status, 501);
-  assert.equal(refused.body.error.code, "NOT_IMPLEMENTED");
+  assert.equal(refused.status, 503);
+  assert.equal(refused.body.error.code, "DEPENDENCY_UNAVAILABLE");
   assert.equal(JSON.stringify(refused.body).includes(material), false);
   await f.assertNothingSaved();
 
@@ -360,12 +360,12 @@ test("managed Source requests fail closed before the legacy Gateway handler", as
     { config: { provider_preset: "openai" } },
   ]) {
     const updated = await f.request("PATCH", `${f.path}/${legacy.data.id}`, { body });
-    assert.equal(updated.status, 501);
+    assert.equal(updated.status, 409);
     assert.equal(JSON.stringify(updated.body).includes(material), false);
   }
   assert.equal(f.mutations.length, mutationsBefore);
 
-  // A staged request still requires the exact Source operation and attributable denial evidence.
+  // Each request still requires the exact Source operation and attributable denial evidence.
   const member = await f.createNamespaceMember("source-reader", f.namespace.id, [
     ["read", "namespace"],
   ]);

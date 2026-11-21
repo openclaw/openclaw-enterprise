@@ -8,7 +8,6 @@ import type {
   AgentStatus,
   CredentialSourceState,
   CredentialSourceOwnerCapability,
-  TokenServiceRegistration,
   HarnessExecutionMode,
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
@@ -539,8 +538,6 @@ export const credentialSources = occSchema.table(
       () => tokenServiceInstances.id,
       { onDelete: "restrict", onUpdate: "restrict" },
     ),
-    registration: jsonb("registration").$type<TokenServiceRegistration>(),
-    registrationDispatchedAt: timestamp("registration_dispatched_at", { withTimezone: true }),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
@@ -573,13 +570,9 @@ export const credentialSources = occSchema.table(
     check(
       "credential_sources_owner_capability_valid",
       sql`CASE WHEN ${table.ownerCapability} = 'token_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND (
-      (${table.type} = 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NULL AND ${table.registration} IS NULL AND ${table.registrationDispatchedAt} IS NULL)
-      OR (${table.type} <> 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NOT NULL
-        AND (${table.registration} IS NULL OR occ.token_service_registration_is_valid(${table.registration}))
-        AND (${table.registrationDispatchedAt} IS NULL OR ${table.registrationDispatchedAt} >= ${table.createdAt})
-        AND (${table.state} <> 'registering' OR ${table.registration} IS NULL)
-        AND (${table.state} <> 'ready' OR (${table.registration} IS NOT NULL AND ${table.registrationDispatchedAt} IS NOT NULL)))
-    ) ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL AND ${table.registration} IS NULL AND ${table.registrationDispatchedAt} IS NULL
+      (${table.type} = 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NULL)
+      OR (${table.type} <> 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.state} IN ('ready', 'deleting'))
+    ) ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL
       AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL)) END IS TRUE`,
     ),
     check(

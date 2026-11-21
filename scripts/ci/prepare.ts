@@ -899,7 +899,7 @@ const { ensurePostgresServer, createAndMigrateDatabase } = createPostgresPrepara
   repositoryRoot,
   preparationJournal,
 );
-const { ensureK3dCluster, k3dStage } = createK3dPreparation({
+const { ensureK3dCluster, k3dStage, prepareSlackHelmPluginStatusProxy } = createK3dPreparation({
   ...preparationJournal,
   progress,
   fixtureLanes,
@@ -1020,10 +1020,17 @@ async function retainRuntimeProvenance(
             "containerd",
           )
         ).stdout;
-      const selection = parseJson(
-        await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
-      );
-      const selected: unknown = Array.isArray(selection) ? selection[0] : undefined;
+      // Classic stores return the config ID directly. Docker 28.0.4 rejects
+      // --platform on image inspect, even for an immutable local image ID.
+      let selected: unknown = inspected;
+      if (inspected.Descriptor !== undefined) {
+        const selection = parseJson(
+          await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
+        );
+        selected = Array.isArray(selection) ? selection[0] : undefined;
+      } else if (inspected.Id !== image.hostImageId) {
+        return;
+      }
       if (!configInspection(selected)) {
         return;
       }
@@ -2292,6 +2299,13 @@ async function prepareFileWithState({
   const effectiveState = state ?? baseState(name, resolvedStatePath);
   const env = baseEnv(resolvedStatePath, effectiveState);
   const resourceIds: string[] = [];
+
+  if (name === "slack" && relativeFile === "tests/integration/channel-egress-helm-real.test.ts") {
+    env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS = await prepareSlackHelmPluginStatusProxy(
+      effectiveState,
+      env,
+    );
+  }
 
   if (name === "production-tui" && state) {
     const inputs = effectiveLaneEnv(name);
