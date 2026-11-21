@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-21
+last_updated_session: authoring-run/1065fff4-04fa-4b9e-b140-4ed9dbdde80f
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -193,27 +193,28 @@ with the `occ agent deploy` command. Local OpenShell requires the Driver-owned
 and `approvalsReviewer: "user"` for API-key and PAT sources. Prior PAT revisions
 with `workspace-write` are recognized; new deployments use current policy.
 Other workspace or Configuration differences fail drift checks.
-After OCC selects the version, [`findGateway`](../../scripts/first-agent-model.ts)
-resolves `openclaw.dev/namespace`. In this single-cluster setup, embedded and
-dedicated Gateways share the provider-owned Harness namespace. It requires exact Agent
-labels, the revision ConfigMap mount, and a Running, Ready Gateway Pod before
-sending the prompt. [The verifier](../../scripts/first-agent-model.ts) passes its
-type-stripped JavaScript probe to `kubectl exec`. The nonce and optional prompt
-travel on standard input. Embedded OpenClaw requires the key in the Gateway container;
-dedicated Codex keeps it in its Pod or Sandbox. Experimental two-cluster placement
-belongs to Kubernetes Compute; this helper never infers placement from execution mode.
+After OCC selects the version, [findGateway](../../scripts/first-agent-model.ts)
+uses `openclaw.dev/namespace`. Both modes use one
+provider-owned Harness namespace.
+Selection requires exact Agent labels, the revision ConfigMap mount, and a
+Running, Ready Pod.
+`kubectl exec` runs the type-stripped verifier with nonce and optional prompt on
+stdin. Proof requires a refusal-free assistant reply matching the whole nonce
+after trimming whitespace, removing one final period, and removing one quote
+pair, backtick pair, or multiline fence. Custom answers stay verbatim.
+The key stays in the embedded OpenClaw Gateway container or dedicated Codex Pod
+or Sandbox. Kubernetes Compute owns experimental two-cluster placement.
+The helper ignores execution mode for placement.
 `scripts/first-agent.ts:main` distinguishes credential rejection from policy refusal
-when reporting failed deployment, before model verification. See [deployment recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-deployment-fails).
-After a model failure, the CLI prints the original error, then a
-[diagnostic snapshot](../../scripts/first-agent-diagnostics.ts) from revision-scoped
-runtime status and logs. The API resolves Kubernetes and OpenShell Harness
-ownership. Changed Gateway Pod UID or restart count suppresses log attribution.
-Output includes container state, admitted startup fields, and fixed Codex connection,
-fallback and retry classifications; never free-form logs or provider bodies.
-Collection permits ten seconds, 64 KiB per response, and two container streams per
-role. Same-stream gaps retain valid observations but mark evidence incomplete.
-Missing or incomplete evidence preserves the original failure; startup observations
-do not establish the failed request's cause.
+before verification. See [deployment recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-deployment-fails).
+On model failure, the CLI prints the original error and [revision diagnostics](../../scripts/first-agent-diagnostics.ts).
+The API resolves Kubernetes and OpenShell Harness ownership. Pod UID or restart
+count changes suppress log attribution. Diagnostics report container state, admitted startup fields, and fixed Codex
+connection, fallback, and retry classes. They exclude free-form logs and provider
+bodies.
+Collection allows ten seconds, 64 KiB per response, and two container streams per
+role. Same-stream gaps retain valid but incomplete evidence. Missing or incomplete
+evidence preserves the original failure. Startup observations cannot establish its cause.
 The tool retains installation resources on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
@@ -335,6 +336,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 16:05: Allow simple formatting in assistant nonce proof. (authoring-run/1065fff4-04fa-4b9e-b140-4ed9dbdde80f - ff770f5bef21b30cc12018e776add31a606d6f0d)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:35: Point Configuration binding writes to their OCC module. (authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea - 81cdb33c3d2d2ba64dfd783b0216b5dbcfebe395)
