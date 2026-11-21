@@ -642,8 +642,14 @@ export async function sendSkipperChat({
     }
     throw error;
   });
-  const { status, category, content, gatewayTransportCause, gatewayFetchElapsedMs } =
-    JSON.parse(text);
+  const {
+    status,
+    category,
+    content,
+    gatewayTransportCause,
+    gatewayListener,
+    gatewayFetchElapsedMs,
+  } = JSON.parse(text);
   if (status === 200 && category === undefined) {
     return content;
   }
@@ -681,6 +687,7 @@ export async function sendSkipperChat({
       gatewayChatPhase,
       gatewayCategory: category,
       gatewayTransportCause,
+      gatewayListener,
       gatewayFetchElapsedMs,
       httpStatus: status,
       runtimeSignal,
@@ -753,12 +760,33 @@ export async function inGateway(prompt, sessionKey, invocationId, measureNativeG
           break;
       }
     }
+    let gatewayListener;
+    if (measureNativeGit && gatewayTransportCause === "socket-closed" && !signal.aborted) {
+      gatewayListener = "unavailable";
+      const port = process.env.OPENCLAW_GATEWAY_PORT || "8080";
+      if (/^[0-9]+$/.test(port)) {
+        const probe = new AbortController();
+        try {
+          // Any response headers establish that the listener answered.
+          await fetch("http://127.0.0.1:" + port + "/readyz", {
+            redirect: "manual",
+            signal: AbortSignal.any([signal, probe.signal, AbortSignal.timeout(500)]),
+          });
+          gatewayListener = "responding";
+        } catch (probeError) {
+          if (probeError?.cause?.code === "ECONNREFUSED") gatewayListener = "unreachable";
+        } finally {
+          probe.abort();
+        }
+      }
+    }
     // Fetch can reject a refused redirect as an unclassified transport error.
     const timingEligible = category === "client-deadline" || gatewayTransportCause !== undefined;
     process.stdout.write(
       JSON.stringify({
         status: 0,
         category,
+        gatewayListener,
         gatewayTransportCause:
           category === "transport" ? (gatewayTransportCause ?? "other") : undefined,
         ...(timingEligible && elapsedMs !== undefined && elapsedMs >= 0 && elapsedMs <= 240_000

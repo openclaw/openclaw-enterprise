@@ -318,8 +318,10 @@ test("installed Skipper receiver reports failures without exposing response cont
     const timeout = AbortSignal.timeout;
     AbortSignal.timeout = (ms) => timeout(ms === 170_000 ? 1_000 : ms);
   }
-  for (const [scenario, status, category, gatewayTransportCause] of [
-    ["transport", 0, "transport", "socket-closed"],
+  for (const [scenario, status, category, gatewayTransportCause, gatewayListener] of [
+    ["transport", 0, "transport", "socket-closed", "responding"],
+    ["stopped", 0, "transport", "socket-closed", "unreachable"],
+    ["stalled", 0, "transport", "socket-closed", "unavailable"],
     ["client-deadline", 0, "client-deadline"],
     ["redirect", 0, "transport", "other"],
     ["http-timeout", 504, "timeout"],
@@ -332,8 +334,19 @@ test("installed Skipper receiver reports failures without exposing response cont
       const canary = "private-response-content";
       // Real sockets exercise fetch rejection, interrupted body reads and JSON parsing.
       let requests = 0;
+      let probes = 0;
       let redirectTargets = 0;
       const server = createServer((req, res) => {
+        if (req.url === "/readyz") {
+          probes++;
+          assert.equal(req.method, "GET");
+          assert.equal(req.headers.authorization, undefined);
+          assert.equal(req.headers["x-openclaw-session-key"], undefined);
+          if (scenario === "stalled") return;
+          res.writeHead(302, { location: "/redirect-target" });
+          res.end(canary);
+          return;
+        }
         if (req.url === "/redirect-target") {
           redirectTargets++;
           res.end();
@@ -347,7 +360,8 @@ test("installed Skipper receiver reports failures without exposing response cont
         if (scenario === "client-deadline") {
           return; // Leave headers unsent until the client aborts.
         }
-        if (scenario === "transport") {
+        if (gatewayListener) {
+          if (scenario === "stopped") server.close();
           req.socket.destroy();
         } else if (scenario === "redirect") {
           res.writeHead(302, { location: "/redirect-target" });
@@ -392,10 +406,11 @@ test("installed Skipper receiver reports failures without exposing response cont
         },
       );
       assert.equal(requests, 1);
+      assert.equal(probes, scenario === "transport" || scenario === "stalled" ? 1 : 0);
       assert.equal(redirectTargets, 0);
       assert.equal(result.stderr, "");
       const { gatewayFetchElapsedMs, ...response } = JSON.parse(result.stdout);
-      if (scenario === "transport" || scenario === "client-deadline") {
+      if (gatewayListener || scenario === "client-deadline") {
         assert.ok(Number.isInteger(gatewayFetchElapsedMs));
         assert.ok(gatewayFetchElapsedMs >= 0 && gatewayFetchElapsedMs <= 240_000);
       } else {
@@ -404,7 +419,12 @@ test("installed Skipper receiver reports failures without exposing response cont
       assert.deepEqual(
         response,
         gatewayTransportCause
-          ? { status, category, gatewayTransportCause }
+          ? {
+              status,
+              category,
+              gatewayTransportCause,
+              ...(gatewayListener ? { gatewayListener } : {}),
+            }
           : category
             ? { status, category }
             : { status, content: "reply" },
@@ -769,6 +789,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
       // The loopback adapter sends the received user message to the installed
       // synthetic model's command fixture. Its tool call is never executed here.
       const server = createServer(async (req, res) => {
+        if (req.url === "/readyz") return req.socket.destroy();
         let body = "";
         for await (const chunk of req) {
           body += chunk;
@@ -929,6 +950,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
             httpStatus: 0,
             gatewayCategory: "transport",
             gatewayTransportCause: "socket-closed",
+            gatewayListener: "unavailable",
             runtimeSignal: "thread-start",
             modelRequestObservation: expected,
             ...(scenario === "terminal" ? { modelFixtureSelectedTerminalSuccess: true } : {}),
