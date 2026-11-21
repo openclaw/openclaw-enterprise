@@ -684,7 +684,7 @@ export function createWorkerRevisionFixtures(
         const sandbox = protectedRepositoryDriver.require("sandbox");
         await state.transact(async (unit) => {
           // This fixture seeds a historical snapshot from the stored binding and source.
-          const sources = await controller.admitCredentialSources(
+          const sources = await controller.agentCredentialAccess.admitCredentialSources(
             unit,
             actorId,
             owner,
@@ -696,7 +696,7 @@ export function createWorkerRevisionFixtures(
           assert.deepEqual(sources, credentialSources);
           const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
           const plan = (chosen) =>
-            controller.admitProxyPlan(
+            controller.egressAdmission.admitProxyPlan(
               unit,
               owner,
               candidate.id,
