@@ -1019,9 +1019,6 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
   "occ/kubernetes",
   "kubernetes-local",
 ]);
-/** Only a claimed server-side consent attempt may operate on its still-pending source. */
-const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
-
 /**
  * Revisions other than `active` that may still run with the sources they were admitted with,
  * and so need their own withdrawal of a source withdrawn from the Agent: earlier revisions not
@@ -1096,6 +1093,9 @@ const STANDING_APPROVAL_REFUSALS = Object.freeze({
   policyChanged:
     "This Agent's standing repository approval no longer matches team policy. Remove it (this needs Agent administer on the Agent) and approve the current scope again, or deploy after an Installation administrator restores the policy.",
 });
+
+/** Only a claimed server-side consent attempt may operate on its still-pending source. */
+const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
 
 function validExecutionMode(value: unknown): value is HarnessExecutionMode {
   return value === "embedded" || value === "dedicated";
