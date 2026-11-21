@@ -875,11 +875,17 @@ export class OpenShellGitRuntime {
     ) {
       throw new OpenShellGitRouteBlockedError("repository_expired");
     }
+    const scopedRest = "scopedRest" in scope.delivery ? scope.delivery.scopedRest : undefined;
+    const issueReads = scopedRest?.some(
+      ({ repository, readIssues }) =>
+        readIssues &&
+        scope.repositoryNetworkPolicy?.some((grant) => grant.repository === repository),
+    );
     return {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
-      nativeBinaries: entry.preview.native
-        ? openShellGitNetworkDefaults(entry.authorization.delivery).binaries
+      nativePolicy: entry.preview.native
+        ? { binaries: openShellGitNetworkDefaults(scope.delivery).binaries, scopedRest }
         : undefined,
       readOnlyPaths: draft ? [dirname(REPOSITORY_CLIENT_BIN)] : [],
       environment: [
@@ -924,6 +930,7 @@ export class OpenShellGitRuntime {
         this.configuration.registrationName,
         entry.bindingId,
         entry.preview.native,
+        issueReads,
       ),
     };
   }
@@ -2653,6 +2660,7 @@ export function openShellGitMiddleware(
   registrationName: string,
   bindingId: string,
   native = false,
+  issueReads = false,
 ) {
   return {
     "oce-prepared-git": {
@@ -2661,7 +2669,13 @@ export function openShellGitMiddleware(
       config: { fields: { binding_id: { stringValue: bindingId } } },
       on_error: "fail_closed",
       order: 2147483647,
-      endpoints: { include: native ? ["api.github.com"] : ["github.com", "api.github.com"] },
+      // Recipient verification pins the registered service. Select no admitted GitHub host
+      // on native delivery: stock selects by host, so a PR hook would also capture issue reads.
+      endpoints: {
+        include: native
+          ? [issueReads ? "deny-egress.invalid" : "api.github.com"]
+          : ["github.com", "api.github.com"],
+      },
     },
   };
 }
