@@ -305,8 +305,6 @@ import {
   normalizeLoggingLevel,
   normalizePluginDesiredState,
   normalizePluginApprovers,
-  normalizeSecretBindings,
-  isSecretHarnessAuth,
   freezeAgentRevision,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -322,7 +320,7 @@ import {
   type AgentRevisionListPage,
   type ActiveAgentRevisionSelection,
 } from "./agent-queries.ts";
-import { requireDeployableRoster, withAgentIdentityName } from "./openclaw-roster.ts";
+import { withAgentIdentityName } from "./openclaw-roster.ts";
 import {
   DriverRegistry,
   unchangedDriver,
@@ -372,12 +370,8 @@ import {
   SecretBindingValidationError,
   SecretDriverOwnershipError,
 } from "./errors.ts";
-import {
-  refuseUndeployableConfigurationValues,
-  validateConfigurationSettings,
-} from "./configuration-settings.ts";
+import { refuseUndeployableConfigurationValues } from "./configuration-settings.ts";
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
-import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import {
   admitsOpenClawExecutionMode,
   agentRuntimeConfiguration,
@@ -482,6 +476,19 @@ import {
   type CreateSecretInput,
   type UpdateSecretInput,
 } from "./secret-operations.ts";
+import {
+  createConfigurationOperations,
+  exactConfiguration,
+  rejectCrossNamespaceSecretSources,
+  storedSecretBindings,
+  type CreateConfigurationInput,
+  type UpdateConfigurationInput,
+} from "./configuration-operations.ts";
+
+export type {
+  CreateConfigurationInput,
+  UpdateConfigurationInput,
+} from "./configuration-operations.ts";
 import {
   createServiceAccountOperations,
   exactServiceAccount,
@@ -987,22 +994,6 @@ export interface RotateCredentialSourceInput {
   readonly credentialSourceId: string;
 }
 
-export interface CreateConfigurationInput {
-  readonly namespaceId: string;
-  readonly kind: Configuration["kind"];
-  readonly values: Readonly<OpenClawConfigurationDocument>;
-  readonly secretBindings?: SecretBindings;
-}
-
-export interface UpdateConfigurationInput {
-  readonly namespaceId: string;
-  readonly configurationId: string;
-  readonly values: Readonly<OpenClawConfigurationDocument>;
-  readonly secretBindings?: SecretBindings;
-  /** Refuses the update unless the Configuration is still at this generation. */
-  readonly expectedGeneration?: number;
-}
-
 export interface DeployAgentInput {
   readonly harnessOverrides?: Readonly<Record<string, unknown>> | undefined;
   readonly namespaceId: string;
@@ -1097,14 +1088,6 @@ const MANAGED_SOURCE: unique symbol = Symbol("managed-source");
  * gateway copy does not prove that no late create is still in flight, so the record is kept.
  */
 const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
-
-/**
- * How far a stored Configuration may run ahead of its record and still count as a leftover of
- * failed writes (finding 1396). Each failed update whose compensation could not run adds one, and
- * update advances the record once per skipped generation, so the bound also caps that work.
- * A document further ahead fails closed, as any other mismatch does.
- */
-const MAX_CONFIGURATION_LEFTOVER_LEAD = 100;
 
 /**
  * Revisions other than `active` that may still run with the sources they were admitted with,
@@ -1368,25 +1351,6 @@ function validChannelDirectoryResult(value: unknown): value is ChannelDirectoryR
   return true;
 }
 
-/**
- * Rejects requested Secret references (bindings and Harness authentication) that name
- * another Namespace. It compares only the request against its route Namespace, so it
- * reveals nothing about other Namespaces and can run before any Secret lookup.
- */
-function rejectCrossNamespaceSecretSources(
-  namespaceId: string,
-  secretBindings: SecretBindings | undefined,
-  harnessAuth: HarnessAuthBinding | null | undefined,
-): void {
-  const sources = Object.values(secretBindings ?? {}).map(({ source }) => source);
-  if (isSecretHarnessAuth(harnessAuth)) {
-    sources.push(harnessAuth.source);
-  }
-  if (sources.some((source) => source.namespaceId !== namespaceId)) {
-    throw new SecretBindingValidationError("Secret references cannot cross Namespaces.");
-  }
-}
-
 // Internal Installation composition only; the public Repo Driver contract is unchanged.
 type InstallationRepositoryAdmission = Readonly<{
   policyMode?: "built-in";
@@ -1587,6 +1551,27 @@ export class OpenClawController {
       authorizeOverride: authorizeOverride
         ? (request) => Reflect.apply(authorizeOverride, this, [request])
         : undefined,
+    });
+    this.configurationOperations = createConfigurationOperations({
+      read: this.transactions.read,
+      transact: this.transactions.transact,
+      authorize: this.authority.authorize,
+      registerRollback: (compensate) => this.registerRollback(compensate),
+      holdAuthority: this.authority.holdAuthority,
+      lockNamespaceForPolicyDelete: (state, principalId, target) =>
+        this.lockNamespaceForPolicyDelete(state, principalId, target),
+      guardProvisioningConfiguration: (state, namespaceId, id, readOnly) =>
+        this.guardProvisioningConfiguration(state, namespaceId, id, readOnly),
+      configurationDriver: () => this.configurationDriver(),
+      validateComputeConfiguration: (values, options) =>
+        this.validateComputeConfiguration(values, options),
+      requireBundledChannelBindings: (values, secretBindings) =>
+        this.requireBundledChannelBindings(values, secretBindings),
+      ownedSecretDriver: (driverId, failure) => this.ownedSecretDriver(driverId, failure),
+      bindCreator: (state, principalId, target) => this.bindCreator(state, principalId, target),
+      nextIdentifier: (kind) => this.nextIdentifier(kind),
+      timestamp: () => this.timestamp(),
+      driverOperation: (operation) => this.driverOperation(operation),
     });
     this.iamPolicy = createIAMPolicyOperations({
       installationId: this.installation.id,
@@ -2960,6 +2945,8 @@ export class OpenClawController {
     return this.presets.deletePreset(principalId, namespaceId, presetId);
   }
 
+  private readonly configurationOperations: ReturnType<typeof createConfigurationOperations>;
+
   /**
    * The grant check that opens createConfiguration (no configurationId) or
    * updateConfiguration, alone. The HTTP layer runs it before it reads a write's body (up to
@@ -2971,16 +2958,11 @@ export class OpenClawController {
     namespaceId: string,
     configurationId?: string,
   ): Promise<void> {
-    if (configurationId === undefined) {
-      this.namespaceIdentity(namespaceId);
-    } else {
-      this.configurationIdentity(namespaceId, configurationId);
-    }
-    await this.authorize(principalId, configurationId === undefined ? "create" : "update", {
-      kind: "configuration",
-      id: configurationId ?? namespaceId,
+    return this.configurationOperations.authorizeConfigurationWrite(
+      principalId,
       namespaceId,
-    });
+      configurationId,
+    );
   }
 
   /**
@@ -3002,13 +2984,12 @@ export class OpenClawController {
     secretBindings?: SecretBindings,
     agent?: ModelPolicyAgent,
   ): void {
-    validateModelProviderSettings(values, options);
-    validateConfigurationSettings(values, options);
-    requireDeployableRoster(values, options, agent);
-    this.validateComputeConfiguration(values, options);
-    if (secretBindings !== undefined) {
-      this.requireBundledChannelBindings(values, secretBindings);
-    }
+    return this.configurationOperations.validateConfigurationContent(
+      values,
+      options,
+      secretBindings,
+      agent,
+    );
   }
 
   // On the bundled Kubernetes Compute, which delivers channel credentials only from bindings, the
@@ -4680,83 +4661,7 @@ export class OpenClawController {
     principalId: string,
     input: CreateConfigurationInput,
   ): Promise<Readonly<Configuration>> {
-    if (input.kind !== "agent") {
-      throw new ScopeViolationError("The Configuration kind must identify an Agent.");
-    }
-    const values = freezeConfigurationValues(input.values);
-    this.namespaceIdentity(input.namespaceId);
-    return this.mutate(async (state) => {
-      await this.holdAuthority(state);
-      const target: ResourceRef = {
-        kind: "configuration",
-        id: input.namespaceId,
-        namespaceId: input.namespaceId,
-      };
-      await this.authorize(principalId, "create", target);
-      const namespace = await this.lockNamespace(state, input.namespaceId);
-      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
-      // while this write waited stops it before it leaves a durable Owner binding or grant.
-      await this.authorize(principalId, "create", target);
-      // Checked after authorization: the conflict names the Namespace state.
-      if (namespace.status !== "provisioning" && namespace.status !== "ready") {
-        throw new ResourceStateConflictError("The Namespace does not accept new Configurations.");
-      }
-      if (namespace.existingNamespace !== undefined && namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      const secretBindings = normalizeRequestSecretBindings(input.secretBindings);
-      rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
-      await this.authorizeBindings(state, principalId, namespace.id, secretBindings);
-      const driver = this.configurationDriver();
-      const configuration: Configuration = Object.freeze({
-        id: this.nextIdentifier("configuration"),
-        namespaceId: namespace.id,
-        kind: input.kind,
-        generation: 1,
-        values,
-        createdAt: this.timestamp(),
-      });
-      // A document too large to store is refused before the content rules walk it (finding 1317).
-      await driver.validateSize?.(values);
-      this.validateConfigurationContent(values, undefined, secretBindings);
-      await driver.validate(configuration);
-      const metadata = await state.configurations.createConfiguration({
-        id: configuration.id,
-        namespaceId: namespace.id,
-        kind: configuration.kind,
-        generation: configuration.generation,
-        ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
-        createdAt: configuration.createdAt,
-      });
-      await this.bindCreator(state, principalId, {
-        kind: "configuration",
-        id: metadata.id,
-        namespaceId: namespace.id,
-      });
-      // Registered before the write: a create that applied but answered with an error (a
-      // timeout, a lost response) would otherwise leave a ConfigMap without metadata (finding
-      // 916). The rollback deletes only this exact Configuration (identity, generation, creation
-      // time and values); an absent one means the create never applied, and a Driver that cannot
-      // inspect it is compensated only after a create it saw succeed.
-      let created = false;
-      this.registerRollback(async () => {
-        if (driver.inspectExact === undefined) {
-          if (!created) {
-            return;
-          }
-        } else if (
-          (await this.driverOperation(() => driver.inspectExact!(configuration))) === undefined
-        ) {
-          return;
-        }
-        await this.driverOperation(() =>
-          driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
-        );
-      });
-      const result = await this.driverOperation(() => driver.create(configuration));
-      created = true;
-      return this.exactConfiguration(result, metadata);
-    });
+    return this.configurationOperations.createConfiguration(principalId, input);
   }
 
   private readonly serviceAccountOperations = createServiceAccountOperations({
@@ -4839,25 +4744,7 @@ export class OpenClawController {
     namespaceId: string,
     configurationId: string,
   ): Promise<Readonly<Configuration>> {
-    this.configurationIdentity(namespaceId, configurationId);
-    await this.authorize(principalId, "read", {
-      kind: "configuration",
-      id: configurationId,
-      namespaceId,
-    });
-    const driver = this.configurationDriver();
-    return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const metadata = await state.configurations.findConfiguration(namespace.id, configurationId);
-      if (!metadata) {
-        throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
-      }
-      await this.guardProvisioningConfiguration(state, namespace.id, configurationId, true);
-      const configuration = await this.driverOperation(() =>
-        driver.read({ id: metadata.id, namespaceId: namespace.id }),
-      );
-      return this.exactConfiguration(configuration, metadata);
-    });
+    return this.configurationOperations.getConfiguration(principalId, namespaceId, configurationId);
   }
 
   /**
@@ -4874,127 +4761,18 @@ export class OpenClawController {
     namespaceId: string,
     configurationId: string,
   ): Promise<Readonly<Record<string, Readonly<ResourceRef>>>> {
-    this.configurationIdentity(namespaceId, configurationId);
-    await this.authorize(principalId, "read", {
-      kind: "configuration",
-      id: configurationId,
+    return this.configurationOperations.getConfigurationSecretBindingSources(
+      principalId,
       namespaceId,
-    });
-    return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const metadata = await state.configurations.findConfiguration(namespace.id, configurationId);
-      if (!metadata) {
-        throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
-      }
-      return Object.freeze(
-        Object.fromEntries(
-          Object.entries(this.bindings(metadata.secretBindings)).map(([name, { source }]) => [
-            name,
-            source,
-          ]),
-        ),
-      );
-    });
+      configurationId,
+    );
   }
 
   async updateConfiguration(
     principalId: string,
     input: UpdateConfigurationInput,
   ): Promise<Readonly<Configuration>> {
-    this.configurationIdentity(input.namespaceId, input.configurationId);
-    if (Object.hasOwn(input, "kind")) {
-      throw new ScopeViolationError("The Configuration kind cannot be changed.");
-    }
-    const values = freezeConfigurationValues(input.values);
-    return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
-        kind: "configuration",
-        id: input.configurationId,
-        namespaceId: input.namespaceId,
-      });
-      const namespace = await this.lockNamespace(state, input.namespaceId);
-      const driver = this.configurationDriver();
-      const metadata = await state.configurations.lockConfiguration(
-        namespace.id,
-        input.configurationId,
-      );
-      if (!metadata) {
-        throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
-      }
-      await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
-      // Compared under the row lock, so a save that read an older generation cannot replace a
-      // newer one (finding 1505).
-      if (
-        input.expectedGeneration !== undefined &&
-        input.expectedGeneration !== metadata.generation
-      ) {
-        throw new ConfigurationGenerationConflictError();
-      }
-      const previous = await this.lockedConfiguration(driver, metadata);
-      let secretBindings: SecretBindings;
-      if (input.secretBindings === undefined) {
-        secretBindings = this.bindings(metadata.secretBindings);
-      } else {
-        secretBindings = normalizeRequestSecretBindings(input.secretBindings);
-        rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
-      }
-      await this.authorizeBindings(state, principalId, namespace.id, secretBindings);
-      let advanced = await state.configurations.advanceConfigurationGeneration(
-        namespace.id,
-        metadata.id,
-        metadata.generation,
-        secretBindings,
-      );
-      // A stored document ahead of the record holds content that was never recorded. The
-      // replacement skips past every generation it went through, one advance at a time (the
-      // record moves by exactly one per write), so no number names two documents.
-      while (advanced && advanced.generation <= previous.generation) {
-        advanced = await state.configurations.advanceConfigurationGeneration(
-          namespace.id,
-          metadata.id,
-          advanced.generation,
-          secretBindings,
-        );
-      }
-      if (!advanced) {
-        throw new ResourceStateConflictError(
-          "The Configuration generation changed during its update.",
-        );
-      }
-      const configuration: Configuration = Object.freeze({
-        id: advanced.id,
-        namespaceId: advanced.namespaceId,
-        kind: advanced.kind,
-        generation: advanced.generation,
-        values,
-        createdAt: advanced.createdAt,
-      });
-      // A document too large to store is refused before the content rules walk it (finding 1317).
-      await driver.validateSize?.(values);
-      // A stored Configuration that predates these rules still reads, and deployment refuses it
-      // as before; only a replacement that keeps the refused value fails. That includes a channel
-      // reference left without a binding by either half of the update: its values, or bindings
-      // it replaced (finding 2319).
-      this.validateConfigurationContent(values, undefined, secretBindings);
-      await driver.validate(configuration);
-      // Registered before the write: a replace that applied but answered with an error (a
-      // timeout, a lost response) would otherwise leave the stored Configuration one generation
-      // ahead of the rolled-back metadata (finding 911). A write that never applied is left alone,
-      // and so is a stored generation another update committed after the lock was released. A
-      // replacement of a leftover ahead of the record restores that leftover, which a retry can
-      // replace again (finding 1396).
-      this.registerRollback(async () => {
-        const stored = await driver.read({ id: previous.id, namespaceId: previous.namespaceId });
-        if (
-          stored.generation === configuration.generation &&
-          (await this.configurationRecordUnchanged(metadata))
-        ) {
-          await driver.update(previous);
-        }
-      });
-      const updated = await this.driverOperation(() => driver.update(configuration));
-      return this.exactConfiguration(updated, advanced);
-    });
+    return this.configurationOperations.updateConfiguration(principalId, input);
   }
 
   async deleteConfiguration(
@@ -5002,86 +4780,11 @@ export class OpenClawController {
     namespaceId: string,
     configurationId: string,
   ): Promise<readonly RemovedAccessBinding[]> {
-    this.configurationIdentity(namespaceId, configurationId);
-    return this.mutate(async (state) => {
-      const namespace = await this.lockNamespaceForPolicyDelete(state, principalId, {
-        kind: "configuration",
-        id: configurationId,
-        namespaceId,
-      });
-      const driver = this.configurationDriver();
-      const configuration = await state.configurations.lockConfiguration(
-        namespace.id,
-        configurationId,
-      );
-      if (!configuration) {
-        throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
-      }
-      const agents = await state.agents.listAgents(namespace.id);
-      if (agents.some((agent) => agent.configurationId === configuration.id)) {
-        throw new ResourceStateConflictError(
-          "An Agent still references the Configuration. Delete the Agent or select another Configuration first.",
-        );
-      }
-      // A provisioning record references the Configuration it created. Once its Agent has
-      // succeeded and selects another Configuration (checked above), the record releases it.
-      if (
-        (await state.provisioning.findByConfiguration(namespace.id, configuration.id)) !==
-          undefined &&
-        !(await state.provisioning.releaseConfiguration(namespace.id, configuration.id))
-      ) {
-        throw new ResourceStateConflictError(
-          "An Agent provisioning request that has not succeeded still references the Configuration. Let it finish or retry it, or delete the Agent it provisioned, first.",
-        );
-      }
-      // A record whose document a failed delete already removed has nothing left to delete or
-      // restore (finding 1396); only a Driver that confirms the absence lets it go.
-      const previous = await this.lockedConfiguration(driver, configuration).catch(
-        async (error: unknown) => {
-          if (await this.configurationAbsent(driver, configuration)) {
-            return undefined;
-          }
-          throw error;
-        },
-      );
-      if (previous !== undefined) {
-        // Registered before the write: a delete that applied but answered with an error would
-        // otherwise leave the metadata without its ConfigMap (finding 916). The rollback
-        // recreates the previous Configuration only when it is gone and its record is still the
-        // one locked here; one still stored exactly means the delete never applied, and a record
-        // another request deleted or changed in the meantime is that request's (finding 945). A
-        // Driver that cannot inspect it is compensated only after a delete it saw succeed.
-        let deleted = false;
-        this.registerRollback(async () => {
-          if (driver.inspectExact === undefined) {
-            if (!deleted) {
-              return;
-            }
-          } else if (
-            (await this.driverOperation(() => driver.inspectExact!(previous))) !== undefined
-          ) {
-            return;
-          }
-          if (await this.configurationRecordUnchanged(configuration)) {
-            await this.driverOperation(() => driver.create(previous));
-          }
-        });
-        await this.driverOperation(() =>
-          driver.delete({ id: configuration.id, namespaceId: namespace.id }),
-        );
-        deleted = true;
-      }
-      const removed = await accessBindingsTargeting(
-        state,
-        namespace.id,
-        "configuration",
-        configuration.id,
-      );
-      if (!(await state.configurations.deleteConfiguration(namespace.id, configuration.id))) {
-        throw new ResourceStateConflictError("The Configuration changed during deletion.");
-      }
-      return removed;
-    });
+    return this.configurationOperations.deleteConfiguration(
+      principalId,
+      namespaceId,
+      configurationId,
+    );
   }
 
   private async authorizeDeviceAuthorizationScope(
@@ -8127,13 +7830,7 @@ export class OpenClawController {
   }
 
   private bindings(input: unknown): SecretBindings {
-    try {
-      return normalizeSecretBindings(input);
-    } catch {
-      throw new ScopeViolationError(
-        "Secret bindings require supported exact sources and non-reserved environment destinations.",
-      );
-    }
+    return storedSecretBindings(input);
   }
 
   /** Called under the Namespace lock, also taken by deletion and assignment. */
@@ -8143,20 +7840,12 @@ export class OpenClawController {
     namespaceId: string,
     bindings: SecretBindings,
   ): Promise<readonly Secret[]> {
-    const secrets = new Map<string, Secret>();
-    for (const { source } of Object.values(bindings)) {
-      if (source.namespaceId !== namespaceId) {
-        throw new ScopeViolationError("Secret references cannot cross Namespaces.");
-      }
-      await this.authorize(principalId, "operate", source);
-      const secret = await state.secrets.lockSecret(namespaceId, source.id);
-      if (!secret) {
-        throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
-      }
-      this.ownedSecretDriver(secret.driverId, () => new SecretBindingDriverError());
-      secrets.set(secret.id, secret);
-    }
-    return Object.freeze([...secrets.values()]);
+    return this.configurationOperations.authorizeBindings(
+      state,
+      principalId,
+      namespaceId,
+      bindings,
+    );
   }
 
   /** Namespace lock serializes binding, source deletion, and admission. */
@@ -8597,10 +8286,7 @@ export class OpenClawController {
   }
 
   private configurationIdentity(namespaceId: string, configurationId: string): void {
-    this.namespaceIdentity(namespaceId);
-    if (!isNonEmptyString(configurationId)) {
-      throw new ScopeViolationError("The exact Configuration identity is missing.");
-    }
+    return this.configurationOperations.configurationIdentity(namespaceId, configurationId);
   }
 
   private namespaceIdentity(namespaceId: string): void {
@@ -8794,27 +8480,13 @@ export class OpenClawController {
     }
   }
 
-  // The Configuration an Agent save names, read from the Configuration Driver at most once and
-  // only when a check needs its values.
   private savedConfigurationReader(
     metadata: Pick<
       Configuration,
       "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
     >,
   ): () => Promise<Readonly<Configuration>> {
-    let read: Promise<Readonly<Configuration>> | undefined;
-    return () => {
-      read ??= (async () => {
-        const driver = this.configurationDriver();
-        return this.exactConfiguration(
-          await this.driverOperation(() =>
-            driver.read({ id: metadata.id, namespaceId: metadata.namespaceId }),
-          ),
-          metadata,
-        );
-      })();
-      return read;
-    };
+    return this.configurationOperations.savedConfigurationReader(metadata);
   }
 
   private agentRuntimeConfiguration(
@@ -9119,94 +8791,6 @@ export class OpenClawController {
     }
   }
 
-  /**
-   * Compensations run after the failed transaction's ROLLBACK released its row locks, so another
-   * request may have deleted or updated the Configuration in between (finding 945). A
-   * compensation restores the previous document only while the record is still the one the
-   * failed request locked; otherwise that later write owns the backend state. A state read that
-   * fails counts as unchanged: the failure is usually the same outage that failed the request,
-   * when no other request can commit either, and skipping would leave the metadata without its
-   * ConfigMap (finding 916).
-   */
-  private async configurationRecordUnchanged(
-    expected: Pick<Configuration, "id" | "namespaceId" | "generation" | "createdAt">,
-  ): Promise<boolean> {
-    const current = await this.read((state) =>
-      state.configurations.findConfiguration(expected.namespaceId, expected.id),
-    ).catch(() => "unreadable" as const);
-    if (current === "unreadable") {
-      return true;
-    }
-    return (
-      current !== undefined &&
-      current.generation === expected.generation &&
-      current.createdAt === expected.createdAt
-    );
-  }
-
-  /**
-   * The stored Configuration behind a record that update or delete holds locked. A failed update
-   * whose compensation could not run (a crash, a lost COMMIT acknowledgement that hid a rollback,
-   * or a compensation read that failed in the same outage) leaves the stored document one
-   * generation ahead of the record, and each such failure during recovery one more (finding
-   * 1396). The record lock keeps other requests out, so a document up to
-   * MAX_CONFIGURATION_LEFTOVER_LEAD generations ahead is a leftover, not a write in flight; it is
-   * returned at its own generation, for update to replace and delete to remove. Another
-   * request's compensation runs without the lock, but the Kubernetes Driver refuses a replace
-   * that does not move the generation by exactly one from the document it read, or whose
-   * resource version changed since, so the later of two writes fails and rolls back. Reads and
-   * deploys keep refusing the leftover, so unrecorded content is never served or recorded.
-   */
-  private async lockedConfiguration(
-    driver: ConfigurationDriver,
-    record: Pick<
-      Configuration,
-      "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
-    >,
-  ): Promise<Readonly<Configuration>> {
-    const stored = await this.driverOperation(() =>
-      driver.read({ id: record.id, namespaceId: record.namespaceId }),
-    );
-    const lead = Number.isSafeInteger(stored?.generation)
-      ? stored.generation - record.generation
-      : 0;
-    return this.exactConfiguration(
-      stored,
-      lead > 0 && lead <= MAX_CONFIGURATION_LEFTOVER_LEAD
-        ? { ...record, generation: stored.generation }
-        : record,
-    );
-  }
-
-  /**
-   * Whether the Driver confirms that nothing is stored for a record: a failed delete whose
-   * compensation could not run leaves the record without its document (finding 1396). Only exact
-   * inspection tells absence from an unreachable backend: it answers undefined only when nothing
-   * is stored, and any stored document answers or conflicts with the placeholder values. A Driver
-   * without it, or one that fails, does not confirm absence.
-   */
-  private async configurationAbsent(
-    driver: ConfigurationDriver,
-    record: Pick<Configuration, "id" | "namespaceId" | "kind" | "generation" | "createdAt">,
-  ): Promise<boolean> {
-    if (driver.inspectExact === undefined) {
-      return false;
-    }
-    const placeholder: Configuration = {
-      id: record.id,
-      namespaceId: record.namespaceId,
-      kind: record.kind,
-      generation: record.generation,
-      values: {},
-      createdAt: record.createdAt,
-    };
-    try {
-      return (await driver.inspectExact(placeholder)) === undefined;
-    } catch {
-      return false;
-    }
-  }
-
   private exactConfiguration(
     configuration: Configuration,
     expected: Pick<
@@ -9214,29 +8798,7 @@ export class OpenClawController {
       "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
     >,
   ): Readonly<Configuration> {
-    if (
-      !configuration ||
-      configuration.id !== expected.id ||
-      configuration.namespaceId !== expected.namespaceId ||
-      configuration.kind !== expected.kind ||
-      configuration.generation !== expected.generation ||
-      configuration.createdAt !== expected.createdAt
-    ) {
-      throw new DependencyUnavailableError(
-        "The Configuration Driver returned a resource outside its exact ownership scope.",
-      );
-    }
-    return Object.freeze({
-      id: expected.id,
-      namespaceId: expected.namespaceId,
-      kind: expected.kind,
-      generation: expected.generation,
-      values: freezeConfigurationValues(configuration.values),
-      ...(expected.secretBindings === undefined
-        ? {}
-        : { secretBindings: this.bindings(expected.secretBindings) }),
-      createdAt: expected.createdAt,
-    });
+    return exactConfiguration(configuration, expected);
   }
 
   private nextIdentifier(kind: ResourceKind): string {
