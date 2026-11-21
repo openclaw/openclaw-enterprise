@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -7,6 +8,10 @@ import {
   openShellProgress,
   openShellProgressPrefix,
 } from "../../scripts/ci/openshell-progress.mjs";
+import {
+  isOpenShellPluginStage,
+  parseOpenShellPluginFailureTiming,
+} from "../../scripts/ci/reporter-measurements.ts";
 import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 
 const pluginInstallCase = "OpenShell installs selected Codex plugins before WebSocket startup";
@@ -116,7 +121,7 @@ function nextPluginStage(line: string, previous: PluginStage | undefined): Plugi
     const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
     if (
       value?.kind === "openshell-stage" &&
-      (value.stage === "installation" || value.stage === "exposure-auth") &&
+      isOpenShellPluginStage(value.stage) &&
       line === `${openShellProgressPrefix}${JSON.stringify(value)}` &&
       validPluginTransition(previous, value as PluginStage)
     ) {
@@ -128,7 +133,25 @@ function nextPluginStage(line: string, previous: PluginStage | undefined): Plugi
   return undefined;
 }
 
-// Only complete, validated stdout stage records precede the terminal frame.
+function diagnosticBelongsToFailure(
+  diagnostic: Record<string, unknown>,
+  failure: Record<string, unknown>,
+): boolean {
+  return (
+    diagnostic.nesting === 0 &&
+    typeof failure.entryFile === "string" &&
+    typeof failure.file === "string" &&
+    Number.isInteger(failure.line) &&
+    Number.isInteger(failure.column) &&
+    diagnostic.entryFile === failure.entryFile &&
+    diagnostic.file === failure.file &&
+    diagnostic.line === failure.line &&
+    diagnostic.column === failure.column
+  );
+}
+
+// Checkpoints can survive interruption. A failed timing needs the named test's
+// own diagnostic and a complete ordinary failure of exactly that test.
 export default async function* reporter(source: AsyncIterable<{ type: string; data: unknown }>) {
   // The transition check admits at most four frames across the entire child.
   const pending: string[] = [];
@@ -145,6 +168,11 @@ export default async function* reporter(source: AsyncIterable<{ type: string; da
   let complete = false;
   let primary: string | DeploymentFailure | undefined;
   let teardown = false;
+  let terminalCount = 0;
+  let ordinaryFailure: Record<string, unknown> | undefined;
+  let completeFailure = false;
+  let repeatedTiming = false;
+  const timings = new Map<string, string>();
   for await (const event of source) {
     const data = record(event.data);
     if (event.type === "test:stdout" && typeof data.message === "string") {
@@ -161,16 +189,41 @@ export default async function* reporter(source: AsyncIterable<{ type: string; da
     ) {
       teardown = true;
     }
+    // Node emits TestContext diagnostics after that test's terminal event.
+    if (
+      event.type === "test:diagnostic" &&
+      ordinaryFailure &&
+      !completeFailure &&
+      diagnosticBelongsToFailure(data, ordinaryFailure) &&
+      typeof data.message === "string"
+    ) {
+      const timing = parseOpenShellPluginFailureTiming(data.message);
+      if (timing) {
+        repeatedTiming ||= timings.has(timing.stage);
+        timings.set(timing.stage, data.message);
+      }
+    }
     if (event.type === "test:fail") {
       failed = true;
+      terminalCount += 1;
       if (data.name === pluginInstallCase && data.nesting === 0) {
-        const error = record(record(data.details).error);
+        const details = record(data.details);
+        const error = record(details.error);
+        if (
+          details.type === "test" &&
+          error.failureType === "testCodeFailure" &&
+          !data.skip &&
+          !data.todo
+        ) {
+          ordinaryFailure = data;
+        }
         if (error.failureType !== "hookFailed") {
           primary ??= failureMessage(error);
         }
       }
     }
     if (event.type === "test:pass") {
+      terminalCount += 1;
       if (
         data.name === pluginInstallCase &&
         data.nesting === 0 &&
@@ -194,54 +247,76 @@ export default async function* reporter(source: AsyncIterable<{ type: string; da
         counts.skipped === 0 &&
         counts.todo === 0 &&
         counts.suites === 0;
+      completeFailure =
+        data.success === false &&
+        counts.tests === 1 &&
+        counts.topLevel === 1 &&
+        counts.passed === 0 &&
+        counts.failed === 1 &&
+        counts.cancelled === 0 &&
+        counts.skipped === 0 &&
+        counts.todo === 0 &&
+        counts.suites === 0;
     }
   }
   if (!primary && !teardown && !failed && complete && passed === 1) {
     yield JSON.stringify("passed");
     return;
   }
+  if (completeFailure && terminalCount === 1 && ordinaryFailure && !repeatedTiming) {
+    // A failed deploy also fails its enclosing installation.
+    const timing =
+      timings.size === 1
+        ? timings.values().next().value
+        : timings.size === 2 && timings.has("installation")
+          ? timings.get("agent-deploy")
+          : undefined;
+    if (timing) {
+      yield timing + "\n";
+    }
+  }
   yield JSON.stringify({ primary: primary ?? (teardown ? null : incomplete), teardown });
 }
 
-export function pluginInstallOutcome(
+function pluginInstallOutcome(
   stdout: string,
   cleanExit: boolean,
   killedByTimeout = false,
-): string | undefined {
+): { failure: string | undefined; ordinaryFailure?: boolean } {
   if (killedByTimeout) {
-    return timedOut;
+    return { failure: timedOut };
   }
   // Exact serialized values also reject partial, duplicated or malformed output.
   if (cleanExit && stdout === JSON.stringify("passed")) {
-    return undefined;
+    return { failure: undefined };
   }
   // Validate the bounded protocol before rendering any child-provided fields.
   if (stdout.length > 4096) {
-    return incomplete;
+    return { failure: incomplete };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
   } catch {
-    return incomplete;
+    return { failure: incomplete };
   }
   const outcome = record(parsed);
   if (
     typeof outcome.teardown !== "boolean" ||
     stdout !== JSON.stringify({ primary: outcome.primary, teardown: outcome.teardown })
   ) {
-    return incomplete;
+    return { failure: incomplete };
   }
   let primary: string;
   if (outcome.primary === null && outcome.teardown) {
-    return teardownFailed;
+    return { failure: teardownFailed };
   }
   if (typeof outcome.primary === "string") {
     if (
       outcome.primary !== incomplete &&
       !failureMessages.some((message) => message === outcome.primary)
     ) {
-      return incomplete;
+      return { failure: incomplete };
     }
     primary = outcome.primary;
   } else {
@@ -256,11 +331,14 @@ export function pluginInstallOutcome(
       (code !== policyCode && categories !== "") ||
       JSON.stringify(outcome.primary) !== JSON.stringify({ code, categories })
     ) {
-      return incomplete;
+      return { failure: incomplete };
     }
     primary = `OpenShell revision deployment failed (${code}${categories ? `: ${categories}` : ""}).`;
   }
-  return outcome.teardown ? `${primary} ${teardownFailed}` : primary;
+  return {
+    failure: outcome.teardown ? `${primary} ${teardownFailed}` : primary,
+    ordinaryFailure: outcome.primary !== incomplete,
+  };
 }
 
 // Keep the last complete stage even if execFile's deadline interrupts the child.
@@ -270,7 +348,7 @@ export function pluginInstallResult(
   stdout: string,
   cleanExit: boolean,
   killedByTimeout = false,
-): { progress: PluginStage | undefined; failure: string | undefined } {
+): { progress: PluginStage | undefined; failure: string | undefined; failedTiming?: string } {
   let progress: PluginStage | undefined;
   let offset = 0;
   while (stdout.startsWith(openShellProgressPrefix, offset)) {
@@ -286,13 +364,30 @@ export function pluginInstallResult(
     progress = value;
     offset = end + 1;
   }
-  return {
-    progress,
-    failure: pluginInstallOutcome(stdout.slice(offset), cleanExit, killedByTimeout),
-  };
+  let failedTiming: string | undefined;
+  if (!cleanExit && !killedByTimeout) {
+    const end = stdout.indexOf("\n", offset);
+    if (end !== -1 && end - offset <= 256) {
+      const line = stdout.slice(offset, end);
+      if (parseOpenShellPluginFailureTiming(line)) {
+        failedTiming = line;
+        offset = end + 1;
+      }
+    }
+  }
+  const { failure, ordinaryFailure } = pluginInstallOutcome(
+    stdout.slice(offset),
+    cleanExit,
+    killedByTimeout,
+  );
+  return { progress, failure, ...(failedTiming && ordinaryFailure ? { failedTiming } : {}) };
 }
 
-export async function runPluginInstallCase(testFile: string, timeout: number): Promise<void> {
+export async function runPluginInstallCase(
+  testFile: string,
+  timeout: number,
+  t: Pick<TestContext, "diagnostic">,
+): Promise<void> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     OCC_TEST_OPENSHELL_HARNESS: "codex",
@@ -309,12 +404,14 @@ export async function runPluginInstallCase(testFile: string, timeout: number): P
     ],
     { env, timeout, maxBuffer: 32 * 1024 * 1024 },
   ).then(
-    ({ stdout }) => ({ stdout, cleanExit: true, killedByTimeout: false }),
+    ({ stdout }) => ({ stdout, cleanExit: true, killedByTimeout: false, failedExit: false }),
     (error: unknown) => {
       const details = error !== null && typeof error === "object" ? error : {};
       return {
         stdout: "stdout" in details && typeof details.stdout === "string" ? details.stdout : "",
         cleanExit: false,
+        failedExit:
+          "code" in details && details.code === 1 && "signal" in details && details.signal === null,
         // execFile owns this kill marker: its only kill paths are timeout and
         // maxBuffer. A nested runner may drain SIGTERM and close with exit 1.
         killedByTimeout:
@@ -324,12 +421,21 @@ export async function runPluginInstallCase(testFile: string, timeout: number): P
       };
     },
   );
-  const { progress, failure } = pluginInstallResult(
+  const { progress, failure, failedTiming } = pluginInstallResult(
     result.stdout,
     result.cleanExit,
     result.killedByTimeout,
   );
   if (failure !== undefined) {
+    if (progress) {
+      const { stage, outcome } = progress;
+      t.diagnostic(
+        `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-plugin-stage", stage, outcome })}`,
+      );
+    }
+    if (result.failedExit && failedTiming) {
+      t.diagnostic(failedTiming);
+    }
     const stage = progress
       ? `\nLast reported OpenShell stage was ${progress.stage} (${progress.outcome}).`
       : "";
