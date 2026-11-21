@@ -96,7 +96,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     // Substitute only the Core API transport; ownership checks remain in the real Driver.
     Reflect.set(drivers.secretDriver, "client", Promise.resolve(core));
     const controller = new OpenClawController(installation, { state });
-    await installTokenServiceDriver(controller, drivers);
+    await installTokenServiceDriver(controller, drivers, state);
     return controller;
   }
 
@@ -117,30 +117,28 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   await state.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(namespaceId, "provisioning", "ready"),
   );
-  const sourceId = `cs_${randomUUID()}`;
-  await state.transact((unit) =>
-    unit.credentialSources.createCredentialSource({
-      id: sourceId,
+  const owner = initial.selectedDriver("token_service");
+  const source = await owner.createSource(
+    {
       namespaceId,
-      name: "Reserved source",
-      type: "openai",
+      name: "Active source",
+      lifecycleConfig: { type: "static", settings: {} },
+      secret: { credential: randomUUID() },
       config: {},
-      secrets: {},
-      ownerCapability: "token_service",
-      tokenServiceInstanceId: initialInstance,
-      state: "registering",
-      createdAt,
-    }),
+    },
+    AbortSignal.timeout(5_000),
   );
   // A new private owner can establish its own marker, but live source custody
   // still prevents selecting a replacement TokenService instance.
   await assert.rejects(start("secret-b"), /still has registrations/);
-  assert.equal(
-    await state.transact((unit) =>
-      unit.credentialSources.deleteCredentialSource(namespaceId, sourceId),
-    ),
-    true,
+  const sourceInstance = {
+    sourceRef: { kind: "credential_source" as const, namespaceId, id: source.id },
+    tokenServiceInstanceId: initialInstance,
+  };
+  await state.transact(({ credentialSources }) =>
+    credentialSources.markCredentialSourceDeleting(namespaceId, source.id),
   );
+  await owner.removeSource(sourceInstance, AbortSignal.timeout(5_000));
 
   const replacement = await start("secret-b");
   assert.notEqual(replacement.currentTokenServiceInstanceId(), initialInstance);

@@ -55,6 +55,7 @@ import {
   SecretDriverOwnershipError,
   SecretValueError,
   ServiceAccountDriverNotConfiguredError,
+  TokenServiceSourceInputError,
   type RuntimeLogsErrorCode,
 } from "@openclaw-enterprise/occ";
 import {
@@ -974,6 +975,13 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof ResourceConflictError) {
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
+  }
+  if (error instanceof TokenServiceSourceInputError) {
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      "Static sources accept only the optional provider_preset=openai configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
+    );
   }
   if (
     error instanceof ScopeViolationError ||

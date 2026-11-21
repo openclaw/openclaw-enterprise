@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
 import { probeDedicatedCommand } from "../fixtures/runtime-image-startup/dedicated-command.ts";
 import {
@@ -12,7 +11,11 @@ import {
 } from "../fixtures/runtime-image-startup/wire.ts";
 import { renderProbe } from "./runtime-image-startup-support.ts";
 
-export async function verifyDedicatedCommand(image: string, historicalCodex: boolean) {
+export async function verifyDedicatedCommand(
+  image: string,
+  harness: string,
+  historicalCodex: boolean,
+) {
   // Substitute only authentication results and the app-server transport. The emitted
   // startup computes native settings; the image's actual Codex executes the shell.
   // Docker supplies isolation; this offline check proves no model turn or provider access.
@@ -52,7 +55,7 @@ export async function verifyDedicatedCommand(image: string, historicalCodex: boo
       probe,
     ],
     {},
-    AGENT_RUNTIME_ENTRYPOINT,
+    harness,
   );
   assert.match(stdout, /native-repository-shell-ready/);
 }

@@ -18,7 +18,7 @@ export interface RemovedAccessBinding {
   readonly resourceId?: string;
 }
 
-function removedAccessBinding(binding: Readonly<AccessBinding>): RemovedAccessBinding {
+export function removedAccessBinding(binding: Readonly<AccessBinding>): RemovedAccessBinding {
   return Object.freeze({
     id: binding.id,
     subjectKind: binding.subjectKind,
