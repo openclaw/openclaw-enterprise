@@ -474,12 +474,6 @@ function createAgentTeardownOperations(
   return { agentCredentialWithdrawal, agentTermination };
 }
 
-type DeviceAuthorizationScopeCheck = (
-  principalId: string,
-  namespaceId: string,
-  agentId?: string,
-) => Promise<void>;
-
 function createCredentialServices({
   installationId,
   stateAndAuthority: { platformState, transactions, authority, iamPolicy, resourceValues },
@@ -488,7 +482,6 @@ function createCredentialServices({
   publicController,
   preparedTokens,
   deviceCipher,
-  authorizeDeviceAuthorizationScope,
   canUseNativeAuthorization,
 }: {
   installationId: string;
@@ -508,7 +501,6 @@ function createCredentialServices({
   >;
   preparedTokens: TokenService | undefined;
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
-  authorizeDeviceAuthorizationScope: DeviceAuthorizationScopeCheck;
   canUseNativeAuthorization: boolean;
 }) {
   const nextSourceId = () => resourceValues.nextIdentifier("credential_source");
@@ -564,7 +556,6 @@ function createCredentialServices({
     timestamp: resourceValues.timestamp,
     transactions,
     authority,
-    authorizeScope: authorizeDeviceAuthorizationScope,
     hasDriver: (capability) => drivers.hasSelection(capability),
     credentialGatewayDriver: credentialSourceDrivers.credentialGatewayDriver,
     credentialRefreshDriver: credentialSourceDrivers.credentialRefreshDriver,
@@ -699,7 +690,6 @@ export function createControllerComposition(
   installation: Installation,
   options: ControllerOptions,
   publicController: ControllerDispatch,
-  authorizeDeviceAuthorizationScope: DeviceAuthorizationScopeCheck,
 ) {
   const requestAuditId = new AsyncLocalStorage<string>();
   const currentRequestAuditId = () => requestAuditId.getStore();
@@ -768,7 +758,6 @@ export function createControllerComposition(
     publicController,
     preparedTokens,
     deviceCipher,
-    authorizeDeviceAuthorizationScope,
     canUseNativeAuthorization: !authorization,
   });
   const {
@@ -1179,7 +1168,6 @@ export function createControllerComposition(
     agentDrafts,
     agentQueries,
     agentTermination,
-    authority,
     bindInstallationRepository,
     configurationOperations,
     credentialProxyCapacity,
@@ -1206,6 +1194,7 @@ export function createControllerComposition(
     setupDiscovery,
     transactions,
     validateBackendConfiguration,
-    workRecorder,
+    withAuthorityFence: authority.withAuthorityFence,
+    withRequestAuditId: workRecorder.withRequestAuditId,
   };
 }

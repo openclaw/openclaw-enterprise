@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-20
-last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Platform console request flow
@@ -184,11 +184,11 @@ returns Agent detail and creation to Agents.
 
 `apps/controller/src/index.ts:perform`, `requireInstallationAdmin`
 
-`packages/occ/src/index.ts:OpenClawController.listNamespaces`, `listAgents`
+`packages/occ/src/namespace-operations.ts:listNamespaces`, `packages/occ/src/agent-queries.ts:listAgents`
 
-Agents and Secrets use the selected Namespace's route. OCC authorizes Namespace reads and
-filters Agents by exact read permission; Namespace listing filters its
-Installation-wide collection. No readable selection means no Agent request.
+Agent and Secret requests use the selected Namespace. OCC filters Installation
+Namespaces and exact Agents by read permission. The Console requests Agents
+only for a readable Namespace.
 `GET /backends` ignores selection and requires Installation `administer` before
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
@@ -367,6 +367,7 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 
 - 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)

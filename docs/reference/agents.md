@@ -402,7 +402,7 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 - [IAM](authorization.md)
 - [Controller configuration](settings.md)
 - [Platform architecture](../design.md)
-- [Agent lifecycle implementation](../../packages/occ/src/index.ts)
+- [Agent controller methods](../../packages/occ/src/controller.ts)
 - [HTTP resource schemas](../../packages/contracts/src/api/resources.ts)
 - [Local testing](../testing/local.md)
 
