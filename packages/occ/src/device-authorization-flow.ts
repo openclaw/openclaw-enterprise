@@ -1,6 +1,5 @@
 import type {
   AuditEvent,
-  AuthorizationRequest,
   CredentialGatewayDriver,
   CredentialRefreshDriver,
   CredentialSource,
@@ -8,10 +7,11 @@ import type {
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
   CredentialSourceMetadata,
-  Namespace,
   ResourceRef,
 } from "@openclaw-enterprise/contracts";
 
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
   cancelledDeviceAuthorization,
   deviceAuthorizationScope,
@@ -27,21 +27,7 @@ import {
   RetryLaterError,
   ScopeViolationError,
 } from "./errors.ts";
-import type {
-  AuthenticationStateReadRepository,
-  AuthenticationStateRepository,
-} from "./ports/authentication-states.ts";
-
-type DeviceAuthorizationReadState = {
-  readonly authenticationStates: AuthenticationStateReadRepository;
-};
-
-type DeviceAuthorizationWriteState = {
-  readonly audit: {
-    append(event: AuditEvent): Promise<void>;
-  };
-  readonly authenticationStates: Pick<AuthenticationStateRepository, "create" | "replaceDevice">;
-};
+import { lockNamespace } from "./resource-scope.ts";
 
 type SourceAudit = (source: Readonly<CredentialSourceMetadata>) => AuditEvent;
 export type DeviceAuthorizationAudit = (
@@ -54,26 +40,19 @@ type GatewaySourceContext = {
   readonly context: CredentialSourceContext;
 };
 
-type DeviceAuthorizationDependencies<ReadState, WriteState> = {
+interface DeviceAuthorizationDependencies {
   readonly installationId: string;
   readonly cipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   readonly gatewayTimeoutMs: number;
   readonly nextSessionId: () => string;
   readonly timestamp: () => string;
-  readonly read: <T>(work: (state: ReadState) => Promise<T>) => Promise<T>;
-  readonly mutate: <T>(work: (state: WriteState) => Promise<T>) => Promise<T>;
-  readonly holdAuthority: (state: WriteState) => Promise<void>;
-  readonly authorize: (
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    resource: ResourceRef,
-  ) => Promise<unknown>;
+  readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
   readonly authorizeScope: (
     principalId: string,
     namespaceId: string,
     agentId?: string,
   ) => Promise<void>;
-  readonly lockNamespace: (state: WriteState, namespaceId: string) => Promise<Readonly<Namespace>>;
   readonly hasDriver: (capability: "credential_gateway" | "credential_refresh") => boolean;
   readonly credentialGatewayDriver: () => CredentialGatewayDriver;
   readonly credentialRefreshDriver: () => CredentialRefreshDriver;
@@ -96,12 +75,12 @@ type DeviceAuthorizationDependencies<ReadState, WriteState> = {
   readonly credentialSourceMetadata: (
     source: Readonly<CredentialSource>,
   ) => Readonly<CredentialSourceMetadata>;
-};
+}
 
-export function createDeviceAuthorizationFlow<
-  ReadState extends DeviceAuthorizationReadState,
-  WriteState extends DeviceAuthorizationWriteState,
->(deps: DeviceAuthorizationDependencies<ReadState, WriteState>) {
+export function createDeviceAuthorizationFlow(deps: DeviceAuthorizationDependencies) {
+  const { read, transact } = deps.transactions;
+  const { authorize, holdAuthority } = deps.authority;
+
   async function start(
     principalId: string,
     namespaceId: string,
@@ -117,7 +96,7 @@ export function createDeviceAuthorizationFlow<
     };
     // A missing grant must return its audited denial before checking Driver availability.
     // Source registration checks the grant again before writing the source.
-    await deps.authorize(principalId, "create", sourceTarget);
+    await authorize(principalId, "create", sourceTarget);
     if (!deps.hasDriver("credential_gateway") || !deps.hasDriver("credential_refresh")) {
       throw new NotImplementedError(
         "agent_device_authorization",
@@ -160,7 +139,7 @@ export function createDeviceAuthorizationFlow<
     const { context } = await deps.credentialSourceContext(namespaceId, source.id);
     // Registration can outlive an IAM change; check the start authority again before provider I/O.
     await deps.authorizeScope(principalId, namespaceId, agentId);
-    await deps.authorize(principalId, "create", sourceTarget);
+    await authorize(principalId, "create", sourceTarget);
     let started: CredentialSourceDeviceAuthorization;
     try {
       started = await refresh.startDeviceAuthorization(context);
@@ -195,10 +174,10 @@ export function createDeviceAuthorizationFlow<
       JSON.stringify({ verificationUrl, userCode }),
       deviceAuthorizationScope(deps.installationId, sessionId, session, "challenge"),
     );
-    await deps.mutate(async (state) => {
-      await deps.holdAuthority(state);
-      const namespace = await deps.lockNamespace(state, namespaceId);
-      await deps.authorize(principalId, "create", sourceTarget);
+    await transact(async (state) => {
+      await holdAuthority(state);
+      const namespace = await lockNamespace(state, namespaceId);
+      await authorize(principalId, "create", sourceTarget);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -232,7 +211,7 @@ export function createDeviceAuthorizationFlow<
   ) {
     const session = await readSession(principalId, namespaceId, sessionId, agentId);
     const { version } = session;
-    await deps.authorize(principalId, "operate", {
+    await authorize(principalId, "operate", {
       kind: "credential_source",
       namespaceId,
       id: session.sourceId,
@@ -367,7 +346,7 @@ export function createDeviceAuthorizationFlow<
   }
 
   function replaceSession(id: string, version: number, session: DeviceAuthorizationSession) {
-    return deps.mutate((state) =>
+    return transact((state) =>
       state.authenticationStates.replaceDevice(session.namespaceId, id, version, session),
     );
   }
@@ -379,7 +358,7 @@ export function createDeviceAuthorizationFlow<
     agentId?: string,
   ) {
     await deps.authorizeScope(principalId, namespaceId, agentId);
-    const stored = await deps.read((state) =>
+    const stored = await read((state) =>
       state.authenticationStates.findDevice(namespaceId, sessionId),
     );
     if (stored === undefined) {
