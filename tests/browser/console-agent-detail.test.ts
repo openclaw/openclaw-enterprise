@@ -1482,20 +1482,22 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
 
   await page.getByRole("button", { name: "Stop Agent" }).click();
   let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog
-    .getByText(/Configuration, versions, Credentials, and workspace data are retained/i)
-    .waitFor();
+  await dialog.getByText(/Configuration, versions, credentials, and workspace data/i).waitFor();
   // The dialog names its target Agent as text, and in its accessible description.
   await dialog.getByText("Stop Candidate", { exact: true }).waitFor();
-  assert.equal(await accessibleDescription(dialog), `Agent: Stop Candidate ${STOP_CONFIRMATION}`);
-  await dialog.getByRole("button", { name: "Cancel" }).click();
+  const description = await accessibleDescription(dialog);
+  assert.ok(description.includes("Stop Candidate"));
+  assert.ok(description.includes(STOP_CONFIRMATION));
+  assert.ok(description.includes("It starts and may resume unfinished work."));
+  assert.ok(description.includes("To cancel a reply, select Stop in chat first."));
+  const goBack = dialog.getByRole("button", { name: "Go back" });
+  assert.equal(await goBack.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  await goBack.click();
   await dialog.waitFor({ state: "hidden" });
-  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
   await page.getByRole("button", { name: "Stop Agent" }).click();
   dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog
-    .getByText(/Configuration, versions, Credentials, and workspace data are retained/i)
-    .waitFor();
+  await dialog.getByText(/Configuration, versions, credentials, and workspace data/i).waitFor();
   const stopResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop` &&
@@ -2275,7 +2277,7 @@ for (const viewport of [
         sentence: STOP_RUNNING_VERSION,
         dialog: "Stop this Agent?",
         confirm: "Stop Agent",
-        prose: /Configuration, versions, Credentials, and workspace data are retained\./,
+        prose: /Configuration, versions, credentials, and workspace data\./,
       },
       {
         name: "Delete Agent",
@@ -2329,7 +2331,9 @@ for (const viewport of [
         border: danger,
         fill: danger,
       });
-      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await dialog
+        .getByRole("button", { name: row.name === "Stop Agent" ? "Go back" : "Cancel" })
+        .click();
       await page.locator("dialog[open]").waitFor({ state: "detached" });
     }
     assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -4113,7 +4117,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     assert.equal(await confirm.isDisabled(), true);
     assert.equal(
       await page.evaluate(() => globalThis.document.activeElement?.textContent),
-      "Cancel",
+      action === "Stop" ? "Go back" : "Cancel",
     );
     // The confirmation stays in the Tab order, described by the refusal, and sends nothing
     // (finding 2935).
@@ -4122,7 +4126,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     await confirm.dispatchEvent("click");
     await settlePageRequests(page);
     assert.deepEqual(nonAuthWriteRequests(requests), []);
-    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await dialog.getByRole("button", { name: action === "Stop" ? "Go back" : "Cancel" }).click();
     await page.locator("dialog[open]").waitFor({ state: "detached" });
     // The row this viewer used stays, with the reason, instead of vanishing under them.
     const row = page.getByRole("region", { name: action + " Agent", exact: true });

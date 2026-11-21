@@ -5,7 +5,7 @@ import {
   namedDenial,
   requestFailure,
 } from "../api-client.mjs";
-import { button, element } from "../dom.mjs";
+import { button, element, statusBlock } from "../dom.mjs";
 import type { AgentNavigation } from "./list.mjs";
 
 /** Stop and Delete follow the selected Agent until the operator leaves its detail page. */
@@ -37,25 +37,6 @@ export function grantRefusal(cause: unknown) {
   );
 }
 
-// Agent list and detail use the same confirmation and explain which resources deletion keeps.
-export const STOP_CONFIRMATION =
-  "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
-
-// A first deployment that is queued or in progress, with no version selected yet: Stop only
-// cancels it, because no gateway runs yet to interrupt (finding D691).
-export const STOP_FIRST_DEPLOYMENT_CONFIRMATION =
-  "No version is serving yet, so this cancels the deployment in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
-
-// No version is selected and this viewer cannot read the latest deployment's outcome, so the
-// console cannot say whether Stop cancels a deployment or interrupts a gateway that started.
-export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION =
-  "This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
-
-// Request Stop again on an Agent already requested to stop: no gateway runs that this would
-// interrupt, so the confirmation says it only repeats the request (finding D815).
-export const STOP_REPEAT_CONFIRMATION =
-  "This Agent is already requested to stop. This sends the stop request again; use it if an earlier stop did not finish. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
-
 /**
  * Stop cancels a first deployment only when the Agent is requested to run, no version is
  * selected, and the latest deployment this viewer read is queued or in progress. A completed stop
@@ -73,28 +54,54 @@ export function cancelsFirstDeployment(
 }
 
 /**
- * `latestDeployment` is the status of the latest deployment this viewer read, or null/undefined
- * when it is unknown (unreadable, failed read, or still reading).
+ * The list and detail views explain the same Stop action. A completed deployment may be
+ * newer than the Agent read, and a missing deployment status may hide a running version.
  */
 export function stopConfirmation(
+  id: string,
   agent: Pick<AgentRead, "activeRevisionId" | "desiredRuntimeState">,
   latestDeployment: string | null | undefined,
 ) {
-  if (agent.desiredRuntimeState === "stopped") {
-    return STOP_REPEAT_CONFIRMATION;
+  const repeat = agent.desiredRuntimeState === "stopped";
+  const firstDeployment = cancelsFirstDeployment(agent, latestDeployment);
+  let effect = "The Agent goes offline.";
+  if (repeat) {
+    effect = "This sends another stop request. Use it if the first one hasn’t finished.";
+  } else if (firstDeployment) {
+    effect = "This cancels the pending deployment.";
+  } else if (!agent.activeRevisionId && latestDeployment !== "succeeded") {
+    effect = "This cancels any pending deployment. If the Agent is running, it goes offline.";
   }
-  if (cancelsFirstDeployment(agent, latestDeployment)) {
-    return STOP_FIRST_DEPLOYMENT_CONFIRMATION;
-  }
-  // A succeeded deployment read against an older Agent read means a version runs.
-  if (
-    agent.desiredRuntimeState === "running" &&
-    !agent.activeRevisionId &&
-    latestDeployment !== "succeeded"
-  ) {
-    return STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION;
-  }
-  return STOP_CONFIRMATION;
+
+  return element(
+    "div",
+    { id, className: "dialog-body", "aria-live": "polite" },
+    element(
+      "dl",
+      { className: "agent-stop-effects" },
+      element("dt", {}, repeat ? "When you retry" : "When you stop"),
+      element("dd", {}, effect),
+      element("dt", {}, "When you deploy again"),
+      element(
+        "dd",
+        {},
+        firstDeployment
+          ? "The Agent starts with a new version."
+          : "It starts and may resume unfinished work.",
+      ),
+      element("dt", {}, "What the Agent keeps"),
+      element("dd", {}, "Configuration, versions, credentials, and workspace data."),
+    ),
+    firstDeployment || repeat
+      ? null
+      : statusBlock(
+          "info",
+          null,
+          ["To cancel a reply, select ", element("strong", {}, "Stop"), " in chat first."],
+          [],
+          { role: null },
+        ),
+  );
 }
 
 export const DELETE_CONFIRMATION =

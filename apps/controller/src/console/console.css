@@ -3209,6 +3209,28 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   background: color-mix(in srgb, var(--color-danger) 60%, var(--color-surface));
   border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-surface));
 }
+.agent-stop-effects {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-4) var(--space-6);
+  margin: 0;
+}
+.agent-stop-effects dt {
+  font-weight: var(--weight-semibold);
+}
+.agent-stop-effects dd {
+  margin: 0;
+  text-wrap: pretty;
+}
+@media (max-width: 520px) {
+  .agent-stop-effects {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+  }
+  .agent-stop-effects dd + dt {
+    margin-top: var(--space-2);
+  }
+}
 .agent-kept-resources {
   margin-top: var(--space-3);
 }

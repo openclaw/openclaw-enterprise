@@ -3967,7 +3967,7 @@ export function registerSharingCredentialsAndChannelsCases(
     await repeat.focus();
     await repeat.press("Enter");
     let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await dialog.getByRole("button", { name: "Go back" }).click();
     await page.locator(".agent-stop-dialog").waitFor({ state: "detached" });
     assert.equal(await repeat.evaluate((node) => node === node.ownerDocument.activeElement), true);
     await repeat.press("Enter");

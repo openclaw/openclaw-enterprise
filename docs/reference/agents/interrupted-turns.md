@@ -46,12 +46,11 @@ session and its history remain. Check for partial effects, then send the request
 again or select **Try again**. Redeployment, Stop then deployment, and upgrades
 replace the Gateway too and use normal recovery.
 
-Deploying a stopped Agent currently starts it again. Keeping stopped Agents
-stopped on deployment is tracked separately by
-[issue #6500](https://github.com/openclaw/openclaw-enterprise/issues/6500).
-Workload Stop is distinct from native turn cancellation. A failed teardown does
-not mean the old workload has stopped; normal ownership and replacement checks
-still apply.
+The [production runtime upgrade](../../guides/deploy/production-upgrade.md#upgrade-agent-runtimes)
+selects Agents requested to run. Deploy a new version to start a stopped Agent.
+To cancel an active reply in native chat, select **Stop** in the chat before
+selecting **Stop Agent** in the Console. If shutdown fails, the old workload may
+still be running. Normal ownership and replacement checks apply.
 
 Changing Harnesses does not make an incompatible saved session usable. Retained
 storage, native state validity, current authority, and Harness support remain

@@ -748,21 +748,22 @@ export function renderAgentList(context: AgentListContext) {
 
   function confirmAction(item: AgentRead, kind: RowAction, invoker: HTMLButtonElement) {
     const stopping = kind === "stop";
-    const description = element(
-      "p",
-      { id: "agent-row-confirm-description", "aria-live": "polite" },
-      stopping ? stopConfirmation(item, latestDeployments.get(item.id)) : DELETE_CONFIRMATION,
-    );
+    const id = "agent-row-confirm-description";
+    const description = stopping
+      ? stopConfirmation(id, item, latestDeployments.get(item.id))
+      : element("p", { id, "aria-live": "polite" }, DELETE_CONFIRMATION);
     const kept = stopping ? null : keptResources(item);
     const dialog = element("dialog", {
-      className: stopping ? "dialog agent-stop-dialog" : "dialog agent-delete-dialog",
+      className: stopping
+        ? "dialog dialog--framed agent-stop-dialog"
+        : "dialog agent-delete-dialog",
       "aria-labelledby": "agent-row-confirm-title",
       "aria-describedby": kept ? `${description.id} ${kept.summary.id}` : description.id,
     });
     let pending = false;
     let submitted = false;
     const permission = stopping ? "operate" : "delete";
-    const cancel = button("Cancel", () => dialog.close());
+    const cancel = button(stopping ? "Go back" : "Cancel", () => dialog.close());
     const confirm = button(
       stopping ? "Stop Agent" : "Permanently delete Agent",
       async () => {
@@ -796,12 +797,13 @@ export function renderAgentList(context: AgentListContext) {
     restrictOpenDialog = restrict;
     const dismiss = () => dialog.close();
     dismissOpenDialog = dismiss;
+    const title = element(
+      "h2",
+      { id: "agent-row-confirm-title" },
+      `${stopping ? "Stop" : "Delete"} ${item.name}?`,
+    );
     dialog.append(
-      element(
-        "h2",
-        { id: "agent-row-confirm-title" },
-        `${stopping ? "Stop" : "Delete"} ${item.name}?`,
-      ),
+      stopping ? element("header", { className: "dialog-header" }, title) : title,
       description,
       ...(kept ? [kept.summary, kept.commands] : []),
       element("div", { className: "dialog-actions" }, cancel, confirm),

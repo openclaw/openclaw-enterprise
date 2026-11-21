@@ -113,16 +113,12 @@ export const AGENT_DEPLOY_NOT_INCLUDED = notIncluded("deploying this Agent", "Ag
 // The Stop confirmation, on the Agents list and the Agent page, by what the page read of the
 // Agent's version and its latest deployment (apps/controller/src/console/agents/
 // lifecycle-confirmation.mts, finding D691).
-const STOP_KEEPS =
-  "Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
-// A version is selected for service.
-export const STOP_CONFIRMATION = `This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. ${STOP_KEEPS}`;
-// No version is selected and the first deployment is queued or in progress.
-export const STOP_FIRST_DEPLOYMENT_CONFIRMATION = `No version is serving yet, so this cancels the deployment in progress. ${STOP_KEEPS}`;
-// No version is selected and the page could not read the latest deployment's outcome.
-export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION = `This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. ${STOP_KEEPS}`;
-// The Agent is already requested to stop: Request Stop again only repeats the request (D815).
-export const STOP_REPEAT_CONFIRMATION = `This Agent is already requested to stop. This sends the stop request again; use it if an earlier stop did not finish. ${STOP_KEEPS}`;
+export const STOP_CONFIRMATION = "The Agent goes offline.";
+export const STOP_FIRST_DEPLOYMENT_CONFIRMATION = "This cancels the pending deployment.";
+export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION =
+  "This cancels any pending deployment. If the Agent is running, it goes offline.";
+export const STOP_REPEAT_CONFIRMATION =
+  "This sends another stop request. Use it if the first one hasn’t finished.";
 // The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
 export const STOP_CANCELS_FIRST_DEPLOYMENT = "Cancels this deployment without deleting Agent data.";
 export const STOP_RUNNING_VERSION = "Stops the running version without deleting Agent data.";
