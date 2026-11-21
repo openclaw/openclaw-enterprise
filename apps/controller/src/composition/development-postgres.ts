@@ -3,6 +3,7 @@ import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.t
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
+import { createGatewayPeopleAccess } from "./gateway-people.ts";
 import { installTokenServiceDriver } from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
@@ -45,7 +46,10 @@ import {
 } from "../logging.ts";
 import { resolveApprovedHarness } from "./production-harness.ts";
 import type { CompositionDependencies } from "./production.ts";
-import type { ControllerWorkspaceFilesAccess } from "../gateway/contracts.ts";
+import type {
+  ControllerGatewayPeopleAccess,
+  ControllerWorkspaceFilesAccess,
+} from "../gateway/contracts.ts";
 import type { NativeAdminAccessConfig } from "../gateway/native-admin.ts";
 import {
   createWorkspaceFilesAccess,
@@ -72,6 +76,7 @@ export interface PostgresDevelopmentConfig {
   readonly trustedDevelopmentBridgeCidr?: string;
   readonly trustedDevelopmentForwarderCidr?: string;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
+  readonly gatewayPeopleAccess?: ControllerGatewayPeopleAccess;
   readonly gatewayApiKeyPath?: string;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
@@ -308,6 +313,11 @@ export async function composePostgresDevelopment(
         : (warning) => emitOccLogEvent(config.logger!, warning),
     );
 
+    const gatewayPeopleAccess =
+      config.gatewayPeopleAccess ??
+      (config.gatewayApiKeyPath === undefined
+        ? undefined
+        : createGatewayPeopleAccess(computeDriver, config.gatewayApiKeyPath));
     let workspaceFilesAccess = config.workspaceFilesAccess;
     if (workspaceFilesAccess === undefined && config.gatewayApiKeyPath !== undefined) {
       const gatewayApiKeyPath = config.gatewayApiKeyPath;
@@ -365,6 +375,7 @@ export async function composePostgresDevelopment(
             }),
       },
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
+      ...(gatewayPeopleAccess === undefined ? {} : { gatewayPeopleAccess }),
     });
     drivers?.repositoryTransport?.connectRestartObservation?.(pool);
     await drivers?.preparedGitHub?.connect(pool);

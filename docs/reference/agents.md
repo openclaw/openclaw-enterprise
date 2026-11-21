@@ -56,6 +56,9 @@ metadata-only detail response. Authorization and strict mutation/runtime validat
 are unchanged; query failures still fail requests. See the
 [Console warning](../guides/console/agent-details.md#unreadable-saved-settings).
 
+[Direct Control UI access](agents/gateway-people.md) lists configured users with
+optional native profile details. It does not change admission or OCC sharing.
+
 ## Deployment status
 
 The `deploymentId` is the saved AgentRevision ID from

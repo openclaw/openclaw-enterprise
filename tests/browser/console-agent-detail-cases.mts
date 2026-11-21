@@ -25,6 +25,7 @@ import { createConsoleAppFixture, type fileConsoleApp } from "../helpers/console
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  fetchFixtureRoute,
   AGENT_READ,
   apiRequests,
   authorizationDenials,
@@ -513,7 +514,11 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
       `${policyPath}/access-bindings/${agentBinding.id}`,
     );
     assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
-    const denied = await holdNextStatusResponse(page, `${fixture.origin}${agentPath}`);
+    const denied = await holdNextStatusResponse(
+      page,
+      `${fixture.origin}${agentPath}`,
+      fixture.fetch,
+    );
     await page.clock.runFor(DELETION_POLL_MS);
     const status = await denied.status;
     const expectedFocus = moveFocusDuringPoll
@@ -570,7 +575,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         return;
       }
       interceptedDeletes += 1;
-      await replyWithDifferentAgentId(route, agent.id, 202);
+      await replyWithDifferentAgentId(route, agent.id, 202, fixture.fetch);
     });
 
     await login(
@@ -601,7 +606,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     // A read for a different Agent cannot unlock another destructive request either.
     await page.route(
       fixture.origin + deletePath,
-      (route) => replyWithDifferentAgentId(route, agent.id, 200),
+      (route) => replyWithDifferentAgentId(route, agent.id, 200, fixture.fetch),
       { times: 1 },
     );
     await page.getByRole("button", { name: "Refresh deletion status" }).click();
@@ -642,7 +647,12 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
     await page.getByRole("button", { name: "Request deletion again", exact: true }).waitFor();
     requests.length = 0;
-    await checkStatusRefreshFocus(page, `${fixture.origin}${path}`, "Refresh deletion status");
+    await checkStatusRefreshFocus(
+      page,
+      `${fixture.origin}${path}`,
+      "Refresh deletion status",
+      fixture.fetch,
+    );
     const open = () =>
       page.getByRole("button", { name: "Request deletion again", exact: true }).click();
     await open();
@@ -924,7 +934,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         return;
       }
       holdRead = false;
-      const response = await route.fetch();
+      const response = await fetchFixtureRoute(route, fixture.fetch);
       entered();
       await gate;
       if (endsAccess) {
@@ -946,7 +956,11 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         });
         return;
       }
-      await route.fulfill({ response });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
     });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
     await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
@@ -1030,7 +1044,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         await route.continue();
         return;
       }
-      await route.fetch();
+      await fetchFixtureRoute(route, fixture.fetch);
       await route.fulfill({
         status: 503,
         contentType: "application/json",
@@ -1406,10 +1420,14 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
     t.after(() => releaseSession());
     const { promise: sessionHeld, resolve: sessionReached } = deferred<void>();
     await page.route(`${fixture.origin}/api/auth/session`, async (route) => {
-      const response = await route.fetch();
+      const response = await fetchFixtureRoute(route, fixture.fetch);
       sessionReached();
       await sessionGate;
-      await route.fulfill({ response });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
     });
 
     // One tab return can emit both events. The saved revision and unsaved editor stay mounted
@@ -1521,11 +1539,6 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
         "The Repositories tab is on the version draft only. Showing Configuration.",
       ],
       ["draft", "logs", "The Logs tab is on deployed versions only. Showing Configuration."],
-      [
-        "draft",
-        "access",
-        "The Access tab needs Installation administration, which your access does not include. Showing Configuration.",
-      ],
       ["draft", "bogus", "This Agent has no “bogus” tab. Showing Configuration."],
     ] as const) {
       const { page } = await newPage(t, fixture);
@@ -1854,7 +1867,7 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
       await login(page, fixture, url);
       await page.getByRole("heading", { name: `Refocus ${variant} Agent` }).waitFor();
       if (variant === "sharing") {
-        const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+        const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
         await panel.getByLabel("Existing person’s Principal ID").fill("typed-principal");
       } else {
         await page.locator(".content form:not(.agent-access-form)").first().waitFor();
@@ -2023,10 +2036,14 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
     const { promise: held, resolve: reached } = deferred<void>();
     // Delay a real authorized response to exercise navigation while the first panel read is pending.
     await page.route(`${fixture.origin}${configurationPath}`, async (route) => {
-      const response = await route.fetch();
+      const response = await fetchFixtureRoute(route, fixture.fetch);
       reached();
       await gate;
-      await route.fulfill({ response });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
     });
     await page.getByRole("tab", { name: "Channels", exact: true }).click();
     await held;
@@ -2361,7 +2378,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const requests = apiRequests(page, fixture.origin);
     const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
     await login(page, fixture, detail);
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
     await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
     await panel.getByRole("checkbox").check();
     await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
@@ -2728,7 +2745,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const requests = apiRequests(page, fixture.origin);
     const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
     await login(page, fixture, detail);
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
     const principal = panel.getByLabel("Existing person’s Principal ID");
     const writes = () =>
       nonAuthWriteRequests(requests).filter((request) => request.path.includes("/iam/"));
@@ -2757,6 +2774,7 @@ export function registerSharingCredentialsAndChannelsCases(
   // Both sharing and credential access must stop before sending any binding request.
   async function expectBroaderCreatedRoleRefused(
     page: Page,
+    fetchRequest: (request: Request) => Promise<Response>,
     requests: ReturnType<typeof apiRequests>,
     rolesPath: string,
     broader: Role,
@@ -2768,15 +2786,19 @@ export function registerSharingCredentialsAndChannelsCases(
         await route.continue();
         return;
       }
-      const response = await route.fetch();
-      assert.equal(response.status(), 201);
-      const body = record(await response.json());
+      const response = await fetchFixtureRoute(route, fetchRequest);
+      assert.equal(response.status, 201);
+      const body = record(await response.clone().json());
       const createdRole = readRole(body.data);
       assert.deepEqual(createdRole.permissions, record(route.request().postDataJSON()).permissions);
       assert.equal(createdRole.namespaceId, broader.namespaceId);
       assert.notEqual(createdRole.id, broader.id);
       assert.ok(broader.permissions.length > createdRole.permissions.length);
-      await route.fulfill({ response, json: { ...body, data: broader } });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        json: { ...body, data: broader },
+      });
     });
     const returned = page.waitForResponse(
       (response) => response.url().endsWith(rolesPath) && response.request().method() === "POST",
@@ -2827,7 +2849,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const requests = apiRequests(page, fixture.origin);
     const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
     await login(page, fixture, detail);
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
     await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
     await panel.getByRole("checkbox").check();
     const share = panel.getByRole("button", { name: "Share Agent", exact: true });
@@ -2835,6 +2857,7 @@ export function registerSharingCredentialsAndChannelsCases(
     assert.ok(broaderDiscoveryRole);
     await expectBroaderCreatedRoleRefused(
       page,
+      fixture.fetch,
       requests,
       `${policyPath}/roles`,
       broaderDiscoveryRole,
@@ -3040,8 +3063,13 @@ export function registerSharingCredentialsAndChannelsCases(
     });
     assert.equal(broader.status, 201);
     const retry = page.getByRole("button", { name: "Retry credential access" });
-    await expectBroaderCreatedRoleRefused(page, requests, rolesPath, readRole(broader.data), () =>
-      retry.click(),
+    await expectBroaderCreatedRoleRefused(
+      page,
+      fixture.fetch,
+      requests,
+      rolesPath,
+      readRole(broader.data),
+      () => retry.click(),
     );
     assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
     // Commit the binding through the real API, then lose only its response. Read-before-create makes retry safe.
@@ -3050,8 +3078,8 @@ export function registerSharingCredentialsAndChannelsCases(
         await route.continue();
         return;
       }
-      const response = await route.fetch();
-      assert.equal(response.status(), 201);
+      const response = await fetchFixtureRoute(route, fixture.fetch);
+      assert.equal(response.status, 201);
       await route.abort("failed");
     });
     await page.getByRole("button", { name: "Retry credential access" }).click();
@@ -3106,7 +3134,7 @@ export function registerSharingCredentialsAndChannelsCases(
         await route.continue();
         return;
       }
-      assert.equal((await route.fetch()).status(), 200);
+      assert.equal((await fetchFixtureRoute(route, fixture.fetch)).status, 200);
       await route.abort("failed");
     });
     await page.getByLabel("Authentication source").selectOption("api_key");
@@ -4000,7 +4028,12 @@ export function registerSharingCredentialsAndChannelsCases(
     assert.equal(responseData(after).activeRevisionId, active.revision.id);
     assert.equal(responseData(after).desiredRuntimeState, "stopped");
     assert.equal(responseData(after).configurationId, agent.configurationId);
-    await checkStatusRefreshFocus(page, `${fixture.origin}${path}`, "Refresh stop status");
+    await checkStatusRefreshFocus(
+      page,
+      `${fixture.origin}${path}`,
+      "Refresh stop status",
+      fixture.fetch,
+    );
     // No selected version does not prove candidate/history cleanup completed.
     await state.transact((unit) =>
       unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
@@ -4128,11 +4161,16 @@ export function registerSharingCredentialsAndChannelsCases(
   });
 }
 
-async function checkStatusRefreshFocus(page: Page, url: string, name: string) {
+async function checkStatusRefreshFocus(
+  page: Page,
+  url: string,
+  name: string,
+  fetchRequest: (request: Request) => Promise<Response>,
+) {
   const refresh = page.getByRole("button", { name, disabled: false });
   const agentsLink = page.getByRole("link", { name: "← Agents", exact: true });
   for (const expectedFocus of [refresh, agentsLink]) {
-    const held = await holdNextStatusResponse(page, url);
+    const held = await holdNextStatusResponse(page, url, fetchRequest);
     await refresh.press("Enter");
     const status = await held.status;
     if (expectedFocus === agentsLink) {
@@ -4146,16 +4184,24 @@ async function checkStatusRefreshFocus(page: Page, url: string, name: string) {
 }
 
 // Hold the real status response so focus can move before the Console handles it.
-async function holdNextStatusResponse(page: Page, url: string) {
+async function holdNextStatusResponse(
+  page: Page,
+  url: string,
+  fetchRequest: (request: Request) => Promise<Response>,
+) {
   const held = deferred<number>();
   const release = deferred<void>();
   await page.route(
     url,
     async (route) => {
-      const response = await route.fetch();
-      held.resolve(response.status());
+      const response = await fetchFixtureRoute(route, fetchRequest);
+      held.resolve(response.status);
       await release.promise;
-      await route.fulfill({ response });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
     },
     { times: 1 },
   );

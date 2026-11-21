@@ -162,6 +162,9 @@ export function documentApiExamples<T>(document: T): T {
               'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello."},"index":0}]}\n\ndata: [DONE]\n\n',
               "Native SSE completion",
             );
+          } else if (record(content.schema ?? {}, name + " response schema").format === "binary") {
+            // Binary responses contain raw bytes, not a JSON data/meta envelope.
+            continue;
           } else if (mediaType === "text/plain") {
             content.examples = example(
               "2026-10-01T12:00:00.000Z Agent ready\n",

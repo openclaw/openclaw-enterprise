@@ -327,6 +327,7 @@ export const parameterExamples = {
   harnessOverrides: "{}",
   namespaceId,
   agentId,
+  profileId: "profile-alice",
   configurationId,
   revisionId,
   deploymentId: revisionId,
@@ -663,6 +664,17 @@ export const responseExamples = {
     intentId: uuid,
     exchange: "e".repeat(43),
     redeemUrl: `${nativeBrowserOrigin}/__occ/native-admin/redeem`,
+  },
+  getAgentGatewayPeople: {
+    people: [
+      {
+        identity: "oidc:member-01",
+        profileId: "profile-alice",
+        displayName: "Alice",
+        role: "member",
+        hasAvatar: false,
+      },
+    ],
   },
   getAgentRuntimeImages: { status: "undeployed", images: [] },
   getAgentRuntimeCredentials: { transportConfigured: true },

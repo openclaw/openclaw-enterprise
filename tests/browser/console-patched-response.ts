@@ -8,10 +8,28 @@ export async function fulfillPatchedJson<T extends TSchema>(
   route: Route,
   schema: T,
   patch: (body: Static<T>) => unknown,
+  fetchRequest?: (request: Request) => Promise<Response>,
 ): Promise<void> {
-  const response = await route.fetch();
-  if (!response.ok()) {
-    await route.fulfill({ response });
+  const original = route.request();
+  const requestBody = original.postData();
+  const response = fetchRequest
+    ? await fetchRequest(
+        new Request(original.url(), {
+          method: original.method(),
+          headers: await original.allHeaders(),
+          ...(requestBody === null ? {} : { body: requestBody }),
+        }),
+      )
+    : await route.fetch();
+  const status = response instanceof Response ? response.status : response.status();
+  const headers =
+    response instanceof Response ? Object.fromEntries(response.headers) : { ...response.headers() };
+  if (!(response instanceof Response ? response.ok : response.ok())) {
+    await route.fulfill(
+      response instanceof Response
+        ? { status, headers, body: Buffer.from(await response.arrayBuffer()) }
+        : { response },
+    );
     return;
   }
   let body: unknown;
@@ -23,14 +41,13 @@ export async function fulfillPatchedJson<T extends TSchema>(
   if (!Check(schema, body)) {
     throw new Error("Cannot patch successful API response: response schema mismatch");
   }
-  const headers = { ...response.headers() };
   // Do not reuse the original body's length, encoding, or cache validators.
   delete headers["content-length"];
   delete headers["content-encoding"];
   delete headers.etag;
   delete headers["last-modified"];
   await route.fulfill({
-    response,
+    status,
     headers,
     json: patch(body),
     contentType: headers["content-type"] ?? "application/json",

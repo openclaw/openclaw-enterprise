@@ -12,6 +12,7 @@
     "tests/browser/console-shell.test.ts",
     "tests/browser/console-json-error-feedback.test.ts",
     "tests/browser/console-agent-detail-2.test.ts",
+    "tests/browser/console-agent-people.test.ts",
     "tests/browser/console-workspace-editor.test.ts",
     "tests/browser/console-agent-detail.test.ts",
     "tests/browser/console-agent-deploy-again.test.ts",
@@ -49,6 +50,9 @@
     },
     {
       "path": "tests/browser/console-agent-detail-2.test.ts"
+    },
+    {
+      "path": "tests/browser/console-agent-people.test.ts"
     },
     {
       "path": "tests/browser/console-workspace-editor.test.ts"

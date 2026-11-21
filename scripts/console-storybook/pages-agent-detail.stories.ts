@@ -337,3 +337,24 @@ export const HarnessOverrides = story("harnessOverrides");
 
 export const HarnessDeploymentPending = story("harnessDeploymentPending");
 export const HarnessDeploymentDenied = story("harnessDeploymentDenied");
+export const HarnessReauthorizationPending = story("harnessReauthorizationPending");
+export const HarnessReauthorizationRefused = story("harnessReauthorizationRefused");
+
+export const GatewayPeople = story("gatewayPeople");
+export const GatewayPeopleEmpty = story("gatewayPeopleEmpty");
+export const GatewayPeopleServiceOnly = story("gatewayPeopleServiceOnly");
+export const GatewayPeopleNotConfigured = story("gatewayPeopleNotConfigured");
+export const GatewayPeopleLoading = story("gatewayPeopleLoading");
+export const GatewayPeopleError = story("gatewayPeopleError");
+export const GatewayPeopleDenied = story("gatewayPeopleDenied");
+export const GatewayPeopleAccessGranted = story("gatewayPeopleAccessGranted");
+export const GatewayPeopleStopped = story("gatewayPeopleStopped");
+export const GatewayPeopleAvatar = story("gatewayPeopleAvatar");
+
+export const GatewayPeopleLarge = story("gatewayPeopleLarge");
+export const GatewayPeopleSearch = story("gatewayPeopleSearch");
+export const GatewayPeopleNoMatches = story("gatewayPeopleNoMatches");
+export const GatewayPeopleIdentitySearch = story("gatewayPeopleIdentitySearch");
+export const GatewayPeopleNeverConnected = story("gatewayPeopleNeverConnected");
+
+export const GatewayPeopleSharingDenied = story("gatewayPeopleSharingDenied");

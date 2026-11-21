@@ -253,17 +253,25 @@ export function grantSecretOperate(
 // The caller-permissions answer is advisory. Report Configuration update as granted, as a page
 // that read the answer before a revocation would, so the Configuration editor opens and what a
 // test sees is the API's refusal (finding 2421).
-export async function grantStaleConfigurationUpdate(page: Page) {
+export async function grantStaleConfigurationUpdate(
+  page: Page,
+  fetchRequest?: FixtureRequestFetch,
+) {
   await page.route(/\/agents\/[^/]+\/permissions$/, (route) =>
-    fulfillPatchedJson(route, AgentCallerPermissionsResponse, (body) => ({
-      ...body,
-      data: {
-        ...body.data,
-        configurationUpdate: true,
-        configurationSecretsOperate: true,
-        configurationSecretsOperateDeniedBindings: [],
-      },
-    })),
+    fulfillPatchedJson(
+      route,
+      AgentCallerPermissionsResponse,
+      (body) => ({
+        ...body,
+        data: {
+          ...body.data,
+          configurationUpdate: true,
+          configurationSecretsOperate: true,
+          configurationSecretsOperateDeniedBindings: [],
+        },
+      }),
+      fetchRequest,
+    ),
   );
 }
 
@@ -912,6 +920,47 @@ export function repositoryCheckbox(page: Page, name: string) {
 // request fails on release although the server applied it. With `fulfill`, the held request
 // gets that response.
 
+type HoldRequestOptions = {
+  once?: boolean;
+  method?: string;
+  afterServer?: boolean;
+  loseResponse?: boolean;
+  fulfill?: Parameters<Route["fulfill"]>[0] | null;
+  timeout?: number;
+};
+type FixtureRequestFetch = (request: globalThis.Request) => Promise<Response>;
+
+// Forward the intercepted browser request through the fixture’s real HTTP transport.
+// Keep its method, cookies and binding headers; do not replace it with an administrator read.
+export async function fetchFixtureRoute(route: Route, fetchRequest: FixtureRequestFetch) {
+  const original = route.request();
+  const body = original.postData();
+  return fetchRequest(
+    new globalThis.Request(original.url(), {
+      method: original.method(),
+      headers: await original.allHeaders(),
+      ...(body === null ? {} : { body }),
+    }),
+  );
+}
+type HeldRequests<T> = {
+  readonly requested: Promise<T | undefined>;
+  release(): void;
+  wasRequested(): boolean;
+};
+
+export function holdRequests(
+  t: TestContext,
+  page: Page,
+  url: Parameters<Page["route"]>[0],
+  options: HoldRequestOptions & { fetchRequest: FixtureRequestFetch },
+): Promise<HeldRequests<Response>>;
+export function holdRequests(
+  t: TestContext,
+  page: Page,
+  url: Parameters<Page["route"]>[0],
+  options?: HoldRequestOptions & { fetchRequest?: undefined },
+): Promise<HeldRequests<APIResponse>>;
 export async function holdRequests(
   t: TestContext,
   page: Page,
@@ -920,25 +969,23 @@ export async function holdRequests(
     once = false,
     method,
     afterServer = false,
+    fetchRequest,
     loseResponse = false,
     fulfill = null,
     timeout = 10_000,
-  }: {
-    once?: boolean;
-    method?: string;
-    afterServer?: boolean;
-    loseResponse?: boolean;
-    fulfill?: Parameters<Route["fulfill"]>[0] | null;
-    timeout?: number;
-  } = {},
-) {
+  }: HoldRequestOptions & { fetchRequest?: FixtureRequestFetch | undefined } = {},
+): Promise<HeldRequests<APIResponse | Response>> {
   if (loseResponse && !afterServer) {
     throw new Error("loseResponse needs afterServer: only a server answer can be lost");
   }
   const { promise: held, resolve: release } = Promise.withResolvers<void>();
-  const { promise: requested, resolve, reject } = Promise.withResolvers<APIResponse | undefined>();
+  const {
+    promise: requested,
+    resolve,
+    reject,
+  } = Promise.withResolvers<APIResponse | Response | undefined>();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const markRequested = (response: APIResponse | undefined) => {
+  const markRequested = (response: APIResponse | Response | undefined) => {
     clearTimeout(timer);
     resolve(response);
   };
@@ -954,10 +1001,28 @@ export async function holdRequests(
       return;
     }
     taken = true;
-    let response: APIResponse | null = null;
+    let response: APIResponse | Response | null = null;
+    let forwarded: Parameters<Route["fulfill"]>[0] | null = null;
     if (afterServer) {
       try {
-        response = await route.fetch();
+        if (fetchRequest) {
+          const original = route.request();
+          const body = original.postData();
+          response = await fetchRequest(
+            new globalThis.Request(original.url(), {
+              method: original.method(),
+              headers: await original.allHeaders(),
+              ...(body === null ? {} : { body }),
+            }),
+          );
+          forwarded = {
+            status: response.status,
+            headers: Object.fromEntries(response.headers),
+            body: Buffer.from(await response.clone().arrayBuffer()),
+          };
+        } else {
+          response = await route.fetch();
+        }
       } catch (error) {
         // The server may have applied a write before its answer was lost. Never send it again:
         // `requested` rejects with the failure and the page's request fails.
@@ -974,7 +1039,11 @@ export async function holdRequests(
     }
     await (
       response || fulfill
-        ? route.fulfill(fulfill ?? (response ? { response } : {}))
+        ? route.fulfill(
+            fulfill ??
+              forwarded ??
+              (response && !(response instanceof Response) ? { response } : {}),
+          )
         : route.continue()
     ).catch(() => {});
   });
@@ -1171,7 +1240,7 @@ export const consoleViewports = Object.freeze([
 // `olderRead`, when given, is told of each older-page request and answers when it resolves.
 export function routeOneVersionPerPage(
   page: Page,
-  fixture: Pick<Fixture, "origin">,
+  fixture: Pick<Fixture, "origin" | "fetch">,
   namespace: Pick<Namespace, "id">,
   agent: Pick<Agent, "id">,
   olderRead?: () => unknown,
@@ -1184,11 +1253,16 @@ export function routeOneVersionPerPage(
       if (cursor === "older-page") {
         await olderRead?.();
       }
-      const response = await route.fetch({ url: `${fixture.origin}${revisionsPath}` });
+      const response = await fixture.fetch(
+        new globalThis.Request(`${fixture.origin}${revisionsPath}`, {
+          headers: await route.request().allHeaders(),
+        }),
+      );
       const body: unknown = await response.json();
       assert.ok(isRecord(body) && Array.isArray(body.data) && isRecord(body.meta));
       await route.fulfill({
-        response,
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
         json: {
           ...body,
           data: cursor === "older-page" ? body.data.slice(1) : body.data.slice(0, 1),

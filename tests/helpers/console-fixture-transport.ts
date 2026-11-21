@@ -1,8 +1,22 @@
-import { request as httpRequest } from "node:http";
+import { Agent, request as httpRequest } from "node:http";
 
 // Use the real HTTP transport while preserving the public Host header. Node fetch replaces
 // Host with the loopback dial address, which does not represent an HTTPS ingress request.
 export async function fetchLoopback(url: string, init: RequestInit): Promise<Response> {
+  const target = new URL(url);
+  if (
+    target.protocol !== "http:" ||
+    !["127.0.0.1", "[::1]"].includes(target.hostname) ||
+    target.port === "" ||
+    target.username !== "" ||
+    target.password !== ""
+  ) {
+    throw new TypeError("Console fixture transport requires an explicit loopback HTTP URL.");
+  }
+  // The global Agent may be an environment-proxy Agent, which correctly refuses a
+  // public Host for a different proxy authority. This Agent belongs only to this
+  // validated local fixture dial; external requests retain the global proxy policy.
+  const agent = new Agent({ keepAlive: false });
   const body = init.body as string | ArrayBuffer | undefined;
   const headers = new Headers(init.headers);
   if (body !== undefined) {
@@ -11,40 +25,45 @@ export async function fetchLoopback(url: string, init: RequestInit): Promise<Res
       String(typeof body === "string" ? Buffer.byteLength(body) : body.byteLength),
     );
   }
-  return new Promise((resolve, reject) => {
-    const request = httpRequest(
-      url,
-      {
-        method: init.method,
-        headers: Object.fromEntries(headers),
-        signal: init.signal ?? undefined,
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk: Buffer) => chunks.push(chunk));
-        response.on("error", reject);
-        response.on("end", () => {
-          const headers = new Headers();
-          for (const [name, values] of Object.entries(response.headers)) {
-            for (const value of Array.isArray(values) ? values : [values]) {
-              if (value !== undefined) {
-                headers.append(name, value);
+  try {
+    return await new Promise<Response>((resolve, reject) => {
+      const request = httpRequest(
+        target,
+        {
+          agent,
+          method: init.method,
+          headers: Object.fromEntries(headers),
+          signal: init.signal ?? undefined,
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.on("error", reject);
+          response.on("end", () => {
+            const headers = new Headers();
+            for (const [name, values] of Object.entries(response.headers)) {
+              for (const value of Array.isArray(values) ? values : [values]) {
+                if (value !== undefined) {
+                  headers.append(name, value);
+                }
               }
             }
-          }
-          const status = response.statusCode ?? 500;
-          resolve(
-            new Response([204, 205, 304].includes(status) ? null : Buffer.concat(chunks), {
-              status,
-              headers,
-            }),
-          );
-        });
-      },
-    );
-    request.on("error", reject);
-    request.end(body instanceof ArrayBuffer ? Buffer.from(body) : body);
-  });
+            const status = response.statusCode ?? 500;
+            resolve(
+              new Response([204, 205, 304].includes(status) ? null : Buffer.concat(chunks), {
+                status,
+                headers,
+              }),
+            );
+          });
+        },
+      );
+      request.on("error", reject);
+      request.end(body instanceof ArrayBuffer ? Buffer.from(body) : body);
+    });
+  } finally {
+    agent.destroy();
+  }
 }
 
 type RawRequestOptions = {

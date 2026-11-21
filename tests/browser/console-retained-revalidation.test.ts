@@ -1,3 +1,4 @@
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test, { type TestContext } from "node:test";
@@ -8,6 +9,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { listen } from "../helpers/listen.ts";
 import {
   detailUrl,
+  fetchFixtureRoute,
   hasFocus,
   holdRequests,
   login,
@@ -28,6 +30,8 @@ import {
   viewTag,
 } from "./console-refocus-helpers.ts";
 import { restrict } from "../helpers/iam-grants.ts";
+import { AgentRevisionReadResponse } from "../../packages/contracts/src/api/resources.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type Agent = Pick<AgentWire, "id" | "name" | "configurationId">;
@@ -1645,15 +1649,21 @@ test("Logout during a first visit's hold leaves nothing private, even after Back
 });
 
 test("A Stop that lands after leaving the Agent closes its dialog, and Back rebuilds the page", async (t) => {
-  const { namespace, agent, page } = await openList(t, "Stop after leaving", "Stopping Agent", {
-    deploy: true,
-  });
+  const { fixture, namespace, agent, page } = await openList(
+    t,
+    "Stop after leaving",
+    "Stopping Agent",
+    {
+      deploy: true,
+    },
+  );
   await openAgent(page, "Stopping Agent");
   await tagView(page, "before-stop");
   // The server applies the Stop, but its answer reaches the page only after the user leaves.
   const stop = await holdRequests(t, page, `${agentPath(namespace, agent)}/stop`, {
     once: true,
     afterServer: true,
+    fetchRequest: fixture.fetch,
   });
   await page.getByRole("button", { name: "Stop Agent", exact: true }).first().click();
   await confirmAgentAction(page, "Stop this Agent?", "Stop");
@@ -2060,4 +2070,387 @@ test("the console web font is ready before the entry script runs, fetched once",
   script.release();
   await page.getByLabel("Email", { exact: true }).waitFor();
   assert.deepEqual(fonts, [`${fixture.origin}/console/fonts/instrument-sans-latin.woff2`]);
+});
+
+test("a narrowed saved revision retires retained private Configuration after Access refocus", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: {
+      async list() {
+        return [
+          {
+            identity: "oidc:saved-reader",
+            profileId: null,
+            displayName: "",
+            role: null,
+            hasAvatar: false,
+          },
+        ];
+      },
+      async avatar() {
+        return undefined;
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Narrowed retained revision", { ready: true });
+  const marker = "retained-saved-private-marker";
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Saved private Agent",
+    nativeValues(marker),
+  );
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const configurationPath =
+    "/namespaces/" + namespace.id + "/configurations/" + agent.configurationId;
+  const revisionPath =
+    "/namespaces/" + namespace.id + "/agents/" + agent.id + "/revisions/" + revision.id;
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  let unreadable = false;
+  let snapshotReads = 0;
+  await page.route(fixture.origin + revisionPath, async (route) => {
+    const response = await fetchFixtureRoute(route, fixture.fetch);
+    const body = fixture.fixtureResponse(
+      { status: response.status, body: await response.clone().json() },
+      200,
+      AgentRevisionReadResponse,
+      "read saved revision before narrowing",
+    );
+    snapshotReads += 1;
+    let projection = body;
+    if (unreadable) {
+      // The in-memory store cannot produce a persisted decoding failure. Forward
+      // real authorized metadata into the production PostgreSQL decoder's supported
+      // projection, not a fabricated status or a mocked authorization decision.
+      const { id, namespaceId, agentId, revision, backendId, createdAt } = body.data;
+      projection = {
+        ...body,
+        data: {
+          id,
+          namespaceId,
+          agentId,
+          revision,
+          backendId,
+          createdAt,
+          configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
+        },
+      };
+      fixture.fixtureResponse(
+        { status: response.status, body: projection },
+        200,
+        AgentRevisionReadResponse,
+        "supported unreadable saved revision projection",
+      );
+    }
+    const headers = Object.fromEntries(response.headers);
+    delete headers["content-length"];
+    delete headers["content-encoding"];
+    delete headers.etag;
+    delete headers["last-modified"];
+    await route.fulfill({ status: response.status, headers, json: projection });
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
+  const snapshotHeading = page.getByRole("heading", {
+    name: "Configuration snapshot",
+    exact: true,
+  });
+  await snapshotHeading.waitFor();
+  await page.getByText("View admitted native configuration", { exact: true }).click();
+  assert.ok((await page.locator(".agent-card pre").innerText()).includes(marker));
+  // Park another snapshot-backed view so narrowing cannot leave an older tab reusable.
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await waitForIdleFetches(page);
+  await configuration.click();
+  await snapshotHeading.waitFor();
+  const access = page.getByRole("tab", { name: "Access", exact: true });
+  await access.click();
+  const direct = page.getByRole("region", { name: "Direct Control UI access", exact: true });
+  await direct.getByText("oidc:saved-reader", { exact: true }).waitFor();
+
+  // Configuration IAM denial is a real, separate boundary. Saved revision
+  // narrowing itself models unreadable persisted settings, not that denial.
+  restrict(fixture.policy, "read", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  assert.equal((await fixture.request("GET", configurationPath)).status, 403);
+  unreadable = true;
+  await refocusHeld(t, page);
+  await waitForIdleFetches(page);
+  const before = snapshotReads;
+  const narrowedRead = responseTo(page, "GET", fixture.origin + revisionPath);
+  await configuration.click();
+  const response = await narrowedRead;
+  assert.equal(response.status(), 200);
+  const returned: unknown = await response.json();
+  fixture.fixtureResponse(
+    { status: response.status(), body: returned },
+    200,
+    AgentRevisionReadResponse,
+    "browser received narrowed revision",
+  );
+  await waitForIdleFetches(page);
+  assert.equal(
+    await snapshotHeading.count(),
+    0,
+    "a fulfilled metadata projection must not restore private cached nodes",
+  );
+  await page
+    .getByRole("heading", { name: "Saved configuration unreadable", exact: true })
+    .waitFor();
+  assert.equal(await page.locator(".agent-card pre").count(), 0);
+  assert.equal(await page.locator(".agent-draft-actions, .agent-harness-settings").count(), 0);
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "Saved configuration unreadable", exact: true })
+    .waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(
+    snapshotReads,
+    before + 1,
+    "reuse the narrowed response without a second snapshot probe",
+  );
+  await access.click();
+  await direct.getByText("oidc:saved-reader", { exact: true }).waitFor();
+  assert.equal(
+    snapshotReads,
+    before + 1,
+    "narrowed private settings must not make Access depend on snapshots",
+  );
+});
+
+// Access reads the serving Gateway independently of the selected Configuration. Returning
+// editors must retain live action wiring as well as input and read authorization.
+test("Returning to retained Configuration after Access refocus rechecks revoked read access", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: {
+      async list() {
+        return [
+          {
+            identity: "oidc:retained-reader",
+            profileId: null,
+            displayName: "",
+            role: null,
+            hasAvatar: false,
+          },
+        ];
+      },
+      async avatar() {
+        return undefined;
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = namespaceResource(
+    await fixture.createNamespace("Protected retained tab", { ready: true }),
+  );
+  const agent = agentResource(
+    await fixture.createAgent(
+      namespace.id,
+      "Protected retained Agent",
+      nativeValues("retained-private-marker"),
+    ),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const configurationPath =
+    "/namespaces/" + namespace.id + "/configurations/" + agent.configurationId;
+  const snapshotStatuses: number[] = [];
+  page.on("response", (response) => {
+    if (
+      new URL(response.url()).pathname === configurationPath &&
+      response.request().method() === "GET"
+    ) {
+      snapshotStatuses.push(response.status());
+    }
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const access = page.getByRole("tab", { name: "Access", exact: true });
+  const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
+  const direct = page.getByRole("region", { name: "Direct Control UI access", exact: true });
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  const draftCard = page.locator(".agent-draft-actions");
+  const harnessCard = page.locator(".agent-harness-settings");
+  const pendingCards: {
+    phase: "allowed" | "revoked";
+    draftVisible: boolean;
+    harnessVisible: boolean;
+  }[] = [];
+  await waitForEnabled(deploy);
+  assert.equal(await harnessCard.isVisible(), true);
+  await waitForIdleFetches(page);
+  let beforeAccess = snapshotStatuses.length;
+  await access.click();
+  await direct.waitFor();
+  await refocusHeld(t, page);
+  await waitForIdleFetches(page);
+  assert.equal(
+    snapshotStatuses.length,
+    beforeAccess,
+    "Access and its focus recheck must not read the selected Configuration",
+  );
+  const allowedCheck = await holdRequests(t, page, fixture.origin + configurationPath, {
+    method: "GET",
+    once: true,
+  });
+  await configuration.click();
+  await allowedCheck.requested;
+  pendingCards.push({
+    phase: "allowed",
+    draftVisible: await draftCard.isVisible(),
+    harnessVisible: await harnessCard.isVisible(),
+  });
+  // A completed check from an abandoned tab must not reveal version controls on Access.
+  await access.click();
+  await direct.waitFor();
+  allowedCheck.release();
+  await waitForIdleFetches(page);
+  await page.getByRole("tab", { name: "Access", exact: true, selected: true }).waitFor();
+  assert.equal(await draftCard.isVisible(), false);
+  assert.equal(await harnessCard.isVisible(), false);
+  await configuration.click();
+  await waitForEnabled(deploy);
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const json = page.getByLabel("Configuration JSON");
+  await json.waitFor();
+  const saved = await json.inputValue();
+  const edited = saved.replace("retained-private-marker", "edited-after-return-marker");
+  assert.notEqual(edited, saved);
+  await json.fill(edited);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  await waitForEnabled(save);
+  assert.equal(
+    await deploy.isDisabled(),
+    true,
+    "the visible Deploy control must follow edits made after restoring a clean Configuration view",
+  );
+  const written = responseTo(page, "PATCH", fixture.origin + configurationPath);
+  await save.click();
+  assert.equal((await written).status(), 200);
+  await page.getByText("Configuration saved.", { exact: true }).waitFor();
+  await waitForEnabled(deploy);
+  const persisted = await fixture.request("GET", configurationPath);
+  assert.equal(persisted.status, 200);
+  assert.ok(
+    JSON.stringify(persisted.data).includes("edited-after-return-marker"),
+    "normal Save persists the restored editor’s new input",
+  );
+
+  // Exercise unsaved-input retention separately from the clean-view action check.
+  await page.reload();
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  await json.waitFor();
+  const draft = (await json.inputValue()).replace(
+    "edited-after-return-marker",
+    "unsaved-private-marker",
+  );
+  await json.fill(draft);
+  await harnessCard.getByText("Harness destination", { exact: true }).click();
+  const harnessChoice = harnessCard.getByLabel("Harness settings", { exact: true });
+  const providerUrl = harnessCard.getByLabel("Provider base URL", { exact: true });
+  const providerProtocol = harnessCard.getByLabel("Provider protocol", { exact: true });
+  const providerSearch = harnessCard.getByLabel("Supports standalone web search", { exact: true });
+  await harnessChoice.selectOption("custom");
+  await providerUrl.fill("https://models.example.com/v1");
+  await providerProtocol.selectOption("openai-completions");
+  await providerSearch.check();
+  await waitForIdleFetches(page);
+  beforeAccess = snapshotStatuses.length;
+  await access.click();
+  await direct.waitFor();
+  await refocusHeld(t, page);
+  await waitForIdleFetches(page);
+  assert.equal(snapshotStatuses.length, beforeAccess);
+  await configuration.click();
+  await json.waitFor();
+  assert.equal(
+    await json.inputValue(),
+    draft,
+    "a still-authorized editor keeps its unsaved input after refocus",
+  );
+  assert.equal(
+    await harnessChoice.inputValue(),
+    "custom",
+    "reauthorization keeps the unsaved Harness choice",
+  );
+  assert.equal(await providerUrl.inputValue(), "https://models.example.com/v1");
+  assert.equal(await providerProtocol.inputValue(), "openai-completions");
+  assert.equal(await providerSearch.isChecked(), true);
+
+  beforeAccess = snapshotStatuses.length;
+  await access.click();
+  await direct.waitFor();
+  restrict(fixture.policy, "read", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  await refocusHeld(t, page);
+  await waitForIdleFetches(page);
+  assert.equal(
+    snapshotStatuses.length,
+    beforeAccess,
+    "a revoked Configuration still must not be probed while Access is active",
+  );
+  assert.equal(
+    await direct.isVisible(),
+    true,
+    "the independent configured-user roster stays available",
+  );
+  const refusedCheck = await holdRequests(t, page, fixture.origin + configurationPath, {
+    method: "GET",
+    once: true,
+  });
+  await configuration.click();
+  await refusedCheck.requested;
+  pendingCards.push({
+    phase: "revoked",
+    draftVisible: await draftCard.isVisible(),
+    harnessVisible: await harnessCard.isVisible(),
+  });
+  assert.equal(
+    await json.isVisible(),
+    false,
+    "a parked private Configuration must not be restored before its read is authorized again",
+  );
+  refusedCheck.release();
+  await waitForIdleFetches(page);
+  assert.equal(
+    snapshotStatuses.at(-1),
+    403,
+    "returning to the protected editor must reach the real Configuration authorization boundary",
+  );
+  assert.equal(await json.isVisible(), false);
+  assert.equal(
+    await page.locator(".agent-draft-actions").count(),
+    0,
+    "a refused snapshot must retire its shared generation checklist and Deploy controls",
+  );
+  assert.deepEqual(
+    { pendingCards, refusedHarnessCards: await harnessCard.count() },
+    {
+      pendingCards: [
+        { phase: "allowed", draftVisible: false, harnessVisible: false },
+        { phase: "revoked", draftVisible: false, harnessVisible: false },
+      ],
+      refusedHarnessCards: 0,
+    },
+    "pending authorization must hold both page-level cards, and refusal must retire Harness settings too",
+  );
+  const deniedReads = snapshotStatuses.length;
+  await access.click();
+  await direct.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(
+    snapshotStatuses.length,
+    deniedReads,
+    "the protected refusal must not make Access depend on Configuration reads",
+  );
 });

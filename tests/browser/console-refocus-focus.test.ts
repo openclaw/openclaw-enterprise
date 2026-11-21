@@ -128,13 +128,14 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
       once: true,
       method: "POST",
       afterServer: true,
+      fetchRequest: fixture.fetch,
     });
     const answered = responseTo(page, "POST", url);
     await page.keyboard.press("Enter");
     const upstream = await held.requested;
     assert.ok(upstream, "the real Controller must answer before the hold");
     const expectedStatus = provider ? 403 : 401;
-    assert.equal(upstream.status(), expectedStatus);
+    assert.equal(upstream.status, expectedStatus);
     assert.equal(await hasFocus(trigger), true, `${attempt}: focus stays during the request`);
     const oidc = page.getByRole("button", { name: "Continue with Example SSO", exact: true });
     if (discovery) {
@@ -238,11 +239,12 @@ test("The Namespace selector keeps keyboard focus acquired during Agents list re
       once: true,
       method: "GET",
       afterServer: true,
+      fetchRequest: fixture.fetch,
     });
     await refocus(page);
     const response = await read.requested;
     assert.ok(response, "the hold received a real Controller response");
-    assert.equal(response.status(), 200, "the Controller admitted the selected list read");
+    assert.equal(response.status, 200, "the Controller admitted the selected list read");
     const body: unknown = await response.json();
     assert.ok(Check(AgentListResponse, body), "the Controller answered with the Agents list");
     assert.deepEqual(
@@ -745,8 +747,11 @@ test("a session reply missing its binding blocks private reads until Retry", asy
   await page.route(
     `**${sessionPath}`,
     async (route) => {
-      const actual = await route.fetch();
-      assert.equal(actual.status(), 200);
+      const original = route.request();
+      const actual = await fixture.fetch(
+        new Request(original.url(), { headers: await original.allHeaders() }),
+      );
+      assert.equal(actual.status, 200);
       const payload: unknown = await actual.json();
       assert.ok(payload !== null && typeof payload === "object" && "data" in payload);
       const data = payload.data;
@@ -755,7 +760,8 @@ test("a session reply missing its binding blocks private reads until Retry", asy
       assert.ok(typeof sessionKey === "string" && sessionKey.length > 0);
       genuineBinding = sessionKey;
       await route.fulfill({
-        response: actual,
+        status: actual.status,
+        headers: Object.fromEntries(actual.headers),
         json: { ...payload, data: withoutBinding },
       });
     },
@@ -1404,7 +1410,7 @@ test("a failed sharing refresh retains permissions confirmed on Agent refocus", 
   await save.click({ trial: true });
 
   await page.getByRole("tab", { name: "Access", exact: true }).click();
-  const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+  const sharing = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   const refresh = sharing.getByRole("button", { name: "Refresh sharing", exact: true });
   await sharing.getByText("Current policy loaded.", { exact: true }).waitFor();
   await waitForIdleFetches(page);

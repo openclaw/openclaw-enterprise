@@ -113,7 +113,10 @@ import { createBootstrapResources } from "./composition/installation-bootstrap.t
 import { discoverMcpAuthorization } from "./connections/mcp-discovery.ts";
 import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
-import type { ControllerWorkspaceFilesAccess } from "./gateway/contracts.ts";
+import type {
+  ControllerWorkspaceFilesAccess,
+  ControllerGatewayPeopleAccess,
+} from "./gateway/contracts.ts";
 import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
@@ -221,6 +224,7 @@ export interface ControllerAppOptions {
   readonly maxBodyBytes?: number;
   readonly auth: ControllerAuth;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
+  readonly gatewayPeopleAccess?: ControllerGatewayPeopleAccess;
   readonly workspaceFileRequestTimeoutMs?: number;
   readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
   readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
@@ -1684,6 +1688,68 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return disconnected.signal;
   }
 
+  function gatewayRequestSignal(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    timeoutMs: number,
+  ): { readonly signal: AbortSignal; readonly dispose: () => void } {
+    const controller = new AbortController();
+    const abort = (message: string) => {
+      if (!controller.signal.aborted) {
+        controller.abort(new Error(message));
+      }
+    };
+    const timeout = setTimeout(
+      () => abort(`The Gateway people request exceeded its ${timeoutMs}ms deadline.`),
+      timeoutMs,
+    );
+    timeout.unref?.();
+    const onRequestAborted = () =>
+      abort("The HTTP client disconnected before the Gateway people request completed.");
+    const onReplyClosed = () => {
+      if (!reply.raw.writableEnded) {
+        abort("The HTTP client disconnected before the Gateway people request completed.");
+      }
+    };
+    if (request.raw.aborted || reply.raw.destroyed) {
+      abort("The HTTP client disconnected before the Gateway people request.");
+    }
+    request.raw.once("aborted", onRequestAborted);
+    reply.raw.once("close", onReplyClosed);
+    return {
+      signal: controller.signal,
+      dispose() {
+        clearTimeout(timeout);
+        request.raw.off("aborted", onRequestAborted);
+        reply.raw.off("close", onReplyClosed);
+      },
+    };
+  }
+
+  async function withGatewayRequestSignal<T>(
+    signal: AbortSignal,
+    operation: Promise<T>,
+    abortError: () => Error = dependencyUnavailable,
+  ): Promise<T> {
+    if (signal.aborted) {
+      // The operation has already started; observe any rejection after the HTTP deadline.
+      void operation.catch(() => {});
+      throw abortError();
+    }
+    let abort: (() => void) | undefined;
+    const aborted = new Promise<never>((_, reject) => {
+      abort = () => reject(abortError());
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      return await Promise.race([operation, aborted]);
+    } finally {
+      if (abort !== undefined) {
+        signal.removeEventListener("abort", abort);
+      }
+    }
+  }
+
   async function requireInstallationAdmin(
     request: FastifyRequest,
     operation: OccApiRoute,
@@ -3095,6 +3161,96 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: { operateDenied, unreadableOperateDenied },
         meta: { requestId: request.id },
       });
+      return;
+    }
+
+    if (
+      operation.operationId === "getAgentGatewayPeople" ||
+      operation.operationId === "getAgentGatewayPersonAvatar"
+    ) {
+      const lifetime = gatewayRequestSignal(request, reply, 5_000);
+      const deadline = new Date(Date.now() + 5_000);
+      try {
+        if (options.gatewayPeopleAccess === undefined) {
+          await withGatewayRequestSignal(
+            lifetime.signal,
+            controller.getAdministerableAgent(context.actorId, namespaceId, agentId),
+          );
+          if (operation.operationId === "getAgentGatewayPeople") {
+            reply
+              .header("cache-control", "no-store")
+              .send({ data: { people: null }, meta: { requestId: request.id } });
+            return;
+          }
+          throw failure(
+            501,
+            "NOT_IMPLEMENTED",
+            "Gateway people are not configured for this installation.",
+          );
+        }
+        const { agent, revision, successor, predecessorPhase } = await withGatewayRequestSignal(
+          lifetime.signal,
+          controller.getAdministerableActiveAgentRevision(context.actorId, namespaceId, agentId),
+        );
+        if (agent.desiredRuntimeState !== "running" || predecessorPhase === "stopping") {
+          throw failure(409, "RESOURCE_CONFLICT", "The Agent Gateway is not serving.");
+        }
+        if (predecessorPhase === undefined && successor !== undefined) {
+          let compute: ComputeDriver;
+          try {
+            compute = controller.selectedDriver("compute");
+          } catch {
+            throw dependencyUnavailable();
+          }
+          if (
+            successor.compute.id === compute.id &&
+            successor.compute.implementation === compute.implementation &&
+            compute.requiresStoppedPredecessors?.(successor) === true
+          ) {
+            throw failure(409, "RESOURCE_CONFLICT", "The Agent Gateway is not serving.");
+          }
+        }
+        const input = { revision, signal: lifetime.signal, deadline };
+        if (operation.operationId === "getAgentGatewayPeople") {
+          const people = await withGatewayRequestSignal(
+            lifetime.signal,
+            options.gatewayPeopleAccess.list(input).catch(() => {
+              throw dependencyUnavailable();
+            }),
+          );
+          reply.header("cache-control", "no-store").send({
+            data: {
+              people: people.map(({ identity, profileId, displayName, role, hasAvatar }) => ({
+                identity,
+                profileId,
+                displayName,
+                role,
+                hasAvatar,
+              })),
+            },
+            meta: { requestId: request.id },
+          });
+        } else {
+          const avatar = await withGatewayRequestSignal(
+            lifetime.signal,
+            options.gatewayPeopleAccess
+              .avatar({ ...input, profileId: params.profileId! })
+              .catch(() => {
+                throw dependencyUnavailable();
+              }),
+          );
+          if (avatar === undefined) {
+            throw failure(404, "NOT_FOUND", "The profile avatar was not found.");
+          }
+          reply
+            .header("cache-control", "no-store")
+            .header("x-content-type-options", "nosniff")
+            .type(avatar.mime)
+            .send(Buffer.from(avatar.bytes));
+        }
+      } finally {
+        lifetime.dispose();
+      }
       return;
     }
 
