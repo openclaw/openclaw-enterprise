@@ -29,6 +29,7 @@ import {
   DependencyUnavailableError,
   NativeWorkerSupportError,
   ResourceStateConflictError,
+  ScopeViolationError,
   SandboxRepositoryRecipientUnverifiedError,
 } from "./errors.ts";
 import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
@@ -363,4 +364,16 @@ export function createSavedAgentTopologyValidator(dependencies: AgentHarnessTopo
   }
 
   return validateSavedAgentTopology;
+}
+
+export function validExecutionMode(value: unknown): value is HarnessExecutionMode {
+  return value === "embedded" || value === "dedicated";
+}
+
+export function normalizeGatewayManagedMode(value: unknown, defaultValue?: boolean): boolean {
+  const mode = value === undefined ? defaultValue : value;
+  if (typeof mode !== "boolean") {
+    throw new ScopeViolationError("The Agent Gateway managed mode must be a boolean.");
+  }
+  return mode;
 }

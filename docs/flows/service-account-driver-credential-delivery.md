@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: "2026-11-20"
-last_updated_session: "authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c"
+last_updated_session: "authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39"
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -144,7 +144,7 @@ account lookup; a selected Driver that fails stays `503`.
 
 ### 4. Save Agent Backend intent and admit the Agent revision
 
-`packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`, `deployAgent`
+`packages/occ/src/agent-drafts.ts:createAgent`, `updateAgent`, `deployAgent`
 
 Agent `backendId` is nullable. Create omission saves `null`; PATCH omission
 preserves the current value; explicit `null` clears it; and a nonnull ID must
@@ -233,6 +233,8 @@ Refresh, rotation, and automated reconciliation remain deferred.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 
 - 2026-11-20 16:31: Update OCC ServiceAccount operation source pointers. (authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c - 8eb97c71e0aa0b84779e19f9bbacc2d37f22fa14)
 - 2026-11-11 02:28: Confirm exact Secret readback and revoke provider credentials before deleting failed-issuance recovery receipts. (authoring-run/18242737-895e-484c-a1a9-29c2cd289d43 - 7fed115af7b57060bba5c6e276ad4cf316b9b58d)
