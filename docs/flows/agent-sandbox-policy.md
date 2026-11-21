@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-20"
-last_updated_session: "authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca"
+updated: "2026-11-21"
+last_updated_session: "authoring-run/0bcc1e9a-07b4-4e62-84f3-5c8d8204522e"
 ---
 
 # Agent sandbox policy flow
@@ -85,13 +85,16 @@ identity, version and empty additions before runtime credential provisioning.
 That immutable snapshot remains ineligible for live apply. For unreadable scoped revisions, the policy view reports
 `protectedExecution: null`.
 
-Protected Codex repository preparation compiles the revision's qualified artifact
-snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
-Both paired compilers validate the complete map. The Sandbox separately compares
-the final workspace enrollment rule with its validated Agent-owned setup binding,
-then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
-The proxy checks the complete artifact map and bounded auxiliary rule before
-comparing the complete loaded policy.
+Protected Codex repository preparation compiles the artifact snapshot without ambient
+defaults through `openshell-codex-artifacts.ts`; both compilers validate the complete map.
+Sandbox verifies enrollment against the Agent-owned setup binding and returns immutable
+policy in `SandboxResourceRef.proxyWiring`. Credential Proxy compares artifact and auxiliary
+rules with the complete loaded policy.
+
+[`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts) intersects native Git grants with
+[opted-in issue reads](../reference/repository-credentials/access-levels.md#native-git-delivery),
+adding only issue-list and positive-decimal detail GETs bound to the credential-only
+Provider. Stock Supervisor enforces locally without Worker authorization.
 For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an
@@ -266,6 +269,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-21 11:25: Issue reads. (authoring-run/0bcc1e9a-07b4-4e62-84f3-5c8d8204522e - 64c5b34ff03f7b17aaa69af21aa75af0a91b1d56)
 
 - 2026-11-20 23:58: Document repository grant persistence and revision compatibility. (authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca - 0f4a2d3d3)
 
