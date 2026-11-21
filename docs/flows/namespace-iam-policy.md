@@ -8,11 +8,10 @@ last_updated_session: "authoring-run/44d201ec-ee79-4633-aebb-a4ae8e9cd904"
 
 ## Overview
 
-Authenticated callers use the OCC API or CLI to list, read, or create Namespace
-Roles, exact AccessBindings, and ServicePrincipals, and to delete Roles and
-AccessBindings. OCC checks authority and Namespace ownership before the selected
-IAM Driver writes policy. Policy and audit commit in the same State transaction. Phase 6 covers
-configured policy, Group membership, Owner bindings, and deploy-time grants.
+The OCC API and CLI list, read, and create Namespace Roles, exact AccessBindings,
+and ServicePrincipals. Callers can also delete Roles and AccessBindings. OCC
+checks authority and Namespace ownership before the selected IAM Driver writes
+policy. Policy and audit commit in the same State transaction.
 
 ## Entry Points
 
