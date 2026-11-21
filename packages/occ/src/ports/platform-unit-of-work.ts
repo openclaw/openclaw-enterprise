@@ -2,6 +2,8 @@ import { bindRepository } from "./repository-factory.ts";
 import type { RepositoryTransactionLifetime } from "./transaction.ts";
 import type { PlatformUnitOfWork } from "../state/platform-state.ts";
 
+export type { PlatformUnitOfWork };
+
 /** The explicit outward projection shares one transaction lifetime. */
 export function bindPlatformUnitOfWork(
   repositories: PlatformUnitOfWork,

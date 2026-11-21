@@ -62,7 +62,7 @@ Replace the sample IDs and Secret reference. Execution authority admits every pr
 }
 ```
 
-The `201` response includes the `cs_` source ID, binding `ref` and status. Bind the Agent to the source ID. The source retains the `sec_` reference.
+The `201` response includes the `cs_` ID, binding `ref` and status. The source retains its `sec_` reference.
 
 - `name` is unique within the Namespace.
 - Select an offered `type`. With a Proxy selected, fresh Gateway registration requires
@@ -77,10 +77,8 @@ The `201` response includes the `cs_` source ID, binding `ref` and status. Bind 
 - `secrets` maps catalog fields to same-Namespace Secret references. OCC rejects
   cross-Namespace references with `400` and missing Secrets with `404`.
 
-OCC rejects unknown or missing required fields and invalid configuration
-with `400 INVALID_REQUEST`, which names the field and points at `/config/<field>` or
-`/secrets/<field>`, before reading Secrets through
-the Secret Driver. OCC records `registering` before the external operation.
+Before reading Secrets, OCC rejects invalid fields or configuration with `400 INVALID_REQUEST`
+at `/config/<field>` or `/secrets/<field>`. OCC records `registering` before the external operation.
 For Gateway copies, definitive rejection triggers cleanup. An uncertain write,
 such as a timeout, leaves the source `deleting` because a copy may still
 appear. Use DELETE to finish cleanup.
@@ -165,26 +163,21 @@ credential source. Kubernetes [rechecks its lifecycle before release](../flows/c
 Device-authorized sources reject PATCH with `409` before reading Secrets or
 changing refresh state. Sign in again and replace the Agent binding instead.
 
-For an ordinary static Gateway source, updating the Secret does not change the copy. To push a new
-value, send
-`PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId`. The
-caller needs exact `credential_source:update` and `secret:operate` on every
-Secret the update reads:
+To replace a static Gateway copy, send
+`PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with exact
+`credential_source:update` and `secret:operate` on every Secret read. Updating
+the Secret alone does not change the copy:
 
-- An empty body `{}` re-reads the source's current Secrets. An
-  `oauth2-refresh-token` source refuses it; see below.
+- `{}` re-reads current Secrets; `oauth2-refresh-token` refuses it (see below).
 - `{ "secrets": { "api_key": <SecretReference> } }` switches each named field to
   a replacement same-Namespace Secret. The field set stays the source type's
   catalog fields, and non-secret `config` cannot change; register a new source
   instead.
 
-A successful update returns `200` with the source and its live gateway `status`.
-Only a `ready` source can be updated. A gateway failure returns `503` and leaves
-the Secret references unchanged; once the gateway may have changed, the failure
-is audited. The gateway is updated before OCC commits, so
-if the request fails after that, repeating the same request converges. If the
-gateway no longer holds a copy (`absent`), the update also returns `503`;
-delete the source and register it again.
+Only a `ready` source can be updated. Success returns `200` with the source and
+live Gateway `status`. A Gateway failure returns `503`, preserves Secret references,
+and is audited if the Gateway might have changed. The Gateway updates before OCC
+commits, so retrying converges. If its copy is `absent`, delete and register the source again.
 
 Prepared and credential-free sources reject PATCH and rotation with `409`. Register a replacement source. For a live static source, changing the referenced Secret value affects subsequent eligible reads. Changing its reference or adopting a legacy source requires an unbound source. See [protected static inference](credential-sources/protected-inference.md#static-source-and-response-policy).
 
