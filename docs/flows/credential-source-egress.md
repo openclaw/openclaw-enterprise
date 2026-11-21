@@ -75,9 +75,8 @@ Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from Harness
 settings and consent; empty routes deny all. Plans pin execution, digest, grant
 and source generation. Deployment rechecks the unique compatible provider before
 provisioning transport credentials and saving the revision.
-`packages/occ/src/credential-egress-authority.ts:createEgressAuthority` supplies
-the request checks. It rechecks source ownership before reading material and
-evaluates fresh policy before each send.
+`packages/occ/src/credential-egress-authority.ts:createEgressAuthority` rechecks
+source ownership before reading material and loads fresh policy before each send.
 `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
 submitted settings for OCC normalization and grant checks.
 
@@ -172,7 +171,7 @@ Ambiguity refuses. OCC rechecks pins around provider calls and at material acces
 send and response release; changes restored between checks escape detection.
 Only one exact route match reserves a UUIDv7 ID before capture or policy I/O.
 Creation fixes its 30-second replay horizon; [capacity is bounded](../reference/drivers/credential-proxy.md#request-time-capacity).
-Unsupported or ambiguous operations refuse before reservation. The authority audits only when exactly one refused route reports, exactly once with a valid rule.
+Unsupported or ambiguous operations refuse before reservation. The authority audits only a unique refusal with a valid rule.
 It records execution and exact request ID before capture or credential access.
 Persistence failure refuses as authority-unavailable.
 
