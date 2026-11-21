@@ -79,10 +79,14 @@ channel-enabled Gateway starts until its own listener and network grants are ins
 
 ## Connect and verify
 
-Follow [Channels](channels.md#add-slack-in-the-console) to create or select the
-Secrets in the Slack drawer, restrict access, save, deploy, and verify a threaded
-reply. Stored bindings confirm storage only; they do not prove that Slack
-accepted the tokens or delivered a message.
+Open your Agent’s draft in the Console and follow the illustrated
+[Channels walkthrough](channels.md#add-slack-in-the-console) to bind the token
+Secrets, choose channels and people, save, deploy, and verify a threaded reply.
+
+![fred’s saved Slack card with one channel and both token Secrets bound](../../assets/slack-channel/saved-slack.png)
+
+_Storybook example. Configured (enabled) means the settings are saved.
+Deploy the new version and [verify a reply](channels.md#verify-a-reply) in Slack._
 
 For an older Configuration with missing token bindings, open **Credentials**,
 select the token Secrets, and choose **Save channel Secrets**. Bound tokens show

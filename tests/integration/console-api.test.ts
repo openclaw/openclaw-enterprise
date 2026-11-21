@@ -1230,20 +1230,54 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   assert.equal(missing.status, 404);
 });
 
+function createSecretAnswerReadRecorder(t: TestContext) {
+  const unit = new AsyncLocalStorage<symbol>();
+  let units = 0;
+  const decisions: { action: PermissionAction; unitId: symbol | undefined }[] = [];
+  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
+    read: (work) => {
+      units += 1;
+      return unit.run(Symbol(), () => state.read(work));
+    },
+    transact: (work) => state.transact(work),
+  });
+
+  function observe(iamDriver: Fixture["iamDriver"], answer: () => Promise<string[]>) {
+    const authorize = iamDriver.authorize;
+    iamDriver.authorize = async (request) => {
+      if (request.resource.kind === "secret") {
+        decisions.push({ action: request.action, unitId: unit.getStore() });
+      }
+      return authorize.call(iamDriver, request);
+    };
+    t.after(() => {
+      iamDriver.authorize = authorize;
+    });
+
+    return async () => {
+      decisions.length = 0;
+      units = 0;
+      const denied = await answer();
+      // All Secret decisions for this answer must share the same read unit.
+      const unitId = decisions[0]?.unitId;
+      assert.notEqual(unitId, undefined, "Expected a Secret decision inside a read unit");
+      assert.ok(
+        decisions.every((decision) => decision.unitId === unitId),
+        "Secret decisions must share one read unit",
+      );
+      return { denied, units, decisions: [...decisions] };
+    };
+  }
+
+  return { wrapState, observe };
+}
+
 // The answer makes one decision per readable Secret. They share one platform read unit, so the
 // native IAM Driver reads its policy once for all of them; outside a unit each would check out
 // its own database connection and policy read (finding 2473). The units the answer opens do not
 // grow with the number of Secrets.
 test("the Agent Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage<boolean>();
-  let units = 0;
-  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
-    read: (work) => {
-      units += 1;
-      return unit.run(true, () => state.read(work));
-    },
-    transact: (work) => state.transact(work),
-  });
+  const { wrapState, observe } = createSecretAnswerReadRecorder(t);
   const { fixture, namespace, agent, app, bot, member } = await secretAnswerFixture(t, {
     wrapState,
   });
@@ -1258,23 +1292,7 @@ test("the Agent Secret answer makes its Secret decisions in one read unit", asyn
     [],
   );
   editor.grant("configuration", "update", "configuration", agent.configurationId);
-  const decisions: { action: PermissionAction; inUnit: boolean }[] = [];
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.resource.kind === "secret") {
-      decisions.push({ action: request.action, inUnit: unit.getStore() === true });
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  t.after(() => {
-    fixture.iamDriver.authorize = authorize;
-  });
-  const measure = async () => {
-    decisions.length = 0;
-    units = 0;
-    const denied = await editor.answer();
-    return { denied, units, decisions: [...decisions] };
-  };
+  const measure = observe(fixture.iamDriver, editor.answer);
   const few = await measure();
   // The bound Slack Secrets and the fixture's Harness authentication Secret.
   assert.equal(few.denied.length, 3);
@@ -1284,9 +1302,8 @@ test("the Agent Secret answer makes its Secret decisions in one read unit", asyn
   }
   const many = await measure();
   assert.equal(many.denied.length, 9);
-  // Each readable Secret costs a read and an operate decision, all inside a read unit.
+  // Each readable Secret costs a read and an operate decision in the shared read unit.
   assert.equal(many.decisions.filter(({ action }) => action === "operate").length, 9);
-  assert.ok(many.decisions.every(({ inUnit }) => inUnit));
   assert.equal(many.units, few.units);
 });
 
@@ -1463,15 +1480,7 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
 // native IAM Driver reads its policy once for all of them, as for the Agent Secret answer
 // (finding 2473). The units the answer opens do not grow with the number of Secrets.
 test("the Namespace Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage<symbol>();
-  let units = 0;
-  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
-    read: (work) => {
-      units += 1;
-      return unit.run(Symbol(), () => state.read(work));
-    },
-    transact: (work) => state.transact(work),
-  });
+  const { wrapState, observe } = createSecretAnswerReadRecorder(t);
   const { fixture, namespace, model, bot, member } = await namespaceSecretAnswerFixture(t, {
     wrapState,
   });
@@ -1484,27 +1493,7 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     ],
     [],
   );
-  const decisions: { action: PermissionAction; unitId: symbol | undefined }[] = [];
-  const authorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (request) => {
-    if (request.resource.kind === "secret") {
-      decisions.push({ action: request.action, unitId: unit.getStore() });
-    }
-    return authorize.call(fixture.iamDriver, request);
-  };
-  t.after(() => {
-    fixture.iamDriver.authorize = authorize;
-  });
-  const measure = async () => {
-    decisions.length = 0;
-    units = 0;
-    const denied = await creator.answer();
-    // All Secret decisions for this answer must share the same read unit.
-    const unitId = decisions[0]?.unitId;
-    assert.notEqual(unitId, undefined);
-    assert.ok(decisions.every((decision) => decision.unitId === unitId));
-    return { denied, units, decisions: [...decisions] };
-  };
+  const measure = observe(fixture.iamDriver, creator.answer);
   const few = await measure();
   const expectedDenied = [model.id, bot.id];
   assert.deepEqual(few.denied, [...expectedDenied].sort());
