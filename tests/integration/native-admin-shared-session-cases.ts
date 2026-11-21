@@ -1,86 +1,42 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type nodeTest from "node:test";
-import type { TestContext } from "node:test";
 
 import Type from "typebox";
 import { Check } from "typebox/value";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
-import type { ControllerAppOptions, createFastifyApp } from "../../apps/controller/src/index.ts";
-import { createOccLogger, type OccLogger } from "../../apps/controller/src/logging.ts";
+import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { ErrorResponse, Meta } from "../../packages/contracts/src/api/common.ts";
 import {
   AgentResponse,
   ConfigurationResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import type {
-  Agent,
-  Identity,
-  Namespace,
-  ServicePrincipal,
-} from "../../packages/contracts/src/index.ts";
 import { denialsDuring } from "../helpers/console-audit-denials.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { grantRole } from "../helpers/iam-grants.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
-import type { sharedSessionDependencies } from "./native-admin-access.test.mjs";
+import {
+  authBaseURL,
+  createSiblingAgent,
+  injectJson,
+  issueServiceKeyForNativeAgent,
+  nativeAuthority,
+  nativeStatus,
+  publicOrigin,
+  type ConsoleFixture,
+  type FixtureResponse,
+  type HttpResponse,
+  type NativeAdminCaseDependencies,
+  type NativeAdminApp,
+  type RegisterNativeAdminCases,
+} from "./native-admin-access-fixture.ts";
+import { activatedDocumentNavigationHeaders } from "./native-admin-browser-access-cases.ts";
 
-type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
-type FixtureResponse = { status: number; body: unknown };
-type ServiceKeyContext = {
-  fixture: {
-    request: (
-      ...args: Parameters<ConsoleFixture["request"]>
-    ) => Promise<FixtureResponse & { headers: Headers; data: unknown }>;
-    fixtureResponse: ConsoleFixture["fixtureResponse"];
-    policy: Pick<ConsoleFixture["policy"], "roles" | "bindings"> & { identities: Identity[] };
-  };
-  namespace: Pick<Namespace, "id">;
-  agent: Pick<Agent, "id">;
-};
-
-type SharedSessionFixture = ServiceKeyContext & {
-  fixture: NativeAdminApp &
-    Pick<ConsoleFixture, "createAgent"> & {
-      memoryDatabase: Pick<ConsoleFixture["memoryDatabase"], "session">;
-    };
-  agent: Pick<Agent, "id" | "namespaceId">;
-  session: Pick<Awaited<ReturnType<ConsoleFixture["signIn"]>>, "cookie" | "setCookie">;
-  upstream: {
-    cert: string;
-    requests: readonly { method: string | undefined; url: string | undefined }[];
-  };
-};
-
-type NativeAdminApp = { app: Pick<ReturnType<typeof createFastifyApp>, "inject"> };
-type InjectedResponse = Awaited<ReturnType<NativeAdminApp["app"]["inject"]>>;
-type HttpResponse = Pick<InjectedResponse, "statusCode" | "headers" | "body">;
-
-interface SharedSessionDependencies {
-  publicOrigin: string;
-  authBaseURL: string;
-  createNativeAdminFixture: (
-    t: TestContext,
-    options?: { nativeDomain?: string; auditSink?: InMemoryAuditSink; logger?: OccLogger },
-  ) => Promise<SharedSessionFixture>;
-  nativeStatus: (context: SharedSessionFixture) => Promise<FixtureResponse>;
-  injectJson: (
-    fixture: NativeAdminApp,
-    method: "GET" | "POST",
-    path: string,
-    options: { headers: Record<string, string> },
-  ) => Promise<HttpResponse>;
-  nativeAuthority: (native: { origin: string }) => string;
-  createSiblingAgent: (context: SharedSessionFixture) => Promise<Pick<Agent, "id">>;
-  trustLocalUpstreamCertificate: (t: TestContext, cert: string) => void;
-}
-
-// Check the JavaScript entry's real fixture and callbacks wherever it registers these cases.
-type RegisterSharedSessionCases = (
-  test: typeof nodeTest,
-  dependencies: typeof sharedSessionDependencies,
-) => void;
+type SharedSessionDependencies = Pick<
+  NativeAdminCaseDependencies,
+  "createNativeAdminFixture" | "trustLocalUpstreamCertificate"
+>;
 
 // These controller-local routes have no shared TypeBox response schema.
 // Validate the fields this case family consumes at the JSON boundary.
@@ -95,17 +51,6 @@ const NativeStatusResponse = Type.Object({
       url: Type.Optional(Type.Never()),
     }),
   ]),
-});
-const IssuedKeyResponse = Type.Object({
-  meta: Meta,
-  data: Type.Object({
-    key: Type.String({ pattern: "^occ_" }),
-    namespaceId: Type.String(),
-    servicePrincipalId: Type.String(),
-    id: Type.String(),
-    name: Type.String(),
-    expiresAt: Type.String({ format: "date-time" }),
-  }),
 });
 const SessionResponse = Type.Object({
   meta: Meta,
@@ -144,48 +89,9 @@ function availableNativeOrigin(
   return data.origin;
 }
 
-export async function issueServiceKeyForNativeAgent(context: ServiceKeyContext) {
-  const principal: ServicePrincipal = {
-    id: `native-admin-service-${randomUUID()}`,
-    kind: "service_principal",
-    namespaceId: context.namespace.id,
-  };
-  context.fixture.policy.identities.push(principal);
-  const { role } = grantRole(context.fixture.policy, principal.id, {
-    id: `native-admin-service-role-${randomUUID()}`,
-    bindingId: `native-admin-service-binding-${randomUUID()}`,
-    namespaceId: context.namespace.id,
-    permissions: { agent: ["administer"] },
-    resource: { kind: "agent", id: context.agent.id },
-  });
-  const issued = await context.fixture.request("POST", "/api/auth/service-keys", {
-    body: {
-      servicePrincipalId: principal.id,
-      namespaceId: context.namespace.id,
-      name: "native-admin-service-key",
-    },
-  });
-  const { data } = context.fixture.fixtureResponse(
-    issued,
-    201,
-    IssuedKeyResponse,
-    "issue Agent service key",
-  );
-  assert.equal(data.servicePrincipalId, principal.id);
-  assert.equal(data.namespaceId, context.namespace.id);
-  return { key: data.key, role };
-}
-
-export const registerNativeAdminSharedCookieCases: RegisterSharedSessionCases = (
+export const registerNativeAdminSharedCookieCases: RegisterNativeAdminCases = (
   test: typeof nodeTest,
-  {
-    publicOrigin,
-    authBaseURL,
-    createNativeAdminFixture,
-    nativeStatus,
-    injectJson,
-    nativeAuthority,
-  }: SharedSessionDependencies,
+  { createNativeAdminFixture }: SharedSessionDependencies,
 ): void => {
   // Retained installation settings must not take ordinary Console and API access down.
   test("native admin retained domains preserve controller access and refuse unusable targets", async (t) => {
@@ -320,15 +226,9 @@ export const registerNativeAdminSharedCookieCases: RegisterSharedSessionCases = 
   });
 };
 
-export const registerNativeAdminSessionRecoveryCase: RegisterSharedSessionCases = (
+export const registerNativeAdminSessionRecoveryCase: RegisterNativeAdminCases = (
   test: typeof nodeTest,
-  {
-    createNativeAdminFixture,
-    nativeStatus,
-    injectJson,
-    nativeAuthority,
-    trustLocalUpstreamCertificate,
-  }: SharedSessionDependencies,
+  { createNativeAdminFixture, trustLocalUpstreamCertificate }: SharedSessionDependencies,
 ): void => {
   test("native browser admission reports a failed session lookup and accepts the same session after recovery", async (t) => {
     const logLines: string[] = [];
@@ -348,10 +248,7 @@ export const registerNativeAdminSessionRecoveryCase: RegisterSharedSessionCases 
     const headers = {
       host: nativeAuthority({ origin }),
       cookie: context.session.cookie,
-      accept: "text/html,application/xhtml+xml",
-      "sec-fetch-mode": "navigate",
-      "sec-fetch-dest": "document",
-      "sec-fetch-user": "?1",
+      ...activatedDocumentNavigationHeaders,
     };
     // Fail the backing session store below Better Auth while leaving the issued session intact.
     const sessions = context.fixture.memoryDatabase.session;
@@ -422,17 +319,9 @@ export const registerNativeAdminSessionRecoveryCase: RegisterSharedSessionCases 
   });
 };
 
-export const registerNativeAdminSessionOriginCases: RegisterSharedSessionCases = (
+export const registerNativeAdminSessionOriginCases: RegisterNativeAdminCases = (
   test: typeof nodeTest,
-  {
-    publicOrigin,
-    createNativeAdminFixture,
-    nativeStatus,
-    injectJson,
-    nativeAuthority,
-    trustLocalUpstreamCertificate,
-    createSiblingAgent,
-  }: SharedSessionDependencies,
+  { createNativeAdminFixture, trustLocalUpstreamCertificate }: SharedSessionDependencies,
 ): void => {
   test("native Agent requests retain their own origin boundary", async (t) => {
     const context = await createNativeAdminFixture(t);

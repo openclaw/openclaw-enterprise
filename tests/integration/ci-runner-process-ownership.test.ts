@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test, { describe, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { isObject } from "../../scripts/ci/runner-inputs.ts";
+import { isRecord } from "../../scripts/ci/records.ts";
 import {
   createRunnerFixture as fixture,
   heldClock,
@@ -29,7 +29,7 @@ const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 const timeoutSecret = /secretauthvalue|abcdefghijklmnop0123/u;
 
 function jsonObject(value: unknown, field: string) {
-  assert.ok(isObject(value), `Expected an object for ${field}`);
+  assert.ok(isRecord(value), `Expected an object for ${field}`);
   return value;
 }
 
@@ -91,7 +91,7 @@ function readProcessReceipt(path: string) {
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
-    if (isObject(error) && error.code === "ENOENT") {
+    if (isRecord(error) && error.code === "ENOENT") {
       return;
     }
     throw error;
@@ -320,7 +320,7 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
   // the runner's parent, as the cancellation kills the shell, and then fails, as the racing
   // cleanup step makes it.
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     `export async function prepareFile({ file }) {
   if (file.path.endsWith('plain.test.mjs')) {
     return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };

@@ -1,3 +1,4 @@
+import { channelEgressOptions } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,17 +7,11 @@ import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
 import {
   assertNoPackagingFailure,
+  image,
+  imageTestOptions,
   registerProductionImageControllerStartupCases,
   runDocker,
 } from "./production-image-controller-startup-cases.ts";
-
-const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
-const imageTestOptions =
-  image === undefined
-    ? {
-        skip: "Set OCC_TEST_PRODUCTION_IMAGE to a locally built production controller image tag.",
-      }
-    : {};
 
 function productionResourceRequirements() {
   return {
@@ -105,9 +100,7 @@ function productionInstallation(adminKeyPath) {
           runtime: {
             transportSecretPrefix: "agent-transport",
             gatewayStorageClassName: "sqlite-block",
-            channels: {
-              proxyUrl: "http://198.51.100.10:8080",
-            },
+            channelEgress: channelEgressOptions,
           },
         },
       },
@@ -118,11 +111,9 @@ function productionInstallation(adminKeyPath) {
       sandbox: {
         id: "sandbox-openshell",
         configuration: {
-          gateway: {
-            workspaceMode: "operator",
-          },
+          integrationMode: "legacy",
+          gateway: {},
           kubernetes: {
-            runtimeClassName: "openshell",
             serviceAccount: { mode: "gatewayConfigured" },
             sandboxDataMount: {
               subPath: "sandboxes",
@@ -167,7 +158,7 @@ async function productionFixture(t) {
   return fixture;
 }
 
-registerProductionImageControllerStartupCases({ image, imageTestOptions, productionFixture });
+registerProductionImageControllerStartupCases({ productionFixture });
 
 test(
   "production image runs the chart's pre-upgrade Installation check",

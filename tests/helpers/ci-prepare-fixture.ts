@@ -5,7 +5,7 @@ import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import type { CleanupRegistrar } from "./console-file-app.ts";
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.ts";
 import { readJsonLines } from "./json-lines.mjs";
 import { socketDirectory } from "./socket-directory.ts";
@@ -328,14 +328,14 @@ export async function fixtureImageCommands(
         env: { ...env, ...extraEnv },
       }),
     prepare: (args: string[] = [], options?: SpawnOptions) =>
-      run("prepare.mjs", [...prepareArgs, ...args], options),
+      run("prepare.ts", [...prepareArgs, ...args], options),
     prepareStagingSignin: () =>
       spawnResult(
         process.execPath,
         [
           "--input-type=module",
           "-e",
-          'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.mjs"; await prepareStagingSigninCluster(process.argv[1]);',
+          'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.ts"; await prepareStagingSigninCluster(process.argv[1]);',
           statePath,
         ],
         { env },
@@ -343,7 +343,7 @@ export async function fixtureImageCommands(
     warmImageCache: (args: string[] = []) =>
       run("warm-image-cache.ts", ["--state", statePath, ...args]),
     prepareFile: (file: string) =>
-      run("prepare.mjs", ["--lane", lane, "--file", file, "--state", statePath]),
+      run("prepare.ts", ["--lane", lane, "--file", file, "--state", statePath]),
     cleanup,
     cleanupSuccessfully: async () => {
       const result = await cleanup();

@@ -11,7 +11,7 @@ import type {
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
-import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
+import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import {
   deployFiniteAgent,
   deployStandingAgent,

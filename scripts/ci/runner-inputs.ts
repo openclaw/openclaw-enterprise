@@ -5,8 +5,9 @@ import { availableParallelism } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { openShellHarnessError } from "./openshell-model-inputs.mjs";
+import { openShellHarnessError } from "./openshell-model-inputs.ts";
 import { loadTestSuites } from "./test-suites.ts";
+import { isRecord } from "./records.ts";
 
 type IssueDetails = {
   file?: string;
@@ -125,10 +126,6 @@ export function issue(code: string, message: string, extra: IssueDetails = {}): 
   return { code, message, ...extra };
 }
 
-export function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function isUnknownArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
 }
@@ -151,7 +148,7 @@ function envObject(value: unknown, path: string, issues: RunnerIssue[]): Record<
   if (value === undefined) {
     return {};
   }
-  if (!isObject(value)) {
+  if (!isRecord(value)) {
     issues.push(issue("invalid-manifest", `${path} must be an object`));
     return {};
   }
@@ -178,7 +175,7 @@ function normalizeFile(
   issues: RunnerIssue[],
 ): RunnerFile | null {
   const path = `lanes.${laneName}.files.${index}`;
-  if (!isObject(file) || typeof file.path !== "string") {
+  if (!isRecord(file) || typeof file.path !== "string") {
     issues.push(issue("invalid-manifest", `${path} must be an object with a path string`));
     return null;
   }
@@ -212,10 +209,10 @@ function fileModes(
   const paths = new Set(files.map((file) => file.path));
   const parallel = stringArray(lane.parallelFiles, `${path}.parallelFiles`, issues);
   const serial = lane.serialFiles ?? {};
-  if (!isObject(serial)) {
+  if (!isRecord(serial)) {
     issues.push(issue("invalid-manifest", `${path}.serialFiles must be an object`));
   }
-  for (const [file, reason] of isObject(serial) ? Object.entries(serial) : []) {
+  for (const [file, reason] of isRecord(serial) ? Object.entries(serial) : []) {
     if (typeof reason !== "string" || reason.trim() === "") {
       issues.push(issue("invalid-manifest", `${path}.serialFiles.${file} must name a reason`));
     }
@@ -232,13 +229,13 @@ function fileModes(
       issues.push(issue("invalid-manifest", `${path}.parallelFiles lists ${file} twice`));
       continue;
     }
-    if (isObject(serial) && Object.hasOwn(serial, file)) {
+    if (isRecord(serial) && Object.hasOwn(serial, file)) {
       issues.push(issue("invalid-manifest", `${path}.parallelFiles ${file} is also serial`));
     }
     seen.add(file);
   }
   return parallel.filter(
-    (file) => paths.has(file) && !(isObject(serial) && Object.hasOwn(serial, file)),
+    (file) => paths.has(file) && !(isRecord(serial) && Object.hasOwn(serial, file)),
   );
 }
 
@@ -278,7 +275,7 @@ function fileDurations(raw: Record<string, unknown>, manifestPath: string, issue
     issues.push(issue("invalid-manifest", `fileDurations ${reference} is not readable JSON`));
     return durations;
   }
-  if (!isObject(table) || table.version !== 1 || !isObject(table.files)) {
+  if (!isRecord(table) || table.version !== 1 || !isRecord(table.files)) {
     issues.push(
       issue("invalid-manifest", `fileDurations ${reference} must be version 1 with a files object`),
     );
@@ -306,7 +303,7 @@ function normalizeManifest(raw: unknown, manifestPath: string): RunnerManifest {
   const lanes = new Map<string, RunnerLane>();
   const groups = new Map<string, string[]>();
 
-  if (!isObject(raw)) {
+  if (!isRecord(raw)) {
     return {
       lanes,
       groups,
@@ -318,17 +315,17 @@ function normalizeManifest(raw: unknown, manifestPath: string): RunnerManifest {
   if (raw.version !== 1) {
     issues.push(issue("invalid-manifest", "manifest version must be 1"));
   }
-  if (!isObject(raw.lanes)) {
+  if (!isRecord(raw.lanes)) {
     issues.push(issue("invalid-manifest", "lanes must be an object"));
   }
-  if (!isObject(raw.groups)) {
+  if (!isRecord(raw.groups)) {
     issues.push(issue("invalid-manifest", "groups must be an object"));
   }
 
   // Inspect entries even after reporting an invalid container so its entries still get diagnostics.
   const laneEntries: [string, unknown][] = Object.entries(raw.lanes ?? {});
   for (const [laneName, lane] of laneEntries) {
-    if (!isObject(lane)) {
+    if (!isRecord(lane)) {
       issues.push(issue("invalid-manifest", `lanes.${laneName} must be an object`));
       continue;
     }

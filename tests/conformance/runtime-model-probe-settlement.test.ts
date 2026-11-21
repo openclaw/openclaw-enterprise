@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import vm from "node:vm";
 
 import reporter from "../../scripts/ci/reporter.ts";
-import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
+import { isRecord } from "../../scripts/ci/records.ts";
 import type { ProbeEvent, ProbePhase } from "../helpers/runtime-model-probe-diagnostic.ts";
 import {
   modelProbeDiagnostic,

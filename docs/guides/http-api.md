@@ -11,7 +11,8 @@ operations, permissions, and request and response fields. Continue with
 
 You need Bash, `curl`, `jq`, the origin of an existing OCC Installation, and an
 unexpired [service API key](../reference/authentication/service-api-keys.md). The key should be stored as
-the full issuance or bootstrap JSON response in an owner-readable file. Keep
+JSON containing `data.key` in an owner-readable file: the issuance response or a
+[locally prepared bootstrap file](../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key). Keep
 shell tracing disabled; do not print or paste the plaintext key.
 
 The two top-level requests below require an Installation-scoped key. Reading the

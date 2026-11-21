@@ -1,10 +1,13 @@
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { TestEvent } from "node:test/reporters";
-import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
+import { projectFailureDiagnostic } from "./reporter-diagnostics.ts";
+import { isRecord } from "./records.ts";
 import {
   boundedProgressLines,
   openShellProgress,
   openShellProgressPrefix,
+  upstreamOutageCase,
 } from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.ts";
 import { recordsCoverage } from "./full-integration-coverage.ts";
@@ -26,6 +29,7 @@ type ReporterEventData = Partial<
 > & {
   details?: { duration_ms?: number; type?: string; error?: unknown };
   counts?: ReportedCounts;
+  entryFile?: string;
   message?: string;
   type?: string;
 };
@@ -81,7 +85,10 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
   if (typeof failureStage !== "string" || !stages.includes(failureStage)) {
     return undefined;
   }
-  const diagnostic = { kind: "native-first-agent-proof" as const, failureStage };
+  const diagnostic = {
+    kind: "native-first-agent-proof" as const,
+    failureStage,
+  };
   if (!isRecord(worker)) {
     return diagnostic;
   }
@@ -158,6 +165,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
     "network-connection",
     "worker-authority",
     "worker-transport",
+    "worker-provider-replay",
+    "worker-transcript-settlement",
     "http-unauthorized",
     "http-forbidden",
     "http-rate-limit",
@@ -190,6 +199,14 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
     ],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
+    turnStartupPhase: [
+      "provisioning_environment",
+      "preparing_workspace",
+      "preparing_context",
+      "starting_model",
+    ],
+    turnLifecyclePhase: ["end", "error"],
+    turnLifecycleError: turnErrors,
     proofError: turnErrors,
     assistantError: turnErrors,
     execError: turnErrors,
@@ -519,7 +536,12 @@ function* interruptedOutput({ lines, omitted }: OutputTail) {
 
 const nativeChildTestFile = resolve("tests/integration/harness-topology-k3d-real.test.mjs");
 
-function location(data: ReporterEventData = {}, recordCoverage = false, failed = false) {
+function location(
+  data: ReporterEventData = {},
+  recordCoverage = false,
+  failed = false,
+  upstreamCaseTimedOut = false,
+) {
   const rawError = data.details?.error;
   const error = failureFields(rawError);
   const cause = error?.cause ?? rawError;
@@ -535,7 +557,11 @@ function location(data: ReporterEventData = {}, recordCoverage = false, failed =
     const frame = fields.stack.split("\n").find((line) => line.includes(marker));
     const coordinates = frame?.slice(frame.indexOf(marker) + marker.length).match(/^(\d+):(\d+)/);
     if (coordinates) {
-      failureLocation = { file, line: Number(coordinates[1]), column: Number(coordinates[2]) };
+      failureLocation = {
+        file,
+        line: Number(coordinates[1]),
+        column: Number(coordinates[2]),
+      };
     }
   }
   return {
@@ -570,8 +596,9 @@ function location(data: ReporterEventData = {}, recordCoverage = false, failed =
         ? {
             code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
             name: "Error",
-            failureType:
-              fileFailure && error.failureType === "testCodeFailure"
+            failureType: upstreamCaseTimedOut
+              ? "testTimeoutFailure"
+              : fileFailure && error.failureType === "testCodeFailure"
                 ? "testCodeFailure"
                 : undefined,
             exitCode:
@@ -616,6 +643,32 @@ export default async function* jsonLinesReporter(
 ): AsyncGenerator<string> {
   const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
+  const root = process.cwd();
+  let upstreamEntry = join(root, upstreamOutageCase.entry);
+  const upstreamDeclaration = join(root, upstreamOutageCase.declaration);
+  // Node stamps its lexical CLI argument on the wrapper and child events.
+  // Admit another spelling only for the checkout root; the entry is fixed.
+  const entryArgument = process.argv[1];
+  const entrySuffix = join(sep, upstreamOutageCase.entry);
+  if (
+    entryArgument !== upstreamEntry &&
+    entryArgument?.endsWith(entrySuffix) &&
+    isAbsolute(entryArgument) &&
+    normalize(entryArgument) === entryArgument
+  ) {
+    try {
+      if (realpathSync(entryArgument.slice(0, -entrySuffix.length)) === root) {
+        upstreamEntry = entryArgument;
+      }
+    } catch {
+      // An unresolved root cannot bind the lexical entry.
+    }
+  }
+  // Node forwards child stdout before a dequeue can arrive. Admit progress
+  // after the native file envelope only if the whole lifecycle has one case.
+  let upstreamPhase:
+    "unseen" | "envelope" | "active" | "complete" | "failed" | "closed" | "ineligible" = "unseen";
+  let upstreamCase: ReporterEventData | undefined;
   const progress: Record<string, unknown>[] = [];
   const readProgress: (text: string) => void = boundedProgressLines((line: string) => {
     if (!line.startsWith(openShellProgressPrefix)) {
@@ -624,6 +677,13 @@ export default async function* jsonLinesReporter(
     try {
       const raw: unknown = JSON.parse(line.slice(openShellProgressPrefix.length));
       const value: unknown = openShellProgress(raw);
+      if (
+        isRecord(raw) &&
+        (raw.kind === "openshell-stage" || raw.kind === "openshell-replacement-checkpoint") &&
+        (!isRecord(value) || (upstreamPhase !== "envelope" && upstreamPhase !== "active"))
+      ) {
+        upstreamPhase = "ineligible";
+      }
       if (isRecord(value)) {
         progress.push(value);
       }
@@ -639,9 +699,70 @@ export default async function* jsonLinesReporter(
   const runningKey = (data: ReporterEventData) =>
     `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
+    let upstreamCaseTimedOut = false;
+    if (
+      upstreamPhase !== "ineligible" &&
+      (event.type === "test:dequeue" ||
+        event.type === "test:complete" ||
+        event.type === "test:pass" ||
+        event.type === "test:fail")
+    ) {
+      const data: ReporterEventData | undefined = event.data;
+      // The native envelope is outside the subprocess. Node stamps its
+      // selected entry file onto the subprocess events, even a same-name case.
+      const envelope =
+        data?.file === upstreamEntry &&
+        data.name === upstreamEntry &&
+        data.entryFile === undefined &&
+        data.nesting === 0 &&
+        data.line === 1 &&
+        data.column === 1;
+      const helper =
+        data?.file === upstreamDeclaration &&
+        data.entryFile === upstreamEntry &&
+        data.name === upstreamOutageCase.name &&
+        data.nesting === 0;
+      const sameCase =
+        helper && data.line === upstreamCase?.line && data.column === upstreamCase?.column;
+      if (event.type === "test:dequeue" && upstreamPhase === "unseen" && envelope) {
+        upstreamPhase = "envelope";
+      } else if (
+        event.type === "test:dequeue" &&
+        upstreamPhase === "envelope" &&
+        helper &&
+        typeof data.line === "number" &&
+        Number.isSafeInteger(data.line) &&
+        data.line > 0 &&
+        typeof data.column === "number" &&
+        Number.isSafeInteger(data.column) &&
+        data.column > 0
+      ) {
+        upstreamCase = data;
+        upstreamPhase = "active";
+      } else if (event.type === "test:complete" && upstreamPhase === "active" && sameCase) {
+        upstreamPhase = "complete";
+      } else if (
+        event.type === "test:fail" &&
+        upstreamPhase === "complete" &&
+        sameCase &&
+        data.details?.type === "test"
+      ) {
+        upstreamPhase = "failed";
+        const error = failureFields(data.details.error);
+        upstreamCaseTimedOut =
+          error?.code === "ERR_TEST_FAILURE" && error.failureType === "testTimeoutFailure";
+      } else if (event.type === "test:complete" && upstreamPhase === "failed" && envelope) {
+        upstreamPhase = "closed";
+      } else {
+        upstreamPhase = "ineligible";
+      }
+    }
     if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
       const key = runningKey(event.data);
-      running.set(key, { data: event.data, count: (running.get(key)?.count ?? 0) + 1 });
+      running.set(key, {
+        data: event.data,
+        count: (running.get(key)?.count ?? 0) + 1,
+      });
       continue;
     }
     if (event.type === "test:complete" && typeof event.data?.name === "string") {
@@ -665,8 +786,10 @@ export default async function* jsonLinesReporter(
             line: data.line,
             nesting: data.nesting,
           })),
+          ...(upstreamPhase === "active" ? { singleUpstreamOutageCase: true } : {}),
         },
       })}\n`;
+      upstreamPhase = "ineligible";
       if (!outputSent) {
         outputSent = true;
         yield* interruptedOutput(output.finish());
@@ -728,8 +851,11 @@ export default async function* jsonLinesReporter(
 
     yield `${JSON.stringify({
       type: event.type,
-      data: location(event.data, recordCoverage, event.type === "test:fail"),
+      data: location(event.data, recordCoverage, event.type === "test:fail", upstreamCaseTimedOut),
     })}\n`;
+  }
+  if (upstreamPhase === "closed") {
+    yield '{"type":"test:upstream-outage-attribution"}\n';
   }
   // Passing files send nothing extra.
   if (failed && !outputSent) {

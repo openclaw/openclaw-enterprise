@@ -17,9 +17,6 @@ import type {
   ChannelDirectoryResult,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -73,7 +70,6 @@ import {
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
   RESOURCE_CONFLICT,
-  SANDBOX_POLICY_READ_DENIED,
   STOP_REPEAT_CONFIRMATION,
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
@@ -81,10 +77,11 @@ import {
   BOUND_SECRET_UNLISTED,
   notIncluded,
   deleteRefused,
-  NAMESPACE_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
+import { SANDBOX_POLICY_READ_DENIED, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function deferred<T>() {
   let resolve: (value: T | PromiseLike<T>) => void = () =>
@@ -135,6 +132,8 @@ async function slackSelectionValue(locator: Locator): Promise<string> {
 
 export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof fileConsoleApp>) {
   test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Delete cancellation", { ready: true });
     const agent = await fixture.createAgent(namespace.id, "Cancel Candidate", nativeValues("keep"));
@@ -421,6 +420,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     t: TestContext,
     { moveFocusDuringPoll }: { moveFocusDuringPoll: boolean },
   ) {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["scoped-deleter"] });
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Delete scoped", { ready: true });
@@ -678,6 +678,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   });
 
   test("Repeat deletion preserves bounded retry ownership feedback and ordinary denial guidance", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Retry refusal feedback", {
       ready: true,
@@ -797,6 +798,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   });
 
   test("failed repeat deletion preserves feedback when a poll was rearmed during its request", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     // The API's 400 and 409 answers for this route (contractMessage and occ's deleteAgent). Delete
     // has no form, so a schema refusal does not ask to check entered values, and the API's typed
     // 409 sentence shows with the step that recovers (finding 2538).
@@ -893,6 +895,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     t: TestContext,
     { endsAccess, readFails = false }: { endsAccess: boolean; readFails?: boolean },
   ) {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace(
       `Read before repeat${endsAccess ? " ending access" : ""}${readFails ? " failing" : ""}`,
@@ -1006,6 +1009,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   }
 
   test("An uncertain repeat deletion stays blocked until a successful deleting readback", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Repeat deletion uncertainty", {
       ready: true,

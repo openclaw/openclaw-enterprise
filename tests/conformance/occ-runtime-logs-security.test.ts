@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import {
+  assertLogSecurityCondition,
+  assertSensitiveValuesAbsent,
+} from "./runtime-log-security-assertions.ts";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { Check } from "typebox/value";
 import { InMemoryAuditSink, type AuditEvent } from "../../packages/audit/src/index.ts";
 import {
@@ -17,11 +22,8 @@ import {
 import type { Permission } from "../../packages/contracts/src/index.ts";
 import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
 import { denialsDuring } from "../helpers/console-audit-denials.ts";
-import {
-  callerDenied,
-  POLICY_RECOMMENDATIONS_NO_SANDBOX,
-  runtimeLogSourceUnavailable,
-} from "../helpers/refusal-text.mjs";
+import { callerDenied, POLICY_RECOMMENDATIONS_NO_SANDBOX } from "../helpers/refusal-text.mjs";
+import { runtimeLogSourceUnavailable } from "../helpers/refusal-configuration-runtime.ts";
 import {
   administerGrants,
   createProviderSandboxDriver,
@@ -51,22 +53,29 @@ async function createSecurityFixture({
 }
 
 function runtimeDescription(response: FixtureResponse) {
-  assert.equal(response.status, 200, response.text);
-  assert.ok(Check(AgentRuntimeDescriptionSchema, response.data), response.text);
+  assertLogSecurityCondition(response.status === 200, "runtimeDescription", "status");
+  assertLogSecurityCondition(
+    Check(AgentRuntimeDescriptionSchema, response.data),
+    "runtimeDescription",
+    "schema",
+  );
   return response.data;
 }
 
 function logPage(response: FixtureResponse) {
-  assert.equal(response.status, 200, response.text);
-  assert.ok(Check(AgentRuntimeLogPageSchema, response.data), response.text);
+  assertLogSecurityCondition(response.status === 200, "runtimePage", "status");
+  assertLogSecurityCondition(
+    Check(AgentRuntimeLogPageSchema, response.data),
+    "runtimePage",
+    "schema",
+  );
   return response.data;
 }
 
-function apiError(response: FixtureResponse, status: number, code: ErrorCode, label?: string) {
-  const message = label === undefined ? response.text : `${label}: ${response.text}`;
-  assert.equal(response.status, status, message);
-  assert.ok(Check(ErrorResponse, response.body), message);
-  assert.equal(response.body.error.code, code, message);
+function apiError(response: FixtureResponse, status: number, code: ErrorCode) {
+  assertLogSecurityCondition(response.status === status, "apiError", "status");
+  assertLogSecurityCondition(Check(ErrorResponse, response.body), "apiError", "schema");
+  assertLogSecurityCondition(response.body.error.code === code, "apiError", "code");
   return response.body.error;
 }
 
@@ -91,11 +100,30 @@ function auditDetails(event: AuditEvent | undefined, key: string) {
   return details;
 }
 
-function logAuditEvents(
+function logAuditSnapshot(
   sink: InMemoryAuditSink,
   action: typeof VIEW_ACTION | typeof DOWNLOAD_ACTION,
 ) {
-  return sink.events.filter((event) => event.action === action);
+  const events = sink.events.filter((event) => event.action === action);
+  const successfulAccesses = events.filter(
+    (event) => event.kind === "access" && event.outcome === "success",
+  );
+  return { events, successfulAccesses };
+}
+
+function assertLogAuditCounts(
+  sink: InMemoryAuditSink,
+  action: typeof VIEW_ACTION | typeof DOWNLOAD_ACTION,
+  expected: { total: number; successfulAccesses: number },
+) {
+  const snapshot = logAuditSnapshot(sink, action);
+  assert.equal(snapshot.events.length, expected.total, `${action} total events`);
+  assert.equal(
+    snapshot.successfulAccesses.length,
+    expected.successfulAccesses,
+    `${action} successful access events`,
+  );
+  return snapshot;
 }
 
 function runtimeLogLine(index: number, raw = `gateway output ${index}`) {
@@ -131,7 +159,7 @@ test("runtime status and log reads enforce their permission tiers before any Dri
 
   for (const path of [target.runtimePath, target.logsPath()]) {
     const denied = await fixture.request("GET", path, { session: reader.session });
-    apiError(denied, 403, "FORBIDDEN", path);
+    apiError(denied, 403, "FORBIDDEN");
     assert.equal(fixture.auditSink.events.at(-1)?.kind, "authorization_denial");
   }
   // Operate is the status audience: it sees Pods and Events but never log text.
@@ -216,7 +244,7 @@ test("runtime status and log reads enforce their permission tiers before any Dri
     const { response, denials } = await denialsDuring(fixture.auditSink, () =>
       fixture.request("GET", path, caller),
     );
-    const error = apiError(response, 403, "FORBIDDEN", path);
+    const error = apiError(response, 403, "FORBIDDEN");
     assert.equal(error.message, callerDenied(refusal.grant, refusal.target), path);
     assert.deepEqual(denials, [refusal.denial], path);
   }
@@ -335,8 +363,26 @@ test("an Agent-level read_logs grant covers every revision, including later depl
     { action: "read_logs", resourceKind: "agent" },
     { action: "read", resourceKind: "agent" },
   ]);
-  const first = await fixture.request("GET", target.logsPath(), { session: delegate.session });
-  assert.deepEqual(lineMessages(logPage(first).records), ["gateway output 1"]);
+  const first = await fixture.request("GET", target.logsPath("source=gateway"), {
+    session: delegate.session,
+  });
+  const firstPage = logPage(first);
+  assert.deepEqual(lineMessages(firstPage.records), ["gateway output 1"]);
+
+  // Establish that this exact cursor can continue on its own revision first.
+  const cursor = encodeURIComponent(cursorFrom(firstPage));
+  const successfulViews = () =>
+    logAuditSnapshot(fixture.auditSink, VIEW_ACTION).successfulAccesses.length;
+  const viewsAfterFirst = successfulViews();
+  fixture.computeDriver.state.lines = [runtimeLogLine(1), runtimeLogLine(2)];
+  const continued = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${cursor}`),
+    { session: delegate.session },
+  );
+  assert.deepEqual(lineMessages(logPage(continued).records), ["gateway output 2"]);
+  assert.equal(successfulViews(), viewsAfterFirst);
+  fixture.computeDriver.state.lines = [runtimeLogLine(1)];
 
   // A new deployment creates a new revision; the same Agent grant still reads its logs.
   const redeployed = await fixture.request(
@@ -351,8 +397,20 @@ test("an Agent-level read_logs grant covers every revision, including later depl
   const revisionId = redeployed.body.data.id;
   assert.notEqual(revisionId, target.revisionId);
   const secondPath = `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments/${revisionId}/runtime/logs?source=gateway`;
+  // The Agent grant still applies, but the proven cursor cannot cross revisions.
+  const readsBeforeReplay = driverReads(fixture).length;
+  const viewsBeforeReplay = successfulViews();
+  const replay = await fixture.request("GET", `${secondPath}&cursor=${cursor}`, {
+    session: delegate.session,
+  });
+  apiError(replay, 400, "RUNTIME_LOGS_CURSOR_INVALID");
+  assert.equal(driverReads(fixture).length, readsBeforeReplay);
+  assert.equal(successfulViews(), viewsBeforeReplay);
+
   const second = await fixture.request("GET", secondPath, { session: delegate.session });
   assert.equal(second.status, 200, second.text);
+  assert.deepEqual(lineMessages(logPage(second).records), ["gateway output 1"]);
+  assert.equal(successfulViews(), viewsBeforeReplay + 1);
   const download = await fixture.request("GET", `${secondPath}&download=true`, {
     session: delegate.session,
   });
@@ -380,7 +438,7 @@ test("an Agent-level read_logs grant covers every revision, including later depl
       `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments/${sibling.revisionId}/runtime/logs?${query}`,
       { session: delegate.session },
     );
-    apiError(crossed, 404, "NOT_FOUND", query);
+    apiError(crossed, 404, "NOT_FOUND");
     assert.equal(fixture.computeDriver.calls.length, callsBeforeCrossed, query);
     assert.equal(accessCount("openclaw.agents.runtime_logs.view"), viewsBeforeCrossed, query);
     assert.equal(
@@ -417,9 +475,9 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
   const first = await fixture.request("GET", target.logsPath(), { session: viewer.session });
   const firstPage = logPage(first);
   assert.equal(firstPage.records.length, 2);
-  const views = () => logAuditEvents(fixture.auditSink, VIEW_ACTION);
-  assert.equal(views().length, 1);
-  const view = views()[0];
+  const views = (total: number, successfulAccesses: number) =>
+    assertLogAuditCounts(fixture.auditSink, VIEW_ACTION, { total, successfulAccesses });
+  const view = views(1, 1).successfulAccesses[0];
   assert.equal(view?.kind, "access");
   assert.equal(view.authorization?.action, "administer");
   assert.equal(view.actor?.principalId, viewer.principal.id);
@@ -445,7 +503,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
   const agentPath = target.logsPath("source=agent&container=agent");
   const agent = await fixture.request("GET", agentPath, { session: viewer.session });
   assert.deepEqual(lineMessages(logPage(agent).records), ["Agent container output"]);
-  assert.equal(views().length, 2);
+  views(2, 2);
 
   // Moving an intact Gateway cursor to the Agent source must fail before a text read or access audit.
   const readsBeforeCrossed = driverReads(fixture).length;
@@ -454,9 +512,10 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
   const crossed = await fixture.request("GET", `${agentPath}&cursor=${cursor}`, {
     session: viewer.session,
   });
-  apiError(crossed, 400, "RUNTIME_LOGS_CURSOR_INVALID", "another source");
+  apiError(crossed, 400, "RUNTIME_LOGS_CURSOR_INVALID");
   assert.equal(driverReads(fixture).length, readsBeforeCrossed);
   assert.equal(auditCount(), auditsBefore);
+  views(2, 2);
 
   // A follow poll returns only lines after the cursor and is not re-audited.
   state.lines = [runtimeLogLine(1), runtimeLogLine(2), runtimeLogLine(3)];
@@ -467,7 +526,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
   assert.deepEqual(lineMessages(nextPage.records), ["gateway output 3"]);
   const sinceSeconds = driverReads(fixture).at(-1)?.sinceSeconds;
   assert.ok(sinceSeconds !== undefined && sinceSeconds >= 1);
-  assert.equal(views().length, 2);
+  views(2, 2);
 
   // A container restart is labelled, never a silent restart of the stream.
   state.restartCount = 1;
@@ -483,12 +542,14 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
     ),
     ["stream_replaced", "after restart"],
   );
+  views(2, 2);
   state.previousLines = [runtimeLogLine(0, "before restart")];
   const previous = await fixture.request("GET", target.logsPath("source=gateway&previous=true"), {
     session: viewer.session,
   });
   assert.deepEqual(lineMessages(logPage(previous).records), ["before restart"]);
   assert.equal(driverReads(fixture).at(-1)?.previous, true);
+  views(3, 3);
   // Reusing a view's cursor for another instance selection starts a new audited view.
   const previousWithCursor = await fixture.request(
     "GET",
@@ -498,7 +559,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
     { session: viewer.session },
   );
   assert.equal(previousWithCursor.status, 200, previousWithCursor.text);
-  assert.equal(views().length, 4);
+  views(4, 4);
   const readsBefore = driverReads(fixture).length;
 
   // The other principal and a changed signature independently invalidate the same cursor.
@@ -511,16 +572,17 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
     false,
     "the tamper control must change decoded MAC bytes",
   );
-  for (const [label, submitted, session] of [
-    ["foreign principal", token, other.session],
-    ["tampered", tamperedCursor, viewer.session],
+  for (const [submitted, session] of [
+    [token, other.session],
+    [tamperedCursor, viewer.session],
   ] as const) {
     const rejected = await fixture.request(
       "GET",
       target.logsPath(`source=gateway&cursor=${encodeURIComponent(submitted)}`),
       { session },
     );
-    apiError(rejected, 400, "RUNTIME_LOGS_CURSOR_INVALID", label);
+    apiError(rejected, 400, "RUNTIME_LOGS_CURSOR_INVALID");
+    views(4, 4);
   }
   assert.equal(driverReads(fixture).length, readsBefore);
 
@@ -548,7 +610,7 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
     const outOfRange = await fixture.request("GET", target.logsPath(`source=gateway&${query}`), {
       session: viewer.session,
     });
-    const error = apiError(outOfRange, 400, "INVALID_REQUEST", query);
+    const error = apiError(outOfRange, 400, "INVALID_REQUEST");
     assert.deepEqual(
       error.details,
       [{ path: `/${query.split("=")[0]}`, code: "INVALID_FORMAT" }],
@@ -559,11 +621,21 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
 
   // Revocation between polls is honoured with the same cursor.
   viewer.revoke("administer", "agent");
+  views(4, 4);
   const revoked = await fixture.request("GET", target.logsPath(`source=gateway&cursor=${cursor}`), {
     session: viewer.session,
   });
   assert.equal(revoked.status, 403);
   assert.equal(driverReads(fixture).length, readsBefore);
+  const denial = views(5, 4).events.at(-1);
+  assert.equal(denial?.kind, "authorization_denial");
+  assert.equal(denial.outcome, "denied");
+  assert.equal(denial.actor?.principalId, viewer.principal.id);
+  assert.deepEqual(denial.authorization, {
+    principalId: viewer.principal.id,
+    action: "read_logs",
+    resource: { kind: "agent", id: target.agent.id, namespaceId: target.namespace.id },
+  });
 });
 
 test("minLevel filters log lines on the server and a cursor still resumes after hidden lines", async () => {
@@ -592,7 +664,8 @@ test("minLevel filters log lines on the server and a cursor still resumes after 
     runtimeLogLine(3, "plain wrapper text"),
     codex(4, "INFO", { message: "close" }, { name: "fs.read_file" }),
   ];
-  const views = () => logAuditEvents(fixture.auditSink, VIEW_ACTION);
+  const views = (total: number, successfulAccesses: number) =>
+    assertLogAuditCounts(fixture.auditSink, VIEW_ACTION, { total, successfulAccesses });
   const shown = (page: AgentRuntimeLogPageWire) =>
     page.records.map((record) =>
       record.type === "line" ? `${record.level} ${record.message}` : record.type,
@@ -605,12 +678,13 @@ test("minLevel filters log lines on the server and a cursor still resumes after 
     "unknown plain wrapper text",
     "debug span close fs.read_file",
   ]);
+  views(1, 1);
 
   // Lines of unknown level stay: the server cannot tell they are below the floor.
   const info = await fixture.request("GET", target.logsPath("source=gateway&minLevel=info"));
   const infoPage = logPage(info);
   assert.deepEqual(shown(infoPage), ["warn retrying model request", "unknown plain wrapper text"]);
-  assert.equal(views().length, 2);
+  views(2, 2);
 
   // A poll at the same level is the same view and resumes after the last line read,
   // including the hidden debug line, so lowering the level later never replays it.
@@ -626,12 +700,13 @@ test("minLevel filters log lines on the server and a cursor still resumes after 
   );
   const nextPage = logPage(next);
   assert.deepEqual(shown(nextPage), ["error model request failed"]);
-  assert.equal(views().length, 2);
+  views(2, 2);
   const after = await fixture.request(
     "GET",
     target.logsPath(`source=gateway&cursor=${encodeURIComponent(cursorFrom(nextPage))}`),
   );
   assert.deepEqual(shown(logPage(after)), []);
+  views(2, 2);
 
   // The download applies the same floor.
   const download = await fixture.request(
@@ -647,11 +722,15 @@ test("minLevel filters log lines on the server and a cursor still resumes after 
       .map((line) => line.split(" ").slice(1, 2)[0]),
     ["UNKNOWN", "ERROR"],
   );
+  assertLogAuditCounts(fixture.auditSink, DOWNLOAD_ACTION, { total: 1, successfulAccesses: 1 });
+  views(2, 2);
 
   const reads = driverReads(fixture).length;
   const invalid = await fixture.request("GET", target.logsPath("source=gateway&minLevel=unknown"));
   assert.equal(invalid.status, 400, invalid.text);
   assert.equal(driverReads(fixture).length, reads);
+  views(2, 2);
+  assertLogAuditCounts(fixture.auditSink, DOWNLOAD_ACTION, { total: 1, successfulAccesses: 1 });
 });
 
 test("an expired runtime log cursor starts a new audited view with a labelled gap", async (t) => {
@@ -663,8 +742,9 @@ test("an expired runtime log cursor starts a new audited view with a labelled ga
 
   const first = logPage(await fixture.request("GET", target.logsPath()));
   const expired = cursorFrom(first);
-  const views = () => logAuditEvents(fixture.auditSink, VIEW_ACTION);
-  assert.equal(views().length, 1);
+  const views = (total: number, successfulAccesses: number) =>
+    assertLogAuditCounts(fixture.auditSink, VIEW_ACTION, { total, successfulAccesses });
+  views(1, 1);
 
   // Advance the clock beyond the one-hour lifetime of the cursor issued by the API.
   t.mock.timers.setTime(now + 3_600_001);
@@ -679,8 +759,7 @@ test("an expired runtime log cursor starts a new audited view with a labelled ga
     ["cursor_expired", "line"],
   );
   assert.notEqual(cursorFrom(resumed), expired);
-  const [original, fresh] = views();
-  assert.equal(views().length, 2);
+  const [original, fresh] = views(2, 2).successfulAccesses;
   assert.equal(fresh?.kind, "access");
   const originalDetails = auditDetails(original, "runtimeLogs");
   const freshDetails = auditDetails(fresh, "runtimeLogs");
@@ -696,12 +775,12 @@ test("a cursor whose Pod is gone starts a new audited view of the Pod that is re
   state.lines = [runtimeLogLine(1)];
   const replacement = "gateway-replacement-0";
   state.extraPods = [{ name: replacement, uid: "4a1b2c3d-0000-4000-8000-000000000002" }];
-  const views = () => logAuditEvents(fixture.auditSink, VIEW_ACTION);
+  const views = (total: number, successfulAccesses: number) =>
+    assertLogAuditCounts(fixture.auditSink, VIEW_ACTION, { total, successfulAccesses });
 
   const first = await fixture.request("GET", target.logsPath(`source=gateway&pod=${replacement}`));
   const firstPage = logPage(first);
-  assert.equal(views().length, 1);
-  const initialView = auditDetails(views()[0], "runtimeLogs");
+  const initialView = auditDetails(views(1, 1).successfulAccesses[0], "runtimeLogs");
   assert.ok("pod" in initialView && "viewId" in initialView);
   assert.equal(initialView.pod, replacement);
 
@@ -717,8 +796,7 @@ test("a cursor whose Pod is gone starts a new audited view of the Pod that is re
   assert.equal(gap.reason, "stream_replaced");
   const primary = fixture.computeDriver.podName({ id: target.revisionId });
   assert.equal(nextPage.stream?.pod, primary);
-  assert.equal(views().length, 2, "reading another Pod is a new view");
-  const replacementView = auditDetails(views()[1], "runtimeLogs");
+  const replacementView = auditDetails(views(2, 2).successfulAccesses[1], "runtimeLogs");
   assert.ok("pod" in replacementView && "viewId" in replacementView);
   assert.equal(replacementView.pod, primary);
   assert.notEqual(replacementView.viewId, initialView.viewId);
@@ -729,7 +807,7 @@ test("a cursor whose Pod is gone starts a new audited view of the Pod that is re
     target.logsPath(`source=gateway&cursor=${encodeURIComponent(cursorFrom(nextPage))}`),
   );
   assert.equal(again.status, 200, again.text);
-  assert.equal(views().length, 2);
+  views(2, 2);
 });
 
 test("runtime routes reject the Agent draft and unknown revisions without a Driver call", async () => {
@@ -748,7 +826,7 @@ test("runtime routes reject the Agent draft and unknown revisions without a Driv
       `${base}/${revision}/runtime/logs?source=gateway`,
     ]) {
       const response = await fixture.request("GET", path);
-      apiError(response, status, code, path);
+      apiError(response, status, code);
     }
   }
   assert.equal(fixture.computeDriver.calls.length, 0);
@@ -803,26 +881,31 @@ test("runtime log failures are fixed, content-free and never read after an audit
   const auditSink = new UnavailableLogAuditSink();
   const fixture = await createSecurityFixture({ auditSink });
   const target = await fixture.deployAgent();
-  fixture.computeDriver.state.lines = [runtimeLogLine(1, "must not be returned")];
+  const refusedContent = "must not be returned";
+  fixture.computeDriver.state.lines = [runtimeLogLine(1, refusedContent)];
 
   const unaudited = await fixture.request("GET", target.logsPath());
+  assertSensitiveValuesAbsent(unaudited.text, "refusedPage", { REFUSED_CONTENT: refusedContent });
   apiError(unaudited, 503, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
-  assert.equal(unaudited.text.includes("must not be returned"), false);
   const undownloaded = await fixture.request(
     "GET",
     target.logsPath("source=gateway&download=true"),
   );
+  assertSensitiveValuesAbsent(undownloaded.text, "refusedDownload", {
+    REFUSED_CONTENT: refusedContent,
+  });
   apiError(undownloaded, 503, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
-  assert.equal(undownloaded.text.includes("must not be returned"), false);
   assert.equal(driverReads(fixture).length, 0);
   auditSink.failLogAccess = false;
 
   const marker = `private-driver-detail-${randomUUID()}`;
   fixture.computeDriver.state.readError = new Error(marker);
   const failed = await fixture.request("GET", target.logsPath());
+  assertSensitiveValuesAbsent(failed.text, "refusedPage", { DRIVER_ERROR: marker });
+  assertSensitiveValuesAbsent(JSON.stringify(fixture.auditSink.events), "audit", {
+    DRIVER_ERROR: marker,
+  });
   apiError(failed, 503, "RUNTIME_LOGS_UNAVAILABLE");
-  assert.equal(failed.text.includes(marker), false);
-  assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
 
   fixture.computeDriver.state.readError = new RuntimeLogsForbiddenByClusterError();
   const rbac = await fixture.request("GET", target.logsPath());
@@ -831,8 +914,8 @@ test("runtime log failures are fixed, content-free and never read after an audit
 
   fixture.computeDriver.state.describeError = new Error(marker);
   const status = await fixture.request("GET", target.runtimePath);
-  assert.equal(status.status, 503);
-  assert.equal(status.text.includes(marker), false);
+  assertSensitiveValuesAbsent(status.text, "runtimeStatus", { DRIVER_ERROR: marker });
+  assertLogSecurityCondition(status.status === 503, "runtimeStatus", "status");
   fixture.computeDriver.state.describeError = undefined;
 
   // Reject the entire Driver description when it contains an invalid Pod name.
@@ -845,9 +928,9 @@ test("runtime log failures are fixed, content-free and never read after an audit
 test("a version without a Sandbox names the log sources and policy suggestions it lacks", async () => {
   const fixture = await createSecurityFixture();
   const target = await fixture.deployAgent();
-  for (const source of ["sandbox", "agent"]) {
+  for (const source of ["sandbox", "agent"] satisfies ("sandbox" | "agent")[]) {
     const refused = await fixture.request("GET", target.logsPath(`source=${source}`));
-    const error = apiError(refused, 400, "RUNTIME_LOGS_SOURCE_UNAVAILABLE", source);
+    const error = apiError(refused, 400, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
     assert.equal(error.message, runtimeLogSourceUnavailable(source));
   }
   const suggestions = await fixture.request(
@@ -906,7 +989,7 @@ test("runtime routes answer 501 when the Driver, its logging owner or the operat
     const target = await fixture.deployAgent();
     for (const path of [target.runtimePath, target.logsPath()]) {
       const response = await fixture.request("GET", path);
-      apiError(response, 501, "NOT_IMPLEMENTED", `${label}: ${path}`);
+      apiError(response, 501, "NOT_IMPLEMENTED");
     }
     assert.equal(fixture.computeDriver.calls.length, 0, label);
     if (label === "feature disabled") {
@@ -935,8 +1018,10 @@ test("runtime log downloads use the log tier and are audited once per download",
     target,
     administerGrants,
   );
-  const downloads = () => logAuditEvents(fixture.auditSink, DOWNLOAD_ACTION);
-  const views = () => logAuditEvents(fixture.auditSink, VIEW_ACTION);
+  const downloads = (total: number, successfulAccesses: number) =>
+    assertLogAuditCounts(fixture.auditSink, DOWNLOAD_ACTION, { total, successfulAccesses });
+  const views = (total: number, successfulAccesses: number) =>
+    assertLogAuditCounts(fixture.auditSink, VIEW_ACTION, { total, successfulAccesses });
   fixture.computeDriver.calls.length = 0;
 
   // Status access is not enough; the denial never reaches the Driver.
@@ -949,35 +1034,56 @@ test("runtime log downloads use the log tier and are audited once per download",
   // The denial names the download, not a view.
   assert.equal(fixture.auditSink.events.at(-1)?.action, "openclaw.agents.runtime_logs.download");
   assert.equal(driverReads(fixture).length, 0);
-  const deniedDownloads = downloads().length;
+  const deniedDownloads = downloads(1, 0).events.length;
 
   const path = target.logsPath("source=gateway&tailLines=5&download=true");
   const first = await fixture.request("GET", path, { session: administrator.session });
-  assert.equal(first.status, 200, first.text);
-  assert.equal(first.headers.get("content-type"), "text/plain; charset=utf-8");
-  assert.equal(first.headers.get("cache-control"), "no-store");
+  assertLogSecurityCondition(first.status === 200, "runtimeDownload", "status");
+  assertLogSecurityCondition(
+    first.headers.get("content-type") === "text/plain; charset=utf-8",
+    "runtimeDownload",
+    "header",
+  );
+  assertLogSecurityCondition(
+    first.headers.get("cache-control") === "no-store",
+    "runtimeDownload",
+    "header",
+  );
   const pod = fixture.computeDriver.podName({ id: target.revisionId });
-  assert.equal(
-    first.headers.get("content-disposition"),
-    `attachment; filename="${target.agent.id}-${target.revisionId}-gateway-${pod}.log"`,
+  assertLogSecurityCondition(
+    first.headers.get("content-disposition") ===
+      `attachment; filename="${target.agent.id}-${target.revisionId}-gateway-${pod}.log"`,
+    "runtimeDownload",
+    "header",
   );
   const lines = first.text.trimEnd().split("\n");
   const [header] = lines;
-  assert.ok(header);
-  assert.match(header, new RegExp(`^# agent=${target.agent.id} revision=${target.revisionId}`));
-  assert.deepEqual(lines.slice(1), [
-    `${runtimeLogLine(1).time} UNKNOWN text gateway output 1`,
-    `${runtimeLogLine(2).time} WARN openclaw [gateway] slow start status=503`,
-  ]);
+  assertLogSecurityCondition(
+    typeof header === "string" && header.length > 0,
+    "runtimeDownload",
+    "header",
+  );
+  assertLogSecurityCondition(
+    new RegExp(`^# agent=${target.agent.id} revision=${target.revisionId}`).test(header),
+    "runtimeDownload",
+    "header",
+  );
+  assertLogSecurityCondition(
+    isDeepStrictEqual(lines.slice(1), [
+      `${runtimeLogLine(1).time} UNKNOWN text gateway output 1`,
+      `${runtimeLogLine(2).time} WARN openclaw [gateway] slow start status=503`,
+    ]),
+    "runtimeDownload",
+    "content",
+  );
   // A download always reads the maximum tail, whatever the caller asked for.
   assert.equal(driverReads(fixture).at(-1)?.tailLines, 1000);
+  downloads(deniedDownloads + 1, 1);
 
-  await fixture.request("GET", path, { session: administrator.session });
-  const granted = () => downloads().filter(({ kind }) => kind === "access");
-  assert.equal(downloads().length, deniedDownloads + 2);
-  assert.equal(granted().length, 2, "every download is audited");
-  assert.equal(views().length, 0, "a download is not a view");
-  const [audit] = granted();
+  const second = await fixture.request("GET", path, { session: administrator.session });
+  assertLogSecurityCondition(second.status === 200, "runtimeDownload", "status");
+  const [audit] = downloads(deniedDownloads + 2, 2).successfulAccesses;
+  views(0, 0);
   assert.equal(audit?.kind, "access");
   assert.equal(audit.actor?.principalId, administrator.principal.id);
   const details = auditDetails(audit, "runtimeLogs");
@@ -988,6 +1094,7 @@ test("runtime log downloads use the log tier and are audited once per download",
 
   // A download is a fresh snapshot and never continues a view.
   const page = await fixture.request("GET", target.logsPath(), { session: administrator.session });
+  views(1, 1);
   const readsBefore = driverReads(fixture).length;
   const withCursor = await fixture.request(
     "GET",
@@ -997,13 +1104,24 @@ test("runtime log downloads use the log tier and are audited once per download",
     { session: administrator.session },
   );
   const error = apiError(withCursor, 400, "INVALID_REQUEST");
-  assert.match(error.message, /\/cursor cannot be combined with \/download/);
-  assert.deepEqual(error.details, [{ path: "/cursor", code: "INVALID_VALUE" }]);
+  assertLogSecurityCondition(
+    /\/cursor cannot be combined with \/download/.test(error.message),
+    "apiError",
+    "content",
+  );
+  assertLogSecurityCondition(
+    isDeepStrictEqual(error.details, [{ path: "/cursor", code: "INVALID_VALUE" }]),
+    "apiError",
+    "content",
+  );
   assert.equal(driverReads(fixture).length, readsBefore);
-  assert.equal(granted().length, 2);
+  downloads(deniedDownloads + 2, 2);
+  views(1, 1);
 
   // Failures stay JSON errors with fixed text.
   fixture.computeDriver.state.readError = new RuntimeLogsForbiddenByClusterError();
   const rbac = await fixture.request("GET", path, { session: administrator.session });
   apiError(rbac, 503, "RUNTIME_LOGS_CLUSTER_RBAC");
+  downloads(deniedDownloads + 3, 3);
+  views(1, 1);
 });

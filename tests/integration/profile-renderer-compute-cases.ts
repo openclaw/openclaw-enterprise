@@ -12,7 +12,7 @@ import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 import { baseInput, codexInput, externalSignInInput } from "./profile-renderer-inputs.ts";
 import {
   helmSkip,

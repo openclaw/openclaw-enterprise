@@ -21,7 +21,7 @@ import {
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
 import { createOidcProvider } from "./oidc-provider.mjs";
-import { composeProduction } from "./password-hasher.mjs";
+import { composeProduction } from "./password-hasher.ts";
 
 // Only Compute is passive: no Agent is deployed, so sign-in proofs need no cluster.
 // Authentication, State, IAM, audit and Fastify are the production implementations.
@@ -32,7 +32,7 @@ function passiveComputeDriver(id) {
   });
 }
 
-/** Runs the chart's initialization Job command and returns the generated administrator password.
+/** Runs the chart's initialization Job command and returns the supplied administrator password.
  * @param {Pick<import("node:test").TestContext, "after">} context
  * @param {{databaseUrl: string | undefined, email: string, authSecret: string}} options
  */
@@ -49,7 +49,7 @@ export async function bootstrapProductionInstallation(context, { databaseUrl, em
   if (!result.ok) {
     throw new Error(`Production bootstrap failed:\n${result.stderr || result.stdout}`);
   }
-  return (await readFile(environment.OCC_BOOTSTRAP_PASSWORD_FILE, "utf8")).trim();
+  return await readFile(environment.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE, "utf8");
 }
 
 /** Collects structured controller log events, as the API Pod would emit them. */
@@ -121,8 +121,8 @@ export function googleUpgradeSettings(recoveryUserId, allowedDomains = []) {
 }
 
 /**
- * An Auth0-shaped OIDC issuer for the fixtures: the trailing slash is part of `iss`, and all
- * four URLs share its host, as the parser and chart require.
+ * This Auth0-shaped OIDC fixture uses one host for all four URLs and includes the trailing
+ * slash in `iss`.
  */
 export const fixtureOidcIssuer = Object.freeze({
   issuer: "https://tenant.idp.example.test/",
@@ -173,17 +173,23 @@ export function oidcUpgradeSettings(recoveryUserId, issuer = fixtureOidcIssuer, 
   });
 }
 
+/**
+ * @param {ProductionSignInOptions["settings"]} settings
+ * @param {ProductionSignInOptions["secrets"]} secrets
+ */
 function resolveSettings(settings, secrets) {
+  /** @type {Record<string, string>} */
   const environment = {};
   for (const [name, value] of Object.entries(settings)) {
     if (typeof value === "string") {
       environment[name] = value;
     } else {
       const { name: secret, key } = value.secretKeyRef;
-      environment[name] = secrets[`${secret}/${key}`];
-      if (environment[name] === undefined) {
+      const resolved = secrets[`${secret}/${key}`];
+      if (resolved === undefined) {
         throw new Error(`Missing fixture Secret ${secret}/${key}.`);
       }
+      environment[name] = resolved;
     }
   }
   return environment;
@@ -192,7 +198,7 @@ function resolveSettings(settings, secrets) {
 /**
  * @typedef {import("../../apps/controller/src/composition/production.ts").ProductionConfig} ProductionConfig
  * @typedef {import("../../apps/controller/src/composition/production.ts").CompositionDependencies} CompositionDependencies
- * @typedef {import("../../packages/contracts/src/index.ts").InstallationConfiguration["iam"]} IAMConfiguration
+ * @typedef {import("../../apps/controller/src/composition/installation-config.ts").InstallationStartupConfiguration["iam"]} IAMConfiguration
  * @typedef {{
  *   databaseUrl: string | undefined,
  *   settings: import("./sign-in-chart.ts").SignInSettings,
@@ -209,6 +215,7 @@ function resolveSettings(settings, secrets) {
  * sign-in and native-admin names the way apps/controller/src/api-startup.ts does.
  * @param {Pick<import("node:test").TestContext, "after">} context
  * @param {ProductionSignInOptions} options
+ * @returns {Promise<ProductionConfig>}
  */
 export async function productionSignInConfiguration(
   context,
@@ -231,30 +238,40 @@ export async function productionSignInConfiguration(
     environment: {},
     startupConfiguration: { configuration, logging: { level: "info" } },
   });
+  assert.ok(runtime);
   const { installation } = runtime;
   const humanLogin = humanLoginConfiguration(environment);
   const clientAddress = clientAddressConfiguration(environment);
   const nativeAdminEnabled = environment.OCC_AGENT_NATIVE_ADMIN_ENABLED === "true";
+  const authSecret = environment.OCC_AUTH_SECRET;
+  const authBaseURL = environment.OCC_AUTH_BASE_URL;
+  const nativeAdminDomain = environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
+  assert.ok(
+    databaseUrl && authSecret && authBaseURL,
+    "Production sign-in requires database and auth settings",
+  );
   return {
     mode: "production",
     host: "127.0.0.1",
     databaseUrl,
-    authSecret: environment.OCC_AUTH_SECRET,
-    authBaseURL: environment.OCC_AUTH_BASE_URL,
+    authSecret,
+    authBaseURL,
     ...(environment.OCC_GATEWAY_API_KEY_PATH === undefined ? {} : { gatewayApiKeyPath: keyFile }),
     ...humanLogin,
     ...(clientAddress === undefined ? {} : { clientAddress }),
     nativeAdmin: {
       enabled: nativeAdminEnabled,
-      domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+      ...(nativeAdminDomain === undefined ? {} : { domain: nativeAdminDomain }),
     },
     ...(logger === undefined ? {} : { logger }),
     ...(metrics === undefined ? {} : { metrics }),
     ...(passwordSlowLaneFloors === undefined ? {} : { passwordSlowLaneFloors }),
     drivers: {
       installation,
-      defaultPresets: runtime.defaultPresets,
-      bundledPresetVersions: runtime.bundledPresetVersions,
+      ...(runtime.defaultPresets === undefined ? {} : { defaultPresets: runtime.defaultPresets }),
+      ...(runtime.bundledPresetVersions === undefined
+        ? {}
+        : { bundledPresetVersions: runtime.bundledPresetVersions }),
       computeDriver: passiveComputeDriver(installation.drivers.compute.id),
       configurationDriver: createTestConfigurationDriver({
         id: installation.drivers.configuration.id,
@@ -272,7 +289,7 @@ export async function productionSignInConfiguration(
 /**
  * Composes the production API from rendered API Pod settings (see
  * productionSignInConfiguration). It hashes with the fixtures' cheap hasher unless
- * `passwordHasher` is given (see password-hasher.mjs).
+ * `passwordHasher` is given (see password-hasher.ts).
  * @param {Pick<import("node:test").TestContext, "after">} context
  * @param {ProductionSignInOptions & {passwordHasher?: CompositionDependencies["passwordHasher"]}} options
  */

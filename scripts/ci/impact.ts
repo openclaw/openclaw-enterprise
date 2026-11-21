@@ -76,8 +76,7 @@ function commitsPresent(names: string[]) {
 function documentationPath(path: string) {
   if (
     /^(?:docs|specs)\/(?:[\s\S]*\/)?AGENTS\.md$/.test(path) ||
-    ["docs/reference/api.md", "docs/reference/cheatsheets/api.md"].includes(path) ||
-    /^docs\/reference\/api\/[\s\S]+\.md$/.test(path)
+    ["docs/reference/api.md", "docs/reference/cheatsheets/api.md"].includes(path)
   ) {
     return false;
   }

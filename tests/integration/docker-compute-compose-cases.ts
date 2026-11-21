@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, open, rm, stat } from "node:fs/promises";
+import { randomBytes, randomUUID } from "node:crypto";
+import { mkdtemp, open, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -60,7 +60,6 @@ const COMPOSE_FILE = "compose.yaml";
 const LOGGING_COMPOSE_FILE = "compose.logging.yaml";
 const PODMAN_COMPOSE_FILE = "compose.podman.yaml";
 const INTERNAL_API_PORT = "3000";
-const BOOTSTRAP_SERVICE_KEY_PATH = "/var/lib/openclaw/bootstrap/initial-admin-service-key.json";
 const LABEL_COMPOSE_PROJECT = podmanSelected
   ? "io.podman.compose.project"
   : "com.docker.compose.project";
@@ -153,7 +152,23 @@ async function buildCli(context: TestContext) {
   owned.directory = directory;
   const binary = join(directory, "occ");
   await command("go", ["build", "-trimpath", "-o", binary, "./cmd/occ"]);
-  return { binary, directory, owned };
+  // Prepare inputs before Compose evaluates even a postgres-only command.
+  const adminPassword = `${engineBinary}-admin-${randomUUID()}`;
+  const serviceKey = `occ_${randomBytes(32).toString("base64url")}`;
+  const bootstrapInputs = {
+    OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: join(directory, "mount-admin-password"),
+    OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: join(directory, "mount-admin-service-key"),
+  };
+  // Only disposable mount copies may change owner; keep private host recovery inputs.
+  for (const [name, value] of Object.entries({
+    "admin-password-input": adminPassword,
+    "admin-service-key-input": serviceKey,
+    "mount-admin-password": adminPassword,
+    "mount-admin-service-key": serviceKey,
+  })) {
+    await writeFile(join(directory, name), value, { mode: 0o600, flag: "wx" });
+  }
+  return { binary, directory, owned, bootstrapInputs, adminPassword, serviceKey };
 }
 
 function assertNoSecretMaterial(value: unknown, secrets: readonly string[], description: string) {
@@ -406,64 +421,75 @@ function refusal(response: ApiResponse, status: number, code: ErrorCode, descrip
   return error;
 }
 
-async function copyBootstrapServiceKey({
+async function prepareLocalServiceKey({
   project,
   env,
-  outputDirectory,
-  secrets,
+  directory,
+  baseUrl,
+  adminPassword,
+  serviceKey,
 }: {
   project: string;
   env: NodeJS.ProcessEnv;
-  outputDirectory: string;
-  secrets: readonly string[];
+  directory: string;
+  baseUrl: string;
+  adminPassword: string;
+  serviceKey: string;
 }) {
-  const localFile = join(outputDirectory, "initial-admin-service-key.json");
-  const bootstrap = await composeServiceContainer(project, "bootstrap", env);
-  assert.equal(
-    hasMountDestination(bootstrap.observation, "/var/lib/openclaw/bootstrap"),
-    true,
-    "bootstrap service must mount the private bootstrap output volume",
-  );
-  assert.equal(
-    hasMountDestination(
-      (await composeServiceContainer(project, "controller", env)).observation,
-      "/var/lib/openclaw/bootstrap",
-    ),
-    false,
-    "controller service must not mount the private bootstrap output volume",
-  );
-  const bootstrapId = bootstrap.id;
-  await docker(["cp", `${bootstrapId}:${BOOTSTRAP_SERVICE_KEY_PATH}`, localFile], {
-    env,
-    timeoutMs: 60_000,
-    secrets,
-  });
-  // Verify the mode on the same copied file that supplies the CLI credential.
-  const copiedKey = await open(localFile, "r");
-  let output: unknown;
-  try {
-    const outputStatus = await copiedKey.stat();
-    assert.equal(outputStatus.mode & 0o777, 0o600);
-    output = parseJson(await copiedKey.readFile("utf8"), "Bootstrap service-key file");
-  } finally {
-    await copiedKey.close();
+  // Ownership preparation must not change or expose the host's recovery inputs.
+  for (const [name, expected] of Object.entries({
+    "admin-password-input": adminPassword,
+    "admin-service-key-input": serviceKey,
+  })) {
+    const input = await open(join(directory, name), "r");
+    try {
+      const info = await input.stat();
+      assert.equal(info.uid, process.getuid?.());
+      assert.equal(info.mode & 0o777, 0o600);
+      assert.equal((await input.readFile("utf8")) === expected, true);
+    } finally {
+      await input.close();
+    }
   }
-  const record = asRecord(output);
-  assert.ok(record, "bootstrap service-key output must be JSON");
-  const data = asRecord(record.data);
-  const installationId = asRecord(record.meta)?.installationId;
-  const key = data?.key;
-  assert.ok(typeof installationId === "string", "bootstrap output requires an Installation ID");
-  assert.ok(typeof key === "string", "bootstrap output requires a service key");
-  assert.match(key, /^occ_/);
-  assert.equal(typeof data?.id, "string");
-  const servicePrincipalId = data?.servicePrincipalId;
-  assert.ok(
-    typeof servicePrincipalId === "string",
-    "bootstrap output requires a ServicePrincipal ID",
+  const inputPaths = ["/run/secrets/admin-password", "/run/secrets/admin-service-key"];
+  const bootstrap = await composeServiceContainer(project, "bootstrap", env);
+  const bootstrapMounts = inspectedObjects(bootstrap.observation.Mounts, "Bootstrap mounts");
+  for (const path of inputPaths) {
+    const mount = bootstrapMounts.find((mount) => mount.Destination === path);
+    assert.ok(mount, "bootstrap must mount each credential input");
+    assert.equal(mount.RW, false, "bootstrap credential inputs must be read-only");
+  }
+  for (const service of ["bootstrap", "migrate", "controller", "worker"]) {
+    const { observation } = await composeServiceContainer(project, service, env);
+    assert.equal(hasMountDestination(observation, "/var/lib/openclaw/bootstrap"), false);
+    if (service !== "bootstrap") {
+      for (const path of inputPaths) {
+        assert.equal(hasMountDestination(observation, path), false);
+      }
+    }
+  }
+  // The local file carries only the precreated key, not invented issuance metadata.
+  const localFile = join(directory, "admin-service-key.json");
+  await writeFile(localFile, JSON.stringify({ data: { key: serviceKey } }), {
+    mode: 0o600,
+    flag: "wx",
+  });
+  assert.equal((await stat(localFile)).mode & 0o777, 0o600);
+  const installation = success(
+    await apiClient(baseUrl, serviceKey)("GET", "/installation"),
+    200,
+    InstallationResponse,
   );
-  assert.equal(data?.name, "bootstrap-admin");
-  return { localFile, installationId, key, servicePrincipalId };
+  const principal = asRecord(
+    await postgresJson(
+      project,
+      env,
+      "SELECT json_build_object('id', reference_id)::text FROM occ.apikey WHERE name = 'bootstrap-admin'",
+      [serviceKey],
+    ),
+  );
+  const servicePrincipalId = nonempty(principal?.id, "Bootstrap ServicePrincipal ID");
+  return { localFile, installationId: installation.data.id, servicePrincipalId };
 }
 
 async function runOcc({
@@ -775,10 +801,11 @@ async function assertHarnessAuthRefusal(
 }
 
 export async function composeCleanupCase(context: TestContext): Promise<void> {
-  const { binary, owned } = await buildCli(context);
+  const { binary, owned, bootstrapInputs } = await buildCli(context);
   const project = `oce-cleanup-${randomUUID().replaceAll("-", "").slice(0, 18)}`;
   const env: NodeJS.ProcessEnv = {
     ...composeEnvironment(),
+    ...bootstrapInputs,
     COMPOSE_PROJECT_NAME: project,
     OCC_POSTGRES_PORT: String(await availablePort()),
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
@@ -828,7 +855,14 @@ export async function composeCleanupCase(context: TestContext): Promise<void> {
 }
 
 export async function composeDevelopmentCase(context: TestContext): Promise<void> {
-  const { binary, directory: bootstrapDirectory, owned } = await buildCli(context);
+  const {
+    binary,
+    directory: bootstrapDirectory,
+    owned,
+    bootstrapInputs,
+    adminPassword,
+    serviceKey,
+  } = await buildCli(context);
   assert.equal(
     podmanSelected &&
       (process.env.OCC_TEST_OTEL_LOGS === "1" ||
@@ -868,7 +902,6 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
   const namespaceIds = new Set<string>();
   const custody: { serviceKey?: string } = {};
   const adminEmail = `admin-${project}@example.test`;
-  const adminPassword = `${engineBinary}-admin-${randomUUID()}`;
   const baseUrl = `http://127.0.0.1:${apiPort}`;
   const otelLogs = createOtelLogObservation(context, {
     description: `${engineName} Compose development OTel logs`,
@@ -881,6 +914,7 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
   };
   const env: NodeJS.ProcessEnv = {
     ...composeEnvironment(),
+    ...bootstrapInputs,
     COMPOSE_PROJECT_NAME: project,
     NODE_BASE_IMAGE: process.env.NODE_BASE_IMAGE ?? "docker.io/library/node:24-bookworm",
     NODE_ENV: "development",
@@ -905,7 +939,6 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
       pathname: "/openclaw_enterprise",
     }),
     OPENCLAW_DEV_EMAIL: adminEmail,
-    OPENCLAW_DEV_PASSWORD: adminPassword,
     OPENCLAW_DEV_INSTALLATION_NAME: `OpenClaw ${engineName} Compute ${project}`,
     OCC_DOCKER_RUNTIME_IMAGE: runtimeImage,
     OCC_DOCKER_GATEWAY_IMAGE: gatewayImage,
@@ -926,7 +959,7 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
   };
 
   env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = await composeSubnet(env);
-  const composeSecrets = [adminPassword];
+  const composeSecrets = [adminPassword, serviceKey];
   owned.teardownProject = async () => {
     const cleanupServiceKey = custody.serviceKey;
     const cleanupNamespaceIds = new Set(namespaceIds);
@@ -962,6 +995,23 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
         secrets: composeSecrets,
       });
     }
+    // Use the launcher's actual-reader UID preparation even when Compose starts directly.
+    await command(
+      binary,
+      [
+        "dev",
+        "prepare-bootstrap-mounts",
+        "--directory",
+        bootstrapDirectory,
+        "--",
+        ...composeArguments(project, "up", [], composeOptions).slice(1, -1),
+      ],
+      {
+        env: { ...env, OCC_DEVELOPMENT_CONTAINER_ENGINE: engineBinary },
+        timeoutMs: 600_000,
+        secrets: composeSecrets,
+      },
+    );
     await docker(
       composeArguments(
         project,
@@ -999,13 +1049,14 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
   const {
     localFile: serviceKeyFile,
     installationId,
-    key: serviceKey,
     servicePrincipalId: bootstrapServicePrincipalId,
-  } = await copyBootstrapServiceKey({
+  } = await prepareLocalServiceKey({
     project,
     env,
-    outputDirectory: bootstrapDirectory,
-    secrets: composeSecrets,
+    directory: bootstrapDirectory,
+    baseUrl,
+    adminPassword,
+    serviceKey,
   });
   custody.serviceKey = serviceKey;
   assert.equal(installationId.startsWith("ins_"), true);
@@ -1027,7 +1078,7 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
   await assert.rejects(
     stat(serviceKeyFile),
     (error) => error instanceof Error && "code" in error && error.code === "ENOENT",
-    "temporary local service-key copy must be removed after CLI use",
+    "temporary local CLI key file must be removed after CLI use",
   );
 
   const request = apiClient(baseUrl, serviceKey);

@@ -13,7 +13,7 @@ import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sa
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { selfSigned } from "../helpers/certificates.ts";
 import { observeOpenShellPermissionRefusal } from "../helpers/openshell-permission-diagnostic.ts";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
 
 const controllerRequire = createRequire(
@@ -343,9 +343,9 @@ async function fixture(t: TestContext, options: Options = {}) {
   };
   const driver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
-        runtimeClassName: "openshell-sandbox",
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",
@@ -416,6 +416,7 @@ async function fixture(t: TestContext, options: Options = {}) {
           image: "runtime@sha256:" + "a".repeat(64),
           command: ["codex", "app-server"],
           workspaceMounts: [],
+          retainedDirectories: [],
           environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
           files: [],
           credentialAttachments: [],

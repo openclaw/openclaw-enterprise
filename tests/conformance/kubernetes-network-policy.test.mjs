@@ -8,7 +8,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { networkPolicySpecToJson } from "../../apps/controller/src/drivers/kubernetes/network-policy.ts";
 import { sha256Hex } from "../../packages/utils/src/hashing.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),

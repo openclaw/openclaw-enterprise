@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { prepareFile } from "../../scripts/ci/prepare.mjs";
+import { prepareFile } from "../../scripts/ci/prepare.ts";
 import { authorizedPrincipal } from "./development-iam-state.ts";
 import {
   createBackendWorkerDrivers,
@@ -306,6 +306,7 @@ export function createWorkerRevisionFixtures(
    *   leaseDurationMs?: number,
    *   maxAttempts?: number,
    *   onHealthy?: ControllerWorkerOptions["onHealthy"],
+   *   healthClock?: ControllerWorkerOptions["healthClock"],
    *   onProgress?: ControllerWorkerOptions["onProgress"],
    *   metrics?: ControllerWorkerOptions["metrics"],
    *   repoDriver?: RepositoryWorkerDriver,
@@ -322,6 +323,7 @@ export function createWorkerRevisionFixtures(
       leaseDurationMs = 30_000,
       maxAttempts = 5,
       onHealthy,
+      healthClock,
       onProgress,
       metrics,
       repoDriver,
@@ -677,6 +679,7 @@ export function createWorkerRevisionFixtures(
         ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
         createdAt: new Date(Date.now() + controllerSkewMs).toISOString(),
       };
+      let proxyAdmission;
       if (protectedRepositoryDriver) {
         const sandbox = protectedRepositoryDriver.require("sandbox");
         await state.transact(async (unit) => {
@@ -708,7 +711,8 @@ export function createWorkerRevisionFixtures(
             plan({ ...auth, sourceId: "unselected" }),
             /created or adopted under the Proxy/,
           );
-          const egressPlan = await plan(auth);
+          proxyAdmission = await plan(auth);
+          const egressPlan = proxyAdmission.plan;
           assert.deepEqual(egressPlan.harnessCredentialSource, auth);
           assert.deepEqual(
             egressPlan.routes,
@@ -752,6 +756,7 @@ export function createWorkerRevisionFixtures(
         if (runtimeInputs !== undefined) {
           candidate.compute = { ...candidate.compute, runtimeInputs };
         }
+        proxyAdmission?.assertProvidersCurrent();
         admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,
@@ -870,6 +875,7 @@ export function createWorkerRevisionFixtures(
         leaseDurationMs,
         maxAttempts,
         onHealthy,
+        ...(healthClock === undefined ? {} : { healthClock }),
         onProgress,
         ...(drivers === undefined ? { computeDriver } : { drivers }),
         ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),

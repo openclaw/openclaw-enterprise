@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-12
-last_updated_session: authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97
+updated: 2026-11-19
+last_updated_session: authoring-run/0cdd91e7-47ea-4661-a124-c23fd4479805
 ---
 
 # Agent Plugin Deployment Flow
@@ -135,10 +135,28 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the Configuration, Driver and selections. Before cutover the worker checks the pinned Driver against the Harness. Gateway and worker each verify their assets from Compute’s package descriptors.
+At save and deployment, the OpenClaw Driver's
+[credential validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts)
+passes the admitted plugin identity and connections to
+[`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts), then
+checks the returned connections against OCC-authorized sources. The description
+lists required network access; each connection identifies only requests eligible
+for credential injection. Other requests remain network-only, even on the same
+host. Discovery may be public or authenticated.
 
-- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** An account lets the worker advertise selected tools. The Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return structured results or policy denials through the Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces exact tool names and rejects overlapping routes.
+OCC snapshots the Configuration, Driver and selections. The worker checks
+Driver–Harness compatibility before cutover. Gateway and worker verify artifacts
+against Compute’s package descriptors.
+
+- **CLI packages.** The Gateway loads skills; the Harness runs the pinned executable.
+  For Google, the [OpenShell Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts)
+  checks the guard version before attachment, and the signed guard enforces the
+  source scope and reviewed requests.
+- **Hosted MCP packages.** The worker advertises selected tools. Gateway grants
+  same-node execution; Gateway hooks and cross-node calls return structured
+  results or policy denials through Code Mode. The credential Driver attaches
+  the source, Sandbox supplies its placeholder, and OpenShell scopes requests,
+  enforces exact tool names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
 Withdrawal removes credential injection. Recovery preserves other attachments.
@@ -193,8 +211,10 @@ before startup.
 Dedicated launchers capture the [Gateway tool policy](../reference/configuration.md#gateway-tool-policy)
 from the saved Agent revision before plugin grants. Startup and peer respawn
 enforce it; failures keep the Gateway unready. Changes require deployment replacement
-after affected old work ends. Human permissions stay unchanged. An embedded Gateway
-applies a policy that the Configuration sets without this composition, so Compute checks
+after affected work ends. Human permissions stay unchanged. The default adds
+Gateway-side read-only `skills_search` and `skills_read`; dedicated Codex reads
+pinned Skill Library skills by name through `skills_read`, without Gateway paths.
+Embedded Gateways apply a Configuration-set policy without this composition; Compute checks
 it at Configuration save and deployment admission with the same rules
 (`gateway-tool-policy.ts:validateGatewayToolPolicy`), not on maintenance passes.
 
@@ -241,9 +261,8 @@ approval-only or MCP-policy-only entries inherit the verified plugin default-off
 setting. Source/account-disabled plugins remain disabled.
 
 `runtime-entrypoints.ts:startAuthenticatedCodex` passes the admitted Harness model,
-without its provider prefix, to the app-server after the authentication probe
-succeeds. Native configuration readback therefore exposes the model used for
-startup policy validation.
+without its provider prefix, after the authentication probe succeeds; startup
+policy validation reads it back.
 
 `runtime-entrypoints.ts:verifyCodexReviewerConfiguration` checks app/link reviewers
 and `configRequirements/read`. Forbidden reviewers, incompatible automatic-review
@@ -369,6 +388,12 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)
+
+- 2026-11-17 21:20: Check guard compatibility before attachment. (01a1eb01-409e-7270-a471-5a104ce7b468 - a5ebff48cd9cb180ea21ecd9740a034fde254864)
+
+- 2026-11-17 19:48: Trace OpenClaw deployment requirements through account validation. (01a1eb01-409e-7270-a471-5a104ce7b468 - 23b54e2855d0a8d60b2168588fe8c7d7f06e9b36)
+
 - 2026-11-12 11:28: Accept omitted hosted executor metadata. (authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
 
 - 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
@@ -378,20 +403,5 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 - 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
 
 - 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
-
-- 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
-
-- 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
-
-- 2026-11-02 23:59: Discover live MCP tools. (authoring-run/f6c72b81-af00-4c3d-9758-96b1d6ca64b1 - 6f95625048a1d20ebb5cc6e26368192b3300849c)
-
-- 2026-11-02 23:45: Describe discovery and deployment from a managed MCP release. (authoring-run/39268f6b-739c-4af1-82dd-3ecfe85d6ffa - 5d58446a2a6e200510da738698ef832612aab50d)
-
-- 2026-11-02 22:29: Trace the Slack account and tool selection through dedicated Agent deployment. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
-
-- 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
-- 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
-
-- 2026-10-28 14:40: Trace worker installation and discovery of Slack MCP tools. (authoring-run/55da35a7-f123-436e-9c32-65036b85894d - 0ba3c0fd5a26a82dba6551f04b74a697c5324fdd)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

@@ -58,7 +58,7 @@ opaque handle. Poll returns `pending` or `ready` only, never issuer credentials.
 The Refresh Driver performs the exchange, configures gateway-owned refresh, and
 confirms a usable token before reporting `ready`.
 
-OCC fences polling with Secret compare-and-swap and binds the session to its actor,
+OCC serializes polls with conditional updates to the session and binds it to its actor,
 source, and both Gateway and Refresh Driver IDs. It rechecks those bindings and
 authority after external completion. A changed selection or uncertain exchange
 requires reconnecting; it never replays the exchange. Closing the session removes

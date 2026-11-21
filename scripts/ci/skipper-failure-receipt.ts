@@ -44,6 +44,7 @@ type Checkpoint =
   | ["skipper_http_status", number]
   | ["skipper_gateway_category", string]
   | ["skipper_gateway_transport_cause", string]
+  | ["skipper_gateway_fetch_elapsed_ms", number]
   | ["skipper_runtime_signal", string]
   | ["skipper_model_request_observation", string]
   | ["skipper_model_fixture_selected_terminal_success", true]
@@ -135,8 +136,14 @@ export async function recordSkipperTestFailure(
     }
   }
   if (diagnostic?.operation === "gateway-chat") {
-    const { gatewayChatPhase, httpStatus, gatewayCategory, runtimeSignal, gatewayTransportCause } =
-      diagnostic;
+    const {
+      gatewayChatPhase,
+      httpStatus,
+      gatewayCategory,
+      runtimeSignal,
+      gatewayTransportCause,
+      gatewayFetchElapsedMs,
+    } = diagnostic;
     if (diagnostic.modelFixtureSelectedTerminalSuccess) {
       await recordSkipperCheckpoint("skipper_model_fixture_selected_terminal_success", true);
     }
@@ -151,6 +158,9 @@ export async function recordSkipperTestFailure(
     }
     if (gatewayTransportCause !== undefined) {
       await recordSkipperCheckpoint("skipper_gateway_transport_cause", gatewayTransportCause);
+    }
+    if (gatewayFetchElapsedMs !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_fetch_elapsed_ms", gatewayFetchElapsedMs);
     }
     if (gatewayCategory !== undefined) {
       await recordSkipperCheckpoint("skipper_gateway_category", gatewayCategory);
@@ -201,6 +211,8 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
     const testOperation = selected(skipperOperations, process.env.SKIPPER_TEST_OPERATION);
     const statusText = process.env.SKIPPER_HTTP_STATUS;
     const status = Number(statusText);
+    const elapsedText = process.env.SKIPPER_GATEWAY_FETCH_ELAPSED_MS;
+    const elapsed = Number(elapsedText);
     const gatewayChat =
       lastStage === "selected-test" && testOperation === "gateway-chat"
         ? skipperOperationDiagnostic({
@@ -211,6 +223,7 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
             httpStatus: String(status) === statusText ? status : undefined,
             gatewayCategory: process.env.SKIPPER_GATEWAY_CATEGORY,
             gatewayTransportCause: process.env.SKIPPER_GATEWAY_TRANSPORT_CAUSE,
+            gatewayFetchElapsedMs: String(elapsed) === elapsedText ? elapsed : undefined,
             runtimeSignal: process.env.SKIPPER_RUNTIME_SIGNAL,
             modelFixtureSelectedTerminalSuccess:
               process.env.SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS === "true",
@@ -264,6 +277,9 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
               : {}),
             ...(gatewayChat?.gatewayTransportCause
               ? { gatewayTransportCause: gatewayChat.gatewayTransportCause }
+              : {}),
+            ...(gatewayChat?.gatewayFetchElapsedMs !== undefined
+              ? { gatewayFetchElapsedMs: gatewayChat.gatewayFetchElapsedMs }
               : {}),
             ...(gatewayChat?.runtimeSignal ? { runtimeSignal: gatewayChat.runtimeSignal } : {}),
             ...(gatewayChat?.modelFixtureSelectedTerminalSuccess

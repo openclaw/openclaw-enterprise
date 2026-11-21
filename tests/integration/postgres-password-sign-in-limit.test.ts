@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
 import { passwordFailureBudget } from "../../apps/controller/src/auth/admission.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   consoleOrigin as origin,
   defaultInstallSettings,
@@ -21,7 +21,7 @@ import {
   type InjectedResponse,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { scryptPasswordHasher } from "../helpers/password-hasher.mjs";
+import { scryptPasswordHasher } from "../helpers/password-hasher.ts";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.ts";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import {
   consoleOrigin as origin,
   currentSession,
@@ -10,7 +10,7 @@ import {
   fixtureOidcIssuer,
   memoryLogger,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";

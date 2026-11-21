@@ -4,7 +4,7 @@ import type { Pool } from "pg";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   assertConsoleSignIn,
   clientAddresses,
@@ -89,6 +89,69 @@ test(
     assert.equal(recovery.statusCode, 200, recovery.body);
     assert.equal(recordData(recovery.json<unknown>()).userId, admin.id);
     const target = await readAccount(app, limitedHeaders, admin.id);
+
+    await t.test("same-origin browser fetch reads guarded account and recovery state", async () => {
+      // Chromium omits Origin on these fetches. The same cookie can reach other hosts,
+      // so match the browser request context to the configured Console authority.
+      const host = new URL(origin).host;
+      const cookie = adminHeaders.cookie;
+      const browserHeaders = {
+        host,
+        cookie,
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+      };
+      const accountPath = `/api/auth/accounts/${admin.id}`;
+      for (const [url, expected] of [
+        [accountPath, target],
+        ["/api/auth/recovery", recordData(recovery.json<unknown>())],
+      ] as const) {
+        for (const [label, headers] of [
+          ["missing fetch metadata", { host, cookie }],
+          ["same-site fetch", { ...browserHeaders, "sec-fetch-site": "same-site" }],
+          ["cross-site fetch", { ...browserHeaders, "sec-fetch-site": "cross-site" }],
+          [
+            "document navigation",
+            { ...browserHeaders, "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+          ],
+          ["foreign Host", { ...browserHeaders, host: "other.example.test" }],
+          [
+            "foreign Host despite a forwarded Console host",
+            { ...browserHeaders, host: "other.example.test", "x-forwarded-host": host },
+          ],
+          ["explicit foreign Origin", { ...browserHeaders, origin: "https://other.example.test" }],
+        ] as const) {
+          assertApiError(await app.inject({ url, headers }), 403, "FORBIDDEN", label);
+        }
+        const response = await app.inject({ url, headers: browserHeaders });
+        assert.equal(response.statusCode, 200, `${url}: ${response.body}`);
+        assert.deepEqual(recordData(response.json<unknown>()), expected);
+        assert.equal(response.headers["cache-control"], "no-store");
+      }
+
+      const memberHeaders = await signedInHeaders(app, origin, member, address());
+      assertApiError(
+        await app.inject({
+          url: accountPath,
+          headers: { ...browserHeaders, cookie: memberHeaders.cookie },
+        }),
+        403,
+        "FORBIDDEN",
+        "a same-origin browser still needs an Installation administrator session",
+      );
+      assertApiError(
+        await app.inject({
+          method: "POST",
+          url: `${accountPath}/revoke`,
+          headers: browserHeaders,
+          payload: { expectedVersion: target.version },
+        }),
+        403,
+        "FORBIDDEN",
+        "account mutations still need the exact Origin",
+      );
+    });
 
     const attached = await post(limitedHeaders, `/api/auth/accounts/${admin.id}/providers/oidc`, {
       subject: takeoverSubject,

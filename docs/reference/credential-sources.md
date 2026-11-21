@@ -137,7 +137,7 @@ For **source-backed Harness authentication**, set `harnessAuth` to
 Gateway source whose catalog type supports Harness authentication. Naming an
 unlisted source, or removing it while `harnessAuth` still names it, fails after the grant checks with `400`: "The Harness credential source must be listed in the Agent's credentialSources." When replacing a binding after a Driver change,
 update `harnessAuth` if it names the old source.
-[Binding and deployment trace](../flows/credential-source-lifecycle.md#4-bind-the-source-to-an-agent)
+[Binding and deployment trace](../flows/credential-source-lifecycle.md#3-bind-and-admit-an-agent-revision)
 
 | What the workload may know       | What it can do with it                                                                                    |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -158,7 +158,7 @@ Both Dedicated Harnesses share provider and Secret controls. API-key provisionin
 
 For an Agent without repositories on the bundled Git-only Proxy, bind the matching
 ready static Harness model source from the selected Gateway as the Agent’s only
-credential source. Kubernetes [rechecks its lifecycle before release](../flows/credential-source-lifecycle.md#6-resolve-the-source-at-dispatch).
+credential source. Kubernetes [rechecks its lifecycle before release](../flows/credential-source-lifecycle.md#4-resolve-the-source-at-dispatch).
 
 ## Update a source
 

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -389,6 +390,41 @@ func TestOpenShellImportInterruptedTag(t *testing.T) {
 	}
 	if !slices.Contains(commands(), "docker image rm "+stage) {
 		t.Fatal("recovery did not use the exact staging name")
+	}
+}
+
+func TestPodmanImageInspectionCacheMiss(t *testing.T) {
+	const name = "registry.example/controller:v0.5.2"
+	const pinned = name + "@" + profileTestDigest
+	const canonical = "registry.example/controller@" + profileTestDigest
+	for _, test := range []struct {
+		name, engine, query, resolved, prefix string
+		code                                  int
+		missing                               bool
+	}{
+		{"tag", "podman", name, name, "", 125, true},
+		{"tag-and-digest", "podman", pinned, canonical, "", 125, true},
+		{"wrong-object", "podman", pinned, canonical + "-foreign", "", 125, false},
+		{"connection-error", "podman", pinned, canonical, "Cannot connect to Podman\n", 125, false},
+		{"wrong-exit-code", "podman", pinned, canonical, "", 1, false},
+		{"wrong-engine", "docker", pinned, canonical, "", 125, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Podman 6.0.2 reports an uncached image with this complete diagnostic
+			// and exit 125. Other failures must not authorize a pull or tag write.
+			diagnostic := test.prefix + "Error: unable to inspect \"" + test.query + "\": failed to find image " + test.query + ": " + test.resolved + ": image not known"
+			fakeProfileCommands(t, map[string]string{test.engine: `"image inspect ` + test.query + `") printf '[]\n'; printf '%s\n' ` + shellQuote(diagnostic) + ` >&2; exit ` + strconv.Itoa(test.code) + ` ;;`})
+			r := newRunner(Options{})
+			r.engine = test.engine
+			image, err := r.inspectLocalImage(context.Background(), test.query, "")
+			if test.missing {
+				if err != nil || image != nil {
+					t.Fatalf("cache miss was not recognized: image=%v error=%v", image, err)
+				}
+			} else if err == nil {
+				t.Fatal("ambiguous engine failure was accepted as a cache miss")
+			}
+		})
 	}
 }
 

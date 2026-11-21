@@ -88,9 +88,16 @@ spec:
             items:
               - {key: ca.crt, path: ca.crt}
         {{- end }}
-        - name: bootstrap-password-output
-          persistentVolumeClaim:
-            claimName: {{ .Values.bootstrap.password.claimName | quote }}
+        {{- if .Release.IsInstall }}
+        - name: bootstrap-credentials
+          secret:
+            secretName: {{ .Values.bootstrap.credentials.secretName | quote }}
+            items:
+              - key: {{ .Values.bootstrap.credentials.passwordKey | quote }}
+                path: admin-password
+              - key: {{ .Values.bootstrap.credentials.serviceKeyKey | quote }}
+                path: admin-service-key
+        {{- end }}
         {{- if .Values.database.caSecretName }}
         - name: database-ca
           secret:
@@ -149,7 +156,9 @@ spec:
         - name: migration
           image: {{ .Values.images.controller | quote }}
           args:
-            - scripts/migrate-production.mjs
+            - -e
+            - {{ required "chart is missing files/migrate-selected-image.cjs" (.Files.Get "files/migrate-selected-image.cjs") | quote }}
+            - --
             {{- if .Release.IsInstall }}
             - --expect-empty
             {{- else if eq .Values.database.upgradeMigration "separate" }}
@@ -172,7 +181,7 @@ spec:
       containers:
         - name: bootstrap
           image: {{ .Values.images.controller | quote }}
-          args: ["scripts/bootstrap-installation.mjs"]
+          args: ["scripts/bootstrap-installation.mjs"{{ if .Release.IsInstall }}, "--require-fresh"{{ end }}]
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}
           resources:
@@ -188,18 +197,25 @@ spec:
               value: {{ .Values.agentNativeAdmin.domain | quote }}
             - name: OCC_BOOTSTRAP_ADMIN_EMAIL
               value: {{ .Values.bootstrap.adminEmail | quote }}
-            - name: OCC_BOOTSTRAP_PASSWORD_FILE
-              value: {{ printf "%s/%s" .Values.bootstrap.password.mountPath .Values.bootstrap.password.fileName | quote }}
-            - name: OCC_BOOTSTRAP_SERVICE_KEY_FILE
-              value: {{ printf "%s/%s" .Values.bootstrap.password.mountPath .Values.bootstrap.serviceKey.fileName | quote }}
+            {{- if .Release.IsInstall }}
+            - name: OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE
+              value: /run/openclaw-bootstrap/admin-password
+            - name: OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE
+              value: /run/openclaw-bootstrap/admin-service-key
+            {{- end }}
             - name: OCC_BOOTSTRAP_INSTALLATION_NAME
               value: {{ .Values.installation.name | quote }}
+          {{- if or .Release.IsInstall .Values.database.caSecretName }}
           volumeMounts:
-            - name: bootstrap-password-output
-              mountPath: {{ .Values.bootstrap.password.mountPath | quote }}
+            {{- if .Release.IsInstall }}
+            - name: bootstrap-credentials
+              mountPath: /run/openclaw-bootstrap
+              readOnly: true
+            {{- end }}
             {{- if .Values.database.caSecretName }}
             - name: database-ca
               mountPath: {{ .Values.database.caMountPath | quote }}
               readOnly: true
             {{- end }}
+          {{- end }}
 {{- end }}
