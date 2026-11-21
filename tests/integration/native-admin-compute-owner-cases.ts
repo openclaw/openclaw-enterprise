@@ -179,6 +179,12 @@ export function registerNativeAdminComputeOwnerCases(
         assert.equal(errorRecord(status.json<unknown>()).code, "DEPENDENCY_UNAVAILABLE");
         // Agent-host admission retains its existing non-disclosing refusal envelope.
         assert.equal(proxy.statusCode, 403);
+        const requestId = proxy.headers["x-request-id"];
+        assert.ok(typeof requestId === "string" && requestId.length > 0);
+        assert.deepEqual(proxy.json<unknown>(), {
+          error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
+          meta: { requestId },
+        });
         assert.deepEqual(calls, { endpoint: 0, key: 0 });
         assert.equal(upstream.requests.length, 0);
         // One operator line names both owners and the recovery; no endpoint or key.

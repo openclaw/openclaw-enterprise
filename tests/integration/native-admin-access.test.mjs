@@ -42,12 +42,14 @@ import {
   registerNativeAdminRevisionDecodingCase,
 } from "./native-admin-browser-access-cases.ts";
 import {
+  errorRecord,
   registerNativeAdminAuthorityStatusCase,
   registerNativeAdminExplicitStopCase,
   registerNativeAdminPresetCase,
   registerNativeAdminProxyCase,
 } from "./native-admin-authority-cases.ts";
 import { registerNativeAdminComputeOwnerCases } from "./native-admin-compute-owner-cases.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
 
 const nativeGatewayApiKey = `native-gateway-private-key-${randomUUID()}`;
 
@@ -71,16 +73,18 @@ function nativeAdminHarnessConfiguration(nativeOrigin) {
     nativeOrigin,
   );
   // Preserve read/write device coverage: the machine identity supplies admin.
-  configuration.gateway.auth.trustedProxy.deviceAutoApprove = {
-    enabled: true,
-    scopes: ["operator.read", "operator.write"],
-  };
+  Object.assign(configuration.gateway.auth.trustedProxy, {
+    deviceAutoApprove: {
+      enabled: true,
+      scopes: ["operator.read", "operator.write"],
+    },
+  });
   return configuration;
 }
 
-/** @param {number} upstreamPort @param {{ exclusiveReplacement?: boolean | ((revision: import("../../packages/contracts/src/index.ts").AgentRevision) => boolean) | undefined }} [options] */
+/** @param {number} upstreamPort @param {{ exclusiveReplacement?: boolean | ((revision: import("../../packages/contracts/src/index.ts").AgentRevision) => boolean) }} [options] */
 function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
-  return createReadyComputeDriver("native-admin-compute", {
+  const driver = createReadyComputeDriver("native-admin-compute", {
     // Kubernetes dedicated revisions stop their predecessors before they start.
     ...(exclusiveReplacement
       ? {
@@ -89,8 +93,6 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
         }
       : {}),
     implementation: "native-admin-test-upstream",
-    // The HTTPS upstream is no OC Gateway, so this Compute applies no managed mode.
-    supportsGatewayManagedMode: undefined,
     validateHarnessAuth() {},
     /** @param {import("../../packages/contracts/src/index.ts").AgentRevision} revision */
     getGatewayEndpoint(revision) {
@@ -109,6 +111,9 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
       };
     },
   });
+  // The HTTPS upstream is no OC Gateway, so this Compute applies no managed mode.
+  const { supportsGatewayManagedMode: _managedMode, ...nativeDriver } = driver;
+  return nativeDriver;
 }
 
 /** @typedef {import("./native-admin-http-integrity-cases.ts").NativeAdminHttpObservations} NativeAdminHttpObservations */
@@ -346,6 +351,30 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
   };
 }
 
+/** @typedef {Omit<import("./native-admin-access-fixture.ts").ConsoleFixture, "controller"> & { readonly controller: unknown }} UncheckedControllerFixture */
+/** @typedef {UncheckedControllerFixture & { readonly controller: OpenClawController }} CheckedControllerFixture */
+
+/** @param {UncheckedControllerFixture} fixture @returns {asserts fixture is CheckedControllerFixture} */
+function installControllerCheck(fixture) {
+  const descriptor = Object.getOwnPropertyDescriptors(fixture).controller;
+  assert.ok(descriptor?.get, "the console fixture must expose its live controller getter");
+  const readController = descriptor.get;
+  Object.defineProperty(fixture, "controller", {
+    ...descriptor,
+    get() {
+      const controller = readController.call(fixture);
+      assert.ok(controller instanceof OpenClawController, "bootstrap must create a controller");
+      return controller;
+    },
+  });
+}
+
+/** @param {UncheckedControllerFixture} fixture @returns {CheckedControllerFixture} */
+function checkNativeAdminConsoleFixture(fixture) {
+  installControllerCheck(fixture);
+  return fixture;
+}
+
 /**
  * @param {import("node:test").TestContext} t
  * @param {{
@@ -365,12 +394,12 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
  */
 async function createNativeAdminFixture(t, options = {}) {
   const upstream = await startNativeHttpsUpstream(t, options.upstream);
-  const fixture = await createConsoleAppFixture(t, {
+  const rawFixture = await createConsoleAppFixture(t, {
     ...(options.state === undefined ? {} : { state: options.state }),
     publicOrigin: options.publicOrigin ?? publicOrigin,
     authBaseURL: options.authBaseURL ?? authBaseURL,
     development: options.development ?? { enabled: false },
-    auditSink: options.auditSink,
+    ...(options.auditSink === undefined ? {} : { auditSink: options.auditSink }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.recordOperations === undefined
       ? {}
@@ -382,10 +411,14 @@ async function createNativeAdminFixture(t, options = {}) {
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
     // The HTTPS upstream simulates the native admin endpoint; it is not an OC Gateway.
     agentGatewayManagedMode: false,
-    computeDriver: nativeComputeDriver(upstream.port, {
-      exclusiveReplacement: options.exclusiveReplacement,
-    }),
+    computeDriver: nativeComputeDriver(
+      upstream.port,
+      options.exclusiveReplacement === undefined
+        ? {}
+        : { exclusiveReplacement: options.exclusiveReplacement },
+    ),
   });
+  const fixture = checkNativeAdminConsoleFixture(rawFixture);
   return { fixture, upstream, ...(await completeNativeAdminFixture(fixture, options)) };
 }
 
@@ -437,7 +470,7 @@ async function assertSiblingStatusDenied(context, session, deniedText) {
     nativeStatus({ ...context, agent: sibling }, { session }),
   );
   assertApiError(response, 403, "FORBIDDEN");
-  assert.equal(response.body.error.message, deniedText(`Agent ${sibling.id}`));
+  assert.equal(errorRecord(response.body).message, deniedText(`Agent ${sibling.id}`));
   assert.deepEqual(denials, [{ action: "operate", kind: "agent", id: sibling.id }]);
 }
 
