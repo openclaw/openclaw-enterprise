@@ -24,11 +24,20 @@ not grant OCE Configuration, deployment, Secret or Agent stop permissions. The
 
 ## Direct grants and removal
 
-**Direct Agent grants** lists explicit bindings to this Agent and their Role
-permissions. It is not an effective-access report. **Remove binding** deletes
-only that binding and preserves Namespace discovery. Other grants, groups and
-Installation administration can still provide access; accounts, Roles and
-Agents are retained.
+**Direct Agent grants** groups explicit bindings to this Agent by subject. The
+policy lists contain Principal IDs, not account names. Service Principals,
+groups, and other identities appear separately from human Principals. Expand a
+row to see the full subject ID and each binding's Role, permissions, and ID.
+
+For a Principal, **Open Agent UI · administer** means a listed Role grants
+exact-Agent `administer`. Otherwise **Open chat · operate** means a listed Role
+grants exact-Agent `operate`. A Role name or read grant does not determine the
+label. A binding whose Role is not listed remains visible. These labels are not
+an effective-access report and do not confirm that the Agent UI is available.
+
+**Remove binding** deletes only the selected binding and preserves Namespace
+discovery. Other grants, groups, and Installation administration can still
+provide access; accounts, Roles, and Agents are retained.
 
 ## Failures and uncertain outcomes
 

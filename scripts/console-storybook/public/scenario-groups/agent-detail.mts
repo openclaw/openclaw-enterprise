@@ -16,6 +16,7 @@ import type { PluginFieldsOptions } from "../../../../apps/controller/src/consol
 import type { agentSaveGap } from "../../../../apps/controller/src/console/agents/list.mts";
 import type { StoryAction } from "../../story-action.mts";
 import type { createFixtureFetch } from "../preview-rules.mts";
+import type { installFixture } from "../fixtures.mts";
 import type { servePluginDiscovery } from "../plugin-discovery-fixture.mts";
 import { click } from "../create-agent-form-data.mts";
 import {
@@ -43,6 +44,7 @@ type AgentDetailScenario = {
   gap?: string;
   actions?: StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
+  accessPolicy?: NonNullable<Parameters<typeof installFixture>[0]["accessPolicy"]>;
   nextStory?: string;
   deployed?: true;
   auth?: "oauth" | "codex_pat" | "api-source" | null;
@@ -134,6 +136,37 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const rosterNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
+  const rosterAgentId = "agt_00000000-0000-4000-8000-000000000001";
+  const rosterRoles = [
+    { name: "Research support", actions: ["read"] },
+    { name: "Research chat", actions: ["operate"] },
+    { name: "Agent native administration", actions: ["read", "administer"] },
+  ] as const;
+  const rosterRole = (index: number) => `role_7e000000-0000-4000-8000-00000000000${index}`;
+  const roles = rosterRoles.map(({ name, actions }, index) => ({
+    id: rosterRole(index + 1),
+    namespaceId: rosterNamespaceId,
+    name,
+    permissions: actions.map((action) => ({ action, resourceKind: "agent" as const })),
+  }));
+  const chatPrincipal = "prn_49a93c18-631e-40ad-99c4-e8443e9c3b6e";
+  const subjects = [
+    [chatPrincipal, 1],
+    [chatPrincipal, 2],
+    ["prn_7b422ce0-028e-46b2-aec2-f59a1340ae0c", 3],
+    ["prn_05d55728-7dc3-45c0-856c-8f2dc196db1f", 1],
+    ["spn_2faa7861-3d15-4e44-8f25-85917c574c9d", 1],
+  ] as const;
+  const bindings = subjects.map(([subjectId, role], index) => ({
+    id: `binding_26b00000-0000-4000-8000-00000000000${index + 1}`,
+    namespaceId: rosterNamespaceId,
+    subjectKind: "identity" as const,
+    subjectId,
+    roleId: rosterRole(role),
+    resourceKind: "agent" as const,
+    resourceId: rosterAgentId,
+  }));
   const newerDeployment: AgentRevisionSummaryWire = {
     id: "rev_00000000-0000-4000-8000-000000000008",
     namespaceId: "ns_00000000-0000-4000-8000-000000000001",
@@ -554,7 +587,36 @@ export function createAgentDetailScenarios({
           "Enter prn_person-demo as the existing Principal ID.",
           "Review the native-access disclosure and acknowledge it.",
           "Tab to Share Agent, press Enter once, and confirm focus remains on Share Agent when Agent access is shared.",
-          "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
+          "Expand the Principal row. Select Remove binding on the direct Agent binding to remove it immediately; Namespace discovery remains.",
+        ],
+      },
+      agentDirectGrantRoster: {
+        group: "Pages/Agent detail",
+        name: "Direct Agent grant roster",
+        path: `${draft}&tab=access`,
+        accessPolicy: { roles, bindings },
+        description:
+          "Inspect existing direct grants without looking up accounts or calculating effective access.",
+        steps: [
+          "Compare the Principal with separate read and operate bindings to the one with administer.",
+          "Open a row to see the full ID, role permissions, and the action for each binding.",
+          "The read-only Principal has no launch label. Account names are not available in the policy response, and the Service Principal is not listed as a person.",
+          "Remove only the Research support binding from the Principal with two bindings. The Open chat label and the Research chat binding remain.",
+        ],
+        gap: "Simulated policy state and writes; no deployed Agent, account directory, or effective access check.",
+      },
+      agentDirectGrantRoleUnavailable: {
+        group: "Pages/Agent detail",
+        name: "Direct Agent grant with an unavailable Role",
+        path: `${draft}&tab=access`,
+        accessPolicy: { roles, bindings },
+        // A new Role and binding can appear between the two sequential policy reads.
+        rules: [{ method: "GET", suffix: "/iam/roles", data: roles.slice(0, 2), once: true }],
+        description:
+          "A binding whose Role was not listed stays visible without a guessed browser grant. Refresh sharing reads the current Role and restores the label.",
+        steps: [
+          "Expand the Principal marked Browser grant unknown. Check that the Role and binding IDs remain visible.",
+          "Select Refresh sharing. The row shows Open Agent UI · administer when the Role is returned.",
         ],
       },
       agentSharingGranted: {
@@ -630,7 +692,11 @@ export function createAgentDetailScenarios({
         group: "Pages/Agent detail",
         name: "Direct Agent grant removed",
         path: `${draft}&tab=access`,
-        actions: [...shareExistingPerson, click("Remove binding")],
+        actions: [
+          ...shareExistingPerson,
+          { selector: ".agent-access-roster summary", click: true },
+          click("Remove binding"),
+        ],
         description:
           "The selected direct Agent binding was removed. Namespace discovery and unrelated grants are preserved.",
       },

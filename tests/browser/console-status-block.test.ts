@@ -317,6 +317,7 @@ test("Share Agent refusals", async (t) => {
       await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
       await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
       await page.route(`${iam(removalNamespace)}/access-bindings/*`, forbidden);
+      await panel.getByRole("list", { name: "Principal grants" }).locator("summary").click();
       const remove = panel.getByRole("button", { name: "Remove binding", exact: true }).first();
       await remove.focus();
       await page.keyboard.press("Enter");

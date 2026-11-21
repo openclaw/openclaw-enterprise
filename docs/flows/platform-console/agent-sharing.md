@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-09-28
-last_updated_session: authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a
+updated: 2026-11-21
+last_updated_session: authoring-run/ec2d41b6-97b8-46da-a59f-ec9aed3988c4
 ---
 
 # Console Agent sharing and removal
@@ -30,14 +30,15 @@ See the [parent flow](../platform-console.md) and the
 graph TD
   A["Access tab mounts sharing panel"] --> B["Read Namespace Roles and bindings"]
   B -->|policy denied| K["Keep other Agent panels available"]
+  B -->|policy read| H["Show current direct grants by subject"]
   B --> C["Submit share for an existing Principal"]
   C --> D["Reread policy; find or create Namespace read Role"]
   D --> E["Bind Namespace read to the exact Namespace"]
   E --> F["Find or create Agent read/administer Role"]
   F --> G["Bind it to the selected Agent"]
   C --> P["Hold version and page changes"]
-  G -->|confirmed steps| H["Show progress and direct grants"]
-  H --> U["Release the hold"]
+  G -->|confirmed steps| H
+  G --> U["Release the hold"]
   C -->|uncertain| Q["Block writes until policy refresh"]
   H --> R["Remove one selected Agent binding"]
 ```
@@ -64,6 +65,12 @@ detail follows the Agent answer. When the console already settled that the
 person lacks Installation administration, the policy is read again only if the
 Namespace answer reports it, so administration granted again applies without a
 page reload; otherwise the tab gives way to Configuration with no audited read.
+
+The panel filters the binding list to the current Namespace and exact Agent.
+It groups bindings by subject kind and ID and reads Role permissions from the
+already loaded list. A human Principal row can show a direct browser grant; it
+does not make an admission decision or look up an account name. Expand a row to
+inspect individual Roles and bindings, including those whose Role was not listed.
 
 ### 2. Serialize Role and binding writes
 
@@ -125,6 +132,8 @@ The panel retains discovery grants and explains other possible access sources.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 14:43: Document direct grant grouping and the limits of the roster labels. (authoring-run/ec2d41b6-97b8-46da-a59f-ec9aed3988c4 - b0da800df32dc5311524ef462b5c94a3cbe0264e)
 
 - 2026-09-28 01:39: Move the sharing trace out of the parent and editing flows to keep them within the length limit. (authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a - 4f32ebbca5d699296a142dfbd34c8ec46844fce7)
 

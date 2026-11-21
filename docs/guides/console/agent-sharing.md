@@ -30,8 +30,9 @@ happened to an earlier unanswered request.
 
 ## Remove a direct grant
 
-To withdraw one explicit Agent grant, find it under **Direct Agent grants** and
-select **Remove binding**. Namespace discovery remains, and other grants, groups
+Under **Direct Agent grants**, expand the row for the Principal ID to see its
+bindings. Find the applicable Role and select **Remove binding** next to it.
+Namespace discovery remains, and other grants, groups
 or Installation administration may still provide access. The console does not
 delete the person, Agent or Roles. People without Installation administration
 do not see the **Access** tab. If a sharing policy read is denied, the tab is

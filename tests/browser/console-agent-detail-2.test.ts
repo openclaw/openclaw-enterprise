@@ -868,6 +868,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
   await recipient.getByText(STOP_REQUESTED, { exact: true }).waitFor();
 
   // The stale administrator list holds the specific sharing binding, not the new operate grant.
+  await panel.getByRole("list", { name: "Principal grants" }).locator("summary").click();
   await panel.getByRole("button", { name: "Remove binding", exact: true }).click();
   await panel.getByText("Binding removed.", { exact: false }).waitFor();
   await panel.screenshot({ path: join(artifacts, "agent-sharing-removed.png") });

@@ -3854,17 +3854,112 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: auto;
 }
 
+.agent-access-roster,
+.agent-access-bindings {
+  margin: var(--space-2) 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.agent-access-roster > li {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.agent-access-roster > li:first-child {
+  border-top: 1px solid var(--color-border);
+}
+
+.agent-access-roster summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 10px;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--touch-min);
+  padding: var(--space-2) var(--space-3);
+  list-style: none;
+  cursor: pointer;
+}
+
+.agent-access-roster summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-access-roster summary::after {
+  content: "";
+  grid-column: 3;
+  justify-self: center;
+  width: 8px;
+  height: 8px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+}
+
+.agent-access-roster details[open] > summary::after {
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.agent-access-roster summary:hover,
+.agent-access-roster details[open] > summary {
+  background: var(--color-surface-hover);
+}
+
+.agent-access-roster summary > span:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+}
+
+.agent-access-subject-kind,
+.agent-access-other-title {
+  font-weight: var(--weight-semibold);
+}
+
+.agent-access-other-title {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-md);
+}
+
+.agent-access-subject-id,
+.agent-access-bindings {
+  margin-inline: var(--space-3);
+}
+
 .agent-access-grant {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   padding-block: var(--space-3);
+  border-top: 1px solid var(--color-border);
   overflow-wrap: anywhere;
 }
 
 .agent-access-grant p {
   margin-block: var(--space-1);
+}
+
+@media (max-width: 520px) {
+  .agent-access-roster summary {
+    grid-template-columns: minmax(0, 1fr) 10px;
+    row-gap: var(--space-1);
+  }
+
+  .agent-access-roster summary > .badge {
+    grid-column: 1;
+    justify-self: start;
+  }
+
+  .agent-access-roster summary::after {
+    grid-area: 1 / 2;
+  }
+
+  .agent-access-grant {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
 }
 
 .agent-access-progress {

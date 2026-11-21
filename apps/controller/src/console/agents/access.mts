@@ -23,7 +23,7 @@ import {
   policyList,
   policyRole,
 } from "./credential-access.mjs";
-import { describeFailure, message, namespacePath } from "./list.mjs";
+import { describeFailure, message, namespacePath, shortId } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }] satisfies Permission[];
 // People receive `prn_` Principal IDs; emails and other text never name an IAM subject.
@@ -44,6 +44,40 @@ const agentPermissions = [
 
 type PolicyBinding = ReturnType<typeof policyBinding>;
 type PolicyRole = ReturnType<typeof policyRole>;
+type DirectGrant = { binding: PolicyBinding; role: PolicyRole | undefined };
+
+function subjectLabel({ subjectKind, subjectId }: PolicyBinding) {
+  if (subjectKind === "group") {
+    return "Group";
+  }
+  if (principalIdPattern.test(subjectId)) {
+    return "Principal";
+  }
+  if (subjectId.startsWith("spn_") || subjectId.startsWith("service-agent-")) {
+    return "Service Principal";
+  }
+  return "Identity";
+}
+
+function directBrowserGrant(grants: readonly DirectGrant[]) {
+  const has = (action: "administer" | "operate") =>
+    grants.some(({ role }) =>
+      role?.permissions.some(
+        (permission) => permission.resourceKind === "agent" && permission.action === action,
+      ),
+    );
+  // The native launcher checks administer before operate. These labels describe only the grants
+  // in this list, not the result of a browser admission check for this Principal.
+  if (has("administer")) {
+    return "Open Agent UI · administer";
+  }
+  if (has("operate")) {
+    return "Open chat · operate";
+  }
+  return grants.some(({ role }) => role === undefined)
+    ? "Browser grant unknown"
+    : "No direct browser grant";
+}
 
 // The Agent page's Access tab (spec 3.8). `onDenied` runs when the policy read is refused, after
 // the panel hides itself. `onWriting` runs with true when a share or removal starts and false
@@ -147,7 +181,7 @@ export function renderAgentAccess(
       element(
         "p",
         { className: "hint" },
-        "These are explicit bindings to this Agent, not all effective access. Groups, other grants and Installation administration can still provide access. Removing a binding keeps Namespace discovery access.",
+        "These are explicit bindings to this Agent. Browser labels describe direct grants, not whether someone can open the Agent now. Other policy can still affect access.",
       ),
       grants,
       refresh,
@@ -193,6 +227,17 @@ export function renderAgentAccess(
         control.disabled = true;
       }
     }
+    const openRows = new Set(
+      Array.from(
+        grants.querySelectorAll<HTMLDetailsElement>("details[open]"),
+        (row) => row.dataset.subject,
+      ),
+    );
+    const active = document.activeElement;
+    const focusedSubject =
+      active instanceof HTMLElement && grants.contains(active)
+        ? active.closest("details")?.dataset.subject
+        : undefined;
     grants.replaceChildren();
     if (!state.loaded) {
       grants.append(
@@ -222,32 +267,146 @@ export function renderAgentAccess(
     );
     if (!direct.length) {
       grants.append(element("p", { className: "muted" }, "No direct Agent grants."));
+      if (focusedSubject) {
+        refresh.focus({ preventScroll: true });
+      }
+      return;
     }
+    renderRoster(direct, openRows, focusedSubject, blocked);
+  }
+
+  function renderRoster(
+    direct: readonly PolicyBinding[],
+    openRows: ReadonlySet<string | undefined>,
+    focusedSubject: string | undefined,
+    blocked: boolean,
+  ) {
+    const roles = new Map(
+      state.roles.filter((role) => role.namespaceId === namespaceId).map((role) => [role.id, role]),
+    );
+    const subjects = new Map<string, [DirectGrant, ...DirectGrant[]]>();
     for (const binding of direct) {
-      const role = state.roles.find((candidate) => candidate.id === binding.roleId);
-      const permissions =
-        role?.permissions.map((item) => `${item.resourceKind}: ${item.action}`).join(", ") ??
-        "Role unavailable";
-      // Removal deletes the binding at once, so it takes the destructive tone (finding 1967).
-      const remove = button("Remove binding", () => void removeBinding(binding), {
-        tone: "danger",
-        disabled: blocked,
-      });
-      grants.append(
+      const key = `${binding.subjectKind}:${binding.subjectId}`;
+      const entry = { binding, role: roles.get(binding.roleId) };
+      const bucket = subjects.get(key);
+      if (bucket) {
+        bucket.push(entry);
+      } else {
+        subjects.set(key, [entry]);
+      }
+    }
+    const principals = element("ul", {
+      className: "agent-access-roster",
+      role: "list",
+      "aria-label": "Principal grants",
+    });
+    const others = element("ul", {
+      className: "agent-access-roster",
+      role: "list",
+      "aria-label": "Other binding subjects",
+    });
+    let restoreFocus: HTMLElement | undefined;
+    for (const [key, entries] of subjects) {
+      const { binding } = entries[0];
+      const { subjectId } = binding;
+      const label = subjectLabel(binding);
+      const isPrincipal = label === "Principal";
+      const summary = element(
+        "summary",
+        {},
         element(
-          "div",
-          { className: "agent-access-grant" },
+          "span",
+          {},
+          element("span", { className: "agent-access-subject-kind" }, label),
           element(
-            "div",
-            {},
-            element("p", {}, `${binding.subjectKind}: ${binding.subjectId}`),
-            element("p", { className: "hint" }, permissions),
-            element("p", { className: "resource-id" }, binding.id),
+            "strong",
+            { className: "resource-id" },
+            subjectId.length > 20 ? shortId(subjectId) : subjectId,
           ),
-          remove,
+        ),
+        ...(isPrincipal
+          ? [element("span", { className: "badge" }, directBrowserGrant(entries))]
+          : []),
+      );
+      const row = element(
+        "details",
+        { "data-subject": key },
+        summary,
+        element(
+          "p",
+          { className: "hint agent-access-subject-id" },
+          `${label} ID: `,
+          element("code", { className: "resource-id" }, subjectId),
+        ),
+        element(
+          "ul",
+          { className: "agent-access-bindings", role: "list", "aria-label": "Direct bindings" },
+          ...entries.map(({ binding, role }) => renderBinding(binding, role, blocked)),
         ),
       );
+      row.open = openRows.has(key);
+      const list = isPrincipal ? principals : others;
+      list.append(element("li", {}, row));
+      if (key === focusedSubject) {
+        restoreFocus = summary;
+      }
     }
+    if (principals.childElementCount) {
+      grants.append(
+        element(
+          "p",
+          { className: "hint" },
+          "Policy lists contain Principal IDs, not account names.",
+        ),
+        principals,
+      );
+    }
+    if (others.childElementCount) {
+      grants.append(
+        element("h4", { className: "agent-access-other-title" }, "Other binding subjects"),
+        others,
+      );
+    }
+    if (focusedSubject) {
+      (restoreFocus ?? refresh).focus({ preventScroll: true });
+    }
+  }
+
+  function renderBinding(binding: PolicyBinding, role: PolicyRole | undefined, blocked: boolean) {
+    const title = role ? (role.name ?? "Unnamed role") : "Role unavailable";
+    const permissions = role?.permissions
+      .map(({ resourceKind, action }) => `${resourceKind}: ${action}`)
+      .join(", ");
+    const descriptionId = `agent-access-binding-${encodeURIComponent(binding.id)}`;
+    // Removal deletes this binding at once; other bindings for this subject are not changed.
+    const remove = button("Remove binding", () => void removeBinding(binding), {
+      tone: "danger",
+      disabled: blocked,
+    });
+    remove.setAttribute("aria-describedby", descriptionId);
+    return element(
+      "li",
+      { className: "agent-access-grant" },
+      element(
+        "div",
+        {},
+        element("strong", { id: descriptionId }, title),
+        ...(permissions ? [element("p", { className: "hint" }, permissions)] : []),
+        element(
+          "p",
+          { className: "hint" },
+          "Role ID: ",
+          element("code", { className: "resource-id" }, binding.roleId),
+        ),
+        element(
+          "p",
+          { className: "hint" },
+          "Binding ID: ",
+          element("code", { className: "resource-id" }, binding.id),
+        ),
+      ),
+      remove,
+    );
   }
 
   // The two lists are read one at a time: a reader whose administration ended is refused, and

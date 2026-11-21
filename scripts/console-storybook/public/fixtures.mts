@@ -10,6 +10,8 @@ import type {
   AgentRuntimePodStatus,
   AgentRuntimeEvent,
   HarnessAuthBinding,
+  IAMAccessBindingSchema,
+  IAMRoleSchema,
   OpenClawConfigurationDocument,
   RepositoryOption,
   SecretReference,
@@ -86,6 +88,10 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
       truncated: boolean;
     };
     rules?: Parameters<typeof createFixtureFetch>[0];
+    accessPolicy?: {
+      roles: readonly Static<typeof IAMRoleSchema>[];
+      bindings: readonly Static<typeof IAMAccessBindingSchema>[];
+    };
     signedOut?: boolean;
     pendingOidcAttempt?: boolean;
     expiredSession?: boolean;
@@ -219,8 +225,8 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map<string, DeviceLogin>();
   const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
-  const roles: StoredIdentity[] = [];
-  const bindings: StoredIdentity[] = [];
+  const roles: StoredIdentity[] = scenario.accessPolicy?.roles.map(storedIdentity) ?? [];
+  const bindings: StoredIdentity[] = scenario.accessPolicy?.bindings.map(storedIdentity) ?? [];
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
