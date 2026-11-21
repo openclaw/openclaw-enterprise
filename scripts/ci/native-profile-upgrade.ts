@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "./prepare-command.ts";
 
-// This is the exact pre-feature main parent, not a previous published release.
+// This is the fixed pre-feature main revision, not a previous published release.
 export const nativeProfileBaseline = Object.freeze({
   revision: "535e08cae41dfd5bda0c072fcb37039e699203eb",
   tree: "618072a31adcaafb75060fa49c2d4f2309c19c98",
@@ -16,10 +16,34 @@ export const nativeProfileBaseline = Object.freeze({
 });
 export const nativeProfileUpgradeFile = "tests/integration/native-profile-upgrade-k3d-real.test.ts";
 
-export function nativeProfileSourceReceipt(value) {
+function isPropertyBag(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function sourceMetadata(text: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(text);
+  if (value === null) {
+    throw new TypeError("Cannot read properties of null (reading 'commit')");
+  }
+  return isPropertyBag(value) ? value : {};
+}
+
+// A JSON array containing a single hash coerces to that hash at any nesting depth.
+type SourceHash = string | [SourceHash];
+
+function assertSourceHashes(source: Record<string, unknown>): asserts source is {
+  commit: SourceHash;
+  sourceArchiveSha256: SourceHash;
+} {
+  assert.ok(
+    /^[a-f0-9]{40}$/.test(String(source.commit)) &&
+      /^[a-f0-9]{64}$/.test(String(source.sourceArchiveSha256)),
+  );
+}
+
+export function nativeProfileSourceReceipt(value: unknown) {
   if (
-    value === null ||
-    typeof value !== "object" ||
+    !isPropertyBag(value) ||
     !Object.entries(nativeProfileBaseline).every(([key, expected]) => value[key] === expected) ||
     typeof value.tree !== "string" ||
     !/^[a-f0-9]{40}$/.test(value.tree)
@@ -31,20 +55,24 @@ export function nativeProfileSourceReceipt(value) {
   return { ...nativeProfileBaseline };
 }
 
-export function selectsNativeProfileUpgrade(lane, file) {
+export function selectsNativeProfileUpgrade(lane: unknown, file?: unknown) {
   return lane === "gateway-routing" && (file === undefined || file === nativeProfileUpgradeFile);
 }
 
 // Verify the complete old build context, including its migration catalog. The
 // candidate owns a separate, observed catalog; it need not equal the baseline.
-export async function verifyNativeProfileBaseline(repository, run = execFile) {
-  const git = async (...args) => (await run("git", args, { cwd: repository })).stdout.trim();
+export async function verifyNativeProfileBaseline(
+  repository: string,
+  run: typeof execFile = execFile,
+) {
+  const git = async (...args: string[]) =>
+    (await run("git", args, { cwd: repository })).stdout.trim();
   assert.equal(await git("rev-parse", "HEAD"), nativeProfileBaseline.revision);
   assert.equal(await git("status", "--porcelain", "--untracked-files=all"), "");
   assert.equal(await git("rev-parse", "HEAD:migrations"), nativeProfileBaseline.migrations);
   assert.equal(await git("rev-parse", "HEAD:deploy/runtime"), nativeProfileBaseline.runtimeTree);
   assert.equal(await git("rev-parse", "HEAD:Dockerfile"), nativeProfileBaseline.controllerRecipe);
-  const source = JSON.parse(
+  const source = sourceMetadata(
     await readFile(join(repository, "deploy/runtime/openclaw-source.json"), "utf8"),
   );
   assert.equal(source.commit, nativeProfileBaseline.nativeCommit);
@@ -64,20 +92,25 @@ export async function verifyNativeProfileBaseline(repository, run = execFile) {
 
 // The candidate is the actual tested checkout, not an assumed copy of the old
 // nine-bridge runtime. A merge may add bridges, migrations or another native pin.
-export async function nativeProfileCandidateSource(repository) {
-  const git = async (...args) => (await execFile("git", args, { cwd: repository })).stdout.trim();
-  const source = JSON.parse(
+export async function nativeProfileCandidateSource(repository: string) {
+  const git = async (...args: string[]) =>
+    (await execFile("git", args, { cwd: repository })).stdout.trim();
+  const source = sourceMetadata(
     await readFile(join(repository, "deploy/runtime/openclaw-source.json"), "utf8"),
   );
-  assert.ok(
-    /^[a-f0-9]{40}$/.test(source.commit) && /^[a-f0-9]{64}$/.test(source.sourceArchiveSha256),
-  );
+  assertSourceHashes(source);
   const bridgePatches = (await git("ls-tree", "-r", "HEAD", "deploy/runtime"))
     .split("\n")
     .flatMap((line) => {
       const match =
         /^100644 blob ([a-f0-9]{40})\t(deploy\/runtime\/openclaw-[a-z0-9-]+\.patch)$/.exec(line);
-      return match ? [{ path: match[2], blob: match[1] }] : [];
+      if (!match) {
+        return [];
+      }
+      const blob = match[1];
+      const path = match[2];
+      assert.ok(blob !== undefined && path !== undefined);
+      return [{ path, blob }];
     });
   assert.ok(bridgePatches.length > 0, "candidate native bridge inventory is required");
   return {
@@ -93,14 +126,14 @@ export async function nativeProfileCandidateSource(repository) {
   };
 }
 
-/**
- * @template Result
- * @param {string} repository
- * @param {(sourceRoot: string, receipt: Awaited<ReturnType<typeof verifyNativeProfileBaseline>>) => Promise<Result>} operation
- * @returns {Promise<Result>}
- */
-export async function withNativeProfileBaseline(repository, operation) {
-  const run = (args) => execFile("git", args, { cwd: repository, timeoutMs: 120_000 });
+export async function withNativeProfileBaseline<Result>(
+  repository: string,
+  operation: (
+    sourceRoot: string,
+    receipt: Awaited<ReturnType<typeof verifyNativeProfileBaseline>>,
+  ) => Promise<Result>,
+): Promise<Result> {
+  const run = (args: string[]) => execFile("git", args, { cwd: repository, timeoutMs: 120_000 });
   try {
     await run(["cat-file", "-e", nativeProfileBaseline.revision + "^{commit}"]);
   } catch {
