@@ -1,5 +1,7 @@
 import type { compileOpenShellBoundGitRule } from "../sandbox/openshell-git-network-policy.ts";
 
+export const onlineRequestImplementation = "online-request-authorization";
+
 export type NativeRestMode = "read" | "write";
 
 /** Only the compiled, credential-bound routes select the validator, including after a downgrade. */

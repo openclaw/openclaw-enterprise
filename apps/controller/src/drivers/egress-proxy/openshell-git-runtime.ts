@@ -1,6 +1,6 @@
-import { onlineRequestImplementation } from "./openshell-online-authority.ts";
 import {
   nativeRestMode,
+  onlineRequestImplementation,
   openShellGitMiddleware,
   restWriteRegistration,
 } from "./openshell-git-middleware.ts";

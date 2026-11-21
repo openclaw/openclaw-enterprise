@@ -1,3 +1,4 @@
+import { onlineRequestImplementation } from "./openshell-git-middleware.ts";
 import { isIP } from "node:net";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
 import {
@@ -50,8 +51,6 @@ function denial(result: OpenShellOnlineDecision): Wire {
 }
 const boundedId = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9_-]{22,128}$/.test(value);
-
-export const onlineRequestImplementation = "online-request-authorization";
 
 export interface OpenShellOnlineHttpAuthorityOptions {
   readonly identity: Pick<
