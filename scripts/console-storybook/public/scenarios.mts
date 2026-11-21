@@ -43,7 +43,12 @@ import {
   presetSecretsPath,
   readyForm,
 } from "./create-agent-form-data.mts";
-import { calendarPlugin, pluginCapabilities, pluginSetup } from "./plugin-scenario-data.mts";
+import {
+  calendarPlugin,
+  pluginCapabilities,
+  pluginDetailIdentityRefusal,
+  pluginSetup,
+} from "./plugin-scenario-data.mts";
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
 import { secretsScenarios } from "./scenario-groups/secrets.mts";
 import { connectionTemplateScenarios } from "./scenario-groups/connection-templates.mts";
@@ -951,6 +956,23 @@ const authoredScenarios = {
   ...credentialsOAuthScenarios({ draft }),
   ...createAgentOutcomeScenarios,
   ...agentDetailScenarios.configuration,
+  pluginsDetailIdentityRefused: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin details for a different plugin",
+    agentPlugins: {},
+    pluginDiscovery: pluginDetailIdentityRefusal,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Project tracker"]', click: true },
+    ],
+    description: "Project tracker and Calendar share a locator that returns Calendar's details.",
+    steps: [
+      "Check that Project tracker stays selected and each plugin appears once. Read the error, find Retry tools for Project tracker, and check that Add Project tracker is disabled.",
+      "Select Calendar. Its details show List events, and Add Calendar is available.",
+    ],
+    gap: "Catalog responses and the saved Agent are simulated.",
+  } satisfies LocalScenario,
   ...pluginApproverScenarios(draft),
   ...agentDetailScenarios.versions,
   agentsLongName: {

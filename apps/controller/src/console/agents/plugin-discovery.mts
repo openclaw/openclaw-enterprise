@@ -321,10 +321,15 @@ export function createPluginDiscovery({
         body: connection
           ? { pluginId: id, managedConnection: connection }
           : requestBody({ pluginId: entry.remoteId! }),
-      })) as PluginCatalogEntry;
+      })) as PluginCatalogEntry | null | undefined;
       const current = currentEntry();
       if (!current) {
         return;
+      }
+      if (detail?.id !== id) {
+        throw Object.assign(new Error("Plugin details do not match the selected plugin."), {
+          code: "PLUGIN_DISCOVERY_INVALID_RESPONSE",
+        });
       }
       entries.set(
         id,
