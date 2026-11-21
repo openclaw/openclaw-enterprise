@@ -1,6 +1,7 @@
 {{- $repositoryBroker := .Values.repositoryCredentials.enabled }}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . }}
 {{- range $component := list "api" "worker" }}
+{{- $sandboxControl := and (eq $component "worker") $.Values.worker.sandboxControlClaimName }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
 ---
@@ -65,6 +66,12 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if $sandboxControl }}
+        - name: sandbox-control
+          persistentVolumeClaim:
+            claimName: {{ $sandboxControl | quote }}
+            readOnly: true
+        {{- end }}
         {{- if $.Values.backend.openshell.clientSecretName }}
         - name: openshell-client
           secret:
@@ -480,6 +487,11 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
             {{- end }}
           volumeMounts:
+            {{- if $sandboxControl }}
+            - name: sandbox-control
+              mountPath: /run/openclaw-sandbox-control
+              readOnly: true
+            {{- end }}
             {{- if $.Values.backend.openshell.clientSecretName }}
             - name: openshell-client
               mountPath: /etc/openclaw/openshell
