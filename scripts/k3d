@@ -812,7 +812,7 @@ if [ "$action" = "demo" ]; then
     echo "Cluster, images, and PostgreSQL remain available."
     echo "Restart the demo and port-forwards with: ./scripts/k3d demo --harness openclaw"
   else
-    node scripts/k3d-demo.mjs
+    node scripts/k3d-demo.ts
   fi
   exit 0
 fi
