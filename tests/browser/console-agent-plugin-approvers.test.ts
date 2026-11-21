@@ -14,6 +14,7 @@ import { OpenClawController } from "../../packages/occ/src/index.ts";
 import type {
   CredentialGatewayDriver,
   PluginApprovers,
+  PluginCatalogEntry,
   SandboxDriver,
   SecretMetadata,
 } from "../../packages/contracts/src/index.ts";
@@ -245,6 +246,88 @@ test("A dedicated Agent with empty configuration can browse the default OpenClaw
     .getByRole("dialog", { name: "Configure plugins", exact: true })
     .getByRole("button", { name: "Google Workspace", exact: true })
     .waitFor({ state: "visible" });
+});
+
+test("Agent plugin discovery refuses mismatched details and retries the selected plugin", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Hosted plugin discovery");
+  const driver = new CodexPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const secret = await fixture.createSecret(namespace.id, "Discovery token", "fixture-value");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Discovery Agent",
+    nativeValues("plugin-discovery", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: { method: "codex_pat", source: secret.ref } },
+  );
+  await fixture.grantAgentSecretOperate(agent, secret.ref, { listed: false });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const catalogUrl = new URL(`${path}/plugins`, fixture.origin).href;
+  const detailsUrl = `${catalogUrl}/details`;
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+
+  // Both catalog entries share a remote locator but have different canonical IDs.
+  const remoteId = "shared-catalog-locator";
+  const alpha = {
+    id: "codex-plugin:alpha@openai-curated-remote",
+    name: "Alpha",
+    remoteId,
+    tools: null,
+  };
+  const beta = { ...alpha, id: "codex-plugin:beta@openai-curated-remote", name: "Beta" };
+  const alphaTool = { id: "app_alpha/search", name: "Find Alpha records", ownerId: "app_alpha" };
+  const betaTool = { id: "app_beta/list", name: "List Beta documents", ownerId: "app_beta" };
+  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+  const catalog = { data: { plugins: [alpha, beta], nextCursor: null }, meta };
+  let detail: PluginCatalogEntry = { ...beta, tools: [betaTool] };
+  await page.route(catalogUrl, (route) => route.fulfill({ status: 200, json: catalog }));
+  await page.route(detailsUrl, (route) =>
+    route.fulfill({ status: 200, json: { data: detail, meta } }),
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const alphaRow = dialog.getByRole("button", { name: alpha.name, exact: true });
+  const betaRow = dialog.getByRole("button", { name: beta.name, exact: true });
+  const addAlpha = dialog.getByRole("button", { name: "Add Alpha", exact: true });
+  const refusal = dialog.getByText(
+    "The plugin service returned an unsupported response. Retry or contact your operator.",
+    { exact: true },
+  );
+  const input = page.locator("#agent-plugins");
+
+  async function loadDetails(control: Locator) {
+    const reply = responseTo(page, "POST", detailsUrl);
+    await control.click();
+    const response = await reply;
+    assert.equal(response.status(), 200);
+    assert.deepEqual(response.request().postDataJSON(), { pluginId: remoteId });
+    await dialog.getByText("Loading tools…", { exact: true }).waitFor({ state: "detached" });
+  }
+
+  await loadDetails(alphaRow);
+  assert.deepEqual(
+    [await alphaRow.count(), await betaRow.count()],
+    [1, 1],
+    "mismatched details must preserve both plugin rows",
+  );
+  assert.equal(await alphaRow.getAttribute("aria-current"), "true");
+  assert.equal(await refusal.isVisible(), true);
+  assert.equal(await addAlpha.isDisabled(), true);
+  assert.equal(await dialog.getByText(betaTool.name, { exact: true }).count(), 0);
+  assert.deepEqual(JSON.parse(await input.inputValue()), {});
+  assert.equal(pathRequests(requests, "PATCH", path).length, 0);
+
+  detail = { ...alpha, tools: [alphaTool] };
+  await loadDetails(dialog.getByRole("button", { name: "Retry tools for Alpha", exact: true }));
+  const alphaSummary = dialog.locator("summary").getByText(alphaTool.name, { exact: true });
+  assert.equal(await alphaSummary.isVisible(), true);
+  assert.equal(await refusal.count(), 0);
+  assert.equal(await addAlpha.isEnabled(), true);
+  await addAlpha.click();
+  assert.deepEqual(JSON.parse(await input.inputValue()), { [alpha.id]: { enabled: true } });
 });
 
 test("Managed MCP tool approval is saved per selected tool and removed when the tool is disabled", async (t) => {

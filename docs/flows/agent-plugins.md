@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-21
-last_updated_session: authoring-run/c4d8dbfd-1681-4b5b-a0d6-45a805b2aa68
+last_updated_session: authoring-run/9fa66906-eefe-4497-818f-876448b9d7fa
 ---
 
 # Agent Plugin Deployment Flow
@@ -84,11 +84,12 @@ Managed MCP uses Secret Driver, rechecking before `tools/list`.
 `driverPolicy.toolNames` pins upstream names across runtimes.
 
 Closing cancels. Account changes clear results. Harness changes clear selections/approvers.
-[Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) cap size and time,
-reject redirects and credential echoes, and set `Cache-Control: no-store`.
+[Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) cap size/time,
+reject redirects/credential echoes and set `Cache-Control: no-store`.
 The Driver rejects pages repeating canonical selection IDs. The API returns HTTP 503 `PLUGIN_DISCOVERY_INVALID_RESPONSE`.
+The Console rejects missing or mismatched detail IDs and offers retry.
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
-`requires_local_executor`. With `true` and no skills, the entry is unavailable.
+`requires_local_executor`; `true` without skills means unavailable.
 Details reject unmatched MCP/scheduled tasks. Optional stdio
 `NativeCodexPluginCatalogReader` rejects invalid `plugin/list`, stopping its child.
 
@@ -385,6 +386,7 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-21 15:08: Detail-ID refusal. (authoring-run/9fa66906-eefe-4497-818f-876448b9d7fa - b0da800df32dc5311524ef462b5c94a3cbe0264e)
 - 2026-11-21 12:38: Document rejection of duplicate hosted catalog selections. (authoring-run/c4d8dbfd-1681-4b5b-a0d6-45a805b2aa68 - 7dd321619d7400e144f805ec7b9bde5e98b59ed2)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:13: Update discovery source. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)

@@ -43,7 +43,12 @@ import {
   presetSecretsPath,
   readyForm,
 } from "./create-agent-form-data.mts";
-import { calendarPlugin, pluginCapabilities, pluginSetup } from "./plugin-scenario-data.mts";
+import {
+  calendarPlugin,
+  pluginCapabilities,
+  pluginDetailIdentityRefusal,
+  pluginSetup,
+} from "./plugin-scenario-data.mts";
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
 import { secretsScenarios } from "./scenario-groups/secrets.mts";
 import { connectionTemplateScenarios } from "./scenario-groups/connection-templates.mts";
@@ -63,7 +68,7 @@ type AuthoredRule = Omit<FixtureRule, "data"> &
         suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions";
         data: PermissionSnapshot;
       }
-    | { suffix: "/SOUL.md"; data: WorkspaceFileResponse["data"] }
+    | { suffix: "/SOUL.md" | "/workspace/files/AGENTS.md"; data: WorkspaceFileResponse["data"] }
   );
 type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
   Parameters<typeof configurationValues>[0] & {
@@ -96,6 +101,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     emptyNamespaces?: boolean;
     emptyBackends?: boolean;
     namespaceName?: string;
+    navigationAgentHistory?: true;
     namespaceStatus?: NamespaceStatus;
     namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
     candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
@@ -393,6 +399,31 @@ const authoredScenarios = {
       "Use Tab to focus Namespaces, then Enter. After loading, its heading has focus and the next Tab reaches Refresh. Back and Forward focus the destination heading while retaining loaded content.",
       "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
+    ],
+  } satisfies LocalScenario,
+  navigationAgentHistory: {
+    group: "Pages/Navigation",
+    name: "Return to an interrupted Agent link",
+    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?revision=rev_00000000-0000-4000-8000-000000000006&tab=deployment",
+    namespaceName: "Z history holder",
+    navigationAgentHistory: true,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000002/agents/agt_00000000-0000-4000-8000-000000000001",
+        status: 404,
+        code: "NOT_FOUND",
+      },
+    ],
+    description:
+      "A shared Agent link has no Namespace. Leave while the Console looks in another Namespace, then use Back to reopen the linked version and Deployment tab. API responses are simulated.",
+    steps: [
+      "Wait for Looking for this Agent in your other Namespaces. Before the lookup finishes, choose ← Agents.",
+      "Wait for the delayed read to finish. The Agents list stays open.",
+      "Use browser Back. Research assistant opens in Z history holder with version 6 and Deployment selected. Check This version’s deployment record.",
+      "Use Forward. The same Agents list returns. Reset story to repeat.",
     ],
   } satisfies LocalScenario,
   navigationSlowRecheck: {
@@ -951,6 +982,23 @@ const authoredScenarios = {
   ...credentialsOAuthScenarios({ draft }),
   ...createAgentOutcomeScenarios,
   ...agentDetailScenarios.configuration,
+  pluginsDetailIdentityRefused: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin details for a different plugin",
+    agentPlugins: {},
+    pluginDiscovery: pluginDetailIdentityRefusal,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Project tracker"]', click: true },
+    ],
+    description: "Project tracker and Calendar share a locator that returns Calendar's details.",
+    steps: [
+      "Check that Project tracker stays selected and each plugin appears once. Read the error, find Retry tools for Project tracker, and check that Add Project tracker is disabled.",
+      "Select Calendar. Its details show List events, and Add Calendar is available.",
+    ],
+    gap: "Catalog responses and the saved Agent are simulated.",
+  } satisfies LocalScenario,
   ...pluginApproverScenarios(draft),
   ...agentDetailScenarios.versions,
   agentsLongName: {
@@ -1462,9 +1510,20 @@ const authoredScenarios = {
     name: "Keep unsaved files",
     path: `${revision}&tab=workspace`,
     deployed: true,
+    // The first read precedes another writer’s change. Later reads and saves use the live fixture.
+    workspaceFiles: { "AGENTS.md": "Updated guidance" },
+    rules: [
+      {
+        suffix: "/workspace/files/AGENTS.md",
+        method: "GET",
+        once: true,
+        data: { name: "AGENTS.md", content: "Previous guidance" },
+      },
+    ],
     actions: [
       {
         selector: '[id="workspace-AGENTS.md"]',
+        matches: "Previous guidance",
         value: "# Unsaved guidance\nKeep these edits while navigating.\n",
       },
     ],
@@ -1472,7 +1531,9 @@ const authoredScenarios = {
     steps: [
       "Choose User context and clear its text. Switch between Instructions and User context; check the Unsaved indicators and role descriptions. On a phone use Workspace file.",
       "Switch to Configuration and back to Workspace files; the selected file and unsaved contents remain.",
-      "Open Namespaces, return with Back, then save AGENTS.md and reload USER.md.",
+      "Open Namespaces and return with Back. Instructions still contains the unsaved guidance, and AGENTS.md warns that it changed since editing started.",
+      "Type Previous guidance in Instructions. Open Namespaces and return with Back again. Check that the warning stays visible and Save is enabled.",
+      "Type Updated guidance to match the current file. The warning clears and Save is disabled. Edit and save AGENTS.md, then reload USER.md.",
     ],
     gap: "Simulated files; no live Agent gateway.",
   } satisfies LocalScenario,
