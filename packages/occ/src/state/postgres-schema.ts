@@ -717,6 +717,7 @@ export const agentRevisions = occSchema.table(
     networkProxyUrl: text("network_proxy_url"),
     networkProxySecretId: text("network_proxy_secret_id"),
     firstDeploymentDigest: text("first_deployment_digest"),
+    networkProxyAdmission: text("network_proxy_admission"),
     admittedSpec: jsonb("admitted_spec").$type<Record<string, unknown>>().notNull(),
     admittedAt: timestamp("admitted_at", { withTimezone: true }).notNull(),
   },
@@ -724,6 +725,10 @@ export const agentRevisions = occSchema.table(
     check(
       "agent_revisions_network_proxy_shape",
       sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxySecretId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxySecretId} IS NULL OR ${table.networkProxySecretId} <> ''))`,
+    ),
+    check(
+      "agent_revisions_network_proxy_admission_shape",
+      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxyAdmission} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND ${table.networkProxyAdmission} IS NOT NULL AND length(${table.networkProxyAdmission}) BETWEEN 1 AND 8192)`,
     ),
     check(
       "agent_revisions_first_deployment_digest",

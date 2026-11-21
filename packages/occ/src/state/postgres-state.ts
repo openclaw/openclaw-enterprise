@@ -944,6 +944,7 @@ function revisionFromRow(
     );
   }
   const networkProxy = configurationRead("networkProxy", () => networkProxyFromRow(row));
+  const networkProxyAdmission = optionalText(row, "network_proxy_admission");
   return immutableCopy({
     ...metadata,
     configurationId: admitted.configuration_id,
@@ -953,7 +954,10 @@ function revisionFromRow(
     gatewayManagedMode: boolean(row, "gateway_managed_mode"),
     ...(networkProxy === undefined ? {} : { networkProxy }),
     harness: admitted.harness,
-    compute: admitted.compute,
+    compute: {
+      ...admitted.compute,
+      ...(networkProxyAdmission === undefined ? {} : { networkProxyAdmission }),
+    },
     ...(admitted.sandbox_policy === undefined ? {} : { sandboxPolicy: admitted.sandbox_policy }),
     ...(admitted.sandbox_driver_id === undefined
       ? {}
@@ -4114,7 +4118,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       const found = decodeQueryRows(
         await client.query(
           `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id,
+                      r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id, r.network_proxy_admission,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
@@ -4133,7 +4137,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       const found = decodeQueryRows(
         await client.query(
           `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id,
+                      r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id, r.network_proxy_admission,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
@@ -4318,11 +4322,12 @@ export class PostgresPlatformState implements PlatformStateStore {
         // The database clock stamps admission, as it stamps controller work, so a stop or
         // deletion orders this revision against its own creation without controller clock
         // skew (finding 1195). The caller's createdAt is replaced, not stored.
+        const { networkProxyAdmission, ...storedCompute } = revision.compute;
         const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at, first_deployment_digest,
-            network_proxy_url, network_proxy_secret_id)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, clock_timestamp(), $8, $9, $10)
+            network_proxy_url, network_proxy_secret_id, network_proxy_admission)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, clock_timestamp(), $8, $9, $10, $11)
            RETURNING admitted_at`,
           [
             revision.id,
@@ -4336,7 +4341,7 @@ export class PostgresPlatformState implements PlatformStateStore {
               configuration_generation: revision.configurationGeneration,
               draft_spec: revision.configuration,
               harness: revision.harness,
-              compute: revision.compute,
+              compute: storedCompute,
               ...(revision.sandboxPolicy === undefined
                 ? {}
                 : { sandbox_policy: revision.sandboxPolicy }),
@@ -4380,6 +4385,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             firstDeploymentDigest ?? null,
             revision.networkProxy?.url ?? null,
             revision.networkProxy?.credentialSecretId ?? null,
+            networkProxyAdmission ?? null,
           ],
         );
         const [stamped] = decodeQueryRows(admitted);

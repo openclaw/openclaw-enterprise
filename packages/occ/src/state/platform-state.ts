@@ -3452,6 +3452,13 @@ function repositories(
     },
     createRevision: async (input, firstDeploymentDigest) => {
       const revision = immutableCopy(input);
+      const admission = revision.compute.networkProxyAdmission;
+      if (
+        (revision.networkProxy === undefined) !== (admission === undefined) ||
+        (admission !== undefined && (admission.length < 1 || admission.length > 8192))
+      ) {
+        throw new ScopeViolationError("The AgentRevision Network proxy admission is invalid.");
+      }
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
       const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
