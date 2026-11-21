@@ -121,8 +121,8 @@ async function fixture(t: TestContext) {
       name: "held-sandbox",
       workspace: namespace.name,
       resource_version: "5",
-      labels,
-      annotations,
+      labels: { ...labels } as Record<string, string>,
+      annotations: { ...annotations } as Record<string, string>,
     },
     spec: {
       providers: [] as string[],
@@ -302,7 +302,25 @@ async function fixture(t: TestContext) {
     },
     UpdateProvider: (input) => {
       state.updates.push(input);
-      return state.provider && { provider: state.provider };
+      const supplied = record(input.provider);
+      const metadata = record(supplied.metadata);
+      if (
+        !state.provider ||
+        metadata.name !== state.provider.metadata.name ||
+        metadata.resource_version !== state.provider.metadata.resource_version
+      ) {
+        throw Object.assign(new Error("Provider resource version changed"), {
+          code: grpc.status.ABORTED,
+        });
+      }
+      state.provider.config = {
+        ...state.provider.config,
+        ...(supplied.config as Record<string, string> | undefined),
+      };
+      state.provider.metadata.resource_version = String(
+        BigInt(state.provider.metadata.resource_version) + 1n,
+      );
+      return { provider: state.provider };
     },
     AttachSandboxProvider: (input) => {
       state.attaches.push(input);
@@ -431,11 +449,11 @@ async function fixture(t: TestContext) {
   const selectedSandbox = {
     id: "sandbox",
     implementation: "openshell",
-    harnessResource: () => ({
+    harnessResource: ({ revision }: { revision: { agentId: string; id: string } }) => ({
       namespaceName: namespace.name,
       resourceName: sandbox.metadata.name,
-      agentId: configuration.targetRef.agentId,
-      revisionId: configuration.targetRef.revisionId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
     }),
   } as unknown as SandboxDriver;
   const backend = {
@@ -479,11 +497,12 @@ async function fixture(t: TestContext) {
     signal: t.signal,
   } satisfies CredentialDeploymentContext;
   let resolutions = 0;
+  let resolvedCredential = { credential: "synthetic-material", version: "source-v1" };
   const suppliedBinding = {
     binding,
     resolveCredential: async () => {
       resolutions++;
-      return { credential: "synthetic-material", version: "source-v1" };
+      return resolvedCredential;
     },
   };
   const configure = (overrides: Partial<ConfigureInput> = {}) =>
@@ -631,11 +650,14 @@ async function fixture(t: TestContext) {
     configure,
     observeServing,
     removeCredentialRoute,
+    setResolvedCredential: (credential: string, version: string) => {
+      resolvedCredential = { credential, version };
+    },
     resolutions: () => resolutions,
   };
 }
 
-test("staged OpenShell Proxy transfers once, attaches with CAS, and reuses without resolving", async (t) => {
+test("staged OpenShell Proxy resolves the current pushed version and reuses it without another transfer", async (t) => {
   const f = await fixture(t);
   const first = await f.configure();
   assert.deepEqual(first, {
@@ -659,9 +681,120 @@ test("staged OpenShell Proxy transfers once, attaches with CAS, and reuses witho
   assert.equal(record(f.state.attaches[0]?.workspace_scope).workspace, namespace.name);
   assert.match(String(f.state.attaches[0]?.request_id), /^[0-9a-f-]{36}$/);
   assert.deepEqual(await f.configure(), first);
-  assert.equal(f.resolutions(), 1);
+  assert.equal(f.resolutions(), 2);
   assert.equal(f.state.creates.length, 1);
   assert.equal(f.state.attaches.length, 1);
+  assert.equal(f.state.updates.length, 0);
+});
+
+test("staged OpenShell Proxy refreshes a retained Provider for the next deployment", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.observeServing();
+  assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), { state: "ready" });
+  const originalProvider = structuredClone(f.state.provider!);
+
+  // The Sandbox owner removes the old policy rule before target cleanup clears the last binding.
+  f.removeCredentialRoute();
+  await f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef });
+  assert.deepEqual(f.sandbox.spec.providers, []);
+  // Model a Source update after Stop and Agent references are cleared, then a new admitted binding.
+  // This fixture only changes the Source-bound resolver; it does not exercise those OCC operations.
+  f.setResolvedCredential("synthetic-material-v2", "source-v2");
+
+  const nextConfiguration = {
+    targetRef: {
+      ...configuration.targetRef,
+      revisionId: "revision-2",
+      sandboxId: "f1d7e6c5-1b2a-4c3d-8e9f-102938475620",
+    },
+    configurationId: "configuration-2",
+  };
+  const nextContext = {
+    ...f.context,
+    revision: {
+      ...f.context.revision,
+      id: nextConfiguration.targetRef.revisionId,
+      revision: 2,
+      configurationId: nextConfiguration.configurationId,
+      configurationGeneration: 2,
+      servicePrincipalId: "sp_revision_2",
+    },
+  } satisfies CredentialDeploymentContext;
+  Object.assign(f.sandbox.metadata, {
+    id: nextConfiguration.targetRef.sandboxId,
+    name: "next-held-sandbox",
+    resource_version: "5",
+  });
+  f.sandbox.metadata.labels["openclaw.dev/revision"] = nextConfiguration.targetRef.revisionId;
+  f.sandbox.metadata.annotations["openclaw.dev/revision-id"] =
+    nextConfiguration.targetRef.revisionId;
+  f.sandbox.metadata.annotations["openclaw.dev/configuration-id"] =
+    nextConfiguration.configurationId;
+  f.sandbox.spec.provider_attachment_epoch = "";
+  f.sandbox.spec.policy = undefined;
+  f.sandbox.status = {};
+  f.state.config = undefined;
+  f.state.policyStatus = undefined;
+  f.state.providerStatus = undefined;
+
+  await f.proxy.configureDeployment(nextContext, {
+    ...nextConfiguration,
+    bindings: [f.suppliedBinding],
+    injectionPolicies: [injection],
+  });
+  assert.equal(f.resolutions(), 2);
+  assert.equal(f.state.updates.length, 1);
+  const update = f.state.updates[0]!;
+  const updated = record(update.provider);
+  assert.equal(record(update.workspace_scope).workspace, namespace.name);
+  assert.deepEqual(record(updated.metadata), {
+    name: originalProvider.metadata.name,
+    resource_version: "7",
+  });
+  assert.equal(updated.type, originalProvider.type);
+  assert.equal(updated.profile_workspace, namespace.name);
+  assert.deepEqual(updated.credentials, { OPENAI_API_KEY: "synthetic-material-v2" });
+  assert.deepEqual(updated.config, { oce_source_version: "source-v2" });
+  assert.equal(f.state.provider!.metadata.id, originalProvider.metadata.id);
+  assert.equal(f.state.provider!.metadata.resource_version, "8");
+  assert.equal(f.state.provider!.config.oce_source_version, "source-v2");
+  assert.deepEqual(f.sandbox.spec.providers, [originalProvider.metadata.name]);
+
+  // The new target is not ready while its supervisor still has the old Provider environment.
+  const evidence = f.observeServing();
+  f.state.config!.provider_env_revision = "13";
+  record(f.sandbox.status.configuration_admission).provider_env_revision = "13";
+  evidence.desired.provider_env_revision = "13";
+  f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_PENDING";
+  f.state.providerStatus!.reason = "PROVIDER_READINESS_REASON_SNAPSHOT_MISMATCH";
+  const readyOperation = f.state.providerStatus!.operation;
+  Reflect.deleteProperty(f.state.providerStatus!, "operation");
+  assert.deepEqual(await f.proxy.getDeploymentStatus(nextContext, nextConfiguration), {
+    state: "pending",
+  });
+  assert.equal(evidence.desired.provider_resource_version, "8");
+  evidence.observed.provider_env_revision = "13";
+  f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_READY";
+  f.state.providerStatus!.operation = readyOperation;
+  Reflect.deleteProperty(f.state.providerStatus!, "reason");
+  assert.deepEqual(await f.proxy.getDeploymentStatus(nextContext, nextConfiguration), {
+    state: "ready",
+  });
+
+  // Existing SDK consumers that do not supply configuration must still omit it on the wire.
+  await f.client.updateProviderCredentialsConditionally(
+    {
+      workspace: namespace.name,
+      name: originalProvider.metadata.name,
+      type: originalProvider.type,
+      labels: {},
+      credentials: { OPENAI_API_KEY: "synthetic-sdk-material" },
+    },
+    "8",
+    t.signal,
+  );
+  assert.equal(record(f.state.updates[1]!.provider).config, undefined);
 });
 
 test("staged OpenShell Proxy rejects the wrong target before source resolution", async (t) => {

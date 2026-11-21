@@ -190,7 +190,7 @@ export async function readOwnedOpenShellPushedProvider(input: {
   return provider;
 }
 
-/** First-use transfer only. Reusing a delivery Provider never resolves or repairs its value. */
+/** Initialize or refresh the owned pushed copy from this binding's authorized Source. */
 export async function prepareOpenShellPushedProvider(input: {
   readonly client: Pick<
     OpenShellGatewayClient,
@@ -199,6 +199,7 @@ export async function prepareOpenShellPushedProvider(input: {
     | "getProviderProfile"
     | "importProviderProfile"
     | "createProvider"
+    | "updateProviderCredentialsConditionally"
   >;
   readonly workspace: string;
   readonly namespaceId: string;
@@ -225,16 +226,8 @@ export async function prepareOpenShellPushedProvider(input: {
   }
   const profile = profileFor(binding);
   const existing = await client.getProvider(workspace, profile.id, signal);
-  if (existing) {
-    const profileVersion = checkProfile(
-      await client.getProviderProfile(workspace, profile.id, signal),
-      profile,
-    );
-    return checkProvider(existing, binding, workspace, owner.id, profileVersion);
-  }
-
   let stored = await client.getProviderProfile(workspace, profile.id, signal);
-  if (!stored) {
+  if (!stored && !existing) {
     try {
       await client.importProviderProfile(workspace, profile, signal);
     } catch (error) {
@@ -247,10 +240,8 @@ export async function prepareOpenShellPushedProvider(input: {
   }
   const profileVersion = checkProfile(stored, profile);
   // Another deployment may have completed initialization while the profile was being imported.
-  const concurrent = await client.getProvider(workspace, profile.id, signal);
-  if (concurrent) {
-    return checkProvider(concurrent, binding, workspace, owner.id, profileVersion);
-  }
+  const prior = existing ?? (await client.getProvider(workspace, profile.id, signal));
+  const current = prior && checkProvider(prior, binding, workspace, owner.id, profileVersion);
   let resolved: ResolvedCredential;
   try {
     resolved = await input.resolveCredential();
@@ -262,27 +253,53 @@ export async function prepareOpenShellPushedProvider(input: {
     refuse();
   }
   signal.throwIfAborted();
+  const transfer = {
+    workspace,
+    name: profile.id,
+    type: profile.id,
+    labels: {
+      [MANAGED_BY_LABEL]: MANAGED_BY,
+      [SOURCE_ID_LABEL]: binding.sourceRef.id,
+      [NAMESPACE_ID]: input.namespaceId,
+      [DELIVERY_OWNER]: STATIC_DELIVERY,
+    },
+    credentials: { [binding.projection.environment]: resolved.credential },
+    config: { [SOURCE_VERSION]: resolved.version },
+    ...(resolved.expiresAt && {
+      credentialExpirationTimes: { [binding.projection.environment]: resolved.expiresAt },
+    }),
+  };
+  if (current) {
+    if (current.sourceVersion === resolved.version) {
+      return current;
+    }
+    if (!client.updateProviderCredentialsConditionally) {
+      refuse();
+    }
+    let updated: OpenShellProviderResponse;
+    try {
+      updated = await client.updateProviderCredentialsConditionally(
+        transfer,
+        current.resourceVersion,
+        signal,
+      );
+    } catch {
+      signal.throwIfAborted();
+      refuse();
+    }
+    const prepared = checkProvider(updated, binding, workspace, owner.id, profileVersion);
+    if (
+      prepared.id !== current.id ||
+      BigInt(prepared.resourceVersion) <= BigInt(current.resourceVersion) ||
+      prepared.sourceVersion !== resolved.version
+    ) {
+      refuse();
+    }
+    return prepared;
+  }
   let provider: OpenShellProviderResponse | undefined;
   try {
-    provider = await client.createProvider(
-      {
-        workspace,
-        name: profile.id,
-        type: profile.id,
-        labels: {
-          [MANAGED_BY_LABEL]: MANAGED_BY,
-          [SOURCE_ID_LABEL]: binding.sourceRef.id,
-          [NAMESPACE_ID]: input.namespaceId,
-          [DELIVERY_OWNER]: STATIC_DELIVERY,
-        },
-        credentials: { [binding.projection.environment]: resolved.credential },
-        config: { [SOURCE_VERSION]: resolved.version },
-        ...(resolved.expiresAt && {
-          credentialExpirationTimes: { [binding.projection.environment]: resolved.expiresAt },
-        }),
-      },
-      signal,
-    );
+    provider = await client.createProvider(transfer, signal);
   } catch (error) {
     if (!(error instanceof OpenShellProviderAlreadyExistsError)) {
       signal.throwIfAborted();
