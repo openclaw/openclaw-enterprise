@@ -45,12 +45,10 @@ Solid arrows trace source paths, not provider verification.
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
-output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
-omitted and refuses unsupported explicit formats before any request. It then
-prints the acknowledged result through
-`internal/occcli/output.go:printStructured`. A successful mutation therefore
-returns its result without a later table-format error.
+`internal/occcli/agent_policy.go:agentPolicyCommand` supports JSON and YAML.
+`internal/occcli/cli.go:validateOptions` defaults to JSON when `--output` is omitted
+and rejects unsupported formats before requests. `internal/occcli/output.go:printStructured`
+prints acknowledged results without a later format error.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
@@ -114,15 +112,12 @@ Both state adapters return `sandboxPolicyEditing: false` at Agent creation,
 matching the PostgreSQL column default and subsequent reads. The separately
 authorized editing operation changes this flag.
 
-`packages/occ/src/state/postgres-state.ts` performs versioned updates. Agent
-creation creates its one policy through a database trigger. Constraints enforce
-ownership, document shape, immutable application identity, version transitions,
-and application revision ownership. The in-memory adapter and the PostgreSQL
-update trigger reject saves that remove a pending application, including saves
-that keep the current policy version. The worker can record the expected provider
-resource version and set the same application to `applied` or `failed`.
-Agent deletion cascades policy removal and
-cleans its exact IAM access.
+`packages/occ/src/state/postgres-state.ts` versions updates. A trigger creates
+each Agent's single policy. Constraints enforce ownership, document shape,
+immutable application identity, version transitions and revision ownership.
+Both adapters reject removing pending applications, even at the current version.
+The worker records the expected provider resource version and settles the same
+application as `applied` or `failed`. Agent deletion cascades policy and exact IAM access removal.
 
 Migration 0086 lets State persist an optional ordered list of repository grants
 in the versioned policy. An absent list preserves the existing policy format.
@@ -189,53 +184,45 @@ console editor submits canonical additions through the same mutation path;
 native draft approval cannot bypass OCC admission.
 
 `console/driver-configurations.mts:renderAgentDriverConfigurations` discovers
-sections and selects resource-owner controls. `console/configuration-fields.mts`
-renders schema fields and JSON fallback, with safe field/root diagnostics.
-String controls retain the complete draft. Length validation stays with the
-policy owner: JSON Schema counts Unicode code points, while HTML length
-attributes count UTF-16 code units and can truncate a valid executable path.
+sections and selects owner controls. `console/configuration-fields.mts` renders
+schema fields, JSON fallback and safe field/root diagnostics. String drafts remain
+complete for owner validation because HTML counts UTF-16 units while JSON Schema
+counts Unicode code points, risking valid path truncation.
 `console/agents/sandbox-policy.mts:renderLogs` snapshots the displayed log window,
 filters it, and renders five denials per page initially. Selection spans pages;
 Select page changes only eligible visible rows. Follow retains up to 1,000 new
 log records without replacing inspected rows. Show newest accepts the retained
 window and removes selections for records no longer retained.
 
-`stageGrants` builds exact executable/host/port candidates, deduplicates requests,
-and skips requests already covered by saved or proposed grants. It retains the
-complete additions array and opens the schema editor or batch preview. Missing
-metadata disables prefilling. An incomplete existing draft must be corrected
-before staging more grants. `ruleList` searches and pages explicit rules five at
+`stageGrants` deduplicates exact executable/host/port candidates and excludes
+requests covered by saved or proposed grants. It preserves all additions and
+opens the schema editor or batch preview. Missing metadata prevents prefilling.
+Incomplete drafts block further staging. `ruleList` searches and pages explicit rules five at
 a time; row controls edit or remove local additions.
 
 `console/agents/sandbox-policy.mts:renderPolicy` places policy status and suggestions
 above the log. It shows three suggestions initially and expands the remaining
 candidates on request, independently of mutation authority. `openNetworkLimits`
 uses the policy view's ceiling in a separate read-only dialog. Defaults and
-version details stay in the main-page disclosure. The Network policy card also enables or disables Agent policy editing
-through the separately authorized editing operation. Mutation feedback appears in
-the card while the dialog is closed; a failed policy read retains its error and
-read recovery action. `renderEditor` manages rules without an editing toggle and
-keeps proposed rules local until preview. Its footer compares the draft with saved
-additions, including removals and restored values, to offer review, application,
-or Done. Saving a confirmed response closes the dialog and clears the completed
-selection. Review shows additions, updates, and removals from the controller-validated rules,
-with the previously saved policy available for comparison. Save sends the complete
-validated array with the reviewed policy version. Superseded preview and read responses
-cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
-cannot invalidate a newer request. A pending application re-arms polling after
-the latest read, including a response discarded after a draft edit.
-An unreadable preview retains the draft for another review. The combined request
-must return the reviewed rules, the next version of this Agent’s policy and a
-fresh pending application for the selected running revision. Starting a write
-invalidates earlier policy reads and pauses polling. If the combined response is
-lost or does not match, the Console reads the policy again. An unsuccessful
-read leaves **Refresh policy** available in the open editor. A refused request
-keeps the edit local. After admission, the provider outcome remains pending
-until confirmed. **Save for later** only saves. **Apply saved rules** requires
-a clean draft and targets the existing saved version. `loadPolicy(true)` records explicit
-inspection of a failed application. Refresh issues only the policy GET; a separate
-Retry application action invokes the existing apply descriptor after inspection.
-The action remains subject to current permissions, lifecycle, and draft guards.
+version details stay in the main-page disclosure. The Network policy card controls editing through a separate authorized operation,
+shows mutation feedback with the dialog closed, and retains read errors and recovery.
+`renderEditor` has no editing toggle and keeps proposals local until preview.
+Its footer compares saved and draft additions, including removals and restorations,
+to offer review, application or Done. Review compares controller-validated changes
+with the saved policy. Save submits the complete validated array and reviewed version.
+Confirmation closes the dialog and clears the completed selection. Superseded responses cannot overwrite newer drafts, and separately sequenced
+policy reads cannot invalidate newer requests. Pending applications resume polling
+after the latest read, even if a draft edit discarded its response. Unreadable
+previews retain the draft. The combined response must contain the reviewed rules,
+this Agent's next policy version and a fresh pending application for the selected
+running revision. Writes invalidate earlier reads and pause polling. A lost or
+mismatched response triggers a policy GET. If that fails, **Refresh policy**
+remains available in the open editor. Refusals retain local edits. Provider
+outcomes remain pending until confirmed. **Save for later** only saves.
+**Apply saved rules** requires a clean draft and targets the saved version.
+`loadPolicy(true)` records inspection of a failed application. Refresh only reads.
+Retry application invokes the existing apply descriptor after inspection, subject
+to current permissions, lifecycle and draft guards.
 
 `console/agents/sandbox-policy.mts:mutate` displays rejected saves as focused
 alerts and scrolls the reason into view after rendering. Ceiling rejection
