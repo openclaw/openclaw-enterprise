@@ -493,10 +493,22 @@ async function rawConnect(
   gateway: GatewayPod,
   authority: string,
 ): Promise<number> {
-  const script = `const n=require('node:net');const p=new URL(process.env.HTTPS_PROXY);const s=n.connect(Number(p.port),p.hostname,()=>s.write('CONNECT '+${JSON.stringify(authority)}+' HTTP/1.1\\r\\nHost: '+${JSON.stringify(authority)}+'\\r\\n\\r\\n'));let b='';s.setTimeout(10000,()=>s.destroy());s.on('data',x=>{b+=x;const m=/^HTTP\\/1\\.[01] (\\d+)/.exec(b);if(m){console.log(m[1]);s.destroy()}});s.on('error',()=>process.exitCode=2);`;
+  const script = String.raw`const n=require('node:net');const p=new URL(process.env.HTTPS_PROXY);const a=process.argv[1];const s=n.connect(Number(p.port),p.hostname,()=>s.write('CONNECT '+a+' HTTP/1.1\r\nHost: '+a+'\r\n\r\n'));let b='';s.setTimeout(10000,()=>s.destroy());s.on('data',x=>{b+=x;const m=/^HTTP\/1\.[01] (\d+)/.exec(b);if(m){console.log(m[1]);s.destroy()}});s.on('error',()=>process.exitCode=2);`;
   const { stdout } = await kubectl(
     stack,
-    ["-n", gateway.namespace, "exec", gateway.pod, "-c", "gateway", "--", "node", "-e", script],
+    [
+      "-n",
+      gateway.namespace,
+      "exec",
+      gateway.pod,
+      "-c",
+      "gateway",
+      "--",
+      "node",
+      "-e",
+      script,
+      authority,
+    ],
     { timeout: 20_000 },
   );
   return Number(stdout.trim());
@@ -527,10 +539,23 @@ async function managedProxy(stack: SmokeStack, gateway: GatewayPod): Promise<URL
 }
 
 async function deniedTcp(stack: SmokeStack, gateway: GatewayPod, host: string, port: number) {
-  const script = `const net=require("node:net");const s=net.connect(${JSON.stringify(port)},${JSON.stringify(host)});s.setTimeout(2000);s.once("connect",()=>{console.log("connected");s.destroy()});s.once("timeout",()=>{console.log("denied");s.destroy()});s.once("error",()=>console.log("denied"));`;
+  const script = `const net=require("node:net");const s=net.connect(Number(process.argv[2]),process.argv[1]);s.setTimeout(2000);s.once("connect",()=>{console.log("connected");s.destroy()});s.once("timeout",()=>{console.log("denied");s.destroy()});s.once("error",()=>console.log("denied"));`;
   const { stdout } = await kubectl(
     stack,
-    ["-n", gateway.namespace, "exec", gateway.pod, "-c", "gateway", "--", "node", "-e", script],
+    [
+      "-n",
+      gateway.namespace,
+      "exec",
+      gateway.pod,
+      "-c",
+      "gateway",
+      "--",
+      "node",
+      "-e",
+      script,
+      host,
+      String(port),
+    ],
     { timeout: 10_000 },
   );
   assert.equal(stdout.trim(), "denied", `Gateway unexpectedly connected to ${host}:${port}`);
