@@ -391,8 +391,8 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
   const selected = {
     namespaceId: context.namespace.id,
     agentId: selectedAgent,
-    requests: { cpu: "88" },
-    limits: { cpu: "90", memory: "352Gi" },
+    requests: { cpu: "1500m" },
+    limits: { cpu: "3", memory: "3Gi" },
   };
   const options: OpenShellSandboxDriverOptions = {
     ...base,
@@ -437,14 +437,14 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
   };
   const saved = templateFor(name);
   assert.deepEqual(resources(saved, "requests"), {
-    cpu: "88",
+    cpu: "1500m",
     memory: "1Gi",
     "example.com/gpu": "1",
     "ephemeral-storage": "256Mi",
   });
   assert.deepEqual(resources(saved, "limits"), {
-    cpu: "90",
-    memory: "352Gi",
+    cpu: "3",
+    memory: "3Gi",
     "example.com/gpu": "1",
     "ephemeral-storage": "1Gi",
   });
