@@ -279,6 +279,9 @@ export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup"
 export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");
 
 export const PolicyDenials = story("policyDenials");
+export const PolicyRepositoryRecovery = story("policyRepositoryRecovery");
+export const PolicyRepositoryLimits = story("policyRepositoryLimits");
+export const PolicyRepositoryEditor = story("policyRepositoryEditor");
 export const PolicyUnicodeExecutable = story("policyUnicodeExecutable");
 export const PolicyDenialsMany = story("policyDenialsMany");
 export const PolicyRulesPopulated = story("policyRulesPopulated");

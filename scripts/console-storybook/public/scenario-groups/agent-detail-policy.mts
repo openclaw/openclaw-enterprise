@@ -36,6 +36,9 @@ type PolicyState =
   | "readDenied"
   | "loading"
   | "noCredential"
+  | "repositoryLimits"
+  | "repositoryEditor"
+  | "repositoryRecovery"
   | "protected"
   | "withheldOne"
   | "withheldMany";
@@ -46,8 +49,8 @@ type AgentDetailPolicyScenario = {
   group: "Pages/Agent detail";
   name: string;
   path: string;
-  deployed: true;
-  candidateDeploymentStatus: "succeeded";
+  deployed: boolean;
+  candidateDeploymentStatus?: "succeeded";
   policyState: PolicyState;
   description: string;
   steps: string[];
@@ -76,6 +79,17 @@ export function createAgentDetailPolicyScenarios({
   const variants = [
     ["policyDenials", "ready", "Policy denials and reviewed network additions"],
     ["policyUnicodeExecutable", "unicode", "Unicode executable path remains complete"],
+    ["policyRepositoryLimits", "repositoryLimits", "Inspect Namespace repository limits"],
+    [
+      "policyRepositoryRecovery",
+      "repositoryRecovery",
+      "Withdraw grants with an unreadable active revision",
+    ],
+    [
+      "policyRepositoryEditor",
+      "repositoryEditor",
+      "Save Agent repository access and narrow a grant",
+    ],
     ["policyDenialsMany", "many", "Two hundred denials with batch approval"],
     ["policyRulesPopulated", "populated", "Manage ten applied network rules"],
     [
@@ -155,9 +169,9 @@ export function createAgentDetailPolicyScenarios({
         {
           group: "Pages/Agent detail",
           name,
-          path: `${candidateVersion}&tab=policy`,
-          deployed: true,
-          candidateDeploymentStatus: "succeeded",
+          path: `${state === "repositoryEditor" ? candidateVersion.replace(/([?&]revision=)[^&]+/, "$1draft") : candidateVersion}&tab=policy`,
+          deployed: state !== "repositoryEditor",
+          ...(state === "repositoryEditor" ? {} : { candidateDeploymentStatus: "succeeded" }),
           policyState: state,
           ...(["many", "populated"].includes(state)
             ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
@@ -236,11 +250,45 @@ export function createAgentDetailPolicyScenarios({
                 ],
               }
             : {}),
+          ...(state === "repositoryLimits"
+            ? {
+                policyCeiling: [],
+                description:
+                  "The Namespace delegates repository access. An earlier version was deployed without a repository policy.",
+                steps: [
+                  "Open View network limits. Check that example/application is read and example/tooling is write.",
+                  "Open Manage rules. Check the guidance to create a new Agent and verify that no repository save controls appear.",
+                ],
+              }
+            : {}),
+          ...(state === "repositoryEditor"
+            ? {
+                policyCeiling: [],
+                description:
+                  "An Agent can propose repository access within the Namespace limits before its first deployment.",
+                steps: [
+                  "Open Manage rules, select Read for example/application and Write for example/tooling, and save.",
+                  "Reopen Manage rules, change example/tooling to Read, and save again.",
+                  "Reload the story from its initial state and choose Deny all repositories. Confirm the empty policy remains distinct from legacy access.",
+                ],
+              }
+            : {}),
+          ...(state === "repositoryRecovery"
+            ? {
+                steps: [
+                  "Check that the active policy is unavailable and the saved grants are readable.",
+                  "Open Manage rules and choose Withdraw saved repository grants.",
+                  "Check the compatible controller and Worker guidance, then save the deny-all policy.",
+                ],
+              }
+            : {}),
           ...(state === "protected"
             ? {
                 steps: [
                   "Open Manage rules. The protected execution notice is visible, adding and editing are disabled, and live application is unavailable.",
-                  "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules, review the removal, then Save for later and confirm the saved policy is empty.",
+                  "Existing ordinary rules and repository grants were saved before protected execution applied. First choose Remove saved network rules, review the removal, and choose Save for later.",
+                  "Reopen Manage rules. Choose Withdraw saved repository grants and check the confirmation. Back to editing preserves the saved grant.",
+                  "Review again and choose Save deny-all policy. Confirm the saved policy denies all repositories and the feedback describes the saved change. Check that no live application or deployment is offered.",
                 ],
               }
             : {}),

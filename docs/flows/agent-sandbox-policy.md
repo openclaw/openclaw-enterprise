@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-20"
-last_updated_session: "authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca"
+updated: "2026-11-21"
+last_updated_session: "authoring-run/6ef4f22d-ce36-4d4c-941f-cb7a21afbb49"
 ---
 
 # Agent sandbox policy flow
@@ -29,6 +29,8 @@ graph TD
   Draft --> Preview["Preview draft<br/>without writes"]
   Preview -->|errors| Draft
   Preview -->|valid| U2["Review proposal"]
+  Cfg --> Grants["Choose repository grants<br/>or confirm deny all"]
+  Grants --> A
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
@@ -45,23 +47,19 @@ Solid arrows trace source paths, not provider verification.
 
 ### 1. Admit and persist desired additions
 
-The CLI supports JSON and YAML for policy commands
-(`internal/occcli/agent_policy.go:agentPolicyCommand`). It defaults to JSON
-and rejects an unsupported format before the request. It prints the
-acknowledged result as structured output.
+The CLI defaults to JSON and accepts YAML
+(`internal/occcli/agent_policy.go:agentPolicyCommand`). It rejects unsupported
+formats before sending a request and prints the acknowledged result.
 
-`SetupDiscovery.discoverConfigurations` lists selected Driver contributions.
-Installation `administer` permits [startup inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
-Agent discovery requires Agent and policy `read` and shares the policy GET descriptor.
-Submitted additions cannot select a Driver.
+`SetupDiscovery.discoverConfigurations` lists the selected Driver contributions.
+Agent discovery requires Agent and policy `read`. The policy GET describes the
+same selected owner. Submitted additions cannot select a Driver.
 
-`validateAgentSandboxPolicy` checks Agent and policy authorization, editing, version,
-pending work, grant schemas and Driver rules. `networkGrantAdmissionDetails` in
-`packages/contracts/src/deployment-policy.ts` checks executables, hosts and ports against the
-Installation ceiling and Sandbox wildcard and range support. Preview writes nothing; save and deploy repeat admission.
-
-Validation names failed fields and checks. Stale or denied requests retain resource errors.
-`internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details without Unicode controls.
+`validateAgentSandboxPolicy` checks permission, editing, version, pending work,
+schema and Driver rules. `networkGrantAdmissionDetails` checks the executable,
+host and ports against the Installation ceiling and Sandbox capabilities.
+Preview writes nothing. Save and deploy repeat admission.
+`internal/occclient/transport.go:APIError.Error` prints up to 32 escaped errors.
 
 Staged `validateDeploymentPolicy(policy, context)` checks source approval, reviewed requests and
 projections using trusted binding, source and consumer authority. Only proposed proxy configuration
@@ -85,20 +83,16 @@ identity, version and empty additions before runtime credential provisioning.
 That immutable snapshot remains ineligible for live apply. For unreadable scoped revisions, the policy view reports
 `protectedExecution: null`.
 
-Protected Codex repository preparation compiles the revision's qualified artifact
-snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
-Both paired compilers validate the complete map. The Sandbox separately compares
-the final workspace enrollment rule with its validated Agent-owned setup binding,
-then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
-The proxy checks the complete artifact map and bounded auxiliary rule before
-comparing the complete loaded policy.
-For an Agent with repository bindings (or a Git-bound active revision), Driver
-admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
-refuses a grant or default reaching `github.com` or a name under it, or naming an
-IP address, with a `409` naming it. Adding a binding beside such a saved grant, deploy, and provisioning refuse it too.
-With saved additions, deploy and an Agent update that leaves repository bindings
-authorize SandboxPolicy `read` first, so only a caller who may read the grant
-sees it named (findings 2151, 2881).
+Protected Codex repository preparation uses
+`openshell-codex-artifacts.ts` to compile the qualified artifact snapshot. The
+Sandbox verifies the workspace enrollment rule against the Agent's setup binding
+and returns the immutable policy in `SandboxResourceRef.proxyWiring`. The proxy
+checks the artifact and auxiliary rules before comparing loaded policy.
+
+For a Git-bound Agent or active revision, OpenShell refuses additions or defaults
+that reach GitHub's domain or name an IP address. Binding updates, deploy and
+provisioning check the same overlap. Deploy and binding updates require policy
+`read` before naming a saved grant (findings 2151, 2881).
 `apps/controller/src/http/sandbox-policy.ts` records the
 nonsecret approved additions with their version in the same transaction.
 The required facet argument currently admits `networking` only. Other facets
@@ -122,6 +116,14 @@ returns the saved grants and Namespace ceiling. Save the first list before
 deploying. The selected protected topology must admit a first list, including
 `[]`, or a nonempty replacement. Omission retains the list. Empty lists in both fields let an authorized
 editor with policy read access withdraw grants after Driver loss.
+
+`apps/controller/src/console/agents/sandbox-policy.mts:renderAgentSandboxPolicy`
+uses the GET hint to offer candidates from the Namespace ceiling. The versioned
+PUT checks the whole list. The Console verifies the returned Agent, Namespace,
+version and grants. Deny-all and withdrawal require confirmation. For an Agent
+with earlier unscoped deployments, create a new Agent and save its policy before
+deploying. If the active revision is unreadable, use a compatible controller and
+Worker to stop it.
 
 Deployment rechecks the selected Repo scope, proxy and Driver identities across
 asynchronous validation before accessing credentials and inserting a revision.
@@ -266,6 +268,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-21 08:16: Document Console repository choices, first-deployment eligibility and active revision recovery. (authoring-run/6ef4f22d-ce36-4d4c-941f-cb7a21afbb49 - 9cd9c344f9c57cd158dd74b87029a8266ca7cac2)
 
 - 2026-11-20 23:58: Document repository grant persistence and revision compatibility. (authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca - 0f4a2d3d3)
 
