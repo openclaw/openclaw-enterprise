@@ -4,6 +4,7 @@
     "OCC_TEST_OPENSHELL_K3D_REAL": "1",
     "OCC_TEST_LOCAL_FIRST_AGENT_REAL": "1",
     "OCC_TEST_OPENSHELL_SAVED_AGENT_ACL": "1",
+    "OCC_TEST_OPENSHELL_SAVED_AGENT_REST": "reads",
     "OPENAI_API_KEY": "fixture-only-no-model-call",
     "OCC_TEST_OPENAI_MODEL": "fixture-only-no-model-call"
   },
@@ -13,7 +14,9 @@
     {
       "path": "tests/integration/openshell-saved-agent-git-policy-real.test.ts",
       "expectedTests": [
-        "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent"
+        "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent",
+        "Saved native Git grants admit read-only gh API on A and B",
+        "Downgraded native Git grants retain read-only gh API"
       ]
     }
   ]
