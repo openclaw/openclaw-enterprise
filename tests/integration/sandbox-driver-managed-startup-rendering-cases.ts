@@ -317,10 +317,9 @@ export function registerManagedStartupRenderingCases(): void {
       id: "openshell-sandbox",
       backend: backendFor(client),
     });
-    await assert.rejects(
-      resizedDriver.provisionHarness({ ...context, revision, requirements }),
-      /cannot change resources/,
-    );
+    await assert.rejects(resizedDriver.provisionHarness({ ...context, revision, requirements }), {
+      code: "SANDBOX_WORKLOAD_IMMUTABLE",
+    });
 
     // A server with the older image-only update contract can acknowledge an update
     // while retaining command/environment/metadata. Readback must prevent StartSandbox.

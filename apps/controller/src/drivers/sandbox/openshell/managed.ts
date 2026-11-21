@@ -515,8 +515,9 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         throw new Error("Stop the previous managed workload before updating its Sandbox.");
       }
       if (!isDeepStrictEqual(immutableWorkload(existing.spec), immutableWorkload(create.spec))) {
-        throw new Error(
-          "OpenShell workload update cannot change resources or runtime class; this prototype refuses that revision.",
+        throw new SandboxRevisionUnsupportedError(
+          "SANDBOX_WORKLOAD_IMMUTABLE",
+          "OpenShell workload update cannot change resources or other immutable Sandbox settings.",
         );
       }
       if (client.updateSandbox === undefined || existing.resourceVersion === undefined) {

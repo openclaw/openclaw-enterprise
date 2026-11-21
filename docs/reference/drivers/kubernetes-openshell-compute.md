@@ -100,6 +100,10 @@ use it have been retired. Redeployment stops the predecessor before checking
 its template. Provisioning refuses the old layout with `SANDBOX_RECREATION_REQUIRED`,
 including on resume. Deleting an Agent removes its retained storage.
 
+Changing resource requests or limits on a retained Sandbox stops the predecessor
+and fails the deployment with `SANDBOX_WORKLOAD_IMMUTABLE`. Restore the original
+Installation sizing and deploy again to resume with the retained files.
+
 The Sandbox and runtime Provider names derive from the Agent ID. Stop and
 revision retirement retain the Sandbox and its storage. Replacement updates
 runtime material, policy and workload while stopped. Each update checks the

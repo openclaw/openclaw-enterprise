@@ -90,7 +90,8 @@ ownership on readback. A retry can adopt a committed config after a lost
 response. A retry for the same revision may renew its setup envelope.
 
 `reconcileHarness` verifies Namespace and Agent ownership and requires a
-confirmed stop for replacement. It rejects resource changes.
+confirmed stop for replacement. A difference in `immutableWorkload`, including
+sizing, raises `SANDBOX_WORKLOAD_IMMUTABLE` before update or start.
 Before replacing runtime Provider material or reconciling the owned Sandbox,
 `requireManagedTemplate` refuses the old caller-config layout. The worker treats
 `SandboxRevisionUnsupportedError` as permanent. See
