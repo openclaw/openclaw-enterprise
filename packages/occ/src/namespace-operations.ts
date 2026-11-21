@@ -21,7 +21,6 @@ import {
 import { removeNamespacePolicy, removedPolicyDetails } from "./iam-policy-cleanup.ts";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import type { NamespaceLifecycleEvidence } from "./namespace-lifecycle.ts";
-import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { createPresetOperations } from "./preset-operations.ts";
 import { exactNamespace, namespaceIdentity } from "./resource-scope.ts";
@@ -54,7 +53,7 @@ interface NamespaceDependencies {
     "bindCreator" | "applyConfiguredPolicy" | "lockNamespaceForPolicyDelete"
   >;
   readonly presets: Pick<
-    ReturnType<typeof createPresetOperations<PlatformReadView, PlatformUnitOfWork>>,
+    ReturnType<typeof createPresetOperations>,
     "ensureNamespaceDefaultPresets" | "deletePresetInState" | "isUnmodifiedDefaultPreset"
   >;
   readonly record: (state: PlatformUnitOfWork, operation: NamespaceOperation) => Promise<void>;

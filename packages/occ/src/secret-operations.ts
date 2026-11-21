@@ -14,6 +14,8 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type { AgentProvisioningConfigurationInput } from "./agent-provisioning.ts";
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
   DependencyUnavailableError,
   NamespaceNotReadyError,
@@ -28,6 +30,7 @@ import {
 import { accessBindingsTargeting, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import { exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 export interface CreateSecretInput {
   readonly namespaceId: string;
@@ -50,35 +53,17 @@ type ConsumerProvisioningPlan = {
 };
 
 interface SecretOperationsDependencies {
-  readonly read: <T>(work: (state: PlatformReadView) => Promise<T>) => Promise<T>;
-  readonly mutate: <T>(work: (state: PlatformUnitOfWork) => Promise<T>) => Promise<T>;
-  readonly authorize: (
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    target: ResourceRef,
-  ) => Promise<unknown>;
-  readonly canRead: (principalId: string, target: ResourceRef) => Promise<boolean>;
-  readonly authorizationDecision: (
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    target: ResourceRef,
-  ) => Promise<{ readonly decision: { readonly allowed: boolean } }>;
-  readonly holdAuthority: (state: PlatformUnitOfWork) => Promise<void>;
+  readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
+  readonly authority: Pick<
+    ControllerAuthority,
+    "authorize" | "authorizationDecision" | "canRead" | "holdAuthority"
+  >;
   readonly bindCreator: (
     state: PlatformUnitOfWork,
     principalId: string,
     target: ResourceRef & { readonly namespaceId: string },
   ) => Promise<void>;
-  readonly namespaceIdentity: (namespaceId: string) => void;
   readonly getNamespace: (principalId: string, namespaceId: string) => Promise<Readonly<Namespace>>;
-  readonly exactNamespace: (
-    state: PlatformReadView,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
-  readonly lockNamespace: (
-    state: PlatformUnitOfWork,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
   readonly lockNamespaceForPolicyDelete: (
     state: PlatformUnitOfWork,
     principalId: string,
@@ -162,10 +147,10 @@ export async function secretOperation<T>(operation: () => Promise<T>): Promise<T
   }
 }
 
-export function createSecretOperations(
-  installationId: () => string,
-  deps: SecretOperationsDependencies,
-) {
+export function createSecretOperations(installationId: string, deps: SecretOperationsDependencies) {
+  const { read, transact } = deps.transactions;
+  const { authorize, authorizationDecision, canRead, holdAuthority } = deps.authority;
+
   async function createSecret(
     principalId: string,
     input: CreateSecretInput,
@@ -174,19 +159,19 @@ export function createSecretOperations(
     if (!isName(input.name)) {
       throw new ScopeViolationError("The Secret name is invalid.");
     }
-    deps.namespaceIdentity(input.namespaceId);
-    return deps.mutate(async (state) => {
-      await deps.holdAuthority(state);
+    namespaceIdentity(input.namespaceId);
+    return transact(async (state) => {
+      await holdAuthority(state);
       const target: ResourceRef = {
         kind: "secret",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
       };
-      await deps.authorize(principalId, "create", target);
-      const namespace = await deps.lockNamespace(state, input.namespaceId);
+      await authorize(principalId, "create", target);
+      const namespace = await lockNamespace(state, input.namespaceId);
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
       // while this write waited stops it before it leaves a durable Owner binding or grant.
-      await deps.authorize(principalId, "create", target);
+      await authorize(principalId, "create", target);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -220,9 +205,9 @@ export function createSecretOperations(
     namespaceId: string,
     secretId: string,
   ): Promise<Readonly<SecretDetail>> {
-    await deps.authorize(principalId, "read", { kind: "secret", id: secretId, namespaceId });
-    return deps.read(async (state) => {
-      await deps.exactNamespace(state, namespaceId);
+    await authorize(principalId, "read", { kind: "secret", id: secretId, namespaceId });
+    return read(async (state) => {
+      await exactNamespace(state, namespaceId);
       const secret = await state.secrets.findSecret(namespaceId, secretId);
       if (!secret) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
@@ -239,11 +224,11 @@ export function createSecretOperations(
     namespaceId: string,
   ): Promise<readonly Readonly<SecretMetadata>[]> {
     const namespace = await deps.getNamespace(principalId, namespaceId);
-    return deps.read(async (state) => {
+    return read(async (state) => {
       const readable: Readonly<SecretMetadata>[] = [];
       for (const secret of await state.secrets.listSecrets(namespace.id)) {
         if (
-          await deps.canRead(principalId, {
+          await canRead(principalId, {
             kind: "secret",
             id: secret.id,
             namespaceId: namespace.id,
@@ -262,19 +247,19 @@ export function createSecretOperations(
     unreadableAmong: ReadonlySet<string>,
   ): Promise<{ readonly readable: readonly string[]; readonly unreadableCount: number }> {
     const namespace = await deps.getNamespace(principalId, namespaceId);
-    return deps.read(async (state) => {
+    return read(async (state) => {
       const readable: string[] = [];
       let unreadableCount = 0;
       for (const secret of await state.secrets.listSecrets(namespace.id)) {
         const resource: ResourceRef = { kind: "secret", id: secret.id, namespaceId: namespace.id };
-        const read = await deps.canRead(principalId, resource);
-        if (!read && !unreadableAmong.has(secret.id)) {
+        const mayRead = await canRead(principalId, resource);
+        if (!mayRead && !unreadableAmong.has(secret.id)) {
           continue;
         }
-        if ((await deps.authorizationDecision(principalId, "operate", resource)).decision.allowed) {
+        if ((await authorizationDecision(principalId, "operate", resource)).decision.allowed) {
           continue;
         }
-        if (read) {
+        if (mayRead) {
           readable.push(secret.id);
         } else {
           unreadableCount += 1;
@@ -289,14 +274,14 @@ export function createSecretOperations(
     input: UpdateSecretInput,
   ): Promise<Readonly<SecretMetadata>> {
     validateSecretValue(input.value);
-    deps.namespaceIdentity(input.namespaceId);
-    return deps.mutate(async (state) => {
-      await deps.authorize(principalId, "update", {
+    namespaceIdentity(input.namespaceId);
+    return transact(async (state) => {
+      await authorize(principalId, "update", {
         kind: "secret",
         id: input.secretId,
         namespaceId: input.namespaceId,
       });
-      const namespace = await deps.lockNamespace(state, input.namespaceId);
+      const namespace = await lockNamespace(state, input.namespaceId);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -319,8 +304,8 @@ export function createSecretOperations(
     namespaceId: string,
     secretId: string,
   ): Promise<readonly RemovedAccessBinding[]> {
-    deps.namespaceIdentity(namespaceId);
-    return deps.mutate(async (state) => {
+    namespaceIdentity(namespaceId);
+    return transact(async (state) => {
       const namespace = await deps.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "secret",
         id: secretId,
@@ -373,8 +358,7 @@ export function createSecretOperations(
       const key = JSON.stringify([action, resource.kind, resource.namespaceId, resource.id]);
       let decision = decisions.get(key);
       if (decision === undefined) {
-        decision = (await deps.authorizationDecision(principalId, action, resource)).decision
-          .allowed;
+        decision = (await authorizationDecision(principalId, action, resource)).decision.allowed;
         decisions.set(key, decision);
       }
       return decision;
@@ -430,7 +414,7 @@ export function createSecretOperations(
     const checks: [AuthorizationRequest["action"], ResourceRef][] = [
       ["create", { kind: "agent", namespaceId, id: namespaceId }],
       ["create", { kind: "configuration", namespaceId, id: namespaceId }],
-      ["administer", { kind: "installation", id: installationId() }],
+      ["administer", { kind: "installation", id: installationId }],
       ...(record.agentId === undefined
         ? []
         : (["read", "operate", "deploy"] as const).map(
