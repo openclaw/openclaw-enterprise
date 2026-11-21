@@ -18,8 +18,8 @@ agentNativeAdmin:
 
 bootstrap:
   adminEmail: admin@example.invalid
-  password:
-    claimName: occ-bootstrap-admin-password
+  credentials:
+    secretName: occ-bootstrap-credentials
 
 database:
   caSecretName: occ-rds-ca
@@ -30,10 +30,6 @@ database:
     - 10.45.0.13/32
 
 api:
-  # For Slack directory lookup, set the approved proxy independently of the
-  # gateway proxy in installation.yaml, or enable slackProxy below.
-  # See docs/guides/integrations/slack.md.
-  # channelDirectoryProxyUrl: http://198.51.100.25:3128
   # Optional; see model discovery in docs/reference/console/create-and-deploy.md.
   modelDiscoveryCidrs: []
   # Optional MCP plugin discovery HTTPS hosts; see docs/guides/topics/plugins-configure.md.
@@ -81,10 +77,11 @@ repositoryCredentials:
   # serviceName: git
   # upstreamCidrs: [198.51.100.0/24]
 
-# Optional chart-managed CONNECT proxy for Slack directory lookup and future
-# gateway channel traffic. Public HTTPS egress excludes private/reserved ranges.
-slackProxy:
+# Optional dedicated Envoy egress fleet. Set matching runtime.channelEgress
+# fields in installation.yaml and supply the actual Pod, Service and node CIDRs.
+channelEgress:
   enabled: false
+  excludedCidrs: []
 
 # Metrics listeners are enabled privately. Set both selectors to admit your scraper.
 metrics:

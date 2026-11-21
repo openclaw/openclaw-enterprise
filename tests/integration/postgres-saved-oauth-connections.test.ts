@@ -15,7 +15,7 @@ import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-ses
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -228,7 +228,7 @@ test(
     const removed = await inject("DELETE", `${base}/credential-sources/${pendingId}`);
     assert.equal(removed.statusCode, 204, removed.body);
     const pendingSession = await pool.query(
-      "SELECT 1 FROM occ.connection_sessions WHERE credential_source_id=$1",
+      "SELECT 1 FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1",
       [pendingId],
     );
     assert.equal(pendingSession.rowCount, 0);
@@ -929,7 +929,7 @@ test(
     try {
       await lock.query("BEGIN");
       const held = await lock.query(
-        "DELETE FROM occ.connection_sessions WHERE credential_source_id=$1 RETURNING pg_backend_pid() AS pid, pkce_verifier",
+        "DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1 RETURNING pg_backend_pid() AS pid, binding->>'pkceVerifier' AS pkce_verifier",
         [waiting.id],
       );
       verifier = held.rows[0].pkce_verifier;

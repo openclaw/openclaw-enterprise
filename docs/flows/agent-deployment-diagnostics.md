@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-14
-last_updated_session: authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260
+updated: 2026-11-20
+last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
 ---
 
 # Agent deployment diagnostics flow
@@ -18,7 +18,7 @@ work or select a live version.
 
 - Trigger: `POST /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`.
 - Source: `apps/controller/src/index.ts:createFastifyApp`,
-  `packages/occ/src/index.ts:OpenClawController.diagnoseAgentDeployment`, and
+  `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.diagnoseAgentDeployment`, and
   `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.diagnoseAgentDeployment`.
 - Assumptions: `deploymentId` is the Agent revision ID of a saved version. The caller needs
   exact Agent `read` and `operate` and Agent revision `read` permissions.
@@ -49,7 +49,7 @@ graph TD
 `packages/contracts/src/api/routes.ts:occApiRoutes` declares a bodyless POST.
 `apps/controller/src/index.ts:requiredPermissions` requires exact Agent
 `operate` and `read` plus Agent revision `read`.
-`packages/occ/src/index.ts:OpenClawController.diagnoseAgentDeployment`
+`packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.diagnoseAgentDeployment`
 resolves the version under the supplied Namespace and Agent, authorizes the
 same resources, and selects the Compute Driver recorded in that version.
 
@@ -106,15 +106,14 @@ Driver provisions the Harness. An [OpenShell](../reference/drivers/openshell-san
 Harness listens inside its own Sandbox network namespace. Its `agent` `runtime-status` check is `unknown` with code
 `UNAVAILABLE`. The Gateway can still report a held failure.
 
-Beside Compute's checks, `OpenClawController.diagnoseAgentDeployment` asks the
-version's Sandbox Driver for its record of a dedicated Harness Sandbox
-(`observeHarness`, with a ten-second timeout signal). The result leads the list as an
-`agent` `sandbox` check: `succeeded` while the Sandbox runs, `failed` with a code
-such as `SANDBOX_FAILED` or `HARNESS_EXITED` once it can no longer serve the
-version, `failed` with `HARNESS_RESTARTING` while OpenShell restarts a Harness
-process that exited, and `unknown` on a first start (code `STARTING`), when the
-record is unreadable (`UNAVAILABLE`), or when a version that is not selected for the running
-Agent has no Sandbox, such as a stopped Agent's.
+Alongside Compute's checks, `AgentRuntimeObservations.diagnoseAgentDeployment`
+asks the selected Sandbox Driver about a dedicated Harness using a ten-second
+timeout signal. When supported, this observation adds the first `agent`
+`sandbox` check. A running Sandbox reports `succeeded`. A terminal Sandbox
+or a Harness restart reports `failed` with its code, such as `SANDBOX_FAILED`
+or `HARNESS_RESTARTING`. A first start (`STARTING`) or unreadable record
+(`UNAVAILABLE`) reports `unknown`. A missing or deleting Sandbox reports
+failure only for the running Agent's active revision.
 
 ### 3. Return validated evidence
 
@@ -159,11 +158,22 @@ state after admission.
   OpenClaw's own hints to run `openclaw doctor` are dropped, since the
   Harness runs Doctor itself. A pending marker in the retained `state` directory preserves the repair requirement
   across container replacements; fix the cause, then deploy again.
-- A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a dedicated
-  Gateway that OpenClaw refused to configure: an earlier Gateway process did not
-  stop cleanly, and the restarted container cannot verify that the lock holder
-  stopped. The log line quotes OpenClaw's holder description. Follow
+- A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a Gateway
+  that OpenClaw refused to configure or to start: an earlier Gateway process did
+  not stop cleanly, and this container cannot verify that the holder stopped.
+  The log line quotes each holder. A dedicated Kubernetes Gateway holds it when
+  `config validate` meets the lock, as after a kill. OpenClaw's own start can
+  also refuse, for example on a force-deleted Pod's owner lease, and exit 1. A
+  Kubernetes Gateway that never served then runs the read-only
+  `openclaw gateway recover-lock --json` (never `--confirm`) and holds when
+  holders remain, or exits 1 if none do. Every 5 minutes either hold
+  (`runtime-entrypoints.ts:holdGatewayStartupFailure`) retries a failed release
+  of its own child's records and inspects again. It restarts on purpose
+  (exit 75) once no holder remains; a failed inspection exits 1. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+- An `agent` `gateway-state-lock` check is a Kubernetes Harness whose Doctor or
+  native setup met node state lock holders. Both fail the deployment with
+  `RUNTIME_STATE_LOCK_UNVERIFIED` (`worker.ts:heldRuntimeFailureCode`).
 - A dedicated Gateway held at `gateway-tool-policy` with code
   `INCOMPATIBLE_RESPONSE` can have a runtime image provenance failure.
   `apps/controller/src/drivers/compute/gateway-tool-policy.ts:requireGatewayToolPolicyRuntime`
@@ -241,6 +251,14 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
+
+- 2026-11-18 03:40: Held `gateway-state-lock` fails as `RUNTIME_STATE_LOCK_UNVERIFIED`. (finding 3348)
+
+- 2026-11-17 23:35: Kubernetes wrappers release an unfinished Doctor's or setup's own state locks; a Harness on an unverifiable holder reports `gateway-state-lock`. (finding 3345)
+
+- 2026-11-17 12:30: Hold a Kubernetes Gateway whose own start refused an unverifiable state lock owner as check `gateway-state-lock`, after a read-only lock inspection; the recheck retries a failed release of its own child's records. (fix-gateway-lock-check, finding 3288)
 
 - 2026-11-14 11:06: Reject missing positions in the lists embedded in generated runtime programs. (authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260 - 08f8640d5503df1c98e9939ea5cce2763e9c4085)
 

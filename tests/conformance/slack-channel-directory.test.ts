@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import net from "node:net";
 import test from "node:test";
 import {
   Agent,
@@ -10,15 +9,8 @@ import {
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { SLACK_ROUTE_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
-import {
-  connectThroughProxy,
-  requestThroughProxy,
-  startSlackProxy,
-} from "../helpers/slack-proxy.mjs";
-import { within } from "../helpers/wait-for.mjs";
 
 const token = "xoxb-fixture";
 
@@ -46,23 +38,23 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
     () =>
       new SlackChannelDriver(
         globalThis.fetch,
-        "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
-        { managedProxyHosts: ["openclaw-enterprise-slack-proxy.openclaw-system.svc"] },
+        "http://openclaw-channel-egress.openclaw-system.svc:3128",
+        { managedProxyHosts: ["openclaw-channel-egress.openclaw-system.svc"] },
       ),
   );
   for (const proxyUrl of [
-    "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
-    "http://slack-proxy:3128",
-    "http://slack-proxy.openclaw-system.svc.cluster.local:3128",
+    "http://openclaw-channel-egress.openclaw-system.svc:3128",
+    "http://channel-egress:10000",
+    "http://channel-egress.openclaw-system.svc.cluster.local:3128",
     syntheticCredentialUrl({
       protocol: "http",
       username: "user",
       password: "pass",
-      host: "openclaw-enterprise-slack-proxy.openclaw-system.svc",
+      host: "openclaw-channel-egress.openclaw-system.svc",
       port: 3128,
     }),
-    "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128/path",
-    "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:65536",
+    "http://openclaw-channel-egress.openclaw-system.svc:3128/path",
+    "http://openclaw-channel-egress.openclaw-system.svc:65536",
   ]) {
     assert.throws(() => new SlackChannelDriver(globalThis.fetch, proxyUrl), /managed Kubernetes/);
   }
@@ -73,79 +65,6 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
       /^Error: Slack directory proxy must not use host 0\.0\.0\.0, which names no proxy address\.$/,
     );
   }
-});
-
-test("bundled Slack proxy process restricts methods and CONNECT targets", async (t) => {
-  const upstream = net.createServer((socket) => {
-    socket.on("error", () => {});
-    socket.write("fixture-upstream");
-  });
-  const upstreamPort = await listen(t, upstream);
-  // A fixed proxy port, so the test proves the proxy honours OCC_SLACK_PROXY_PORT.
-  const proxyOptions = { fixedPort: true, upstreamPort };
-  const { port: proxyPort } = await startSlackProxy(t, proxyOptions);
-  assert.ok(typeof proxyPort === "number");
-
-  assert.match(
-    await requestThroughProxy(proxyPort, "GET / HTTP/1.1\r\nHost: slack.com\r\n\r\n"),
-    /^HTTP\/1\.1 405 Method Not Allowed/,
-  );
-  assert.match(
-    await connectThroughProxy(proxyPort, "example.com:443"),
-    /^HTTP\/1\.1 403 Forbidden/,
-  );
-  assert.match(await connectThroughProxy(proxyPort, "slack.com:80"), /^HTTP\/1\.1 403 Forbidden/);
-  assert.match(
-    await connectThroughProxy(proxyPort, "slack.com.evil.example:443"),
-    /^HTTP\/1\.1 403 Forbidden/,
-  );
-  assert.match(
-    await connectThroughProxy(proxyPort, "slack.com:443"),
-    /^HTTP\/1\.1 200 Connection Established/,
-  );
-});
-
-test("bundled Slack proxy process exits on SIGTERM and closes open tunnels", async (t) => {
-  // In its Pod the proxy is PID 1 (ENTRYPOINT node, no init), where the kernel drops a
-  // SIGTERM that has no handler: the Pod would wait out its grace period for SIGKILL.
-  const upstream = net.createServer((socket) => {
-    socket.on("error", () => {});
-  });
-  const upstreamPort = await listen(t, upstream);
-  const proxyOptions = { fixedPort: false, upstreamPort };
-  const { child, port: proxyPort } = await startSlackProxy(t, proxyOptions);
-  assert.ok(typeof proxyPort === "number");
-  t.after(() => child.kill("SIGKILL"));
-  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
-    child.once("exit", (code, signal) => resolve({ code, signal })),
-  );
-
-  const tunnel = net.connect({ host: "127.0.0.1", port: proxyPort });
-  tunnel.on("error", () => {});
-  t.after(() => tunnel.destroy());
-  const tunnelClosed = new Promise<void>((resolve) => tunnel.once("close", () => resolve()));
-  const connected = new Promise<void>((resolve, reject) => {
-    let response = "";
-    tunnel.once("connect", () =>
-      tunnel.write("CONNECT slack.com:443 HTTP/1.1\r\nHost: slack.com:443\r\n\r\n"),
-    );
-    tunnel.on("data", (chunk) => {
-      response += chunk;
-      if (response.includes("\r\n\r\n")) {
-        if (response.startsWith("HTTP/1.1 200 Connection Established")) {
-          resolve();
-        } else {
-          reject(new Error(`CONNECT was refused: ${response}`));
-        }
-      }
-    });
-    tunnel.once("close", () => reject(new Error("tunnel closed before it was established")));
-  });
-
-  await within(connected, "establish CONNECT tunnel", 5_000);
-  child.kill("SIGTERM");
-  assert.deepEqual(await within(exited, "proxy exit", 5_000), { code: 0, signal: null });
-  await within(tunnelClosed, "tunnel close", 5_000);
 });
 
 function auth() {
@@ -494,78 +413,24 @@ test("Slack credential checks read only a whole ${NAME} token string as an env r
   assert.deepEqual(read, ["SLACK_BOT_TOKEN"]);
 });
 
-test("Slack credential checks name the missing proxy only when production expects one and Slack never answered", async (t) => {
-  // Finding 2521: production composition passes expectProxy. With no proxy URL, an auth.test
-  // that Slack never answers usually means the Installation has no Slack route, so the refusal
-  // names the Helm setting and still allows a retry for an open route that timed out (2531).
-  const check = (driver: SlackChannelDriver, value = token) =>
+test("production Slack calls fail before transport when managed egress is absent", async () => {
+  let requests = 0;
+  const driver = new SlackChannelDriver(
+    async () => {
+      requests += 1;
+      throw new Error("Direct transport must not run");
+    },
+    undefined,
+    { expectProxy: true },
+  );
+  const refusal = { name: "SlackRouteNotConfiguredError", message: SLACK_ROUTE_NOT_CONFIGURED };
+  await assert.rejects(driver.lookupDirectory({ token, kind: "users" }), refusal);
+  await assert.rejects(
     driver.validateCredentials(
-      { channels: { slack: { mode: "http", botToken: "${SLACK_BOT_TOKEN}" } } },
-      async (_id, _field, use) => use(value),
-    );
-  const noRoute = {
-    name: "SlackRouteNotConfiguredError",
-    message: SLACK_ROUTE_NOT_CONFIGURED,
-  };
-  const unavailable = { reason: "unavailable", path: "/channels/slack/botToken" };
-  // Node's own fetch sends the request to local endpoints, so each failure has the real shape.
-  const sendTo =
-    (url: string): typeof fetch =>
-    (_slack, options) =>
-      globalThis.fetch(url, options);
-  // A released port could be taken by a parallel listener; this one refuses until released.
-  const refusing = await refusingPort();
-  t.after(() => refusing.release());
-  const closedUrl = `http://127.0.0.1:${refusing.port}/`;
-  // A refused connection and an expired time budget are the two ways Slack never answers.
-  await assert.rejects(
-    check(new SlackChannelDriver(sendTo(closedUrl), undefined, { expectProxy: true })),
-    noRoute,
-  );
-  const timedOut = async () => {
-    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
-  };
-  await assert.rejects(
-    check(new SlackChannelDriver(timedOut, undefined, { expectProxy: true })),
-    noRoute,
-  );
-  // Finding 2532: a redirect refused by redirect: "error" and an invalid header value are fetch
-  // rejections after or without a connection attempt, not a missing route: they stay transient.
-  const redirectRequests: (string | undefined)[] = [];
-  const redirectTargetBody = await auth().text();
-  const redirectServer = createServer((request, response) => {
-    redirectRequests.push(request.url);
-    if (request.url === "/redirect-target") {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(redirectTargetBody);
-      return;
-    }
-    response.writeHead(302, { location: "/redirect-target" }).end();
-  });
-  const redirectUrl = `http://127.0.0.1:${await listen(t, redirectServer)}`;
-  await assert.rejects(
-    check(new SlackChannelDriver(sendTo(redirectUrl), undefined, { expectProxy: true })),
-    unavailable,
-  );
-  assert.deepEqual(redirectRequests, ["/"]);
-  await assert.rejects(
-    check(
-      new SlackChannelDriver(sendTo(redirectUrl), undefined, { expectProxy: true }),
-      "xoxb-a\u0000b",
+      { channels: { slack: { enabled: true, mode: "http", botToken: "${SLACK_BOT_TOKEN}" } } },
+      async (_id, _field, use) => use(token),
     ),
-    unavailable,
+    refusal,
   );
-  assert.deepEqual(redirectRequests, ["/"]);
-  // Development composition expects no proxy: the same failure stays the transient outage.
-  await assert.rejects(check(new SlackChannelDriver(sendTo(closedUrl))), unavailable);
-  // With a proxy configured, a refused tunnel is an outage of that route, not a missing setting.
-  const proxy = createServer();
-  proxy.on("connect", (_request, socket) => {
-    socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
-  });
-  const proxyUrl = `http://127.0.0.1:${await listen(t, proxy)}`;
-  const proxied = new SlackChannelDriver(globalThis.fetch, proxyUrl, {
-    expectProxy: true,
-  });
-  await assert.rejects(check(proxied), unavailable);
+  assert.equal(requests, 0, "an absent managed route must never enable direct provider requests");
 });

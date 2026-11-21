@@ -38,12 +38,12 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.ts";
 import {
   createConsoleFixtureTransport,
   fetchLoopback,
 } from "../helpers/console-fixture-transport.ts";
-import { jsonRequestInit } from "../helpers/inject-json.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.ts";
 import {
   alternateWorkspaceId,
   createAccessTokenServiceAccount,
@@ -60,14 +60,14 @@ import {
 } from "../helpers/postgres-backend-state.mjs";
 import { reservePort } from "../helpers/available-port.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.ts";
 import { claimIsolatedWork } from "../helpers/postgres-work-claim.ts";
+import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 import {
-  EMBEDDED_API_KEY_REQUIRED,
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-admission.ts";
 
 type BackendFixture = Awaited<ReturnType<typeof createBackendFixture>>;
 type AuthSession = Awaited<ReturnType<typeof signInWithEmailPassword>>;

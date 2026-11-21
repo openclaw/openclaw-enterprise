@@ -1,5 +1,5 @@
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
-import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.mjs";
+import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
@@ -25,13 +25,13 @@ import { createOpenShellBackend } from "../../apps/controller/src/backends/opens
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
   createOpenShellEgressAuthority,
   bindOpenShellEgressAuthority,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
-import { selfSigned } from "./certificates.mjs";
+import { selfSigned } from "./certificates.ts";
 import { listen } from "./listen.ts";
 import {
   createExchangeClients,
@@ -76,9 +76,10 @@ export const unary = (client, method, request, metadata, timeoutMs = 5000) =>
 async function buildStaticEgressFixture(
   t,
   {
-    appFactory = /** @type {(t: import("node:test").TestContext, options?: Parameters<typeof createConsoleAppFixture>[1]) => Promise<Awaited<ReturnType<typeof createConsoleAppFixture>> | Awaited<ReturnType<typeof import("./postgres-egress-app.mjs").postgresApp>>>} */ (
+    appFactory = /** @type {(t: import("node:test").TestContext, options?: Parameters<typeof createConsoleAppFixture>[1], transportDatabaseUrl?: string) => Promise<Awaited<ReturnType<typeof createConsoleAppFixture>> | Awaited<ReturnType<typeof import("./postgres-egress-app.mjs").postgresApp>>>} */ (
       createConsoleAppFixture
     ),
+    transportDatabaseUrl = /** @type {string | undefined} */ (undefined),
     driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
     // Admission uses production composition; execution retains an already admitted owner.
@@ -256,6 +257,9 @@ async function buildStaticEgressFixture(
     policyStatusRequests: 0,
     gatewayInfoRequests: 0,
     policyStatusUnavailable: false,
+    policyVersion: 1,
+    activePolicyVersion: 1,
+    policyStatus: 2,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
   const gatewayCapabilities = ["openshell.supervisor-middleware.contract", ...capabilities].sort();
@@ -401,8 +405,8 @@ async function buildStaticEgressFixture(
       }
       callback(null, {
         revision: {
-          version: 1,
-          status: 2,
+          version: observed.policyVersion,
+          status: observed.policyStatus,
           policy: observed.policy,
           policy_hash: observed.policyHash,
         },
@@ -411,7 +415,7 @@ async function buildStaticEgressFixture(
         loaded_policy_observation: observed.observation
           ? { ...observed.observation, enforcement: observed.evidence }
           : undefined,
-        active_version: 1,
+        active_version: observed.activePolicyVersion,
       });
     },
     DeleteSandbox(call, callback) {
@@ -496,7 +500,7 @@ async function buildStaticEgressFixture(
     });
     assert.ok(loaded?.protectedDriver);
     assert.ok(loaded.sandboxDriver instanceof OpenShellSandboxDriver);
-    assert.ok(loaded.proxyDriver instanceof OpenShellCredentialProxyDriver);
+    assert.ok(loaded.proxyDriver instanceof OpenShellLegacyEgressProxyDriver);
     assert.ok(loaded.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
     admissionDrivers = {
       owner: loaded.protectedDriver,
@@ -510,9 +514,9 @@ async function buildStaticEgressFixture(
     new OpenShellSandboxDriver(
       {
         egress: egressOptions,
-        gateway: { workspaceMode: "operator" },
+        integrationMode: "legacy",
+        gateway: {},
         kubernetes: {
-          runtimeClassName: "openshell-sandbox",
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {
             subPath: "workspace",
@@ -562,7 +566,7 @@ async function buildStaticEgressFixture(
   };
   const egress =
     admissionDrivers?.proxy ??
-    new OpenShellCredentialProxyDriver(egressOptions, {
+    new OpenShellLegacyEgressProxyDriver(egressOptions, {
       id: proxyDriverId,
       preparedProviders: preparedProvider
         ? [preparedProvider]
@@ -616,27 +620,31 @@ async function buildStaticEgressFixture(
       { capabilities: { sandbox, credential_proxy: egress } },
       { sandbox: sandbox.id, credential_proxy: egress.id },
     );
-  const app = await appFactory(t, {
-    now,
-    provisionedPeople: [],
-    preparedTokens,
-    ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
-    driverConfigurations: [
-      {
-        capability: "sandbox",
-        driverId: sandbox.id,
-        implementation: sandbox.implementation,
-        definition: OpenShellSandboxDriver,
-      },
-      ...driverConfigurations,
-    ],
-    preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
-    secretDriver,
-    computeDriver,
-    namespaceLifecycleBindings: [
-      sandboxNamespaceLifecycleBinding(computeDriver, sandbox, installedDriver),
-    ],
-  });
+  const app = await appFactory(
+    t,
+    {
+      now,
+      provisionedPeople: [],
+      preparedTokens,
+      ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
+      driverConfigurations: [
+        {
+          capability: "sandbox",
+          driverId: sandbox.id,
+          implementation: sandbox.implementation,
+          definition: OpenShellSandboxDriver,
+        },
+        ...driverConfigurations,
+      ],
+      preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
+      secretDriver,
+      computeDriver,
+      namespaceLifecycleBindings: [
+        sandboxNamespaceLifecycleBinding(computeDriver, sandbox, installedDriver),
+      ],
+    },
+    transportDatabaseUrl,
+  );
   await app.bootstrap();
   if (!protectedSourceOnly) {
     app.controller.registerDriver(catalog);
@@ -765,6 +773,8 @@ async function buildStaticEgressFixture(
       ...app,
       ...admissionControls,
       fixtureKind: /** @type {const} */ ("undeployed"),
+      placement,
+      countStoredSecrets: () => objects.size,
       agent,
       source,
       grant,

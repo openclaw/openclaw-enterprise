@@ -17,7 +17,7 @@ import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/ind
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.ts";
-import { permissionsFor } from "../helpers/iam-grants.mjs";
+import { permissionsFor } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 

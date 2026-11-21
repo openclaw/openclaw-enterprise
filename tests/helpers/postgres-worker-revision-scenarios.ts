@@ -10,7 +10,7 @@ import type {
   DeploymentStatusResult,
 } from "../../packages/occ/src/index.ts";
 import type { RevisionFixture, WorkIdentity } from "./postgres-worker-refused-candidate.ts";
-import type { waitFor } from "./wait-for.mjs";
+import type { waitFor } from "./wait-for.ts";
 
 type PollingOptions = Parameters<typeof waitFor>[2];
 
@@ -69,7 +69,11 @@ export async function assertFailedDeployment(
   assert.deepEqual(result.rows, [{ reason_code: error.code, result_data: resultData }]);
   const status = await fixture.deploymentStatus(owner, candidate);
   assert.equal(status.status, "failed");
-  assert.deepEqual(status.error, error);
+  // Each case admits its own Agent, so an expected message names it as AGENT_ID.
+  assert.deepEqual(status.error, {
+    ...error,
+    message: error.message.replace("AGENT_ID", owner.id),
+  });
 }
 
 // A boundary Compute Driver reports the supplied evidence; the real worker decides

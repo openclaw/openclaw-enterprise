@@ -1,18 +1,18 @@
 ---
 created: 2026-09-27
-updated: 2026-09-29
-last_updated_session: authoring-run/b28f3746-f8be-4f03-9f5e-33cf08d9a535
+updated: "2026-11-20"
+last_updated_session: "authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39"
 ---
 
 # Agent Plugin Approvals Flow
 
 ## Overview
 
-An operator selects Slack users for an Agent's plugin approvals. OpenClaw
-Control Plane (OCC) stores exact Slack user identities, freezes the policy in a
-deployment version, and passes it to the selected PluginDriver. OpenClaw owns
-authorization of each later plugin approval request. The optional name lookup
-is described in the [channel directory flow](agent-channel-directory.md).
+An operator selects approvers and, for a dedicated OpenClaw MCP plugin, chooses
+which enabled tools require human review. OpenClaw Control Plane (OCC) freezes
+the selection in the Agent revision. The Gateway requests approval before
+dispatching an Ask tool to the Harness. Name lookup is described in the
+[channel directory flow](agent-channel-directory.md).
 
 ## Entry Points
 
@@ -20,32 +20,39 @@ is described in the [channel directory flow](agent-channel-directory.md).
   or deploys an Agent with plugin approvers.
 - Assumptions: the actor has Agent create or exact Agent update permission, and
   the selected PluginDriver supports approvers.
-- Source: `apps/controller/src/console/agents/slack-approvers.mjs:createSlackApproverField`,
-  `packages/occ/src/index.ts:OpenClawController.updateAgent`, and
+- Source: `apps/controller/src/console/agents/slack-approvers.mts:createSlackApproverField`,
+  `packages/occ/src/agent-drafts.ts:updateAgent`, and
   `apps/controller/src/drivers/plugin/runtime-translator.ts:pluginApprovalOverlay`.
 
 ## Flow
 
 ```mermaid
 graph TD
-  A["Operator selects Slack user IDs"] --> B["OCC validates approvers with PluginDriver"]
+  A["Operator selects tool policy and approvers"] --> B["OCC validates policy with PluginDriver"]
   B -->|unsupported or invalid| X["Reject Agent save"]
-  B -->|valid| C["Agent stores default, plugin, and tool approvers"]
+  B -->|valid| C["Agent stores tool policy and approvers"]
   C --> D["Deployment freezes Agent policy in version"]
   D --> E["PluginDriver renders OpenClaw approval policy"]
   E --> S{"Slack configured and enabled?"}
   S -->|no| N["Retain stored policy without generating Slack configuration"]
   S -->|yes| V["Selected gateway validates generated approval configuration"]
   V -->|unsupported or unavailable| H["Hold startup unready with compatibility evidence"]
-  V -->|accepted| F["OpenClaw gateway owns request-time approval checks"]
+  V -->|accepted| F["Gateway prepares the admitted tool surface"]
   N --> F
+  F --> P{"Native managed MCP tool?"}
+  P -->|no| O["Existing plugin approval path"]
+  P -->|yes, no approval| L["Harness executes locally when eligible"]
+  P -->|disabled| X2["Reject without invoking MCP"]
+  P -->|yes, Ask| Q["Gateway policy requests human approval"]
+  Q -->|deny, timeout, or stale| X2
+  Q -->|allow once| W["Gateway invokes Harness MCP client"]
 ```
 
 ## Execution Trace
 
 ### 1. Save and freeze approver policy
 
-`packages/occ/src/index.ts:OpenClawController.updateAgent`
+`packages/occ/src/agent-drafts.ts:updateAgent`
 
 Agent `pluginApprovers` supplies the default. A plugin's `approvers` replaces
 the default; a tool's `approvers` replaces the plugin list. Omission inherits
@@ -94,6 +101,35 @@ runtime status endpoint. Version admission still precedes this runtime check;
 the worker reads startup evidence during reconciliation. A compatible runtime
 owns each subsequent request-time approval decision.
 
+### 4. Execute a managed MCP tool
+
+`apps/controller/src/drivers/plugin/managed-catalog.ts:managedMcpCredentialBinding`
+
+The selected upstream names remain in `driverPolicy.toolNames`.
+`tools[name].approval: all_actions` adds human review for that enabled tool;
+omitting approval or selecting `none` adds no review. Compute gives the Gateway
+the selected names and review requirements for the saved revision. The worker
+keeps the MCP client and credential placeholder.
+
+When at least one selected tool requires review, the Gateway launcher verifies
+the image-packaged policy files, adds the extension to `plugins.load.paths`,
+and writes each selected server and tool as `allow` or `ask` in its configuration.
+When the worker pairs, the launcher adds its node ID to that configuration.
+
+`deploy/runtime/managed-mcp-policy/index.mjs:register`
+
+The OCE-managed Gateway policy allows eligible tools without review to use
+their same-node execution grant. An Ask tool uses Gateway dispatch. The policy
+requests an allow-once decision for its server and upstream tool name, then
+invokes the node only after approval. This pilot does not display tool arguments.
+Denial, timeout, cancellation, or stale authority prevents the native invocation.
+OpenClaw can continue startup after a policy registration failure; rejecting MCP
+execution in that case is a follow-up. Gateway readiness does not prove registration.
+
+Direct scripts can use an enabled tool's credential placeholder without going
+through this Gateway gate. Disabled upstream names remain denied by the
+credentialed MCP request policy.
+
 ## Debugging and Verification
 
 - Compare `Agent.pluginApprovers`, nested selection overrides, and the admitted
@@ -120,6 +156,10 @@ owns each subsequent request-time approval decision.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
+
+- 2026-11-18 05:23: Document managed MCP human approval and its direct-script boundary. (01a13641-ad1f-7e93-a453-f1fd8c3ad711 - c8c1fb2d1)
 
 - 2026-09-29 09:30: Reject Codex plugin and tool approvers at admission. (authoring-run/b28f3746-f8be-4f03-9f5e-33cf08d9a535 - d040b86dd780e7a9ac3bbbacf1646203881e2990)
 

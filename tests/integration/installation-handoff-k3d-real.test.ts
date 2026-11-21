@@ -10,13 +10,8 @@ import {
   createKubernetesClient,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.ts";
-import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.mjs";
-
-type ChartResource = {
-  kind?: string;
-  metadata?: { name?: string; namespace?: string };
-  spec?: { managedBy?: string; suspend?: boolean };
-};
+import { findChartJob } from "../helpers/production-chart-resource.ts";
+import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.ts";
 
 const selection = {
   kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
@@ -125,11 +120,7 @@ test(
 
     async function renderJob(isUpgrade: boolean) {
       const { stdout } = await renderProductionChart({}, { namespace, isUpgrade, release });
-      const resources: ChartResource[] = await parseProductionChart(stdout);
-      const job = resources.find(
-        (resource) => resource.kind === "Job" && resource.metadata?.name === name,
-      );
-      assert.ok(job?.metadata && job.spec);
+      const job = findChartJob(await parseProductionChart(stdout), name);
       job.metadata.namespace = namespace;
       return { manifest: job, spec: job.spec };
     }
@@ -415,18 +406,20 @@ test("first install retains exact attempt evidence after a lost client", { skip 
   await kubectl("create", "namespace", namespace);
   t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
   const values = join(dir, "values.json");
-  // Missing input Secrets/PVC keep the genuine chart Job pending. This proves
-  // Helm dispatch and handoff, without claiming database initialization ran.
+  // Missing input Secrets keep the genuine chart Job pending. Select existing
+  // credentials below so neither install generates inputs or creates a Secret.
+  // This proves Helm dispatch and handoff, not database initialization.
   await writeFile(
     values,
     JSON.stringify({
       gatewayRouting: { enabled: false },
+      channelEgress: { enabled: false },
       images: { controller: `registry.example.invalid/controller@sha256:${"a".repeat(64)}` },
       auth: { baseUrl: "https://occ.example.invalid", secretName: "occ-auth", secretKey: "secret" },
       agentNativeAdmin: { domain: "agents.example.invalid" },
       bootstrap: {
         adminEmail: "admin@example.invalid",
-        password: { claimName: "absent-bootstrap" },
+        credentials: { secretName: "absent-bootstrap" },
       },
       api: { clients: [{ namespace: "operator-tools", podLabels: { app: "operator" } }] },
       database: { cidrs: ["10.45.0.12/32"] },
@@ -447,6 +440,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
   const args = [
     "installation",
     "install",
+    "--bootstrap-credentials=existing",
     ...target,
     "--chart",
     "deploy/helm/openclaw-enterprise",
@@ -562,11 +556,10 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     { "installation.attemptId": intent.attempt },
     { namespace, release, isUpgrade: true },
   );
-  const replacement = (await parseProductionChart(rendered.stdout)).find(
-    (item: ChartResource) => item.kind === "Job",
-  );
-  assert.ok(replacement);
-  assert.equal(replacement.metadata.annotations["openclaw.dev/installation-attempt"], undefined);
+  const replacement = findChartJob(await parseProductionChart(rendered.stdout));
+  const annotations = asRecord(replacement.metadata.annotations);
+  assert.ok(annotations, "Expected initialization Job annotations");
+  assert.equal(annotations["openclaw.dev/installation-attempt"], undefined);
   replacement.metadata.namespace = namespace;
   replacement.spec.suspend = true;
   await kubectl("-n", namespace, "delete", "job", name);

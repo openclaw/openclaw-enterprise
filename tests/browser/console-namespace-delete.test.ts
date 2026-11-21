@@ -4,11 +4,12 @@ import type { Locator } from "playwright";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
-import { NAMESPACE_DELETE_DENIED, NAMESPACE_DELETE_RESTRICTED } from "../helpers/refusal-text.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
+import { restrict } from "../helpers/iam-grants.ts";
+
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { callbackGate } from "../helpers/wait-for.ts";
 import {
   apiRequests,
   fileBrowser,
@@ -27,6 +28,15 @@ import {
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.ts";
+
+// Finding D788. Namespace IAM Roles cannot grant Namespace delete, so a member's trash icon names
+// who can delete the Namespace instead of a grant to ask for.
+const NAMESPACE_DELETE_DENIED =
+  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
+// The same icon for an Installation administrator whom a deny Restriction keeps from deleting the
+// Namespace (finding 2861): administration cannot lift it.
+const NAMESPACE_DELETE_RESTRICTED =
+  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
 
 const browser = fileBrowser();
 
@@ -560,27 +570,28 @@ for (const outcome of [
     assert.equal((await accepted).status(), 202);
     const retry = page.getByRole("button", { name: "Request deletion again", exact: true });
     await retry.waitFor();
-    const started = Promise.withResolvers<void>();
+    const started = callbackGate("the held background deletion poll");
     const release = Promise.withResolvers<void>();
     t.after(() => release.resolve());
     await page.route(
       url,
-      async (route) => {
-        assert.equal(route.request().method(), "GET");
-        started.resolve();
-        await release.promise;
-        if (outcome === "still deleting") {
-          await route.continue();
-        } else if (outcome === "access ended") {
-          await route.fulfill(apiErrorResponse(403, "FORBIDDEN", "Access denied"));
-        } else {
-          await route.fulfill(proxyErrorResponse(503));
-        }
-      },
+      (route) =>
+        started.run(async () => {
+          assert.equal(route.request().method(), "GET");
+          started.resolve();
+          await release.promise;
+          if (outcome === "still deleting") {
+            await route.continue();
+          } else if (outcome === "access ended") {
+            await route.fulfill(apiErrorResponse(403, "FORBIDDEN", "Access denied"));
+          } else {
+            await route.fulfill(proxyErrorResponse(503));
+          }
+        }),
       { times: 1 },
     );
     // The normal background poll is already running when the operator opens retry.
-    await started.promise;
+    await started.reached();
     await retry.click();
     const dialog = page.getByRole("dialog", {
       name: "Retry deletion of Observed cleanup?",

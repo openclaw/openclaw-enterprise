@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { isRecord } from "../../scripts/ci/records.ts";
 import type openShellLane from "../../scripts/ci/test-suites/openshell.json";
 import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import {
@@ -16,6 +17,7 @@ import {
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const browserFile = "tests/integration/dev-up-openshell-k3d-real.test.mjs";
+const invalidModelError = /OCC_TEST_OPENAI_MODEL must contain a nonempty model ID/u;
 
 type OpenShellLane = typeof openShellLane;
 
@@ -35,33 +37,39 @@ type FocusedSelection = {
     }
 );
 
+function jsonObject(value: unknown) {
+  assert.ok(isRecord(value), "expected a JSON object");
+  return value;
+}
+
+function jsonObjects(value: unknown): Record<string, unknown>[] {
+  assert.ok(Array.isArray(value) && value.every(isRecord), "expected an array of JSON objects");
+  return value;
+}
+
+async function readSummary(path: string) {
+  const summary = jsonObject(JSON.parse(await readFile(path, "utf8")));
+  return { ...summary, files: jsonObjects(summary.files), issues: jsonObjects(summary.issues) };
+}
+
 function readSelectedOpenShellLane(name: string, view = "default") {
-  const suite = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"), view);
-  const lanes = field(suite, "lanes");
-  const lane = field(lanes, name);
-  assert.ok(typeof lane === "object" && lane !== null);
-  const requiredEnv = field(lane, "requiredEnv");
-  const files = field(lane, "files");
+  const suite = jsonObject(
+    loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"), view),
+  );
+  const lane = jsonObject(jsonObject(suite.lanes)[name]);
+  const { requiredEnv } = lane;
   assert.ok(isStrings(requiredEnv));
-  assert.ok(Array.isArray(files));
   return {
     ...lane,
     requiredEnv,
-    files: files.map((entry: unknown) => {
-      assert.ok(typeof entry === "object" && entry !== null);
-      const path = field(entry, "path");
-      const expectedTests = field(entry, "expectedTests");
-      const requiredEnv = field(entry, "requiredEnv");
+    files: jsonObjects(lane.files).map((entry) => {
+      const { path, expectedTests, requiredEnv } = entry;
       assert.ok(typeof path === "string");
       assert.ok(isStrings(expectedTests));
       assert.ok(requiredEnv === undefined || isStrings(requiredEnv));
       return { ...entry, path, expectedTests, requiredEnv };
     }),
   };
-}
-
-function field(value: unknown, key: string): unknown {
-  return value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined;
 }
 
 function isStrings(value: unknown): value is string[] {
@@ -146,7 +154,8 @@ export function registerOpenShellAdmissionCases() {
               ...baseEnv,
               OCC_TEST_OPENSHELL_K3D_REAL: "1",
               OCC_TEST_OPENSHELL_HARNESS: "codex",
-              OCC_TEST_OPENAI_MODEL: "fixture-model",
+              // Omission uses the direct fixture's default model.
+              OCC_TEST_OPENAI_MODEL: endpoint ? "openai/fixture-model" : undefined,
               OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
               [credential]: "synthetic-model-credential",
             },
@@ -162,6 +171,87 @@ export function registerOpenShellAdmissionCases() {
       }
     });
   }
+
+  test("OpenShell model normalization rejects blank IDs and preserves healthy names", async () => {
+    const { assertOpenShellModelId, normalizeOpenShellModelId } =
+      await import("../../scripts/ci/openshell-model-inputs.ts");
+    for (const value of ["", "  ", "codex/", "openai/", "codex/  ", "openai/  "]) {
+      assert.throws(
+        () => assertOpenShellModelId(normalizeOpenShellModelId(value)),
+        invalidModelError,
+      );
+    }
+    for (const [input, expected] of [
+      ["fixture-model", "fixture-model"],
+      ["codex/fixture-model", "fixture-model"],
+      ["openai/fixture-model", "fixture-model"],
+      ["other/fixture-model", "other/fixture-model"],
+      ["openai/codex/fixture-model", "codex/fixture-model"],
+    ] as const) {
+      const model = normalizeOpenShellModelId(input);
+      assert.doesNotThrow(() => assertOpenShellModelId(model));
+      assert.equal(model, expected);
+    }
+  });
+
+  test("OpenShell preparation refuses a blank provider model before lane and file setup", async (t) => {
+    const root = await fixture(t);
+    const state = join(root, "state/openshell.json");
+    const githubEnv = join(root, "state/openshell.env");
+    for (const [selection, model] of [
+      ["--selected-file", "codex/"],
+      ["--file", "openai/  "],
+    ] as const) {
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(repositoryRoot, "scripts/ci/prepare.ts"),
+          "--lane",
+          "openshell",
+          "--state",
+          state,
+          "--github-env",
+          githubEnv,
+          selection,
+          "tests/integration/openshell-refresh-real.test.ts",
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            PATH: root,
+            HOME: root,
+            TMPDIR: root,
+            OPENAI_API_KEY: "synthetic-model-key",
+            OCC_TEST_OPENAI_MODEL: model,
+            // A regressed check still stops at image admission before any setup.
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "fixture-image",
+          },
+        },
+      );
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.match(result.stdout + result.stderr, invalidModelError);
+      await assert.rejects(stat(state), { code: "ENOENT" });
+      await assert.rejects(stat(githubEnv), { code: "ENOENT" });
+    }
+  });
+
+  test("direct OpenShell refresh refuses a blank provider model before fixture setup", async (t) => {
+    const root = await fixture(t);
+    const file = join(repositoryRoot, "tests/integration/openshell-refresh-real.test.ts");
+    const result = spawnSync(process.execPath, ["--test", file], {
+      encoding: "utf8",
+      env: {
+        PATH: root,
+        HOME: root,
+        TMPDIR: root,
+        OPENAI_API_KEY: "synthetic-model-key",
+        OCC_TEST_OPENSHELL_K3D_REAL: "1",
+        OCC_TEST_OPENAI_MODEL: "openai/",
+      },
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout + result.stderr, invalidModelError);
+  });
 
   for (const selection of [
     { name: "declared", error: /must be an immutable image@sha256 reference/u },
@@ -188,8 +278,8 @@ export function registerOpenShellAdmissionCases() {
         const resultsPath = join(root, "results/namespace.json");
         await writeRunnerManifest(root, { lanes: { openshell: { ...lane, files: [file] } } });
         await writeFile(
-          join(root, "scripts/ci/prepare.mjs"),
-          `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};`,
+          join(root, "scripts/ci/prepare.ts"),
+          `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.ts")).href)};`,
         );
         // Preserve real metadata and preparation. Only the unstarted model child is
         // inert; a regression still stops at the immutable-image gate before setup.
@@ -216,10 +306,11 @@ export function registerOpenShellAdmissionCases() {
           },
         );
         assert.equal(result.status, 1);
-        const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-        assert.ok(summary.issues.some(({ code }: { code: string }) => code === "prepare-failed"));
-        assert.equal(summary.files[0].nodeExitCode, null);
-        assert.deepEqual(summary.files[0].tests, []);
+        const summary = await readSummary(resultsPath);
+        assert.ok(summary.issues.some(({ code }) => code === "prepare-failed"));
+        const fileResult = summary.files[0];
+        assert.equal(fileResult?.nodeExitCode, null);
+        assert.deepEqual(fileResult?.tests, []);
         const diagnostics = await readFile(`${statePath}.diagnostics.json`, "utf8");
         assert.match(diagnostics, selection.error);
         assert.doesNotMatch(
@@ -348,8 +439,8 @@ export function registerOpenShellAdmissionCases() {
         },
       );
       assert.equal(result.status, 0, result.stderr);
-      const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
-      assert.equal(receipt.files[0].tests[0].status, "passed");
+      const receipt = await readSummary(resultsPath);
+      assert.equal(jsonObjects(receipt.files[0]?.tests)[0]?.status, "passed");
     });
   }
 
@@ -404,11 +495,11 @@ export function registerOpenShellAdmissionCases() {
           },
         );
         assert.equal(result.status, 0, result.stderr);
-        const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
-        assert.equal(receipt.status, "passed");
-        assert.equal(receipt.counts.passed, file.expectedTests.length);
-        assert.equal(receipt.counts.failed, 0);
-        assert.equal(receipt.counts.skipped, 0);
+        const receipt = await readSummary(resultsPath);
+        assert.partialDeepStrictEqual(receipt, {
+          status: "passed",
+          counts: { passed: file.expectedTests.length, failed: 0, skipped: 0 },
+        });
       });
     }
   }
@@ -458,21 +549,19 @@ export function registerOpenShellSelectionCases() {
           },
         );
         assert.notEqual(result.status, 0, "The fixture must stop before cluster setup");
-        const summary = JSON.parse(await readFile(join(root, "results/browser.json"), "utf8"));
-        const failure = summary.files[0].tests.find(
-          ({ status }: { status: string }) => status === "failed",
-        );
+        const summary = await readSummary(join(root, "results/browser.json"));
+        const fileResult = summary.files[0];
+        const failure = jsonObjects(fileResult?.tests).find(({ status }) => status === "failed");
         assert.ok(failure, JSON.stringify(summary));
         assert.equal(failure.name, testName);
+        const message = jsonObject(failure.error).message;
+        assert.ok(typeof message === "string");
         if (name === "custom") {
-          assert.match(
-            failure.error.message,
-            /The browser Agent requires the public OpenAI endpoint/,
-          );
-          assert.doesNotMatch(failure.error.message, /ENOENT/);
+          assert.match(message, /The browser Agent requires the public OpenAI endpoint/);
+          assert.doesNotMatch(message, /ENOENT/);
         } else {
-          assert.match(failure.error.message, /ENOENT.*bin\/occ/);
-          assert.doesNotMatch(failure.error.message, /requires the public OpenAI endpoint/);
+          assert.match(message, /ENOENT.*bin\/occ/);
+          assert.doesNotMatch(message, /requires the public OpenAI endpoint/);
         }
       });
     }
@@ -527,9 +616,12 @@ export function registerOpenShellSelectionCases() {
     const lane = await readOpenShellLane();
     const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts";
     const gatewayPolicy = "tests/integration/openshell-gateway-tool-policy-real.test.ts";
+    const credentials = "tests/integration/openshell-credentials-real.test.ts";
     const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
     const scratchFile = lane.files.find(({ path }) => path === scratch);
     assert.ok(scratchFile?.requiredEnv);
+    const credentialsFile = lane.files.find(({ path }) => path === credentials);
+    assert.ok(credentialsFile?.requiredEnv);
     const inputs = {
       ...Object.fromEntries(scratchFile.requiredEnv.map((name) => [name, "fixture-input"])),
       OPENAI_API_KEY: "synthetic-model-key",
@@ -566,6 +658,18 @@ test("receives selected model inputs", () => {
 });
 `,
     );
+    // A missing credentials guard must admit a harmless input consumer, rather than
+    // fail on an unrelated prerequisite or invoke the real credential replacement test.
+    await writeFile(
+      join(root, credentials),
+      `import assert from "node:assert/strict";
+import test from "node:test";
+test("receives selected model inputs", () => {
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, "openclaw");
+  assert.equal(process.env.CODEX_ACCESS_TOKEN, "synthetic-model-token");
+});
+`,
+    );
     await writeFile(join(root, sibling), 'throw new Error("unselected sibling ran");\n');
     const selections: FocusedSelection[] = [
       { lane: "openshell", outcome: "accepted" },
@@ -576,6 +680,15 @@ test("receives selected model inputs", () => {
         env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw", OCC_TEST_OPENSHELL_MODEL_BASE_URL: "" },
       },
       { env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw" }, outcome: "unsupported-harness" },
+      {
+        file: credentials,
+        env: {
+          ...Object.fromEntries(credentialsFile.requiredEnv.map((name) => [name, "fixture-input"])),
+          CODEX_ACCESS_TOKEN: "synthetic-model-token",
+          OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+        },
+        outcome: "unsupported-harness",
+      },
       {
         env: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "", CODEX_ACCESS_TOKEN: "synthetic-model-token" },
         outcome: "accepted",
@@ -611,7 +724,7 @@ test("receives selected model inputs", () => {
           [name]: {
             ...lane,
             files: lane.files
-              .filter(({ path }) => [scratch, sibling, gatewayPolicy].includes(path))
+              .filter(({ path }) => [scratch, sibling, gatewayPolicy, credentials].includes(path))
               .map((file) => ({
                 ...file,
                 expectedTests: ["receives selected model inputs"],
@@ -628,20 +741,29 @@ test("receives selected model inputs", () => {
         ],
         { ...inputs, ...value.env },
       );
-      const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+      const summary = await readSummary(resultsPath);
       if (value.outcome === "unsupported-harness") {
-        assert.equal(result.status, 1);
-        assert.match(summary.issues[0]?.message ?? "", /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
+        assert.equal(result.status, 1, JSON.stringify(summary));
+        assert.deepEqual(
+          summary.issues.map(({ code, file }) => ({ code, file })),
+          [{ code: "invalid-file-selection", file: value.file ?? scratch }],
+        );
+        const message = summary.issues[0]?.message;
+        assert.ok(typeof message === "string");
+        assert.equal(
+          message,
+          `${value.file ?? scratch} requires OCC_TEST_OPENSHELL_HARNESS=codex. Unset the selector or select codex.`,
+        );
         assert.deepEqual(summary.files, []);
         continue;
       }
       const missingInput = value.outcome === "missing-input";
       assert.equal(result.status, missingInput ? 1 : 0, result.stderr);
       assert.deepEqual(
-        summary.issues.map(({ code, env }: { code: string; env?: string }) => ({ code, env })),
+        summary.issues.map(({ code, env }) => ({ code, env })),
         missingInput ? [{ code: "missing-env", env: value.missing }] : [],
       );
-      assert.equal(summary.counts.passed, missingInput ? 0 : 1);
+      assert.partialDeepStrictEqual(summary, { counts: { passed: missingInput ? 0 : 1 } });
     }
   });
 
@@ -687,9 +809,8 @@ test("full lane model inputs", () => {
         env,
       );
       assert.equal(result.status, 0, result.stderr);
-      const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-      assert.equal(summary.scope, "full");
-      assert.equal(summary.counts.passed, 1);
+      const summary = await readSummary(resultsPath);
+      assert.partialDeepStrictEqual(summary, { scope: "full", counts: { passed: 1 } });
       assert.deepEqual(summary.issues, []);
     }
   });

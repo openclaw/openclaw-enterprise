@@ -48,12 +48,12 @@ import type { PostgresQueryClient } from "../../packages/occ/src/state/postgres-
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
-import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
-  startWorkspaceGatewayHostRelay,
 } from "./envoy-workspace-gateway.mjs";
+import { startWorkspaceGatewayHostRelay } from "./workspace-gateway-host-relay.ts";
 import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
@@ -184,16 +184,6 @@ function responseData<Data extends TSchema>(
     `HTTP ${status} response must match the data schema`,
   );
   return response.data;
-}
-
-async function bootstrapServiceKeyFromFile(path: string) {
-  const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-  const key = asRecord(asRecord(parsed)?.data)?.key;
-  assert.ok(
-    typeof key === "string" && key.length > 0,
-    "bootstrap service-key file must contain data.key",
-  );
-  return key;
 }
 
 function installationAdministratorServicePrincipal(iamState: PersistedNativeIAMState) {
@@ -741,13 +731,12 @@ export async function createPluginDriverRealFixture(
     };
     await ensureEnvoyGatewayControllers(helpers);
     const plan = await createEnvoyWorkspaceGatewayPlan(context, { platformNamespace }, helpers);
-    const endpointPort: unknown = await startWorkspaceGatewayHostRelay(context, plan, {
+    const endpointPort = await startWorkspaceGatewayHostRelay(context, plan, {
       ...helpers,
       gatewayImage,
     });
     const { gatewayAuth } = plan.nativeOptions;
     const trustedProxies: unknown = gatewayAuth.trustedProxies;
-    assert.ok(typeof endpointPort === "number", "the Gateway relay must return its bound port");
     assert.ok(
       Check(Type.Array(Type.String()), trustedProxies),
       "the Gateway must supply trusted proxy CIDRs",
@@ -938,9 +927,7 @@ export async function createPluginDriverRealFixture(
       authBaseURL,
       installationName: `Plugin Driver real proof ${pluginDriverId}`,
     });
-    serviceKey = await bootstrapServiceKeyFromFile(
-      bootstrap.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE,
-    );
+    serviceKey = await readFile(bootstrap.environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE, "utf8");
   }
 
   const app = await composeProduction({

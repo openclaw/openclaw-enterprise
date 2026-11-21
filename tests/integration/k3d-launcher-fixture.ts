@@ -7,7 +7,7 @@ import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import * as socketFixture from "../helpers/socket-directory.mjs";
+import * as socketFixture from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const execute = promisify(execFile);
@@ -54,6 +54,7 @@ interface LauncherOptions {
   staleDemo?: boolean;
   activeLock?: boolean;
   foreignState?: boolean;
+  checkoutBuiltState?: boolean;
   stateVersion?: number;
   resourceOwner?: string;
   preparedHarness?: "codex" | "openclaw";
@@ -134,6 +135,7 @@ export async function runLauncher(
     staleDemo = false,
     activeLock = false,
     foreignState = false,
+    checkoutBuiltState = false,
     stateVersion = 1,
     resourceOwner = "openclaw-ci-test",
     preparedHarness,
@@ -164,7 +166,6 @@ export async function runLauncher(
   await mkdir(bin);
 
   await writeCommand(bin, "uname", `printf '${platform}\\n'\n`);
-  await writeCommand(bin, "git", `printf '${"a".repeat(40)}\\n'\n`);
   await writeCommand(bin, clipboardCommand, `/usr/bin/tee '${clipboard}' >/dev/null\n`);
 
   let expectedDockerHost = "";
@@ -258,7 +259,7 @@ assert.match(result.stderr, /must be an immutable image@sha256 reference/);
     bin,
     "node",
     `if [ "$1" = -e ]; then exec '${process.execPath}' "$@"; fi
-if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
+if printf '%s' "$*" | grep -q 'scripts/ci/prepare.ts'; then
   printf '%s' "$*" | grep -q -- '--lane ${selectedHarness === "openclaw" ? "openshell" : "gateway-routing"}' || exit 93
   [ -z "$OCC_TEST_KUBERNETES_GATEWAY_IMAGE" ] || exit 92
   [ -z "$OCC_TEST_KUBERNETES_AGENT_IMAGE" ] || exit 92
@@ -266,8 +267,6 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   [ -z "$OCC_TEST_KUBERNETES_CODEX_IMAGE" ] || exit 92
   [ -z "$OCC_TEST_PRODUCTION_CONTROLLER_IMAGE" ] || exit 92
   [ -n "$NODE_BASE_IMAGE" ] || exit 94
-  [ '${selectedHarness}' != openclaw ] || [ "$OCC_K3D_OPENCLAW_SOURCE" = '${join(root, "openclaw-source")}' ] || exit 95
-  [ '${selectedHarness}' != openclaw ] || [ "$OCC_K3D_OPENCLAW_COMMIT" = '${"a".repeat(40)}' ] || exit 96
   ${realPreparationAdmission ? `'${process.execPath}' '${admissionProbe}' "$@" || exit $?` : ""}
   count="$(cat '${prepareCount}' 2>/dev/null || printf '0')"
   count="$((count + 1))"
@@ -278,13 +277,10 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
     'OCC_TEST_PRODUCTION_CONTROLLER_IMAGE=localhost/controller@sha256:${"e".repeat(64)}' \
     'OCC_TEST_KUBERNETES_KUBECONFIG=/private/demo/kubeconfig' \
     'OCC_TEST_KUBERNETES_CONTEXT=k3d-demo' > '${join(state, "env")}'
-  if [ -n "$OCC_K3D_OPENCLAW_COMMIT" ]; then
-    printf 'OCC_K3D_OPENCLAW_COMMIT=%s\n' "$OCC_K3D_OPENCLAW_COMMIT" >> '${join(state, "env")}'
-  fi
   printf '%s\n' '${preparedModel === undefined ? "" : `OCC_TEST_OPENAI_MODEL=${preparedModel}`}' '${preparedBaseUrl === undefined ? "" : `${selectedHarness === "openclaw" ? "OCC_TEST_OPENSHELL_MODEL_BASE_URL" : "OCC_TEST_CODEX_OPENAI_BASE_URL"}=${preparedBaseUrl}`}' >> '${join(state, "env")}'
   exit 0
 fi
-if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.mjs'; then touch '${resetCalled}'; exit 0; fi
+if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.ts'; then touch '${resetCalled}'; exit 0; fi
 if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; exit 0; fi
 /usr/bin/env -i PATH=/usr/bin:/bin INVOCATION='${invocation}' \
   DOCKER_HOST="\${DOCKER_HOST:-}" OCC_DOCKER_BIN="$OCC_DOCKER_BIN" \
@@ -319,25 +315,39 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
     action === "reset" ||
     action === "down" ||
     foreignState ||
+    checkoutBuiltState ||
     afterReset ||
     activeLock
   ) {
     await mkdir(state, { recursive: true });
+    const savedState = preparedState(
+      foreignState ? join(root, "another-checkout") : repositoryRoot,
+      stateVersion,
+      resourceOwner,
+      stateHarness === "openclaw" ? "openshell" : "gateway-routing",
+    );
+    const checkoutCommit = checkoutBuiltState ? "a".repeat(40) : undefined;
     await writeFile(
       join(state, "state.json"),
-      `${JSON.stringify(
-        preparedState(
-          foreignState ? join(root, "another-checkout") : repositoryRoot,
-          stateVersion,
-          resourceOwner,
-          stateHarness === "openclaw" ? "openshell" : "gateway-routing",
-        ),
-      )}\n`,
+      `${JSON.stringify({
+        ...savedState,
+        ...(checkoutCommit ? { env: { OCC_K3D_OPENCLAW_COMMIT: checkoutCommit } } : {}),
+      })}\n`,
     );
-    await writeFile(
-      join(state, "env"),
-      "OCC_TEST_KUBERNETES_KUBECONFIG=/private/demo/kubeconfig\nOCC_TEST_KUBERNETES_CONTEXT=k3d-demo\n",
-    );
+    // Reset preserves state.json but removes the exported environment and ready marker.
+    if (!afterReset) {
+      const environment = [
+        "OCC_TEST_KUBERNETES_KUBECONFIG=/private/demo/kubeconfig",
+        "OCC_TEST_KUBERNETES_CONTEXT=k3d-demo",
+      ];
+      if (checkoutCommit) {
+        environment.push(
+          `OCC_K3D_OPENCLAW_COMMIT=${checkoutCommit}`,
+          `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE=localhost/controller@sha256:${"e".repeat(64)}`,
+        );
+      }
+      await writeFile(join(state, "env"), `${environment.join("\n")}\n`);
+    }
     await writeFile(join(state, afterReset ? "reset" : "ready"), "");
     if (action !== "reset" && action !== "down" && !afterReset) {
       await writeFile(
@@ -381,10 +391,6 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
     }
   }
 
-  const openclawSource = join(root, "openclaw-source");
-  await mkdir(openclawSource);
-  await writeFile(join(openclawSource, "Dockerfile"), "FROM scratch\n");
-
   const { stdout } = await execute("scripts/k3d", args, {
     env: {
       ...process.env,
@@ -401,7 +407,6 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
       OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "localhost/stale-runtime@sha256:" + "c".repeat(64),
       OCC_TEST_KUBERNETES_CODEX_IMAGE: "localhost/stale-codex@sha256:" + "d".repeat(64),
       OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: "localhost/stale-controller@sha256:" + "e".repeat(64),
-      OCC_K3D_OPENCLAW_SOURCE: openclawSource,
       XDG_STATE_HOME: join(root, "state"),
       PATH: clipboardCommand === "pbcopy" ? `${bin}:/usr/bin:/bin` : `${bin}:/bin`,
     },
@@ -440,7 +445,7 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
     assert.deepEqual(
       preparations,
       (afterReset ? ["--file"] : ["--selected-file", "--file"]).map((selection) => [
-        "scripts/ci/prepare.mjs",
+        "scripts/ci/prepare.ts",
         "--lane",
         "openshell",
         selection,
@@ -490,10 +495,7 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
   assert.equal(recorded.composeProvider, engine === "podman" ? join(bin, "podman-compose") : "");
   assert.match(stdout, new RegExp(`\\[k3d:${engine}\\]`));
   if (selectedHarness === "openclaw") {
-    assert.match(
-      stdout,
-      /WARNING: Dedicated native OpenClaw is experimental\. The current OpenClaw release image does not include native worker-inference support/,
-    );
+    assert.match(stdout, /WARNING: Dedicated native OpenClaw is experimental\./);
   } else {
     assert.doesNotMatch(stdout, /Dedicated native OpenClaw is experimental/);
   }

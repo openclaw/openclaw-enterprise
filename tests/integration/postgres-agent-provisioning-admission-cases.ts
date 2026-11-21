@@ -12,10 +12,10 @@ import type { ControllerWorkState } from "../../packages/occ/src/index.ts";
 import { handedOff, required } from "./postgres-agent-provisioning-setup.ts";
 
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 import {

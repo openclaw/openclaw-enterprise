@@ -17,7 +17,7 @@ import type {
   IAMDriver,
   AuthorizationRequest,
   AuthorizationDecision,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
 } from "../../packages/contracts/src/index.ts";
 import {
   EgressSendReceipts,
@@ -26,7 +26,7 @@ import {
 } from "../../packages/occ/src/egress-send-receipts.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
-import { waitUntil, within } from "../helpers/wait-for.mjs";
+import { waitUntil, within } from "../helpers/wait-for.ts";
 
 const admitMetadata = async ({
   app,
@@ -964,8 +964,8 @@ for (const failure of ["false", "unavailable", "unknown"] as const) {
     let shadowCalls = 0;
     // Control only the selected runtime observation, after real authenticated resolution.
     const verify = async function (
-      this: CredentialProxyDriver,
-      ..._args: Parameters<CredentialProxyDriver["verifyInstallation"]>
+      this: LegacyEgressProxyDriver,
+      ..._args: Parameters<LegacyEgressProxyDriver["verifyInstallation"]>
     ) {
       calls++;
       assert.equal(this, f.egress, "verification retains its selected receiver");
@@ -1063,8 +1063,8 @@ for (const replacement of [
     let verificationCalls = 0;
     const verify = f.egress.verifyInstallation;
     f.egress.verifyInstallation = function (
-      this: CredentialProxyDriver,
-      ...args: Parameters<CredentialProxyDriver["verifyInstallation"]>
+      this: LegacyEgressProxyDriver,
+      ...args: Parameters<LegacyEgressProxyDriver["verifyInstallation"]>
     ) {
       verificationCalls++;
       assert.equal(this, f.egress, "verification retains its selected receiver");

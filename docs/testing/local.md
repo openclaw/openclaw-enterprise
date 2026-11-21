@@ -127,7 +127,7 @@ retain source identity, observed resource identities, refusal output, assertion
 outcomes and final cleanup status. The normal PR lane does not forward this
 optional directory; use its ordinary result and cleanup reports.
 
-Prepare the digest-pinned K3s image selected by `scripts/ci/prepare.mjs` and
+Prepare the digest-pinned K3s image selected by `scripts/ci/prepare.ts` and
 k3d's support images before execution. Allow capacity for one disposable
 single-server cluster and one small volume consumer at a time. The host must
 expose its local Docker socket and the server's PID/cgroup identity. The fixture
@@ -186,8 +186,8 @@ browser policies. Set `OCC_TEST_CONSOLE_ARTIFACT_DIR` to retain screenshots.
 
 The three native Agent admin cases use Linux Chromium's NSS trust store. The
 Console browser command reports these three as skipped on macOS and Windows.
-For the full suite, use a disposable Ubuntu VM with Chromium sandbox support,
-`libnss3-tools`, and the Go version in `go.mod`. Set up the checkout as above,
+For the full suite, use a disposable Ubuntu VM with Chromium sandbox support and
+`libnss3-tools`. Set up the checkout as above,
 then run the Console browser command or just the Agent detail cases:
 
 ```sh
@@ -309,7 +309,7 @@ With an exclusively used disposable database from [PostgreSQL setup](postgresql.
 ```sh
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_test_local \
 OCC_METRICS_TEST_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_test_local \
-  node --test tests/integration/occ-metrics.test.mjs
+  node --test tests/integration/occ-metrics.test.ts
 ```
 
 The migration URL must target the same database; without it the lock case skips.
@@ -338,7 +338,7 @@ NetworkPolicy. Use a fresh private state directory for each run:
 ```sh
 OBS_LANE=k3d-observability
 OBS_RUN_DIR=$(mktemp -d)
-env -u OPENAI_API_KEY node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+env -u OPENAI_API_KEY node scripts/ci/prepare.ts --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
   env -u OPENAI_API_KEY node scripts/ci/run-tests.ts run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
@@ -367,7 +367,7 @@ Run from the checkout root with a fresh state directory.
 ```sh
 OBS_LANE=k3d-otel
 OBS_RUN_DIR=$(mktemp -d)
-corepack pnpm exec node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+corepack pnpm exec node scripts/ci/prepare.ts --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
   corepack pnpm exec node scripts/ci/run-tests.ts run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 

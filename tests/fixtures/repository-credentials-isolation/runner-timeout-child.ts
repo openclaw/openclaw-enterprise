@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { forwardWork } from "./ownership.ts";
-import type { ClientCommand } from "../repository-credentials/clients.ts";
-import { run as runCommand } from "../repository-credentials/process.mjs";
+import { run } from "../repository-credentials/process.ts";
 
 export type TimeoutMarkerPaths = [late: string, cleaned: string];
 
-const run = runCommand as ClientCommand;
 const [, , late, cleaned] = process.argv;
 assert.ok(late && cleaned);
 const lateCommand = `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late command'), 600)`;

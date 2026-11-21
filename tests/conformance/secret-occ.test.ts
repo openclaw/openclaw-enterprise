@@ -9,15 +9,12 @@ import type {
   Driver,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
-  PermissionAction,
-  ResourceKind,
   Secret,
   SecretBindings,
   SecretMetadata,
   SecretReference,
 } from "../../packages/contracts/src/index.ts";
 import type { ChannelCredentialReader } from "../../packages/contracts/src/drivers/channel/index.ts";
-import type { NativeIAMState } from "../../packages/iam/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AuthorizationDeniedError,
@@ -40,9 +37,14 @@ import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
 } from "../helpers/development.mjs";
-import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
+import {
+  bindRole,
+  grantRole,
+  principalIAMState,
+  type ActionsByKind,
+} from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.mjs";
 
 const administrator = "principal-secret-administrator";
@@ -120,7 +122,6 @@ const configurationFix = namesFix(
   /update the Configuration's secretBindings/,
 );
 
-type MutableIAMState = { -readonly [K in keyof NativeIAMState]: NativeIAMState[K][number][] };
 type FixtureOptions = {
   computeOverrides?: Partial<ComputeDriver>;
   secretDriver?: ReturnType<typeof createTestSecretDriver>;
@@ -131,21 +132,6 @@ type FixtureOptions = {
 type AgentUpdate = Partial<Parameters<OpenClawController["updateAgent"]>[1]>;
 type AgentCreate = Partial<Parameters<OpenClawController["createAgent"]>[1]>;
 type ConfigurationUpdate = Partial<Parameters<OpenClawController["updateConfiguration"]>[1]>;
-
-function assertInitialIAMState(
-  state: unknown,
-  principalIds: readonly string[],
-  issuer: string,
-): asserts state is MutableIAMState {
-  assert.deepEqual(state, {
-    identities: principalIds.map((id) => ({ kind: "principal", id, issuer, subject: id })),
-    groups: [],
-    memberships: [],
-    roles: [],
-    bindings: [],
-    restrictions: [],
-  });
-}
 
 /** A ready Namespace (unless `ready: false`) with one Agent (unless `skipAgent`) and helpers. */
 async function buildFixture(options: FixtureOptions) {
@@ -158,15 +144,8 @@ async function buildFixture(options: FixtureOptions) {
     zeroGrant,
   ];
   const issuer = "secret-occ-conformance";
-  const initialIAMState: unknown = principalIAMState(principalIds, issuer);
-  assertInitialIAMState(initialIAMState, principalIds, issuer);
-  const iamState = initialIAMState;
-  const grant = (
-    subjectId: string,
-    name: string,
-    permissions: Partial<Record<ResourceKind, PermissionAction[]>>,
-    bindingName = name,
-  ) =>
+  const iamState = principalIAMState(principalIds, issuer);
+  const grant = (subjectId: string, name: string, permissions: ActionsByKind, bindingName = name) =>
     grantRole(iamState, subjectId, {
       id: `secret-occ-${name}-role`,
       bindingId: `secret-occ-${bindingName}-binding`,
@@ -1008,6 +987,7 @@ function createTestChannelDriver(binding?: string) {
   const driver = {
     id: "channel-test",
     capability: "channel" as const,
+    enableRouting: () => [],
     implementation: "test-channel",
     binding,
     async validateCredentials(

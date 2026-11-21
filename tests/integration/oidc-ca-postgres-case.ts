@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { createServer as createTlsServer } from "node:tls";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import {
@@ -198,12 +198,13 @@ export async function verifyDatabaseStartupTrust(t: TestContext) {
     assert.equal(accepted, before, "invalid trust must be refused before connecting");
     server.setSecureContext({ key: database["leaf.key"], cert: database["leaf.pem"] });
     // The TLS fixture deliberately closes before authentication/SQL. The trust
-    // prerequisites pass, then the generated identity check fails safely.
+    // prerequisites pass, then the generated identity check fails safely and
+    // reports that it could not open the connection.
     await assert.rejects(run(connection(selected)), (failure: unknown) => {
       const error = execFailure(failure);
       assert.match(
         error.stderr,
-        /^Candidate application database Installation identity could not be verified\.\n$/,
+        /^Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database\. [^\n]*\n$/,
       );
       return true;
     });

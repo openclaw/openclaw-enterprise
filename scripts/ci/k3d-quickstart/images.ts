@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { appendFile, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { registryImage } from "../fixture-support-images.mjs";
+import { registryImage } from "../fixture-support-images.ts";
 import { loadRuntimeArtifact, runtimeArtifactSelection } from "../runtime-artifact.ts";
+import { record } from "../records.ts";
 
 const selection = runtimeArtifactSelection(process.env);
 assert.ok(selection, "The quickstart requires its same-run runtime artifact.");
@@ -26,11 +27,6 @@ function docker(
     stdio: capture ? "pipe" : "inherit",
     timeout: Math.min(remaining, timeoutMs),
   });
-}
-
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
-  return value as Record<string, unknown>;
 }
 
 function inspect(args: string[]) {

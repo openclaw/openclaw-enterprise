@@ -9,8 +9,9 @@ reports whether cleanup completed.
 This command applies only to runs with a versioned `preflight-journal.json`. For
 older or uncertain evidence, follow [manual reconciliation](#reconcile-unsupported-or-uncertain-evidence).
 Never create a journal or fill missing receipts from current resource names.
-The journal is bound to hashes of the original helper files. A newer checkout
-cannot clean up older evidence merely because it recognizes that journal shape.
+The journal is bound to hashes of the original helper files and the chart’s
+selected-image migration program. A newer checkout cannot clean up older
+evidence merely because it recognizes that journal shape.
 Retain the original checkout; do not update recorded hashes to bypass this check.
 
 ## Prepare the cleanup
@@ -24,8 +25,8 @@ private evidence directory and `.upgrade-lock`. Before proceeding:
 2. Confirm this is the original evidence directory, with its original files.
    Do not use a restored backup, replace the directory, or edit receipts to make
    validation pass. A backup can omit an already-started create.
-3. Use the original checkout and unchanged helper files. Retain the original
-   kubeconfig path and contents, context, namespace and release from
+3. Use the original checkout with unchanged helper files and chart program.
+   Retain the original kubeconfig path and contents, context, namespace and release from
    `parameters.json`. Current credentials must still authorize the cleanup.
 
 The command requires Python 3, Node.js matching the release checkout's
@@ -34,6 +35,8 @@ access must permit reading and deleting the recorded Jobs, Secrets and
 NetworkPolicies, plus listing Pods and reading any recorded child Pod. No OCC
 service key or candidate image is required. Cleanup does not run Helm, migrate
 the database, scale workloads, create Kubernetes resources or dispatch Agents.
+Cleanup applies the [kubectl preference and credential checks](production-upgrade-command.md#run-the-image-upgrade)
+before cluster access.
 
 ## Run cleanup against the original evidence
 
@@ -77,6 +80,13 @@ the result's path. It keeps original receipts and earlier results unchanged.
 not remove `.upgrade-lock`, resume an upgrade, prove release health, establish
 migration outcomes or roll back the database. The release owner must finish
 [partial-upgrade recovery](production-upgrade-recovery.md).
+
+An interrupted upgrade can retain a private temporary kubeconfig. Once the operation
+and all helper children are settled and no resume is planned, inspect each
+`kubeconfig-snapshot.*` receipt in the original evidence. Verify the recorded
+path differs from the original kubeconfig, then retire that temporary copy as
+credential material. Retain the receipt with the evidence; keep the original
+kubeconfig.
 
 ## Understand an incomplete result
 

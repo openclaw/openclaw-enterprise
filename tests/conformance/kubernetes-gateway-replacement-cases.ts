@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { TestContext } from "node:test";
 
 import {
   KubernetesComputeDriver,
@@ -60,7 +61,7 @@ export async function checkGatewayRolloutReadiness() {
     name,
     ownership,
     namespace,
-    options().images.gateway,
+    { runtime: options().images.gateway, workspaceSetup: options().images.gateway },
     name,
     "gateway",
     {},
@@ -101,7 +102,7 @@ export async function checkGatewayRolloutReadiness() {
   assert.equal(await driver["gatewayReady"](ownership, name, namespace), true);
 }
 
-export async function checkCandidateGatewayReplacement() {
+export async function checkCandidateGatewayReplacement(t: TestContext) {
   let setupCalls = 0;
   let connected = false;
   const driver = new KubernetesComputeDriver(
@@ -209,7 +210,7 @@ export async function checkCandidateGatewayReplacement() {
     gatewayName,
     gatewayOwnership,
     { name: gatewayNamespace, plane: "control" },
-    options().images.gateway,
+    { runtime: options().images.gateway, workspaceSetup: options().images.gateway },
     gatewayName,
     "gateway",
     {},
@@ -369,6 +370,13 @@ export async function checkCandidateGatewayReplacement() {
   });
 
   const prepare = () => driver.prepareRevision(replacement, computeAuthContext(replacement));
+  const readGateway = () => read("Deployment", gatewayName, gatewayNamespace);
+  const gatewayPod = (gateway: ObservedResource) => {
+    const pod = asRecord(asRecord(asRecord(gateway.spec)?.template)?.spec);
+    assert.ok(pod && Array.isArray(pod.volumes));
+    const volumes: unknown[] = pod.volumes;
+    return { pod, volumes };
+  };
   const markReady = (name: string) => {
     const target = name === gatewayName ? gatewayNamespace : namespace;
     const object = read("Deployment", name, target);
@@ -381,6 +389,47 @@ export async function checkCandidateGatewayReplacement() {
     save(object);
   };
 
+  await t.test("scaled predecessor waits and an unconfigured predecessor is refused", async () => {
+    const original = readGateway();
+    const scaled = readGateway();
+    scaled.spec = { ...scaled.spec, replicas: 2 };
+    save(scaled);
+    try {
+      const { volumes } = gatewayPod(scaled);
+      const configurationVolumeIndex = volumes.findIndex(
+        (volume) => asRecord(volume)?.name === "openclaw-configuration",
+      );
+      assert.ok(configurationVolumeIndex >= 0);
+      const configMap = asRecord(asRecord(volumes[configurationVolumeIndex])?.configMap);
+      assert.ok(configMap && typeof configMap.name === "string");
+
+      // An external scale must defer candidate workloads for an owned, ConfigMap-backed Gateway.
+      assert.equal((await prepare()).ready, false);
+      assert.equal(objects.has(key("Deployment", agentName)), false);
+      assert.equal(candidateGatewayStarted, false);
+      assert.deepEqual(readGateway(), scaled);
+
+      // Keep the mount valid while giving the predecessor a source the Driver must refuse.
+      volumes[configurationVolumeIndex] = { name: "openclaw-configuration", emptyDir: {} };
+      save(scaled);
+      await assert.rejects(prepare, (error: unknown) => {
+        assert.deepEqual(driver.describePrepareRevisionFailure(error), {
+          code: "KUBERNETES_OWNERSHIP_CONFLICT",
+          stage: "prepare_revision",
+          errorClass: "OwnershipFailure",
+          message: `Refusing unconfigured Agent gateway ${gatewayName}.`,
+        });
+        return true;
+      });
+      assert.equal(objects.has(key("Deployment", agentName)), false);
+      assert.equal(candidateGatewayStarted, false);
+      assert.deepEqual(readGateway(), scaled);
+    } finally {
+      save(original);
+    }
+  });
+
+  // Restoring one replica allows the original candidate preparation to proceed.
   assert.equal((await prepare()).ready, false);
   assert.equal(candidateGatewayStarted, false);
   assert.equal(setupCalls, 1);
@@ -424,6 +473,31 @@ export async function checkCandidateGatewayReplacement() {
   connected = true;
   assert.equal((await prepare()).ready, true);
   assert.equal(setupCalls, 1);
+
+  await t.test("current revision refuses a different configuration mount", async () => {
+    const original = readGateway();
+    const changed = readGateway();
+    const { volumes } = gatewayPod(changed);
+    const volume = volumes.find((entry) => asRecord(entry)?.name === "openclaw-configuration");
+    const configMap = asRecord(asRecord(volume)?.configMap);
+    assert.ok(configMap && typeof configMap.name === "string");
+    configMap.name = `${configMap.name}-other`;
+    save(changed);
+    try {
+      await assert.rejects(prepare, (error: unknown) => {
+        assert.deepEqual(driver.describePrepareRevisionFailure(error), {
+          code: "KUBERNETES_CONFIGURATION_INVALID",
+          stage: "prepare_revision",
+          errorClass: "ConfigurationFailure",
+          message: "Immutable AgentRevision gateway configuration cannot change.",
+        });
+        return true;
+      });
+      assert.deepEqual(readGateway(), changed);
+    } finally {
+      save(original);
+    }
+  });
 }
 
 export async function checkDedicatedHarnessServiceCutover() {

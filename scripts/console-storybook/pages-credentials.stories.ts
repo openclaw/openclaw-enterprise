@@ -9,6 +9,7 @@ export const ConnectionTemplatesMobile = story("credentialsTemplateCatalog", {
   frameHeight: "844px",
 });
 export const GoogleOAuthTemplate = story("credentialsGoogleTemplate");
+export const UnconfirmedTemplateSave = story("credentialsUnconfirmedTemplate");
 export const ManualOAuthTemplate = story("credentialsManualTemplate");
 export const ChooseTemplateAvailability = story("credentialsTemplateWithoutNamespace");
 export const ApprovedScopeLimit = story("credentialsApprovedScopeLimit");

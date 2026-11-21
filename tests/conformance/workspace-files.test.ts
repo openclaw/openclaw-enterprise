@@ -10,17 +10,17 @@ import {
   type ControllerWorkspaceFilesAccess,
 } from "../../apps/controller/src/gateway/contracts.ts";
 import { createFastifyApp, type ControllerApp } from "../../apps/controller/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import {
   createTenantReaderFixture,
   tenantRequest as request,
   type TenantReaderApp,
   type TenantRequestOptions,
 } from "../helpers/tenant-reader-app.ts";
-import { bindRole } from "../helpers/iam-grants.mjs";
+import { bindRole } from "../helpers/iam-grants.ts";
 import {
   workspaceVersionStarting,
   workspaceWithoutRunningVersion,

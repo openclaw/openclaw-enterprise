@@ -17,9 +17,12 @@ import {
   parseProductionChart,
   productionCollectorValues,
   renderProductionChart,
-} from "./production-chart.mjs";
+} from "./production-chart.ts";
 import { createDriver, fixtureComputeConfiguration } from "./kubernetes-compute-real.mjs";
+import { createManagementPolicyControls } from "./production-network-management-access.ts";
 import { createProductionNetworkProbe } from "./production-network-probe.ts";
+
+/** @import { ManagementTenant } from "./production-network-management-access.ts" */
 
 const execute = promisify(execFile);
 const componentLabel = "app.kubernetes.io/component";
@@ -32,6 +35,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
   const destinations = `${namespace}-destinations`;
   const envoyNamespace = `${namespace}-envoy`;
   const ownedNamespaces = [];
+  /** @param {...string} args */
   const kubectl = async (...args) =>
     (await kubectlGetJson(selection, args, { timeoutMs: 30_000 })) ??
     (await execute("kubectl", kubectlArguments(selection, args), { timeout: 30_000 })).stdout;
@@ -40,6 +44,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     kubectl,
     waitTimeoutMs: 60_000,
   });
+  /** @returns {Promise<string>} */
   const kubectlWithInput = (args, object) =>
     new Promise((resolve, reject) => {
       const child = execFile(
@@ -269,6 +274,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
   );
   const runDir = await temporaryDirectory(t, "oce-network-");
   await symlink(join(quickstart, "kubernetes"), join(runDir, "kubernetes"));
+  /** @param {string} command @param {ManagementTenant} [tenant] */
   const runNetworkHelper = (command, tenant, path = process.env.PATH) =>
     execute(
       "bash",
@@ -304,6 +310,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     metadata: { name, namespace: space },
     spec,
   });
+  /** @type {ManagementTenant[] | undefined} */
   let managementTenants;
   let ownedApiDiscoveryPath;
   async function updateApiEndpointSlice(update) {
@@ -644,67 +651,26 @@ print(json.dumps(payload))
       );
       assert.match(result.stderr, /No ready Kubernetes API endpoint/);
     },
-    async confirmManagementPortControls() {
-      // Change only destination ingress. A successful connection from each caller
-      // proves that its preceding 8081 denial was not caused by source egress.
-      const name = "verify-management-listener";
-      await apply([
-        policy(name, system, {
-          podSelector: { matchLabels: sources.management.labels },
-          policyTypes: ["Ingress"],
-          ingress: [{ ports: [{ protocol: "TCP", port: 8081 }] }],
-        }),
-      ]);
-      try {
-        await Promise.all(
-          [
-            "managementapi",
-            "managementworker",
-            "supervisor0",
-            "gateway0",
-            "supervisor1",
-            "gateway1",
-          ].map((source) => controls(["managementWrongPort"], source)),
-        );
-      } finally {
-        await kubectl("delete", "networkpolicy", "-n", system, name);
-      }
-    },
-    async removeRecordedServicePolicies() {
-      await runNetworkHelper("delete_service_peers");
-      for (const tenant of managementTenants) {
-        const remaining = await kubectl(
-          "get",
-          "networkpolicy",
-          "-n",
-          system,
-          "--ignore-not-found",
-          "-o",
-          "name",
-          "oce-management-from-supervisors-" + kubernetesHash(tenant.id),
-          "oce-management-from-" + kubernetesHash(tenant.agent),
-        );
-        assert.equal(remaining.trim(), "", "uninstall must remove earlier and later tenant grants");
-      }
-    },
-    async withdrawSupervisorGrant(index) {
-      const tenant = managementTenants[index];
-      await kubectl(
-        "delete",
-        "networkpolicy",
-        "-n",
-        "oce-system",
-        "oce-management-from-supervisors-" + kubernetesHash(tenant.id),
-      );
-    },
-    async removeTenantOwnership(index) {
-      await kubectl(
-        "label",
-        "namespace",
-        managementTenants[index].namespace,
-        "openclaw.dev/namespace-",
-      );
-    },
+    ...createManagementPolicyControls({
+      system,
+      allowManagementPort: (name, port) =>
+        apply([
+          policy(name, system, {
+            podSelector: { matchLabels: sources.management.labels },
+            policyTypes: ["Ingress"],
+            ingress: [{ ports: [{ protocol: "TCP", port }] }],
+          }),
+        ]),
+      controls,
+      kubectl,
+      runNetworkHelper,
+      *recordedTenants() {
+        for (const tenant of managementTenants) {
+          yield tenant;
+        }
+      },
+      tenantField: (index, field) => managementTenants[index][field],
+    }),
     async installPublicReaderRevisions() {
       const address = "10.43.0.19";
       const peer = { namespace: destinations, podLabels: { app: "public-reader" }, address };
@@ -815,6 +781,7 @@ print(json.dumps(payload))
       );
       envoyEnabled = phase === "optional";
     },
+    /** @param {Parameters<typeof verifyNetworkAccess>[0]} scenario */
     verify(scenario) {
       return verifyNetworkAccess(scenario, envoyEnabled);
     },

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-11-13
-last_updated_session: authoring-run/ab7d7799-30b2-43fe-8453-86ac8cba698b
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Common Operational Logging Flow
@@ -17,7 +17,7 @@ retains separate, durable audit evidence.
 - Trigger: API, worker, migration, or bootstrap startup, Agent deployment, or
   optional Docker Compose or Helm Collector enablement.
 - Source: `apps/controller/src/composition/installation-config.ts:loadStartupConfigurationSnapshot`
-- Source: `packages/occ/src/index.ts:OpenClawController.deployAgent`
+- Source: `packages/occ/src/agent-harness-topology.ts:agentRuntimeConfiguration`
 - Source: `deploy/helm/openclaw-enterprise/templates/collector.yaml:logging.collector.enabled`
 - Assumptions: trusted startup YAML, authorized deployment, Compute Driver
   support, and operator-owned Collector configuration for remote export.
@@ -75,14 +75,14 @@ See the [settings reference](../reference/settings.md) for YAML shape and values
 `apps/controller/src/api-startup.ts:startApi`
 
 Worker (`apps/controller/src/worker.mjs`), bootstrap
-(`scripts/bootstrap-installation.mjs`), and migration (`scripts/migrate-production.mjs`)
+(`scripts/bootstrap-installation.mjs`), and migration (`scripts/migrate-production.ts`)
 use Pino at the selected level. The API disables Fastify request logging.
 Bootstrap and migration separate protocol success output from structured
 failures. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`
 keeps reviewed scalars and drops credentials, provider payloads, request and
-reply objects, and unsafe strings. The emitter applies URL and
-connection-string credential checks to approved strings. Step 7 covers
-Collector filtering.
+reply objects, and unsafe strings. The emitter applies token, URL, query, form,
+JSON, connection-string and HTTP header credential checks to approved strings.
+Step 7 covers Collector filtering.
 
 The Collector keeps allowed worker `work.operation` values and `work.id` formats.
 Agent stop keys include the operation UUID. Credential withdrawal keys end in
@@ -105,12 +105,13 @@ Missing or malformed evidence leaves the field unset and health unproven.
 Pending outcomes and scheduling are unchanged.
 
 Compute preparation failures may carry a Driver-reviewed stage, classification,
-status, and message (up to 256 characters). The worker excludes raw exceptions.
-The sanitizer drops secret-shaped messages before output.
+status, and message; the worker caps that message at 256 characters and excludes
+raw exceptions. The logger keeps it, and a Compute preflight warning's message,
+as one line cut at 512 characters, and drops secret-shaped messages before output.
 
 ### 3. Admission freezes runtime logging
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-harness-topology.ts:agentRuntimeConfiguration`
 
 When the trusted ComputeDriver declares `runtimeLogging: "driver"`, admission
 validates and freezes the native document with its logging fields intact. The
@@ -220,6 +221,8 @@ hash is not exported. `authentication.provider-unavailable-warning` keeps
 `occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile`,
 `membership` or `email`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
+`authentication.request-refused` and `authentication.library-error` or `-warning` keep `request.id`
+and `occ.reason_code`; the operation, method and route pattern stay local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
 `occ.worker.cause`. These codes and runtime wrapper codes reject the same recognized
 key and token shapes as the other code fields. SQLSTATE values remain supported.
@@ -341,6 +344,9 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-18 04:25: Name the exported authentication refusal and library events with their request ID. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
 
 - 2026-11-13 22:56: Apply the existing credential checks to local scalar strings and Collector diagnostic codes. (authoring-run/ab7d7799-30b2-43fe-8453-86ac8cba698b - afab47b8ff040a1ab6e0fa1c5a211690ab990f32)
 

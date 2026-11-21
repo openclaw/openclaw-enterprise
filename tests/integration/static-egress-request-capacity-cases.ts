@@ -26,11 +26,12 @@ import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import capturedOperation from "../fixtures/static-egress/openshell-operation.json" with { type: "json" };
-import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import { requestId } from "../helpers/static-egress-request-id.ts";
 import { staticEgressWireFixture, wireTime } from "../helpers/static-egress.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { registerStaticEgressResponsesWireCases } from "./static-egress-responses-wire-cases.ts";
 
 function heldRequests(t: TestContext, release: () => void) {
   const cancellation = new AbortController();
@@ -846,3 +847,23 @@ export function registerStaticEgressRequestCapacityCases(): void {
     assert.equal(checks, 3);
   });
 }
+
+export function registerStaticEgressResponsesAndCapacityCases(
+  unicodeEscapes: (text: string) => string,
+): void {
+  registerStaticEgressResponsesWireCases(unicodeEscapes);
+  registerStaticEgressRequestCapacityCases();
+}
+
+export {
+  runStaticEgressElapsedDeadlineCase,
+  runStaticEgressReceiptCapacityCase,
+} from "./static-egress-receipt-capacity-cases.ts";
+export {
+  runStaticEgressCredentialRejectionCase,
+  runStaticEgressReceiptAuthorizationFailureCase,
+  runStaticEgressReceiptRestartCase,
+  runStaticEgressResponseCommitCase,
+} from "./static-egress-receipt-persistence-cases.ts";
+export { createReceiptPersistenceFaults } from "./static-egress-receipt-support.ts";
+export { createStaticEgressAdmissionCases } from "./static-egress-admission-cases.ts";

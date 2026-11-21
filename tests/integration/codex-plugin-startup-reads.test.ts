@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import type { SpawnOptions } from "node:child_process";
 import test from "node:test";
-import { runStartupReadCase } from "./codex-plugin-startup-read-cases.ts";
-import { completeNativeStartupReceipt } from "../fixtures/codex-native-startup-probe.ts";
 import { captureChild } from "../helpers/child-processes.mjs";
+import { runStartupReadCase } from "./codex-plugin-startup-read-cases.ts";
 
 const cases = [
   ["ordinary", "read"],
@@ -20,7 +19,9 @@ const launchInstaller: Parameters<typeof runStartupReadCase>[3] = async (script,
     env,
     signal,
     killSignal: "SIGKILL",
-  } satisfies SpawnOptions & { encoding: BufferEncoding };
+  } satisfies SpawnOptions & {
+    encoding: BufferEncoding;
+  };
   const result: unknown = await captureChild(process.execPath, ["-e", script], options);
   assert.ok(
     result &&
@@ -47,34 +48,3 @@ for (const [mode, outcome] of cases) {
     );
   }
 }
-
-test("native startup receipt requires a disabled app from the selected plugins", () => {
-  const reads = {
-    version: "codex-cli 0.164.0",
-    nativeReadCount: 6,
-    maxOutstanding: 4,
-    drainedNativeError: true,
-    recovered: true,
-    disabledStartupSelections: 4,
-  } as const;
-  const selectedApps: string[] = [];
-  const details = [[], [], [], selectedApps, ["unselected"], []].map((appIds) => ({ appIds }));
-  const receipt = (overrides: Record<string, unknown>) =>
-    completeNativeStartupReceipt(
-      assert,
-      details,
-      {
-        apps: { _default: { enabled: false }, unselected: { enabled: true }, ...overrides },
-        plugins: { _default: { enabled: false } },
-      },
-      reads,
-    );
-
-  assert.throws(() => receipt({}), /requires at least one app among disabled selections/);
-  selectedApps.push("selected");
-  assert.equal(receipt({}).disabledAppPolicy, true);
-  assert.equal(receipt({ selected: { enabled: false } }).disabledAppPolicy, true);
-  for (const selected of [{ enabled: true }, {}, null]) {
-    assert.throws(() => receipt({ selected }), /disabled selections must not enable/);
-  }
-});

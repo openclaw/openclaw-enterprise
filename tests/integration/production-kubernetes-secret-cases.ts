@@ -3,7 +3,7 @@ import test from "node:test";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 
-import { parseProductionChart, productionCollectorValues } from "../helpers/production-chart.mjs";
+import { parseProductionChart, productionCollectorValues } from "../helpers/production-chart.ts";
 import {
   gatewayRoutingValues,
   gatewaySandboxValues,
@@ -246,7 +246,6 @@ export function registerDatabaseCaCases({
         {},
         optionalFeatures,
         { ...issuerCaValues, "backend.openshell.clientSecretName": "dedicated-openshell-admin" },
-        { "bootstrap.password.mountPath": "/custom/bootstrap" },
       ]) {
         const objects = await resources((await render(features)).stdout);
         // Derive the existing mounts from shipped workloads, independently of the validation list.
@@ -341,7 +340,7 @@ export function registerDatabaseCaCases({
           "database.caMountPath": mountPath,
         });
       }
-      for (const mountPath of ["/etc/openclaw/installation", "/var/lib/openclaw/bootstrap"]) {
+      for (const mountPath of ["/etc/openclaw/installation", "/run/openclaw-bootstrap"]) {
         assert.equal((await render({ "database.caMountPath": mountPath })).stdout, ordinary);
       }
     },

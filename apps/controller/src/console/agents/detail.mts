@@ -1362,6 +1362,10 @@ export async function renderAgentDetail(
     showDeleting,
     callerPermissionsRead.then((permissions) => permissions?.delete),
     () => permissionsRereads,
+    (afterReads) =>
+      !permissionsReadSettled && permissionsRereads > afterReads
+        ? latestPermissionsRead
+        : rereadPermissions(),
   );
   // Stop and Delete share the Configuration tab’s danger zone (UX spec 3.9). A row
   // hides itself when the caller's permission answer denies it, and the zone hides with no row.
@@ -2959,6 +2963,9 @@ export async function renderAgentDetail(
           const focused = document.activeElement;
           const refreshFocused =
             focused instanceof HTMLButtonElement && focused.parentElement === activityPanel;
+          const summarySelector = ":scope > details > summary";
+          const summaryFocused =
+            focused !== null && focused === activityPanel.querySelector(summarySelector);
           activityPanel.replaceWith(panel);
           activityPanel = panel;
           // The panel's direct button refreshes whichever deployment is now shown.
@@ -2966,6 +2973,8 @@ export async function renderAgentDetail(
             panel
               .querySelector<HTMLButtonElement>(":scope > button")
               ?.focus({ preventScroll: true });
+          } else if (summaryFocused) {
+            panel.querySelector<HTMLElement>(summarySelector)?.focus({ preventScroll: true });
           }
         }
         void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
@@ -4535,7 +4544,9 @@ export async function renderAgentDetail(
     ++agentNamesGeneration;
     agentDeniedSecretNames = [];
     configurationDeniedSecretNames = [];
-    redrawConfigurationAccessViews();
+    if (!deleting) {
+      redrawConfigurationAccessViews();
+    }
     secretsOperateAnswer.reset();
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
@@ -4556,6 +4567,12 @@ export async function renderAgentDetail(
       if (context.isCurrent() && (foreground?.() ?? true) && reread > appliedReread) {
         appliedReread = reread;
         callerPermissions = permissions;
+        // A deleting Agent shows only the deletion row. If the page opened in that state,
+        // the editor, deployment controls and native admin view were never initialized.
+        if (deleting) {
+          deletion.applyDelete(permissions?.delete, reread);
+          return callerPermissions;
+        }
         if (
           permissions &&
           permissions !== unconfirmedPermissions &&
@@ -4567,7 +4584,7 @@ export async function renderAgentDetail(
           reread === permissionsRereads
             ? Promise.resolve(agentSaveDenial(permissions, agent))
             : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
-        if (latestDeploymentStatus === "failed" && !deleting) {
+        if (latestDeploymentStatus === "failed") {
           renderLatestDeployment();
         }
         applyDraftAccess();

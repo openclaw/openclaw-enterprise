@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createGunzip, createZstdDecompress } from "node:zlib";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.ts";
+import { record } from "./records.ts";
 
 type RuntimeIdentity = {
   sourceSha: string;
@@ -27,11 +28,6 @@ type Descriptor = {
   mediaType: string;
   platform?: Record<string, unknown>;
 };
-
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
-  return value as Record<string, unknown>;
-}
 
 function descriptor(value: unknown): Descriptor {
   const entry = record(value);
@@ -686,7 +682,7 @@ async function build(directory: string) {
       "deploy/runtime/Dockerfile",
       ".",
     ],
-    180 * 60_000,
+    40 * 60_000,
   );
   if (process.env.GITHUB_ACTIONS === "true") {
     console.log(

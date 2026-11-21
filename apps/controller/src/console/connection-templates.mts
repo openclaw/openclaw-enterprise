@@ -593,6 +593,7 @@ export function openConnectionTemplateEditor(
   async function submit(continueRegistration = false) {
     if (
       busy ||
+      uncertain ||
       !validateFields([
         scope,
         name,
@@ -650,6 +651,8 @@ export function openConnectionTemplateEditor(
       }
       if (
         !saved.id ||
+        !Number.isSafeInteger(saved.current.version) ||
+        saved.current.version < 1 ||
         (template &&
           (saved.id !== template.id || saved.current.version < template.current.version)) ||
         saved.displayName !== body.displayName ||
@@ -668,10 +671,19 @@ export function openConnectionTemplateEditor(
       const code = requestFailure(cause).status;
       uncertain = code === undefined || code >= 500 || code === 408;
       if (dialog.open) {
-        status.textContent = failure(cause, "the template change");
+        if (uncertain) {
+          close.textContent = "Close";
+          status.textContent =
+            "The template may have been saved. Close this dialog and check the template list before trying again.";
+        } else {
+          status.textContent = failure(cause, "the template change");
+        }
       }
     } finally {
       setBusy(false);
+      if (uncertain && dialog.open && context.isCurrent()) {
+        close.focus();
+      }
     }
   }
   server.addEventListener("input", () => {
