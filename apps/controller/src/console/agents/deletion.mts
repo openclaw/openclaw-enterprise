@@ -30,6 +30,7 @@ export function createAgentDeletion(
   onDeleting: () => void,
   allowed?: Promise<boolean | undefined>,
   permissionReadsStarted: () => number = () => 0,
+  rereadDeletePermission?: (afterReads: number) => Promise<unknown>,
 ) {
   // One row of the Agent page's danger zone (UX spec 3.9); the confirmation carries the detail.
   const section = element("section", {
@@ -38,9 +39,6 @@ export function createAgentDeletion(
   });
   const permissionNotice = AGENT_DELETE_DENIED;
   let restrictConfirmation: (() => void) | undefined;
-  // The count of the page's permission reads started before the last refused Delete. Only a read
-  // started after it can lift the refusal (finding 2966).
-  let refusedAfterReads = 0;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
   const remove = button("Delete Agent", openConfirmation, { className: "danger" });
@@ -57,6 +55,7 @@ export function createAgentDeletion(
     accessEnded: boolean;
     notice: string;
     error: LifecycleError | null;
+    refusal: (LifecycleError & { afterReads: number }) | null;
     used: boolean;
   } = {
     deleting: agent.status === "deleting",
@@ -70,9 +69,12 @@ export function createAgentDeletion(
     accessEnded: false,
     notice: "",
     error: null,
+    refusal: null,
     // Set once this viewer opens the confirmation, so the row never vanishes under them.
     used: false,
   };
+  const deleteBlocked = () =>
+    state.accessEnded || state.forbidden || state.needsRefresh || state.refusal !== null;
   let pollTimer: number | undefined;
   // A repeat confirmed while a quiet poll reads. Reads and writes stay serialized, so it is sent
   // when that read ends instead of being dropped (finding 1975).
@@ -110,24 +112,24 @@ export function createAgentDeletion(
         : state.notice;
     replaceChildrenIfChanged(feedback, [
       ...(status ? [statusBlock("info", null, status)] : []),
-      ...(state.forbidden && !state.accessEnded
+      ...(state.forbidden && !state.accessEnded && state.refusal === null
         ? [statusBlock("info", null, permissionNotice, [], { id: "agent-deletion-refused" })]
         : []),
-      ...(state.error
-        ? [
-            element(
-              "div",
-              {
-                className: "status",
-                "data-tone": "danger",
-                role: "alert",
-                id: "agent-deletion-error",
-              },
-              element("p", { className: "status-body" }, state.error.text),
-              state.error.requestId ? requestIdLine(state.error.requestId) : null,
-            ),
-          ]
-        : []),
+      ...[
+        { error: state.accessEnded ? null : state.refusal, id: "agent-deletion-refusal" },
+        { error: state.error, id: "agent-deletion-error" },
+      ].flatMap(({ error, id }) =>
+        error
+          ? [
+              element(
+                "div",
+                { className: "status", "data-tone": "danger", role: "alert", id },
+                element("p", { className: "status-body" }, error.text),
+                error.requestId ? requestIdLine(error.requestId) : null,
+              ),
+            ]
+          : [],
+      ),
     ]);
     setText(remove, state.deleting ? "Request deletion again" : "Delete Agent");
     // A refused Delete, or one that waits for Refresh after a failure, stays in the Tab order,
@@ -135,13 +137,11 @@ export function createAgentDeletion(
     // an unchanged render keeps the earlier ones. While checking it stays natively disabled.
     // A permission refusal keeps it unavailable, described by its alert, until a newer
     // permission answer allows delete (finding 2951).
-    const removeUnavailable =
-      checking || state.needsRefresh || state.forbidden || state.error?.refused === true;
-    const removeReason = checking
-      ? null
-      : feedback.querySelector<HTMLElement>(
-          state.forbidden ? "#agent-deletion-refused" : "#agent-deletion-error",
-        );
+    const removeUnavailable = checking || deleteBlocked();
+    const fallbackReason = state.forbidden ? "agent-deletion-refused" : "agent-deletion-error";
+    const reasonId = state.refusal ? "agent-deletion-refusal" : fallbackReason;
+    const removeReason =
+      checking || state.accessEnded ? null : feedback.querySelector<HTMLElement>(`#${reasonId}`);
     setUnavailable(remove, removeUnavailable && removeReason !== null, removeReason);
     if (removeUnavailable && removeReason === null) {
       remove.disabled = true;
@@ -234,6 +234,10 @@ export function createAgentDeletion(
         } else {
           setDeleting();
         }
+        // A manual Refresh can also adopt an in-flight poll. Status alone never restores a grant.
+        if (!state.polling && state.refusal) {
+          await rereadDeletePermission?.(state.refusal.afterReads);
+        }
       } else if (current.status === "active" && !state.deleting) {
         state.needsRefresh = false;
         state.notice = "The Agent is still active. You can try deleting it again.";
@@ -272,7 +276,7 @@ export function createAgentDeletion(
         render();
         // The reader may still be deciding in the repeat dialog, or may have confirmed a repeat
         // we have not sent. Close either before returning focus; the modal makes the page inert.
-        const dropQueued = state.accessEnded || state.forbidden || state.needsRefresh;
+        const dropQueued = deleteBlocked();
         if (state.accessEnded || (queued && dropQueued)) {
           section.querySelector<HTMLDialogElement>("dialog[open]")?.close();
         }
@@ -306,7 +310,7 @@ export function createAgentDeletion(
     cancel: HTMLButtonElement,
     confirm: HTMLButtonElement,
   ) {
-    if (state.accessEnded || state.forbidden || state.needsRefresh || !context.isCurrent()) {
+    if (deleteBlocked() || !context.isCurrent()) {
       return;
     }
     if (state.pending) {
@@ -364,7 +368,6 @@ export function createAgentDeletion(
         const grant = grantRefusal(cause);
         text = (!grant && error.serverMessage) || deleteRefused(agent.name);
         refused = grant || !state.deleting;
-        refusedAfterReads = permissionReadsStarted();
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
@@ -382,7 +385,12 @@ export function createAgentDeletion(
         text =
           "Outcome unknown. Deletion may have started. Refresh deletion status before trying again.";
       }
-      state.error = { text, requestId: error.requestId, refused };
+      const failure = { text, requestId: error.requestId };
+      if (refused) {
+        state.refusal = { ...failure, afterReads: permissionReadsStarted() };
+      } else {
+        state.error = failure;
+      }
     } finally {
       if (context.isCurrent()) {
         state.pending = false;
@@ -393,12 +401,7 @@ export function createAgentDeletion(
   }
 
   function openConfirmation() {
-    if (
-      state.accessEnded ||
-      state.forbidden ||
-      (state.pending && !state.polling) ||
-      state.needsRefresh
-    ) {
+    if (deleteBlocked() || (state.pending && !state.polling)) {
       return;
     }
     const retry = state.deleting;
@@ -497,7 +500,7 @@ export function createAgentDeletion(
       return;
     }
     const regranted =
-      permitted === true && state.error?.refused === true && read > refusedAfterReads;
+      permitted === true && state.refusal !== null && read > state.refusal.afterReads;
     const forbidden = permitted === false;
     if (forbidden === state.forbidden && !regranted) {
       return;
@@ -507,7 +510,7 @@ export function createAgentDeletion(
       restrictConfirmation?.();
     } else if (regranted) {
       // The refusal no longer describes this viewer's access.
-      state.error = null;
+      state.refusal = null;
     }
     render();
   }

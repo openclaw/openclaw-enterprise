@@ -127,7 +127,7 @@ Worker to stop it.
 
 Deployment rechecks the selected Repo scope, proxy and Driver identities across
 asynchronous validation before accessing credentials and inserting a revision.
-Migration 0086 binds the snapshot to the exact saved policy version, grants
+Migration 0087 binds the snapshot to the exact saved policy version, grants
 and identity. Older Workers refuse its reader marker. The Worker rechecks
 the policy before dispatch. An explicit list blocks live application.
 

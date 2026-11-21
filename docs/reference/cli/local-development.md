@@ -72,6 +72,9 @@ reported the result. It does not establish that cancellation initiated failure.
 Original errors and exit behavior are preserved. The record contains no raw
 errors, paths or subprocess output.
 
+`primary_stage=codex-sandbox-preparation` identifies a failure preparing the
+dedicated Codex sandbox before private routing setup.
+
 `primary_stage=controller-image-import` identifies a failure while preparing or
 importing the development controller image. Inspect the original CLI build or
 import error first. For an explicitly selected image, check the selected engine
