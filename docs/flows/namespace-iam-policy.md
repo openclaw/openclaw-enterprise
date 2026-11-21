@@ -148,10 +148,7 @@ validates and indexes it once by ID and issuer/subject for identities, by
 subject for bindings, and by action and kind for Restrictions. The next unit
 reads fresh policy.
 
-`packages/occ/src/index.ts:OpenClawController.updateAgent` checks Agent `update`
-again after locking the Namespace. Namespace IAM writes take the same lock.
-If a binding withdrawal commits first and the caller has no other applicable
-`update` grant, the Agent save returns `403` and leaves the draft unchanged.
+`packages/occ/src/agent-drafts.ts:updateAgent` rechecks Agent `update` after the Namespace lock. IAM writes share this lock. If a withdrawal commits first and leaves no Agent update grant, save returns `403` and preserves the draft.
 
 ### 5. Platform state commits policy and audit together
 
@@ -302,6 +299,9 @@ behavior.
 ## Changelog
 
 - 2026-11-20 17:01: Point to deployment grant creation in the Agent credential access module. (authoring-run/fda3d531-de1b-4732-984e-f4c3f1c19868 - 91d5a4bc0ddd450d83d4ec939dd9c377cc145f8e)
+
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
+
 - 2026-11-20 16:40: Update source pointers for Namespace policy commands and configured grants. (authoring-run/5e3917d4-e775-43a5-9016-4f8ba744675e - dde01a7334a51ced932f1eb0ea6a4561c3e97581)
 - 2026-11-20 16:23: Point to the shared authority fence used by OCC transactions. (authoring-run/44d201ec-ee79-4633-aebb-a4ae8e9cd904 - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
 - 2026-11-17 19:20: Order Connection ownership, standing repository approval, and startup Preset ownership against configured-policy changes. (authoring-run/01a1bfc4-452e-7521-a7b2-2e1c44f855df - ecf6a80b605ec64c9d68a150cb07dbda5055d2a8)

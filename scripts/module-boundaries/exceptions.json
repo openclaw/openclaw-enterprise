@@ -227,23 +227,6 @@
       "reason": "The precompiled route compilers file is loaded only from the fixed build-output path, and only when its fingerprint matches this Node version, lockfile, compiler packages and route-compilers.ts.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or build-output resolution is represented in the analyzer.",
       "loaderIdentity": "loader:sha256:a2a30ae033a222fdd13bd05455172a06b655d81700c1371d3b085b9fe854e07f"
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/repository-credential-state.ts",
-      "specifier": "./state/repository-credential-state.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": [
-        "value:normalizedRepositoryAccess",
-        "value:validAdmittedRepositoryBindings",
-        "value:validRepositoryAccess",
-        "value:validRepositoryRevisionState"
-      ],
-      "owner": "Repository revision admission",
-      "reason": "OCC admission reuses the canonical material-free repository snapshot and access-intent validators currently located in the State module.",
-      "removeWhen": "Move shared repository snapshot validation into neutral contracts and update admission and State consumers."
     }
   ]
 }
