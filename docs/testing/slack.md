@@ -12,6 +12,12 @@ Run live Slack integration checks with the [Kubernetes runtime](kubernetes.md#ku
 
 ## Slack
 
+Run the credential-free final-authority filter proof with Docker:
+`OCC_TEST_CHANNEL_ENVOY_REAL=1 node --test tests/integration/channel-egress-envoy-authority-real.test.ts`.
+It executes the product filter chain in the pinned Envoy image and checks CIDR,
+excluded-IP, and alternate numeric authority denials before proxy contact. It
+does not prove an Agent deployment or a live Slack connection.
+
 The [QA matrix](ci/qa-advisory.md) checks live ingress and a threaded reply. The focused test below checks root replies, credential placement, proxy isolation, and Socket Mode. Prepare an authorized model credential.
 
 Use an authorized test channel in one Slack workspace. The gateway bot and the authorized sender must join it. Use a distinct authorized sender bot. Use an existing Socket Mode app and compatible controller, Gateway, and Codex app-server images. CI builds the controller and the runtime with the pinned OpenClaw source, Codex, and Slack plugin when image overrides are absent. To select existing runtime images, supply both `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` as digest references; omit both to use the CI build. Direct test execution requires the imported immutable image references from [runtime preparation](kubernetes.md#kubernetes-model-turns-and-secrets). Run the [image smoke](docker.md#images-and-helm) first; version output alone does not prove compatibility.

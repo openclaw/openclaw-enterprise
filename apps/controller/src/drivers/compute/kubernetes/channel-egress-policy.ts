@@ -205,7 +205,81 @@ export function requireSupportedChannelDestinations(
 
 const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const octet = "(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])";
-const ipv4 = `${octet}(?:\\.${octet}){3}`;
+const canonicalIpv4 = `${octet}(?:\\.${octet}){3}`;
+// WHATWG IPv4 parsing accepts a bare 0x component as zero and an optional trailing dot.
+const numericPart = "(?:0[xX][0-9a-fA-F]*|[0-9]+)";
+const numericIpv4 = `${numericPart}(?:\\.${numericPart}){0,3}\\.?`;
+
+interface DigitTrie {
+  terminal: boolean;
+  children: Map<string, DigitTrie>;
+}
+
+/** Build a bounded RE2 expression for one CIDR's partial IPv4 octet, without leading zeroes. */
+function octetInterval(start: number, end: number): string {
+  const root: DigitTrie = { terminal: false, children: new Map() };
+  for (let value = start; value <= end; value += 1) {
+    let node = root;
+    for (const digit of String(value)) {
+      let child = node.children.get(digit);
+      if (!child) {
+        child = { terminal: false, children: new Map() };
+        node.children.set(digit, child);
+      }
+      node = child;
+    }
+    node.terminal = true;
+  }
+  const render = (node: DigitTrie): string => {
+    const groups = new Map<string, string[]>();
+    for (const [digit, child] of node.children) {
+      const suffix = render(child);
+      groups.set(suffix, [...(groups.get(suffix) ?? []), digit]);
+    }
+    const alternatives = [...groups].map(([suffix, digits]) => {
+      const head = digits.length === 1 ? digits[0] : `[${digits.sort().join("")}]`;
+      return `${head}${suffix}`;
+    });
+    const body = alternatives.length === 1 ? alternatives[0]! : `(?:${alternatives.join("|")})`;
+    if (node.terminal) {
+      return alternatives.length === 0 ? "" : `(?:${body})?`;
+    }
+    return body;
+  };
+  return render(root);
+}
+
+function ipv4CidrAuthority(cidr: string): string {
+  const [network, rawPrefix] = cidr.split("/");
+  const prefix = Number(rawPrefix);
+  return network!
+    .split(".")
+    .map((value, index) => {
+      const bits = Math.max(0, Math.min(8, prefix - index * 8));
+      if (bits === 8) {
+        return value;
+      }
+      if (bits === 0) {
+        return octet;
+      }
+      const start = Number(value);
+      return octetInterval(start, start + 2 ** (8 - bits) - 1);
+    })
+    .join("\\.");
+}
+
+function authorityRegex(regex: string): Record<string, unknown> {
+  return {
+    header: {
+      name: ":authority",
+      string_match: { safe_regex: { regex } },
+    },
+  };
+}
+
+function excludedAuthority(cidr: string): Record<string, unknown> {
+  return authorityRegex(`${ipv4CidrAuthority(cidr)}:[0-9]+`);
+}
 
 function upstreamCidr(cidr: string): Record<string, unknown> {
   const [address, prefix] = cidr.split("/");
@@ -233,7 +307,7 @@ function destinationPermission(
         `${mode === "subdomains" ? "(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+" : ""}${escapeRegex(name)}`,
     )
     .with({ kind: "ip" }, ({ address }) => escapeRegex(address))
-    .with({ kind: "cidr" }, () => ipv4)
+    .with({ kind: "cidr" }, ({ cidr }) => ipv4CidrAuthority(cidr))
     .exhaustive();
   const rules: Record<string, unknown>[] = [
     { header: { name: ":method", string_match: { exact: "CONNECT" } } },
@@ -290,6 +364,34 @@ export function channelEgressFilterChain(
                                       ...options.excludedCidrs,
                                     ]),
                                   ].map(upstreamCidr),
+                                },
+                              },
+                            },
+                          ]
+                        : []),
+                      ...(!upstream && proxy
+                        ? [
+                            {
+                              not_rule: {
+                                and_rules: {
+                                  rules: [
+                                    authorityRegex(`${numericIpv4}:[0-9]+`),
+                                    { not_rule: authorityRegex(`${canonicalIpv4}:[0-9]+`) },
+                                  ],
+                                },
+                              },
+                            },
+                            {
+                              not_rule: {
+                                or_rules: {
+                                  rules: [
+                                    ...new Set([
+                                      ...CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS,
+                                      ...options.excludedCidrs,
+                                    ]),
+                                  ]
+                                    .filter((cidr) => !cidr.includes(":"))
+                                    .map(excludedAuthority),
                                 },
                               },
                             },

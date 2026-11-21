@@ -209,7 +209,12 @@ on retry requires a new deployment.
 
 The direct allow chain checks CONNECT authority and port, resolves a strict-DNS
 subcluster, and checks the selected upstream address. The proxy chain applies
-the same authority and port rules, checks the selected proxy address and port,
+the same authority and port rules. CIDR rules match only literal IPv4 authorities
+inside the declared network. Before forwarding, Envoy rejects literal final IPs
+inside global private/metadata exclusions or Installation-excluded cluster ranges,
+even when an IP or CIDR declaration would otherwise include them. It also rejects
+hexadecimal, octal, shortened, or mixed numeric IPv4 spellings before a DNS rule
+can authorize them. It then checks the selected proxy address and port,
 then injects the slot's SDS credential in the router's upstream filter chain.
 The proxy owns final address resolution. Provider TLS stays end-to-end.
 
@@ -293,6 +298,8 @@ and remaining acceptance evidence.
 ## Changelog
 
 - 2026-11-23 16:55: Check the original revision again before recording each one-off Deploy as sending.
+
+- 2026-11-21 14:07: Enforce exact CIDR authority membership and excluded final-IP literals before proxy forwarding (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298 - 376a3e044ded0b3f5317e1f899bbbbeb3483d1fd)
 
 - 2026-11-21 04:39: Trace Agent proxy admission, exact Secret slots, scoped Envoy enforcement, safe inspection, and drain-fenced retirement (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298 - 1e1803913)
 

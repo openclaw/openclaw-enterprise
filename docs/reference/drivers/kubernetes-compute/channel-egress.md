@@ -61,6 +61,12 @@ rejects activation; it does not combine destination sets or add another fleet.
 ## Upstream proxy configuration
 
 Single-cluster Kubernetes Compute can admit an [Agent Gateway channel proxy](../../agents/network-proxy.md).
+Proxy selection does not relax destination declarations: a CIDR declaration permits
+only literal IPv4 authorities inside that CIDR. Global private, metadata, and
+Installation-excluded cluster IP ranges remain denied for final-IP authorities,
+including intersections with an allowed CIDR. DNS last-hop resolution remains the
+configured proxy's trust responsibility. Alternate numeric IPv4 spellings are
+denied rather than treated as DNS authorities.
 Set the same `upstreamProxies` and optional `proxyTrust` inputs in Helm
 `channelEgress` and Compute `runtime.channelEgress`:
 
