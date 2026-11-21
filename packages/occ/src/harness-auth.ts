@@ -34,6 +34,7 @@ import {
 } from "./errors.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import { exactServiceAccount } from "./service-account-operations.ts";
 
 type ManagedSource = CredentialSource & {
   readonly ownerCapability: "token_service";
@@ -48,11 +49,6 @@ interface HarnessAuthDependencies {
     sources: readonly { readonly sourceId: string }[],
   ) => Promise<void>;
   readonly backends: ReadonlyMap<string, BackendDefinition>;
-  readonly exactServiceAccount: (
-    state: PlatformReadView,
-    namespaceId: string,
-    accountId: string,
-  ) => Promise<unknown>;
   readonly ownedSecretDriver: (
     driverId: string,
     failure: () => SecretDriverOwnershipError,
@@ -89,6 +85,7 @@ export interface PlannedSecretHarnessAuth {
   readonly method: "api_key" | "codex_pat";
 }
 
+// The request alone determines this refusal before any grant or account lookup.
 export const SERVICE_ACCOUNT_CROSS_NAMESPACE =
   "Agent setting harnessAuth.source names a ServiceAccount in another Namespace. Harness authentication can use only a ServiceAccount in the Agent's own Namespace: select one from this Namespace.";
 
@@ -174,7 +171,7 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
         namespaceId,
         id: binding.source.id,
       });
-      await dependencies.exactServiceAccount(state, namespaceId, binding.source.id);
+      await exactServiceAccount(state, namespaceId, binding.source.id);
     }
   }
 

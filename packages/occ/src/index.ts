@@ -285,7 +285,6 @@ import type {
   Secret,
   SecretBindings,
   SecretReference,
-  SecretConsumers,
   SecretDetail,
   SecretDriver,
   SecretMetadata,
@@ -394,9 +393,6 @@ import {
   ServiceAccountDriverNotConfiguredError,
   SecretBindingValidationError,
   SecretDriverOwnershipError,
-  SecretReferencedError,
-  SecretStorageDriverError,
-  SecretValueError,
   WorkClaimLostError,
 } from "./errors.ts";
 import {
@@ -523,6 +519,24 @@ import type {
   AgentProvisioningCheckpoint,
   AgentProvisioningRecord,
 } from "./state/agent-provisioning.ts";
+import {
+  createSecretOperations,
+  secretOperation,
+  type CreateSecretInput,
+  type UpdateSecretInput,
+} from "./secret-operations.ts";
+import {
+  createServiceAccountOperations,
+  exactServiceAccount,
+  type CreateServiceAccountInput,
+  type ServiceAccountDeletion,
+} from "./service-account-operations.ts";
+
+export type { CreateSecretInput, UpdateSecretInput } from "./secret-operations.ts";
+export type {
+  CreateServiceAccountInput,
+  ServiceAccountDeletion,
+} from "./service-account-operations.ts";
 
 export {
   accessBindingsRemovedWithAgent,
@@ -916,23 +930,6 @@ export interface ControllerOptions {
   readonly credentialProxyCapacity?: CredentialProxyCapacity;
 }
 
-/** The result of a ServiceAccount deletion. */
-export interface ServiceAccountDeletion {
-  readonly removedAccessBindings: readonly RemovedAccessBinding[];
-  /**
-   * Set only when a forced deletion removed an account whose issued access token no
-   * ServiceAccount Driver could revoke. The token itself is never read. Its Backend binding
-   * is absent when OCC has no record of it.
-   */
-  readonly unrevokedCredential?: {
-    readonly backendId?: string;
-    readonly workspaceId?: string;
-    /** The provider account the credential belongs to; the provider revokes by both IDs. */
-    readonly externalAccountId?: string;
-    readonly credentialId?: string;
-  };
-}
-
 export interface CreateNamespaceInput {
   readonly name: string;
   readonly existingNamespace?: string;
@@ -1026,17 +1023,6 @@ export interface LookupChannelDirectoryInput {
   readonly configurationId?: string;
 }
 
-export interface CreateServiceAccountInput {
-  readonly namespaceId: string;
-  readonly name: string;
-}
-
-export interface CreateSecretInput {
-  readonly namespaceId: string;
-  readonly name: string;
-  readonly value: string;
-}
-
 export interface CreateCredentialSourceInput {
   readonly namespaceId: string;
   readonly name: string;
@@ -1093,12 +1079,6 @@ export interface UpdateCredentialSourceInput {
 export interface RotateCredentialSourceInput {
   readonly namespaceId: string;
   readonly credentialSourceId: string;
-}
-
-export interface UpdateSecretInput {
-  readonly namespaceId: string;
-  readonly secretId: string;
-  readonly value: string;
 }
 
 export interface CreateConfigurationInput {
@@ -1289,35 +1269,11 @@ const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
  * A document further ahead fails closed, as any other mismatch does.
  */
 const MAX_CONFIGURATION_LEFTOVER_LEAD = 100;
-
-/**
- * The most references a Secret read or delete examines. Each one costs authorization work,
- * so the bound keeps both the response and the IAM work small. Delete makes those decisions
- * while it holds the Namespace and Secret locks, so the bound also limits that lock window.
- */
-const SECRET_CONSUMER_LIMIT = 50;
 /**
  * The IDs of one kind that a NAMESPACE_NOT_EMPTY conflict examines and may name. Each costs
  * one read decision while deletion holds the Namespace lock, so the bound limits that work.
  */
 const NAMESPACE_NOT_EMPTY_ID_LIMIT = 20;
-const SECRET_CONSUMER_KINDS = Object.freeze([
-  "agents",
-  "configurations",
-  "credentialSources",
-  "provisioningRequests",
-] as const);
-type SecretReferenceKind = Awaited<
-  ReturnType<PlatformReadView["secrets"]["listReferences"]>
->["references"][number]["kind"];
-const SECRET_CONSUMER_FIELDS: Readonly<
-  Record<SecretReferenceKind, (typeof SECRET_CONSUMER_KINDS)[number]>
-> = Object.freeze({
-  agent: "agents",
-  configuration: "configurations",
-  credential_source: "credentialSources",
-  provisioning_request: "provisioningRequests",
-});
 
 function connectionConsentScopes(
   version: Readonly<OAuthConnectionTemplateVersion>,
@@ -2123,8 +2079,6 @@ export class OpenClawController {
       authorizeBoundCredentialSources: (principalId, namespaceId, sources) =>
         this.authorizeBoundCredentialSources(principalId, namespaceId, sources),
       backends: this.backendMap,
-      exactServiceAccount: (state, namespaceId, id) =>
-        this.exactServiceAccount(state, namespaceId, id),
       ownedSecretDriver: (driverId, failure) => this.ownedSecretDriver(driverId, failure),
       secretDriver: (id) => this.secretDriver(id),
       secretOperation: (operation) => this.secretOperation(operation),
@@ -4487,16 +4441,11 @@ export class OpenClawController {
     namespaceId: string,
     serviceAccountId: string,
   ): Promise<Readonly<ServiceAccount>> {
-    this.serviceAccountIdentity(namespaceId, serviceAccountId);
-    await this.authorize(principalId, "read", {
-      kind: "service_account",
-      id: serviceAccountId,
+    return this.serviceAccountOperations.getServiceAccount(
+      principalId,
       namespaceId,
-    });
-    return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      return this.exactServiceAccount(state, namespace.id, serviceAccountId);
-    });
+      serviceAccountId,
+    );
   }
 
   async listUsableConnectionTemplates(
@@ -5239,15 +5188,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<ServiceAccount>[]> {
-    const namespace = await this.getNamespace(principalId, namespaceId);
-    return this.read(async (state) =>
-      this.readableListRows(
-        principalId,
-        namespace.id,
-        "service_account",
-        await state.serviceAccounts.listServiceAccounts(namespace.id),
-      ),
-    );
+    return this.serviceAccountOperations.listServiceAccounts(principalId, namespaceId);
   }
 
   /**
@@ -5890,53 +5831,34 @@ export class OpenClawController {
     compute?.validateConfiguration?.(values, options);
   }
 
+  private readonly secretOperations = createSecretOperations(() => this.installation.id, {
+    read: (work) => this.read(work),
+    mutate: (work) => this.mutate(work),
+    authorize: (principalId, action, target) => this.authorize(principalId, action, target),
+    canRead: (principalId, target) => this.canRead(principalId, target),
+    authorizationDecision: (principalId, action, target) =>
+      this.authorizationDecision(principalId, action, target),
+    holdAuthority: (state) => this.holdAuthority(state),
+    bindCreator: (state, principalId, target) => this.bindCreator(state, principalId, target),
+    namespaceIdentity: (namespaceId) => this.namespaceIdentity(namespaceId),
+    getNamespace: (principalId, namespaceId) => this.getNamespace(principalId, namespaceId),
+    exactNamespace: (state, namespaceId) => this.exactNamespace(state, namespaceId),
+    lockNamespace: (state, namespaceId) => this.lockNamespace(state, namespaceId),
+    lockNamespaceForPolicyDelete: (state, principalId, target) =>
+      this.lockNamespaceForPolicyDelete(state, principalId, target),
+    secretDriver: () => this.secretDriver(),
+    ownedSecretDriver: (driverId, failure) => this.ownedSecretDriver(driverId, failure),
+    nextIdentifier: (kind) => this.nextIdentifier(kind),
+    timestamp: () => this.timestamp(),
+    registerRollback: (compensate) => this.registerRollback(compensate),
+    provisioningPlan: (record) => this.provisioningPlan(record),
+  });
+
   async createSecret(
     principalId: string,
     input: CreateSecretInput,
   ): Promise<Readonly<SecretMetadata>> {
-    this.validateSecretValue(input.value);
-    if (!isName(input.name)) {
-      throw new ScopeViolationError("The Secret name is invalid.");
-    }
-    this.namespaceIdentity(input.namespaceId);
-    return this.mutate(async (state) => {
-      await this.holdAuthority(state);
-      const target: ResourceRef = {
-        kind: "secret",
-        id: input.namespaceId,
-        namespaceId: input.namespaceId,
-      };
-      await this.authorize(principalId, "create", target);
-      const namespace = await this.lockNamespace(state, input.namespaceId);
-      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
-      // while this write waited stops it before it leaves a durable Owner binding or grant.
-      await this.authorize(principalId, "create", target);
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      const driver = this.secretDriver();
-      const identity = {
-        id: this.nextIdentifier("secret"),
-        namespaceId: namespace.id,
-        name: input.name,
-      };
-      const backendRef = await this.secretOperation(() => driver.create(identity, input.value));
-      const secret: Secret = {
-        ...identity,
-        driverId: driver.id,
-        backendRef,
-        createdAt: this.timestamp(),
-      };
-      // Compensate only a known failed OCC transaction, never an unknown COMMIT outcome.
-      this.registerRollback(() => this.secretOperation(() => driver.delete(secret)));
-      await state.secrets.createSecret(secret);
-      await this.bindCreator(state, principalId, {
-        kind: "secret",
-        id: secret.id,
-        namespaceId: namespace.id,
-      });
-      return this.secretMetadata(secret);
-    });
+    return this.secretOperations.createSecret(principalId, input);
   }
 
   async readSecret(
@@ -5944,40 +5866,14 @@ export class OpenClawController {
     namespaceId: string,
     secretId: string,
   ): Promise<Readonly<SecretDetail>> {
-    await this.authorize(principalId, "read", { kind: "secret", id: secretId, namespaceId });
-    return this.read(async (state) => {
-      await this.exactNamespace(state, namespaceId);
-      const secret = await state.secrets.findSecret(namespaceId, secretId);
-      if (!secret) {
-        throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
-      }
-      return Object.freeze({
-        ...this.secretMetadata(secret),
-        consumers: await this.secretConsumers(state, principalId, namespaceId, secret.id),
-      });
-    });
+    return this.secretOperations.readSecret(principalId, namespaceId, secretId);
   }
 
   async listSecrets(
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<SecretMetadata>[]> {
-    const namespace = await this.getNamespace(principalId, namespaceId);
-    return this.read(async (state) => {
-      const readable: Readonly<SecretMetadata>[] = [];
-      for (const secret of await state.secrets.listSecrets(namespace.id)) {
-        if (
-          await this.canRead(principalId, {
-            kind: "secret",
-            id: secret.id,
-            namespaceId: namespace.id,
-          })
-        ) {
-          readable.push(this.secretMetadata(secret));
-        }
-      }
-      return Object.freeze(readable);
-    });
+    return this.secretOperations.listSecrets(principalId, namespaceId);
   }
 
   /**
@@ -6007,57 +5903,14 @@ export class OpenClawController {
     namespaceId: string,
     unreadableAmong: ReadonlySet<string>,
   ): Promise<{ readonly readable: readonly string[]; readonly unreadableCount: number }> {
-    const namespace = await this.getNamespace(principalId, namespaceId);
-    return this.read(async (state) => {
-      const readable: string[] = [];
-      let unreadableCount = 0;
-      for (const secret of await state.secrets.listSecrets(namespace.id)) {
-        const resource: ResourceRef = { kind: "secret", id: secret.id, namespaceId: namespace.id };
-        const read = await this.canRead(principalId, resource);
-        if (!read && !unreadableAmong.has(secret.id)) {
-          continue;
-        }
-        if ((await this.authorizationDecision(principalId, "operate", resource)).decision.allowed) {
-          continue;
-        }
-        if (read) {
-          readable.push(secret.id);
-        } else {
-          unreadableCount += 1;
-        }
-      }
-      return { readable: Object.freeze(readable.sort()), unreadableCount };
-    });
+    return this.secretOperations.secretsOperateDenied(principalId, namespaceId, unreadableAmong);
   }
 
   async updateSecret(
     principalId: string,
     input: UpdateSecretInput,
   ): Promise<Readonly<SecretMetadata>> {
-    this.validateSecretValue(input.value);
-    this.namespaceIdentity(input.namespaceId);
-    return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
-        kind: "secret",
-        id: input.secretId,
-        namespaceId: input.namespaceId,
-      });
-      const namespace = await this.lockNamespace(state, input.namespaceId);
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      const secret = await state.secrets.lockSecret(namespace.id, input.secretId);
-      if (!secret) {
-        throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
-      }
-      const driver = this.ownedSecretDriver(
-        secret.driverId,
-        () => new SecretStorageDriverError("update"),
-      );
-      // No prior value is read or retained for rollback. Success means stored, not delivered.
-      await this.secretOperation(() => driver.update(secret, input.value));
-      return this.secretMetadata(secret);
-    });
+    return this.secretOperations.updateSecret(principalId, input);
   }
 
   /** Returns the AccessBindings removed with the Secret, for its deletion audit. */
@@ -6066,35 +5919,7 @@ export class OpenClawController {
     namespaceId: string,
     secretId: string,
   ): Promise<readonly RemovedAccessBinding[]> {
-    this.namespaceIdentity(namespaceId);
-    return this.mutate(async (state) => {
-      const namespace = await this.lockNamespaceForPolicyDelete(state, principalId, {
-        kind: "secret",
-        id: secretId,
-        namespaceId,
-      });
-      const secret = await state.secrets.lockSecret(namespace.id, secretId);
-      if (!secret) {
-        throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
-      }
-      const consumers = await this.secretConsumers(state, principalId, namespace.id, secret.id);
-      if (
-        consumers.unreadable > 0 ||
-        SECRET_CONSUMER_KINDS.some((kind) => consumers[kind].length > 0)
-      ) {
-        throw new SecretReferencedError(consumers);
-      }
-      const removed = await accessBindingsTargeting(state, namespace.id, "secret", secret.id);
-      const driver = this.ownedSecretDriver(
-        secret.driverId,
-        () => new SecretStorageDriverError("delete"),
-      );
-      await this.secretOperation(() => driver.delete(secret));
-      if (!(await state.secrets.deleteSecret(namespace.id, secret.id))) {
-        throw new ResourceStateConflictError("The Secret changed during deletion.");
-      }
-      return removed;
-    });
+    return this.secretOperations.deleteSecret(principalId, namespaceId, secretId);
   }
 
   /** Trusted composition only: public workloads never supply an identity verifier. */
@@ -8575,46 +8400,32 @@ export class OpenClawController {
     });
   }
 
+  private readonly serviceAccountOperations = createServiceAccountOperations({
+    read: (work) => this.read(work),
+    mutate: (work) => this.mutate(work),
+    authorize: (principalId, action, target) => this.authorize(principalId, action, target),
+    holdAuthority: (state) => this.holdAuthority(state),
+    bindCreator: (state, principalId, target) => this.bindCreator(state, principalId, target),
+    namespaceIdentity: (namespaceId) => this.namespaceIdentity(namespaceId),
+    getNamespace: (principalId, namespaceId) => this.getNamespace(principalId, namespaceId),
+    exactNamespace: (state, namespaceId) => this.exactNamespace(state, namespaceId),
+    lockNamespace: (state, namespaceId) => this.lockNamespace(state, namespaceId),
+    lockNamespaceForPolicyDelete: (state, principalId, target) =>
+      this.lockNamespaceForPolicyDelete(state, principalId, target),
+    readableListRows: (principalId, namespaceId, kind, rows) =>
+      this.readableListRows(principalId, namespaceId, kind, rows),
+    serviceAccountDriver: () => this.serviceAccountDriver(),
+    computeDriver: () => this.selectedDriver("compute"),
+    hasConfiguredDriver: () => this.configuredServiceAccountDriverId !== undefined,
+    driverOperation: (operation, capability) => this.driverOperation(operation, capability),
+    nextIdentifier: (kind) => this.nextIdentifier(kind),
+  });
+
   async createServiceAccount(
     principalId: string,
     input: CreateServiceAccountInput,
   ): Promise<Readonly<ServiceAccount>> {
-    if (!isName(input.name)) {
-      throw new ScopeViolationError("The ServiceAccount name is invalid.");
-    }
-    this.namespaceIdentity(input.namespaceId);
-    return this.mutate(async (state) => {
-      await this.holdAuthority(state);
-      const target: ResourceRef = {
-        kind: "service_account",
-        id: input.namespaceId,
-        namespaceId: input.namespaceId,
-      };
-      await this.authorize(principalId, "create", target);
-      const namespace = await this.lockNamespace(state, input.namespaceId);
-      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
-      // while this write waited stops it before it leaves a durable Owner binding or grant.
-      await this.authorize(principalId, "create", target);
-      // Checked after authorization: the conflict names the Namespace state.
-      if (namespace.status !== "provisioning" && namespace.status !== "ready") {
-        throw new ResourceStateConflictError("The Namespace does not accept new ServiceAccounts.");
-      }
-      const account = await state.serviceAccounts.createServiceAccount({
-        id: this.nextIdentifier("service_account"),
-        namespaceId: namespace.id,
-        name: input.name,
-      });
-      await this.bindCreator(state, principalId, {
-        kind: "service_account",
-        id: account.id,
-        namespaceId: namespace.id,
-      });
-      const driver = this.serviceAccountDriver();
-      if (driver !== undefined) {
-        await this.driverOperation(() => driver.create(account), "ServiceAccount");
-      }
-      return account;
-    });
+    return this.serviceAccountOperations.createServiceAccount(principalId, input);
   }
 
   async createServiceAccountCredential(
@@ -8622,49 +8433,11 @@ export class OpenClawController {
     namespaceId: string,
     serviceAccountId: string,
   ): Promise<Readonly<ServiceAccount>> {
-    this.serviceAccountIdentity(namespaceId, serviceAccountId);
-    return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
-        kind: "service_account",
-        id: serviceAccountId,
-        namespaceId,
-      });
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const account = await state.serviceAccounts.lockServiceAccount(
-        namespace.id,
-        serviceAccountId,
-      );
-      if (account === undefined) {
-        throw new ScopeViolationError("The ServiceAccount does not belong to the exact Namespace.");
-      }
-      if (account.credential !== undefined) {
-        throw new ResourceStateConflictError("The ServiceAccount already has a credential.");
-      }
-      const driver = this.serviceAccountDriver();
-      if (driver === undefined) {
-        throw new ServiceAccountDriverNotConfiguredError("issue");
-      }
-      const credential = await this.driverOperation(
-        () => driver.createCredential(account),
-        "ServiceAccount",
-      );
-      if (credential?.kind !== "access_token") {
-        throw new DependencyUnavailableError(
-          "The ServiceAccount Driver returned an unsupported credential.",
-        );
-      }
-      const updated = await state.serviceAccounts.updateCredential(
-        namespace.id,
-        account.id,
-        credential,
-      );
-      if (updated === undefined) {
-        throw new ResourceStateConflictError(
-          "The ServiceAccount credential changed during its update.",
-        );
-      }
-      return updated;
-    });
+    return this.serviceAccountOperations.createServiceAccountCredential(
+      principalId,
+      namespaceId,
+      serviceAccountId,
+    );
   }
 
   async updateServiceAccountCredential(
@@ -8673,38 +8446,12 @@ export class OpenClawController {
     serviceAccountId: string,
     credential: ServiceAccountCredential,
   ): Promise<Readonly<ServiceAccount>> {
-    this.serviceAccountIdentity(namespaceId, serviceAccountId);
-    return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
-        kind: "service_account",
-        id: serviceAccountId,
-        namespaceId,
-      });
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const account = await state.serviceAccounts.lockServiceAccount(
-        namespace.id,
-        serviceAccountId,
-      );
-      if (account === undefined) {
-        throw new ScopeViolationError("The ServiceAccount does not belong to the exact Namespace.");
-      }
-      if (account.credential?.kind === "access_token" || credential.kind === "access_token") {
-        throw new ResourceStateConflictError(
-          "A managed ServiceAccount credential cannot be manually updated.",
-        );
-      }
-      const updated = await state.serviceAccounts.updateCredential(
-        namespace.id,
-        account.id,
-        credential,
-      );
-      if (updated === undefined) {
-        throw new ResourceStateConflictError(
-          "The ServiceAccount credential changed during its update.",
-        );
-      }
-      return updated;
-    });
+    return this.serviceAccountOperations.updateServiceAccountCredential(
+      principalId,
+      namespaceId,
+      serviceAccountId,
+      credential,
+    );
   }
 
   /**
@@ -8720,89 +8467,11 @@ export class OpenClawController {
     serviceAccountId: string,
     options: { readonly force?: boolean } = {},
   ): Promise<ServiceAccountDeletion> {
-    this.serviceAccountIdentity(namespaceId, serviceAccountId);
-    return this.mutate(async (state) => {
-      const namespace = await this.lockNamespaceForPolicyDelete(state, principalId, {
-        kind: "service_account",
-        id: serviceAccountId,
-        namespaceId,
-      });
-      const account = await state.serviceAccounts.lockServiceAccount(
-        namespace.id,
-        serviceAccountId,
-      );
-      if (account === undefined) {
-        throw new ScopeViolationError("The ServiceAccount does not belong to the exact Namespace.");
-      }
-      if (await state.serviceAccounts.hasReferences(namespace.id, account.id)) {
-        throw new ResourceStateConflictError(
-          "An Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the ServiceAccount. Remove those references, or let provisioning finish, first.",
-        );
-      }
-      // Decided once, on the locked account row: Driver selection is fixed when the API
-      // starts, and issuance takes the same row lock, so no token can appear after this read.
-      const driver = this.serviceAccountDriver();
-      let unrevokedCredential: ServiceAccountDeletion["unrevokedCredential"];
-      if (account.credential?.kind === "access_token" && driver === undefined) {
-        // Only the Backend's Driver can revoke the issued token, so deletion waits for it
-        // unless the caller forces it. Only the worker sets a configured Driver id, so the API
-        // always answers the 409 (or forces).
-        if (this.configuredServiceAccountDriverId !== undefined) {
-          throw new DependencyUnavailableError(
-            "The selected ServiceAccount Driver is unavailable.",
-          );
-        }
-        if (options.force !== true) {
-          throw new ServiceAccountDriverNotConfiguredError("delete");
-        }
-        const binding = await state.serviceAccounts.findIssuedCredentialBinding(
-          namespace.id,
-          account.id,
-        );
-        await this.deleteUnrevokedCredentialSecret(account, account.credential);
-        unrevokedCredential = binding === undefined ? {} : { ...binding };
-      }
-      if (driver !== undefined) {
-        await this.driverOperation(() => driver.delete(account), "ServiceAccount");
-      }
-      const removed = await accessBindingsTargeting(
-        state,
-        namespace.id,
-        "service_account",
-        account.id,
-      );
-      if (!(await state.serviceAccounts.deleteServiceAccount(namespace.id, account.id))) {
-        throw new ResourceStateConflictError("The ServiceAccount changed during deletion.");
-      }
-      return {
-        removedAccessBindings: removed,
-        ...(unrevokedCredential === undefined ? {} : { unrevokedCredential }),
-      };
-    });
-  }
-
-  /**
-   * A forced deletion still removes OCC's copy of the unrevoked token: the account-owned
-   * Secret the ChatGPT Driver would have removed after revoking it. The Compute Driver that
-   * stored it owns that Secret; one without the operation never stored account tokens.
-   */
-  private async deleteUnrevokedCredentialSecret(
-    account: Readonly<ServiceAccount>,
-    credential: ServiceAccountCredential,
-  ): Promise<void> {
-    const compute = this.selectedDriver("compute");
-    const deleteSecret = compute.deleteServiceAccountCredential?.bind(compute);
-    if (deleteSecret === undefined) {
-      return;
-    }
-    await this.driverOperation(
-      () =>
-        deleteSecret({
-          namespaceId: account.namespaceId,
-          serviceAccountId: account.id,
-          secretRef: credential.secretRef,
-        }),
-      "Compute",
+    return this.serviceAccountOperations.deleteServiceAccount(
+      principalId,
+      namespaceId,
+      serviceAccountId,
+      options,
     );
   }
 
@@ -12704,150 +12373,6 @@ export class OpenClawController {
     return this.authority.canRead(principalId, target);
   }
 
-  /**
-   * The current references to a Secret, named only where the caller may read the
-   * referencing resource; the rest are counted. One reference query examines at most
-   * SECRET_CONSUMER_LIMIT references. Each costs one `read` decision, except a pending
-   * provisioning request: one record read, then, for its own actor only, the decisions its
-   * status read makes. Identical decisions are made once per call.
-   */
-  private async secretConsumers(
-    state: Pick<PlatformReadView, "secrets" | "provisioning">,
-    principalId: string,
-    namespaceId: string,
-    secretId: string,
-  ): Promise<Readonly<SecretConsumers>> {
-    const page = await state.secrets.listReferences(namespaceId, secretId, SECRET_CONSUMER_LIMIT);
-    const named: Record<(typeof SECRET_CONSUMER_KINDS)[number], string[]> = {
-      agents: [],
-      configurations: [],
-      credentialSources: [],
-      provisioningRequests: [],
-    };
-    let unreadable = 0;
-    const decisions = new Map<string, boolean>();
-    const allowed = async (
-      action: AuthorizationRequest["action"],
-      resource: ResourceRef,
-    ): Promise<boolean> => {
-      const key = JSON.stringify([action, resource.kind, resource.namespaceId, resource.id]);
-      let decision = decisions.get(key);
-      if (decision === undefined) {
-        decision = (await this.authorizationDecision(principalId, action, resource)).decision
-          .allowed;
-        decisions.set(key, decision);
-      }
-      return decision;
-    };
-    for (const reference of page.references) {
-      const readable =
-        reference.kind === "provisioning_request"
-          ? await this.canReadProvisioningRequest(
-              state,
-              principalId,
-              namespaceId,
-              reference.id,
-              allowed,
-            )
-          : await allowed("read", { kind: reference.kind, id: reference.id, namespaceId });
-      if (!readable) {
-        unreadable += 1;
-        continue;
-      }
-      named[SECRET_CONSUMER_FIELDS[reference.kind]].push(reference.id);
-    }
-    return Object.freeze({
-      agents: Object.freeze(named.agents),
-      configurations: Object.freeze(named.configurations),
-      credentialSources: Object.freeze(named.credentialSources),
-      provisioningRequests: Object.freeze(named.provisioningRequests),
-      unreadable,
-      truncated: page.truncated,
-    });
-  }
-
-  /**
-   * Whether the caller may read a pending provisioning request: only its initiating actor,
-   * holding the grants that its status read checks (`authorizeProvisioningRecord`). The plan
-   * checks that a status read also runs are admission, not authorization, so they are skipped;
-   * a stored plan that no longer parses is not named.
-   */
-  private async canReadProvisioningRequest(
-    state: Pick<PlatformReadView, "provisioning">,
-    principalId: string,
-    namespaceId: string,
-    workId: string,
-    allowed: (action: AuthorizationRequest["action"], resource: ResourceRef) => Promise<boolean>,
-  ): Promise<boolean> {
-    const record = await state.provisioning.findByWorkId(workId);
-    if (
-      record === undefined ||
-      record.namespaceId !== namespaceId ||
-      record.actorId !== principalId
-    ) {
-      return false;
-    }
-    let plan: ReturnType<OpenClawController["provisioningPlan"]>;
-    try {
-      plan = this.provisioningPlan(record);
-    } catch (error) {
-      if (error instanceof DependencyUnavailableError) {
-        throw error;
-      }
-      return false;
-    }
-    const harnessAuth = plan.harnessAuth;
-    const checks: [AuthorizationRequest["action"], ResourceRef][] = [
-      ["create", { kind: "agent", namespaceId, id: namespaceId }],
-      ["create", { kind: "configuration", namespaceId, id: namespaceId }],
-      ["administer", { kind: "installation", id: this.installation.id }],
-      ...(record.agentId === undefined
-        ? []
-        : (["read", "operate", "deploy"] as const).map(
-            (action): [AuthorizationRequest["action"], ResourceRef] => [
-              action,
-              { kind: "agent", namespaceId, id: record.agentId as string },
-            ],
-          )),
-      ...(record.configurationId === undefined
-        ? []
-        : (["read", "update"] as const).map(
-            (action): [AuthorizationRequest["action"], ResourceRef] => [
-              action,
-              { kind: "configuration", namespaceId, id: record.configurationId as string },
-            ],
-          )),
-      ...Object.values(plan.configuration.secretBindings ?? {}).map(
-        (binding): [AuthorizationRequest["action"], ResourceRef] => ["operate", binding.source],
-      ),
-      ...(isSecretHarnessAuth(harnessAuth)
-        ? [["operate", harnessAuth.source] as [AuthorizationRequest["action"], ResourceRef]]
-        : []),
-      ...(harnessAuth?.method === "credential_source"
-        ? [
-            ["operate", { kind: "credential_source", namespaceId, id: harnessAuth.sourceId }] as [
-              AuthorizationRequest["action"],
-              ResourceRef,
-            ],
-          ]
-        : []),
-      ...(isServiceAccountHarnessAuth(harnessAuth)
-        ? [
-            ["read", { kind: "service_account", namespaceId, id: harnessAuth.source.id }] as [
-              AuthorizationRequest["action"],
-              ResourceRef,
-            ],
-          ]
-        : []),
-    ];
-    for (const [action, resource] of checks) {
-      if (!(await allowed(action, resource))) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   private authorizationAuthority(principalId: string): IAMDriver {
     return this.authority.authorizationAuthority(principalId);
   }
@@ -14586,22 +14111,6 @@ export class OpenClawController {
     this.ownedSecretDriver(secret.driverId, () => new ProvisioningSecretDriverError());
   }
 
-  private validateSecretValue(value: unknown): asserts value is string {
-    const message =
-      "The Secret value must be nonempty UTF-8, without NUL, and at most 65536 bytes.";
-    if (
-      typeof value !== "string" ||
-      value.length === 0 ||
-      value.includes("\u0000") ||
-      /[\uD800-\uDFFF]/u.test(value)
-    ) {
-      throw new SecretValueError("INVALID_VALUE", message);
-    }
-    if (Buffer.byteLength(value, "utf8") > 65_536) {
-      throw new SecretValueError("TOO_LONG", message);
-    }
-  }
-
   private runtimeCredentialsInput(
     input: AgentRuntimeCredentialsInput,
   ): AgentRuntimeCredentialsInput {
@@ -14672,15 +14181,6 @@ export class OpenClawController {
         agent,
         driver: this.runtimeCredentialComputeDriver("provision"),
       });
-    });
-  }
-
-  private secretMetadata(secret: Secret): Readonly<SecretMetadata> {
-    return immutableCopy({
-      id: secret.id,
-      namespaceId: secret.namespaceId,
-      name: secret.name,
-      ref: { kind: "secret", namespaceId: secret.namespaceId, id: secret.id },
     });
   }
 
@@ -15319,21 +14819,7 @@ export class OpenClawController {
 
   /** Secret SDK error bodies can contain request bytes; never propagate their message or cause. */
   private async secretOperation<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      if (error instanceof ResourceConflictError) {
-        throw new ResourceConflictError(
-          "The Secret backend identity or concurrency precondition conflicts.",
-        );
-      }
-      if (error instanceof ScopeViolationError) {
-        throw new ScopeViolationError("The Secret backend ownership could not be verified.");
-      }
-      throw new DependencyUnavailableError(
-        "The Secret storage operation failed or its outcome is unknown.",
-      );
-    }
+    return secretOperation(operation);
   }
 
   private configurationIdentity(namespaceId: string, configurationId: string): void {
@@ -15347,23 +14833,12 @@ export class OpenClawController {
     namespaceIdentity(namespaceId);
   }
 
-  private serviceAccountIdentity(namespaceId: string, serviceAccountId: string): void {
-    this.namespaceIdentity(namespaceId);
-    if (!isNonEmptyString(serviceAccountId)) {
-      throw new ScopeViolationError("The exact ServiceAccount identity is missing.");
-    }
-  }
-
   private async exactServiceAccount(
     state: PlatformReadView,
     namespaceId: string,
     serviceAccountId: string,
   ): Promise<Readonly<ServiceAccount>> {
-    const account = await state.serviceAccounts.findServiceAccount(namespaceId, serviceAccountId);
-    if (account === undefined) {
-      throw new ScopeViolationError("The ServiceAccount does not belong to the exact Namespace.");
-    }
-    return account;
+    return exactServiceAccount(state, namespaceId, serviceAccountId);
   }
 
   private configurationDriver(): ConfigurationDriver {
