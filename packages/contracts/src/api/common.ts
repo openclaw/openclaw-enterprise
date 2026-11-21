@@ -794,7 +794,8 @@ export const AgentNetworkProxySchema = Type.Object(
     url: Type.String({
       minLength: 1,
       maxLength: 2048,
-      description: "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+      description:
+        "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
     }),
     credentialSecretId: Type.Optional(SecretId),
   },

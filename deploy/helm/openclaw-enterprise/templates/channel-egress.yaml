@@ -31,8 +31,24 @@ spec:
         replicas: {{ $egress.replicas }}
         container:
           image: {{ $egress.image | quote }}
+          {{- if $egress.proxyTrust.caSecretName }}
+          volumeMounts:
+            - name: channel-proxy-ca
+              mountPath: /etc/openclaw/channel-proxy-ca
+              readOnly: true
+          {{- end }}
           resources:
             {{- toYaml $egress.resources | nindent 12 }}
+        {{- if $egress.proxyTrust.caSecretName }}
+        pod:
+          volumes:
+            - name: channel-proxy-ca
+              secret:
+                secretName: {{ $egress.proxyTrust.caSecretName | quote }}
+                items:
+                  - key: {{ $egress.proxyTrust.caKey | quote }}
+                    path: ca.pem
+        {{- end }}
       envoyService:
         type: ClusterIP
 ---
@@ -43,6 +59,9 @@ metadata:
   namespace: {{ .Release.Namespace | quote }}
   labels:
     openclaw.dev/channel-egress-fleet: {{ $egress.gatewayName | quote }}
+  annotations:
+    openclaw.dev/channel-egress-upstream-proxies: {{ toJson $egress.upstreamProxies | quote }}
+    openclaw.dev/channel-egress-proxy-trust: {{ if $egress.proxyTrust.caSecretName }}{{ toJson (dict "caSecretName" $egress.proxyTrust.caSecretName "caKey" $egress.proxyTrust.caKey) | quote }}{{ else }}"null"{{ end }}
 spec:
   gatewayClassName: {{ $egress.gatewayClassName | quote }}
   infrastructure:
@@ -212,6 +231,66 @@ spec:
         - protocol: TCP
           port: {{ $port }}
 {{- end }}
+{{- if $egress.upstreamProxies }}
+{{- range $port := untilStep (int $egress.listenerPortStart) (int (add1 $egress.listenerPortEnd)) 1 }}
+{{- $slot := include "openclaw.channelEgress.slotName" (dict "gatewayName" $egress.gatewayName "port" $port) }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ printf "%s-credential" $slot | quote }}
+  namespace: {{ $root.Release.Namespace | quote }}
+  labels:
+    openclaw.dev/channel-egress-fleet: {{ $egress.gatewayName | quote }}
+    openclaw.dev/channel-egress-slot: {{ $port | quote }}
+type: Opaque
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: {{ printf "%s-credential" $slot | quote }}
+  namespace: {{ $root.Release.Namespace | quote }}
+  labels:
+    openclaw.dev/channel-egress-fleet: {{ $egress.gatewayName | quote }}
+    openclaw.dev/channel-egress-slot: {{ $port | quote }}
+spec:
+  credentialInjection:
+    credential:
+      valueRef:
+        name: {{ printf "%s-credential" $slot | quote }}
+    header: Proxy-Authorization
+    overwrite: true
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ printf "%s-credential" $slot | quote }}
+  namespace: {{ $root.Release.Namespace | quote }}
+  labels:
+    openclaw.dev/channel-egress-fleet: {{ $egress.gatewayName | quote }}
+    openclaw.dev/channel-egress-slot: {{ $port | quote }}
+spec:
+  parentRefs:
+    - name: {{ $egress.gatewayName | quote }}
+      sectionName: {{ printf "agent-%d" $port | quote }}
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: {{ printf "/__oce_channel_credential_%d" $port | quote }}
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: {{ printf "%s-credential" $slot | quote }}
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: {{ printf "%s-deny" $egress.gatewayName | quote }}
+{{- end }}
+{{- end }}
 {{- range $component := list "api" "worker" }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -228,6 +307,29 @@ rules:
   - apiGroups: [gateway.envoyproxy.io]
     resources: [envoypatchpolicies]
     verbs: [get, list, create, update]
+  {{- if $egress.upstreamProxies }}
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames:
+      {{- range $port := untilStep (int $egress.listenerPortStart) (int (add1 $egress.listenerPortEnd)) 1 }}
+      - {{ printf "%s-credential" (include "openclaw.channelEgress.slotName" (dict "gatewayName" $egress.gatewayName "port" $port)) | quote }}
+      {{- end }}
+    verbs: [get, update]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [httproutes]
+    resourceNames:
+      {{- range $port := untilStep (int $egress.listenerPortStart) (int (add1 $egress.listenerPortEnd)) 1 }}
+      - {{ printf "%s-credential" (include "openclaw.channelEgress.slotName" (dict "gatewayName" $egress.gatewayName "port" $port)) | quote }}
+      {{- end }}
+    verbs: [get]
+  - apiGroups: [gateway.envoyproxy.io]
+    resources: [httproutefilters]
+    resourceNames:
+      {{- range $port := untilStep (int $egress.listenerPortStart) (int (add1 $egress.listenerPortEnd)) 1 }}
+      - {{ printf "%s-credential" (include "openclaw.channelEgress.slotName" (dict "gatewayName" $egress.gatewayName "port" $port)) | quote }}
+      {{- end }}
+    verbs: [get]
+  {{- end }}
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -253,6 +355,12 @@ rules:
   - apiGroups: [""]
     resources: [pods, services]
     verbs: [get, list]
+  {{- if $egress.proxyTrust.caSecretName }}
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ $egress.proxyTrust.caSecretName | quote }}]
+    verbs: [get]
+  {{- end }}
   {{- if eq $component "worker" }}
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]

@@ -3561,6 +3561,10 @@ export async function renderAgentDetail(
         }
       }
       const configurationIds = new Set(bound.keys());
+      if (agent.networkProxy?.credentialSecretId !== undefined) {
+        const id = agent.networkProxy.credentialSecretId;
+        bound.set(id, { kind: "secret", namespaceId, id });
+      }
       const harness = harnessCredential(agent.harnessAuth, namespaceId);
       if (harness?.kind === "secret") {
         bound.set(harness.id, harness);

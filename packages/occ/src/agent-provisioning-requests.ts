@@ -8,6 +8,8 @@ import {
   validPluginDriverIdentity,
   type Agent,
   type AgentNetworkProxy,
+  type Secret,
+  type SecretDriver,
   type AuditEvent,
   type BackendRef,
   type CredentialSourceType,
@@ -21,7 +23,11 @@ import {
   type SecretBindings,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
-import { admitNetworkProxy, requestNetworkProxy } from "./agent-network-proxy.ts";
+import {
+  admitNetworkProxy,
+  requestNetworkProxy,
+  validateNetworkProxyCredential,
+} from "./agent-network-proxy.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
@@ -738,7 +744,12 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     }
     const acceptedDrivers = asRecord(record.plan.drivers);
     const compute = runtimeCredentials.runtimeCredentialComputeDriver("provision");
-    await admitNetworkProxy(compute, plan.networkProxy, plan.executionMode, plan.configuration.values);
+    await admitNetworkProxy(
+      compute,
+      plan.networkProxy,
+      plan.executionMode,
+      plan.configuration.values,
+    );
     const configurationDriver = settings.selectedDriver();
     if (
       acceptedDrivers?.compute !== compute.id ||
@@ -1019,11 +1030,12 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       await authorizeProvisioningSecretSource(state, principalId, namespaceId, binding.source);
     }
     if (networkProxy?.credentialSecretId !== undefined) {
-      await authorizeProvisioningSecretSource(state, principalId, namespaceId, {
+      const selected = await authorizeProvisioningSecretSource(state, principalId, namespaceId, {
         kind: "secret",
         namespaceId,
         id: networkProxy.credentialSecretId,
       });
+      await validateNetworkProxyCredential(selected.driver, selected.secret);
     }
     if (isSecretHarnessAuth(harnessAuth)) {
       await authorizeProvisioningSecretSource(state, principalId, namespaceId, harnessAuth.source);
@@ -1052,7 +1064,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     principalId: string,
     namespaceId: string,
     source: SecretReference,
-  ): Promise<void> {
+  ): Promise<{ readonly secret: Readonly<Secret>; readonly driver: SecretDriver }> {
     if (source.namespaceId !== namespaceId) {
       throw new SecretBindingValidationError("Secret references cannot cross Namespaces.");
     }
@@ -1061,7 +1073,11 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     if (secret === undefined) {
       throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
     }
-    secrets.ownedSecretDriver(secret.driverId, () => new ProvisioningSecretDriverError());
+    const driver = secrets.ownedSecretDriver(
+      secret.driverId,
+      () => new ProvisioningSecretDriverError(),
+    );
+    return { secret, driver };
   }
 
   return {

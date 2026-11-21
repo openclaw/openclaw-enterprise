@@ -61,7 +61,12 @@ import {
   NetworkProxySecretDriverError,
   type SecretDriverOwnershipError,
 } from "./errors.ts";
-import { admitNetworkProxy, authorizeNetworkProxySecret, requestNetworkProxy } from "./agent-network-proxy.ts";
+import {
+  admitNetworkProxy,
+  authorizeNetworkProxySecret,
+  requestNetworkProxy,
+  validateNetworkProxyCredential,
+} from "./agent-network-proxy.ts";
 import {
   harnessAuthBinding,
   plannedHarnessAuth,
@@ -560,13 +565,20 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
           namespaceId: namespace.id,
           id: networkProxy.credentialSecretId,
         });
-        const secret = await state.secrets.findSecret(namespace.id, networkProxy.credentialSecretId);
+        const secret = await state.secrets.findSecret(
+          namespace.id,
+          networkProxy.credentialSecretId,
+        );
         if (!secret) {
           throw new ScopeViolationError(
             "The Network proxy Secret does not belong to the exact Namespace.",
           );
         }
-        dependencies.ownedSecretDriver(secret.driverId, () => new NetworkProxySecretDriverError());
+        const driver = dependencies.ownedSecretDriver(
+          secret.driverId,
+          () => new NetworkProxySecretDriverError(),
+        );
+        await validateNetworkProxyCredential(driver, secret);
       }
       const secretBindings =
         input.configuration.secretBindings === undefined

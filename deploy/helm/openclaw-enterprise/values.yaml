@@ -300,6 +300,12 @@ channelEgress:
   inspectionPort: 19004
   # Include every Pod, Service and node CIDR, including public node addresses.
   excludedCidrs: []
+  # Installation-approved proxy endpoints and their exact IPv4 /32 addresses.
+  upstreamProxies: []
+  # Complete public/private trust bundle in the Envoy namespace.
+  proxyTrust:
+    caSecretName: ""
+    caKey: ca.pem
   image: envoyproxy/envoy@sha256:ccb37e93d8274a525fe00d67287716dbe3d58bc4237d7627af9e64fae0fd25c8
   replicas: 1
   resources:

@@ -1061,7 +1061,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           withAgentIdentityName(admittedConfiguration, lockedAgent.name),
         ),
         gatewayManagedMode: lockedAgent.gatewayManagedMode,
-        ...(lockedAgent.networkProxy === undefined ? {} : { networkProxy: lockedAgent.networkProxy }),
+        ...(lockedAgent.networkProxy === undefined
+          ? {}
+          : { networkProxy: lockedAgent.networkProxy }),
         harness: revisionHarness,
         compute: {
           id: compute.id,
