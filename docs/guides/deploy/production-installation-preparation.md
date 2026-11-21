@@ -92,9 +92,10 @@ fi
 
 Qualify the selected image with the lane's [prepared dependencies](../../testing/docker.md#check-published-images).
 Override the runtime built by preparation. Build and push the controller only after
-smoke, preparation, suite and cleanup succeed:
+smoke, preparation, suite and cleanup succeed. Use a fresh metadata directory for each attempt:
 
 ```bash
+CONTROLLER_ATTEMPT_TAG="$OCC_IMAGE_TAG-${OCC_IMAGE_METADATA##*/}"
 RUNTIME_CHECK_STATUS=0
 [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
   docker run --rm --platform "$OCC_IMAGE_PLATFORM" "$RUNTIME_IMAGE" codex --version &&
@@ -119,8 +120,8 @@ if unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT &&
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
     --build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST="$RUNTIME_DIGEST" \
     --build-arg OCC_INSPECTED_WORKSPACE_AGENT_DIGEST="$RUNTIME_DIGEST" \
-    --tag "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG" &&
-  CONTROLLER_PUSH_OUTPUT="$(docker push "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG")" &&
+    --tag "$OCC_IMAGE_REPOSITORY/controller:$CONTROLLER_ATTEMPT_TAG" &&
+  CONTROLLER_PUSH_OUTPUT="$(docker push "$OCC_IMAGE_REPOSITORY/controller:$CONTROLLER_ATTEMPT_TAG")" &&
   [[ "$CONTROLLER_PUSH_OUTPUT" =~ $CONTROLLER_PUSH_DIGEST_PATTERN ]]; then
   export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@${BASH_REMATCH[1]}"
 else

@@ -17,9 +17,11 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
 - [`postgres-azure-workload-identity`](../../scripts/ci/test-suites/postgres-azure-workload-identity.json): see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
 - [`ssh-host`](../../scripts/ci/test-suites/ssh-host.json): requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
 - [`plugin-model`](../../scripts/ci/test-suites/plugin-model.json): requires a disposable cluster with Envoy Gateway and cert-manager, its Gateway CA certificate and key, an authorized Codex account, an immutable Agent image and three distinct scenario databases. See [plugin tests](plugins.md#native-runtime-prerequisites).
-- [`openshell-saved-agent`](../../scripts/ci/test-suites/openshell-saved-agent.json): run the saved-Agent Git ACL regression locally on Linux with Docker/k3d and stock OpenShell 0.1.8. Prepare a qualified, same-source controller/runtime digest pair using the [native Git build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git); the controller must embed the runtime digest for both roles. Use a fresh private attempt directory:
+- [`openshell-saved-agent`](../../scripts/ci/test-suites/openshell-saved-agent.json): run the saved-Agent Git ACL regression locally on Linux with Docker/k3d and stock OpenShell 0.1.8. Prepare a qualified, same-source controller/runtime digest pair using the [native Git build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git); the controller must embed the runtime digest for both roles. Use a fresh private attempt directory and stage both digests in the same Docker daemon used by Local Setup:
 
   ```bash
+  docker pull "${QUALIFIED_CONTROLLER_IMAGE:?}" &&
+  docker pull "${QUALIFIED_RUNTIME_IMAGE:?}" &&
   env -u OCC_DEVELOPMENT_STATE_DIRECTORY -u CODEX_ACCESS_TOKEN \
     OCC_DEVELOPMENT_CONTROLLER_IMAGE="${QUALIFIED_CONTROLLER_IMAGE:?}" \
     OCC_KUBERNETES_RUNTIME_IMAGE="${QUALIFIED_RUNTIME_IMAGE:?}" \
