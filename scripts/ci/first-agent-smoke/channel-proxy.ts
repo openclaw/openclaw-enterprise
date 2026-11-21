@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { connect, createServer, isIP, type Socket } from "node:net";
 import { join } from "node:path";
 import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
@@ -158,6 +158,16 @@ interface Values {
   controlPlane?: Record<string, unknown>;
 }
 
+async function kubectlPatch(stack: SmokeStack, args: string[], patch: unknown) {
+  const path = join(stack.directory, `channel-proxy-patch-${randomUUID()}.json`);
+  try {
+    await writeFile(path, JSON.stringify(patch), { flag: "wx", mode: 0o600 });
+    await kubectl(stack, [...args, `--patch-file=${path}`]);
+  } finally {
+    await rm(path, { force: true });
+  }
+}
+
 async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy[], ca: string) {
   const valuesPath = join(stack.directory, "helm-values.json");
   const installationPath = join(stack.directory, "installation.yaml");
@@ -189,7 +199,7 @@ async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy
   Object.assign(values.channelEgress, { upstreamProxies, proxyTrust: trust });
   const data = JSON.stringify(installation);
   await writeFile(installationPath, data, { mode: 0o600 });
-  await kubectl(
+  await kubectlPatch(
     stack,
     [
       "-n",
@@ -198,9 +208,8 @@ async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy
       "secret",
       "occ-installation-startup",
       "--type=merge",
-      "--patch-file=/dev/stdin",
     ],
-    { input: JSON.stringify({ stringData: { "installation.yaml": data } }) },
+    { stringData: { "installation.yaml": data } },
   );
   values.controlPlane = {
     ...values.controlPlane,
@@ -366,7 +375,7 @@ async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy
       },
     },
   };
-  await kubectl(
+  await kubectlPatch(
     stack,
     [
       "-n",
@@ -375,9 +384,8 @@ async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy
       "deployment",
       "openclaw-enterprise-api",
       "--type=strategic",
-      "--patch-file=/dev/stdin",
     ],
-    { input: JSON.stringify(patch) },
+    patch,
   );
   await kubectl(
     stack,
