@@ -58,9 +58,7 @@ import {
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   isInstallationRepositoryProfile,
-  repositoryGitAuthorization,
   credentialFreeMetadataType,
-  credentialSourceMatchesSnapshot,
   pluginRuntimeHarnessRequirement,
   codexProxiesRepositoryBroker,
   validPluginDriverIdentity,
@@ -382,7 +380,6 @@ import {
   ProvisioningSecretDriverError,
   QualifiedAuthorizationDeniedError,
   RepositoryBindingSelectionError,
-  RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
   RepositoryDriverNotConfiguredError,
   RetryLaterError,
@@ -6243,9 +6240,9 @@ export class OpenClawController {
         selectedProxyOwner: () => this.selectedProxyOwner(),
         secretDriver: (id) => this.secretDriver(id),
         computeDriver: () => this.selectedDriver("compute"),
-        credentialPlacement: () => this.credentialSourceDrivers.credentialPlacement(),
-        credentialNamespace: (namespace) => this.credentialNamespace(namespace),
-        credentialGatewayOperation: (operation) => this.credentialGatewayOperation(operation),
+        credentialPlacement: this.credentialSourceDrivers.credentialPlacement,
+        credentialNamespace: this.credentialSourceDrivers.credentialNamespace,
+        credentialGatewayOperation,
         authorizationAuthority: (principalId) => this.authorizationAuthority(principalId),
         authorizationDecision: (principalId, resource, authority, authorize) =>
           this.authorizationDecision(principalId, "operate", resource, authority, authorize),
@@ -6253,8 +6250,7 @@ export class OpenClawController {
         usesNativeAuthorization: (authority, authorize) =>
           !this.authorization &&
           NativeIAMDriver.usesStateForAuthorization(authority, authorize, this.state),
-        currentCredentialSourceOwner: (source, revision) =>
-          this.currentCredentialSourceOwner(source, revision),
+        currentCredentialSourceOwner: this.credentialSourceDrivers.currentCredentialSourceOwner,
         preparedTokens: this.preparedTokens,
         resolvePrepared: (key, options) =>
           this.tokenService().resolve(
@@ -14275,10 +14271,6 @@ export class OpenClawController {
 
   private credentialSourceOwner(source: CredentialSource) {
     return this.credentialSourceDrivers.credentialSourceOwner(source);
-  }
-
-  private currentCredentialSourceOwner(source: CredentialSource, revision: AgentRevision): boolean {
-    return this.credentialSourceDrivers.currentCredentialSourceOwner(source, revision);
   }
 
   private credentialSourceType(
