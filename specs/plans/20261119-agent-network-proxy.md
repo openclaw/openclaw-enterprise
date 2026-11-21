@@ -95,9 +95,14 @@ bundle fails installation or admission.
    selected proxy cluster. Keep provider TLS inside the tunnel. Do not apply
    the direct route's final-IP check to a proxy-resolved destination or claim
    that it still applies. Install only the selected proxy's egress grant.
-   Stage one binding-owned Kubernetes Secret in the Gateway configuration
-   namespace with key `credential`; Envoy Gateway becomes a trusted reader of
-   that credential. Use a binding-specific Secret name and SDS reference.
+   When upstream proxies are configured, Helm creates one blank Kubernetes
+   Secret for each existing listener slot in the Gateway configuration
+   namespace. The manifest omits Secret data and binding annotations. Give the
+   worker only `get` and `update` on those exact Secret names; never grant it
+   unrestricted Secret access in the OCC release namespace. The worker fills
+   the assigned slot's `credential` key and records the binding identity with
+   a resource-version check. Envoy Gateway becomes a trusted credential reader.
+   Use a new binding-specific HTTPRouteFilter and SDS name for each allocation.
    Generate SDS through a binding-specific HTTPRoute that matches a reserved
    path and returns 503 through the existing deny filter; attach no forwarding
    backend. Include the source Secret UID and resource version in the binding
@@ -106,8 +111,14 @@ bundle fails installation or admission.
    Activate the injector in that listener's router upstream filter chain,
    after CONNECT and proxy-address enforcement and before the upstream codec;
    Envoy Gateway's generated route filter is disabled until a route enables it.
-   Overwrite any downstream `Proxy-Authorization` header. Remove the Secret
-   only after the deny chain is installed and old tunnels have drained.
+   Overwrite any downstream `Proxy-Authorization` header. During retirement,
+   install deny and wait for the drain gauge to reach zero. Empty the slot,
+   require the controller to reject the now-empty credential route, remove
+   that route and filter, and require the old SDS name to disappear. Only then
+   mark the blank slot idle and release the listener port.
+   Restrict inspection to exact listener and cluster resource queries and
+   `dynamic_active_secrets&mask=name`. Reject full dumps, unmasked Secret
+   queries, and extra or duplicate query parameters.
    Preserve capacity limits, retries, stop, deletion, and port-release fences.
 4. **Console and documentation.** Add the URL and Secret selection to the
    Agent editor and deployment summary, with validation, loading, permission,
@@ -182,8 +193,21 @@ through the real caller; register new cases in CI.
   Secret read-only through EnvoyProxy and used its filename for TLS validation;
   authenticated CONNECT and tunnel bytes passed. Forbidden authority and outage
   remained closed.
-- The exact generated OCE read-only inspection chain returned the SDS Secret
-  reference but no credential bytes from `/config_dump` on Envoy 1.39.4.
+- Full inspection returned no credential bytes, but it exposed the SDS
+  resource's 64-character delta version. Envoy Gateway's
+  [go-control-plane dependency](https://github.com/envoyproxy/go-control-plane/blob/v0.14.0/pkg/cache/v3/resource.go)
+  computes that version from deterministic serialized resource bytes. The
+  selected exact-path inspection rules passed listener, cluster, and
+  names-only SDS queries without that hash; full, unmasked, and duplicate-query
+  requests returned 404.
+- Envoy Gateway v1.6.7 rejected a cross-namespace credential Secret reference
+  even with a ReferenceGrant. A Helm 3.19.2 probe instead precreated a blank
+  slot Secret. Upgrade preserved worker-written credential data and binding
+  annotation while the release manifest contained no credential. Exact-name
+  RBAC allowed slot `get` and denied unrelated Secret `get`, Secret creation,
+  and slot deletion. With the chart's drain settings and gauge at zero,
+  emptying the slot made the controller reject the credential route; deleting
+  the route and filter removed the old active SDS resource.
 - The published stable Gateway runtime connected in Socket Mode to a controlled
   Slack-compatible provider using synthetic tokens and `SLACK_API_URL`. The
   provider recorded `auth.test`, `apps.connections.open`, and a WebSocket
@@ -222,3 +246,5 @@ through the real caller; register new cases in CI.
   record the standalone Envoy probe.
 - 2026-11-21 UTC: Settle deny-only SDS staging, upstream injection, mounted
   trust, and exact source-pinned Gateway qualification at `c25e2879`.
+- 2026-11-21 UTC: Qualify exact-name Secret slots, retirement, and inspection
+  queries that exclude credential-derived delta versions.
