@@ -102,6 +102,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     emptyBackends?: boolean;
     namespaceName?: string;
     navigationAgentHistory?: true;
+    navigationAgentLookupMismatch?: true;
     namespaceStatus?: NamespaceStatus;
     namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
     candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
@@ -126,6 +127,18 @@ const currentVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000006";
 const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
+const unscopedHistoricalAgentLink = {
+  path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?revision=rev_00000000-0000-4000-8000-000000000006&tab=deployment",
+  namespaceName: "Z history holder",
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+} as const;
+const defaultNamespaceAgentMiss = {
+  method: "GET",
+  path: "/namespaces/ns_00000000-0000-4000-8000-000000000002/agents/agt_00000000-0000-4000-8000-000000000001",
+  status: 404,
+  code: "NOT_FOUND",
+} as const;
 // A SOUL.md long enough to scroll; its first line names the version that serves it.
 const soulVersion = (version: string) =>
   `# SOUL.md served by ${version}\n\n` +
@@ -404,19 +417,9 @@ const authoredScenarios = {
   navigationAgentHistory: {
     group: "Pages/Navigation",
     name: "Return to an interrupted Agent link",
-    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?revision=rev_00000000-0000-4000-8000-000000000006&tab=deployment",
-    namespaceName: "Z history holder",
+    ...unscopedHistoricalAgentLink,
     navigationAgentHistory: true,
-    deployed: true,
-    candidateDeploymentStatus: "succeeded",
-    rules: [
-      {
-        method: "GET",
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000002/agents/agt_00000000-0000-4000-8000-000000000001",
-        status: 404,
-        code: "NOT_FOUND",
-      },
-    ],
+    rules: [defaultNamespaceAgentMiss],
     description:
       "A shared Agent link has no Namespace. Leave while the Console looks in another Namespace, then use Back to reopen the linked version and Deployment tab. API responses are simulated.",
     steps: [
@@ -424,6 +427,29 @@ const authoredScenarios = {
       "Wait for the delayed read to finish. The Agents list stays open.",
       "Use browser Back. Research assistant opens in Z history holder with version 6 and Deployment selected. Check This version’s deployment record.",
       "Use Forward. The same Agents list returns. Reset story to repeat.",
+    ],
+  } satisfies LocalScenario,
+  navigationAgentLookupMismatch: {
+    ...unscopedHistoricalAgentLink,
+    group: "Pages/Navigation",
+    name: "Recover from a mismatched Agent lookup",
+    navigationAgentLookupMismatch: true,
+    rules: [
+      defaultNamespaceAgentMiss,
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        once: true,
+      },
+    ],
+    description:
+      "A shared Agent link has no Namespace. In this simulation, the holder’s first read fails and a sibling Namespace returns the holder’s Agent.",
+    steps: [
+      "Open the preview in its own tab. Check Agent not in this Namespace, with A history default selected and no namespace parameter in the URL.",
+      "Choose Switch Namespace. Focus moves to the Namespace selector. Leave A history default selected.",
+      "Choose Refresh in the Console. Research assistant opens in Z history holder, with version 6 and Deployment selected. Check This version’s deployment record.",
     ],
   } satisfies LocalScenario,
   navigationSlowRecheck: {

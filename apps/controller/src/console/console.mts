@@ -25,7 +25,11 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
-import { isAgentPermissionSummary, type AgentRecheckHandler } from "./agents/detail.mjs";
+import {
+  isAgentPermissionSummary,
+  matchesAgentIdentity,
+  type AgentRecheckHandler,
+} from "./agents/detail.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
@@ -2039,9 +2043,9 @@ async function loadPage({
       )?.id ??
       null;
     const selectedNamespace = namespaceId;
-    const unscopedAgent = current.namespace === null && Boolean(current.agentId);
+    const unscopedAgentId = current.namespace === null ? current.agentId : null;
     // Record the history position while keeping the Agent's Namespace provisional.
-    replaceUrl(pageUrl(current.target, unscopedAgent ? null : selectedNamespace));
+    replaceUrl(pageUrl(current.target, unscopedAgentId ? null : selectedNamespace));
     const namespacePath =
       selectedNamespace === null ? null : `/namespaces/${encodeURIComponent(selectedNamespace)}`;
     const scopedNamespaceUnavailable =
@@ -2110,14 +2114,7 @@ async function loadPage({
       if (!lifetime.isCurrent(active)) {
         return;
       }
-      // Match the detail page's identity check before making the choice permanent.
-      if (
-        unscopedAgent &&
-        firstAgent &&
-        firstAgent.id === current.agentId &&
-        firstAgent.namespaceId === selectedNamespace &&
-        firstAgent.configurationId
-      ) {
+      if (unscopedAgentId && matchesAgentIdentity(firstAgent, unscopedAgentId, selectedNamespace)) {
         replaceUrl(pageUrl(current.target, selectedNamespace));
       }
     }
@@ -3020,9 +3017,9 @@ async function locateAgentNamespace(agentId: string, excluded: string | null) {
       request(`/namespaces/${encodeURIComponent(item.id)}/agents/${encodeURIComponent(agentId)}`),
     ),
   );
-  const found = probed.filter((_, index) => {
+  const found = probed.filter(({ id }, index) => {
     const result = results[index];
-    return result?.status === "fulfilled" && responseFields(result.value).id === agentId;
+    return result?.status === "fulfilled" && matchesAgentIdentity(result.value, agentId, id);
   });
   if (found.length === 1 && found[0]) {
     return { namespaceId: found[0].id, complete: true };
