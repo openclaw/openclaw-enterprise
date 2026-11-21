@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-11-11
-last_updated_session: authoring-run/f2efc59c-e63d-4f5b-a392-e38ad865f04d
+updated: "2026-11-20"
+last_updated_session: "authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea"
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -29,7 +29,7 @@ outside this flow's scope.
   `OCC_CONFIG_PATH`; production requires the file, while development may use
   its explicit development defaults.
 - Source: `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-  and `packages/occ/src/index.ts:OpenClawController.createConfiguration`.
+  and `packages/occ/src/configuration-operations.ts:createConfiguration`.
 - Requests: [Configuration routes](../../packages/contracts/src/api/routes.ts)
   accept `POST /namespaces/:namespaceId/configurations` and
   `GET`, `PATCH`, or `DELETE` of
@@ -72,26 +72,22 @@ graph TD
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
-The API and worker load trusted Installation selections and validate the chosen
-Configuration Driver's schema and implementation-owned rules before
-constructing its bundled or installed implementation. OCC receives that exact
-capability and identity; invalid settings or a mismatched factory reject
-startup. Installation settings never come from a Configuration Driver. The
-[Driver package loading flow](driver-plugin-loading.md) owns package identity,
-validation, trust boundaries, and IAM construction.
+The API and worker validate trusted Installation settings against the chosen
+Configuration Driver's schema and rules before constructing it. OCC binds its
+exact capability and identity. Invalid settings or a mismatched factory stop
+startup. See the [Driver loading flow](driver-plugin-loading.md) for package
+identity, validation, trust boundaries, and IAM construction.
 
 ### 2. Resolve singleton state and select Drivers
 
 `apps/controller/src/composition/production.ts:composeProduction`
 
-[Production composition](../../apps/controller/src/composition/production.ts)
-loads the sole persisted Installation from
-[PostgreSQL platform state](../../packages/occ/src/state/postgres-state.ts).
-Both processes use the same startup document and Installation identity. The [Driver loading flow](driver-plugin-loading.md)
-traces process-local construction and the selected Secret, Sandbox, and
-ServiceAccount branches. Existing AgentRevisions retain their selected Compute
-identity and immutable admitted configuration; subsequent Configuration edits
-apply only to later deployments.
+The API and worker use the same startup document and load the sole persisted
+Installation from [PostgreSQL](../../packages/occ/src/state/postgres-state.ts).
+The [Driver loading flow](driver-plugin-loading.md) traces their Secret,
+Sandbox, and ServiceAccount selections. Existing Agent revisions retain their
+selected Compute identity and immutable configuration. Later Configuration
+edits apply to subsequent deployments.
 
 Provisioning's `KubernetesConfigurationDriver.createExact` and `inspectExact`
 use the same verified CP namespace as ordinary Configuration CRUD. Recovery checks
@@ -108,12 +104,12 @@ the exact Configuration.
 
 ### 3. Authorize the exact Namespace Configuration operation
 
-`packages/occ/src/index.ts:OpenClawController.createConfiguration`
+`packages/occ/src/configuration-operations.ts:createConfiguration`
 
 [Configuration route contracts](../../packages/contracts/src/api/routes.ts)
 define requests the [controller request handler](../../apps/controller/src/index.ts)
 dispatches to `createConfiguration`, `getConfiguration`, `updateConfiguration`,
-or `deleteConfiguration` in [OCC](../../packages/occ/src/index.ts). OCC resolves
+or `deleteConfiguration` in [OCC](../../packages/occ/src/configuration-operations.ts). OCC resolves
 the server-owned Namespace and checks the selected IAM Driver before accessing
 tenant data. Create checks Configuration permission at Namespace scope. Read,
 update, and delete target the exact Configuration in that Namespace.
@@ -234,6 +230,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-11-20 16:35: Update OCC Configuration operation source pointers. (authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea - 81cdb33c3d2d2ba64dfd783b0216b5dbcfebe395)
 - 2026-11-13 12:50: Retain validated Configuration and Driver identities. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
 
 - 2026-11-11 21:03: Trace text validation and denial ID lookup. (authoring-run/f2efc59c-e63d-4f5b-a392-e38ad865f04d - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)

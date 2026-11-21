@@ -2265,7 +2265,7 @@ export function createAgentDetailScenarios({
         gap: "The failure is simulated; this story does not verify a live deployment.",
       },
       // Finding 2537: these codes read "Deployment reconciliation failed." and got the generic logs
-      // advice. Messages copy deploymentErrorMessage in packages/occ/src/state/controller-work.ts.
+      // advice. Messages copy deploymentErrorMessage in packages/occ/src/deployment-work-status.ts.
       deploymentFailedAdmissionUnavailable: {
         group: "Pages/Agent detail",
         name: "New version failed, protected admission changed",

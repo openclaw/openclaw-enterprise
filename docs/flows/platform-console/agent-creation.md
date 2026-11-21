@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-20
-last_updated_session: authoring-run/2a00b231-82dc-480a-a3af-9dd8215aefe0
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Console Agent creation
@@ -199,7 +199,7 @@ no IAM request and opens the saved draft: the member's
 After a refused Installation read, **Your access** shows whether Agent `create`
 is allowed, refused, or unchecked. When allowed,
 `create.mts:loadNamespaceCapabilities` reads `GET /namespaces/:namespaceId/agent-capabilities`.
-`packages/occ/src/index.ts:getNamespaceAgentCapabilities` checks
+`packages/occ/src/installation-capabilities.ts:getNamespaceAgentCapabilities` checks
 [Agent `create` on the requested collection](../../reference/authorization.md#authorization-decisions)
 before resolving that Namespace by ID. The API returns `403` on denial and `404`
 if an authorized request names a missing Namespace. The lookup needs no
@@ -241,6 +241,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 
 - 2026-11-20 14:31: Trace the Create Agent tabs, the action bar, and the tab selection for a field that fails validation; accompanies uncommitted Console changes. (authoring-run/2a00b231-82dc-480a-a3af-9dd8215aefe0 - 5bf2ae7fd703197701f311098d734a10ed4ab593)
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-11-20
-last_updated_session: authoring-run/92964f65-2664-42de-8b3b-583bfc1329da
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Agent Presets flow
@@ -22,7 +22,7 @@ and Agent through existing APIs. This flow stops at the draft; deployment follow
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`.
 - [Preset routes](../../packages/contracts/src/api/routes.ts): authenticated
   collection and exact-resource operations in a Namespace.
-- [OCC Preset methods](../../packages/occ/src/index.ts): `createPreset`,
+- [OCC Preset methods](../../packages/occ/src/preset-operations.ts): `createPreset`,
   `updatePreset`, `listPresets`, `getPreset`, and `deletePreset` own lifecycle.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
@@ -90,7 +90,7 @@ enabled, into `ControllerOptions.bundledPresetVersions`. A conformance test in
 `tests/conformance/presets.test.ts` fails when a bundled file changes without
 its previous version archived there.
 
-`packages/occ/src/index.ts:OpenClawController.initializeDefaultPresets`
+`packages/occ/src/preset-operations.ts:initializeDefaultPresets`
 
 Initialization authorizes Installation administration, locks Namespaces in ID
 order in one transaction, and skips failed/deleting Namespaces. Missing names
@@ -120,11 +120,11 @@ transport budget for 1 MiB templates, JSON escapes and the envelope; overflow
 returns 413. Their `onRequest` hook runs `authorizePresetWrite`: callers without
 the grant get 403 before any body is read.
 
-`packages/occ/src/index.ts:OpenClawController.createPreset`
+`packages/occ/src/preset-operations.ts:createPreset`
 
-[`OpenClawController.createPreset` and `admitPresetTemplate`](../../packages/occ/src/index.ts)
-lock the Namespace, check the exact collection grant and ready state, then call
-[`normalizePresetTemplate`](../../packages/contracts/src/presets.ts).
+The [Preset operations module](../../packages/occ/src/preset-operations.ts) checks
+the exact collection grant, locks the Namespace, and checks the grant again and
+the ready state. It then calls [`normalizePresetTemplate`](../../packages/contracts/src/presets.ts).
 The normalizer copies the template and fills omitted `namespaceId` fields in
 Harness authentication and Configuration Secret binding sources from the locked
 Namespace. Explicit scopes remain unchanged for same-Namespace validation.
@@ -277,7 +277,7 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 ### 5. Hand off to deployment
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 The saved Agent has a new identity and no Preset reference. Variable inputs are
 not stored as a separate map. Rendered values are ordinary Agent/Configuration
@@ -315,6 +315,8 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 
 - 2026-11-20 19:01: Open a new form with No Preset; apply default-codex only through Use Preset. (authoring-run/92964f65-2664-42de-8b3b-583bfc1329da - 0d17af4253f1f80e0044f2097e4c2f1f0eaffb19)
 

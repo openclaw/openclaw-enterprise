@@ -13,26 +13,22 @@ import { CONTROLLER_WORK_AUDIT_ACTIONS } from "@openclaw-enterprise/contracts";
 import { randomUUID } from "node:crypto";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
+  nonempty,
   type ClaimedWork,
   type ControllerWork,
   type ControllerWorkKind,
   type ControllerWorkState,
 } from "../controller-work.ts";
 import { ResourceConflictError, ScopeViolationError, WorkClaimLostError } from "../errors.ts";
-import {
-  nonempty,
-  safeFailureCode,
-  validateFailureData,
-  validateSuccessResultData,
-  type ControllerWorkAttempt,
-  type ControllerWorkLookup,
-  type DeferredWork,
-  type EnqueueWork,
-  type PermanentFailure,
-  type RetryableFailure,
-  type WorkClaim,
-  type WorkResult,
-} from "./controller-work.ts";
+import { validateFailureData, validateSuccessResultData } from "../controller-work-result.ts";
+import type { ControllerWorkAttempt, ControllerWorkLookup, WorkClaim } from "../controller-work.ts";
+import type {
+  DeferredWork,
+  EnqueueWork,
+  PermanentFailure,
+  RetryableFailure,
+  WorkResult,
+} from "../controller-work.ts";
 
 export {
   isRepositoryCleanupWork,
@@ -46,9 +42,8 @@ export type {
   EnqueueWork,
   PermanentFailure,
   RetryableFailure,
-  WorkClaim,
   WorkResult,
-} from "./controller-work.ts";
+} from "../controller-work.ts";
 import type { RepositoryRevisionOwner } from "../ports/repository-sessions.ts";
 
 export interface PostgresQueryClient {
@@ -554,6 +549,14 @@ function recoveringPredecessorStopsSql(candidates: string, excluded: string): st
         AND NOT ${workEvidenceExistsSql(PREDECESSOR_STOP_RECOVERY)}
         AND NOT ${workEvidenceExistsSql(ACTIVE_REVISION_RECOVERY)}
     ),`;
+}
+
+function safeFailureCode(value: string): string {
+  const normalized = nonempty(value, "Controller work failure code")
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, "_")
+    .slice(0, 64);
+  return normalized.length === 0 ? "UNKNOWN_FAILURE" : normalized;
 }
 
 function positiveInteger(value: number, name: string): number {

@@ -10659,10 +10659,10 @@ Example response
 | Operation | Summary |
 | --- | --- |
 | [`GET /namespaces/{namespaceId}/credential-sources`](#get-namespacesnamespaceidcredentialsources) | List readable credential sources without revealing credential values |
-| [`POST /namespaces/{namespaceId}/credential-sources`](#post-namespacesnamespaceidcredentialsources) | Register a credential source with the selected Credential Gateway |
-| [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source from the Credential Gateway |
-| [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one credential source and its live Credential Gateway status |
-| [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Push current or replacement Secret values to the Credential Gateway copy |
+| [`POST /namespaces/{namespaceId}/credential-sources`](#post-namespacesnamespaceidcredentialsources) | Register a Credential Gateway source; managed static registration is staged |
+| [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source |
+| [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one readable credential source and its available status |
+| [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Update a Credential Gateway source; managed updates are staged |
 | [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Force the Credential Refresh Driver to mint a new token for a refresh-type source |
 
 #### `GET /namespaces/{namespaceId}/credential-sources`
@@ -10777,7 +10777,7 @@ Example response
 
 <span id="post-namespacesnamespaceidcredentialsources"></span>
 
-Register a credential source with the selected Credential Gateway
+Register a Credential Gateway source; managed static registration is staged
 
 **Operation ID:** `createCredentialSource`
 
@@ -10800,12 +10800,25 @@ Register a credential source with the selected Credential Gateway
 
 **Content type:** `application/json`
 
+**Required fields: `name`, `type`**
+
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret source configuration keyed by catalog field name. |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+
+**RegisterTokenServiceSourceBody (required fields: `name`, `type`, `secret`)**
+
+Staged managed static registration contract. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC allocates the identity and selects the TokenService owner.
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
+| `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `secret` | `object<string, string>` | Yes | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
+| `type` | `"static"` | Yes | — |
 
 Example request
 ```json
@@ -10836,6 +10849,7 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
+| `501` | Managed credential source enrollment is unavailable. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
@@ -10905,7 +10919,7 @@ Example response
 
 <span id="delete-namespacesnamespaceidcredentialsourcescredentialsourceid"></span>
 
-Remove an unreferenced credential source from the Credential Gateway
+Remove an unreferenced credential source
 
 **Operation ID:** `deleteCredentialSource`
 
@@ -10939,7 +10953,7 @@ Remove an unreferenced credential source from the Credential Gateway
 
 <span id="get-namespacesnamespaceidcredentialsourcescredentialsourceid"></span>
 
-Get one credential source and its live Credential Gateway status
+Get one readable credential source and its available status
 
 **Operation ID:** `getCredentialSource`
 
@@ -11035,11 +11049,11 @@ Example response
 
 <span id="patch-namespacesnamespaceidcredentialsourcescredentialsourceid"></span>
 
-Push current or replacement Secret values to the Credential Gateway copy
+Update a Credential Gateway source; managed updates are staged
 
 **Operation ID:** `updateCredentialSource`
 
-**Permissions:** Requires update permission on the requested CredentialSource. Requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.
+**Permissions:** Requires update permission on the requested CredentialSource. For a legacy Gateway update, requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -11059,11 +11073,22 @@ Push current or replacement Secret values to the Credential Gateway copy
 
 **Content type:** `application/json`
 
+**Optional fields: `adoption`, `authorityScope`, `secrets`**
+
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `adoption` | `"live"` | No | Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission. |
 | `authorityScope` | `"execution"` | No | Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change. |
 | `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
+
+**UpdateTokenServiceSourceBody**
+
+Supply at least one of config or secret. Omitted fields retain their values. Change or remove provider_preset separately from credential replacement; otherwise the update returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
+| `secret` | `object<string, string>` | No | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
 
 Example request
 ```json
@@ -11092,6 +11117,7 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
+| `501` | Managed credential source enrollment is unavailable. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -13675,8 +13701,7 @@ Reusable schema names are referenced by operation request and response tables.
 | `PushAgentCredentialsBody` | `object` |
 | `PushAgentCredentialsResponse` | `object` |
 | `RegisterTokenServiceSourceBody` | `object` |
-| `TokenServiceSourceMetadata` | `object` |
-| `UpdateTokenServiceSourceBody` | `object or object` |
+| `UpdateTokenServiceSourceBody` | `object` |
 | `SafeJsonValue` | `string or boolean or number or null or array<SafeJsonValue> or object<string, SafeJsonValue>` |
 | `PluginDriverIdentity` | `object` |
 | `AgentRuntimeLogsResponse` | `object` |

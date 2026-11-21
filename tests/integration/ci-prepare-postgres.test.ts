@@ -171,7 +171,7 @@ esac`,
         "--state",
         statePath,
         "--file",
-        "tests/integration/native-admin-session-postgres.test.mjs",
+        "tests/integration/native-admin-session-postgres.test.ts",
       ],
       { cwd: repositoryRoot, encoding: "utf8", env, timeout: 30_000 },
     );

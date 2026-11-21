@@ -287,7 +287,7 @@ export const catalogRowUnselected = (provider) =>
 export const catalogRowNoModel = (provider) =>
   `Configuration setting ${provider}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`;
 // Deployment progress that asks an administrator to act, in fixed copy that never shows the
-// quota's numbers or the image reference (packages/occ/src/state/controller-work.ts).
+// quota's numbers or the image reference (packages/occ/src/deployment-work-status.ts).
 export const POD_QUOTA_FULL =
   "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.";
 export const IMAGE_PULL_FAILING =
@@ -295,7 +295,7 @@ export const IMAGE_PULL_FAILING =
 export const WORKSPACE_SETUP_RETRYING =
   "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an Installation administrator to check the Agent's workspace storage and runtime image.";
 // Failed deployments whose next step needs an Installation administrator, or an operator for the
-// cluster's own capacity, keyed by error code (deploymentErrorMessage in controller-work.ts).
+// cluster's own capacity, keyed by error code (deploymentErrorMessage in deployment-work-status.ts).
 export const DEPLOYMENT_FAILED = {
   AUTHORIZATION_DENIED:
     "The deploying account, or the Agent's own identity, lost a permission the revision needs: Agent deploy, Configuration read, or use of a bound Secret, credential source or ServiceAccount. Ask an Installation administrator to grant it, then deploy again.",
