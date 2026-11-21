@@ -11,6 +11,7 @@ import type {
 import {
   InstalledDriver,
   OpenClawController,
+  CredentialDeploymentFailedError,
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
@@ -241,6 +242,37 @@ async function stagedCredentialScenario(
     currentAgent: () => fixture.currentAgent(owner),
   };
 }
+
+cases.revisionTest(
+  "a terminal Credential Proxy failure permanently fails Work with its exact code",
+  async (fixture, context) => {
+    const code = "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED";
+    let preparations = 0;
+    let activations = 0;
+    const { controller, owner, namespaceId, actorId, currentAgent } =
+      await stagedCredentialScenario(fixture, context, (compute) => ({
+        ...compute,
+        async prepareRevision() {
+          preparations += 1;
+          throw new CredentialDeploymentFailedError(code);
+        },
+        async activateRevision() {
+          activations += 1;
+        },
+      }));
+    const revision = await controller.deployAgent(
+      actorId,
+      { namespaceId, agentId: owner.id },
+      resolveApprovedHarness,
+    );
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    await fixture.work(work, "failed_permanent");
+    assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, code);
+    assert.equal(preparations, 1);
+    assert.equal(activations, 0);
+    assert.equal((await currentAgent())?.activeRevisionId, undefined);
+  },
+);
 
 cases.revisionTest(
   "standalone activation commits the prepared revision before first startup",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
@@ -13,6 +13,7 @@ import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
 import { openShellWorkspaceHarnessConfiguration } from "./sandbox-driver-installation-fixture.ts";
 import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
+import { workspaceNodeSetupSecret } from "./sandbox-driver-workspace-node-setup-fixture.ts";
 import {
   harnessRuntimeCommand,
   runtimeSandboxFixture,
@@ -99,6 +100,26 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
     },
   };
   const context = { ...fixture.context, revision, requirements: fixture.requirements };
+  const setup = {
+    id: "staged-initial-workspace",
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    defaultsId: "staged-defaults",
+    completed: false,
+    files: { "AGENTS.md": "Initial workspace" },
+  };
+  fixture.requirements.workspaceSetup = {
+    id: setup.id,
+    defaultsId: setup.defaultsId,
+    secretKeyRef: { name: "workspace-setup", key: "setup.json" },
+  };
+  const readSecret = context.kubernetes.read;
+  context.kubernetes.read = async (request) =>
+    request.metadata.name === "workspace-setup"
+      ? workspaceNodeSetupSecret(request.metadata, revision.namespaceId, revision.agentId, {
+          "setup.json": Buffer.from(JSON.stringify(setup)).toString("base64"),
+        })
+      : readSecret(request);
   let supervisor: ChildProcess | undefined;
   let exited: Promise<unknown[]> | undefined;
   const nodeIndex = RUNTIME_WRAPPER_COMMAND.indexOf("node");
@@ -106,10 +127,32 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
     process.execPath,
     ...command.slice(nodeIndex + 1),
   ];
+  const events: string[] = [];
+  const validateBindings = (policy: unknown, providers: readonly string[]) => {
+    const networks =
+      (
+        policy as {
+          network_policies?: Record<
+            string,
+            { endpoints?: { credential_binding?: { provider?: string } }[] }
+          >;
+        }
+      )?.network_policies ?? {};
+    for (const rule of Object.values(networks)) {
+      for (const endpoint of rule.endpoints ?? []) {
+        const provider = endpoint.credential_binding?.provider;
+        if (provider && (!providers.includes(provider) || !gateway.providers.has(provider))) {
+          throw new Error("FAILED_PRECONDITION: credential policy names an unattached Provider");
+        }
+      }
+    }
+  };
 
   // The controlled gateway runs the exact rendered programs as local subprocesses. It adapts
   // the unavailable container init binary and Sandbox HOME; it does not emulate their logic.
   gateway.createSandbox = async (request) => {
+    validateBindings(request.spec.policy, (request.spec.providers ?? []) as string[]);
+    events.push("create-idle");
     const command = request.spec.command as readonly string[];
     const environment = request.spec.environment as Record<string, string>;
     const launch = JSON.parse(environment.OPENCLAW_STAGED_HARNESS_COMMAND!) as string[];
@@ -119,6 +162,7 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
         ...process.env,
         ...environment,
         HOME: directory,
+        OPENCLAW_WORKSPACE_DIR: directory,
         OPENCLAW_STAGED_HARNESS_COMMAND: JSON.stringify(localNodeCommand(launch)),
       },
       stdio: "ignore",
@@ -127,7 +171,7 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
     const record = storedSandbox(request, {
       id: "sandbox-fixture",
       resourceVersion: "1",
-      phase: "SANDBOX_PHASE_RUNNING",
+      phase: "SANDBOX_PHASE_PROVISIONING",
     });
     gateway.sandboxes.set(request.name, record);
     await waitFor(
@@ -141,6 +185,13 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
     return record;
   };
   gateway.execSandbox = async (request) => {
+    if (request.environment.OPENCLAW_EXECUTABLE !== undefined) {
+      assert.deepEqual(JSON.parse(request.stdin), setup);
+      // The controlled setup Exec receipt stands in for the container's native setup output.
+      writeFileSync(join(directory, ".oce-workspace-setup.json"), "{}");
+      events.push("workspace-setup");
+      return 0;
+    }
     const result = spawnSync(process.execPath, request.command.slice(1), {
       env: { ...process.env, ...request.environment, HOME: directory, OPENAI_API_KEY: fresh },
       input: request.stdin,
@@ -170,15 +221,7 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
   const sourcePolicy = [...gateway.sandboxes.values()][0]!.spec!.policy as {
     network_policies: Record<string, { endpoints: Record<string, unknown>[] }>;
   };
-  const sourceEndpoint = sourcePolicy.network_policies["oce-agent-model"]!.endpoints[0]!;
-  assert.deepEqual(sourceEndpoint, {
-    host: grant.host,
-    ports: [443],
-    protocol: "rest",
-    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-    rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
-    credential_binding: { provider: openShellProviderName(binding.sourceRef.id) },
-  });
+  assert.equal(sourcePolicy.network_policies["oce-agent-model"], undefined);
   assert.deepEqual(
     sourcePolicy.network_policies["model-egress"]!.endpoints.map(({ host, ports }) => ({
       host,
@@ -205,28 +248,88 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
     sourcePolicy.network_policies["docs-egress"],
     "staged policy must retain unrelated default network grants",
   );
-  gateway.getPolicyStatus = async () => {
-    const effective = structuredClone(sourcePolicy);
-    effective.network_policies["oce-agent-model"]!.endpoints[0]!.provider_credentialed = true;
-    return { policy: effective, version: 1, activeVersion: 1, state: "POLICY_STATUS_LOADED" };
-  };
-  assert.deepEqual(await driver.observeNetworkPolicy(context, revision.sandboxPolicy!), {
+  let policyRevision = structuredClone(sourcePolicy);
+  let policyVersion = 1;
+  gateway.getPolicyStatus = async () => ({
+    policy: policyRevision,
+    version: policyVersion,
+    activeVersion: policyVersion,
+    state: "POLICY_STATUS_LOADED",
+  });
+  assert.equal(
+    (await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches,
+    false,
+  );
+
+  // The separate Credential Proxy owner creates and attaches the Provider before UpdateConfig.
+  const provider = openShellProviderName(binding.sourceRef.id);
+  gateway.providers.set(provider, {
+    name: provider,
+    type: "openai",
+    labels: {},
+    config: {},
     resourceVersion: "1",
-    policyVersion: "1",
+  });
+  const sandbox = [...gateway.sandboxes.values()][0]!;
+  gateway.sandboxes.set(sandbox.name, {
+    ...sandbox,
+    spec: { ...sandbox.spec!, providers: [provider] },
+    resourceVersion: "2",
+  });
+  events.push("attach-provider");
+  gateway.updatePolicy = async (request) => {
+    const current = gateway.sandboxes.get(request.sandbox)!;
+    validateBindings(request.policy, current.spec!.providers as string[]);
+    assert.equal(request.expectedResourceVersion, current.resourceVersion);
+    policyRevision = structuredClone(request.policy) as typeof sourcePolicy;
+    policyVersion++;
+    events.push("update-policy");
+  };
+  await driver.applyNetworkPolicy(context, {
+    snapshot: revision.sandboxPolicy!,
+    expectedProviderVersion: "2",
+    operationId: revision.id,
+  });
+  assert.deepEqual(policyRevision.network_policies["oce-agent-model"]!.endpoints[0], {
+    host: grant.host,
+    ports: [443],
+    protocol: "rest",
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+    credential_binding: { provider },
+  });
+  assert.deepEqual(events, ["create-idle", "attach-provider", "update-policy"]);
+  assert.deepEqual(await driver.observeNetworkPolicy(context, revision.sandboxPolicy!), {
+    resourceVersion: "2",
+    policyVersion: "2",
     state: "applied",
     matches: true,
   });
   assert.equal(existsSync(marker), false, "provisioning must not run the Harness");
-  await driver.prepareStagedHarness(context, [
-    { bindingRef: "model", environment: "OPENAI_API_KEY", placeholder: { kind: "runtime" } },
-  ]);
+  const projections = [
+    {
+      bindingRef: "model",
+      environment: "OPENAI_API_KEY",
+      placeholder: { kind: "runtime" as const },
+    },
+  ];
+  await assert.rejects(driver.prepareStagedHarness(context, projections), {
+    name: "ActivationPendingError",
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  assert.equal(events.includes("workspace-setup"), false);
+  gateway.sandboxes.set(sandbox.name, {
+    ...gateway.sandboxes.get(sandbox.name)!,
+    phase: "SANDBOX_PHASE_READY",
+  });
+  await driver.prepareStagedHarness(context, projections);
+  assert.equal(events.at(-1), "workspace-setup");
   assert.equal(existsSync(marker), false, "preparation must not run the Harness");
   await driver.activateStagedHarness(context);
   await waitFor("Harness marker", () => existsSync(marker), 5000, { interval: 10 });
   assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), { credential: fresh });
-  await driver.prepareStagedHarness(context, [
-    { bindingRef: "model", environment: "OPENAI_API_KEY", placeholder: { kind: "runtime" } },
-  ]);
+  delete fixture.requirements.workspaceSetup;
+  await driver.prepareStagedHarness(context, projections);
   await driver.activateStagedHarness(context);
   await driver.cleanup({ ...fixture.context, revision });
   assert.equal(gateway.sandboxes.size, 0);

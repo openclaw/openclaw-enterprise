@@ -96,6 +96,7 @@ import {
 } from "@kubernetes/client-node";
 import {
   ActivationFailedError,
+  ActivationPendingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
   DependencyUnavailableError,
@@ -2438,11 +2439,14 @@ function sandboxLaunchSpec(
 }
 
 /** Compile the admitted native credential route into the Sandbox-owned network policy. */
-function stagedCredentialPolicy(
+function stagedCredentialPolicies(
   policy: Readonly<Record<string, unknown>>,
   revision: Readonly<AgentRevision>,
   snapshot: SandboxPolicySnapshot,
-): Readonly<Record<string, unknown>> {
+): {
+  readonly idle: Readonly<Record<string, unknown>>;
+  readonly admitted: Readonly<Record<string, unknown>>;
+} {
   const deployment = revision.credentialDeployment;
   const binding = deployment?.bindings[0];
   const injection = deployment?.injectionPolicies[0];
@@ -2548,7 +2552,9 @@ function stagedCredentialPolicy(
       endpoints: [{ ...endpoint, ports: extraPorts }],
     };
   }
-  additions[name] = {
+  delete additions[name];
+  const idleNetworks = { ...trusted, ...desiredDefaults, ...additions };
+  const credentialRule = {
     name,
     binaries: [{ path: request.binary }],
     endpoints: [
@@ -2564,35 +2570,9 @@ function stagedCredentialPolicy(
       },
     ],
   };
-  return { ...policy, network_policies: { ...trusted, ...desiredDefaults, ...additions } };
-}
-
-function withoutDerivedCredentialMarker(policy: Readonly<Record<string, unknown>>) {
-  const networks = asRecord(policy.network_policies);
-  if (!networks) {
-    return policy;
-  }
   return {
-    ...policy,
-    network_policies: Object.fromEntries(
-      Object.entries(networks).map(([name, value]) => {
-        const rule = asRecord(value);
-        return [
-          name,
-          !rule || !Array.isArray(rule.endpoints)
-            ? value
-            : {
-                ...rule,
-                endpoints: rule.endpoints.map((value) => {
-                  const endpoint = asRecord(value);
-                  return endpoint?.credential_binding
-                    ? { ...endpoint, provider_credentialed: undefined }
-                    : value;
-                }),
-              },
-        ];
-      }),
-    ),
+    idle: { ...policy, network_policies: idleNetworks },
+    admitted: { ...policy, network_policies: { ...idleNetworks, [name]: credentialRule } },
   };
 }
 
@@ -3618,7 +3598,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new OpenShellSandboxConfigurationFailure("The staged Harness projections are invalid.");
     }
     const ref = this.sandboxRef(context);
-    const exit = await this.gatewayClientForNamespace(ref.namespaceName).execSandbox(
+    const client = this.gatewayClientForNamespace(ref.namespaceName);
+    if (!(await this.initializeWorkspace(context, ref, client))) {
+      throw new ActivationPendingError(
+        "CREDENTIAL_ACTIVATION_PENDING",
+        "The staged Sandbox is not ready for initial workspace setup.",
+      );
+    }
+    const exit = await client.execSandbox(
       {
         workspace: workspaceName(context.namespace),
         sandbox: ref.resourceName,
@@ -3885,11 +3872,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
       spec = {
         ...supervisorSpec,
-        policy: stagedCredentialPolicy(
+        policy: stagedCredentialPolicies(
           supervisorSpec.policy,
           context.revision,
           context.revision.sandboxPolicy!,
-        ) as typeof supervisorSpec.policy,
+        ).idle as typeof supervisorSpec.policy,
         environment: Object.assign({}, supervisorSpec.environment, {
           OPENCLAW_STAGED_HARNESS_COMMAND: JSON.stringify(launchSpec.command),
         }),
@@ -3984,7 +3971,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       mcpPolicies,
     );
     await checkEffectivePolicy();
-    await this.initializeWorkspace(context, reconciled, client);
+    if (!staged) {
+      await this.initializeWorkspace(context, reconciled, client);
+    }
     return reconciled;
   }
 
@@ -4564,10 +4553,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     context: SandboxHarnessContext,
     sandbox: SandboxResourceRef,
     client: OpenShellGatewayClient,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const setup = context.requirements.workspaceSetup;
     if (setup === undefined) {
-      return;
+      return true;
     }
     const workspace = workspaceName(context.namespace);
     const current = await client.getSandbox(
@@ -4580,7 +4569,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // setup: this pass read or created the Sandbox a moment ago, so it is a flap within one
     // pass, nothing is recorded as gone, and the next pass's create fails closed.
     if (current?.phase !== "SANDBOX_PHASE_READY" && current?.phase !== 2) {
-      return;
+      return false;
     }
     let exit: number;
     try {
@@ -4661,6 +4650,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OPENSHELL_WORKSPACE_INITIALIZATION_FAILED",
       );
     }
+    return true;
   }
 
   async harnessEndpoint(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint> {
@@ -5174,13 +5164,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       context.revision.executionAdmission.mode === "standalone" &&
       context.revision.credentialDeployment !== undefined;
     const candidate = staged
-      ? stagedCredentialPolicy(baseline, context.revision, snapshot)
+      ? stagedCredentialPolicies(baseline, context.revision, snapshot).admitted
       : openShellPolicyCandidate(baseline, snapshot);
     const status = await client.getPolicyStatus(request, context.signal);
-    const matches = sameOpenShellPolicy(
-      staged ? withoutDerivedCredentialMarker(status.policy) : status.policy,
-      candidate,
-    );
+    const matches = sameOpenShellPolicy(status.policy, candidate);
     const state =
       status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version
         ? "applied"
@@ -5228,7 +5215,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const candidate =
       context.revision.executionAdmission.mode === "standalone" &&
       context.revision.credentialDeployment !== undefined
-        ? stagedCredentialPolicy(baseline, context.revision, input.snapshot)
+        ? stagedCredentialPolicies(baseline, context.revision, input.snapshot).admitted
         : openShellPolicyCandidate(baseline, input.snapshot);
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {

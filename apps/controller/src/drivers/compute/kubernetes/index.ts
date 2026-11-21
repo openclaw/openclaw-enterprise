@@ -203,6 +203,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
+  CredentialDeploymentFailedError,
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
@@ -815,6 +816,13 @@ function diagnosticMessage(message: string): boolean {
 function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFailureDiagnostic {
   const failure = preparationFailure(error);
   const cause = privateWriteEvidence(failure.error) ?? failure.error;
+  if (cause instanceof CredentialDeploymentFailedError) {
+    return {
+      code: cause.code,
+      stage: failure.stage,
+      errorClass: "CredentialDeploymentFailedError",
+    };
+  }
   if (cause instanceof OpenShellSandboxConfigurationFailure && cause.diagnosticCode !== undefined) {
     return {
       code: cause.diagnosticCode,
@@ -8152,14 +8160,38 @@ export class KubernetesComputeDriver implements ComputeDriver {
             network = await sandboxDriver.observeNetworkPolicy!(proxyContext, snapshot);
           }
           const injection = await proxy!.getDeploymentStatus(proxyContext, configuration);
-          if (network.state === "failed" || injection.state === "failed") {
+          if (injection.state === "failed") {
+            throw new CredentialDeploymentFailedError(injection.code);
+          }
+          if (network.state === "failed") {
             throw new DependencyUnavailableError("The staged credential deployment failed.");
           }
           if (network.state !== "applied" || !network.matches || injection.state !== "ready") {
             return incomplete();
           }
           if (credentialProjections !== undefined) {
-            await sandboxDriver.prepareStagedHarness!(harnessContext, credentialProjections);
+            try {
+              await sandboxDriver.prepareStagedHarness!(harnessContext, credentialProjections);
+            } catch (error) {
+              if (
+                error instanceof ActivationPendingError &&
+                error.code === "CREDENTIAL_ACTIVATION_PENDING"
+              ) {
+                return incomplete(error.code);
+              }
+              if (error instanceof SandboxWorkspaceSetupRefusedError) {
+                return {
+                  ...result,
+                  runtimeFailure: {
+                    component: "agent",
+                    check: "workspace-setup",
+                    code: "WORKSPACE_SETUP_REFUSED",
+                    checkedAt: new Date().toISOString(),
+                  },
+                };
+              }
+              throw error;
+            }
             return {
               ...result,
               preparedForCredentialActivation: true,

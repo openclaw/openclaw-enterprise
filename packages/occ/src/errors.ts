@@ -1214,6 +1214,17 @@ export class ComputePreparationFailedError extends Error {
   }
 }
 
+/** The selected Credential Proxy confirmed this deployment cannot become ready. */
+export class CredentialDeploymentFailedError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super("The Credential Proxy refused the staged deployment.");
+    this.name = "CredentialDeploymentFailedError";
+    this.code = code;
+  }
+}
+
 /**
  * A workload cannot activate under its current configuration or managed policy.
  * Preparation and activation can both discover the refusal. The worker fails

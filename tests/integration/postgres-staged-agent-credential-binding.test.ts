@@ -19,6 +19,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
@@ -313,8 +314,13 @@ test(
       [`binding-${randomUUID()}`, namespaceId, authorId, roleId],
     );
     const session = await signInToControllerApp(app, { email, password });
-    const memberRequest = (method: "GET" | "POST" | "PATCH", url: string, payload?: object) =>
-      app.inject({
+    const memberRequest = (
+      method: "GET" | "POST" | "PATCH",
+      url: string,
+      payload?: object,
+      selectedApp = app,
+    ) =>
+      selectedApp.inject({
         method,
         url,
         headers: {
@@ -871,6 +877,95 @@ test(
     );
     assert.equal(enrolledNative.statusCode, 201, enrolledNative.body);
     const nativeSource = enrolledNative.json().data;
+
+    // Guided provisioning cannot supply the network grants that staged delivery requires.
+    // Exact Source authorization must still precede that refusal, and neither request may queue work or create resources.
+    const guidedConfigurationDriver = createTestConfigurationDriver({
+      id: "guided-source-configuration",
+      exact: true,
+    });
+    nativeController.registerDriver(guidedConfigurationDriver);
+    const originalConfigurationDriver = nativeController.selectedDriver("configuration");
+    nativeController.selectDriver("configuration", guidedConfigurationDriver.id);
+    const guidedRoleId = `role-${randomUUID()}`;
+    const guidedBindingId = `binding-${randomUUID()}`;
+    await pool.query("INSERT INTO occ.iam_roles (id,name,permissions) VALUES ($1,$2,$3::jsonb)", [
+      guidedRoleId,
+      "Guided Agent requester",
+      JSON.stringify([
+        { action: "administer", resourceKind: "installation" },
+        { action: "create", resourceKind: "configuration" },
+      ]),
+    ]);
+    await pool.query(
+      "INSERT INTO occ.iam_access_bindings (id,identity_subject_id,role_id) VALUES ($1,$2,$3)",
+      [guidedBindingId, authorId, guidedRoleId],
+    );
+    const guidedEffects = async () =>
+      (
+        await pool.query(
+          `SELECT
+           (SELECT count(*)::int FROM occ.agent_provisioning_work WHERE namespace_id=$1) AS provisioning,
+           (SELECT count(*)::int FROM occ.controller_work WHERE namespace_id=$1) AS work,
+           (SELECT count(*)::int FROM occ.agents WHERE namespace_id=$1) AS agents,
+           (SELECT count(*)::int FROM occ.configurations WHERE namespace_id=$1) AS configurations`,
+          [namespaceId],
+        )
+      ).rows[0];
+    const effectsBeforeGuided = await guidedEffects();
+    const { agents, models } = createHarnessConfiguration("openclaw", "gpt-4.1");
+    const guidedRequest = {
+      requestId: `req_${randomUUID()}`,
+      name: `Guided staged source ${randomUUID()}`,
+      executionMode: "dedicated",
+      configuration: { kind: "agent", values: { agents, models } },
+      harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
+    };
+    try {
+      const iam = nativeController.selectedDriver("iam");
+      for (const [action, resource] of [
+        ["create", { kind: "agent", namespaceId, id: namespaceId }],
+        ["create", { kind: "configuration", namespaceId, id: namespaceId }],
+        ["administer", { kind: "installation", id: nativeController.installation.id }],
+      ] as const) {
+        assert.equal(
+          (await iam.authorize({ principalId: authorId, action, resource })).allowed,
+          true,
+          `${action} ${resource.kind} must be allowed`,
+        );
+      }
+      assert.equal(
+        (
+          await iam.authorize({
+            principalId: authorId,
+            action: "operate",
+            resource: { kind: "credential_source", namespaceId, id: nativeSource.id },
+          })
+        ).allowed,
+        false,
+      );
+      const deniedGuided = await memberRequest(
+        "POST",
+        `${base}/agents/provision`,
+        guidedRequest,
+        nativeApp,
+      );
+      assert.equal(deniedGuided.statusCode, 403, deniedGuided.body);
+      const refusedGuided = await inject(
+        "POST",
+        `${base}/agents/provision`,
+        guidedRequest,
+        nativeApp,
+      );
+      assert.equal(refusedGuided.statusCode, 409, refusedGuided.body);
+      assert.equal(refusedGuided.json().error.code, "RESOURCE_CONFLICT");
+      assert.match(refusedGuided.json().error.message, /guided.*managed credential source/i);
+      assert.deepEqual(await guidedEffects(), effectsBeforeGuided);
+    } finally {
+      nativeController.selectDriver("configuration", originalConfigurationDriver.id);
+      await pool.query("DELETE FROM occ.iam_access_bindings WHERE id=$1", [guidedBindingId]);
+      await pool.query("DELETE FROM occ.iam_roles WHERE id=$1", [guidedRoleId]);
+    }
     const providerlessMaterial = randomUUID();
     material.push(providerlessMaterial);
     const providerless = remember(

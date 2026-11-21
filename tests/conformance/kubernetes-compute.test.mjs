@@ -759,8 +759,12 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     placeholder: { kind: "runtime" },
   };
   const events = [];
+  let sandboxReady = false;
   let networkReady = true;
-  let proxyReady = false;
+  let networkMatches = false;
+  let proxyReady = true;
+  let proxyFailureCode;
+  let workspaceRefused = false;
   let started = false;
   let provisioned = false;
   let workloadLabels;
@@ -775,6 +779,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     async provisionHarness() {
       assert.fail("staged deployment cannot use ordinary Sandbox provisioning");
     },
+    validateWorkspaceSetup() {},
     async provisionStagedHarness({ revision, requirements }) {
       events.push("provision-idle");
       provisioned = true;
@@ -791,12 +796,27 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
       events.push("network-status");
       return {
         state: networkReady ? "applied" : "pending",
-        matches: true,
+        matches: networkMatches,
         resourceVersion: "1",
         policyVersion: "1",
       };
     },
-    async prepareStagedHarness(_context, projections) {
+    async applyNetworkPolicy() {
+      events.push("apply-network");
+      networkMatches = true;
+    },
+    async prepareStagedHarness(context, projections) {
+      if (!sandboxReady) {
+        throw new ActivationPendingError(
+          "CREDENTIAL_ACTIVATION_PENDING",
+          "The idle Sandbox is still pending initial workspace setup.",
+        );
+      }
+      if (workspaceRefused) {
+        throw new SandboxWorkspaceSetupRefusedError("Initial workspace was refused.");
+      }
+      assert.ok(context.requirements.workspaceSetup);
+      events.push("workspace-setup");
       events.push("prepare-launch");
       assert.deepEqual(projections, [projection]);
       assert.equal(started, false, "preparation must not start the Harness");
@@ -829,6 +849,12 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     },
     async getDeploymentStatus() {
       events.push("proxy-status");
+      if (proxyFailureCode !== undefined) {
+        return { state: "failed", code: proxyFailureCode };
+      }
+      if (proxyReady) {
+        events.push("proxy-ready");
+      }
       return { state: proxyReady ? "ready" : "pending" };
     },
     async removeDeployment(_context, removal) {
@@ -852,6 +878,13 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   };
   const context = {
     harnessAuth: auth,
+    workspaceSetup: {
+      id: "setup-staged",
+      namespaceId: tenant.id,
+      agentId: "agent-staged",
+      files: { "AGENTS.md": "initial workspace" },
+      completed: false,
+    },
     async configureCredentialDeployment(configuration) {
       events.push("configure-proxy");
       assert.deepEqual(configuration.targetRef, targetRef);
@@ -860,6 +893,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   };
   const stagedRevision = {
     ...nativeSandboxRevision(sandboxDriver.id),
+    agentId: context.workspaceSetup.agentId,
     harnessAuth: auth,
     sandboxPolicy: {
       driverId: sandboxDriver.id,
@@ -928,17 +962,40 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   assert.equal((await prepare()).ready, false);
   markReady(gatewayName);
 
-  // Each independent desired-policy observation must be ready before preparing launch inputs.
+  // Proxy and network readiness do not allow launch while the idle Sandbox cannot run setup.
+  const pendingSetup = await prepare();
+  assert.equal(pendingSetup.ready, false);
+  assert.equal(pendingSetup.pendingReason, "CREDENTIAL_ACTIVATION_PENDING");
+  assert.equal(pendingSetup.preparedForCredentialActivation, undefined);
+  assert.ok(events.includes("proxy-ready"));
+  assert.equal(events.includes("workspace-setup"), false, "the first Sandbox was pending");
+  proxyFailureCode = "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED";
+  await assert.rejects(prepare(), {
+    name: "CredentialDeploymentFailedError",
+    code: proxyFailureCode,
+  });
+  proxyFailureCode = undefined;
+  sandboxReady = true;
+  proxyReady = false;
   assert.equal((await prepare()).ready, false);
   networkReady = false;
   proxyReady = true;
   assert.equal((await prepare()).ready, false);
   assert.equal(events.includes("prepare-launch"), false);
   networkReady = true;
+  workspaceRefused = true;
+  assert.equal((await prepare()).runtimeFailure.code, "WORKSPACE_SETUP_REFUSED");
+  workspaceRefused = false;
   const prepared = await prepare();
   assert.equal(prepared.preparedForCredentialActivation, true);
+  assert.ok(events.includes("workspace-setup"), "the ready Sandbox must initialize its workspace");
   assert.equal(started, false);
   assert.deepEqual(events.slice(0, 3), ["deploy-proxy", "provision-idle", "configure-proxy"]);
+  assert.ok(events.indexOf("configure-proxy") < events.indexOf("network-status"));
+  assert.ok(events.indexOf("network-status") < events.indexOf("apply-network"));
+  assert.ok(events.indexOf("apply-network") < events.indexOf("proxy-ready"));
+  assert.ok(events.indexOf("apply-network") < events.lastIndexOf("prepare-launch"));
+  assert.ok(events.indexOf("workspace-setup") < events.lastIndexOf("prepare-launch"));
   assert.ok(events.lastIndexOf("network-status") < events.lastIndexOf("prepare-launch"));
   assert.ok(events.lastIndexOf("proxy-status") < events.lastIndexOf("prepare-launch"));
   assert.equal(objects.has(key("HTTPRoute", gatewayName)), false);
@@ -949,6 +1006,7 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     code: "CREDENTIAL_ACTIVATION_PENDING",
   });
   assert.equal(started, true);
+  assert.ok(events.indexOf("workspace-setup") < events.indexOf("activate"));
   assert.equal(objects.has(key("HTTPRoute", gatewayName)), false);
   state.providerPod = readyNativeHarnessPod(namespace, workloadLabels);
   state.connected = true;

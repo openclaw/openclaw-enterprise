@@ -80,11 +80,11 @@ For a draft, Console creates the Configuration and Agent, then grants access to 
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
-For Harness authentication from a credential source, OCC reads the catalog entry
-from the recorded Gateway. Compute validates that same entry and its login mode
-for this admission. A later provisioning request reads the catalog again.
+OCC authorizes the exact Source. It rejects TokenService-owned Sources before creating
+work because guided provisioning cannot admit a staged network grant. For Gateway
+sources, Compute validates the current catalog entry and login mode.
 
-OCC first authorizes Agent `create`, Configuration `create`, and Installation `administer` for the Namespace. Status and retry use the same grants; absence gives `403` regardless of the body. It validates Configuration, references, workspace inputs, execution mode, and current authority, then refuses a taken Agent name with `409`. Reserved Secret destinations, cross-Namespace references, and missing or `runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule; an absent Secret remains `404`. Before Compute planning, Secret bindings get Agent save's Harness authentication check and named `400`.
+OCC first authorizes Agent `create`, Configuration `create`, and Installation `administer` for the Namespace. Status and retry require the same grants; absence gives `403` regardless of body. OCC validates Configuration, references, workspace inputs, execution mode, and authority, then refuses a taken Agent name with `409`. Reserved Secret destinations, cross-Namespace references, and missing or `runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule; an absent Secret remains `404`. Before Compute planning, Secret bindings get Agent save's Harness authentication check and named `400`.
 
 A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
 
