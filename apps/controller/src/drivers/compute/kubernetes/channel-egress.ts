@@ -17,8 +17,43 @@ import {
 
 const API = "gateway.envoyproxy.io/v1alpha1";
 const RECORD = "openclaw.dev/channel-egress-binding";
+const REVISION_LABEL = "openclaw.dev/revision";
 const FLEET = "openclaw.dev/channel-egress-fleet";
 export const CHANNEL_EGRESS_BINDING_LABEL = "openclaw.dev/channel-egress-binding";
+
+function gatewaySourceLabels(
+  revision: Pick<AgentRevision, "namespaceId" | "agentId">,
+  revisionId: string,
+  bindingId: string,
+) {
+  return {
+    "openclaw.dev/namespace": revision.namespaceId,
+    "openclaw.dev/agent": revision.agentId,
+    [REVISION_LABEL]: revisionId,
+    "openclaw.dev/workload-role": "gateway",
+    [NETWORK_PROFILE_LABEL]: ORDINARY_NETWORK_PROFILE,
+    [CHANNEL_EGRESS_BINDING_LABEL]: bindingId,
+  };
+}
+
+function dependsOnGeneratedGatewayLabel(value: unknown): boolean {
+  const selector = asRecord(value);
+  const matchLabels = asRecord(selector?.matchLabels) ?? {};
+  if (
+    Object.hasOwn(matchLabels, REVISION_LABEL) ||
+    Object.hasOwn(matchLabels, CHANNEL_EGRESS_BINDING_LABEL)
+  ) {
+    return true;
+  }
+  const expressions = Array.isArray(selector?.matchExpressions) ? selector.matchExpressions : [];
+  return expressions.some((raw) => {
+    const expression = asRecord(raw);
+    return (
+      (expression?.key === REVISION_LABEL || expression?.key === CHANNEL_EGRESS_BINDING_LABEL) &&
+      (expression.operator === "In" || expression.operator === "NotIn")
+    );
+  });
+}
 
 interface Resource extends KubernetesObject {
   apiVersion: string;
@@ -167,20 +202,26 @@ function permitsPort(value: unknown, port: number): boolean {
 }
 
 export class ChannelPublicEgressPolicyConflict extends Error {
-  readonly #operatorMessage: string;
+  readonly #uid: string | undefined;
+  readonly peerKind: "unspecified-destinations" | "ip-block-outside-allowed-ranges";
 
-  constructor(message: string, uid: string | undefined) {
-    super(message);
-    // Only the worker's operator diagnostic can read this locator. Kubernetes-assigned
+  constructor(peerKind: ChannelPublicEgressPolicyConflict["peerKind"], uid: string | undefined) {
+    super(
+      peerKind === "unspecified-destinations"
+        ? "An additive NetworkPolicy grants unrestricted direct destinations to a channel Gateway."
+        : "An additive NetworkPolicy permits direct public egress from a channel Gateway.",
+    );
+    this.peerKind = peerKind;
+    // Only operator diagnostics include this locator. Kubernetes-assigned
     // UUIDs are bounded and identify even policies with long or sensitive names.
-    this.#operatorMessage =
+    this.#uid =
       uid?.length === 36 && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(uid)
-        ? `${message} Inspect NetworkPolicy UID ${uid}.`
-        : message;
+        ? uid
+        : undefined;
   }
 
-  operatorMessage(): string {
-    return this.#operatorMessage;
+  operatorMessage(message = this.message): string {
+    return this.#uid ? `${message} Inspect NetworkPolicy UID ${this.#uid}.` : message;
   }
 }
 
@@ -762,14 +803,7 @@ export class KubernetesChannelEgress {
   }
 
   private grants(binding: ChannelEgressBinding): Resource[] {
-    const source = {
-      "openclaw.dev/namespace": binding.namespaceId,
-      "openclaw.dev/agent": binding.agentId,
-      "openclaw.dev/revision": binding.revisionId,
-      "openclaw.dev/workload-role": "gateway",
-      [NETWORK_PROFILE_LABEL]: ORDINARY_NETWORK_PROFILE,
-      [CHANNEL_EGRESS_BINDING_LABEL]: binding.id,
-    };
+    const source = gatewaySourceLabels(binding, binding.revisionId, binding.id);
     const peer = {
       namespaceSelector: {
         matchLabels: { "kubernetes.io/metadata.name": this.options.envoyNamespace },
@@ -887,6 +921,79 @@ export class KubernetesChannelEgress {
     }
   }
 
+  private async listNetworkPolicies(namespace: string): Promise<Resource[]> {
+    const policies = await this.request((api) =>
+      api.list<Resource>("networking.k8s.io/v1", "NetworkPolicy", namespace),
+    );
+    if (policies.metadata?._continue) {
+      throw new Error("Cannot inspect the complete additive NetworkPolicy set.");
+    }
+    return policies.items;
+  }
+
+  private *egressRules(spec: Resource["spec"]) {
+    for (const raw of Array.isArray(spec?.egress) ? spec.egress : []) {
+      const rule = asRecord(raw);
+      const peers = Array.isArray(rule?.to) && rule.to.length > 0 ? rule.to : [{}];
+      yield { rule, peers };
+    }
+  }
+
+  private isPrivateRange(cidr: string): boolean {
+    const [address, prefix] = cidr.split("/");
+    if (isIP(address ?? "") !== 4) {
+      return false;
+    }
+    return [...CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS, ...this.options.excludedCidrs].some(
+      (excluded) => {
+        const [network, bits] = excluded.split("/");
+        if (isIP(network ?? "") !== 4 || Number(prefix) < Number(bits)) {
+          return false;
+        }
+        const block = new BlockList();
+        block.addSubnet(network!, Number(bits), "ipv4");
+        return block.check(address!, "ipv4");
+      },
+    );
+  }
+
+  private verifyNoDirectPublicPeer(
+    peer: Record<string, unknown>,
+    block: Record<string, unknown> | undefined,
+    uid: string | undefined,
+  ): void {
+    if (!block && peer.namespaceSelector === undefined && peer.podSelector === undefined) {
+      throw new ChannelPublicEgressPolicyConflict("unspecified-destinations", uid);
+    }
+    if (block && !this.isPrivateRange(String(block.cidr))) {
+      throw new ChannelPublicEgressPolicyConflict("ip-block-outside-allowed-ranges", uid);
+    }
+  }
+
+  async verifyProspectiveGatewayDirectEgressGuard(
+    namespace: string,
+    agents: readonly Pick<AgentRevision, "namespaceId" | "agentId">[],
+  ): Promise<void> {
+    // Both labels are present at activation. Their values are irrelevant to the
+    // Worker predicate after deferring selectors that test either generated value.
+    const sources = agents.map((agent) => gatewaySourceLabels(agent, "", ""));
+    for (const policy of await this.listNetworkPolicies(namespace)) {
+      const selector = policy.spec?.podSelector;
+      if (
+        dependsOnGeneratedGatewayLabel(selector) ||
+        !sources.some((source) => maySelect(selector, source))
+      ) {
+        continue;
+      }
+      for (const { peers } of this.egressRules(policy.spec)) {
+        for (const rawPeer of peers) {
+          const peer = asRecord(rawPeer) ?? {};
+          this.verifyNoDirectPublicPeer(peer, asRecord(peer.ipBlock), policy.metadata.uid);
+        }
+      }
+    }
+  }
+
   private async verifyPolicySet(binding: ChannelEgressBinding): Promise<void> {
     const fleet = await this.fleet();
     const service = await this.read(
@@ -908,56 +1015,16 @@ export class KubernetesChannelEgress {
     const source = asRecord(
       asRecord(this.grants(binding)[0]!.spec?.podSelector)?.matchLabels,
     ) as Record<string, string>;
-    const isPrivateRange = (cidr: string): boolean => {
-      const [address, prefix] = cidr.split("/");
-      if (isIP(address ?? "") !== 4) {
-        return false;
-      }
-      return [...CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS, ...this.options.excludedCidrs].some(
-        (excluded) => {
-          const [network, bits] = excluded.split("/");
-          if (isIP(network ?? "") !== 4 || Number(prefix) < Number(bits)) {
-            return false;
-          }
-          const block = new BlockList();
-          block.addSubnet(network!, Number(bits), "ipv4");
-          return block.check(address!, "ipv4");
-        },
-      );
-    };
     for (const namespace of new Set([binding.namespace, this.options.envoyNamespace])) {
-      const policies = await this.request((api) =>
-        api.list<Resource>("networking.k8s.io/v1", "NetworkPolicy", namespace),
-      );
-      if (policies.metadata?._continue) {
-        throw new Error("Cannot inspect the complete additive NetworkPolicy set.");
-      }
-      for (const policy of policies.items) {
+      for (const policy of await this.listNetworkPolicies(namespace)) {
         // Kubernetes list entries can omit kind; the list operation fixes it.
         const spec = networkPolicyFields({ ...policy, kind: "NetworkPolicy" }, false).spec;
         if (namespace === binding.namespace && maySelect(spec?.podSelector, source)) {
-          for (const raw of Array.isArray(spec?.egress) ? spec.egress : []) {
-            const rule = asRecord(raw);
-            const peers = Array.isArray(rule?.to) && rule.to.length > 0 ? rule.to : [{}];
+          for (const { rule, peers } of this.egressRules(spec)) {
             for (const rawPeer of peers) {
               const peer = asRecord(rawPeer) ?? {};
               const block = asRecord(peer.ipBlock);
-              if (
-                !block &&
-                peer.namespaceSelector === undefined &&
-                peer.podSelector === undefined
-              ) {
-                throw new ChannelPublicEgressPolicyConflict(
-                  "An additive NetworkPolicy grants unrestricted direct destinations to a channel Gateway.",
-                  policy.metadata.uid,
-                );
-              }
-              if (block && !isPrivateRange(String(block.cidr))) {
-                throw new ChannelPublicEgressPolicyConflict(
-                  "An additive NetworkPolicy permits direct public egress from a channel Gateway.",
-                  policy.metadata.uid,
-                );
-              }
+              this.verifyNoDirectPublicPeer(peer, block, policy.metadata.uid);
               const targetsFleet = block
                 ? addresses.some(
                     (address) =>
