@@ -898,6 +898,13 @@
       "path": "tests/integration/openshell-full-integration.test.ts"
     },
     {
+      "path": "tests/integration/openshell-stock-destination-ca.test.ts",
+      "expectedTests": [
+        "OpenShell destination CA fixture accepts a single CA and refuses a substituted ConfigMap",
+        "OpenShell stock Supervisor fixture refuses a substituted imported image"
+      ]
+    },
+    {
       "path": "tests/integration/oidc-provider.test.ts"
     },
     {

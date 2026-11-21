@@ -304,6 +304,10 @@
                     "label": "Credential Sources"
                   },
                   {
+                    "page": "reference/credential-sources/managed-static",
+                    "label": "Managed Static Sources"
+                  },
+                  {
                     "page": "guides/credential-proxy",
                     "label": "Set Up Credential Proxy"
                   },

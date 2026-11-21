@@ -259,6 +259,7 @@ function requireClaimRenewal(renewed: ClaimedWork | undefined): void {
 }
 
 const INCOMPATIBLE_REPOSITORY_HISTORY = "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE";
+const UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT = "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED";
 
 // A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
 // An active revision's source is already consumed.
@@ -630,6 +631,21 @@ interface RevisionDispatchResult extends DispatchResult {
   readonly supersededBy?: Readonly<AgentRevision>;
   readonly expectedActiveRevisionId?: string;
   readonly context?: ComputeRevisionContext;
+}
+
+class ScopedDeploymentRefusal extends RepositoryCredentialAuthorityError {
+  readonly result: RevisionDispatchResult;
+
+  constructor(result: RevisionDispatchResult) {
+    super(result.code);
+    this.result = result;
+  }
+}
+
+function repositoryFailure(error: RepositoryCredentialAuthorityError): RevisionDispatchResult {
+  return error instanceof ScopedDeploymentRefusal
+    ? error.result
+    : { outcome: "permanent", code: error.code };
 }
 
 type RuntimeSuccessor =
@@ -1247,6 +1263,8 @@ export class ControllerWorker {
   private passOutcome: WorkOutcome = "error";
   /** The revision this pass asked Compute to prepare, if any. */
   private preparedThisPass: string | undefined;
+  // Set only for a fresh deployment claim, cleared before its first possible effect.
+  private untouchedCandidate: ClaimedWork | undefined;
   /**
    * The refusal this deployment pass's work still waits to publish: its latest evidence is a
    * REFUSED_CANDIDATE_STOP_PENDING deferral, or a lost claim that kept its refusal.
@@ -1533,7 +1551,11 @@ export class ControllerWorker {
             this.compute.verifyRepositoryExecution?.(revision, signal) ??
             Promise.resolve(undefined),
         ),
-      authorize: (claim, revision) => this.assertRepositoryAuthority(claim, revision),
+      authorize: async (claim, revision) => {
+        await this.assertRepositoryAuthority(claim, revision);
+        // From here the lifecycle may inspect a live execution or open a session.
+        this.untouchedCandidate = undefined;
+      },
       effect: (claim, operation) => this.withClaimHeartbeat(claim, operation),
     });
   }
@@ -1705,6 +1727,7 @@ export class ControllerWorker {
           const started = process.hrtime.bigint();
           this.passOutcome = "error";
           this.preparedThisPass = undefined;
+          this.untouchedCandidate = undefined;
           this.refusalWait = undefined;
           this.stopYieldedThisPass = false;
           try {
@@ -2011,6 +2034,22 @@ export class ControllerWorker {
     return decision;
   }
 
+  private requireDeploymentAuthorization(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    denied: RevisionDispatchResult | undefined,
+  ): void {
+    if (denied === undefined) {
+      return;
+    }
+    if (isScopedDeployment(claim, revision)) {
+      throw new ScopedDeploymentRefusal(
+        this.untouchedCandidate === claim ? { ...denied, candidateNotStarted: true } : denied,
+      );
+    }
+    throw new RepositoryCredentialAuthorityError(denied.code);
+  }
+
   private async fenceScopedDeployment(
     unit: PlatformUnitOfWork,
     claim: ClaimedWork,
@@ -2027,10 +2066,11 @@ export class ControllerWorker {
     ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_REVISION_STOPPED");
     }
-    const denied = await this.authorizeDeploymentActor(claim, agent, revision, "reconcile");
-    if (denied !== undefined) {
-      throw new RepositoryCredentialAuthorityError(denied.code);
-    }
+    this.requireDeploymentAuthorization(
+      claim,
+      revision,
+      await this.authorizeDeploymentActor(claim, agent, revision, "reconcile"),
+    );
     return agent;
   }
 
@@ -2052,6 +2092,7 @@ export class ControllerWorker {
           await this.fenceScopedDeployment(unit, claim, revision);
           requireClaimRenewal(await queue.heartbeat(claim));
           signal.throwIfAborted();
+          this.untouchedCandidate = undefined;
           pending = dispatch();
           // The Driver can reject while the transaction is finishing.
           void pending.catch(() => {});
@@ -2079,7 +2120,8 @@ export class ControllerWorker {
       if (!this.revisionPluginDriverAvailable(revision)) {
         throw new Error("PLUGIN_DRIVER_MISMATCH");
       }
-      await this.validateExecutionAdmission(revision, "reconcile");
+      this.validateExecutionAdmission(revision);
+      await this.validateRepositoryNetworkPolicy(revision);
     }
     signal.throwIfAborted();
     const applyStage = async () => {
@@ -2236,10 +2278,11 @@ export class ControllerWorker {
     ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_REVISION_SUPERSEDED");
     }
-    const denied = await this.authorizeRevision(claim, agent, revision, "reconcile");
-    if (denied !== undefined) {
-      throw new RepositoryCredentialAuthorityError(denied.code);
-    }
+    this.requireDeploymentAuthorization(
+      claim,
+      revision,
+      await this.authorizeRevision(claim, agent, revision, "reconcile"),
+    );
     const backend = await this.resolveRevisionBackend(revision);
     if (backend !== undefined) {
       throw new RepositoryCredentialAuthorityError(backend.code);
@@ -2266,7 +2309,8 @@ export class ControllerWorker {
     if (!this.revisionPluginDriverAvailable(revision)) {
       throw new Error("PLUGIN_DRIVER_MISMATCH");
     }
-    await this.validateExecutionAdmission(revision, "reconcile");
+    this.validateExecutionAdmission(revision);
+    await this.validateRepositoryNetworkPolicy(revision);
     const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
       const prepared = await this.prepareRevisionPass(claim, revision, context);
@@ -2378,6 +2422,7 @@ export class ControllerWorker {
         if ((await queue.heartbeat(claim)) === undefined) {
           throw new WorkClaimLostError();
         }
+        this.untouchedCandidate = undefined;
         if (agent?.activeRevisionId !== previous.id || claim.revisionId === undefined) {
           return;
         }
@@ -4435,6 +4480,7 @@ export class ControllerWorker {
     if (withdraw === undefined || sourceIds.length === 0) {
       return;
     }
+    this.untouchedCandidate = undefined;
     const sources = await this.state.read(async (view) => {
       const revokedIds = new Set(
         (await view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id))
@@ -4701,16 +4747,10 @@ export class ControllerWorker {
       refusalWaitRead = true;
       // Only explicit admission decisions before runtime handoff may certify an untouched candidate.
       const refuseAdmission = async (result: RevisionDispatchResult) => {
-        // Deferral can refund the attempt count. Require the original schedule and
-        // absence of prior work evidence as well as the first claim's count.
         if (
           result.outcome === "permanent" &&
-          agent.activeRevisionId !== revision.id &&
-          revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined &&
-          isCandidateDeployment(claim) &&
-          claim.attemptCount === 1 &&
-          claim.availableAt.getTime() <= claim.createdAt.getTime() &&
-          (await this.queue.findWorkAttempt(claim.idempotencyKey)) === undefined
+          isScopedDeployment(claim, revision) &&
+          this.untouchedCandidate === claim
         ) {
           await this.finalizeRevision(claim, { ...result, candidateNotStarted: true });
         } else if (result.code === INCOMPATIBLE_REPOSITORY_HISTORY) {
@@ -5012,11 +5052,13 @@ export class ControllerWorker {
       // Deploy and repair work must never re-attach a withdrawn source.
       const secretContext = historySupported
         ? await this.resolveRevisionSecretContext(revision, "reconcile")
-        : { result: { outcome: "permanent", code: "EXECUTION_ADMISSION_UNAVAILABLE" } as const };
+        : { result: { outcome: "permanent", code: INCOMPATIBLE_REPOSITORY_HISTORY } as const };
       if ("result" in secretContext) {
         if (agent.activeRevisionId === revision.id) {
           if (
-            secretContext.result.code === "EXECUTION_ADMISSION_UNAVAILABLE" &&
+            (secretContext.result.code === "EXECUTION_ADMISSION_UNAVAILABLE" ||
+              secretContext.result.code === INCOMPATIBLE_REPOSITORY_HISTORY ||
+              secretContext.result.code === UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT) &&
             (await this.withdrawRejectedActiveExecution(claim, revision))
           ) {
             return;
@@ -5069,7 +5111,11 @@ export class ControllerWorker {
             await this.compute.bindAgent!({ namespace, agent });
           });
         } catch (error) {
-          if (error instanceof WorkClaimLostError || agent.activeRevisionId !== revision.id) {
+          if (
+            error instanceof ScopedDeploymentRefusal ||
+            error instanceof WorkClaimLostError ||
+            agent.activeRevisionId !== revision.id
+          ) {
             throw error;
           }
           await this.finalizeActiveRevision(claim, revision, "COMPUTE_BINDING_INCOMPLETE");
@@ -5258,7 +5304,9 @@ export class ControllerWorker {
         ({ result, logFields: failureLogFields } = error.pending());
       } else {
         const dependencyFailure = revisionDependencyFailure(error);
-        if (error instanceof ComputePreparationFailedError) {
+        if (error instanceof RepositoryCredentialAuthorityError) {
+          result = repositoryFailure(error);
+        } else if (error instanceof ComputePreparationFailedError) {
           result = {
             outcome: "permanent",
             code: error.code,
@@ -5270,7 +5318,6 @@ export class ControllerWorker {
           // could not authenticate retries within the attempt budget first (finding 1694).
           result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
-          error instanceof RepositoryCredentialAuthorityError ||
           // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
           // can never enroll, so it fails now instead of at the convergence deadline.
           error instanceof RepositoryGitSenderUnqualifiedError ||
@@ -5311,10 +5358,18 @@ export class ControllerWorker {
         result.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
           ? failureLogFields?.failure
           : undefined;
-      await this.finalizeRevision(claim, pending.result, {
-        ...pending.logFields,
-        ...(permissionDenials === undefined ? {} : { failure: permissionDenials }),
-      });
+      await this.finalizeRevision(
+        claim,
+        {
+          ...pending.result,
+          ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
+          ...(result.decision === undefined ? {} : { decision: result.decision }),
+        },
+        {
+          ...pending.logFields,
+          ...(permissionDenials === undefined ? {} : { failure: permissionDenials }),
+        },
+      );
     }
   }
 
@@ -5929,21 +5984,16 @@ export class ControllerWorker {
     );
   }
 
-  private async validateExecutionAdmission(
-    revision: AgentRevision,
-    operation: "reconcile" | "withdraw",
-  ): Promise<void> {
+  private validateExecutionAdmission(revision: AgentRevision): void {
     if (this.compute.validateExecutionAdmission === undefined) {
       assertExecutionReleaseAllowed(revision);
     } else {
       this.compute.validateExecutionAdmission(revision, "stored");
     }
-    // Keep the original execution checks for withdrawal. Inability to install
-    // a policy must not prevent removing access from its existing recipient.
-    if (
-      operation === "reconcile" &&
-      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined
-    ) {
+  }
+
+  private async validateRepositoryNetworkPolicy(revision: AgentRevision): Promise<void> {
+    if (revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
       if (this.compute.validateProtectedRepositoryNetworkPolicy === undefined) {
         throw new DependencyUnavailableError(
           "The selected Compute cannot enforce this repository network policy.",
@@ -5997,9 +6047,25 @@ export class ControllerWorker {
     { readonly context: ComputeRevisionContext } | { readonly result: RevisionDispatchResult }
   > {
     try {
-      await this.validateExecutionAdmission(revision, operation);
+      this.validateExecutionAdmission(revision);
     } catch {
       return { result: { outcome: "permanent", code: "EXECUTION_ADMISSION_UNAVAILABLE" } };
+    }
+    // Withdrawal can remove existing access even when the placement cannot install the policy.
+    if (operation === "reconcile") {
+      try {
+        await this.validateRepositoryNetworkPolicy(revision);
+      } catch {
+        return {
+          result: {
+            outcome: "permanent",
+            code:
+              revision.executionAdmission.mode === "unprotected"
+                ? UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT
+                : "EXECUTION_ADMISSION_UNAVAILABLE",
+          },
+        };
+      }
     }
     const bindings = revisionSecretBindings(revision);
     if ("result" in bindings) {
@@ -6573,7 +6639,7 @@ export class ControllerWorker {
           throw error;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
-          resolved = { outcome: "permanent", code: error.code };
+          resolved = repositoryFailure(error);
         } else {
           resolved = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
           // Say why the check failed, as a failure in dispatch does (finding 2272).
@@ -6836,7 +6902,7 @@ export class ControllerWorker {
         if (error instanceof RepositoryCredentialAuthorityError) {
           await this.finalizeRevision(
             claim,
-            { outcome: "permanent", code: error.code },
+            repositoryFailure(error),
             computeCleanupLogFields(error),
           );
           return;
@@ -7076,6 +7142,15 @@ export class ControllerWorker {
       return;
     }
     const latest = await this.queue.findWorkAttempt(claim.idempotencyKey);
+    // Deferral can refund the attempt count. Require the original schedule
+    // and absence of prior work evidence as well as the first claim's count.
+    if (
+      latest === undefined &&
+      claim.attemptCount === 1 &&
+      claim.availableAt.getTime() <= claim.createdAt.getTime()
+    ) {
+      this.untouchedCandidate = claim;
+    }
     if (
       latest?.refusal !== undefined &&
       (latest.code === "REFUSED_CANDIDATE_STOP_PENDING" || latest.code === "LEASE_EXPIRED")
@@ -7418,7 +7493,7 @@ export class ControllerWorker {
           throw error;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
-          await this.finalizeRevision(claim, { outcome: "permanent", code: error.code });
+          await this.finalizeRevision(claim, repositoryFailure(error));
           return;
         }
         throw error;

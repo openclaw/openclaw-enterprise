@@ -420,7 +420,6 @@ export function createIAMPolicyOperations({
       id: input.resourceId,
       namespaceId: namespace.id,
     });
-    await verifyNamespacePolicyResource(namespace.id, resourceKind, input.resourceId);
     const driver = iamPolicyDriver("createNamespaceAccessBinding");
     const roles = iamPolicyDriver("getNamespaceRole");
     return transactions.transact(async (state) => {
@@ -429,6 +428,7 @@ export function createIAMPolicyOperations({
         id: input.resourceId,
         namespaceId: namespace.id,
       });
+      await verifyNamespacePolicyResource(namespace.id, resourceKind, input.resourceId);
       const role = await iamPolicyOperation(() =>
         roles.getNamespaceRole!({ policy: state.iamPolicy }, namespace.id, input.roleId),
       );
@@ -990,13 +990,17 @@ export function createIAMPolicyOperations({
         return;
       }
       if (resourceKind === "credential_source") {
-        if (
-          (await state.credentialSources.findCredentialSource(namespaceId, resourceId)) ===
-          undefined
-        ) {
+        const source = await state.credentialSources.findCredentialSource(namespaceId, resourceId);
+        if (source === undefined) {
           throw new IAMPolicyValidationError(
             "/resourceId",
             "The IAM target credential source does not belong to the Namespace.",
+          );
+        }
+        if (source.state === "deleting") {
+          throw new IAMPolicyValidationError(
+            "/resourceId",
+            "The IAM target credential source is deleting.",
           );
         }
         return;
