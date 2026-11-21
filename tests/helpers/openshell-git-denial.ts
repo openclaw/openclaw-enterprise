@@ -400,24 +400,32 @@ export function createOpenShellGitDenial({
 type GitAclDenial =
   { kind: "git" } | { kind: "rest"; method: "GET" | "POST"; path: string; host: string };
 
-/** Run the same bounded denial check in the installed guest and the local test. */
-export function createGitAclDenialCommand(token: string) {
+function gitAclCheckCommand(token: string) {
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   const fingerprints = [token, basic].flatMap((value) => [
     String(Buffer.byteLength(value)),
     createHash("sha256").update(value).digest("hex"),
   ]);
   // Node's TypeScript loader erases types. The guest needs only Node builtins.
-  const script = `(${checkGitAclDenial.toString()})().catch(() => {
+  const script = `(${checkGitAclCommand.toString()})().catch(() => {
     process.stderr.write("ACL_DENIAL_CAPTURE\\n");
     process.exitCode = 1;
   });`;
+  return ["node", "--eval", script, "--", ...fingerprints];
+}
+
+/** Check the alias and require the broad credential to be absent from every guest value. */
+export function createGitAclEnvironmentGuard(token: string): string {
+  return [...gitAclCheckCommand(token), "environment"]
+    .map((argument) => "'" + argument.replaceAll("'", "'\\''") + "'")
+    .join(" ");
+}
+
+/** Run the same bounded denial check in the installed guest and the local test. */
+export function createGitAclDenialCommand(token: string) {
+  const command = gitAclCheckCommand(token);
   return (denial: GitAclDenial, [executable, ...args]: [string, ...string[]]) => [
-    "node",
-    "--eval",
-    script,
-    "--",
-    ...fingerprints,
+    ...command,
     denial.kind,
     denial.kind === "rest" ? denial.method : "",
     denial.kind === "rest" ? denial.path : "",
@@ -427,8 +435,7 @@ export function createGitAclDenialCommand(token: string) {
   ];
 }
 
-async function checkGitAclDenial() {
-  const { spawnSync } = await import("node:child_process");
+async function checkGitAclCommand() {
   const { createHash } = await import("node:crypto");
   const [
     rawLength,
@@ -447,6 +454,49 @@ async function checkGitAclDenial() {
     process.stderr.write(diagnostic + "\n");
     process.exitCode = 1;
   };
+  const fingerprints = [
+    [Number(rawLength), rawHash],
+    [Number(basicLength), basicHash],
+  ] as const;
+  if (
+    fingerprints.some(
+      ([size, hash]) =>
+        !Number.isSafeInteger(size) || size <= 0 || !hash || !/^[a-f0-9]{64}$/.test(hash),
+    )
+  ) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+  // A credential can be embedded in a URL, JSON, or an Authorization header.
+  const containsCredential = (value: Buffer): boolean =>
+    fingerprints.some(([size, hash]) => {
+      for (let offset = 0; offset + size <= value.length; offset++) {
+        if (
+          createHash("sha256")
+            .update(value.subarray(offset, offset + size))
+            .digest("hex") === hash
+        ) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+  if (kind === "environment") {
+    if (
+      !/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(process.env.GITHUB_TOKEN ?? "")
+    ) {
+      return fail("ACL_GITHUB_PLACEHOLDER");
+    }
+    if (
+      Object.values(process.env).some(
+        (value) => value !== undefined && containsCredential(Buffer.from(value)),
+      )
+    ) {
+      return fail("ACL_CREDENTIAL_IN_ENVIRONMENT");
+    }
+    return;
+  }
+
   if (!executable || (kind !== "git" && kind !== "rest")) {
     return fail("ACL_DENIAL_CAPTURE");
   }
@@ -461,6 +511,7 @@ async function checkGitAclDenial() {
       "\n%{http_code} %{content_type}\n",
     );
   }
+  const { spawnSync } = await import("node:child_process");
   const { stdout, stderr, status, error } = spawnSync(executable, args, {
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: limit + 1,
@@ -470,25 +521,8 @@ async function checkGitAclDenial() {
   }
 
   // Scan complete bytes in both streams before interpreting a status or body.
-  // Any contiguous match counts, including prefixes and extra JSON fields.
-  for (const [size, hash] of [
-    [Number(rawLength), rawHash],
-    [Number(basicLength), basicHash],
-  ] as const) {
-    if (!Number.isSafeInteger(size) || size <= 0 || !hash || !/^[a-f0-9]{64}$/.test(hash)) {
-      return fail("ACL_DENIAL_CAPTURE");
-    }
-    for (const stream of [stdout, stderr]) {
-      for (let offset = 0; offset + size <= stream.length; offset++) {
-        if (
-          createHash("sha256")
-            .update(stream.subarray(offset, offset + size))
-            .digest("hex") === hash
-        ) {
-          return fail("ACL_CREDENTIAL_IN_OUTPUT");
-        }
-      }
-    }
+  if (containsCredential(stdout) || containsCredential(stderr)) {
+    return fail("ACL_CREDENTIAL_IN_OUTPUT");
   }
 
   if (kind === "git") {

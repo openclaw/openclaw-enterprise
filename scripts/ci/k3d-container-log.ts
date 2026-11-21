@@ -4,6 +4,7 @@ import {
   redactLogLine,
   redactOutputLine,
   type RedactionSecrets,
+  withoutCutLine,
 } from "./failure-redaction.ts";
 import { compareEventTimes, eventObservedTime } from "./kubernetes-event-time.ts";
 import { maskPrivateKeyLogLines, redactCredentialLine } from "./k3d-node-log.ts";
@@ -11,6 +12,11 @@ import { maskPrivateKeyLogLines, redactCredentialLine } from "./k3d-node-log.ts"
 const MAX_ACTIVITY_RECORDS = 200;
 const CONTAINER_LOG_LINES = 1_500;
 const CONTAINER_LOG_LINE_CHARS = 1_000;
+// The test's follower (tests/helpers/container-log-capture.ts) keeps the last 2,048 characters
+// of kubectl's stderr and the last 2 MiB of a line, so a text that long may start inside a
+// credential whose key or prefix was cut off.
+export const CONTAINER_LOG_ERROR_CHARS = 2_048;
+export const CONTAINER_LOG_BUFFER_CHARS = 2 * 1024 * 1024;
 
 function property(value: unknown, key: string): unknown {
   if (value === null || value === undefined) {
@@ -124,6 +130,20 @@ export function eventStatus(object: unknown, secrets: RedactionSecrets = []) {
   };
 }
 
+// kubectl's stderr window, redacted whole as an uncut one is. Only then is a cut window's first
+// line dropped (see withoutCutLine), so what is left is a part of the uncut projection.
+function streamError(error: string, secrets: RedactionSecrets) {
+  const shown = redactLogLine(
+    maskPrivateKeyLogLines(error.split("\n"))
+      .map((line: string) => (isCredentialLine(line) ? "[redacted credential-bearing line]" : line))
+      .join("\n"),
+    secrets,
+    2_000,
+  );
+  const cut = error.length >= CONTAINER_LOG_ERROR_CHARS;
+  return withoutCutLine(shown, cut) || (cut ? "[diagnostics: cut stderr; first line dropped]" : "");
+}
+
 /** Project a test-written container log record into bounded, redacted diagnostic output. */
 export function projectContainerLog(value: unknown, secrets: RedactionSecrets = []) {
   const record = asRecord(value);
@@ -134,12 +154,18 @@ export function projectContainerLog(value: unknown, secrets: RedactionSecrets = 
     typeof field === "string" ? redactLogLine(field, secrets, limit) : undefined;
   const count = (field: unknown): number =>
     typeof field === "number" && Number.isSafeInteger(field) && field >= 0 ? field : 0;
-  const lines = maskPrivateKeyLogLines(
-    record.lines.filter((line: unknown): line is string => typeof line === "string"),
-  );
+  const raw = record.lines.filter((line: unknown): line is string => typeof line === "string");
+  const lines = maskPrivateKeyLogLines(raw);
+  // A cut line is removed only after the whole list was masked and selected, so what is
+  // published is a subset of the lines that would be published with it.
+  const first = Math.max(0, lines.length - CONTAINER_LOG_LINES);
   const kept = lines
-    .slice(-CONTAINER_LOG_LINES)
-    .map((line: string) => redactOutputLine(line, secrets, "", CONTAINER_LOG_LINE_CHARS));
+    .slice(first)
+    .flatMap((line: string, index: number) =>
+      raw[first + index]!.length >= CONTAINER_LOG_BUFFER_CHARS
+        ? []
+        : [redactOutputLine(line, secrets, "", CONTAINER_LOG_LINE_CHARS)],
+    );
   const stream = asRecord(record.stream);
   const markers = records(record.markers);
   return {
@@ -159,17 +185,7 @@ export function projectContainerLog(value: unknown, secrets: RedactionSecrets = 
         typeof stream?.exitCode === "number" && Number.isInteger(stream.exitCode)
           ? stream.exitCode
           : undefined,
-      error:
-        typeof stream?.error === "string"
-          ? text(
-              maskPrivateKeyLogLines(stream.error.split("\n"))
-                .map((line: string) =>
-                  isCredentialLine(line) ? "[redacted credential-bearing line]" : line,
-                )
-                .join("\n"),
-              2_000,
-            )
-          : undefined,
+      error: typeof stream?.error === "string" ? streamError(stream.error, secrets) : undefined,
     },
     snapshots: records(record.snapshots)
       .slice(0, 4)

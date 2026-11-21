@@ -70,7 +70,6 @@ import {
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
   RESOURCE_CONFLICT,
-  SANDBOX_POLICY_READ_DENIED,
   STOP_REPEAT_CONFIRMATION,
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
@@ -78,9 +77,9 @@ import {
   BOUND_SECRET_UNLISTED,
   notIncluded,
   deleteRefused,
-  NAMESPACE_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
+import { SANDBOX_POLICY_READ_DENIED, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 

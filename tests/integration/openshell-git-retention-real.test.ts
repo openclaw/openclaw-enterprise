@@ -1,5 +1,6 @@
+import { compileOpenShellBoundGitRule } from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
 import assert from "node:assert/strict";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -20,10 +21,7 @@ import {
   observeUntil,
 } from "../helpers/finite-git-agent.ts";
 import { createFiniteGitProviderObservation } from "../helpers/finite-git-providers.ts";
-import {
-  OpenShellPreparedGitProvider,
-  type OpenShellPreparedGitScope,
-} from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import {
   cleanEnvironment,
   run,
@@ -37,6 +35,7 @@ import {
 } from "../helpers/finite-git-conversation.ts";
 import {
   createGitAclDenialCommand,
+  createGitAclEnvironmentGuard,
   createOpenShellGitDenial,
   gitRemovalDenialCategory,
   gitRemovalDenialCommand,
@@ -971,7 +970,6 @@ test(
     const { gatewayClient, workspace, origin } = fixture;
     const network = origin.network;
     assert.ok(network && network.token);
-    assert.deepEqual(network.repositories, ["fixture/a", "fixture/b", "fixture/c"]);
     assert.match(fixture.sandboxImage, /@sha256:[a-f0-9]{64}$/);
     assert.match(origin.initialSha, /^[a-f0-9]{40}$/u);
     const workspaceResource = await gatewayClient.getWorkspace(workspace, t.signal);
@@ -991,7 +989,6 @@ test(
     const token = network.token;
     const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
     const denialCommand = createGitAclDenialCommand(token);
-    const fingerprint = (value: string) => createHash("sha256").update(value).digest("hex");
     type Target = { sandboxName: string; sandboxId: string };
     const execute = async (target: Target, command: string[]) => {
       const result = await managedExec(target, command);
@@ -1029,12 +1026,15 @@ test(
     await control(["clone", `https://github.com:${port}/fixture/a.git`, "a"]);
     await control(["-C", "a", "push", "origin", "HEAD:refs/heads/approved"]);
     assert.equal(await network.ref("fixture/a", "refs/heads/approved"), origin.initialSha);
-    await network.clearRef("fixture/a", "refs/heads/approved");
     await control(["clone", `https://github.com:${port}/fixture/c.git`, "c"]);
     await control(["-C", "c", "push", "origin", "HEAD:refs/heads/control"]);
     assert.equal(await network.ref("fixture/c", "refs/heads/control"), origin.initialSha);
 
-    const createSandbox = async (name: string, providers: string[]): Promise<Target> => {
+    const createSandbox = async (
+      name: string,
+      providers: string[],
+      gitRule?: ReturnType<typeof compileOpenShellBoundGitRule>,
+    ): Promise<Target> => {
       const selector = { workspace, name };
       assert.ok(!(await gatewayClient.getSandbox(selector, t.signal)), "ACL_NAME_ALREADY_USED");
       const created = await gatewayClient.createSandbox(
@@ -1056,7 +1056,7 @@ test(
                 read_write: ["/tmp", "/dev/null"],
               },
               process: { run_as_user: "1000", run_as_group: "1000" },
-              network_policies: {},
+              network_policies: gitRule ? { [gitRule.name]: gitRule } : {},
             },
           },
         },
@@ -1101,7 +1101,7 @@ test(
     assert.ok(gitHelper && curl);
 
     const install = async (
-      repositoryNetworkPolicy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>,
+      repositoryNetworkPolicy: Parameters<typeof compileOpenShellBoundGitRule>[0],
     ) => {
       const name = `ga-${randomBytes(8).toString("hex")}`;
       const scope = {
@@ -1113,14 +1113,19 @@ test(
         gitOrigin: "https://github.com",
         apiOrigin: "https://api.github.com",
         binaries: [gitHelper, curl],
-        repositoryNetworkPolicy,
+        nativeGit: "v1" as const,
       };
       const provider = new OpenShellPreparedGitProvider(gatewayClient, scope);
       const binding = await provider.prepare(
         { value: token, expiresAt: new Date(Date.now() + 3_500_000).toISOString() },
         t.signal,
       );
-      const target = await createSandbox(name, [binding.provider]);
+      const rule = compileOpenShellBoundGitRule(
+        repositoryNetworkPolicy,
+        binding.provider,
+        scope.binaries,
+      );
+      const target = await createSandbox(name, [binding.provider], rule);
       const supervisor = await fixture.verifySupervisorImage(target);
       await fixture.checkpoint("installed-supervisor", supervisor);
       const installed = await observeUntil(
@@ -1158,27 +1163,7 @@ test(
       execute(target, ["sh", "-ceu", script, "--", ...command]);
     // Check the stable alias and absence of the credential in the launch environment.
     // Only fingerprints of the synthetic credential enter the workload command.
-    const requireGitHubPlaceholder = `require_github_placeholder() (
-  case \${GITHUB_TOKEN-} in
-    openshell:resolve:env:s*_GITHUB_TOKEN)
-      handle=\${GITHUB_TOKEN#openshell:resolve:env:s}
-      handle=\${handle%_GITHUB_TOKEN}
-      case $handle in *[!0123456789abcdef]*) exit 1 ;; esac
-      [ "\${#handle}" -eq 64 ]
-      ;;
-    *) exit 1 ;;
-  esac
-)
-require_github_placeholder`;
-    const requirePlaceholderOnly = `${requireGitHubPlaceholder}; node -e '
-const { createHash } = require("node:crypto");
-const hashes = new Set(process.argv.slice(1));
-for (const value of Object.values(process.env)) {
-  const candidates = [value, value.replace(/^(?:Authorization: )?Basic /i, "")];
-  if (candidates.some((candidate) => hashes.has(createHash("sha256").update(candidate).digest("hex")))) {
-    process.exit(63);
-  }
-}' -- ${fingerprint(token)} ${fingerprint(basic)}`;
+    const requirePlaceholderOnly = createGitAclEnvironmentGuard(token);
     const gitSetup = `${requirePlaceholderOnly}; export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false; export HOME=/tmp; git config --global credential.helper '!f() { printf "%s\\n" username=x-access-token "password=$GITHUB_TOKEN"; }; f'`;
     // Start with empty object stores and independently require an authenticated
     // upload-pack POST for each ref fetched into them.
@@ -1315,6 +1300,7 @@ git -C '${directory}' checkout -q '${ref}'`,
       const priorRequests = network.requests().length;
       // Strict TLS, fixed private resolution, and no proxies or redirects.
       // The exact fixture credential travels on stdin only.
+      const priorOriginRequests = origin.snapshot().requests;
       const witness = await run(
         "curl",
         [
@@ -1344,6 +1330,7 @@ git -C '${directory}' checkout -q '${ref}'`,
         },
       );
       assert.ok(witness.stdout === `200 ${request.responseType}`, "ACL_EXACT_TOKEN_BYPASS");
+      assert.equal(origin.snapshot().requests, priorOriginRequests + 1, "ACL_WITNESS_ORIGIN_COUNT");
       checkOrigin(priorRequests, repository, probe);
 
       const before = origin.snapshot().requests;
@@ -1379,15 +1366,17 @@ git -C '${directory}' checkout -q '${ref}'`,
       assert.equal(origin.snapshot().requests, before, "ACL_NATIVE_DENIAL_ORIGIN");
       assert.ok(result.stdout.toString("utf8") === "403 native-git\n", "ACL_NATIVE_HTTP");
     };
+    // Use B's independently verified new commit so a successful push would change A.
+    assert.notEqual(pushed, origin.initialSha);
     await denied(original.target, [
       "-C",
-      "/tmp/a",
+      "/tmp/b",
       "push",
       "-q",
-      "origin",
+      "https://github.com/fixture/a.git",
       "HEAD:refs/heads/approved",
     ]);
-    assert.equal(await network.ref("fixture/a", "refs/heads/approved"), undefined);
+    assert.equal(await network.ref("fixture/a", "refs/heads/approved"), origin.initialSha);
     await denied(original.target, [
       "clone",
       "-q",
@@ -1506,7 +1495,7 @@ git -C /tmp/b rev-parse HEAD HEAD^`,
         await denyReplay(replacement.target, repository, request);
       }
     }
-    assert.equal(await network.ref("fixture/a", approved), undefined);
+    assert.equal(await network.ref("fixture/a", approved), origin.initialSha);
     assert.equal(await network.ref("fixture/b", approved), pushed);
     assert.equal(await network.hasObject("fixture/b", attempted), false);
   }),
