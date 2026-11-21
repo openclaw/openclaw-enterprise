@@ -2333,7 +2333,8 @@ export class OpenClawController {
       mutate: (work) => this.mutate(work),
       holdAuthority: (state) => this.holdAuthority(state),
       authorize: (principalId, action, target) => this.authorize(principalId, action, target),
-      exactNamespace: (state, namespaceId) => this.exactNamespace(state, namespaceId),
+      authorizeScope: (principalId, namespaceId, agentId) =>
+        this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId),
       lockNamespace: (state, namespaceId) => this.lockNamespace(state, namespaceId),
       hasDriver: (capability) => this.selections.has(capability),
       credentialGatewayDriver: () => this.credentialGatewayDriver(),
@@ -9698,6 +9699,41 @@ export class OpenClawController {
         throw new ResourceStateConflictError("The Configuration changed during deletion.");
       }
       return removed;
+    });
+  }
+
+  private async authorizeDeviceAuthorizationScope(
+    principalId: string,
+    namespaceId: string,
+    agentId?: string,
+  ): Promise<void> {
+    if (agentId === undefined) {
+      await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    } else {
+      const resource = { kind: "agent" as const, id: agentId, namespaceId };
+      await this.authorize(principalId, "read", resource);
+      await this.authorize(principalId, "update", resource);
+    }
+    await this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      if (agentId !== undefined) {
+        const agent = await state.agents.findAgent(namespaceId, agentId);
+        if (agent === undefined) {
+          throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+        }
+        if (agent.status !== "active") {
+          throw new AgentDeletingError();
+        }
+        if (agent.executionMode !== "dedicated") {
+          throw new NotImplementedError(
+            "agent_device_authorization",
+            "Device login requires a dedicated Agent.",
+          );
+        }
+      }
     });
   }
 

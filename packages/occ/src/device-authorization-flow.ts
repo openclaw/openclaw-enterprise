@@ -1,5 +1,4 @@
 import type {
-  Agent,
   AuditEvent,
   AuthorizationRequest,
   CredentialGatewayDriver,
@@ -21,7 +20,6 @@ import {
   type deviceAuthorizationCipher,
 } from "./device-authorization.ts";
 import {
-  AgentDeletingError,
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   NamespaceNotReadyError,
@@ -32,9 +30,6 @@ import {
 } from "./errors.ts";
 
 type DeviceAuthorizationReadState = {
-  readonly agents: {
-    findAgent(namespaceId: string, agentId: string): Promise<Readonly<Agent> | undefined>;
-  };
   readonly authenticationStates: {
     findDevice(namespaceId: string, id: string): Promise<DeviceAuthenticationState | undefined>;
   };
@@ -80,7 +75,11 @@ type DeviceAuthorizationDependencies<ReadState, WriteState> = {
     action: AuthorizationRequest["action"],
     resource: ResourceRef,
   ) => Promise<unknown>;
-  readonly exactNamespace: (state: ReadState, namespaceId: string) => Promise<Readonly<Namespace>>;
+  readonly authorizeScope: (
+    principalId: string,
+    namespaceId: string,
+    agentId?: string,
+  ) => Promise<void>;
   readonly lockNamespace: (state: WriteState, namespaceId: string) => Promise<Readonly<Namespace>>;
   readonly hasDriver: (capability: "credential_gateway" | "credential_refresh") => boolean;
   readonly credentialGatewayDriver: () => CredentialGatewayDriver;
@@ -117,7 +116,7 @@ export function createDeviceAuthorizationFlow<
     agentId?: string,
     audit?: DeviceAuthorizationAudit,
   ) {
-    await authorizeScope(principalId, namespaceId, agentId);
+    await deps.authorizeScope(principalId, namespaceId, agentId);
     const sourceTarget: ResourceRef = {
       kind: "credential_source",
       id: namespaceId,
@@ -167,7 +166,7 @@ export function createDeviceAuthorizationFlow<
     );
     const { context } = await deps.credentialSourceContext(namespaceId, source.id);
     // Registration can outlive an IAM change; check the start authority again before provider I/O.
-    await authorizeScope(principalId, namespaceId, agentId);
+    await deps.authorizeScope(principalId, namespaceId, agentId);
     await deps.authorize(principalId, "create", sourceTarget);
     let started: CredentialSourceDeviceAuthorization;
     try {
@@ -177,7 +176,7 @@ export function createDeviceAuthorizationFlow<
         ? error
         : new DeviceAuthorizationStartError("unavailable");
     }
-    await authorizeScope(principalId, namespaceId, agentId);
+    await deps.authorizeScope(principalId, namespaceId, agentId);
     const { privateState, intervalSeconds, userCode, verificationUrl } = started;
     const expiresAt = new Date(started.expiresAt).toISOString();
     const sessionId = deps.nextSessionId();
@@ -323,7 +322,7 @@ export function createDeviceAuthorizationFlow<
       await replaceSession(sessionId, claimedVersion, cancelledDeviceAuthorization(session));
       throw new RetryLaterError("deviceLoginFailed", error);
     }
-    await authorizeScope(principalId, namespaceId, agentId);
+    await deps.authorizeScope(principalId, namespaceId, agentId);
     const current = await deps.authorizedCredentialSource(
       principalId,
       namespaceId,
@@ -374,41 +373,6 @@ export function createDeviceAuthorizationFlow<
     }
   }
 
-  async function authorizeScope(
-    principalId: string,
-    namespaceId: string,
-    agentId?: string,
-  ): Promise<void> {
-    if (agentId === undefined) {
-      await deps.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
-    } else {
-      const resource = { kind: "agent" as const, id: agentId, namespaceId };
-      await deps.authorize(principalId, "read", resource);
-      await deps.authorize(principalId, "update", resource);
-    }
-    await deps.read(async (state) => {
-      const namespace = await deps.exactNamespace(state, namespaceId);
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      if (agentId !== undefined) {
-        const agent = await state.agents.findAgent(namespaceId, agentId);
-        if (agent === undefined) {
-          throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
-        }
-        if (agent.status !== "active") {
-          throw new AgentDeletingError();
-        }
-        if (agent.executionMode !== "dedicated") {
-          throw new NotImplementedError(
-            "agent_device_authorization",
-            "Device login requires a dedicated Agent.",
-          );
-        }
-      }
-    });
-  }
-
   function replaceSession(id: string, version: number, session: DeviceAuthorizationSession) {
     return deps.mutate((state) =>
       state.authenticationStates.replaceDevice(session.namespaceId, id, version, session),
@@ -421,7 +385,7 @@ export function createDeviceAuthorizationFlow<
     sessionId: string,
     agentId?: string,
   ) {
-    await authorizeScope(principalId, namespaceId, agentId);
+    await deps.authorizeScope(principalId, namespaceId, agentId);
     const stored = await deps.read((state) =>
       state.authenticationStates.findDevice(namespaceId, sessionId),
     );
