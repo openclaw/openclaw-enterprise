@@ -8,7 +8,7 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-From the repository root, use official OpenShell `v0.1.8`. See [qualification limits](openshell-oauth.md#prepare-images-and-trust).
+From the repository root, use official OpenShell `v0.1.9`. See [qualification limits](openshell-oauth.md#prepare-images-and-trust).
 
 ## Start a reusable development environment
 
