@@ -8,20 +8,22 @@ import {
   type ConnectionTemplate,
   type ConnectionTemplateValues,
   type McpAuthorizationMetadata,
-  type Namespace,
   type OAuthClient,
   type SecretDriver,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
   DependencyUnavailableError,
   ResourceStateConflictError,
   ScopeViolationError,
 } from "./errors.ts";
 import type { StoredOAuthClient } from "./ports/oauth-client.ts";
-import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import { lockNamespace } from "./resource-scope.ts";
+import { secretOperation } from "./secret-operations.ts";
 
 interface ApprovedTemplateSettings {
   readonly scopes: readonly string[];
@@ -170,32 +172,33 @@ function oauthClientMetadata({
 
 interface ConnectionAdministrationDependencies {
   readonly installationId: string;
-  readonly authorizeAdministration: (principalId: string) => Promise<void>;
-  readonly read: <T>(work: (view: PlatformReadView) => Promise<T>) => Promise<T>;
-  readonly mutate: <T>(work: (unit: PlatformUnitOfWork) => Promise<T>) => Promise<T>;
-  readonly lockNamespace: (
-    unit: PlatformUnitOfWork,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
-  readonly requireIndependentMutation: (operation: string) => void;
+  readonly transactions: Pick<
+    ControllerTransactions,
+    "read" | "transact" | "requireIndependentMutation"
+  >;
+  readonly authority: Pick<ControllerAuthority, "authorize">;
   readonly secretDriver: (expectedId?: string) => Pick<SecretDriver, "id" | "installationSecrets">;
-  readonly secretOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly now: () => Date;
   readonly timestamp: () => string;
 }
 
 export function createConnectionAdministration({
   installationId,
-  authorizeAdministration,
-  read,
-  mutate,
-  lockNamespace,
-  requireIndependentMutation,
+  transactions,
+  authority,
   secretDriver,
-  secretOperation,
   now,
   timestamp,
 }: ConnectionAdministrationDependencies) {
+  const { read, transact, requireIndependentMutation } = transactions;
+
+  async function authorizeAdministration(principalId: string): Promise<void> {
+    await authority.authorize(principalId, "administer", {
+      kind: "installation",
+      id: installationId,
+    });
+  }
+
   async function listConnectionTemplates(
     principalId: string,
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
@@ -244,7 +247,7 @@ export function createConnectionAdministration({
   ): Promise<Readonly<ConnectionTemplate>> {
     await authorizeAdministration(principalId);
     const values = await effectiveConnectionTemplate(input, discover);
-    return mutate(async (state) => {
+    return transact(async (state) => {
       await authorizeAdministration(principalId);
       await lockTemplateScope(state, input.namespaceId);
       await assertTemplateClient(state, values, input.namespaceId);
@@ -276,7 +279,7 @@ export function createConnectionAdministration({
     // Resolve the exact authorized target before any administrator-selected outbound discovery.
     await getConnectionTemplate(principalId, id);
     const values = "mode" in input ? await effectiveConnectionTemplate(input, discover) : undefined;
-    return mutate(async (state) => {
+    return transact(async (state) => {
       await authorizeAdministration(principalId);
       const current = await state.connectionTemplates.lockConnectionTemplate(id);
       if (!current) {
@@ -315,7 +318,7 @@ export function createConnectionAdministration({
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    await mutate(async (state) => {
+    await transact(async (state) => {
       await authorizeAdministration(principalId);
       if (!(await state.connectionTemplates.deleteConnectionTemplate(id))) {
         throw new ScopeViolationError("The connection template does not exist.");
@@ -414,7 +417,7 @@ export function createConnectionAdministration({
         });
       }
     };
-    await mutate(async (state) => {
+    await transact(async (state) => {
       await lockSelectedVersion(state);
       // The cleanup worker can reclaim a hidden reservation if the private write fails.
       const cleanupAfter = clientSecret
@@ -429,7 +432,7 @@ export function createConnectionAdministration({
       }
     });
     if (clientSecret) {
-      await mutate(async (state) => {
+      await transact(async (state) => {
         await lockSelectedVersion(state);
         const reserved = await state.connectionTemplates.lockOAuthClientForCleanup(
           client.id,
@@ -472,7 +475,7 @@ export function createConnectionAdministration({
     };
     if (audit) {
       // An in-place Driver write can succeed before SQL records its outcome. Persist the request first.
-      await mutate(async (state) => {
+      await transact(async (state) => {
         await lockClient(state);
         await state.audit.append({
           ...audit,
@@ -481,7 +484,7 @@ export function createConnectionAdministration({
         });
       });
     }
-    return mutate(async (state) => {
+    return transact(async (state) => {
       const client = await lockClient(state);
       const { store, ref } = oauthClientSecret(client);
       await secretOperation(() => store.update(ref, clientSecret));
@@ -499,7 +502,7 @@ export function createConnectionAdministration({
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
     await authorizeAdministration(principalId);
-    await mutate(async (state) => {
+    await transact(async (state) => {
       const client = await state.connectionTemplates.lockOAuthClient(id);
       await authorizeAdministration(principalId);
       await holdSession?.(state);
@@ -526,7 +529,7 @@ export function createConnectionAdministration({
   async function cleanupOAuthClients(): Promise<void> {
     const ids = await read((view) => view.connectionTemplates.listOAuthClientCleanups(32));
     for (const id of ids) {
-      await mutate(async (state) => {
+      await transact(async (state) => {
         const client = await state.connectionTemplates.lockOAuthClientForCleanup(id, true);
         if (!client) {
           return;

@@ -1,6 +1,5 @@
 import {
   isName,
-  type AuthorizationRequest,
   type ComputeDriver,
   type Namespace,
   type ResourceRef,
@@ -9,6 +8,8 @@ import {
   type ServiceAccountDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
   DependencyUnavailableError,
   ResourceStateConflictError,
@@ -18,6 +19,7 @@ import {
 import { accessBindingsTargeting, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import { exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 export interface CreateServiceAccountInput {
   readonly namespaceId: string;
@@ -42,40 +44,19 @@ export interface ServiceAccountDeletion {
 }
 
 interface ServiceAccountOperationsDependencies {
-  readonly read: <T>(work: (state: PlatformReadView) => Promise<T>) => Promise<T>;
-  readonly mutate: <T>(work: (state: PlatformUnitOfWork) => Promise<T>) => Promise<T>;
-  readonly authorize: (
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    target: ResourceRef,
-  ) => Promise<unknown>;
-  readonly holdAuthority: (state: PlatformUnitOfWork) => Promise<void>;
+  readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority" | "readableListRows">;
   readonly bindCreator: (
     state: PlatformUnitOfWork,
     principalId: string,
     target: ResourceRef & { readonly namespaceId: string },
   ) => Promise<void>;
-  readonly namespaceIdentity: (namespaceId: string) => void;
   readonly getNamespace: (principalId: string, namespaceId: string) => Promise<Readonly<Namespace>>;
-  readonly exactNamespace: (
-    state: PlatformReadView,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
-  readonly lockNamespace: (
-    state: PlatformUnitOfWork,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
   readonly lockNamespaceForPolicyDelete: (
     state: PlatformUnitOfWork,
     principalId: string,
     target: ResourceRef & { readonly namespaceId: string },
   ) => Promise<Readonly<Namespace>>;
-  readonly readableListRows: (
-    principalId: string,
-    namespaceId: string,
-    kind: "service_account",
-    rows: readonly Readonly<ServiceAccount>[],
-  ) => Promise<readonly Readonly<ServiceAccount>[]>;
   readonly serviceAccountDriver: () => ServiceAccountDriver | undefined;
   readonly computeDriver: () => ComputeDriver;
   readonly hasConfiguredDriver: () => boolean;
@@ -111,19 +92,22 @@ async function lockServiceAccount(
 }
 
 export function createServiceAccountOperations(deps: ServiceAccountOperationsDependencies) {
+  const { read, transact } = deps.transactions;
+  const { authorize, holdAuthority, readableListRows } = deps.authority;
+
   async function getServiceAccount(
     principalId: string,
     namespaceId: string,
     serviceAccountId: string,
   ): Promise<Readonly<ServiceAccount>> {
     serviceAccountIdentity(namespaceId, serviceAccountId);
-    await deps.authorize(principalId, "read", {
+    await authorize(principalId, "read", {
       kind: "service_account",
       id: serviceAccountId,
       namespaceId,
     });
-    return deps.read(async (state) => {
-      const namespace = await deps.exactNamespace(state, namespaceId);
+    return read(async (state) => {
+      const namespace = await exactNamespace(state, namespaceId);
       return exactServiceAccount(state, namespace.id, serviceAccountId);
     });
   }
@@ -133,8 +117,8 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
     namespaceId: string,
   ): Promise<readonly Readonly<ServiceAccount>[]> {
     const namespace = await deps.getNamespace(principalId, namespaceId);
-    return deps.read(async (state) =>
-      deps.readableListRows(
+    return read(async (state) =>
+      readableListRows(
         principalId,
         namespace.id,
         "service_account",
@@ -150,19 +134,19 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
     if (!isName(input.name)) {
       throw new ScopeViolationError("The ServiceAccount name is invalid.");
     }
-    deps.namespaceIdentity(input.namespaceId);
-    return deps.mutate(async (state) => {
-      await deps.holdAuthority(state);
+    namespaceIdentity(input.namespaceId);
+    return transact(async (state) => {
+      await holdAuthority(state);
       const target: ResourceRef = {
         kind: "service_account",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
       };
-      await deps.authorize(principalId, "create", target);
-      const namespace = await deps.lockNamespace(state, input.namespaceId);
+      await authorize(principalId, "create", target);
+      const namespace = await lockNamespace(state, input.namespaceId);
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
       // while this write waited stops it before it leaves a durable Owner binding or grant.
-      await deps.authorize(principalId, "create", target);
+      await authorize(principalId, "create", target);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new ServiceAccounts.");
@@ -191,13 +175,13 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
     serviceAccountId: string,
   ): Promise<Readonly<ServiceAccount>> {
     serviceAccountIdentity(namespaceId, serviceAccountId);
-    return deps.mutate(async (state) => {
-      await deps.authorize(principalId, "update", {
+    return transact(async (state) => {
+      await authorize(principalId, "update", {
         kind: "service_account",
         id: serviceAccountId,
         namespaceId,
       });
-      const namespace = await deps.exactNamespace(state, namespaceId);
+      const namespace = await exactNamespace(state, namespaceId);
       const account = await lockServiceAccount(state, namespace.id, serviceAccountId);
       if (account.credential !== undefined) {
         throw new ResourceStateConflictError("The ServiceAccount already has a credential.");
@@ -236,13 +220,13 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
     credential: ServiceAccountCredential,
   ): Promise<Readonly<ServiceAccount>> {
     serviceAccountIdentity(namespaceId, serviceAccountId);
-    return deps.mutate(async (state) => {
-      await deps.authorize(principalId, "update", {
+    return transact(async (state) => {
+      await authorize(principalId, "update", {
         kind: "service_account",
         id: serviceAccountId,
         namespaceId,
       });
-      const namespace = await deps.exactNamespace(state, namespaceId);
+      const namespace = await exactNamespace(state, namespaceId);
       const account = await lockServiceAccount(state, namespace.id, serviceAccountId);
       if (account.credential?.kind === "access_token" || credential.kind === "access_token") {
         throw new ResourceStateConflictError(
@@ -270,7 +254,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
     options: { readonly force?: boolean } = {},
   ): Promise<ServiceAccountDeletion> {
     serviceAccountIdentity(namespaceId, serviceAccountId);
-    return deps.mutate(async (state) => {
+    return transact(async (state) => {
       const namespace = await deps.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "service_account",
         id: serviceAccountId,
@@ -346,7 +330,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
   }
 
   function serviceAccountIdentity(namespaceId: string, serviceAccountId: string): void {
-    deps.namespaceIdentity(namespaceId);
+    namespaceIdentity(namespaceId);
     if (!isNonEmptyString(serviceAccountId)) {
       throw new ScopeViolationError("The exact ServiceAccount identity is missing.");
     }
