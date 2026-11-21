@@ -144,7 +144,7 @@ async function openGatedForm(
   }
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   const view = page.locator(settledView);
-  await view.getByLabel("Preset", { exact: true }).selectOption("");
+  await view.locator("#create-agent-form").waitFor();
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
   await view.getByText(WAITS, { exact: true }).waitFor();
   const create = view.getByRole("button", { name: "Create Agent", exact: true });
@@ -435,7 +435,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
     page.once("dialog", (dialog) => void dialog.accept());
     await view.getByRole("button", { name: "Start over", exact: true }).click();
-    await view.getByLabel("Preset", { exact: true }).selectOption("");
+    await view.locator("#create-agent-form").waitFor();
     await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
     assert.equal(await view.getByText(NOT_READY).count(), 0);

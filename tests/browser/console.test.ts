@@ -1,3 +1,4 @@
+import { useDefaultPreset } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { cp } from "node:fs/promises";
 import { join } from "node:path";
@@ -1201,7 +1202,7 @@ test("console keeps loaded route families visible while return reads refresh", a
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByRole("heading", { name: "Create Agent", exact: true }).waitFor();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Retained draft Agent");
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
@@ -1642,7 +1643,7 @@ test("a session replaced by another tab signs this tab out instead of being adop
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Old session draft");
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
@@ -1677,7 +1678,7 @@ test("a session replaced by another tab signs this tab out instead of being adop
   await page.locator("#create-agent-form").waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/agents/new");
   assert.equal(new URL(page.url()).searchParams.get("namespace"), namespace.id);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
 

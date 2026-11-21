@@ -1,4 +1,8 @@
-import { openAdvancedSettings, openCreateTab } from "./console-agents-ui-test-support.ts";
+import {
+  openAdvancedSettings,
+  openCreateTab,
+  useDefaultPreset,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -396,7 +400,7 @@ test("repository rows and the Slack people search on Create Agent show an unclip
         }),
     );
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.locator("#create-agent-form").waitFor();
+    await useDefaultPreset(page);
     await openCreateTab(page, "repositories");
     await repositoryCheckbox(page, "example/app").waitFor();
     // Each repository result draws its ring around the whole row for its borderless checkbox.

@@ -3,6 +3,7 @@ import {
   openAdvancedSettings,
   submitCreateAgent,
   openCreateTab,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -802,7 +803,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
     },
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openAdvancedSettings(page);
   // The approvers select looks like every other select on the form: it was bold with a thin
   // square border and no padding (finding 2401).

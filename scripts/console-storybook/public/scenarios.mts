@@ -1943,7 +1943,7 @@ const authoredScenarios = {
     description:
       "Leave a default starter Agent form and return to it, keep it after a refused Create, then discard it with Cancel.",
     steps: [
-      "On the form the default Preset filled, enter an Agent name.",
+      "Choose default-codex in Preset, select Use Preset, and enter an Agent name.",
       "Select the Agents link, then choose Create Agent again: the form returns with the name.",
       "Choose a listed model, create a model Secret, and select Create Agent: a simulated conflict refuses it once. Leave and return the same way: the name, model, and Secret return, ready to retry.",
       "Select Cancel and confirm Discard this draft. Choose Create Agent: a new form opens.",
@@ -1959,7 +1959,7 @@ const authoredScenarios = {
     description:
       "Create a Dedicated Agent from the default Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
     steps: [
-      "On the form the default Preset filled, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose a listed model or enter a model ID manually.",
+      "Choose default-codex in Preset and select Use Preset. Enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose a listed model or enter a model ID manually.",
       "On the Workspace files tab, review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
       "Wait for automatic provisioning and deployment activation; the Console then opens Workspace files for the returned revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",
@@ -1986,7 +1986,7 @@ const authoredScenarios = {
     description:
       "Guided create-form state with one existing simulated Slack Secret and one newly created simulated Secret staged into the Agent Configuration.",
     steps: [
-      "On the form the default Preset filled, enter the Agent name.",
+      "Choose default-codex in Preset, select Use Preset, and enter the Agent name.",
       "On the Channels tab, open Configure Slack, choose the existing Slack app Secret, create a new Slack bot Secret from the modal, and allow everyone in the selected channel.",
       'Apply channel settings. The form receives channel JSON with users: ["*"] and Secret binding JSON while token values stay hidden.',
       "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",

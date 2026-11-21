@@ -6,6 +6,7 @@ import {
   waitForCreateFormReads,
   LIVE_BUTTON,
   openCreateTab,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -167,7 +168,7 @@ async function failNextNamespacesRead(page: Page) {
 }
 
 async function startDefaultPreset(page: Page) {
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).waitFor();
 }
 
@@ -339,7 +340,7 @@ test("an administrator's kept draft that a Restriction now refuses says why Crea
   const namespace = resource(await fixture.createNamespace("Restricted later", { ready: true }));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   const name = page.getByLabel("Agent name", { exact: true });
   await name.fill("Kept administrator draft");
   await waitForCreateFormReads(page);
@@ -1110,7 +1111,7 @@ async function fillProvisionedAgent(
   name: string,
 ) {
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill(name);
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "synthetic-guard-model-key");
@@ -1214,7 +1215,7 @@ test("a refused credential registration keeps no draft", async (t) => {
     await route.fulfill(proxyErrorResponse(429));
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Registration Agent");
   await enterManualModel(page, "synthetic-guard-model-key", "gpt-5");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();

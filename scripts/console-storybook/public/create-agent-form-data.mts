@@ -5,11 +5,11 @@ export const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-
 
 export const click = (text: string): { click: string } => ({ click: text });
 
-// A new form opens filled from default-codex once the Presets are read.
-export const form: StoryAction[] = [{ selector: "#create-agent-form" }];
-
-// The form without a Preset.
-export const withoutPreset: StoryAction = { selector: "#agent-preset", value: "" };
+// A form filled from the default Preset: choose it in Preset on Basics, then Use Preset.
+export const form: StoryAction[] = [
+  { selector: "#agent-preset", value: "pre_default_codex" },
+  click("Use Preset"),
+];
 
 export const tab = (
   id: "basics" | "configuration" | "plugins" | "channels" | "repositories" | "workspace",

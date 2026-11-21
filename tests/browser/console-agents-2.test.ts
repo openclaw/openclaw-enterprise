@@ -12,6 +12,7 @@ import {
   waitForProvisioningFailure,
   createAgentThroughForm,
   submitCreateAgent,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -194,7 +195,7 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Provision response identity");
   await enterManualModel(page, "test-model-key");
   await page.getByRole("button", { name: "Create Agent" }).click();
@@ -287,7 +288,7 @@ for (const malformed of ["revision ID", "error message"] as const) {
     });
     await trackSettledFetches(page);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset", { exact: true }).selectOption("");
+    await page.locator("#create-agent-form").waitFor();
     await page.getByLabel("Agent name").fill(agent.name);
     await enterManualModel(page, "test-malformed-reply-key");
     // Start the write trace after credential setup: submission must only admit this one job.
@@ -576,7 +577,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Taken name");
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
@@ -770,7 +771,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Refused retry");
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
@@ -970,7 +971,7 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Stopped first deployment");
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
@@ -1082,7 +1083,7 @@ test("Dedicated Agent creation keeps the first revision observed after admission
     });
     await trackSettledFetches(page);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset", { exact: true }).selectOption("");
+    await page.locator("#create-agent-form").waitFor();
     await page.getByLabel("Agent name").fill("Observe handoff");
     await enterManualModel(page, "test-model-key");
     const requests = apiRequests(page, fixture.origin);
@@ -1183,7 +1184,7 @@ test("Dedicated Agent creation opens the Agent's deployment at handoff", async (
   });
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Handed off Agent");
   await enterManualModel(page, "test-model-key");
   await runProvisioningPolls(
@@ -1296,7 +1297,7 @@ for (const mode of ["unavailable", "refused"] as const) {
     );
     await trackSettledFetches(page);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset", { exact: true }).selectOption("");
+    await page.locator("#create-agent-form").waitFor();
     await page.getByLabel("Agent name").fill("Quota Agent");
     await enterManualModel(page, "test-model-key");
     await page.evaluate(recordProvisioningWrites, ["Provisioning", "The Namespace"]);
@@ -1360,7 +1361,7 @@ test("Dedicated Agent creation keeps following the job when the first deployment
   });
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Restricted Agent");
   await enterManualModel(page, "test-model-key");
   await runProvisioningPolls(
@@ -1419,7 +1420,7 @@ for (const leave of [false, true]) {
       return observation;
     });
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset", { exact: true }).selectOption("");
+    await page.locator("#create-agent-form").waitFor();
     await page.getByLabel("Agent name").fill("Stalled Agent");
     await enterManualModel(page, "test-model-key");
     await page.clock.install();
@@ -1552,7 +1553,7 @@ test("Create preserves the admitted version when the operator resends the same p
       );
       await trackSettledFetches(page);
       await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-      await page.getByLabel("Preset", { exact: true }).selectOption("");
+      await page.locator("#create-agent-form").waitFor();
       const name = page.getByLabel("Agent name");
       await name.fill("Recover first deployment");
       await enterManualModel(page, "test-model-key");
@@ -1666,7 +1667,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Provision label");
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
@@ -1696,7 +1697,7 @@ test("Agent creation rejects non-object native Configuration JSON before Configu
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   requests.length = 0;
 
   await enterManualModel(page, "unused-invalid-config-key", "gpt-4.1");
@@ -1756,7 +1757,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   const serviceAccountSecret = page.getByLabel("Service account token Secret", { exact: true });
   await serviceAccountSecret.waitFor();
@@ -1871,7 +1872,7 @@ test("Static model selection survives credential edits and resets for provider o
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   const key = page.getByLabel("API key Secret", { exact: true });
   const choice = page.getByLabel("Model", { exact: true });
   const configuration = page.getByLabel("Configuration JSON");
@@ -1981,7 +1982,7 @@ for (const width of [1440, 390]) {
     page.on("pageerror", (error) => errors.push(error.message));
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     const requests = apiRequests(page, fixture.origin);
-    await page.getByLabel("Preset", { exact: true }).selectOption("");
+    await page.locator("#create-agent-form").waitFor();
     await openAdvancedSettings(page);
     const configuration = page.getByLabel("Configuration JSON", { exact: true });
     const choice = page.getByLabel("Model", { exact: true });
@@ -2210,7 +2211,7 @@ test("Agent creation can return from manual model entry to the list and save the
   // Save through the regular draft workflow; this case does not exercise provisioning.
   await routeInstallationWithoutProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name").fill("Model selection round trip");
   const credential = page.getByLabel("API key Secret", { exact: true });
   const choice = page.getByLabel("Model", { exact: true });
@@ -2506,7 +2507,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name").fill("Manual model Agent");
   assert.equal(
     JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).browser.enabled,
@@ -2554,7 +2555,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
     configuration.data.values.plugins.entries.codex.config.appServer.approvalPolicy,
     "on-request",
   );
-  // A new form reads default-codex once, to fill itself.
+  // The chooser reads default-codex once, when the reader chooses it.
   assert.equal(
     pathRequests(requests, "GET", `/namespaces/${namespace.id}/presets/${starter.id}`).length,
     1,
@@ -2570,7 +2571,7 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name").fill("Model temperature");
   await enterManualModel(page, "test-model-temperature-key", "gpt-4.1");
   await openAdvancedSettings(page);
@@ -2616,7 +2617,7 @@ test("Agent creation names the Configuration field that holds an inline model cr
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Inline credential Agent");
   await enterManualModel(page, "inline-credential-model-key", "gpt-inline-credential");
   await openAdvancedSettings(page);
@@ -2659,7 +2660,7 @@ test("Agent creation reports unavailable Secret storage before creating Configur
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name").fill("Unavailable Agent");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   const failed = page.waitForResponse(
@@ -2691,7 +2692,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Taken Agent");
   await enterManualModel(page, "duplicate-name-model-key", "gpt-duplicate-name");
   const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
@@ -2886,7 +2887,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   await selectSecret(page, "Service account token Secret", discardedPatSecret);
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
@@ -3091,7 +3092,7 @@ test("Agent creation retries a denied credential grant without duplicating its s
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   // Native IAM denies the administrator's grant authority after the session found it allowed. A
   // session that already knows it is refused sends no grant at all (finding 2109).
   const deniedGrant = restrict(fixture.policy, "administer", "installation", {
@@ -3176,7 +3177,7 @@ for (const swapped of ["Agent", "service principal"]) {
       await route.fulfill({ status: 201, json: { data: swappedData, meta } });
     });
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.locator("#create-agent-form").waitFor();
+    await useDefaultPreset(page);
     await page.getByLabel("Agent name").fill("New Agent");
     const secret = await enterManualModel(page, "test-create-response-key");
     assert.ok(secret, "Expected the created model credential Secret");
@@ -3253,7 +3254,7 @@ for (const collection of ["secrets", "configurations", "agents"]) {
       await route.abort("failed");
     });
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.locator("#create-agent-form").waitFor();
+    await useDefaultPreset(page);
     await page.getByLabel("Agent name").fill(`Uncertain ${collection} Agent`);
     if (collection === "secrets") {
       await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");

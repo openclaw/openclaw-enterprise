@@ -84,11 +84,10 @@ Codex `config.toml` or a reasoning-effort override.
 
 ### Plain console default
 
-A new Create Agent form starts from the authorized `default-codex` copy in the
-selected Namespace. Its shipped template has no variables, model, name, or
-credential; the form collects them. A customized copy with variables is selected
-in **Preset** and fills the form after **Use Preset**. Without a readable copy,
-the form opens with **No Preset**; other readable Presets remain selectable.
+A new Create Agent form opens with **No Preset**, and the text under **Preset**
+names the authorized `default-codex` copy in the selected Namespace. That copy
+fills the form only after you choose it and select **Use Preset**. Its shipped
+template has no variables, model, name, or credential; the form collects them.
 Install the file through `includeDefaults`, `presets.files`, or Preset POST to
 enable it. **No Preset** uses the console's shared configuration base and
 ordinary creation permissions.

@@ -113,6 +113,14 @@ export async function openCreateTab(page: Page, id: CreateAgentTab) {
   }
 }
 
+// Fills a new Create Agent form from the installed default Preset, as a reader does: choose it
+// in Preset on Basics, then select Use Preset.
+export async function useDefaultPreset(page: Page) {
+  await page.getByLabel("Preset", { exact: true }).selectOption({ label: "default-codex" });
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
+}
+
 // Shows the Configuration JSON on Create Agent, which keeps it on the Configuration tab. An
 // Agent page's editor needs no such step.
 export async function openAdvancedSettings(page: Page) {

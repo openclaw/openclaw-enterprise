@@ -3,6 +3,7 @@ import {
   openAdvancedSettings,
   waitForLiveControls,
   openCreateTab,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -204,7 +205,7 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await enterManualModel(page, "unused-json-feedback-key", "gpt-4.1");
   await page.getByLabel("Agent name").fill("JSON feedback Agent");
   await openAdvancedSettings(page);

@@ -60,7 +60,7 @@ test("Agent repository access labels target the right repository when references
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   await repositoryCheckbox(page, "example/app").click();
   await page.getByRole("button", { name: "Access for example/app", exact: true }).click();
@@ -109,7 +109,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   await page.getByText("Select repositories for this Agent.", { exact: false }).waitFor();
   const accessDetails = page.locator(".repository-access-details");
@@ -378,7 +378,7 @@ test("Create Agent lets a draft drop retained repositories once repository acces
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   await repositoryCheckbox(page, "example/application").click();
   await openCreateTab(page, "basics");
@@ -930,7 +930,7 @@ for (const includeInstallationAccess of [false, true]) {
         response.request().method() === "GET" &&
         response.url().endsWith(`/namespaces/${namespace.id}/agents/repository-options`),
     );
-    await page.getByLabel("Preset", { exact: true }).selectOption("");
+    await page.locator("#create-agent-form").waitFor();
     await openCreateTab(page, "repositories");
     const response = await discovery;
     assert.equal(response.status(), 200);
@@ -971,7 +971,7 @@ for (const count of [1, 5, 25, 140]) {
     );
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset", { exact: true }).selectOption("");
+    await page.locator("#create-agent-form").waitFor();
     await openCreateTab(page, "repositories");
     await repositoryCheckbox(page, "example/repository-001").waitFor();
     await page.getByRole("heading", { name: "Approved repositories" }).waitFor();
@@ -1026,7 +1026,7 @@ for (const count of [1, 5, 25, 140]) {
       await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
       await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
       await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-      await page.getByLabel("Preset", { exact: true }).selectOption("");
+      await page.locator("#create-agent-form").waitFor();
       await openCreateTab(page, "repositories");
       await page.getByText(/Recently used/).waitFor();
       assert.equal(
@@ -1036,7 +1036,7 @@ for (const count of [1, 5, 25, 140]) {
       await search.fill("repository-139");
       await search.press("Enter");
       await page.reload();
-      await page.getByLabel("Preset", { exact: true }).selectOption("");
+      await page.locator("#create-agent-form").waitFor();
       await openCreateTab(page, "repositories");
       await page.getByText(/Recently used/).waitFor();
       assert.equal(
@@ -1071,7 +1071,7 @@ test("Agent repository search is stable in a Turkish browser locale", async (t) 
     };
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   const search = page.getByLabel("Find a repository");
   // Finding 1252: a query with the Turkish capital İ or the dotless ı finds an ASCII i.
@@ -1170,7 +1170,7 @@ test("Repository descriptions show hidden and direction-changing characters as e
     await route.fulfill({ response, json: body });
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   const text = page
     .locator(".repository-result-row")
@@ -1200,7 +1200,7 @@ test("Repository choices distinguish names, references, and restricted access", 
   ]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   const application = page
     .locator(".repository-result-row")
@@ -1234,7 +1234,7 @@ test("Agent repository pagination keeps focus when every result on a page is sel
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   const search = page.getByLabel("Find a repository");
   await search.fill("repository-021");
@@ -1274,7 +1274,7 @@ test("Agent repository search prioritizes exact names before prefix matches", as
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   const search = page.getByLabel("Find a repository");
   const results = page.locator("#repository-results");
@@ -1322,7 +1322,7 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset", { exact: true }).selectOption("");
+    await page.locator("#create-agent-form").waitFor();
     await openCreateTab(page, "repositories");
     const search = page.getByLabel("Find a repository");
     await search.fill("repository-025");
@@ -1405,7 +1405,7 @@ test("selected repository collaborators never override an explicit Read-only Age
   ]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   const modelSecret = await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Explicit repository access");
@@ -1475,7 +1475,7 @@ test("selected repository collaborators never override an explicit Read-only Age
   assert.equal(saved.data.repositoryAccess?.defaultProfile, "git-read");
 
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await openCreateTab(page, "repositories");
   assert.ok(modelSecret);
   await openCreateTab(page, "basics");

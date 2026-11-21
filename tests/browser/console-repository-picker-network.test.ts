@@ -57,7 +57,7 @@ test("repository selection and access edits send no descriptionRefs during the p
         response.request().method() === "GET"
       );
     }),
-    page.getByLabel("Preset", { exact: true }).selectOption(""),
+    page.locator("#create-agent-form").waitFor(),
   ]);
   assert.equal(response.status(), 200);
   const envelope: RepositoryOptionListResponse = await response.json();

@@ -2,6 +2,7 @@ import {
   openAdvancedSettings,
   openCreateSecretDialog,
   waitForCreateFormReads,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
@@ -279,7 +280,7 @@ test("Create Agent form fields", async (t) => {
       await routeInstallationWithoutProvisioning(page, fixture);
       const requests = apiRequests(page, fixture.origin);
       await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-      await page.locator("#create-agent-form").waitFor();
+      await useDefaultPreset(page);
       await waitForCreateFormReads(page);
       const name = page.getByLabel("Agent name", { exact: true });
       await name.fill("   ");
@@ -305,7 +306,7 @@ test("Create Agent form fields", async (t) => {
       await routeInstallationWithoutProvisioning(page, fixture);
       const requests = apiRequests(page, fixture.origin);
       await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-      await page.locator("#create-agent-form").waitFor();
+      await useDefaultPreset(page);
       await waitForCreateFormReads(page);
       await openCreateSecretDialog(page, "API key Secret");
       const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
@@ -379,7 +380,7 @@ test("choosing a model credential Secret by click clears its required error", as
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await waitForCreateFormReads(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Picker Agent");
   const picker = page.getByLabel("API key Secret", { exact: true });
@@ -510,7 +511,7 @@ for (const viewport of consoleViewports) {
     await routeInstallationWithoutProvisioning(page, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.locator("#create-agent-form").waitFor();
+    await useDefaultPreset(page);
     await waitForCreateFormReads(page);
     await page.getByLabel("Agent name", { exact: true }).fill("Picker Label Agent");
     // A valid picker still opens on focus alone, as Tab gives it (#2922; finding 2076).
@@ -578,7 +579,7 @@ for (const viewport of consoleViewports) {
       request.method() === "POST" ? route.fulfill(refusal) : route.fallback(),
     );
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.locator("#create-agent-form").waitFor();
+    await useDefaultPreset(page);
     await waitForCreateFormReads(page);
     await openCreateSecretDialog(page, "API key Secret");
     const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });

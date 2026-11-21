@@ -744,39 +744,9 @@ export function renderCreateAgent(
     }
     return;
   }
-  const operateAnswer = namespaceSecretOperateAnswer(context);
-  // A Preset the reader is sent back to shows its variables in Basics (finding 3122).
-  if (returning) {
-    renderAgentForm(context, {}, {}, {}, operateAnswer, returning);
-    return;
-  }
-  // A new form starts from default-codex when it is available. This chooser reads the Presets
-  // first, so the form opens once: filled, or without a Preset and with this chooser's selection.
-  const chooser = createPresetFields(
-    { ...context, secretsOperateDenied: operateAnswer.read },
-    (rendered, options, draft) => {
-      renderAgentForm(context, rendered, options, draft, operateAnswer);
-      focusHeading(context);
-      return true;
-    },
-    undefined,
-    {
-      autoDefault: true,
-      onSettled() {
-        if (context.isCurrent() && chooser.section.isConnected) {
-          renderAgentForm(context, {}, {}, { presetChoice: chooser.capture() }, operateAnswer);
-        }
-      },
-    },
-  );
-  chooser.section.hidden = true;
-  context.view.replaceChildren(
-    // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
-    // replaceChildren would print a null child as the text "null".
-    ...(notReady ? [namespaceNote(notReady)] : []),
-    element("p", { className: "hint", role: "status" }, "Loading Presets…"),
-    chooser.section,
-  );
+  // A new form opens without a Preset: the reader applies one from Basics. A Preset the reader is
+  // sent back to shows its variables there (finding 3122).
+  renderAgentForm(context, {}, {}, {}, namespaceSecretOperateAnswer(context), returning);
 }
 
 // Moves focus to the page heading when the control that had it left with a replaced form
@@ -2198,6 +2168,7 @@ function renderAgentForm(
     if (!discardsWork() || window.confirm("Discard this draft and start again?")) {
       context.drafts.forget("channels");
       renderCreateAgent(context);
+      focusHeading(context);
     }
   });
   // A refusal of a Configuration setting the Preset's variables filled names those variables, and

@@ -30,7 +30,7 @@ import {
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 
-// The shipped default Preset, which Create Agent starts from.
+// The shipped default Preset, which Create Agent's Preset chooser names.
 const DEFAULT_CODEX_PRESET = await shippedPreset("default-codex");
 
 function assertId(value: unknown): asserts value is { id: string } {
@@ -356,19 +356,28 @@ test("a draft's disabled Save and Discard name their reasons", async (t) => {
   }
 });
 
-// A new form starts from default-codex: it has no variables, so it fills the form and offers no
-// Use Preset to wait on.
-test("Create Agent starts from default-codex without a Use Preset step", async (t) => {
+// A new form opens with No Preset: no unavailable Use Preset waits on a choice, and the status
+// under Preset names the default one. Use Preset shows once a Preset is chosen, default-codex
+// included, though it has no variables.
+test("Create Agent names the default Preset and offers Use Preset once it is chosen", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described Preset", {
     defaultPresets: [DEFAULT_CODEX_PRESET],
   });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
   const chooser = page.getByLabel("Preset", { exact: true });
-  assert.equal(await chooser.locator("option:checked").textContent(), "default-codex");
-  assert.equal(await page.getByRole("button", { name: "Use Preset" }).isVisible(), false);
+  const use = page.getByRole("button", { name: "Use Preset" });
+  await page
+    .getByRole("status")
+    .filter({ hasText: /^The default Preset is default-codex\.$/ })
+    .waitFor();
+  assert.equal(await chooser.inputValue(), "");
+  assert.equal(await use.isVisible(), false);
+  await chooser.selectOption({ label: "default-codex" });
+  await use.click();
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
+  assert.equal(await use.isVisible(), false);
 });
 
 // A Slack token without a Secret is the reason too.
@@ -455,7 +464,7 @@ test("a pending Codex Create keeps Execution mode natively disabled", async (t) 
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Pending Codex mode");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
   await page.getByLabel("Agent name").fill("Pending Codex Agent");
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");

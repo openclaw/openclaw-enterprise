@@ -33,10 +33,9 @@ as the reason Dedicated OpenClaw is disabled.
 
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
-2. The form opens on **Basics**, filled from `default-codex` when
-   [available](../presets.md#plain-console-default). For another [Preset](../presets.md),
-   choose it in **Preset**, fill its variables, and select **Use Preset**. **No Preset**
-   empties the form.
+2. The form opens on **Basics** with **No Preset**. To fill it from a
+   [Preset](../presets.md#plain-console-default), choose one in **Preset**, fill its
+   variables, and select **Use Preset**.
 3. Name the Agent uniquely within its Namespace. Choose **Provider**, then
    **Harness**. OpenAI offers **Codex** (default, Dedicated **Execution mode**)
    and **OpenClaw**. Anthropic offers only Embedded **OpenClaw**. OpenAI OpenClaw

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-11-20
-last_updated_session: authoring-run/60c984e8-fa98-4112-8f46-3faf0cf1bdac
+last_updated_session: authoring-run/92964f65-2664-42de-8b3b-583bfc1329da
 ---
 
 # Agent Presets flow
@@ -42,10 +42,9 @@ graph TD
   B --> C["Store Namespace-owned Preset"]
   C --> D["Console reads selected Preset once"]
   D --> E["User supplies variables and selects Use Preset"]
-  D -->|New form, default-codex without variables| F
   E --> F["Renderer copies launch settings"]
   F --> G["Form fills; user edits and saves ordinary draft"]
-  U["No Preset: form opens unfilled"] --> G
+  U["New form opens with No Preset"] --> G
   G --> S["Password input: create Secret in current Namespace"]
   S --> H["Configuration API admits and saves"]
   G -->|Existing credential binding| H
@@ -154,12 +153,11 @@ path records mutations and denials without template or variable contents.
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mts),
 the chooser, lists readable Preset summaries, requiring Namespace read, and reads
-a selection once. `agents/create.mts:renderCreateAgent` waits for the list, so a
-new form opens once: filled from a variable-free `default-codex`, otherwise
-unfilled, with a `default-codex` that has variables still selected. A failed list
-read disables **Preset** and states why. `renderAgentForm` puts the chooser first
-on the **Basics** tab; **No Preset** empties a filled form. Normal creation
-authorization applies.
+a selection once. `agents/create.mts:renderCreateAgent` opens a new form with
+**No Preset**; the chooser's status names a listed `default-codex`, which the
+reader applies like any other Preset. A failed list read disables **Preset** and
+states why. `renderAgentForm` puts the chooser first on the **Basics** tab;
+**No Preset** empties a filled form. Normal creation authorization applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -317,6 +315,8 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 19:01: Open a new form with No Preset; apply default-codex only through Use Preset. (authoring-run/92964f65-2664-42de-8b3b-583bfc1329da - 0d17af4253f1f80e0044f2097e4c2f1f0eaffb19)
 
 - 2026-11-20 14:31: Trace the Preset chooser on the Create Agent Basics tab and the default-filled new form, with uncommitted Console changes. (authoring-run/60c984e8-fa98-4112-8f46-3faf0cf1bdac - 5bf2ae7fd703197701f311098d734a10ed4ab593)
 

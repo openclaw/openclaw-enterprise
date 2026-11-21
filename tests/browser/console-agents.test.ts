@@ -13,6 +13,7 @@ import {
   createAgentThroughForm,
   expectCreateAccess,
   expectCreateRefused,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -156,7 +157,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   assert.equal(await page.getByRole("link", { name: "Backends", exact: true }).count(), 0);
   assert.deepEqual(await optionValues(page.getByLabel("Provider", { exact: true })), [
     { value: "openai", text: "OpenAI" },
@@ -518,7 +519,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   );
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openCreateTab(page, "repositories");
   await page.getByText(REPOSITORY_CHOICES_CREATE_DENIED, { exact: true }).waitFor();
   await enterManualModel(page, "denied-agent-key", "gpt-5.1");
@@ -552,7 +553,7 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   );
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openCreateTab(page, "repositories");
   await page.getByText("Loading approved repositories…").waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
@@ -602,7 +603,7 @@ test("Dedicated repository Agent keeps its bindings through a Slack save that bi
     "xoxb-repository-fixture",
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Dedicated repository Agent");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
@@ -697,7 +698,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   const optionsResponse = unavailablePage.waitForResponse((response) =>
     response.url().endsWith("/agents/repository-options"),
   );
-  await unavailablePage.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(unavailablePage);
   // No Repo Driver is a fixed state: discovery answers no options and says why (finding 2387).
   const options = await optionsResponse;
   assert.equal(options.status(), 200);
@@ -764,7 +765,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
     route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
   );
   await login(deniedPage, deniedFixture, `/console/agents/new?namespace=${deniedNamespace.id}`);
-  await deniedPage.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(deniedPage);
   const repositoryDenial = deniedPage.getByText(REPOSITORY_CHOICES_CREATE_DENIED, { exact: true });
   await openCreateTab(deniedPage, "repositories");
   await repositoryDenial.waitFor();
@@ -802,7 +803,7 @@ test("Agent creation blocks a repository-options Namespace conflict before any w
   );
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openCreateTab(page, "repositories");
   await page.getByText("This Namespace no longer accepts new Agents.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
@@ -859,7 +860,7 @@ test("Agent creation blocks selective Agent-create IAM unavailability even when 
   const optionsResponse = page.waitForResponse((response) =>
     response.url().endsWith("/agents/repository-options"),
   );
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   const options = await optionsResponse;
   assert.equal(options.status(), 503);
   assert.equal((await options.json()).error.code, "DEPENDENCY_UNAVAILABLE");
@@ -926,7 +927,7 @@ for (const failure of [
             });
     await page.route(path, failDiscovery);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.locator("#create-agent-form").waitFor();
+    await useDefaultPreset(page);
     await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
     await page.getByLabel("Agent name").fill("Discovery retry Agent");
     await page.locator('.repository-options[aria-busy="false"]').waitFor({ state: "attached" });
@@ -961,7 +962,7 @@ test("Agent repository selection enforces the 16-item limit without narrow viewp
   const { page } = await newPage(t, fixture);
   await page.setViewportSize({ width: 360, height: 800 });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openCreateTab(page, "repositories");
   await page.getByText("Select repositories for this Agent.", { exact: false }).waitFor();
 
@@ -1004,7 +1005,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openCreateTab(page, "repositories");
   await page.getByText("Select repositories for this Agent.", { exact: false }).waitFor();
   await repositoryCheckbox(page, "example/application").click();
@@ -1201,7 +1202,7 @@ test("Agent creation does not expose recovery actions after an unknown admission
     await route.continue();
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openCreateTab(page, "repositories");
   await page.getByText("Select repositories for this Agent.", { exact: false }).waitFor();
   await repositoryCheckbox(page, "example/application").click();
@@ -1257,7 +1258,7 @@ test("Agent repository recovery with empty current policy requires an explicit n
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openCreateTab(page, "repositories");
   await repositoryCheckbox(page, "example/application").click();
   await page.locator("#repository-default-git-read").check();
@@ -1306,7 +1307,7 @@ test("Agent repository recovery with empty current policy requires an explicit n
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start a new draft" }).click();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openCreateTab(page, "repositories");
   await page.getByText(/No approved repositories are available/).waitFor();
   await openCreateTab(page, "basics");
@@ -1700,7 +1701,7 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
     }),
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await openCreateTab(page, "repositories");
   await page.getByText(REPOSITORY_ACCESS_NOT_CONFIGURED, { exact: false }).waitFor();
   await openCreateTab(page, "basics");
@@ -1764,7 +1765,7 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByText("This installation creates draft Agents for later deployment.").waitFor();
   await assert.rejects(
     page
@@ -2118,7 +2119,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name").fill(agent.name);
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
@@ -2243,7 +2244,7 @@ test("Agent creation explains a denied capability check instead of offering a re
   });
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   // A failed permission read is not a denial: the form says so above the form, not in the hint
   // under its fields, and offers that check again (findings 2092, 2110).
   await expectCreateAccess(page, {
@@ -2268,7 +2269,7 @@ test("Agent creation explains a denied capability check instead of offering a re
   status = 503;
   permissions = null;
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByText(/^Installation capabilities unavailable\. /).waitFor();
   await retry.waitFor();
   assert.equal(await harnessHint.textContent(), "Codex requires OpenAI and Dedicated execution.");
@@ -2284,7 +2285,7 @@ test("Execution mode locked by the Codex harness stays reachable with its hint",
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
   const harness = page.getByLabel("Harness", { exact: true });
   await harness.selectOption("codex");
@@ -2317,7 +2318,7 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
   const mode = page.getByLabel("Execution mode");
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
@@ -2413,7 +2414,7 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   const mode = page.getByLabel("Execution mode");
   const harness = page.getByLabel("Harness", { exact: true });
   await openAdvancedSettings(page);
@@ -2597,7 +2598,7 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await page.getByLabel("Agent name").fill("Discarded draft");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start over" }).click();
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   assert.equal(await page.getByLabel("Agent name").inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
@@ -2610,7 +2611,7 @@ test("Agent creation blocks an incompatible fallback after changing provider unt
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await enterManualModel(page, "fallback-openai-key", "gpt-5.1");
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await openAdvancedSettings(page);
@@ -2677,7 +2678,7 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
   ] as const) {
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-    await page.locator("#create-agent-form").waitFor();
+    await useDefaultPreset(page);
     await page.getByLabel("Harness", { exact: true }).selectOption(harness);
     if (harness === "openclaw" && mode === "dedicated") {
       await page.locator(".launch-runtime:not([open]) > summary").click();
@@ -2745,7 +2746,7 @@ test("Create Agent offers browser chat only on an enabled installation and submi
     args: [...fixture.browserArgs, "--host-resolver-rules=MAP console.example.test 127.0.0.1"],
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await waitForCreateFormReads(page);
   const toggle = page.getByRole("checkbox", { name: "Enable browser chat" });
   assert.equal(await toggle.isChecked(), false);

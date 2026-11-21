@@ -249,7 +249,6 @@ export const CreateNoDefaultPreset = {
   ...story("createNoDefaultPreset"),
   name: "Other Presets, no default",
 };
-export const CreateWithoutPreset = { ...story("createWithoutPreset"), name: "No Preset" };
 export const CreateAnthropic = {
   ...story("createAnthropic"),
   name: "Anthropic with OpenClaw harness",

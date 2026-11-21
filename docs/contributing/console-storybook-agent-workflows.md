@@ -24,9 +24,8 @@ OpenClaw and unsupported-runtime stories keep the draft workflow: provision
 credentials and deploy from Agent detail.
 
 These simulated **Pages → Create Agent** stories show the form's tabs and Preset
-states. **New form** opens filled from the default Preset, with the bar under the
-title and the six tabs. **No Preset** shows the empty form. **Preset variables**
-shows a Preset that is chosen but not yet used. In **Initial workspace file the
+states. **New form** opens with **No Preset**, the bar under the title and the six
+tabs. **Preset variables** shows a Preset that is chosen but not yet used. In **Initial workspace file the
 API would refuse**, **Create Agent** on **Basics** selects **Workspace files** and
 focuses AGENTS.md. **Model credential Secret required** focuses the Secret field.
 **Secret creation not permitted** and **Default Preset access denied** show the

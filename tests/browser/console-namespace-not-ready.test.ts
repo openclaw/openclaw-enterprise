@@ -377,7 +377,7 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   await view.getByText(INVITATION).waitFor();
   assert.equal(await view.getByText(NOT_READY_PREFIX).count(), 0);
   await view.getByRole("button", { name: "Create Agent" }).click();
-  await view.getByLabel("Preset", { exact: true }).selectOption("");
+  await view.locator("#create-agent-form").waitFor();
   assert.equal(await view.getByText("Creating Agents is not available").count(), 0);
   // A ready Namespace's form keeps its plain promise and shows no note.
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
@@ -609,7 +609,7 @@ async function openGatedForm(
   await routeInstallationProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   const view = page.locator(settledView);
-  await view.getByLabel("Preset", { exact: true }).selectOption("");
+  await view.locator("#create-agent-form").waitFor();
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
   await view.getByText(WAITS, { exact: true }).waitFor();
   const create = view.getByRole("button", { name: "Create Agent", exact: true });
@@ -677,7 +677,7 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
     const { page, view } = await openGatedForm(t, team, { clock: true });
     page.once("dialog", (dialog) => void dialog.accept());
     await view.getByRole("button", { name: "Start over", exact: true }).click();
-    await view.getByLabel("Preset", { exact: true }).selectOption("");
+    await view.locator("#create-agent-form").waitFor();
     await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
     await view.getByText(WAITS, { exact: true }).waitFor();
     // Two polls. Reads count as the page starts them, and a replaced form's timer fires in the

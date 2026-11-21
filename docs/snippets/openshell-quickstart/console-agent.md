@@ -10,7 +10,7 @@ Open **Agents**, select the **default** Namespace, and click **Create Agent**.
 
 </Frame>
 
-The form opens on **Basics**. In **Preset**, make sure **No Preset** is selected. Enter `fred` for **Agent name**. Choose **OpenAI** as the provider and **Codex** as the harness. Under **Authentication method**, choose one:
+The form opens on **Basics** with **No Preset**. Enter `fred` for **Agent name**. Choose **OpenAI** as the provider and **Codex** as the harness. Under **Authentication method**, choose one:
 
 - **OpenAI API key** — For chat, select the Secret that holds your API key.
 - **Service Accounts** — For workspace plugins such as Linear, select a separate Secret that holds your ChatGPT workspace service account’s Codex access token. [Get a service account access token](https://learn.chatgpt.com/docs/enterprise/service-accounts#create-an-access-token).

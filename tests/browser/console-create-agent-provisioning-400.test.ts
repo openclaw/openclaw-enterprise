@@ -5,6 +5,7 @@ import {
   openAdvancedSettings,
   submitCreateAgent,
   openCreateTab,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -309,7 +310,7 @@ async function openModelSourceForm(
 ) {
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Harness", { exact: true }).selectOption(harness);
   if (harness === "openclaw") {
     await page.locator(".launch-runtime:not([open]) > summary").click();
@@ -334,7 +335,7 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Provisioned inline credential");
   await pickCodexCredential(page);
   await openAdvancedSettings(page);
@@ -393,7 +394,7 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Taken provisioned");
   await pickCodexCredential(page);
   const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
@@ -454,7 +455,7 @@ test("A refused provisioning request reads the Secret answer again", async (t) =
   const requests = apiRequests(page, fixture.origin);
   const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Revoked operate Agent");
   await selectSecret(page, "API key Secret", secret);
   await page.getByText("Secret selected. Create Agent binds it.").waitFor();
@@ -500,7 +501,7 @@ test("A taken-name refusal after an unknown provisioning outcome unlocks the nam
     await route.fallback();
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   const name = page.getByLabel("Agent name");
   await name.fill("Taken after loss");
   await pickCodexCredential(page);
@@ -540,7 +541,7 @@ test("The pinned runtime lets the Console request dedicated OpenClaw provisionin
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await page.locator(".launch-runtime:not([open]) > summary").click();
   const mode = page.getByLabel("Execution mode");
@@ -593,7 +594,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await page.locator(".launch-runtime:not([open]) > summary").click();
   await page.getByLabel("Execution mode").selectOption("dedicated");
@@ -1211,7 +1212,7 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
   const namespace = await readyNamespace(fixture, "Provision refusal focus");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Provisioned refusal focus");
   await pickCodexCredential(page);
   await openAdvancedSettings(page);
@@ -1275,7 +1276,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
   const namespace = await readyNamespace(fixture, "Provision not ready");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Provisioned before ready");
   await pickCodexCredential(page);
   // The API's answer while the Namespace is provisioning.
@@ -1354,7 +1355,7 @@ async function startWithoutPreset(
   namespace: Pick<Namespace, "id">,
 ) {
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
 }
 
 test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated OpenClaw", async (t) => {
@@ -2486,7 +2487,7 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
     await t.test(answer.name, async (t) => {
       const { page } = await newPage(t, fixture, { browser });
       await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-      await page.getByLabel("Preset", { exact: true }).selectOption("");
+      await page.locator("#create-agent-form").waitFor();
       await page.getByLabel("Agent name").fill(`Provision refusal ${index}`);
       await pickCodexCredential(page);
       const requestId = `req_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
@@ -2521,7 +2522,7 @@ test("Agent name counts characters, as the API does, not UTF-16 code units", asy
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await pickCodexCredential(page);
   const name = page.getByLabel("Agent name");
   // Only the writes a submit makes. Once a credential is selected, the form also prefetches

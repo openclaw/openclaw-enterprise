@@ -84,15 +84,11 @@ function saveField(field: VariableField | SecretField): SavedField {
 
 // How Create Agent opens the chooser. `applied` is the Preset the form was filled from, and
 // `appliedName` its name, shown before the list arrives. `pending` is a selection a restored
-// draft kept, not yet applied. `autoDefault` chooses default-codex for a new form, and
-// `onSettled` runs once the chooser has nothing more to apply by itself. `clear` asks to empty
-// the form when No Preset is chosen.
+// draft kept, not yet applied. `clear` asks to empty the form when No Preset is chosen.
 export interface PresetLaunch {
   applied?: PresetDraft | undefined;
   appliedName?: string | undefined;
   pending?: PresetDraft | undefined;
-  autoDefault?: boolean;
-  onSettled?: () => void;
   clear?: () => boolean;
 }
 
@@ -350,8 +346,9 @@ export function createPresetFields(
   const status = element("p", { className: "hint", role: "status" }, "Loading Presets…");
   const feedback = statusBlock("danger", null, null);
   const inputs = element("div");
-  // How the next selection change started: "shortcut" is the default Preset a new form chose.
-  let origin: "shortcut" | undefined;
+  // The status while no Preset is chosen or used: it names the default Preset (finding 2066),
+  // or says that the reader can use none.
+  let idle = "";
   // Whether the reader changed a variable. The form a Preset opens keeps it, so its Cancel asks
   // first; a reload or tab close warns either way (finding 1902).
   let touched = false;
@@ -604,8 +601,6 @@ export function createPresetFields(
   selector.addEventListener("change", async () => {
     const version = ++loadVersion;
     const selectedId = selector.value;
-    const applyDefault = origin === "shortcut";
-    origin = undefined;
     if (retained?.id !== selectedId) {
       retained = undefined;
     }
@@ -614,7 +609,7 @@ export function createPresetFields(
     fields = [];
     inputs.replaceChildren();
     feedback.textContent = "";
-    status.textContent = "";
+    status.textContent = selectedId || appliedId ? "" : idle;
     applyButton.hidden = true;
     // The form already holds the applied Preset's values: there is nothing to fill in or use.
     if (selectedId === appliedId) {
@@ -789,10 +784,6 @@ export function createPresetFields(
         first.focus();
         document.getElementById(`${first.id}-error`)?.scrollIntoView({ block: "nearest" });
       }
-      // A new form starts from default-codex at once when it has no variables to fill.
-      if (applyDefault && fields.length === 0) {
-        applyButton.click();
-      }
       void loadSecrets(
         version,
         fields.filter((field): field is SecretField => "mode" in field),
@@ -812,10 +803,6 @@ export function createPresetFields(
           refused = undefined;
           selector.focus();
         }
-      }
-    } finally {
-      if (version === loadVersion && applyDefault) {
-        launch.onSettled?.();
       }
     }
   });
@@ -845,25 +832,20 @@ export function createPresetFields(
       );
       listed = true;
       updateSelector();
-      status.textContent = presets.length
-        ? ""
-        : `No Presets available to you in this Namespace. ${askAdministratorTo(
-            "install default-codex or another Preset, or to give you Preset read on one",
-          )}`;
-      const defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
+      idle = presets.some((preset) => preset.name === "default-codex")
+        ? "The default Preset is default-codex."
+        : presets.length
+          ? ""
+          : `No Presets available to you in this Namespace. ${askAdministratorTo(
+              "install default-codex or another Preset, or to give you Preset read on one",
+            )}`;
+      status.textContent = appliedId ? "" : idle;
       // An applied Preset the list no longer holds leaves No Preset selected.
       selector.value = appliedId;
       if (retained?.id !== appliedId && presets.some((preset) => preset.id === retained?.id)) {
         // A selection the form does not use yet shows its variables again.
         selector.value = retained?.id ?? "";
         selector.dispatchEvent(new Event("change"));
-      } else if (launch.autoDefault && defaultId) {
-        // A new form starts from default-codex when it is available.
-        selector.value = defaultId;
-        origin = "shortcut";
-        selector.dispatchEvent(new Event("change"));
-      } else {
-        launch.onSettled?.();
       }
     })
     .catch((error) => {
@@ -875,7 +857,6 @@ export function createPresetFields(
       } else {
         status.textContent = `Presets unavailable. ${message(error, false, namespaceListNeed("Presets"))}`;
       }
-      launch.onSettled?.();
     });
   return {
     section,

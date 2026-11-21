@@ -101,13 +101,13 @@ selected runtime before relying on it.
    Namespace IAM cannot grant `create`, so only Installation administrators can save
    the Agent. Other members can render a Preset into a draft, and the console says
    that creating it needs Installation access.
-2. The form opens on **Basics**. A new form starts from the installed
-   [`default-codex` copy](../../reference/presets.md#plain-console-default) when
-   you can read it. In **Preset**, choose your Preset, fill its variables, and
-   select **Use Preset**. The form does not change until then. If the form has
+2. The form opens on **Basics** with **No Preset**. In **Preset**, choose your
+   Preset, fill its variables, and select **Use Preset**. The installed
+   [`default-codex` copy](../../reference/presets.md#plain-console-default) is
+   chosen the same way. The form does not change until then. If the form has
    changes, confirm that the draft can be discarded. The form then holds the
    rendered copy and shows a **From Preset** badge.
-   To create an Agent without a saved setup, choose **No Preset** instead.
+   To create an Agent without a saved setup, keep **No Preset**.
    If the console cannot read the Presets, **Preset** is disabled and the text
    under it gives the reason.
 3. Review each tab: the model, execution mode, and authentication on **Basics**,

@@ -201,7 +201,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const requests = apiRequests(page, fixture.origin);
   await page.clock.install();
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).isVisible(), false);
   // The Console polls only after the interval the login asks for, and follows a longer one a
@@ -573,7 +573,7 @@ for (const savedAgent of [false, true]) {
           : `/console/agents/new?namespace=${namespace.id}`,
       );
       if (!agent) {
-        await page.getByLabel("Preset", { exact: true }).selectOption("");
+        await page.locator("#create-agent-form").waitFor();
       }
       await page
         .getByLabel(agent ? "Authentication source" : "Authentication method")
@@ -636,7 +636,7 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
   await waitForEnabled(start);
@@ -716,7 +716,7 @@ for (const savedAgent of [false, true]) {
         : `/console/agents/new?namespace=${namespace.id}`,
     );
     if (!agent) {
-      await page.getByLabel("Preset", { exact: true }).selectOption("");
+      await page.locator("#create-agent-form").waitFor();
     }
     const methodLabel = agent ? "Authentication source" : "Authentication method";
     await page.getByLabel(methodLabel).selectOption("credential_source");
@@ -1104,7 +1104,7 @@ test("a refused device login start on Create Agent names the create grants it ch
   revokeAdministratorGrant(fixture, ["create", "credential_source"]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   const refused = page.waitForResponse(
     (response) =>
@@ -1133,7 +1133,7 @@ test("a member's refused Installation read leaves Sign in offered on Create Agen
     (response) => new URL(response.url()).pathname === "/installation",
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   assert.equal((await installationRead).status(), 403);
   await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();

@@ -3,6 +3,7 @@ import {
   expectCreateRefused,
   waitForCreateFormReads,
   openCreateTab,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
@@ -108,7 +109,7 @@ async function setup(t: TestContext) {
 
 // Start from the default Preset with the Namespace's model Secret and a manual model ID.
 async function fillDefaultPreset(page: Page, secret: SecretWire, name: string) {
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill(name);
   await selectSecret(page, "API key Secret", secret);
   const model = page.getByLabel("Model ID", { exact: true });
@@ -133,18 +134,20 @@ test("a member with Agent create completes the default Preset path without Insta
 
   // The real API refused the Installation read; the form reads the Namespace's Agent
   // capabilities instead (RFC-0026), goes on, and says why, above the form.
-  // Each form the page opened (with its default Preset, then No Preset) read it once.
+  // Each form the page opened read it once: the new form, then the one Use Preset filled.
   const installationReads = answers.filter((answer) => answer.startsWith("GET /installation "));
   assert.ok(installationReads.length > 0);
   assert.ok(installationReads.every((answer) => answer === "GET /installation 403"));
   assert.deepEqual(
     answers.filter((answer) => answer.includes("/agent-capabilities ")),
-    [`GET /namespaces/${namespace.id}/agent-capabilities 200`],
+    Array(2).fill(`GET /namespaces/${namespace.id}/agent-capabilities 200`),
   );
-  // A known grant reads the repository choices once; the refused Installation read adds none.
-  assert.deepEqual(repositoryReads(answers), [
-    `GET /namespaces/${namespace.id}/agents/repository-options 200`,
-  ]);
+  // A known grant reads the repository choices once for each form; the refused Installation
+  // read adds none.
+  assert.deepEqual(
+    repositoryReads(answers),
+    Array(2).fill(`GET /namespaces/${namespace.id}/agents/repository-options 200`),
+  );
   // Above the form, not mid-form.
   await expectCreateAccess(page, {
     tone: "info",
@@ -242,9 +245,10 @@ test("an administrator's form reads the Installation and shows no access note", 
   const answers = apiResponses(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await fillDefaultPreset(page, secret, "Administrator Agent");
+  // Once for the new form and once for the form Use Preset filled.
   assert.deepEqual(
     answers.filter((answer) => answer.startsWith("GET /installation ")),
-    ["GET /installation 200"],
+    ["GET /installation 200", "GET /installation 200"],
   );
   assert.equal(await page.locator("#create-agent-access").isHidden(), true);
   assert.equal(
@@ -279,7 +283,7 @@ test("a member whose permission check failed is told so and retries only that ch
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, writer.credentials);
   // An unknown answer keeps Create Agent; the API decides.
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
 
   // The refused Installation read and the failed permission check do not add up to "your account
   // lacks Installation access": the form says which check failed and offers it again (finding 2110),
@@ -351,7 +355,7 @@ test("a member whose permission check failed is told so and retries only that ch
 
   // Start over keeps the answer: the new form goes straight to the member path.
   await page.getByRole("button", { name: "Start over", exact: true }).click();
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.locator("#create-agent-access").waitFor();
   assert.equal(await page.getByText(PERMISSIONS_UNREAD).count(), 0);
   assert.equal(permissionReads().length, failedReads + 2);
@@ -371,7 +375,7 @@ test("a permission retry that refuses Agent create shows the fresh-load refusal 
   // The page's permission read fails, so the form opens without the answer.
   await page.route(permissionsPath, unavailable);
   await login(page, fixture, createPath, limited.credentials);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await expectCreateAccess(page, { tone: "warning", body: PERMISSIONS_UNREAD, retry: true });
   await waitForCreateFormReads(page);
   // New-Agent repository choices authorize Agent create, so the API would refuse and audit their
@@ -470,7 +474,7 @@ test("a temporary Installation read failure keeps an administrator off the membe
   const installationPath = `${fixture.origin}/installation`;
   await page.route(installationPath, unavailable);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   // The permission answer grants Agent create, but only a refusal means the Installation is not
   // readable with this access: an outage offers the retry (finding 2113).
   await page.getByText(/^Installation capabilities unavailable\. /).waitFor();
@@ -580,7 +584,7 @@ test("a member's form links Create Agent to why a Namespace that turned failed r
     }),
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
-  await page.getByLabel("Preset", { exact: true }).selectOption("");
+  await page.locator("#create-agent-form").waitFor();
   await page.locator("#create-agent-access").waitFor();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await submit.getAttribute("aria-describedby"), null);
@@ -640,7 +644,7 @@ test("a member's refused Configuration create and empty Secret list name the acc
     `/console/agents/new?namespace=${namespace.id}`,
     noSecretRead.credentials,
   );
-  await other.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(other);
   await other
     .getByText(
       "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an Installation administrator for Secret read and operate on an existing one.",
@@ -669,7 +673,7 @@ test("a member without Secret create sees the inline Create Secret action disabl
     `/console/agents/new?namespace=${namespace.id}`,
     noSecretCreate.credentials,
   );
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   const denial = SECRET_CREATE_DENIED;
   await page.getByText(`Choose an existing Secret. ${denial}`, { exact: true }).first().waitFor();
   await page.getByLabel("API key Secret", { exact: true }).fill("no matching Secret");
@@ -812,7 +816,7 @@ test("Create Agent's Secret fields refuse a readable Secret the member cannot op
   // The first pick is made before the answer arrives: it waits for the answer.
   const held = await holdRequests(t, page, `${fixture.origin}${answerPath}`, { once: true });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Operate-some Agent");
   const staged = page.getByText("Secret selected. Create Agent binds it.");
   await selectSecret(page, "API key Secret", spare);
@@ -950,7 +954,7 @@ test("a Secret created inline that the member cannot operate is not staged", asy
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
-  await page.locator("#create-agent-form").waitFor();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Inline member Agent");
   await selectSecret(page, "API key Secret", secret);
   const staged = page.getByText("Secret selected. Create Agent binds it.");

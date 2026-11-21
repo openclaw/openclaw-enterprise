@@ -864,14 +864,13 @@ test("Refresh sharing, the Configuration editor and the Create Agent shortcuts k
   await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
   assert.equal(await focusedText(page), "Edit Configuration");
 
-  // Choosing No Preset replaces the form, and with it the chooser that had focus: focus goes to
-  // the page heading, not the document.
+  // Use Preset replaces the form, and with it the button that had focus: focus goes to the page
+  // heading, not the document.
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-  const chooser = page.getByLabel("Preset", { exact: true });
-  await page.locator("#agent-preset:not(:disabled)").waitFor();
-  await chooser.focus();
-  await chooser.selectOption("");
-  await page.getByLabel("Agent name").waitFor();
+  await page.getByLabel("Preset", { exact: true }).selectOption({ label: "default-codex" });
+  await page.getByRole("button", { name: "Use Preset", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
   await page.waitForFunction(() => globalThis.document.activeElement?.tagName !== "BODY");
   assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "H1");
 });

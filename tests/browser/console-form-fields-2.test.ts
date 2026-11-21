@@ -2,6 +2,7 @@ import {
   openCreateTab,
   openCreateSecretDialog,
   waitForCreateFormReads,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
@@ -429,7 +430,7 @@ test("Create Agent refuses what the API would refuse before any write", async (t
     await routeInstallationWithoutProvisioning(page, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.locator("#create-agent-form").waitFor();
+    await useDefaultPreset(page);
     await waitForCreateFormReads(page);
     if (secret) {
       // A complete form apart from the field under test, so that field is the first to fix.

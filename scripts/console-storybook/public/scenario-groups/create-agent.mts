@@ -11,7 +11,6 @@ import {
   presetSecretsPath,
   readyForm,
   tab,
-  withoutPreset,
 } from "../create-agent-form-data.mts";
 import {
   pluginCapabilities,
@@ -260,7 +259,7 @@ export const createAgentFormScenarios = {
     name: "Form, Namespace still provisioning",
     path: create,
     namespaceStatus: "provisioning",
-    actions: [withoutPreset, { selector: "#agent-auth-method", value: "api_key" }],
+    actions: [{ selector: "#agent-auth-method", value: "api_key" }],
     description:
       "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created. Create Agent stays disabled, described by that line; an Embedded OpenClaw draft still saves.",
     steps: [
@@ -274,7 +273,6 @@ export const createAgentFormScenarios = {
     namespaceStatus: "provisioning",
     namespaceRechecks: [503, "ready"],
     actions: [
-      withoutPreset,
       { selector: "#agent-auth-method", value: "api_key" },
       { selector: "#agent-name", value: "Release notes Agent", focus: true },
     ],
@@ -291,7 +289,7 @@ export const createAgentFormScenarios = {
     path: create,
     namespaceStatus: "provisioning",
     namespaceRechecks: ["failed"],
-    actions: [withoutPreset, { selector: "#agent-auth-method", value: "api_key" }],
+    actions: [{ selector: "#agent-auth-method", value: "api_key" }],
     description:
       'A Namespace that fails while the form is open never becomes ready by waiting. The next recheck shows its failed status, ends the recheck, and Create Agent stays disabled for every plan, described by "This Namespace cannot hold new Agents, so Create Agent is unavailable."',
     steps: [
@@ -305,7 +303,7 @@ export const createAgentFormScenarios = {
     path: create,
     namespaceStatus: "provisioning",
     namespaceRechecks: ["missing"],
-    actions: [withoutPreset, { selector: "#agent-auth-method", value: "api_key" }],
+    actions: [{ selector: "#agent-auth-method", value: "api_key" }],
     description:
       "The Namespace list the form rereads no longer holds its Namespace: it was deleted, or the reader lost access. The recheck ends, the note asks for another Namespace, and Create Agent stays disabled for every plan. Start over keeps that answer.",
     steps: [
@@ -318,11 +316,11 @@ export const createAgentFormScenarios = {
     name: "New form",
     path: create,
     description:
-      "A new form opens on Basics, filled from default-codex. The bar under the title says the Agent is not created yet and holds Cancel, Start over and Create Agent. The page header names the Namespace once.",
+      "A new form opens on Basics with No Preset, and the status under Preset names the default one. The bar under the title says the Agent is not created yet and holds Cancel, Start over and Create Agent. The page header names the Namespace once.",
     steps: [
       "Select each tab: Basics, Configuration, Plugins, Channels, Repositories, Workspace files. Each shows its own section, and the bar stays in place.",
       "Focus Basics and press Right, Left, End and Home. Each key selects the tab it moves to.",
-      "In Preset, choose No Preset. The form empties and no Preset badge shows. Choose Research assistant, fill Name, and select Use Preset: the form is filled again.",
+      "In Preset, choose default-codex and select Use Preset. The form is filled and its badge names the Preset. Choose No Preset: the form empties and the badge goes.",
     ],
   },
   createForm: {
@@ -1901,11 +1899,11 @@ export const createAgentProvisioningScenarios = {
     path: create,
     actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
     description:
-      "A reusable template with required and defaulted variables, chosen in Preset on Basics. Its variables show under the chooser; the form below still holds the default-codex values until Use Preset.",
+      "A reusable template with required and defaulted variables, chosen in Preset on Basics. Its variables show under the chooser; the form below is unchanged until Use Preset.",
     steps: [
       "Select Use Preset with Name empty: Name shows its error and the form is unchanged.",
       "Fill Name and select Use Preset. The form is filled from Research assistant, its badge names that Preset, and the variables and Use Preset no longer show.",
-      "Choose default-codex in Preset. With no variables to fill, select Use Preset: the form is filled from default-codex again.",
+      "Choose default-codex in Preset. It has no variables to fill, and still waits for Use Preset: select it, and the form is filled from default-codex.",
     ],
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
   },
@@ -2295,7 +2293,7 @@ export const createAgentProvisioningScenarios = {
     path: create,
     rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), hold: true }],
     description:
-      "A new form waits for the authorized Namespace Preset list, so it opens once, filled from the default Preset.",
+      "The form is usable while the authorized Namespace Preset list loads. Preset is disabled and the status under it says the Presets are loading.",
   },
   createDefaultPresetDenied: {
     group: "Pages/Create Agent",
@@ -2343,11 +2341,12 @@ export const createAgentProvisioningScenarios = {
       },
     ],
     actions: [
+      { selector: "#agent-preset", value: "pre_default_codex" },
       { selector: "#preset-variable-marker", value: "Retained chooser draft" },
       click("Use Preset"),
     ],
     description:
-      "An older stored default-codex has a variable and a numeric primary that the current Controller refuses to save. A new form opens without a Preset, with default-codex chosen and its variable to fill. Use Preset explains that the primary must be text and keeps the entered Marker.",
+      "An older stored default-codex has a variable and a numeric primary that the current Controller refuses to save. With default-codex chosen and its variable filled, Use Preset explains that the primary must be text and keeps the entered Marker.",
     steps: [
       "Confirm the refusal says the primary model must be text and offers another Preset or a template fix. The form is unchanged and Marker still reads Retained chooser draft.",
       "Select the Agents link, then Create Agent. Confirm Marker is retained. Choose Research assistant, enter a Name, and select Use Preset: the form is filled from that Preset.",
@@ -2480,16 +2479,6 @@ export const createAgentProvisioningScenarios = {
     steps: [
       "Choose Research assistant in Preset. Its variables and Use Preset show; the form is unchanged until Use Preset.",
     ],
-  },
-  createWithoutPreset: {
-    group: "Pages/Create Agent",
-    name: "No Preset",
-    path: create,
-    actions: [withoutPreset],
-    description:
-      "Choosing No Preset in Preset empties the form the default Preset filled. Create an editable Agent draft independently of a saved Preset.",
-    steps: ["Enter an Agent name, choose a model and credential, and review the Configuration."],
-    gap: "The fixture simulates API responses and does not verify deployment.",
   },
   createBoundCredentialPreset: {
     group: "Pages/Create Agent",
