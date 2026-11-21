@@ -55,11 +55,14 @@ function invoke(method: unknown, receiver: object, ...args: unknown[]): unknown 
   return Reflect.apply(method, receiver, args);
 }
 
+function isUnknownPromise(value: unknown): value is Promise<unknown> {
+  return value instanceof Promise;
+}
+
 function invokeAsync(method: unknown, receiver: object, ...args: unknown[]): Promise<unknown> {
   const result = invoke(method, receiver, ...args);
-  assert.ok(result instanceof Promise, "the Driver method must return a Promise");
-  const promise: Promise<unknown> = result;
-  return promise;
+  assert.ok(isUnknownPromise(result), "the Driver method must return a Promise");
+  return result;
 }
 
 export function createStaticEgressAdmissionCases({
@@ -178,7 +181,15 @@ export function createStaticEgressAdmissionCases({
         assert.ok(admissionController instanceof OpenClawController);
         const admissionAgentId = admissionAgent?.id;
         assert.ok(typeof admissionAgentId === "string", "undeployed fixture Agent");
-        const response: { status: number; body: unknown } = await admission.request(
+        const admissionHttp: {
+          request: (
+            ...args: Parameters<Awaited<ReturnType<typeof createConsoleAppFixture>>["request"]>
+          ) => Promise<{
+            status: number;
+            body: unknown;
+          }>;
+        } = admission;
+        const response = await admissionHttp.request(
           "POST",
           `/namespaces/${admission.namespace.id}/agents/${admissionAgentId}/deploy`,
         );

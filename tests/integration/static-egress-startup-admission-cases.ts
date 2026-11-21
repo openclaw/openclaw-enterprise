@@ -9,20 +9,20 @@ import {
 } from "../../packages/contracts/src/api/resources.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressAdmissionFixture } from "../helpers/static-egress.mjs";
 
-type FixtureCollections = {
+type HttpResponse = { status: number; body: unknown };
+type FixtureView = {
   gatewayRequests: readonly unknown[];
   profiles: ReadonlyMap<unknown, unknown>;
   providers: Map<unknown, unknown>;
+  request: (
+    ...args: Parameters<Awaited<ReturnType<typeof createConsoleAppFixture>>["request"]>
+  ) => Promise<HttpResponse>;
 };
-type WithFixtureCollections<T> = T extends unknown
-  ? Omit<T, keyof FixtureCollections> & FixtureCollections
-  : never;
-type AdmissionFixture = WithFixtureCollections<
-  Awaited<ReturnType<typeof staticEgressAdmissionFixture>>
->;
-type HttpResponse = { status: number; body: unknown };
+type WithFixtureView<T> = T extends unknown ? Omit<T, keyof FixtureView> & FixtureView : never;
+type AdmissionFixture = WithFixtureView<Awaited<ReturnType<typeof staticEgressAdmissionFixture>>>;
 
 function entries(map: ReadonlyMap<unknown, unknown>): [string, unknown][] {
   return [...map].map(([key, value]) => {
