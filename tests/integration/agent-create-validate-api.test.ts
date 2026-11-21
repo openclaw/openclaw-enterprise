@@ -33,7 +33,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { consoleFixtureClient } from "../helpers/console-fixture-client.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { assertWriteAuthorizationDenial } from "../helpers/partial-write-authorization.ts";
-import { createDenied } from "../helpers/refusal-text.mjs";
+import { createDenied } from "../helpers/refusal-access.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type Session = Awaited<ReturnType<ConsoleFixture["signIn"]>>;

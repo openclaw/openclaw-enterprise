@@ -103,7 +103,7 @@ test(
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
-      await import("../helpers/qa-repository.mjs");
+      await import("../helpers/qa-repository.ts");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
     const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.ts");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
@@ -218,6 +218,15 @@ test(
         "OIDC enrollment, returning sign-in, owner setup, real chat and administrative denial",
         () => runOidcAgentChatScenario(context),
         "oidc-agent-chat",
+      );
+      const { runNativeProfileUpgradeScenario } =
+        await import("../helpers/native-profile-upgrade.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "fixed pre-feature OCE installation upgrades the same retained Agent to delegated native profiles",
+        () => runNativeProfileUpgradeScenario(context),
+        "oidc-agent-chat-upgrade",
       );
     }
     for (const gitReplacement of [false, true].filter((git) =>

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-11-10
-last_updated_session: authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1
+updated: 2026-11-20
+last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
 ---
 
 # Platform console request flow
@@ -128,11 +128,11 @@ stops builds; the SHA excludes uncommitted edits.
 clears retained views, and rebuilds the shell; failures show an error.
 `navigation.mts` removes the old query flag.
 
-`runtime-images.mts:renderRuntimeImages` limits reads to three concurrent requests
-for readable Agents in the selected Namespace. `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages`
-authorizes Agent read, resolves its selected version, and calls its Compute Driver.
+`runtime-images.mts:renderRuntimeImages` allows three concurrent reads in the
+selected Namespace. `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.getAgentRuntimeImages`
+checks Agent read and calls the active revision's Compute Driver.
 Disabling Debug mode stops new reads. See the
-[Compute contract](../reference/drivers/compute.md) for provenance.
+[Compute contract](../reference/drivers/compute.md).
 
 ### 2. Resolve the session before private reads
 
@@ -295,14 +295,16 @@ opened from the list focuses its heading when the title renders. Tabs (one Tab
 stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events.
 `revalidateMountedAgent` rechecks session, Namespace, Agent, version, and
-[permission answer](platform-console/agent-stop-and-deletion.md#stop-agent);
-unchanged access preserves controls, input, and saves.
-Refocus sends a fresh GET. A repeated 403 on a never-readable draft Configuration
-keeps the partial Agent; a version proved unreadable is not read again.
-Lost access scrubs; Agent, session, and scope failures clear their protected views.
-Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
-Returning to the tab restores focus after the unchanged view is admitted, if the control
-remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
+[permissions](platform-console/agent-stop-and-deletion.md#stop-agent) with fresh reads.
+Unchanged access keeps controls, input, and saves. Repeated draft 403s preserve
+partial Agents with never-readable drafts. Checks skip versions already proved
+unreadable. Access loss clears protected views. Other pages, including 403s and
+404s, revalidate before reuse. Forms defer checks.
+Unchanged views can restore focus to retained controls. If the reader leaves
+again during **Still checking…** and the check succeeds in the hidden tab, the
+Console remembers the Configuration editor with selected text. The next
+successful foreground check can refocus that editor in the same view. Newer
+focus or selections take precedence. Draft save baselines stay Namespace-scoped.
 
 Other admission failures clear affected content;
 a current protected `401` clears all private state. `pagehide` clears
@@ -364,6 +366,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 
 - 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)
 

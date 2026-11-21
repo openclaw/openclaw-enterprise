@@ -6,7 +6,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 ## Start the profile
 
 [Install Linux tools](local-kubernetes-tools.md): Node.js satisfying `engines.node` in `package.json`, repository-pinned pnpm, the Go version from `go.mod`, k3d,
-kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
+kubectl, Helm, yq v4, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
 On Linux, install Podman and `podman-compose`. No VM is required. Start the

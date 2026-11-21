@@ -54,6 +54,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `apps/controller/src/auth/`                               | Authentication integrations.                                                                                 |
 | `apps/controller/src/composition/`                        | Runtime assembly and wiring of selected implementations.                                                     |
 | `apps/controller/src/drivers/`                            | Bundled infrastructure Driver implementations, organized by capability.                                      |
+| `apps/controller/src/drivers/credential-proxy/`           | Native credential delivery Driver and its private OpenShell Provider handling.                               |
 | `apps/controller/src/drivers/plugin/google-workspace/`    | Google Workspace operation loading and request authorization for the shared plugin guard.                    |
 | `apps/controller/src/backends/`                           | Backend implementations.                                                                                     |
 | `apps/controller/src/gateway/`                            | Agent gateway transport and workspace access.                                                                |
@@ -84,6 +85,12 @@ registry types. Each Driver capability has its own directory with an `index.ts`,
 such as `drivers/compute/index.ts` or `drivers/iam/index.ts`, containing that
 Driver's interface, request, context, and result types. The root `index.ts` retains
 shared resource definitions and the public package exports.
+
+Within `packages/occ/src/`, `ports/` owns the repository and transaction
+contracts. `state/` holds the in-memory and PostgreSQL implementations.
+`controller-work.ts` owns queued operation records and keys.
+`controller-work-result.ts` validates result data for storage and disclosure.
+`deployment-work-status.ts` derives deployment status, progress, and messages from queued operations.
 
 The container release command starts at `scripts/ci/container-release.ts`.
 Its modules under `scripts/ci/container-release/` own release admission,

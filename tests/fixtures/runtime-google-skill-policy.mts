@@ -37,6 +37,7 @@ async function admits(operation: string, request: object): Promise<boolean> {
   assert.ok(policy, "The runtime registered no workspace.skills policy");
   const result = await policy.handle({
     nodeId,
+    config,
     pluginConfig,
     params: { workspaceDir, operation, request: JSON.stringify(request), watch: false },
     invokeNode: async () => ({ ok: true }),

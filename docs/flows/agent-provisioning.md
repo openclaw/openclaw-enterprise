@@ -97,7 +97,7 @@ The `202` response contains `data.provisioning`, with the work ID and status URL
 
 ### 3. The worker creates resources and credentials
 
-`packages/occ/src/index.ts:OpenClawController.processAgentProvisioning`
+`packages/occ/src/agent-provisioning-worker.ts:processAgentProvisioning`
 
 Under its queue claim, the worker verifies ownership, Namespace readiness and authority before
 effects and result commits. Retries reuse completed outputs. It creates the Configuration from the accepted inline
@@ -130,7 +130,7 @@ Kubernetes Configuration requests.
 
 ### 4. Deployment becomes the lifecycle owner
 
-`packages/occ/src/index.ts:observeProvisioningDeployment`
+`packages/occ/src/agent-provisioning-worker.ts:observeProvisioningDeployment`
 
 At handoff, provisioning saves the first Agent revision ID and stays `running`.
 Provisioning waits without using attempts. On success, PostgreSQL

@@ -64,7 +64,11 @@ warn() {
 # A closed diagnostic pipe must not stop the upgrade or replace a native status.
 progress() (
   trap '' PIPE
-  printf 'Upgrade: %s\n' "$1" >&2 2>/dev/null || true
+  local timestamp=''
+  TZ=UTC0 builtin printf -v timestamp '%(%Y-%m-%dT%H:%M:%SZ)T' -1 2>/dev/null ||
+    timestamp=$(command date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) ||
+    timestamp=''
+  printf 'Upgrade: %s%s\n' "$1" "${timestamp:+ [$timestamp]}" >&2 2>/dev/null || true
 )
 
 die() {
@@ -650,8 +654,9 @@ matches_yaml() {
 }
 
 require_mutable_installation_secret() {
+  local next_step=$2
   jq -e '.immutable != true' "$1" >/dev/null ||
-    die "Installation Secret $installation_secret is immutable and the candidate requires different data. Choose a candidate that preserves the live Installation configuration or defer this upgrade."
+    die "Installation Secret $installation_secret is immutable and the candidate requires different data. $next_step"
 }
 
 check_installation_update_access() {
@@ -986,11 +991,14 @@ fi
 [[ "${HELM_DRIVER:-secret}" == secret ]] ||
   die "unset HELM_DRIVER or set it to secret; the upgrade requires Helm release Secrets in the selected cluster."
 
-# Helm reads these independently of --kubeconfig/--kube-context. Keep its
-# endpoint and TLS settings bound to the same selected file as kubectl.
-for variable in HELM_KUBEAPISERVER HELM_KUBECAFILE HELM_KUBETLS_SERVER_NAME HELM_KUBEINSECURE_SKIP_TLS_VERIFY; do
-  [[ -z "${!variable:-}" ]] ||
-    die "unset $variable; configure the endpoint and TLS settings in the selected kubeconfig before starting or resuming an upgrade."
+# Helm reads these independently of --kubeconfig/--kube-context. Bind both
+# clients' connection settings and credentials to the selected kubeconfig.
+# Expand only a fixed marker so Bash tracing cannot expose an override's value.
+for variable in \
+  HELM_KUBEAPISERVER HELM_KUBECAFILE HELM_KUBETLS_SERVER_NAME HELM_KUBEINSECURE_SKIP_TLS_VERIFY \
+  HELM_KUBETOKEN HELM_KUBEASUSER HELM_KUBEASGROUPS; do
+  [[ -z "${!variable:+present}" ]] ||
+    die "unset $variable before starting or resuming an upgrade. Use the selected kubeconfig for Kubernetes connection settings and credentials."
 done
 
 [[ -z "$verify_agent" && -z "$verify_agent_namespace" || -n "$verify_agent" && -n "$verify_agent_namespace" ]] ||
@@ -1494,7 +1502,7 @@ sys.stdout.buffer.write(data)'
 # use the candidate configuration and their own startup identities.
 run_preflight_jobs() {
   local components=("$@") job_uids=() builder=()
-  local component job_prefix job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid log_container logs logs_status draft_refusals
+  local component preflight_input job_prefix job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid log_container logs logs_status draft_refusals
   local index=0 writer_qualifier=''
   ((resume == 0)) || writer_qualifier='additional '
   # Leave room for the suffix; a trailing dot would create an invalid DNS label.
@@ -1506,9 +1514,15 @@ run_preflight_jobs() {
       builder=(migration-job "$evidence_dir/preflight-rendered.jsonl" "$job" "$namespace" "$release"
         "$selected_controller" "$timeout_seconds" check-installation "$guarded_migration_id")
     else
+      preflight_input=none
+      if [[ "$component" == api ]]; then
+        preflight_input=$drafts_flag
+      elif [[ "$component" == worker && -n "${channel_targets:-}" ]]; then
+        preflight_input=channel-targets
+      fi
       builder=("${preflight_action:-job}" "$evidence_dir/preflight-rendered.jsonl"
         "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret"
-        "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag")
+        "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$preflight_input")
     fi
     node scripts/upgrade-startup-preflight.ts "${builder[@]}" >"$evidence_dir/preflight-$component-job.json" ||
       die "cannot build the $component startup preflight Job from the rendered chart; no ${writer_qualifier}OCC writer was stopped."
@@ -1581,6 +1595,7 @@ run_preflight_jobs() {
       logs=$(read_preflight_logs "$log_container" "$pod" "$evidence_dir/preflight-$component-logs.err") ||
         logs_status=$?
       if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+        identity_valid=0
         logs=
         message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
       else
@@ -1598,6 +1613,9 @@ run_preflight_jobs() {
           message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
         fi
       fi
+    fi
+    if (( ! identity_valid )) && [[ "$phase" == Pending:* ]]; then
+      message+=" Last scheduler report for the original Pod: ${phase#Pending:}"
     fi
     if [[ -z "$message" ]]; then
       case "$phase" in
@@ -1625,6 +1643,13 @@ run_preflight_jobs() {
             ! grep -qx agent-drafts-accepted "$evidence_dir/preflight-api.log"; then
             message="the api startup preflight succeeded without checking the Agent drafts; no ${writer_qualifier}OCC writer was stopped."
           fi
+          if [[ -z "$message" && "$component" == worker && -n "${channel_targets:-}" ]] &&
+            grep -qx channel-direct-egress-guard-unavailable "$evidence_dir/preflight-worker.log"; then
+            warn "the selected controller image cannot forecast the channel direct-egress guard before the upgrade. The Worker runs the guard during activation."
+          elif [[ -z "$message" && "$component" == worker && -n "${channel_targets:-}" ]] &&
+            ! grep -qx channel-direct-egress-guard-no-refusal "$evidence_dir/preflight-worker.log"; then
+            message="the worker startup preflight succeeded without reporting the channel direct-egress guard result; no ${writer_qualifier}OCC writer was stopped."
+          fi
           ;;
         Stuck:*)
           message="the $component startup preflight Pod cannot start (${phase#Stuck:}); no ${writer_qualifier}OCC writer was stopped."
@@ -1650,6 +1675,10 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
           elif [[ "$component" == api && -n "$drafts" ]] &&
             grep -Fxq 'Agent draft check could not load the configured Harness resolver.' "$evidence_dir/preflight-api.log"; then
             message="the selected controller image could not check saved Agent drafts because its configured Harness resolver is unavailable. No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Select a corrected controller image and start again with a new evidence directory."
+          elif [[ "$component" == worker ]] &&
+            grep -q '^Channel direct-egress guard preflight ' "$evidence_dir/preflight-worker.log"; then
+            refusal=$(grep -m 1 '^Channel direct-egress guard preflight ' "$evidence_dir/preflight-worker.log" | cut -c 1-600)
+            message="$refusal No ${writer_qualifier}Agent or OCC writer was stopped. The old release keeps serving. Start again with a new evidence directory after resolving the error."
           elif [[ -n "$name_refusal" ]]; then
             message="the $component startup preflight stopped: $name_refusal (INSTALLATION_NAME_INVALID) No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery.md#correct-an-invalid-installation-name, then start again with a new evidence directory."
           elif [[ -n "$refusal" ]]; then
@@ -1729,12 +1758,16 @@ preflight_startup() {
   ((resume == 0)) || writer_qualifier='additional '
   [[ "$evidence_dir" == "$upgrade_evidence_dir" ]] || attempt=${evidence_dir##*/}
   local suffix secret delete_options upgrade_migration
-  local drafts='' drafts_flag=none drafts_status=0 guarded_migration_id=''
+  local drafts='' channel_targets='' drafts_flag=none drafts_status=0 guarded_migration_id=''
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   if [[ "$preflight_action" == job && -s "${agent_drafts:-}" ]]; then
     drafts="$evidence_dir/inventory/agent-drafts.json.gz"
+    if [[ "$channel_egress_enabled" == true ]]; then
+      channel_targets="$evidence_dir/inventory/channel-targets.json.gz"
+    fi
     node scripts/upgrade-startup-preflight.ts drafts "$agent_drafts" "$candidate_installation" \
-      "$drafts" >/dev/null || drafts_status=$?
+      "$drafts" "$channel_targets" >/dev/null || drafts_status=$?
+    [[ -s "$channel_targets" ]] || channel_targets=''
     if ((drafts_status == 3)); then
       warn "the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it."
       drafts=
@@ -1766,10 +1799,11 @@ preflight_startup() {
     if ((certificate_count > 0)); then
       # Server-side apply sends even unchanged objects for admission. Ignore field
       # ownership conflicts in the dry-run only; Helm does not use server-side apply.
-      "${kube[@]}" --request-timeout=20s --namespace "$namespace" apply --dry-run=server \
+      # Allow the webhook's maximum 30s deadline plus time for the API response.
+      "${kube[@]}" --request-timeout=45s --namespace "$namespace" apply --dry-run=server \
         --server-side --force-conflicts --field-manager=occ-upgrade-preflight \
         --filename "$certificates" >/dev/null 2>"$evidence_dir/preflight-certificates.err" ||
-        die "certificate admission preflight failed; no ${writer_qualifier}OCC writer was stopped. Check cert-manager and see preflight-certificates.err in the evidence directory."
+        die "certificate admission preflight failed. No ${writer_qualifier}OCC writer was stopped. Inspect preflight-certificates.err in the evidence directory. If the webhook call timed out, check reachability from the Kubernetes API server to the cert-manager webhook."
     fi
   fi
   node scripts/upgrade-startup-preflight.ts networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
@@ -1786,7 +1820,7 @@ preflight_startup() {
     acknowledge_preflight_check networkpolicy "networkpolicy.networking.k8s.io/$secret" "$delete_options"
   fi
   delete_options=$(node scripts/upgrade-startup-preflight.ts secret "$candidate_installation" \
-    "$installation_key" "$secret" "$namespace" "$release" "$drafts" |
+    "$installation_key" "$secret" "$namespace" "$release" "$drafts" "$channel_targets" |
     create_preflight secret - preflight-secret-create.err scrub) ||
     unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
   acknowledge_preflight_check secret "secret/$secret" "$delete_options"
@@ -2134,10 +2168,12 @@ require_settled_initializers() {
 
 require_unchanged_helm_status() {
   helm status "$release" "${helm_args[@]}" --output json >"$1"
+  # Helm 4 includes live resources that change during quiescence. Compare
+  # every other release field before this attempt writes candidate settings.
   jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
-    . == $observed[0]
+    (del(.info.resources)) == ($observed[0] | del(.info.resources))
   ' "$1" >/dev/null ||
-    die "the Helm release changed before submission; investigate before continuing."
+    die "the Helm release changed before submission; API and worker remain stopped; this attempt made no candidate writes; investigate before continuing."
 }
 
 migration_secret_identities() {
@@ -2420,9 +2456,9 @@ jq -er --arg key "$installation_key" '.data[$key]' "$live_installation_secret" |
     >"$evidence_dir/before-live-installation.yaml"
 
 matches_yaml "$evidence_dir/before-values.yaml" "$evidence_dir/before-live-values.yaml" ||
-  die "the protected Helm values differ from the live release; refresh --values before upgrading."
+  die "the protected Helm values differ from the live release. Verify the selected target and privately compare before-values.yaml to before-live-values.yaml in the evidence directory before refreshing --values."
 matches_yaml "$evidence_dir/before-installation.yaml" "$evidence_dir/before-live-installation.yaml" ||
-  die "the protected Installation YAML differs from the live Secret; refresh --installation before upgrading."
+  die "the protected Installation YAML differs from the live Secret. Verify the selected target and privately compare before-installation.yaml to before-live-installation.yaml in the evidence directory before refreshing --installation."
 
 # The bundled Collector reads an operator-created Secret that Helm never
 # updates. Stop before mutation when it still holds another revision's shared
@@ -2543,7 +2579,7 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
   agent_drafts="$evidence_dir/inventory/agent-drafts.jsonl"
   : >"$agent_drafts"
   while IFS= read -r target; do
-    json_fields "$target" namespace_id=namespaceId agent_id=agentId
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId execution_mode=executionMode
     prefix="$evidence_dir/inventory/$(json_file_name "$namespace_id--$agent_id")"
     "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" </dev/null \
       >"$prefix.agent.json" ||
@@ -2555,10 +2591,11 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
       >"$prefix.configuration.json" ||
       die "cannot read Configuration $configuration_id of Agent $agent_id in Namespace $namespace_id to check its draft; no cluster changes were made."
     jq -ec --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
-      --arg configurationId "$configuration_id" --slurpfile agent "$prefix.agent.json" '
+      --arg configurationId "$configuration_id" --arg executionMode "$execution_mode" \
+      --slurpfile agent "$prefix.agent.json" '
       select(.id == $configurationId and (.values | type) == "object") |
       {namespaceId: $namespaceId, agentId: $agentId, name: $agent[0].name,
-        configurationId: $configurationId, values: .values}
+        configurationId: $configurationId, executionMode: $executionMode, values: .values}
     ' "$prefix.configuration.json" >>"$agent_drafts" ||
       die "OCC returned no values for Configuration $configuration_id of Agent $agent_id; no cluster changes were made."
   done <"$targets"
@@ -2788,7 +2825,8 @@ fi
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]] ||
   ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installation.yaml"; then
   if [[ ! -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
-    require_mutable_installation_secret "$live_installation_secret"
+    require_mutable_installation_secret "$live_installation_secret" \
+      "Stage a versioned immutable successor with the final candidate Installation configuration. Pass --candidate-values with installation.secretName set to the successor and use a fresh evidence directory. See docs/guides/deploy/immutable-installation-upgrade.md."
     check_installation_update_access
   fi
   touch "$evidence_dir/installation-changed"
@@ -2803,6 +2841,7 @@ if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]] ||
 fi
 
 if [[ "$channel_egress_enabled" == true ]]; then
+  warn "The channel direct-egress forecast covers a single Worker guard. Activation checks Envoy inspection and listener conflicts after Agent Stop."
   python3 scripts/setup-channel-egress check --kubeconfig "$execution_kubeconfig" --context "$context" \
     --namespace "$namespace" --values "$candidate_values" --timeout-seconds "$timeout_seconds" ||
     die "Envoy dependencies are not ready; no Agent or OCC writer was stopped."
@@ -3048,7 +3087,8 @@ if ((helm_complete == 0)); then
   replace_installation_secret=0
   if [[ -f "$evidence_dir/installation-changed" ]] &&
     ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
-    require_mutable_installation_secret "$live_secret"
+    require_mutable_installation_secret "$live_secret" \
+      "The prepared upgrade is bound to the recorded Installation Secret. Keep the maintenance freeze and preserve the original inputs and evidence. See docs/guides/deploy/production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable."
     replace_installation_secret=1
   fi
   if [[ -f "$evidence_dir/helm-started" ]]; then
@@ -3215,6 +3255,10 @@ if ((helm_complete == 0)); then
     die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers stopped. $migration_instruction After verification, resume the original run with --migration-history-checked. The Helm hook independently requires the complete candidate schema." 3
   fi
 
+  if [[ "$repository_enabled" == true ]]; then
+    verify_pair_nodes
+  fi
+  require_unchanged_helm_status "$evidence_dir/before-helm-submission.json"
   if ((separate_handoff)) && [[ "$migration_progress" != "{}" ]]; then
     recheck_migration_release pre-resume "$evidence_dir/before-helm-status.json"
   fi
@@ -3238,16 +3282,12 @@ PYTHON
           >"$evidence_dir/installation-secret-apply.txt"
     fi
   fi
-  # The marker precedes the request, so a crash cannot turn an unknown Helm
-  # outcome into an automatic retry or an unsafe return to the old image.
-  if [[ "$repository_enabled" == true ]]; then
-    verify_pair_nodes
-  fi
-  require_unchanged_helm_status "$evidence_dir/before-helm-submission.json"
   if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
     verify_installation_switch
   fi
   recheck_prepared_migration_secrets
+  # The marker precedes the request, so a crash cannot turn an unknown Helm
+  # outcome into an automatic retry or an unsafe return to the old image.
   python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"
   # Open stdout before entering the native failure handler.
   helm_status=0

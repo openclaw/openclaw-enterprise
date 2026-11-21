@@ -56,6 +56,33 @@ Changing Harnesses does not make an incompatible saved session usable. Retained
 storage, native state validity, current authority, and Harness support remain
 prerequisites. Deletion removes resources according to the Agent deletion contract.
 
+### Native OpenClaw with the OpenShell SandboxDriver
+
+On this development configuration, whose
+[production qualification](../drivers/openshell-sandbox.md#qualification-contract)
+remains open, the pinned runtime does not continue an interrupted turn after a
+Gateway replacement or a redeployment. The resume fails when the new Gateway
+starts. The same conversation then answers `500` with `internal error` until
+about one minute after the new Gateway is ready, and then works again. Files
+that the turn wrote with relative paths are no longer in the session's working
+directory; send the task again.
+
+When the Sandbox is lost, a request in flight gets no answer until the
+[HTTP chat deadline](../agent-http-chat.md#availability-and-failures): `504`, or
+a closed connection without `[DONE]` if its stream had already started. After
+you deploy the Agent again, the same `user` label can keep answering `500`; use
+a new label.
+
+An HTTP chat request that ends, at its deadline or by a disconnect, while the
+turn runs a command can leave its conversation unable to answer. Each later
+request with the same `user` label then gets no bytes until its own deadline; a
+stream gets `200`, then a closed connection without `[DONE]`. A new label
+answers normally, and the Agent stays active with ready Pods. The Gateway log
+repeats, about once a minute,
+`Worker disk-space check failed (<session>): node worker environment stop failed (UNAVAILABLE)`.
+This does not clear by itself, and a Gateway replacement does not help: deploy
+the Agent again, and the same label answers.
+
 ## HTTP chat callers
 
 An [HTTP chat](../agent-http-chat.md) request that waits behind the turn is not

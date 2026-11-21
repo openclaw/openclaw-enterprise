@@ -202,15 +202,25 @@ async function certificates(command, directory, originHost, authorityHost) {
  *   command: (executable: "docker" | "k3d", args: string[], options?: import("../../scripts/lib/image-file.ts").ImageFileTextOptions) => Promise<string>,
  *   cleanup: Array<() => Promise<unknown>>,
  *   directory: string, cluster: string, ca: string,
+ *   onSetupStep?: (step: string) => void,
  *   checkpoint: (event: string, data: Record<string, string>) => Promise<void>
  * }} options
  */
-async function trustedSupervisor({ command, cleanup, directory, cluster, ca, checkpoint }) {
+async function trustedSupervisor({
+  command,
+  cleanup,
+  directory,
+  cluster,
+  ca,
+  checkpoint,
+  onSetupStep,
+}) {
   // Read the same stock pin used by Local Setup rather than maintaining another
   // independent image version. Candidate supplier builds are rejected at entry.
   const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
   const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
   assert.match(parent, /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.8@sha256:[a-f0-9]{64}$/);
+  onSetupStep?.("extract stock Supervisor files");
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
   /** @type {(image: string, filename: string, destination: string) => Promise<void>} */
@@ -219,6 +229,7 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
   const stockCertificates = join(directory, "stock-ca-certificates.crt");
   await extract(parent, "/etc/ssl/certs/ca-certificates.crt", stockCertificates);
   await extract(parent, "/openshell-supervisor", join(directory, "stock-supervisor"));
+  onSetupStep?.("build Supervisor trust image");
   // docker cp preserves the stock file's read-only mode. Build a new owned
   // bundle without changing the stock certificates or their permissions.
   await writeFile(
@@ -232,9 +243,11 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
   const tag = `oce-git-supervisor-${randomUUID()}:test`;
   await command("docker", ["build", "--network=none", "--tag", tag, context], { timeout: 120_000 });
   cleanup.push(() => command("docker", ["image", "rm", tag]));
+  onSetupStep?.("verify Supervisor binary");
   await extract(tag, "/openshell-supervisor", join(directory, "trusted-supervisor"));
   const binaryHash = hash(await readFile(join(directory, "stock-supervisor")));
   assert.equal(hash(await readFile(join(directory, "trusted-supervisor"))), binaryHash);
+  onSetupStep?.("import Supervisor trust image");
   await command("k3d", ["image", "import", "--cluster", cluster, tag], { timeout: 120_000 });
   const containerd = ["exec", `k3d-${cluster}-server-0`, "ctr", "-n", "k8s.io", "images"];
   const imported = (await command("docker", [...containerd, "list"]))
@@ -256,6 +269,7 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
     await command("docker", ["image", "inspect", "--format", "{{.Id}}", tag])
   ).trim();
   assert.match(configDigest, /^sha256:[a-f0-9]{64}$/);
+  onSetupStep?.("record Supervisor trust");
   await checkpoint("supervisor-trust", { parent, reference, binaryHash, configDigest });
   const slash = repository.indexOf("/");
   return {
@@ -272,15 +286,21 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
   };
 }
 
-/** Installs the supported model + selected-repository path in its own k3d cluster. */
+/**
+ * Installs the supported model + selected-repository path in its own k3d cluster.
+ * @param {import("node:test").TestContext} t
+ * @param {{ witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, onSetupStep?: (step: string) => void }} [options]
+ */
 export function createOpenShellGitInstallation(
   t,
-  { witnessIssuedGit = false, allowStandingApprovals = false } = {},
+  { witnessIssuedGit = false, allowStandingApprovals = false, onSetupStep } = {},
 ) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals }));
+  return ownFirstAgentWork(t)(
+    installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, onSetupStep }),
+  );
 }
 
-async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals }) {
+async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, onSetupStep }) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -335,6 +355,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     }
     measurement("cleanup", { outcome: "passed" });
   });
+  onSetupStep?.("Local Setup");
   const stack = await localFirstAgentStack(
     {
       diagnostic: (message) => t.diagnostic(message),
@@ -342,6 +363,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     },
     { modelCredential: "openai" },
   );
+  onSetupStep?.("read installation state");
   const state = JSON.parse(await readFile(join(stack.directory, "state.json"), "utf8"));
   assert.equal(state.deploymentMode, "k3d");
   assert.equal(state.sandboxDriver, "openshell");
@@ -393,6 +415,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     "--namespace",
     platform,
   ];
+  onSetupStep?.("read installed API and workspace");
   const serviceKeyFile = state.keyPath;
   const admin = JSON.parse(await readFile(serviceKeyFile, "utf8"));
   const request = createOpenShellGitApi({
@@ -417,6 +440,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   assert.equal(namespaceList.items.length, 1);
   const sandboxNamespace = namespaceList.items[0].metadata.name;
   assert.equal(namespaceList.items[0].metadata.labels["openshell.ai/openclaw-workspace"], "true");
+  onSetupStep?.("start Git origin");
   const network = JSON.parse(
     await command("docker", ["network", "inspect", `k3d-${state.cluster}`]),
   );
@@ -456,6 +480,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   const service = JSON.parse(
     await kube(["get", "service", "git-fixture", "-n", platform, "-o", "json"]),
   );
+  onSetupStep?.("configure Git fixture DNS");
   const dns = JSON.parse(
     await kube(["get", "configmap", "coredns", "-n", "kube-system", "-o", "json"]),
   );
@@ -468,6 +493,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     timeout: 130_000,
   });
 
+  onSetupStep?.("read Gateway values and signing metadata");
   const gatewayValues = JSON.parse(
     await command("helm", ["get", "values", "openshell-gateway", ...helmContext, "-o", "json"]),
   );
@@ -535,6 +561,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     type: "Opaque",
     stringData,
   });
+  onSetupStep?.("apply Git authority resources");
   await apply([
     configMap("git-fixture-registry-v1", { "registry.json": JSON.stringify(registry) }),
     configMap("git-fixture-ca", { "ca.crt": tls.ca }),
@@ -578,6 +605,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       metadata: { ...supervisorPolicy.metadata, namespace: sandboxNamespace },
     },
   ]);
+  onSetupStep?.("prepare Git authority startup");
   const installation = loadYaml(await readFile(join(stack.directory, "installation.yaml"), "utf8"));
   const sandbox = installation.drivers.sandbox;
   const backend = installation.backend.find(({ type }) => type === "openshell");
@@ -665,6 +693,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   };
   const valuesFile = join(directory, "oce-values.json");
   await writeFile(valuesFile, JSON.stringify(values), { mode: 0o600 });
+  onSetupStep?.("upgrade controller with Git authority");
   await command(
     "helm",
     [
@@ -683,6 +712,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
 
   // Register after enabling repository.openShell: Git configuration must not divert model
   // registration into the Git-only Proxy. All installed Git journeys use this fresh source.
+  onSetupStep?.("register Gateway model source");
   const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
     name: "installed-git-model",
     value: process.env.OPENAI_API_KEY,
@@ -693,6 +723,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     config: { authorized_base_url: "https://api.openai.com/v1" },
     secrets: { api_key: secret.ref },
   });
+  onSetupStep?.("wait for Gateway model source");
   const modelSource = await eventually("Gateway-owned model source", async () => {
     const current = await request(
       "GET",
@@ -704,6 +735,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
   });
 
+  onSetupStep?.("read stock Supervisor pin");
   const supervisor = await trustedSupervisor({
     command,
     cleanup,
@@ -711,7 +743,9 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     cluster: state.cluster,
     ca: tls.ca,
     checkpoint,
+    onSetupStep,
   });
+  onSetupStep?.("upgrade Gateway with Supervisor trust");
   gatewayValues.supervisor.image = supervisor.image;
   gatewayValues.gatewayConfig["openshell.supervisor.middleware"] = [
     {
@@ -757,6 +791,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     { timeout: 190_000 },
   );
 
+  onSetupStep?.("connect to authenticated Gateway workspace");
   const port = await availablePort();
   const forward = spawn(
     "kubectl",

@@ -6,6 +6,7 @@
 // than one after another in one. It starts the wrapper through the same scenario
 // helper as the startup probe files.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -20,10 +21,13 @@ import { runDocker } from "./runtime-image-docker.ts";
 import { image, imageTestOptions, gatewayStateVolume } from "./runtime-image-startup.ts";
 import {
   runStartupProbeScenario,
-  observedValue,
-  phaseAt,
   withStartupProbeEvidence,
 } from "./runtime-image-startup-probe.mjs";
+import {
+  observedValue,
+  phaseAt,
+  type StartupProbeSnapshot,
+} from "./runtime-image-startup-probe-observation.ts";
 
 // The probe files' one-core cap kept the Gateway CPU-throttled for these whole
 // cases; the production example allows up to four cores.
@@ -41,7 +45,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Runs in the Gateway container: waits for the runtime readiness endpoint the
 // kubelet probes, then sends one chat turn at once, as a client does on the
 // first message after Start. Prints the turn's outcome as JSON.
-async function firstTurnAfterReadiness({ budgetMs }: { budgetMs: number }): Promise<void> {
+type TurnOptions = { prompt?: string; sessionKey?: string; workspaceValue?: string };
+
+async function firstTurnAfterReadiness({
+  budgetMs,
+  prompt = "Reply with READY.",
+  sessionKey,
+  workspaceValue,
+}: TurnOptions & { budgetMs: number }): Promise<void> {
   const deadline = Date.now() + budgetMs;
   for (;;) {
     try {
@@ -60,16 +71,21 @@ async function firstTurnAfterReadiness({ budgetMs }: { budgetMs: number }): Prom
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  if (workspaceValue !== undefined) {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile("/home/node/workspace/gateway-history.txt", workspaceValue);
+  }
   const response = await fetch("http://127.0.0.1:8080/v1/chat/completions", {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.OPENCLAW_GATEWAY_PASSWORD}`,
       "content-type": "application/json",
+      ...(sessionKey === undefined ? {} : { "x-openclaw-session-key": sessionKey }),
     },
     body: JSON.stringify({
       model: "openclaw/default",
       stream: false,
-      messages: [{ role: "user", content: "Reply with READY." }],
+      messages: [{ role: "user", content: prompt }],
     }),
     signal: AbortSignal.timeout(120_000),
   });
@@ -102,12 +118,15 @@ async function firstTurnAfterReadiness({ budgetMs }: { budgetMs: number }): Prom
   );
 }
 
-async function sendFirstTurn(containerName: string): Promise<FirstTurnResult> {
+async function sendFirstTurn(
+  containerName: string,
+  options: TurnOptions = {},
+): Promise<FirstTurnResult> {
   const budgetMs = 240_000 * imageSmokeTimeoutMultiplier;
   const { stdout } = await inGatewayContainer(
     containerName,
     firstTurnAfterReadiness,
-    { budgetMs },
+    { budgetMs, ...options },
     budgetMs + 120_000,
   );
   const result: unknown = JSON.parse(stdout);
@@ -193,7 +212,7 @@ async function gatewayContainer(compute: DockerComputeDriver, containerName: str
 export function uncleanStopRestartTest(
   recovery: Recovery,
   title: string,
-  { midTurnCrash = false } = {},
+  { midTurnCrash = false, workspaceHistory = false } = {},
 ): void {
   test(title, { ...imageTestOptions, timeout: 900_000 }, async (t) => {
     assert.ok(image !== undefined, "the runtime image must be selected");
@@ -246,18 +265,32 @@ export function uncleanStopRestartTest(
         : undefined;
     const gatewayManagedMode = recovery === "Kubernetes";
     const heldPrompt = midTurnCrash ? "OCE_GATEWAY_CRASH_TEST" : undefined;
+    const sessionKey = "agent:main:gateway-restart-history";
+    const workspaceValue = workspaceHistory
+      ? "workspace-history-" + randomBytes(16).toString("hex")
+      : undefined;
     const first = await runStartupProbeScenario(t, {
       terminatedGatewayNamespace: undefined,
       kind: "gateway",
       mode: "answer",
       heldPrompt,
+      workspaceHistory,
       ...stateMount,
       podOwner,
       gatewayManagedMode,
       cpus: restartGatewayCpus,
-      until: ({ events }: { events: unknown[] }) => events.some(observedValue("ready", true)),
+      until: ({ events }: StartupProbeSnapshot) => events.some(observedValue("ready", true)),
       act: async ({ containerName }: { containerName: string }) => {
-        firstTurn = await sendFirstTurn(containerName);
+        firstTurn = await sendFirstTurn(
+          containerName,
+          workspaceValue === undefined
+            ? {}
+            : {
+                sessionKey,
+                workspaceValue,
+                prompt: "Read gateway-history.txt and report its value.",
+              },
+        );
         if (compute) {
           await compute["rememberEmbeddedGateway"](
             containerName,
@@ -269,7 +302,10 @@ export function uncleanStopRestartTest(
     });
     await withStartupProbeEvidence(first, async () => {
       assert.equal(firstTurn?.status, 200, `first Gateway turn: ${JSON.stringify(firstTurn)}`);
-      assert.equal(firstTurn?.content, "READY");
+      assert.equal(
+        firstTurn?.content,
+        workspaceValue === undefined ? "READY" : `Read ${workspaceValue}`,
+      );
     });
     // OpenClaw starts most of its worker threads on the first turn, which sets
     // the Gateway's memory high-water mark (finding 2700). The peak includes the
@@ -299,28 +335,48 @@ export function uncleanStopRestartTest(
     }
     // The restart's first turn goes out as soon as the runtime reports ready.
     let turn: FirstTurnResult | undefined;
+    let freshTurn: FirstTurnResult | undefined;
     // The original HTTP client disconnected. The Gateway can still resume its
     // stored turn after readiness, so let the provider answer resumed work too.
     const restarted = await runStartupProbeScenario(t, {
       terminatedGatewayNamespace,
       kind: "gateway",
       mode: "answer",
+      workspaceHistory,
       ...stateMount,
       podOwner,
       gatewayManagedMode,
       cpus: restartGatewayCpus,
-      until: ({ phases }: { phases: unknown[] }) => phaseAt(phases, "native-spawn") !== undefined,
+      until: ({ phases }: StartupProbeSnapshot) => phaseAt(phases, "native-spawn") !== undefined,
       act: async ({ containerName }: { containerName: string }) => {
         // A failed exec is reported with the wrapper output below.
-        turn = await sendFirstTurn(containerName).catch((error: unknown) => ({
+        const continuation = { prompt: "Report the retained workspace result." };
+        turn = await sendFirstTurn(
+          containerName,
+          workspaceHistory ? { ...continuation, sessionKey } : {},
+        ).catch((error: unknown) => ({
           error: error instanceof Error ? error.message : String(error),
         }));
+        if (workspaceHistory && turn.status === 200) {
+          // The same replacement can serve a fresh session, but that session lacks prior tool history.
+          freshTurn = await sendFirstTurn(containerName, {
+            ...continuation,
+            sessionKey: "agent:main:gateway-restart-fresh",
+          });
+        }
       },
     });
     await withStartupProbeEvidence(restarted, async () => {
       // Before the fix: HTTP 500 {"error":{"message":"internal error"}}.
       assert.equal(turn?.status, 200, `first turn after restart: ${JSON.stringify(turn)}`);
-      assert.equal(turn?.content, "READY");
+      assert.equal(
+        turn?.content,
+        workspaceValue === undefined ? "READY" : `Retained ${workspaceValue}`,
+      );
+      if (workspaceHistory) {
+        assert.equal(freshTurn?.status, 200);
+        assert.equal(freshTurn?.content, "History missing");
+      }
       if (!midTurnCrash) {
         if (recovery !== "operator") {
           assert.match(restarted.snapshot.output, /"recovered"\s*:\s*true/);
@@ -552,7 +608,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       podOwner: undefined,
       gatewayManagedMode: false,
       cpus: restartGatewayCpus,
-      until: ({ phases }: { phases: unknown[] }) => phaseAt(phases, "native-spawn") !== undefined,
+      until: ({ phases }: StartupProbeSnapshot) => phaseAt(phases, "native-spawn") !== undefined,
       act: async ({
         containerName,
         exited,
@@ -615,7 +671,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       podOwner: undefined,
       gatewayManagedMode: false,
       cpus: restartGatewayCpus,
-      until: ({ events, output }: { events: unknown[]; output: string }) =>
+      until: ({ events, output }: StartupProbeSnapshot) =>
         events.some(observedValue("ready", true)) || unverifiableOwner.test(output),
       act: undefined,
     });
@@ -654,7 +710,7 @@ export function liveHolderKeepsStateTest(title: string): void {
     } as const;
     const live = await runStartupProbeScenario(t, {
       ...scenario,
-      until: ({ events }: { events: unknown[] }) => events.some(observedValue("ready", true)),
+      until: ({ events }: StartupProbeSnapshot) => events.some(observedValue("ready", true)),
       act: undefined,
     });
     const readLock = async () => {

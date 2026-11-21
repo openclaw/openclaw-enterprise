@@ -103,7 +103,7 @@ Use an exclusive fixture cluster with `oce-system` and `envoy-gateway-system` av
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
 OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
-  node --test tests/integration/production-network-access.test.mjs
+  node --test tests/integration/production-network-access.test.ts
 ```
 
 Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
