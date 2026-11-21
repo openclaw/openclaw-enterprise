@@ -5,6 +5,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { readFileSync } from "node:fs";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { crc32 } from "node:zlib";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
@@ -1093,6 +1094,236 @@ function unicodeEscapes(text) {
 }
 
 registerStaticEgressResponsesPrefixCases();
+
+test("protected Responses forwards inline raster images from users and local tool outputs only", async (t) => {
+  const f = await staticEgressFixture(t);
+  // Codex 0.164.0 serializes the same flattened image part in user content and
+  // structured function/custom output. This is a genuine 1x1 PNG.
+  const image = {
+    type: "input_image",
+    image_url:
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
+  };
+  const jpeg = {
+    ...image,
+    image_url:
+      "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AP7//2Q==",
+  };
+  const webp = {
+    ...image,
+    image_url:
+      "data:image/webp;base64,UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoBAAEAAUAmJaACdLoB+AADsAD+8ut//NgVzXPv9//S4P0uD9Lg/9KQAAA=",
+  };
+  // Two 1x1 lossless frames, red then blue, encoded and decoded with Pillow.
+  const animatedWebp = Buffer.from(
+    "UklGRoQAAABXRUJQVlA4WAoAAAACAAAAAAAAAAAAQU5JTQYAAAAAAAAAAABBTk1GKAAAAAAAAAAAAAAAAAAAAGQAAAJWUDhMDwAAAC8AAAAABxD9j/4HIqL/AQBBTk1GKAAAAAAAAAAAAAAAAAAAAGQAAABWUDhMDwAAAC8AAAAABxDR//4HIqL/AQA=",
+    "base64",
+  );
+  const webpPart = (bytes) => ({
+    ...webp,
+    image_url: "data:image/webp;base64," + bytes.toString("base64"),
+  });
+  const user = {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "look" }, image, jpeg, webpPart(animatedWebp)],
+  };
+  const functionCall = {
+    type: "function_call",
+    name: "capture",
+    call_id: "call_1",
+    arguments: "{}",
+  };
+  const customCall = {
+    type: "custom_tool_call",
+    name: "capture_custom",
+    call_id: "call_2",
+    input: "capture",
+  };
+  const functionOutput = {
+    type: "function_call_output",
+    call_id: "call_1",
+    output: [{ ...webp, detail: "high" }],
+  };
+  const customOutput = {
+    type: "custom_tool_call_output",
+    call_id: "call_2",
+    output: [{ ...image, detail: "original" }],
+  };
+  const body = {
+    model: "fixture-model",
+    input: [user, functionCall, functionOutput, customCall, customOutput],
+    store: false,
+  };
+  const capture = f.capture(body);
+  const result = await f.resolve(capture);
+  assert.ok(result.ready, JSON.stringify(result));
+  assert.ok((await f.authorize(f.permitRequest(capture, result.ready))).allowed);
+  await f.send(capture, result.ready);
+  assert.deepEqual(f.providerRequests.at(-1).body, body);
+
+  // A valid PNG can exceed the text-field limit. Exercise the real provider
+  // classifier directly because the current exchange has a separate request cap.
+  const png = Buffer.from(image.image_url.split(",")[1], "base64");
+  const ancillary = Buffer.alloc(800 * 1024 + 12);
+  ancillary.writeUInt32BE(ancillary.length - 12, 0);
+  ancillary.write("npAD", 4, "ascii");
+  ancillary.writeUInt32BE(crc32(ancillary.subarray(4, -4)), ancillary.length - 4);
+  const largePng = Buffer.concat([png.subarray(0, 33), ancillary, png.subarray(33)]);
+  const largeImage = {
+    ...image,
+    image_url: "data:image/png;base64," + largePng.toString("base64"),
+  };
+  assert.ok(largeImage.image_url.length > 1024 * 1024);
+  const provider = f.egress.sourceControl.providers.find(
+    (entry) => entry.sourceType.type === "openai",
+  );
+  const route = f.installation.plan.routes.find((entry) => entry.path.endsWith("/responses"));
+  const classified = provider.classify(route, {
+    method: "POST",
+    url: route.origin + route.path,
+    headers: [["content-type", "application/json"]],
+    body: Buffer.from(JSON.stringify({ ...body, input: [{ ...user, content: [largeImage] }] })),
+  });
+  assert.deepEqual(classified, { kind: "inference", action: "generate", model: "fixture-model" });
+
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  const withPart = (part, role = "user") => ({
+    ...body,
+    input: [{ ...user, role, content: [part] }],
+  });
+  const avif = Buffer.from(
+    "AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAA" +
+      "AFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAAAbAAAAKGlpbmYAAAAAAAEA" +
+      "AAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAAACAAAAAgAAABBwaXhpAAAAAAMI" +
+      "CAgAAAAMYXYxQ4EADAAAAAATY29scm5jbHgAAgACAAIAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAAAjbWRhdAoJAAAAAAZtfMAg" +
+      "Mg4QAMAAAAKAAAAAsBNLKA==",
+    "base64",
+  );
+  const webpBytes = Buffer.from(webp.image_url.split(",")[1], "base64");
+  const webpWithChunks = (...chunks) => {
+    const bytes = Buffer.concat([webpBytes.subarray(0, 12), ...chunks]);
+    bytes.writeUInt32LE(bytes.length - 8, 4);
+    return bytes;
+  };
+  // The first bad frame must fail even if a later frame contains valid image data.
+  // Change only the nested VP8L length, leaving the enclosing RIFF and ANMF intact.
+  const invalidFrames = [
+    { label: "invalid first WebP frame", lengthOffset: 72 },
+    { label: "invalid last WebP frame", lengthOffset: 120 },
+  ].map(({ label, lengthOffset }) => {
+    const bytes = Buffer.from(animatedWebp);
+    bytes.writeUInt32LE(animatedWebp.length, lengthOffset);
+    return { mime: "webp", label, bytes };
+  });
+  // Reuse the static VP8 and the first frame's VP8L data as healthy siblings.
+  const invalidChunks = [
+    { label: "VP8", chunk: webpBytes.subarray(12), signatureOffset: 11 },
+    { label: "VP8L", chunk: animatedWebp.subarray(68, 92), signatureOffset: 8 },
+  ].flatMap(({ label, chunk, signatureOffset }) => {
+    const invalid = Buffer.from(chunk);
+    invalid[signatureOffset] ^= 0x80;
+    return [
+      {
+        mime: "webp",
+        label: `invalid first ${label} chunk`,
+        bytes: webpWithChunks(invalid, chunk),
+      },
+      { mime: "webp", label: `invalid last ${label} chunk`, bytes: webpWithChunks(chunk, invalid) },
+    ];
+  });
+  // Change only a marker byte and keep the PNG checksum valid so the refusal
+  // depends on the marker, even when ASCII decoding would mask the high bit.
+  const rasterCases = [
+    ...invalidFrames,
+    ...invalidChunks,
+    ...[
+      { label: "high-bit IHDR", offset: 8 },
+      { label: "high-bit IDAT", offset: 33 },
+    ].map(({ label, offset }) => {
+      const bytes = Buffer.from(png);
+      const typeOffset = offset + 4;
+      const crcOffset = offset + 8 + bytes.readUInt32BE(offset);
+      bytes[typeOffset] |= 0x80;
+      bytes.writeUInt32BE(crc32(bytes.subarray(typeOffset, crcOffset)), crcOffset);
+      return { mime: "png", label, bytes };
+    }),
+    ...[
+      { label: "high-bit RIFF", offset: 0 },
+      { label: "high-bit WEBP", offset: 8 },
+      { label: "high-bit VP8", offset: 12 },
+    ].map(({ label, offset }) => {
+      const bytes = Buffer.from(webpBytes);
+      bytes[offset] |= 0x80;
+      return { mime: "webp", label, bytes };
+    }),
+    // AVIF is outside the MIME allowlist regardless of its container bytes.
+    { mime: "avif", label: "valid AVIF", bytes: avif },
+  ];
+  for (const { mime, label, bytes } of rasterCases) {
+    const part = { ...image, image_url: `data:image/${mime};base64,${bytes.toString("base64")}` };
+    assert.ok((await f.resolve(f.capture(withPart(part)))).refused, label);
+    assert.equal(f.secretReads, reads, `${label} must be refused before reading credentials`);
+    assert.equal(f.providerRequests.length, sends, `${label} cannot reach the provider`);
+  }
+
+  const rasterWith = (mime, hex) => ({
+    ...image,
+    image_url: `data:image/${mime};base64,${Buffer.from(hex, "hex").toString("base64")}`,
+  });
+  for (const refused of [
+    withPart({ ...image, image_url: "https://remote.example.test/image.png" }),
+    withPart({ ...image, image_url: "/workspace/image.png" }),
+    withPart({ type: "input_image", file_id: "file_other" }),
+    withPart({ ...image, image_url: "data:image/png;base64,%%" }),
+    withPart({
+      ...image,
+      image_url:
+        "data:image/png;base64," +
+        Buffer.concat([png.subarray(0, 33), png.subarray(-12)]).toString("base64"),
+    }),
+    withPart({ ...jpeg, image_url: "data:image/jpeg;base64,/9j/2Q==" }),
+    withPart({ ...webp, image_url: "data:image/webp;base64,UklGRgwAAABXRUJQVlA4IAAAAAA=" }),
+    // These containers keep their outer markers but lack required raster-data framing.
+    withPart(
+      rasterWith(
+        "png",
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c48900000001494441540028387de80000000049454e44ae426082",
+      ),
+    ),
+    withPart(rasterWith("jpeg", "ffd8ffc00008080001000100ffda00060000000000ffd9")),
+    withPart(rasterWith("jpeg", "ffd8ffc0000b080001000101011100ffda0008010100003f00ffd0ffd9")),
+    withPart(rasterWith("webp", "524946461600000057454250565038200a000000d001009d012a01000100")),
+    withPart(rasterWith("webp", "5249464612000000574542505650384c050000002f0000000000")),
+    withPart(
+      rasterWith("webp", "524946461800000057454250565038200b000000f0ffff9d012a010001000000"),
+    ),
+    withPart({
+      ...image,
+      image_url:
+        "data:image/gif;base64,R0lGODdhAQABAIEAAP8AAAAAAAAAAAAAACwAAAAAAQABAAAIBAABBAQAOw==",
+    }),
+    withPart({
+      ...image,
+      image_url: "data:image/png;base64," + png.subarray(0, -12).toString("base64"),
+    }),
+    withPart({ ...image, image_url: "data:image/jpeg;base64," + image.image_url.split(",")[1] }),
+    withPart({ ...image, detail: "future" }),
+    withPart({ ...image, extra: true }),
+    ...["system", "developer", "assistant"].map((role) => withPart(image, role)),
+    { ...body, model: "other-model" },
+    { ...body, tools: [{ type: "image_generation" }] },
+  ]) {
+    assert.ok((await f.resolve(f.capture(refused))).refused);
+  }
+  assert.equal(f.secretReads, reads, "refused image requests cannot read credential material");
+  assert.equal(
+    f.providerRequests.length,
+    sends,
+    "refused image requests cannot reach the provider",
+  );
+});
 
 test("Responses admits bounded native agent messages", async (t) => {
   await runStaticEgressNativeAgentMessageCase(t);
