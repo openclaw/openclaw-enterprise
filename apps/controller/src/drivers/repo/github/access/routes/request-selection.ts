@@ -313,7 +313,11 @@ function installationApiOperation(
       if (scopedWrite.issueCreationRepositories?.some((repo) => path === `/repos/${repo}/issues`)) {
         return permitsIssueCreation(body) ? "github-rest" : undefined;
       }
-      if (!/^\/repos\/[^/]+\/[^/]+\/pulls$/.test(path) || !permitsSameRepositoryPull(body)) {
+      if (
+        scopedWrite.sameRepositoryPullRequests !== true ||
+        !/^\/repos\/[^/]+\/[^/]+\/pulls$/.test(path) ||
+        !permitsSameRepositoryPull(body)
+      ) {
         return;
       }
     }

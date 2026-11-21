@@ -857,13 +857,16 @@ test("repository API credential issuance is refused while ordinary collaboration
       await refused(issues, "POST", issue);
       await refused(issues, "POST", pull);
 
+      sameRepositoryPullRequests = undefined;
       issueCreationRepositories.push(binding.repository);
+      await refused(pulls, "POST", pull);
       for (const body of [issue, { ...issue, body: "Details" }, { ...issue, body: "" }]) {
         const before = approvals;
         assert.equal((await create(body)).decision, 1);
         assert.equal(approvals, before + 1);
       }
       assert.equal((await evaluate(other, "GET")).decision, 1);
+      sameRepositoryPullRequests = true;
       assert.equal((await evaluate(pulls, "POST", pull)).decision, 1);
       for (const body of [
         undefined,
