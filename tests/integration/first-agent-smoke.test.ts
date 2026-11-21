@@ -26,6 +26,7 @@ import {
   assertAbsent,
   cutCredentials,
   cutOffsets,
+  multiLineCredentials,
   registeredCutSecret,
 } from "../fixtures/cut-credentials.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
@@ -723,6 +724,36 @@ test("a cut stderr tail with no whole line left prints a marker instead", async 
   }
 });
 
+test("a cut stderr tail of only structured supervisor events prints the marker", async () => {
+  // Each such line prints empty, so a cut tail of them alone would be a run of blank lines.
+  const event = `OCSF-JSON {"n":"${"e".repeat(80)}"}`;
+  const events = Array.from({ length: 60 }, (_, index) => `${index} ${event}`);
+  const shown = async (output: string) => {
+    const message = await failedRunMessage(output);
+    return message.slice(message.indexOf("exited 3\n") + "exited 3\n".length);
+  };
+  assert.equal(
+    await shown(events.join("\n")),
+    "[diagnostics: output cut at 4000 characters; first line dropped]",
+  );
+  // An uncut block keeps its blank lines.
+  assert.equal(await shown(events.slice(0, 3).join("\n")), "\n\n");
+});
+
+test("a cut stderr tail masks a key with no END whose header is whole on the cut line", async () => {
+  // The cut falls in the log prefix before the header: only redacting before the cut line is
+  // dropped masks the body, since that line holds the header that starts the key.
+  const key = multiLineCredentials.find(({ name }) => name === "a private key block with no END")!;
+  const line = `2026-11-21T08:00:00Z gateway ${key.text}`;
+  for (const offset of [1, line.indexOf("-----BEGIN") - 1]) {
+    const after = "after the key\n".repeat(300).slice(0, 4_000 - (line.length - offset) - 1);
+    const message = await failedRunMessage(`earlier line\n${line}\n${after}`);
+    for (const secret of key.secrets) {
+      assertAbsent(message, secret, `cut ${offset} in`);
+    }
+  }
+});
+
 test("diagnostics redact command output in the job log from a whole line", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-diagnostics-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -793,6 +824,39 @@ test("diagnostics redact the logs kept from a stopped gateway", async (t) => {
   assert.match(printed, /\ngateway shutdown completed cleanly in 12ms\n/u);
   for (const value of cutCredentials) {
     assertAbsent(printed, value.secret, `stopped gateway logs: ${value.name}`);
+  }
+});
+
+test("a failed diagnostics read prints its error redacted before the 500-character cut", async (t) => {
+  setEnvironment(t, { OCE_SMOKE_FIXTURE_REGISTERED: registeredCutSecret });
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-read-error-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeCommand(directory, "docker", "exit 1");
+  await writeCommand(directory, "kubectl", "exit 1");
+  // Each fixture credential whole in an error message, with the cut at 500 characters inside it.
+  const messages = cutCredentials.flatMap((credential) =>
+    cutOffsets(credential.text).map(
+      (offset) => `${"filler ".repeat(80).slice(offset - 500)}${credential.text} end`,
+    ),
+  );
+  // Each Agent makes three reads through the CLI; reading the stack's origin throws the next one.
+  const stack = `{
+    kubeconfig: "missing",
+    context: "missing",
+    namespaceId: "ns_missing",
+    state: { platformNamespace: "missing" },
+    api: async () => { throw new Error("no API"); },
+    messages: ${JSON.stringify(messages)},
+    get origin() { throw new Error(this.messages.shift()); },
+    agents: Array.from({ length: ${messages.length / 3} }, (_, i) => ({ id: "agent_" + i, label: "fixture" })),
+  }`;
+  const printed = await smokeStdout("reader.ts", `diagnostics(${stack})`, {
+    ...process.env,
+    PATH: commandPath(directory),
+  });
+  assert.equal(printed.match(/^----- fixture [a-z ]+ unavailable: /gmu)?.length, messages.length);
+  for (const value of cutCredentials) {
+    assertAbsent(printed, value.secret, `failed read: ${value.name}`);
   }
 });
 

@@ -511,11 +511,11 @@ export function redactedOutput(text: string, secrets: RedactionSecrets) {
 
 // The last `limit` characters of a command's output, redacted as redactedOutput does. When the
 // output was longer, the first line of the redacted text is dropped, since it holds what is left
-// of the cut one; a fixed marker says so when nothing is left after it.
+// of the cut one; a fixed marker says so when nothing but blank lines is left after it.
 export function redactedOutputTail(text: string, limit: number, secrets: RedactionSecrets) {
   const cut = text.length > limit;
   const shown = withoutCutLine(redactedOutput(text.slice(-limit), secrets), cut);
-  if (cut && shown === "") {
+  if (cut && shown.trim() === "") {
     return `[diagnostics: output cut at ${limit} characters; first line dropped]`;
   }
   return shown;

@@ -700,9 +700,8 @@ export async function diagnostics(stack: (LocalSetup & Partial<SmokeStack>) | un
       const shown = redactedOutputTail(result.stdout, 20_000, failureSecrets([process.env]));
       process.stdout.write(`----- ${label}\n${shown}\n`);
     } catch (error) {
-      process.stdout.write(
-        `----- ${label} unavailable: ${(error as Error).message.slice(0, 500)}\n`,
-      );
+      const message = redactedOutput((error as Error).message, failureSecrets([process.env]));
+      process.stdout.write(`----- ${label} unavailable: ${message.slice(0, 500)}\n`);
     }
   };
   await attempt("stand-in provider events", () =>
