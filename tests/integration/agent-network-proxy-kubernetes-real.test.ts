@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { createServer } from "node:net";
 import test from "node:test";
-import { promisify } from "node:util";
 import type { Agent, AgentRevision } from "@openclaw-enterprise/contracts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { boundedTeardown } from "../helpers/bounded-teardown.ts";
+import { createControlledChannelProxy } from "../helpers/channel-upstream-proxy.ts";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
@@ -14,7 +12,6 @@ import {
   waitFor,
 } from "../helpers/harness-topology-k3d-real.mjs";
 
-const command = promisify(execFile);
 const selected = process.env.OCC_TEST_GATEWAY_ROUTING_REAL === "1";
 
 test(
@@ -25,36 +22,9 @@ test(
   },
   async (t) => {
     const { context } = boundedTeardown(t, { label: "Agent Network proxy topology cleanup" });
-    const clusterContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
-    assert.ok(
-      typeof clusterContext === "string" && clusterContext.startsWith("k3d-"),
-      "Select an owned disposable k3d context.",
-    );
-    const cluster = clusterContext.slice(4);
-    const engine = process.env.OCC_DOCKER_BIN ?? "docker";
-    const inspected = await command(engine, ["network", "inspect", `k3d-${cluster}`]);
-    const network = JSON.parse(inspected.stdout)[0];
-    const address = network?.IPAM?.Config?.[0]?.Gateway;
-    assert.equal(
-      typeof address,
-      "string",
-      "The disposable cluster must expose its bridge gateway.",
-    );
-
-    // A reachable controlled endpoint lets the scenario prove that a no-channel Agent never contacts it.
-    let connections = 0;
-    const proxy = createServer((socket) => {
-      connections += 1;
-      socket.destroy();
-    });
-    context.after(() => new Promise<void>((resolve) => proxy.close(() => resolve())));
-    await new Promise<void>((resolve, reject) => {
-      proxy.once("error", reject);
-      proxy.listen(0, "0.0.0.0", resolve);
-    });
-    const listening = proxy.address();
-    assert.ok(listening && typeof listening === "object");
-    const url = `http://${address}:${listening.port}`;
+    // A controlled endpoint lets the scenario prove that a no-channel Agent never contacts it.
+    const proxy = await createControlledChannelProxy(context, { forward: false });
+    const { url, address, port } = proxy;
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       channelEgressCapacity: 1,
       channelEgress: { upstreamProxies: [{ url, addresses: [`${address}/32`] }] },
@@ -68,7 +38,7 @@ test(
     const agentPath = `/namespaces/${namespaceId}/agents/${agent.id}`;
     const previousRevisionId = initialRevision.id;
     const password = randomBytes(18).toString("hex");
-    const authorization = `Basic ${Buffer.from(`probe:${password}`).toString("base64")}`;
+    const authorization = proxy.authorization;
     const created = await topology.adminRequest("POST", `/namespaces/${namespaceId}/secrets`, {
       name: "Gateway channel proxy credential",
       value: authorization,
@@ -87,7 +57,7 @@ test(
       username: "probe",
       password,
       host: address,
-      port: listening.port,
+      port,
     });
     const invalid = await topology.request("PATCH", agentPath, {
       networkProxy: { url: invalidUrl },
@@ -168,7 +138,7 @@ test(
       ),
       false,
     );
-    assert.equal(connections, 0);
+    assert.equal(proxy.observations.length, 0);
 
     const cleared = await topology.request("PATCH", agentPath, { networkProxy: null });
     assert.equal(cleared.status, 200);

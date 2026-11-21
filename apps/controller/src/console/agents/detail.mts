@@ -86,6 +86,7 @@ import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
 import { renderAgentLogs } from "./logs.mjs";
+import { createNetworkProxyFields } from "./network-proxy.mjs";
 import {
   displayDate,
   shortId,
@@ -243,6 +244,7 @@ interface DraftDetails {
   credentials: Credentials | null;
   channelSecretsNote: string;
   managedMode: { value: Text; action: HTMLButtonElement | null; control: HTMLElement | null };
+  networkProxy: { value: Text; credential: Text; control: HTMLElement };
   setAuthenticationPending(pending: boolean): void;
   setAuthenticationUnsaved(unsaved: boolean): void;
   setDraftEditorState(state: Partial<EditorState>): void;
@@ -978,6 +980,8 @@ export async function renderAgentDetail(
   // The draft holds below are declared before a deleting Agent's early return: ← Agents and the
   // reload check read them on that page too (finding 2125).
   let draftEditorNavigationBlock: string | null = null;
+  let networkProxyNavigationBlock: string | null = null;
+  let networkProxySaving = false;
   // Whether a draft editor's write is in flight (its block names the save to wait for).
   let draftEditorSaving = false;
   // Set while a saved draft refreshes in place; tab and version changes wait for it.
@@ -1559,7 +1563,7 @@ export async function renderAgentDetail(
     if (activeCredentials?.isSaving()) {
       return "This page stays open until the channel Secret bindings save finishes.";
     }
-    return draftEditorNavigationBlock;
+    return networkProxyNavigationBlock ?? draftEditorNavigationBlock;
   }
   function showLeaveBlock() {
     const reason = leaveReason();
@@ -1585,6 +1589,8 @@ export async function renderAgentDetail(
       showLeaveNote(authenticationLeaveAnchor, reason, "end");
     } else if (activeCredentials?.isSaving()) {
       showLeaveNote(activeCredentials.section, reason, "after");
+    } else if (networkProxyNavigationBlock) {
+      showLeaveNote(content, networkProxyNavigationBlock, "start");
     } else {
       showDraftEditorNavigationBlock();
     }
@@ -1601,6 +1607,7 @@ export async function renderAgentDetail(
         refreshingDraft ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
+        (selectedTab === "configuration" && networkProxyNavigationBlock) ||
         (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
           draftEditorNavigationBlock))
     );
@@ -1615,6 +1622,7 @@ export async function renderAgentDetail(
         (rereads && refreshingDraft) ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
+        networkProxySaving ||
         (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
           draftEditorSaving))
     );
@@ -3410,6 +3418,114 @@ export async function renderAgentDetail(
       action: null,
       control: null,
     };
+    let proxyDirty = false;
+    let proxyUnknown = false;
+    const proxyValue = document.createTextNode(agent.networkProxy?.url ?? "None");
+    const proxyCredential = document.createTextNode(
+      agent.networkProxy?.credentialSecretId ?? "None",
+    );
+    const proxyFeedback = element("p", { className: "hint", role: "status" });
+    const proxyPermission = element("p", { className: "hint" });
+    const proxyFields = createNetworkProxyFields({
+      context,
+      namespaceId,
+      id: "agent-network-proxy",
+      ...(agent.networkProxy === undefined ? {} : { initial: agent.networkProxy }),
+      agentName: () => agent.name,
+      onChange: syncProxyEdit,
+    });
+    const proxyReload = button("Reload draft", () => void reloadDraftInPlace(context, {}), {
+      hidden: true,
+    });
+    const proxySave = button("Save Network proxy for next deployment", () => void saveProxy());
+    const proxyCancel = button("Cancel proxy edits", () => {
+      proxyFields.reset(agent.networkProxy);
+      proxyFeedback.textContent = "";
+    });
+    const proxyClear = button("Clear proxy for next deployment", () => {
+      proxyFields.reset(undefined);
+      void saveProxy();
+    });
+    const proxyControl = element(
+      "section",
+      { className: "network-proxy-editor" },
+      element("h3", {}, "Gateway channel proxy"),
+      proxyFields.node,
+      proxyPermission,
+      element(
+        "div",
+        { className: "form-actions" },
+        proxySave,
+        proxyCancel,
+        proxyClear,
+        proxyReload,
+      ),
+      proxyFeedback,
+    );
+    function syncProxyEdit() {
+      const draft = proxyFields.draft();
+      proxyDirty =
+        proxyFields.input.value !== (agent.networkProxy?.url ?? "") ||
+        draft.credentialSecretId !== agent.networkProxy?.credentialSecretId;
+      if (proxyUnknown) {
+        networkProxyNavigationBlock =
+          "Reload the draft before changing or deploying the Network proxy.";
+      } else if (networkProxySaving) {
+        networkProxyNavigationBlock = "Wait for the Network proxy save to finish.";
+      } else if (proxyDirty) {
+        networkProxyNavigationBlock = "Save or cancel Network proxy edits before leaving this tab.";
+      } else {
+        networkProxyNavigationBlock = null;
+      }
+      updateNavigationControls();
+      updateDeployControls();
+    }
+    async function saveProxy() {
+      let selection;
+      try {
+        selection = proxyFields.read();
+      } catch (error) {
+        proxyFields.showValidation(
+          error instanceof Error ? error.message : "The Network proxy selection is invalid.",
+        );
+        return;
+      }
+      networkProxySaving = true;
+      proxyFeedback.textContent = "";
+      syncProxyEdit();
+      try {
+        const saved = agentForPage(
+          await request(path, { method: "PATCH", body: { networkProxy: selection ?? null } }),
+        );
+        if ("configurationReadError" in saved || !sameValue(saved.networkProxy, selection)) {
+          throw new Error("The Agent response did not confirm the Network proxy selection.");
+        }
+        if (context.isCurrent()) {
+          agent = saved;
+          proxyValue.textContent = agent.networkProxy?.url ?? "None";
+          proxyCredential.textContent = agent.networkProxy?.credentialSecretId ?? "None";
+          proxyUnknown = false;
+          proxyFields.reset(agent.networkProxy);
+          proxyFeedback.textContent = "Network proxy saved. Deploy a new version to apply it.";
+          setStatusTone(proxyFeedback, "success");
+          void readDeploySecretsDenied({ fresh: true });
+        }
+      } catch (error) {
+        if (!context.isCurrent()) {
+          return;
+        }
+        const failure = requestFailure(error);
+        proxyUnknown = failure.status === undefined || failure.status >= 500;
+        proxyReload.hidden = !proxyUnknown;
+        proxyFeedback.textContent = proxyUnknown
+          ? "The Network proxy may have been saved. Reload this draft before continuing."
+          : describeFailure(error, { mutation: true, form: true });
+        setStatusTone(proxyFeedback, "danger");
+      } finally {
+        networkProxySaving = false;
+        syncProxyEdit();
+      }
+    }
     let authenticationForm: HTMLElement | undefined;
     const retainedAuthentication = context.drafts.get("authentication") as
       AuthenticationDraft | undefined;
@@ -3654,6 +3770,9 @@ export async function renderAgentDetail(
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        proxyDirty ||
+        proxyUnknown ||
+        networkProxySaving ||
         callerPermissions?.deploy === false ||
         Boolean(deploySecretsOperateReason(deploySecretsDenied)) ||
         authenticationSaveState !== "idle" ||
@@ -3835,7 +3954,30 @@ export async function renderAgentDetail(
           deployPending ||
           Boolean(deployReloadMessage) ||
           Boolean(draftEditorNavigationBlock) ||
+          proxyDirty ||
+          networkProxySaving ||
           Boolean(credentials?.mutationPending());
+      }
+      const proxyUnavailable =
+        callerPermissions?.update !== true ||
+        deployPending ||
+        networkProxySaving ||
+        proxyUnknown ||
+        Boolean(deployReloadMessage) ||
+        Boolean(credentials?.mutationPending());
+      proxyFields.setDisabled(proxyUnavailable);
+      proxySave.disabled = proxyUnavailable || !proxyDirty;
+      proxyCancel.disabled = networkProxySaving || proxyUnknown || !proxyDirty;
+      proxyClear.hidden = agent.networkProxy === undefined;
+      proxyClear.disabled = proxyUnavailable;
+      proxyReload.disabled = networkProxySaving;
+      if (callerPermissions?.update === true) {
+        proxyPermission.textContent = "";
+      } else if (callerPermissions?.update === false) {
+        proxyPermission.textContent =
+          "Agent update permission is required to change the Network proxy.";
+      } else {
+        proxyPermission.textContent = "Checking Agent update permission…";
       }
       const draftBlocksDeploy = deployIsDisabled();
       const deployUnavailable = draftBlocksDeploy;
@@ -3884,6 +4026,12 @@ export async function renderAgentDetail(
         } else if (harnessGrantChecking) {
           // A read that settles within 250 ms never shows this text (finding 2576).
           setDelayedText(deployStatus, "", CHECKING_CREDENTIAL_ACCESS);
+        } else if (proxyUnknown) {
+          deployStatus.textContent = "Reload the Network proxy draft before deploying.";
+        } else if (networkProxySaving) {
+          deployStatus.textContent = "Wait for the Network proxy save before deploying.";
+        } else if (proxyDirty) {
+          deployStatus.textContent = "Save or cancel Network proxy edits before deploying.";
         } else if (authenticationPending || harnessGrantMissing) {
           deployStatus.textContent =
             "Confirm authentication and Secret access in Credentials before deploying.";
@@ -4456,6 +4604,7 @@ export async function renderAgentDetail(
       credentials,
       channelSecretsNote,
       managedMode,
+      networkProxy: { value: proxyValue, credential: proxyCredential, control: proxyControl },
       setAuthenticationPending(pending) {
         authenticationPending = pending;
         updateDeployControls();
@@ -4523,6 +4672,8 @@ export async function renderAgentDetail(
       // Delete took the editors: there is nothing to rebuild, and a settled save no longer holds
       // the page (finding 2125).
       draftEditorNavigationBlock = null;
+      networkProxyNavigationBlock = null;
+      networkProxySaving = false;
       draftEditorSaving = false;
       authenticationSaveState = "idle";
       if (context.isCurrent()) {
@@ -4729,6 +4880,8 @@ export async function renderAgentDetail(
     details = next;
     // The rebuilt editors start clean; nothing is saving any more.
     draftEditorNavigationBlock = null;
+    networkProxyNavigationBlock = null;
+    networkProxySaving = false;
     draftEditorSaving = false;
     authenticationSaveState = "idle";
     // Tabs built from the previous draft state would drive its replaced controls.
@@ -5969,6 +6122,16 @@ export async function renderAgentDetail(
           draft ? "Gateway managed mode" : "Requested Gateway managed mode",
           draft ? data.managedMode.value : snapshot.gatewayManagedMode ? "On" : "Off",
         ],
+        [
+          "Network proxy URL (Gateway channels)",
+          draft ? data.networkProxy.value : (snapshot.networkProxy?.url ?? "None"),
+        ],
+        [
+          "Proxy credential Secret",
+          draft
+            ? data.networkProxy.credential
+            : (snapshot.networkProxy?.credentialSecretId ?? "None"),
+        ],
         ["Backend (experimental)", draft ? agent.backendId : snapshot.backendId],
         [
           "Repository access",
@@ -6072,6 +6235,7 @@ export async function renderAgentDetail(
             ? (data.managedMode.control ??
                 element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY))
             : null,
+          draft ? data.networkProxy.control : null,
         ),
       );
     }

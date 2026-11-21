@@ -3428,6 +3428,7 @@ function repositories(
             backendId,
             configurationId,
             configurationGeneration,
+            networkProxy,
             harness,
             createdAt,
           }) =>
@@ -3439,6 +3440,7 @@ function repositories(
               backendId,
               configurationId,
               configurationGeneration,
+              ...(networkProxy === undefined ? {} : { networkProxy }),
               harness,
               createdAt,
             }),

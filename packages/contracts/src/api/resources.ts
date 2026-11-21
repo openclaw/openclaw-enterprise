@@ -1510,6 +1510,7 @@ export const AgentRevisionSummarySchema = Type.Object(
       "backendId",
       "configurationId",
       "configurationGeneration",
+      "networkProxy",
       "createdAt",
     ]).properties,
     harness: Type.Object(

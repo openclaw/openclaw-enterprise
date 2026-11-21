@@ -57,6 +57,7 @@ import {
   NEW_SECRET_OPERATE_REMEDY,
   secretMetadata,
 } from "./secret-picker.mjs";
+import { createNetworkProxyFields, type NetworkProxyDraft } from "./network-proxy.mjs";
 import { workspaceFileProblem } from "./workspace.mjs";
 import { namespaceNameProblem } from "../namespaces.mjs";
 import {
@@ -179,6 +180,7 @@ export interface CreateAgentDraft {
   inputs: Record<string, string>;
   edited: boolean;
   manualModel: boolean;
+  networkProxy?: NetworkProxyDraft;
   // The original native disable while the editor supplies Dedicated transport.
   nativeCodexEntry?: Record<string, unknown> | undefined;
   pendingModelSettings: ModelSettings | undefined;
@@ -924,6 +926,7 @@ function renderAgentForm(
   operateAnswer = namespaceSecretOperateAnswer(context),
 ) {
   const { view, request, namespaceId } = context;
+  let proxyFieldsForControls: ReturnType<typeof createNetworkProxyFields> | null = null;
   const secretsOperateDenied = operateAnswer.read;
   const secretContext = { ...context, secretsOperateDenied };
   // A recheck replaces it once the Namespace becomes ready (finding 2012).
@@ -2474,6 +2477,24 @@ function renderAgentForm(
     nativeAdminHelp,
   );
   const channelEditor = element("div", { className: "create-channels" });
+  const networkProxyFields = createNetworkProxyFields({
+    context,
+    namespaceId,
+    id: "create-network-proxy",
+    ...(draft.networkProxy === undefined ? {} : { initial: draft.networkProxy }),
+    agentName: () => name.value.trim(),
+    onChange() {
+      edited = true;
+      updateControls();
+    },
+  });
+  proxyFieldsForControls = networkProxyFields;
+  const networkProxySection = element(
+    "section",
+    { className: "card" },
+    element("h2", {}, "Gateway channel proxy"),
+    networkProxyFields.node,
+  );
   // The intro names repository access only where the Installation offers it (finding 2423).
   const introText = (repositoryAccess: boolean) =>
     `Choose a model${repositoryAccess ? " and repository access" : ""}. Add Slack when you want this Agent to work with your team.`;
@@ -2612,6 +2633,7 @@ function renderAgentForm(
       Object.entries(draftInputs).map(([key, input]) => [key, input.value]),
     ),
     manualModel,
+    networkProxy: networkProxyFields.draft(),
     pluginApprovers,
     edited,
     nativeCodexEntry,
@@ -3071,6 +3093,7 @@ function renderAgentForm(
     }
     pluginFields.setDisabled(planLocked);
     channelEditor.toggleAttribute("inert", planLocked || saved);
+    proxyFieldsForControls?.setDisabled(planLocked || saved);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
@@ -4005,10 +4028,20 @@ function renderAgentForm(
         "Channels require Dedicated execution. Select Dedicated under Runtime details or disable configured channels before creating the Agent.";
       return;
     }
+    let networkProxy;
+    try {
+      networkProxy = networkProxyFields.read();
+    } catch (error) {
+      networkProxyFields.showValidation(
+        error instanceof Error ? error.message : "The Network proxy selection is invalid.",
+      );
+      return;
+    }
     const repositoryBindings = repositories.bindings();
     const body = {
       name: name.value.trim(),
       executionMode: mode.value,
+      ...(networkProxy === undefined ? {} : { networkProxy }),
       initialWorkspaceFiles: Object.fromEntries(
         workspaceInputs.map(([filename, input]) => [filename, input.value]),
       ),
@@ -4082,6 +4115,7 @@ function renderAgentForm(
             // is refused before anything is saved (finding 2319).
             configuration: { kind: "agent", values, secretBindings: bindings },
             executionMode: body.executionMode,
+            ...(body.networkProxy === undefined ? {} : { networkProxy: body.networkProxy }),
             initialWorkspaceFiles: body.initialWorkspaceFiles,
             ...(body.plugins ? { plugins: body.plugins } : {}),
             ...(body.pluginApprovers ? { pluginApprovers: body.pluginApprovers } : {}),
@@ -4525,6 +4559,7 @@ function renderAgentForm(
     accessStatus,
     form,
     channelEditor,
+    networkProxySection,
     // The outcome leads; the saved-resources line identifies what was kept (finding 1862).
     feedback,
     savedStatus,

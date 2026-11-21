@@ -69,6 +69,30 @@ graph TD
   T --> U["Fence network grants and release the slot"]
 ```
 
+The proxy path below describes implemented source behavior. It does not by
+itself establish live Agent acceptance.
+
+```mermaid
+---
+config:
+  flowchart:
+    htmlLabels: true
+---
+flowchart TB
+  Draft["<b>Agent draft</b><br/>Endpoint and Secret ID"] -->|deploy| Revision["<b>Agent revision</b><br/>Admitted route"]
+  Revision -->|reserve| Binding["<b>Compute binding</b><br/>Listener and scoped grant"]
+  Binding -->|if authenticated| Slot["<b>Exact Secret slot</b><br/>ADS SDS reference"]
+  Binding --> Envoy["<b>Envoy listener</b><br/>Authorize CONNECT"]
+  Slot -->|inject upstream| Envoy
+  Envoy -->|direct route| Provider["<b>Channel provider</b><br/>End-to-end TLS"]
+  Envoy -->|selected route| Proxy["<b>Upstream proxy</b><br/>Resolve final address"]
+  Proxy --> Provider
+  classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
+  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  class Draft,Revision state
+  class Binding,Slot,Envoy,Proxy,Provider operation
+```
+
 ## Execution Trace
 
 ### 0. Install or upgrade channel routing
@@ -159,6 +183,13 @@ Compute rejects unqualified IPv6 rules. Each attempt retains the resulting
 requirements; a retry derives them again. Destination policies are not a
 separate PostgreSQL snapshot.
 
+`packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
+
+Core saves the Agent's proxy selection and private Compute admission in the
+revision. The worker rechecks the caller and Agent principal on the exact
+Secret and passes Compute only its backend identity. No enabled channels means
+Compute creates no listener binding or proxy grant.
+
 ### 2. Reserve and configure a listener
 
 `apps/controller/src/drivers/compute/kubernetes/channel-egress.ts:KubernetesChannelEgress.reserve`
@@ -168,21 +199,31 @@ It recovers an exact existing binding or reserves an idle port through the
 stable EnvoyPatchPolicy's Kubernetes resource version. The initial policy denies
 all targets. A conflicting reservation is read again; exhaustion rejects
 activation. A different rules hash gets a different binding.
+For a proxy selection, the hash also binds the admitted endpoint, scoped
+addresses, trust, and source Secret UID/resource version. Compute fills only
+the assigned preallocated Secret slot and waits for its fixed deny-only route
+to be accepted before activating the listener. A changed credential version
+on retry requires a new deployment.
 
 `apps/controller/src/drivers/compute/kubernetes/channel-egress-policy.ts:channelEgressFilterChain`
 
-The allow chain checks CONNECT authority and port, resolves a strict-DNS
-subcluster, and checks the selected upstream address before connecting. IPv4
-special-use and installation exclusions remain mandatory. TLS stays end-to-end.
+The direct allow chain checks CONNECT authority and port, resolves a strict-DNS
+subcluster, and checks the selected upstream address. The proxy chain applies
+the same authority and port rules, checks the selected proxy address and port,
+then injects the slot's SDS credential in the router's upstream filter chain.
+The proxy owns final address resolution. Provider TLS stays end-to-end.
 
 ### 3. Verify enforcement before workload start
 
 `apps/controller/src/drivers/compute/kubernetes/channel-egress.ts:KubernetesChannelEgress.waitInstalled`
 
-The worker reads every serving Pod's configuration through the read-only
-inspection listener. It requires the assigned actual TCP port, one matching listener, the intended
+The worker reads every serving Pod's configuration through exact listener and
+cluster inspection queries. Names-only SDS inspection excludes
+credential-derived delta versions. It requires the assigned actual TCP port, one matching listener, the intended
 active filter chain, no alternate or older draining chain, and a stable Pod set. It installs the exact Gateway
 source and Envoy ingress grants, then checks the complete additive policy sets.
+For a proxy binding, it also verifies the exact cluster, SDS name, and scoped
+fleet egress grant before Gateway startup.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deployment`
 
@@ -203,6 +244,9 @@ Gateway Pods to be absent and their Deployments and ReplicaSets to have no
 desired replicas. The stop and retirement callers remove the Gateway first;
 NetworkPolicy readback alone does not confirm CNI revocation. Stable resource versions fence late writes by old workers. Missing
 inspection or uncertain ownership leaves the reservation for retry.
+For an authenticated proxy, Compute empties the exact Secret slot, waits for
+the controller to reject its empty route and for the old SDS name to disappear,
+marks the slot idle, and only then releases the listener port.
 
 ### 5. Keep OCC requests separate
 
@@ -245,6 +289,8 @@ and remaining acceptance evidence.
 ## Changelog
 
 - 2026-11-23 16:55: Check the original revision again before recording each one-off Deploy as sending.
+
+- 2026-11-21 04:39: Trace Agent proxy admission, exact Secret slots, scoped Envoy enforcement, safe inspection, and drain-fenced retirement (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298 - 1e1803913)
 
 - 2026-11-21 04:15: Check every required original revision before a new one-off Stop (authoring-run/b9e0b8fc-0057-44bd-b184-c3de7be3267b - 67ecfd947c8969dec25777d7caebf77459ac978f)
 

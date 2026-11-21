@@ -784,10 +784,12 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
   ) {
     throw new PersistedStateInvalidError("Persisted AgentRevision summary is invalid.");
   }
+  const networkProxy = networkProxyFromRow(row);
   return immutableCopy({
     ...metadata,
     configurationId: text(row, "configuration_id"),
     configurationGeneration,
+    ...(networkProxy === undefined ? {} : { networkProxy }),
     harness: {
       id: harness.id,
       version: harness.version,
@@ -4205,10 +4207,10 @@ export class PostgresPlatformState implements PlatformStateStore {
         const found = decodeQueryRows(
           await client.query(
             `SELECT p.id, p.namespace_id, p.agent_id, p.revision_number, p.backend_id,
-                      p.admitted_at, s.configuration_id, s.configuration_generation, s.harness
+                      p.admitted_at, p.network_proxy_url, p.network_proxy_secret_id, s.configuration_id, s.configuration_generation, s.harness
                FROM (
                  SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                        r.admitted_at, r.admitted_spec
+                        r.admitted_at, r.admitted_spec, r.network_proxy_url, r.network_proxy_secret_id
                  FROM occ.agent_revisions AS r
                  JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
                  JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL

@@ -1289,7 +1289,7 @@ export type AgentRevisionMetadata = Pick<
  * return this projection without decoding the full admitted snapshot.
  */
 export type AgentRevisionSummary = AgentRevisionMetadata &
-  Pick<AgentRevision, "configurationId" | "configurationGeneration"> & {
+  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "networkProxy"> & {
     readonly harness: RevisionHarnessDescriptor;
   };
 
