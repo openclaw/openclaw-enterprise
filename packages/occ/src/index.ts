@@ -351,7 +351,7 @@ import {
 } from "./driver-registry.ts";
 import { readDeploymentInventory } from "./deployment-inventory.ts";
 import { SetupDiscovery, type LookupChannelDirectoryInput } from "./setup-discovery.ts";
-import { readInstallationCapabilities } from "./installation-capabilities.ts";
+import { createInstallationCapabilityQueries } from "./installation-capabilities.ts";
 import {
   AGENT_NAME_CONFLICT,
   AgentCredentialSourceBindingError,
@@ -1930,6 +1930,9 @@ export class OpenClawController {
   private readonly provisioningContext = new AsyncLocalStorage<ClaimedWork>();
   private readonly shouldRecordOperations: boolean;
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
+  private readonly installationCapabilityQueries: ReturnType<
+    typeof createInstallationCapabilityQueries
+  >;
   private readonly runtimeObservations: AgentRuntimeObservations;
   private readonly setupDiscovery: SetupDiscovery;
   private readonly runtimeCredentials: AgentRuntimeCredentials;
@@ -2114,6 +2117,26 @@ export class OpenClawController {
       throw new ScopeViolationError("The configured ServiceAccount Driver ID is invalid.");
     }
     this.configuredServiceAccountDriverId = options.configuredServiceAccountDriverId;
+    this.installationCapabilityQueries = createInstallationCapabilityQueries({
+      installation: this.installation,
+      nativeWorkers: this.nativeWorkers,
+      authority: this.authority,
+      transactions: this.transactions,
+      sandboxDriver: () => this.sandboxDriver(),
+      admitOpenClawExecutionMode: admitsOpenClawExecutionMode,
+      readGatewaySourceTypes: () =>
+        this.drivers.hasSelection("credential_gateway")
+          ? this.credentialGatewayOperation(() =>
+              this.credentialGatewayDriver().listSourceTypes({
+                signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+              }),
+            )
+          : undefined,
+      protectedSourceTypes: () => this.protectedSourceTypes().map(({ type }) => type),
+      allowsGatewaySourceType: (type) =>
+        this.ordinaryCredentialGatewayAllowed(type) || this.staticSourceTypeAvailable(type),
+      enabledPluginDrivers: () => this.drivers.enabledPluginDrivers(),
+    });
     this.runtimeObservations = new AgentRuntimeObservations({
       getAgent: (principalId, namespaceId, agentId) =>
         this.getAgent(principalId, namespaceId, agentId),
@@ -2220,46 +2243,21 @@ export class OpenClawController {
   }
 
   async getInstallation(principalId: string): Promise<Readonly<Installation>> {
-    await this.authorize(principalId, "read", {
-      kind: "installation",
-      id: this.installation.id,
-    });
-    return immutableCopy({ ...this.installation, capabilities: await this.capabilities() });
+    return this.installationCapabilityQueries.getInstallation(principalId);
   }
 
   /**
    * The capabilities Agent creation in a Namespace needs, for a caller who may create Agents
-   * there but cannot read the Installation, such as a Default user (RFC-0026). Browser access
-   * is available to resource owners; guided provisioning still requires Installation administration.
+   * there but cannot read the Installation, such as a Default user (RFC-0026).
    */
   async getNamespaceAgentCapabilities(
     principalId: string,
     namespaceId: string,
   ): Promise<Readonly<Omit<InstallationCapabilities, "agentProvisioning">>> {
-    this.namespaceIdentity(namespaceId);
-    await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
-    await this.read((state) => this.exactNamespace(state, namespaceId));
-    const { agentProvisioning: _administratorOnly, ...capabilities } = await this.capabilities();
-    return immutableCopy(capabilities);
-  }
-
-  private capabilities(): Promise<InstallationCapabilities> {
-    return readInstallationCapabilities(this.installation, this.nativeWorkers, {
-      sandboxDriver: () => this.sandboxDriver(),
-      admitOpenClawExecutionMode: admitsOpenClawExecutionMode,
-      readGatewaySourceTypes: () =>
-        this.drivers.hasSelection("credential_gateway")
-          ? this.credentialGatewayOperation(() =>
-              this.credentialGatewayDriver().listSourceTypes({
-                signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-              }),
-            )
-          : undefined,
-      protectedSourceTypes: () => this.protectedSourceTypes().map(({ type }) => type),
-      allowsGatewaySourceType: (type) =>
-        this.ordinaryCredentialGatewayAllowed(type) || this.staticSourceTypeAvailable(type),
-      enabledPluginDrivers: () => this.enabledPluginDrivers(),
-    });
+    return this.installationCapabilityQueries.getNamespaceAgentCapabilities(
+      principalId,
+      namespaceId,
+    );
   }
 
   async getInstallationDeploymentInventory(
@@ -13682,20 +13680,7 @@ export class OpenClawController {
   }
 
   private pluginDriver(harnessId: string, selection = false): PluginDriver {
-    const drivers = this.enabledPluginDrivers();
-    const driver = drivers.find((item) => item.harnessId === harnessId);
-    if (!driver) {
-      if (selection && drivers.length > 0) {
-        throw new ConfigurationHarnessError(
-          `No Plugin Driver is enabled for the ${harnessId} Harness. Remove the Agent's plugins or enable its catalog.`,
-        );
-      }
-      throw new NotImplementedError(
-        "agent_plugins.driver",
-        "No selected Plugin Driver can represent Agent plugin configuration.",
-      );
-    }
-    return driver;
+    return this.drivers.pluginDriver(harnessId, selection);
   }
 
   /** Only a cleared Agent can start a selection owned by a different driver. */
