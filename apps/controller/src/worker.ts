@@ -5458,6 +5458,10 @@ export class ControllerWorker {
       return secretBindings.result;
     }
     const refs = uniqueSecretRefs(secretBindings.bindings);
+    const proxySecretId = revision.networkProxy?.credentialSecretId;
+    if (proxySecretId !== undefined && !refs.some((ref) => ref.id === proxySecretId)) {
+      refs.push({ kind: "secret", namespaceId: revision.namespaceId, id: proxySecretId });
+    }
     const auth = revision.harnessAuth;
     if (isSecretHarnessAuth(auth)) {
       if (auth.source?.kind !== "secret" || auth.source.namespaceId !== revision.namespaceId) {
@@ -5803,7 +5807,8 @@ export class ControllerWorker {
     }
     const secretDriverId = this.secretDriverId;
     if (
-      Object.keys(bindings.bindings).length > 0 &&
+      (Object.keys(bindings.bindings).length > 0 ||
+        revision.networkProxy?.credentialSecretId !== undefined) &&
       (typeof secretDriverId !== "string" || revision.secretDriverId !== secretDriverId)
     ) {
       return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
@@ -5837,6 +5842,29 @@ export class ControllerWorker {
 
     if (resolved === undefined) {
       return { result: { outcome: "permanent", code: "SECRET_BINDING_UNAVAILABLE" } };
+    }
+    let networkProxyCredential: ComputeRevisionContext["networkProxyCredential"];
+    const networkProxySecretId = revision.networkProxy?.credentialSecretId;
+    if (networkProxySecretId !== undefined) {
+      const secret = await this.state.read((view) =>
+        view.secrets.findSecret(revision.namespaceId, networkProxySecretId),
+      );
+      if (
+        secret === undefined ||
+        secret.driverId !== secretDriverId ||
+        !secret.backendRef.namespaceName ||
+        !secret.backendRef.name ||
+        !secret.backendRef.key ||
+        !secret.backendRef.uid
+      ) {
+        return { result: { outcome: "permanent", code: "NETWORK_PROXY_SECRET_UNAVAILABLE" } };
+      }
+      networkProxyCredential = {
+        secretId: secret.id,
+        namespaceId: secret.namespaceId,
+        agentId: revision.agentId,
+        backendRef: secret.backendRef,
+      };
     }
 
     let harnessAuth: ResolvedHarnessAuth;
@@ -6071,6 +6099,7 @@ export class ControllerWorker {
                 }),
             }),
         secretEnvironment: Object.freeze(resolved),
+        ...(networkProxyCredential === undefined ? {} : { networkProxyCredential }),
         harnessAuth,
         ...(credentialSources.length === 0
           ? {}

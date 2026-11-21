@@ -1,5 +1,6 @@
 import type { JSONSchema, NetworkDestinationRule } from "@openclaw-enterprise/contracts";
-import { normalizeNetworkDestinationRules } from "@openclaw-enterprise/contracts";
+import { normalizeAgentNetworkProxy, normalizeNetworkDestinationRules } from "@openclaw-enterprise/contracts";
+import { BlockList, isIP } from "node:net";
 import { match } from "ts-pattern";
 
 export interface ChannelEgressOptions {
@@ -13,6 +14,13 @@ export interface ChannelEgressOptions {
   readonly inspectionPort: number;
   /** Administrator-supplied Pod, Service and node ranges, including public node addresses. */
   readonly excludedCidrs: readonly string[];
+  readonly upstreamProxies?: readonly ChannelUpstreamProxyEndpoint[];
+  readonly proxyTrust?: { readonly caSecretName: string; readonly caKey: string };
+}
+
+export interface ChannelUpstreamProxyEndpoint {
+  readonly url: string;
+  readonly addresses: readonly string[];
 }
 
 export const CHANNEL_EGRESS_IMAGE =
@@ -76,6 +84,28 @@ export const channelEgressConfigurationSchema: JSONSchema = {
     occListenerPort: portSchema,
     inspectionPort: portSchema,
     excludedCidrs: { type: "array", minItems: 1, maxItems: 128, items: { type: "string" } },
+    upstreamProxies: {
+      type: "array",
+      maxItems: 32,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["url", "addresses"],
+        properties: {
+          url: { type: "string", minLength: 1, maxLength: 2048 },
+          addresses: { type: "array", minItems: 1, maxItems: 16, items: { type: "string" } },
+        },
+      },
+    },
+    proxyTrust: {
+      type: "object",
+      additionalProperties: false,
+      required: ["caSecretName", "caKey"],
+      properties: {
+        caSecretName: { type: "string", minLength: 1, maxLength: 63 },
+        caKey: { type: "string", minLength: 1, maxLength: 253 },
+      },
+    },
   },
 };
 
@@ -118,8 +148,52 @@ export function validateChannelEgressOptions(options: ChannelEgressOptions): voi
   normalizeNetworkDestinationRules(
     options.excludedCidrs.map((cidr) => ({ destination: { kind: "cidr", cidr }, ports: [1] })),
   );
+  const endpoints = new Set<string>();
+  for (const endpoint of options.upstreamProxies ?? []) {
+    if (
+      normalizeAgentNetworkProxy({ url: endpoint.url }).url !== endpoint.url ||
+      endpoints.has(endpoint.url) ||
+      endpoint.addresses.length < 1 ||
+      endpoint.addresses.length > 16 ||
+      new Set(endpoint.addresses).size !== endpoint.addresses.length
+    ) {
+      throw new Error("Channel upstream proxies require unique normalized endpoints and addresses.");
+    }
+    endpoints.add(endpoint.url);
+    for (const cidr of endpoint.addresses) {
+      const address = cidr.endsWith("/32") ? cidr.slice(0, -3) : "";
+      if (isIP(address) !== 4 || proxyAddressForbidden(address, options.excludedCidrs)) {
+        throw new Error("A channel upstream proxy address is outside the permitted endpoint scope.");
+      }
+    }
+  }
+  if (
+    options.proxyTrust &&
+    (!/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(options.proxyTrust.caSecretName) ||
+      !/^[A-Za-z0-9._-]+$/.test(options.proxyTrust.caKey))
+  ) {
+    throw new Error("Channel proxy trust requires an exact public CA Secret and key.");
+  }
 }
 
+export function proxyAddressForbidden(address: string, installationExclusions: readonly string[]): boolean {
+  const privateRanges = new Set(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+  for (const cidr of [
+    ...CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS.filter((entry) => !privateRanges.has(entry)),
+    ...installationExclusions,
+  ]) {
+    const [network, bits] = cidr.split("/");
+    if (isIP(network ?? "") !== 4) {
+      continue;
+    }
+    const block = new BlockList();
+    block.addSubnet(network!, Number(bits), "ipv4");
+    if (block.check(address, "ipv4")) {
+      return true;
+    }
+  }
+  return false;
+}
 export function requireSupportedChannelDestinations(
   rules: readonly NetworkDestinationRule[],
 ): void {

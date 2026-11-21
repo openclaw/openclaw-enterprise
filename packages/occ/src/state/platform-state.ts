@@ -49,6 +49,7 @@ import {
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
+  normalizeAgentNetworkProxy,
 } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { StoredSendReceipt } from "../egress-send-receipts.ts";
@@ -2113,6 +2114,8 @@ function repositories(
         if (
           agent.namespaceId === namespaceId &&
           (harnessSecretReference(agent.harnessAuth, namespaceId, secretId) ||
+            agent.networkProxy?.credentialSecretId === secretId ||
+            activeRevision?.networkProxy?.credentialSecretId === secretId ||
             harnessSecretReference(activeRevision?.harnessAuth, namespaceId, secretId) ||
             secretBindingsReference(activeRevision?.secretBindings, namespaceId, secretId))
         ) {
@@ -2132,6 +2135,7 @@ function repositories(
         if (
           revision !== undefined &&
           (secretBindingsReference(revision.secretBindings, namespaceId, secretId) ||
+            revision.networkProxy?.credentialSecretId === secretId ||
             harnessSecretReference(revision.harnessAuth, namespaceId, secretId))
         ) {
           add("agent", revision.agentId);
@@ -3067,11 +3071,15 @@ function repositories(
         pluginApprovers: _providedPluginApprovers,
         repositoryBindings: _providedRepositoryBindings,
         repositoryAccess: _providedRepositoryAccess,
+        networkProxy: _providedNetworkProxy,
         ...withoutPlugins
       } = agent;
       const saved = immutableCopy({
         ...withoutPlugins,
         gatewayManagedMode: agent.gatewayManagedMode ?? true,
+        ...(agent.networkProxy === undefined
+          ? {}
+          : { networkProxy: normalizeAgentNetworkProxy(agent.networkProxy) }),
         ...(plugins === undefined ? {} : { plugins }),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -3155,6 +3163,7 @@ function repositories(
       nextCredentialSources,
       gatewayManagedMode,
       nextPluginDriver,
+      nextNetworkProxy,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -3221,14 +3230,18 @@ function repositories(
         pluginApprovers: _currentPluginApprovers,
         repositoryBindings: _currentRepositoryBindings,
         credentialSources: _currentCredentialSources,
+        networkProxy: _currentNetworkProxy,
         ...withoutPlugins
       } = current;
+      const proxy = nextNetworkProxy === undefined ? current.networkProxy : nextNetworkProxy;
+      const networkProxy = proxy == null ? undefined : normalizeAgentNetworkProxy(proxy);
       const updated = immutableCopy({
         ...withoutPlugins,
         configurationId,
         backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
         gatewayManagedMode: gatewayManagedMode ?? current.gatewayManagedMode,
+        ...(networkProxy === undefined ? {} : { networkProxy }),
         ...(pluginDriver === undefined ? {} : { pluginDriver }),
         harnessAuth: association,
         ...(agentCredentialSources === undefined || agentCredentialSources.length === 0
@@ -3397,6 +3410,7 @@ function repositories(
         owner.servicePrincipalId !== revision.servicePrincipalId ||
         owner.backendId !== revision.backendId ||
         revision.gatewayManagedMode !== owner.gatewayManagedMode ||
+        !isDeepStrictEqual(revision.networkProxy, owner.networkProxy) ||
         !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
         !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
       ) {
