@@ -1871,7 +1871,7 @@ export class OpenClawController {
         NativeIAMDriver.usesStateForAuthorization(driver, driver.authorize, this.state),
       timestamp: () => this.timestamp(),
     });
-    this.deviceAuthorization = createDeviceAuthorizationFlow<PlatformReadView, PlatformUnitOfWork>({
+    this.deviceAuthorization = createDeviceAuthorizationFlow({
       installationId: this.installation.id,
       cipher: options.authenticationStateEncryptionSecret
         ? deviceAuthorizationCipher(options.authenticationStateEncryptionSecret)
@@ -1879,13 +1879,10 @@ export class OpenClawController {
       gatewayTimeoutMs: CREDENTIAL_GATEWAY_TIMEOUT_MS,
       nextSessionId: () => this.nextIdentifier("secret"),
       timestamp: () => this.timestamp(),
-      read: (work) => this.read(work),
-      mutate: (work) => this.mutate(work),
-      holdAuthority: (state) => this.holdAuthority(state),
-      authorize: (principalId, action, target) => this.authorize(principalId, action, target),
+      transactions: this.transactions,
+      authority: this.authority,
       authorizeScope: (principalId, namespaceId, agentId) =>
         this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId),
-      lockNamespace: (state, namespaceId) => this.lockNamespace(state, namespaceId),
       hasDriver: (capability) => this.drivers.hasSelection(capability),
       credentialGatewayDriver: () => this.credentialGatewayDriver(),
       credentialRefreshDriver: () => this.credentialRefreshDriver(),
