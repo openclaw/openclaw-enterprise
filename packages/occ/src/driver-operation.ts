@@ -3,7 +3,6 @@ import {
   ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
-  TokenServiceRegistrationRefusedError,
   TokenServiceSourceInputError,
 } from "./errors.ts";
 
@@ -16,11 +15,6 @@ export async function driverOperation<T>(
   } catch (error) {
     if (capability === "TokenService") {
       // Driver errors can contain the material supplied to it. Retain only the error category.
-      if (error instanceof TokenServiceRegistrationRefusedError) {
-        throw new TokenServiceRegistrationRefusedError(
-          "The TokenService refused the source registration.",
-        );
-      }
       if (error instanceof TokenServiceSourceInputError) {
         throw new TokenServiceSourceInputError("The TokenService rejected the source input.");
       }

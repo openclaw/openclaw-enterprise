@@ -60,8 +60,17 @@ test(
     const privateStore = driver.installationSecrets;
     assert.ok(privateStore);
     let controlledStoreFailure: Error | undefined;
+    const sourceCountsBeforeCustody: number[] = [];
     const ownerStore: InstallationSecretStore = {
-      create: (ref, value) => privateStore.create(ref, value),
+      create: async (ref, value) => {
+        // An independent connection must not see an OCC reservation before TokenService takes custody.
+        const existing = await pool.query(
+          "SELECT count(*)::int AS count FROM occ.credential_sources WHERE namespace_id=$1",
+          [namespaceId],
+        );
+        sourceCountsBeforeCustody.push(existing.rows[0].count);
+        await privateStore.create(ref, value);
+      },
       update: async (ref, value) => {
         if (controlledStoreFailure !== undefined) {
           const failure = controlledStoreFailure;
@@ -82,6 +91,7 @@ test(
       controller.installation.id,
       ownerStore,
       instanceId,
+      (work) => controller.transact(({ credentialSources }) => work(credentialSources)),
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);
@@ -99,57 +109,6 @@ test(
     });
     assert.equal(configuration.statusCode, 201, configuration.body);
     const configurationId: string = configuration.json().data.id;
-
-    // Represent a Gateway-owned source saved before restart, with its real Namespace Secret
-    // relationship. Selecting the staged owner cannot make a missing Gateway look retryable.
-    const gatewaySecretId = `sec_${randomUUID()}`;
-    const gatewaySecretRef = {
-      kind: "secret" as const,
-      namespaceId,
-      id: gatewaySecretId,
-    };
-    const gatewayId = `cs_${randomUUID()}`;
-    await controller.transact(async (unit) => {
-      await unit.secrets.createSecret({
-        id: gatewaySecretId,
-        namespaceId,
-        name: "Gateway source key",
-        driverId: "previous-secret-driver",
-        backendRef: {
-          namespaceName: "previous-workspace",
-          name: "gateway-key",
-          key: "value",
-          uid: randomUUID(),
-        },
-        createdAt: new Date().toISOString(),
-      });
-      await unit.credentialSources.createCredentialSource({
-        id: gatewayId,
-        namespaceId,
-        name: "Previously saved Gateway source",
-        type: "openai",
-        ownerCapability: "credential_gateway",
-        driverId: "previous-gateway",
-        state: "ready",
-        config: {},
-        secrets: { api_key: gatewaySecretRef },
-        createdAt: new Date().toISOString(),
-      });
-    });
-    for (const harnessAuth of [null, { method: "credential_source", sourceId: gatewayId }]) {
-      const unavailable = await inject("POST", `${base}/agents`, {
-        name: `Gateway unavailable ${randomUUID()}`,
-        configurationId,
-        harnessAuth,
-        credentialSources: [{ sourceId: gatewayId }],
-      });
-      assert.equal(unavailable.statusCode, 409, unavailable.body);
-      assert.equal(unavailable.json().error.code, "CREDENTIAL_GATEWAY_NOT_CONFIGURED");
-    }
-    await controller.transact(async (unit) => {
-      await unit.credentialSources.deleteCredentialSource(namespaceId, gatewayId);
-      await unit.secrets.deleteSecret(namespaceId, gatewaySecretId);
-    });
 
     const enrollmentMaterial = randomUUID();
     const material = [enrollmentMaterial];
@@ -186,6 +145,7 @@ test(
       }),
     );
     assert.equal(createdSource.statusCode, 201, createdSource.body);
+    assert.deepEqual(sourceCountsBeforeCustody, [0]);
     const source = createdSource.json().data;
     const sourceId = source.id;
     const sourceRef: CredentialSourceReference = {
@@ -200,13 +160,7 @@ test(
       assert.equal(value.type, "static");
       assert.deepEqual(value.config, { provider_preset: "openai" });
       assert.deepEqual(value.secrets, {});
-      for (const privateField of [
-        "secret",
-        "driverId",
-        "tokenServiceInstanceId",
-        "registration",
-        "registrationDispatchedAt",
-      ]) {
+      for (const privateField of ["secret", "driverId", "tokenServiceInstanceId"]) {
         assert.equal(Object.hasOwn(value, privateField), false, privateField);
       }
     };
@@ -222,8 +176,7 @@ test(
     const recorded = await state.read((view) =>
       view.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
-    assert.ok(recorded?.ownerCapability === "token_service" && recorded.registration);
-    const registration = recorded.registration;
+    assert.ok(recorded?.ownerCapability === "token_service");
     assert.deepEqual(recorded.secrets, {});
     assert.equal(JSON.stringify(recorded).includes(enrollmentMaterial), false);
     assert.equal(
@@ -240,7 +193,6 @@ test(
           {
             sourceRef,
             tokenServiceInstanceId: instanceId,
-            registration,
           },
           AbortSignal.timeout(5_000),
         )
@@ -296,7 +248,7 @@ test(
       assert.equal(unavailable.json().error.code, "DEPENDENCY_UNAVAILABLE");
     }
 
-    // The account's realistic Namespace role permits Agent creation/deployment and Configuration read,
+    // The account's Namespace role permits Agent creation/deployment and Namespace/Configuration read,
     // but deliberately has no credential-source permission. The public IAM route creates exact grants.
     const roleId = `role-${randomUUID()}`;
     await pool.query("INSERT INTO occ.iam_roles (id,name,permissions) VALUES ($1,$2,$3::jsonb)", [
@@ -306,6 +258,7 @@ test(
         { action: "create", resourceKind: "agent" },
         { action: "deploy", resourceKind: "agent" },
         { action: "read", resourceKind: "configuration" },
+        { action: "read", resourceKind: "namespace" },
       ]),
     ]);
     const email = `author-${randomUUID()}@example.test`;
@@ -333,6 +286,20 @@ test(
         },
         ...(payload === undefined ? {} : { payload }),
       });
+    // Listing must filter by exact Source read before asking an unavailable owner for details.
+    // This member can read the Namespace but has no grant on the managed Source.
+    const restartedMemberSession = await signInToControllerApp(restartedApp, { email, password });
+    const hiddenWithoutOwner = await restartedApp.inject({
+      method: "GET",
+      url: `${base}/credential-sources`,
+      headers: {
+        host: new URL(restartedMemberSession.origin).host,
+        ...authenticatedHeaders(restartedMemberSession),
+      },
+    });
+    assert.equal(hiddenWithoutOwner.statusCode, 200, hiddenWithoutOwner.body);
+    assert.deepEqual(hiddenWithoutOwner.json().data, []);
+
     // An unauthorized creator must receive an attributable denial before OCC validates
     // the schema-valid but unrecognized preset in the request body.
     const deniedEnrollmentMaterial = randomUUID();
@@ -625,6 +592,7 @@ test(
       controller.installation.id,
       driver.installationSecrets,
       instanceId,
+      (work) => controller.transact(({ credentialSources }) => work(credentialSources)),
     );
     controller.registerDriver(replacement);
     controller.selectDriver("token_service", replacement.id);
@@ -649,7 +617,7 @@ test(
     assert.equal((await inject("GET", sourcePath)).statusCode, 404);
     assert.deepEqual((await inject("GET", `${base}/credential-sources`)).json().data, []);
     assert.equal(await sourceBlocker(), undefined);
-    await assert.rejects(resolve, DependencyUnavailableError);
+    await assert.rejects(resolve, ResourceStateConflictError);
 
     const mutations = await pool.query(
       `SELECT action,outcome,actor_id FROM occ.audit_events

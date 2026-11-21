@@ -111,7 +111,6 @@ import {
   NotImplementedError,
   ResourceStateConflictError,
   ScopeViolationError,
-  PostgresCommitOutcomeUnknownError,
 } from "./errors.ts";
 import { createAgentCredentialWithdrawal } from "./agent-credential-withdrawal.ts";
 import { createAgentTermination } from "./agent-termination.ts";
@@ -529,6 +528,10 @@ function createCredentialServices({
     sourceDrivers: credentialSourceDrivers,
     egressAdmission,
     hasProxy: () => drivers.hasSelection("credential_proxy"),
+    managedSourceOwner: (instanceId) =>
+      managedCredentialSources.ownedTokenServiceDriver(instanceId),
+    tokenServiceOperation: (operation) => driverOperation(operation, "TokenService"),
+    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
     assertCredentialSourceOwnerSelected:
       credentialSourceDrivers.assertCredentialSourceOwnerSelected,
     secretDriver,
@@ -579,10 +582,8 @@ function createCredentialServices({
         selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
         clock: resourceValues.now,
         timestamp: resourceValues.timestamp,
-        nextSourceId,
         tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
         driverOperation: (operation) => driverOperation(operation, "TokenService"),
-        isCommitOutcomeUnknown: (error) => error instanceof PostgresCommitOutcomeUnknownError,
         connectionTokenIssuer,
         preparedIssuer,
       },

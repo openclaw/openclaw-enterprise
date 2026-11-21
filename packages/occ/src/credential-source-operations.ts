@@ -17,6 +17,7 @@ import {
   type SecretDriver,
   type SecretReference,
   type TokenService,
+  type TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
@@ -31,6 +32,7 @@ import {
 } from "./credential-source-drivers.ts";
 import {
   credentialSourceMetadata,
+  credentialSourceRef,
   isManagedTokenServiceSource,
 } from "./credential-source-metadata.ts";
 import {
@@ -100,6 +102,9 @@ interface CredentialSourceDependencies {
     | "staticSourceLifecycleMatches"
   >;
   readonly hasProxy: () => boolean;
+  readonly managedSourceOwner: (instanceId: string) => TokenServiceDriver;
+  readonly tokenServiceOperation: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly tokenServiceTimeoutMs: number;
   readonly assertCredentialSourceOwnerSelected: () => void;
   readonly secretDriver: (driverId: string) => SecretDriver;
   readonly secretOperation: <T>(operation: () => Promise<T>) => Promise<T>;
@@ -1012,8 +1017,28 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       return { namespace: exact, source: found };
     });
     if (isManagedTokenServiceSource(source)) {
-      // Registration state is metadata; observing it does not attest usable owner material.
-      return credentialSourceMetadata(source);
+      const owner = dependencies.managedSourceOwner(source.tokenServiceInstanceId);
+      const found = await dependencies.tokenServiceOperation(() =>
+        owner.readSource(
+          {
+            sourceRef: credentialSourceRef(source),
+            tokenServiceInstanceId: source.tokenServiceInstanceId,
+          },
+          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+        ),
+      );
+      if (
+        !found ||
+        found.id !== source.id ||
+        found.namespaceId !== namespaceId ||
+        !isManagedTokenServiceSource(found) ||
+        found.tokenServiceInstanceId !== source.tokenServiceInstanceId
+      ) {
+        throw new ScopeViolationError(
+          "The credential source does not belong to the exact Namespace.",
+        );
+      }
+      return credentialSourceMetadata(found);
     }
     if (source.ownerCapability === "token_service") {
       const refresh = await dependencies.readConnectionStatus(namespaceId, source.id);
@@ -1077,21 +1102,48 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     namespaceId: string,
   ): Promise<readonly Readonly<CredentialSourceMetadata>[]> {
     const namespace = await dependencies.getNamespace(principalId, namespaceId);
-    return dependencies.transactions.read(async (state) => {
-      const readable: Readonly<CredentialSourceMetadata>[] = [];
-      for (const source of await state.credentialSources.listCredentialSources(namespace.id)) {
-        if (
-          await dependencies.authority.canRead(principalId, {
-            kind: "credential_source",
-            id: source.id,
-            namespaceId: namespace.id,
-          })
-        ) {
-          readable.push(credentialSourceMetadata(source));
-        }
+    const catalog = await dependencies.transactions.read((state) =>
+      state.credentialSources.listCredentialSources(namespace.id),
+    );
+    const authorized: Readonly<CredentialSource>[] = [];
+    for (const source of catalog) {
+      if (
+        await dependencies.authority.canRead(principalId, {
+          kind: "credential_source",
+          id: source.id,
+          namespaceId: namespace.id,
+        })
+      ) {
+        authorized.push(source);
       }
-      return Object.freeze(readable);
-    });
+    }
+    const managed = authorized.find(isManagedTokenServiceSource);
+    const owned =
+      managed === undefined
+        ? []
+        : await dependencies.tokenServiceOperation(() =>
+            dependencies
+              .managedSourceOwner(managed.tokenServiceInstanceId)
+              .listSources(namespace.id, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
+          );
+    const ownedById = new Map(
+      owned
+        .filter(
+          (source) =>
+            isManagedTokenServiceSource(source) &&
+            source.namespaceId === namespace.id &&
+            source.tokenServiceInstanceId === managed?.tokenServiceInstanceId,
+        )
+        .map((source) => [source.id, source]),
+    );
+    const readable: Readonly<CredentialSourceMetadata>[] = [];
+    for (const record of authorized) {
+      const source = isManagedTokenServiceSource(record) ? ownedById.get(record.id) : record;
+      if (source) {
+        readable.push(credentialSourceMetadata(source));
+      }
+    }
+    return Object.freeze(readable);
   }
 
   async function authorizedCredentialSource(

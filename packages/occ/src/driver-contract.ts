@@ -61,11 +61,14 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   }
   if (driver.capability === "token_service") {
     return [
-      "registerSource",
+      "createSource",
+      "readSource",
+      "listSources",
       "updateSource",
       "resolveCredential",
       "forceRefresh",
       "getRefreshStatus",
+      "prepareSourceRetirement",
       "removeSource",
     ].every((operation) => typeof candidate[operation] === "function");
   }

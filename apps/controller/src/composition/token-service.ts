@@ -57,6 +57,7 @@ export async function installTokenServiceDriver(
     controller.installation.id,
     store,
     instanceId,
+    (work) => controller.transact(({ credentialSources }) => work(credentialSources)),
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);

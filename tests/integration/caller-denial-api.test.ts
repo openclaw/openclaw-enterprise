@@ -297,6 +297,10 @@ test("a staged credential source refuses an ungranted Agent principal before rev
     fixture.controller.installation.id,
     driver.installationSecrets,
     instanceId,
+    (work) =>
+      fixture.controller.transact(({ credentialSources }: PlatformUnitOfWork) =>
+        work(credentialSources),
+      ),
   );
   fixture.controller.registerDriver(owner);
   fixture.controller.selectDriver("token_service", owner.id);

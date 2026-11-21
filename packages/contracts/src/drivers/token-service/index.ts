@@ -1,4 +1,4 @@
-import type { CredentialSourceReference } from "../../index.ts";
+import type { CredentialSource, CredentialSourceReference } from "../../index.ts";
 import type { Driver } from "../index.ts";
 
 export type TokenServiceSourceRef = CredentialSourceReference | InstallationClientSecretRef;
@@ -10,23 +10,12 @@ export interface InstallationClientSecretRef {
   readonly namespaceId?: never;
 }
 
-/** Private nonsecret locator; a shared implementation validates it before provider attachment. */
-export interface TokenServiceRegistration {
-  readonly backendRef?: Readonly<Record<string, string>>;
-}
-
 /** A credential store instance retains its identity across ordinary restarts and redeployments. */
 export interface TokenServiceSourceInstance<
   Ref extends TokenServiceSourceRef = TokenServiceSourceRef,
 > {
   readonly sourceRef: Ref;
   readonly tokenServiceInstanceId: string;
-}
-
-export interface RegisteredTokenServiceSource<
-  Ref extends TokenServiceSourceRef = TokenServiceSourceRef,
-> extends TokenServiceSourceInstance<Ref> {
-  readonly registration: TokenServiceRegistration;
 }
 
 /** Only the selected owner's adapter interprets its reviewed source type and lifecycle fields. */
@@ -36,15 +25,32 @@ export interface SourceLifecycleConfig {
 }
 
 type SecretFields = Readonly<Record<string, string>>;
+type SourceConfig = Readonly<Record<string, string>>;
 
-export interface SourceRegistrationInput extends TokenServiceSourceInstance {
+export interface SourceRegistrationInput {
+  readonly namespaceId: string;
+  readonly name: string;
   readonly secret: SecretFields;
   readonly lifecycleConfig: SourceLifecycleConfig;
+  readonly config: SourceConfig;
 }
 
 export type SourceUpdate =
-  | { readonly secret: SecretFields; readonly lifecycleConfig?: SourceLifecycleConfig }
-  | { readonly lifecycleConfig: SourceLifecycleConfig; readonly secret?: SecretFields };
+  | {
+      readonly secret: SecretFields;
+      readonly lifecycleConfig?: SourceLifecycleConfig;
+      readonly config?: SourceConfig;
+    }
+  | {
+      readonly lifecycleConfig: SourceLifecycleConfig;
+      readonly secret?: SecretFields;
+      readonly config?: SourceConfig;
+    }
+  | {
+      readonly config: SourceConfig;
+      readonly secret?: SecretFields;
+      readonly lifecycleConfig?: SourceLifecycleConfig;
+    };
 
 export interface ResolvedCredential {
   readonly credential: string;
@@ -70,33 +76,32 @@ export interface SourceRefreshOperation extends TokenServiceSourceInstance<Crede
   readonly operationId: string;
 }
 
-/** Proposed owner boundary. Installation selection lands with its first implementation. */
+/** The selected owner creates and maintains CredentialSources and their usable credentials. */
 export interface TokenServiceDriver extends Omit<Driver, "capability"> {
   readonly capability: "token_service";
-  registerSource(
-    input: SourceRegistrationInput,
+  createSource(input: SourceRegistrationInput, signal: AbortSignal): Promise<CredentialSource>;
+  readSource(
+    source: TokenServiceSourceInstance<CredentialSourceReference>,
     signal: AbortSignal,
-  ): Promise<TokenServiceRegistration>;
+  ): Promise<CredentialSource | undefined>;
+  listSources(namespaceId: string, signal: AbortSignal): Promise<readonly CredentialSource[]>;
   updateSource(
-    source: RegisteredTokenServiceSource,
+    source: TokenServiceSourceInstance,
     update: SourceUpdate,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<CredentialSource>;
   resolveCredential(
-    source: RegisteredTokenServiceSource,
+    source: TokenServiceSourceInstance,
     signal: AbortSignal,
   ): Promise<ResolvedCredential>;
   forceRefresh(
-    source: RegisteredTokenServiceSource<CredentialSourceReference>,
+    source: TokenServiceSourceInstance<CredentialSourceReference>,
     signal: AbortSignal,
   ): Promise<SourceRefreshOperation>;
   getRefreshStatus(
     operation: SourceRefreshOperation,
     signal: AbortSignal,
   ): Promise<CredentialRefreshStatus>;
-  /** Instance identity remains required when registration failed before returning a locator. */
-  removeSource(
-    source: TokenServiceSourceInstance & { readonly registration?: TokenServiceRegistration },
-    signal: AbortSignal,
-  ): Promise<void>;
+  prepareSourceRetirement(source: TokenServiceSourceInstance, signal: AbortSignal): Promise<void>;
+  removeSource(source: TokenServiceSourceInstance, signal: AbortSignal): Promise<void>;
 }

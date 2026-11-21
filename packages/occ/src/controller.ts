@@ -1149,8 +1149,7 @@ export class OpenClawController {
   async createManagedCredentialSource(
     principalId: string,
     namespaceId: string,
-    input: Omit<SourceRegistrationInput, "sourceRef" | "tokenServiceInstanceId"> & {
-      readonly name: string;
+    input: Omit<SourceRegistrationInput, "namespaceId" | "config"> & {
       readonly providerPreset?: SourceProviderPresetId;
     },
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,

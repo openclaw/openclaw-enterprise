@@ -1,7 +1,6 @@
 # Credential sources
 
-A credential source records its owner and nonsecret configuration in a Namespace.
-A Secret-backed source also references Secret material; for example,
+The selected TokenService creates and owns managed static credential sources. OCC governs source IAM, Agent bindings, and destination policy. Older Secret-backed source forms also reference Secret material; for example,
 `github-app-metadata` names the key and repository for `acme/widgets`.
 
 The Agent draft **binds** the source by ID. For supported delivery, OpenClaw

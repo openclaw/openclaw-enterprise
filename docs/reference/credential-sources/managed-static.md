@@ -1,7 +1,7 @@
 # Managed static credential sources
 
-Use a managed static Source to register one credential value with the selected
-TokenService. The Namespace must be `ready`. Send
+The selected TokenService creates and owns each managed static Source and its
+credential. The Namespace must be `ready`. Send
 `POST /namespaces/:namespaceId/credential-sources` with
 `credential_source:create` on the Namespace:
 
@@ -17,7 +17,9 @@ TokenService. The Namespace must be `ready`. Send
 `secret` is write-only and accepts exactly one value. Its field name does not
 grant destination authority. OCC stores no Namespace Secret reference for this
 Source. The optional `config.provider_preset` permits the exact approved preset
-`openai`; omitting it grants no provider authority.
+`openai`; omitting it grants no provider authority. If a private-store write is
+unconfirmed, POST can fail without creating a Source while leaving orphaned
+credential material. The current store cannot list orphaned material.
 
 Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId`
 with exact `credential_source:update`. Supply `secret`, `config`, or both.
@@ -30,14 +32,13 @@ allowed, including while bound.
 Exact GET requires `credential_source:read`. List requires Namespace `read` and
 returns only Sources with exact Source `read`. Responses contain sanitized Source
 metadata, `ownerCapability: "token_service"`, and `secrets: {}`. They do not
-resolve or return credential material, the selected instance, Driver ID, or
-private receipt. Record state does not prove live credential readiness.
+resolve or return credential material, the selected instance, or Driver ID.
+Record state does not prove live credential readiness.
 
 DELETE requires exact `credential_source:delete` and refuses a referenced
-Source with `409`. OCC removes an undispatched reservation directly; otherwise,
-the recorded owner must confirm retirement. DELETE returns `204` after OCC removes
-the Source and its bindings. Until then, the Source blocks Namespace deletion
-and cleanup can be retried.
+Source with `409`. TokenService retires the Source and its credential. DELETE
+returns `204` after Source removal and completion audit. Until then, the Source
+blocks Namespace deletion and cleanup can be retried.
 
 An authorized Agent draft can bind the Source for Harness authentication.
 Deployment currently returns `409` before creating an Agent revision or work;
