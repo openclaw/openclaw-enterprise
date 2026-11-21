@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { repositoryRetirementWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
-import type {
-  PlatformReadView,
-  PlatformStateStore,
-} from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformReadView } from "../../packages/occ/src/ports/platform-read-view.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { callbackGate } from "../helpers/wait-for.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";

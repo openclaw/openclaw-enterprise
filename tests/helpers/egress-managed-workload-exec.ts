@@ -43,7 +43,6 @@ type CheckpointEntry =
         grpcStatus: number | undefined;
         stdoutBytes: number;
         stderrBytes: number;
-        failure?: string;
       },
     ];
 type ExecOptions = {
@@ -51,7 +50,6 @@ type ExecOptions = {
   workspace: string;
   gatewayClient: OpenShellSandboxObserver;
   checkpoint(...entry: CheckpointEntry): void | Promise<void>;
-  describeExitFailure?: (stderr: Buffer) => string | undefined;
 };
 type ExecRequest = {
   workspace_scope: { workspace: string };
@@ -63,23 +61,6 @@ type ExecRequest = {
 };
 type ExecResult = { stdout: Buffer; stderr: Buffer; exitCode: number };
 
-export class UnconfirmedManagedWorkloadExecError extends Error {}
-
-async function throwUnconfirmedExec(
-  checkpoint: ExecOptions["checkpoint"],
-  message: string,
-  ...entry: CheckpointEntry
-): Promise<never> {
-  let cause: unknown;
-  try {
-    await checkpoint(...entry);
-  } catch (error: unknown) {
-    cause = error;
-  }
-  // The caller must halt even if recording the unconfirmed launch failed.
-  throw new UnconfirmedManagedWorkloadExecError(message, { cause });
-}
-
 /**
  * The operator requests an ordinary, piped ExecSandbox via the authenticated
  * gateway. The supplier's supervisor delegates this to the *workload launcher*;
@@ -88,7 +69,7 @@ async function throwUnconfirmedExec(
  */
 export function createManagedWorkloadExec(
   t: ExecContext,
-  { backend, workspace, gatewayClient, checkpoint, describeExitFailure }: ExecOptions,
+  { backend, workspace, gatewayClient, checkpoint }: ExecOptions,
 ): (binding: Binding, command: string[]) => Promise<ExecResult & { requestId: string }> {
   assert.equal(new URL(backend.endpoint).protocol, "https:");
   assert.ok(workspace && backend.auth && ["mtls", "bearerTokenFile"].includes(backend.auth.mode));
@@ -152,7 +133,7 @@ export function createManagedWorkloadExec(
     signal.addEventListener("abort", abort, { once: true });
     let grpcStatus: number | undefined;
     stream.once("status", ({ code }: Grpc.StatusObject) => (grpcStatus = code));
-    let result: ExecResult;
+    let result: ExecResult | undefined;
     try {
       result = await readExecResult(stream);
       assert.equal(grpcStatus, grpc.status.OK);
@@ -160,56 +141,33 @@ export function createManagedWorkloadExec(
       // Neither transport details nor output are safe ledger content. A missing
       // Exit, even on a clean gRPC close, must remain unconfirmed, with no replay.
       stream.cancel();
-      return throwUnconfirmedExec(
-        checkpoint,
-        "Unconfirmed managed workload exec; reconcile its recorded launch ID",
-        "managed-workload-exec-unconfirmed",
-        {
-          ...launch,
-          grpcStatus: grpcStatus ?? "unknown",
-          reason:
-            asRecord(error)?.code === "ERR_ASSERTION"
-              ? "invalid-terminal-stream"
-              : "stream-failure",
-        },
-      );
+      await checkpoint("managed-workload-exec-unconfirmed", {
+        ...launch,
+        grpcStatus: grpcStatus ?? "unknown",
+        reason:
+          asRecord(error)?.code === "ERR_ASSERTION" ? "invalid-terminal-stream" : "stream-failure",
+      });
+      result = undefined;
     } finally {
       signal.removeEventListener("abort", abort);
+    }
+    if (!result) {
+      throw new Error("Unconfirmed managed workload exec; reconcile its recorded launch ID");
     }
 
     const { stdout, stderr, exitCode } = result;
     // At its execution deadline the supplier reports 124 and retains the
     // unconfirmed admission fence. Do not mistake that for confirmed completion.
     const outcome = exitCode === 124 ? "timeout-unconfirmed" : "terminal-exit";
-    const failure =
-      outcome === "terminal-exit" && exitCode !== 0 ? describeExitFailure?.(stderr) : undefined;
-    const resultEntry = [
-      "managed-workload-exec-result",
-      {
-        ...launch,
-        outcome,
-        exitCode,
-        grpcStatus,
-        stdoutBytes: stdout.length,
-        stderrBytes: stderr.length,
-        ...(failure === undefined ? {} : { failure }),
-      },
-    ] satisfies CheckpointEntry;
-    if (outcome === "timeout-unconfirmed") {
-      return throwUnconfirmedExec(
-        checkpoint,
-        "Managed workload exec reached its execution deadline; reconcile its recorded launch ID",
-        ...resultEntry,
-      );
-    }
-    await checkpoint(...resultEntry);
-    assert.equal(
+    await checkpoint("managed-workload-exec-result", {
+      ...launch,
+      outcome,
       exitCode,
-      0,
-      failure === undefined
-        ? "managed client must exit successfully; see private launch ledger"
-        : "managed client failed with " + failure,
-    );
+      grpcStatus,
+      stdoutBytes: stdout.length,
+      stderrBytes: stderr.length,
+    });
+    assert.equal(exitCode, 0, "managed client must exit successfully; see private launch ledger");
     return { stdout, stderr, exitCode, requestId };
   };
 }

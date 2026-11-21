@@ -48,17 +48,6 @@ The [installation profiles](../../../guides/deploy/installation-profiles.md) exp
 the measured memory defaults. Invalid resource pairs, quotas, and selector labels
 fail before resource creation.
 
-Protected repository policy requires digest-pinned Gateway and dedicated Codex
-Harness images, including when `images.requireImmutableDigest` is `false`.
-A controller build enables this path only when it receives both OCI manifest
-digests. After qualifying the image pair together for the inspected Workspace
-transport, pass `--build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
-`--build-arg OCC_INSPECTED_WORKSPACE_AGENT_DIGEST` with their respective
-`sha256:` digests to `node scripts/build-controller.ts docker`. Use image
-references with those digests in `images.gateway` and `images.agent`. Build
-without either argument to keep this path disabled. Supplying only one digest
-fails the build. Start a new Agent revision when you change the selected pair.
-
 Object-count quotas, such as `pods`, `services`, and `count/deployments.apps`,
 must satisfy Kubernetes integer precision. Use whole counts such as `"4"`;
 quantity suffixes that represent a whole count, such as `"1000m"` or `"1.5Ki"`,

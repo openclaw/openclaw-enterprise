@@ -164,17 +164,16 @@ export {
   SandboxNetworkGrantsSchema,
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
-  admitSandboxRepositoryNetworkPolicy,
 } from "./sandbox-policy.ts";
-export type {
-  RepositoryNetworkGrant,
-  RepositoryNetworkPolicy,
-  RepositoryNetworkPolicyCeiling,
-} from "./repository-network-policy.ts";
 export {
-  admitRepositoryNetworkPolicy,
+  maxRepositoryNetworkGrants,
+  repositoryNetworkGrantPattern,
   parseRepositoryNetworkPolicyCeiling,
   RepositoryNetworkPolicyAdmissionError,
+  type RepositoryNetworkPolicyCeiling,
+  isCanonicalRepositoryGrantList,
+  type RepositoryNetworkGrant,
+  type RepositoryNetworkPolicy,
 } from "./repository-network-policy.ts";
 
 export type {
@@ -1661,7 +1660,6 @@ export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-provi
 export {
   RegisterTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
-  TokenServiceSourceMetadata,
 } from "./api/token-service-sources.ts";
 export {
   PushAgentCredentialsBody,
@@ -1807,3 +1805,6 @@ export type {
   HarnessStartupRef,
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
+
+export { admitRepositoryNetworkPolicy } from "./repository-network-policy.ts";
+export { admitSandboxRepositoryNetworkPolicy } from "./sandbox-policy.ts";

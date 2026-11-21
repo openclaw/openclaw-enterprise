@@ -1,3 +1,4 @@
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
 import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
@@ -14,7 +15,6 @@ import type {
 } from "../../index.ts";
 import type { RepositoryExecutionIdentity } from "../repo/index.ts";
 import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
-import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type {
   ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
@@ -315,8 +315,6 @@ export interface SandboxDriver extends Driver {
    * A denial observed here can select material, never release work. */
   observeHeldRepositoryGitPreview?(
     context: SandboxHarnessStatusContext,
-    /** Compute signs the exact one-use discovery probe for a repository network policy. */
-    signProbe?: (startupId: string, probeNonce: string) => string,
   ): Promise<"held" | "installed" | undefined>;
   /**
    * Release the exact protected Harness startup only after Compute has committed

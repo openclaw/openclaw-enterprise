@@ -71,6 +71,26 @@ function api(
   });
 }
 
+test("private origin reports a denied process-group probe before starting Git", async (t) => {
+  const kill = process.kill;
+  t.mock.method(process, "kill", (pid, signal) => {
+    if (pid < 0 && signal === 0) {
+      throw Object.assign(new Error("restricted runner detail"), { code: "EPERM" });
+    }
+    return kill(pid, signal);
+  });
+  // The invalid ref bounds startup even where the group probe must not run.
+  const message =
+    process.platform === "win32"
+      ? "fixture requires POSIX process groups"
+      : process.pid === 1
+        ? "command failed (exit 1)"
+        : "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.";
+  await assert.rejects(startSkipperPrivateGitOrigin({ approvalRef: "refs/heads/invalid.." }), {
+    message,
+  });
+});
+
 test("private Git witness remains reachable from direct and nested temporary roots", async (t) => {
   const shortRoot = await mkdtemp("/tmp/skipper-test-");
   t.after(() => rm(shortRoot, { recursive: true, force: true }));
@@ -622,11 +642,11 @@ function nativeToolOutput({ session, exit, output = "", tokenCount = 12 }) {
   ].join("\n");
 }
 
-async function controlledModel(t) {
+async function controlledModel(t, cmd = "set -eu; printf 'private git task'") {
   const directory = await temporaryDirectory(t, "skipper-model-");
   const path = join(directory, "command.json");
   const command = {
-    cmd: "set -eu; printf 'private git task'",
+    cmd,
     id: "skipper-test",
     expiresAt: Date.now() + 170_000,
   };
@@ -657,6 +677,41 @@ async function controlledModel(t) {
 function toolCall(events) {
   return events.find((event) => event.type === "response.output_item.done").item;
 }
+
+test("the installed Skipper model preserves the exit status of its Git command", async (t) => {
+  const cwd = await temporaryDirectory(t, "skipper-model-git-");
+  const env = cleanEnvironment({ HOME: cwd });
+  const commit =
+    "git -C work -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet --allow-empty -m fixture";
+  const command = commit + " && git -C work rev-parse HEAD";
+  async function execute() {
+    const model = await controlledModel(t, command);
+    const call = toolCall(model.next());
+    const { code, stdout, stderr } = await run("sh", ["-c", JSON.parse(call.arguments).cmd], {
+      cwd,
+      env,
+      allowFailure: true,
+    });
+    const answer = model.result(call, nativeToolOutput({ exit: code, output: stdout + stderr }));
+    return { code, stdout, answer };
+  }
+
+  const missing = await execute();
+  assert.equal(missing.code, 128);
+  assert.equal(missing.stdout, "");
+  assert.equal(missing.answer, "SKIPPER_INCOMPLETE_skipper-test");
+
+  await run("git", ["init", "--quiet", "work"], { cwd, env });
+  const success = await execute();
+  const head = await run("git", ["-C", "work", "rev-parse", "--verify", "HEAD^{commit}"], {
+    cwd,
+    env,
+  });
+  assert.equal(success.code, 0);
+  assert.match(head.stdout.trim(), /^[0-9a-f]{40}$/);
+  assert.equal(success.stdout, head.stdout + "SKIPPER_COMPUTE_DONE_skipper-test\n");
+  assert.equal(success.answer, "SKIPPER_COMPUTE_DONE_skipper-test");
+});
 
 test("the installed Skipper model waits for the same native session without replaying its command", async (t) => {
   const model = await controlledModel(t);

@@ -350,7 +350,7 @@ export async function observeOpenShellGitInstallation(
   }
   if (
     (entry.preview &&
-      !entry.preview.mandatory &&
+      (!entry.preview.mandatory || entry.preview.native) &&
       ((sandbox.restartCount ?? 0) !== 0 ||
         ![1, "SANDBOX_RESTART_POLICY_NEVER"].includes(
           sandbox.spec?.restart_policy as string | number,
@@ -463,7 +463,7 @@ export async function observeOpenShellGitInstallation(
       throw new OpenShellGitRouteError("supervisor_replaced", "OpenShell Git recipient changed.");
     }
     if (recovered) {
-      if (entry.preview && !entry.preview.mandatory) {
+      if (entry.preview && (!entry.preview.mandatory || entry.preview.native)) {
         throw new OpenShellGitRouteError(
           "supervisor_replaced",
           "Observed-only Git runtime was replaced.",
@@ -486,19 +486,22 @@ export async function observeOpenShellGitInstallation(
     if (
       !entry.continuity ||
       !sandbox.mainProcessStartedAt ||
-      (!preview.mandatory && Date.parse(sandbox.mainProcessStartedAt) < preview.opened - 5000) ||
+      ((!preview.mandatory || preview.native) &&
+        Date.parse(sandbox.mainProcessStartedAt) < preview.opened - 5000) ||
       Date.parse(sandbox.mainProcessStartedAt) > Date.now() + 5000
     ) {
       return;
     }
     const recipient = await previewPolicyAndRecipient({
       ...(preview.mandatory && { mandatory: true }),
+      native: preview.native,
       client: entry.client,
       sandbox,
       observed,
       registration: configuration.registrationName,
       audience: configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
+      boundGitRule: entry.preview.native ? entry.provider.boundNetworkRule() : undefined,
       modelProvider: entry.continuity.model,
       runtimeProvider: entry.continuity.runtime,
       sourcePolicy: await readOpenShellGitEvidence(

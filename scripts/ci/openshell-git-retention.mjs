@@ -26,34 +26,6 @@ export {
 
 export const openShellGitRetentionKind = "openshell-git-retention";
 
-const gitAclFailureCodes = new Set([
-  "ACL_ALLOWED_CAPTURE",
-  "ACL_CREDENTIAL_IN_ENVIRONMENT",
-  "ACL_CREDENTIAL_IN_OUTPUT",
-  "ACL_DENIAL_CAPTURE",
-  "ACL_GIT_AUTHORITY_DENIAL",
-  "ACL_HEAD_STATUS",
-  "ACL_NATIVE_HTTP",
-  "ACL_NATIVE_REST_DENIAL",
-  "ACL_NATIVE_UNEXPECTED_SUCCESS",
-  "ACL_PLACEHOLDER_ENVIRONMENT",
-]);
-
-/** @param {unknown} value */
-export function projectOpenShellGitAclFailure(value) {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  if (gitAclFailureCodes.has(value)) {
-    return value;
-  }
-  const variant =
-    /^ACL_VARIANT_(?:PROCESS|OUTPUT_LIMIT|STDERR|HTTP_[1-5][0-9]{2}|CURL_EXIT_[1-9][0-9]{0,2})$/u.exec(
-      value,
-    );
-  return variant?.[0] === value ? value : undefined;
-}
-
 const withdrawalDiagnostics = {
   mode: ["mode", choice("live", "replacement")],
   workerReady: ["workerReady", boolean],
@@ -324,17 +296,6 @@ export function projectOpenShellGitRetention(value) {
     ) {
       return undefined;
     }
-  }
-  if (
-    selected !== undefined &&
-    value.event === "managed-workload-exec-result" &&
-    value.failure !== undefined
-  ) {
-    const failure = projectOpenShellGitAclFailure(value.failure);
-    if (failure === undefined || value.outcome !== "terminal-exit" || value.exitCode === 0) {
-      return undefined;
-    }
-    return { kind: openShellGitRetentionKind, event: value.event, ...selected, failure };
   }
   return selected === undefined
     ? undefined

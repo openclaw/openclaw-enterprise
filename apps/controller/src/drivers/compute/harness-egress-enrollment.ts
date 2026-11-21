@@ -5,36 +5,18 @@ export const HARNESS_GIT_PROBE_PREFIX =
 const gitProbePath = new RegExp(
   HARNESS_GIT_PROBE_PREFIX.source + /[0-9a-f]{32}\.git\/info\/refs$/.source,
 );
-export const HARNESS_REPOSITORY_GIT_PROBE_HEADER = "x-oce-git-startup-probe";
-export const COMPUTE_REPOSITORY_GIT_PROBE_PROFILE = "oce-compute-repository-git-probe-v1";
-export const repositoryGitDiscoveryProbePath =
-  /^\/[a-z0-9_-]+\/(?!\.{1,2}\.git\/)[a-z0-9_.-]+\.git\/info\/refs$/;
 
 // This runs in the generated Harness, before Codex, login or its first model probe. The transport
-// bearer may read this challenge; only Compute can sign a repository probe or release.
-function harnessEgressEnrollmentHelper(repositoryProbe: boolean): string {
-  const enrollmentMode = repositoryProbe
-    ? String.raw`const online = enrollment?.repositoryGitAuthorization === "online-request";
-  const repositoryGitProbePath = enrollment?.repositoryGitProbePath;`
-    : 'const online = preview || enrollment?.repositoryGitAuthorization === "online-request";';
-  const enrollmentCheck = repositoryProbe
-    ? String.raw`Object.keys(enrollment).length !== 6 ||
-      !online || typeof repositoryGitProbePath !== "string" ||
-      !${repositoryGitDiscoveryProbePath}.test(repositoryGitProbePath) ||`
-    : "Object.keys(enrollment).length !== (online ? 5 : 4) ||";
-  const probeCheck = repositoryProbe
-    ? String.raw`const {probePath, probeNonce, probeSignature, startupId} = release;
-          if (probeSent || startupId !== challenge.startupId || probePath !== repositoryGitProbePath ||
-              typeof probeNonce !== "string" || !/^[a-f0-9]{32}$/.test(probeNonce) ||
-              typeof probeSignature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(probeSignature) ||
-              !verify(null, Buffer.from(JSON.stringify([
-                ${JSON.stringify(COMPUTE_REPOSITORY_GIT_PROBE_PROFILE)}, startupId, probePath, probeNonce
-              ])), key, Buffer.from(probeSignature, "base64url"))) {`
-    : String.raw`const {probePath, startupId} = release;
-          if (probeSent || startupId !== challenge.startupId ||
-              typeof probePath !== "string" || !${gitProbePath}.test(probePath)) {`;
-  const probeArguments = repositoryProbe
-    ? `"--header", ${JSON.stringify(HARNESS_REPOSITORY_GIT_PROBE_HEADER + ": ")} + probeNonce,\n                `
+// bearer may read this challenge; only Compute can sign its release.
+function harnessEgressEnrollmentHelper(networkPolicy: boolean): string {
+  const nativeRecipientCheck = networkPolicy
+    ? String.raw`
+            (installation.repositoryGitRecipient?.deliveryProfile !== "github_repository" ||
+              installation.repositoryGitRecipient.nativeStartupId !== challenge.startupId ||
+              Object.hasOwn(installation.repositoryGitRecipient, "observedHook") ||
+              !["providerId", "attachmentEpoch", "processInstanceId", "networkInstanceId"].every((key) =>
+                typeof installation.repositoryGitRecipient[key] === "string" &&
+                installation.repositoryGitRecipient[key].trim().length > 0)) ||`
     : "";
   return String.raw`
 function waitForHarnessEgressEnrollment(enrollment) {
@@ -44,11 +26,11 @@ function waitForHarnessEgressEnrollment(enrollment) {
   const verifier = process.env.APP_TOKEN_SHA;
   const port = Number(process.env.APP_SERVER_PORT);
   const preview = enrollment?.repositoryGitAuthorization === "request-hook-observed";
-  ${enrollmentMode}
+  const online = ${networkPolicy ? 'enrollment?.repositoryGitAuthorization === "network-policy"' : 'preview || enrollment?.repositoryGitAuthorization === "online-request"'};
   const executionKeys = ["installationId", "namespaceId", "agentId", "servicePrincipalId", "revisionId", "executionId"];
   if (typeof verifier !== "string" || !/^[a-f0-9]{64}$/.test(verifier) ||
       !Number.isSafeInteger(port) || port < 1 || port > 65535 ||
-      !isPlainObject(enrollment) || ${enrollmentCheck}
+      !isPlainObject(enrollment) || ${networkPolicy ? "!online || " : ""}Object.keys(enrollment).length !== (online ? 5 : 4) ||
       (typeof enrollment.inference !== "boolean" && enrollment.inference !== "credential_source") ||
       !Number.isSafeInteger(enrollment.routeCount) || enrollment.routeCount < 0 ||
       !isPlainObject(enrollment.plan) || Object.keys(enrollment.plan).length !== 2 ||
@@ -136,7 +118,9 @@ function waitForHarnessEgressEnrollment(enrollment) {
         }
         const release = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         if (online && Object.hasOwn(release, "probePath")) {
-          ${probeCheck}
+          const {probePath, startupId} = release;
+          if (${networkPolicy ? "online || " : ""}probeSent || startupId !== challenge.startupId ||
+              typeof probePath !== "string" || !${gitProbePath}.test(probePath)) {
             answer(409, {error: "stale_probe"});
             return;
           }
@@ -150,7 +134,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
           try {
             ({stdout} = await require("node:util").promisify(require("node:child_process").execFile)(
               "/usr/bin/curl", ["--disable", "--silent", "--proto", "=https", "--max-time", "10",
-                ${probeArguments}"--max-filesize", "4096", "--write-out", "\n%{http_code}", "--url",
+                "--max-filesize", "4096", "--write-out", "\n%{http_code}", "--url",
                 "https://github.com" + probePath + "?service=git-upload-pack"],
               {env, timeout: 12000, maxBuffer: 8192, encoding: "utf8"}));
           } catch (failure) {
@@ -175,7 +159,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
             return;
           }
           observed = true;
-          answer(200, {startupId, probePath, ${repositoryProbe ? "probeNonce, " : ""}reasonCode});
+          answer(200, {startupId, probePath, reasonCode});
           return;
         }
         const { installation, expiresAt, signature } = release ?? {};
@@ -183,12 +167,12 @@ function waitForHarnessEgressEnrollment(enrollment) {
         if (settled || released || performance.now() >= deadline ||
             !isDeepStrictEqual(release.challenge, challenge) || !isPlainObject(installation) ||
             (online && (installation.repositoryGitRecipient?.authorization !== enrollment.repositoryGitAuthorization ||
-              Object.hasOwn(installation, "peerKeyId"))) ||
-            ${repositoryProbe ? "!observed" : "(probeSent && !observed)"} ||
+              Object.hasOwn(installation, "peerKeyId"))) ||${nativeRecipientCheck}
+            (probeSent && !observed) ||
             (preview && (!observed || installation.repositoryGitRecipient?.observedHook?.startupId !== challenge.startupId)) ||
             !["sandboxId", "instanceId", "configurationId", ...(online ? [] : ["peerKeyId"])].every((k) =>
               typeof installation[k] === "string" && installation[k].length > 0) ||
-            !Number.isSafeInteger(expiresAt) || expiresAt < now || expiresAt > now + 60000 ||
+            !Number.isSafeInteger(expiresAt) || expiresAt ${networkPolicy ? "<=" : "<"} now || expiresAt > now + 60000 ||
             typeof signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(signature) ||
             !verify(null, Buffer.from(JSON.stringify([challenge, installation, expiresAt])), key,
               Buffer.from(signature, "base64url"))) {
@@ -217,6 +201,6 @@ function waitForHarnessEgressEnrollment(enrollment) {
 `;
 }
 
-// Provider-owned launches retain their admitted command bytes unless ACL probing is selected.
+// Existing launch identities hash the exact generated bytes.
 export const HARNESS_EGRESS_ENROLLMENT_HELPER = harnessEgressEnrollmentHelper(false);
-export const HARNESS_REPOSITORY_GIT_ENROLLMENT_HELPER = harnessEgressEnrollmentHelper(true);
+export const HARNESS_NATIVE_GIT_ENROLLMENT_HELPER = harnessEgressEnrollmentHelper(true);

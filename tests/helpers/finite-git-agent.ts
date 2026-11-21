@@ -158,8 +158,8 @@ async function deployGitAgent(
   const deadlineWallMs = revision.repositoryCredentials?.deadlineWallMs;
   if (!approvalId) {
     assert.ok(Number.isSafeInteger(deadlineWallMs));
-    assert.ok(deadlineWallMs >= admissionStartedAt + 600_000);
-    assert.ok(deadlineWallMs <= admissionReturnedAt + 600_000);
+    assert.ok(deadlineWallMs >= admissionStartedAt + fixture.sessionDurationSeconds * 1000);
+    assert.ok(deadlineWallMs <= admissionReturnedAt + fixture.sessionDurationSeconds * 1000);
     await evidence("finite-git-grant", { revisionId: revision.id, deadlineWallMs });
   }
   const reportInitialRuntimeFailure =

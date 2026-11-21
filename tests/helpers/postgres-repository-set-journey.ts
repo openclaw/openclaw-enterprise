@@ -109,9 +109,10 @@ type NarrowPreparation = Pick<
 
 export async function beforeNarrowGitPreparation(
   t: TestContext,
+  testUrl: string,
   exercise: (journey: NarrowPreparation) => Promise<void>,
 ) {
-  await repositoryGitJourney(t, import.meta.url, undefined, {}, exercise);
+  await repositoryGitJourney(t, testUrl, undefined, {}, exercise);
 }
 
 type NarrowPolicy = {
@@ -1779,14 +1780,12 @@ async function repositoryGitJourney(
                   admission,
                   "recovery retains the committed execution authorization",
                 );
-                const signed = signComputeExecutionRelease(
-                  keys.privateKey,
-                  recoveredStartup,
-                  current,
-                );
-                assert.equal(signed.challenge.startupId, recoveredStartup);
+                return signComputeExecutionRelease(keys.privateKey, recoveredStartup, current);
               },
-              deliver: async () => true,
+              deliver: async (signed) => {
+                assert.equal(signed.challenge.startupId, recoveredStartup);
+                return true;
+              },
             });
             assert.equal(wire.world.writes, writes, "recovery does not replay credential writes");
             assert.equal(peer.gh.issuesOfTokens.length, 1, "recovery does not issue a new token");

@@ -38,6 +38,23 @@ Installation-wide access uses a separate
 [`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
 `github-installation` is not a value in a repository's `profiles` list.
 
+### Native Git delivery
+
+A Namespace registration can select `nativeGit: "v1"` with the finite
+`github-repository` profile. Select it consistently across the Agent's bindings.
+Deployment also requires a saved [repository policy](../sandbox-policies.md#repository-network-policy)
+and a Compute Driver that admits the placement. Omitting the policy retains
+online authorization. Existing ref, draft and standing grants retain their own profiles.
+
+OpenShell matches discovery and upload-pack for each read grant. Write also
+permits receive-pack. The Sandbox binds each repository path to a credential
+held by the Gateway. This selection grants Git only.
+
+Before installing or renewing the credential, OCE checks that the expected
+Sandbox is the Provider's sole recipient and the workspace has no additional
+members. Operators must retain exclusive control of workspace, Sandbox and
+Provider writes for this delivery mode.
+
 ## Console access levels
 
 | Console choice          | Configuration value | Meaning                                                                       |
@@ -93,45 +110,6 @@ A push can trigger repository CI, so review that CI's own secret and execution p
 A Git-only session does not admit REST or GraphQL. Draft transport admits only its bounded draft
 operation. Neither profile supports arbitrary GitHub CLI commands, merges, forks, SSH or LFS.
 A lost response does not authorize repeating a push or draft creation.
-
-## Scoped REST
-
-For protected `github-repository` delivery with a Sandbox repository network policy,
-set `scopedRest: "v1"` on each participating repository's Namespace row in the
-GitHub registry. Rebind and deploy after changing the setting. With the setting
-omitted, the network policy permits Git only. With the network policy omitted,
-the selected credential uses its ordinary API scope. The existing deployment and
-runtime qualification requirements apply.
-
-A repository read or write grant and `permissions.issues` of `read` or `write`
-allow listing issues and reading one by number. Substitute the approved
-lowercase owner, repository and issue number.
-
-```sh
-gh api repos/owner/repo/issues
-gh api repos/owner/repo/issues/42
-```
-
-A repository write grant and `permissions.pull_requests: "write"` allow pull
-request creation. Use the Sandbox's injected `GITHUB_TOKEN` placeholder. This
-command submits one POST, skips local curl settings and stops at redirects.
-
-```sh
-printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" |
-  curl -q --fail-with-body --header @- --write-out '\nHTTP %{http_code}\n' \
-    --json '{"title":"Fix","head":"topic/fix","base":"main"}' \
-    https://api.github.com/repos/owner/repo/pulls
-```
-
-Use two unqualified branch names in the approved repository. The hook rejects
-fork selectors, issue conversion, and `%3A` or `%25` in either branch. Optional
-fields are `body`, `draft` and `maintainer_can_modify`. Set `"draft":true` for a
-draft. Expect HTTP 201 and verify the returned PR in GitHub. If the outcome is
-uncertain, inspect the repository before submitting again.
-
-OpenShell also admits HEAD for the issue GET routes. It denies issue writes,
-other API routes and GraphQL. The policy controls request destinations.
-GitHub can return references to other repositories.
 
 ## Supported commands
 

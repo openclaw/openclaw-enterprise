@@ -26,20 +26,26 @@ export const inspectedWorkspaceBuild = {
 
 type WorkspaceAgent = Pick<AgentRevision, "namespaceId" | "agentId" | "gatewayManagedMode">;
 
+export function hasInspectedWorkspaceImages(images: {
+  readonly gateway: string;
+  readonly agent: string;
+}): boolean {
+  const release = inspectedWorkspaceBuild.release;
+  return (
+    release !== undefined &&
+    immutableRuntimeImages(images) &&
+    release.gatewayDigest === images.gateway.slice(images.gateway.lastIndexOf("@") + 1) &&
+    release.agentDigest === images.agent.slice(images.agent.lastIndexOf("@") + 1)
+  );
+}
+
 export function admitsInspectedWorkspace(
   images: { readonly gateway: string; readonly agent: string },
   revision: WorkspaceAgent,
   url: string,
 ): boolean {
-  const release = inspectedWorkspaceBuild.release;
   const path = workspaceNodePathFor(revision.namespaceId, revision.agentId);
-  if (
-    !release ||
-    revision.gatewayManagedMode !== true ||
-    !immutableRuntimeImages(images) ||
-    release.gatewayDigest !== images.gateway.slice(images.gateway.lastIndexOf("@") + 1) ||
-    release.agentDigest !== images.agent.slice(images.agent.lastIndexOf("@") + 1)
-  ) {
+  if (revision.gatewayManagedMode !== true || !hasInspectedWorkspaceImages(images)) {
     return false;
   }
   try {

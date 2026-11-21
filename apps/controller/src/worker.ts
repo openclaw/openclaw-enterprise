@@ -1,5 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
-import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
+import { hasOnlyScopedRepositoryRevisions, reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
   pluginRuntimeHarnessRequirement,
@@ -257,10 +258,18 @@ function requireClaimRenewal(renewed: ClaimedWork | undefined): void {
   }
 }
 
+const INCOMPATIBLE_REPOSITORY_HISTORY = "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE";
+
 // A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
 // An active revision's source is already consumed.
 function isCandidateDeployment(claim: ClaimedWork): boolean {
   return claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`;
+}
+
+function isScopedDeployment(claim: ClaimedWork, revision: Readonly<AgentRevision>): boolean {
+  return (
+    isCandidateDeployment(claim) && revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined
+  );
 }
 
 function matchesRevisionDeployment(
@@ -595,6 +604,7 @@ interface DispatchResult {
 }
 
 interface RevisionDispatchResult extends DispatchResult {
+  readonly candidateNotStarted?: true;
   /** Terminal preparation requires durable retirement of this exact revision. */
   readonly cleanupFailedPreparation?: true;
   /** A transient dependency failure, retried until the convergence deadline. */
@@ -2001,6 +2011,59 @@ export class ControllerWorker {
     return decision;
   }
 
+  private async fenceScopedDeployment(
+    unit: PlatformUnitOfWork,
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<Readonly<Agent>> {
+    await unit.installations.holdIAMConfiguration("shared");
+    const namespace = await unit.namespaces.lockNamespace(revision.namespaceId);
+    const agent = await unit.agents.lockAgent(revision.namespaceId, revision.agentId);
+    if (
+      namespace?.status !== "ready" ||
+      agent?.status !== "active" ||
+      agent.desiredRuntimeState !== "running" ||
+      agent.servicePrincipalId !== revision.servicePrincipalId
+    ) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_REVISION_STOPPED");
+    }
+    const denied = await this.authorizeDeploymentActor(claim, agent, revision, "reconcile");
+    if (denied !== undefined) {
+      throw new RepositoryCredentialAuthorityError(denied.code);
+    }
+    return agent;
+  }
+
+  private withRevisionDispatch<T>(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    effect: () => Promise<T>,
+  ): Promise<T> {
+    if (!isScopedDeployment(claim, revision)) {
+      return this.withClaimHeartbeat(claim, effect);
+    }
+    return this.withClaimHeartbeat(claim, async (signal) => {
+      // Hand off under the same IAM, Namespace, Agent and claim locks as the
+      // decision. Keep the Driver in its original context and await it after release.
+      const dispatch = AsyncLocalStorage.bind(async () => effect());
+      let pending: Promise<T> | undefined;
+      try {
+        await this.state.transactWithQueue(async (unit, queue) => {
+          await this.fenceScopedDeployment(unit, claim, revision);
+          requireClaimRenewal(await queue.heartbeat(claim));
+          signal.throwIfAborted();
+          pending = dispatch();
+          // The Driver can reject while the transaction is finishing.
+          void pending.catch(() => {});
+        }, this.queueOptions);
+      } catch (error) {
+        await pending?.catch(() => {});
+        throw error;
+      }
+      return pending!;
+    });
+  }
+
   private async stagedRevision(
     claim: ClaimedWork,
     operation: "activateRevision" | "deactivateRevision",
@@ -2024,7 +2087,7 @@ export class ControllerWorker {
         this.stoppedPredecessors.delete(revision.id);
       }
       try {
-        await stage.call(this.compute, revision, context);
+        await Reflect.apply(stage, this.compute, [revision, context]);
       } catch (error) {
         throw primaryComputeFailure(error);
       }
@@ -2033,9 +2096,7 @@ export class ControllerWorker {
       operation === "activateRevision" &&
       revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined
     ) {
-      // A successor can claim the work during asynchronous policy validation before the
-      // original heartbeat observes the loss. Renew the exact claim at the Driver boundary.
-      await this.withClaimHeartbeat(claim, applyStage);
+      await this.withRevisionDispatch(claim, revision, applyStage);
     } else {
       await applyStage();
     }
@@ -2263,7 +2324,7 @@ export class ControllerWorker {
           (candidate) => candidate.revision < revision.revision,
         ),
       );
-      await this.stopPredecessors(claim, earlier);
+      await this.stopPredecessors(claim, earlier, revision);
     }
     try {
       return await this.prepareAfterPredecessors(claim, revision, context);
@@ -2288,6 +2349,7 @@ export class ControllerWorker {
   private async stopPredecessors(
     claim: ClaimedWork,
     earlier: readonly Readonly<AgentRevisionMetadata>[],
+    candidate: Readonly<AgentRevision> | undefined,
     drain: "yield" | "wait" = "yield",
     load: (
       listed: Readonly<AgentRevisionMetadata>,
@@ -2309,7 +2371,10 @@ export class ControllerWorker {
         continue;
       }
       const retargeted = await this.state.transactWithQueue(async (unit, queue) => {
-        const agent = await this.lockClaimAgent(unit, claim);
+        const agent =
+          candidate && isScopedDeployment(claim, candidate)
+            ? await this.fenceScopedDeployment(unit, claim, candidate)
+            : await this.lockClaimAgent(unit, claim);
         if ((await queue.heartbeat(claim)) === undefined) {
           throw new WorkClaimLostError();
         }
@@ -2397,7 +2462,7 @@ export class ControllerWorker {
     }
     await this.recheckRevokedCredentialSources(claim, revision);
     this.preparedThisPass = revision.id;
-    let observation = await this.withClaimHeartbeat(claim, () =>
+    let observation = await this.withRevisionDispatch(claim, revision, () =>
       this.compute.prepareRevision(revision, prepared),
     );
     if (!validRevisionObservation(observation, revision)) {
@@ -2433,7 +2498,7 @@ export class ControllerWorker {
       prepared = { ...prepared, repositoryCredentials };
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
-      observation = await this.withClaimHeartbeat(claim, () =>
+      observation = await this.withRevisionDispatch(claim, revision, () =>
         this.compute.prepareRevision(revision, prepared),
       );
       if (
@@ -4571,6 +4636,20 @@ export class ControllerWorker {
     );
   }
 
+  private async canReleaseScopedRevision(revision: Readonly<AgentRevision>): Promise<boolean> {
+    if (revision.sandboxPolicy?.repositoryNetworkPolicy === undefined || revision.revision === 1) {
+      return true;
+    }
+    const rows = await this.state.read((view) =>
+      view.revisions.listRevisionsForBrowsing(revision.namespaceId, revision.agentId),
+    );
+    // History is immutable. A later unreadable revision has no bearing on this prefix.
+    const prefix = rows.slice(0, revision.revision);
+    return (
+      prefix[revision.revision - 1]?.id === revision.id && hasOnlyScopedRepositoryRevisions(prefix)
+    );
+  }
+
   private async processRevision(claim: ClaimedWork): Promise<void> {
     // Maintenance, cleanup and stop work are not deployments.
     if (claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`) {
@@ -4620,8 +4699,32 @@ export class ControllerWorker {
       }
       await this.readRefusalWait(claim, agent, revision.id);
       refusalWaitRead = true;
+      // Only explicit admission decisions before runtime handoff may certify an untouched candidate.
+      const refuseAdmission = async (result: RevisionDispatchResult) => {
+        // Deferral can refund the attempt count. Require the original schedule and
+        // absence of prior work evidence as well as the first claim's count.
+        if (
+          result.outcome === "permanent" &&
+          agent.activeRevisionId !== revision.id &&
+          revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined &&
+          isCandidateDeployment(claim) &&
+          claim.attemptCount === 1 &&
+          claim.availableAt.getTime() <= claim.createdAt.getTime() &&
+          (await this.queue.findWorkAttempt(claim.idempotencyKey)) === undefined
+        ) {
+          await this.finalizeRevision(claim, { ...result, candidateNotStarted: true });
+        } else if (result.code === INCOMPATIBLE_REPOSITORY_HISTORY) {
+          // This Worker cannot safely settle any effects of a prior incompatible claim.
+          await this.finalize(claim, undefined, result);
+        } else {
+          await this.finalizeRevision(claim, result);
+        }
+      };
       if (namespace.status !== "ready") {
-        await this.finalizeRevision(claim, { outcome: "permanent", code: "NAMESPACE_NOT_READY" });
+        await refuseAdmission({
+          outcome: "permanent",
+          code: "NAMESPACE_NOT_READY",
+        });
         return;
       }
       if (
@@ -4629,7 +4732,7 @@ export class ControllerWorker {
         revision.agentId !== agent.id ||
         revision.servicePrincipalId !== agent.servicePrincipalId
       ) {
-        await this.finalizeRevision(claim, {
+        await refuseAdmission({
           outcome: "permanent",
           code: "INVALID_ADMITTED_REVISION",
         });
@@ -4637,7 +4740,7 @@ export class ControllerWorker {
       }
       const approvedHarness = resolveApprovedHarness(revision.harness.id, revision.harness.mode);
       if (approvedHarness === undefined || revision.harness.version !== approvedHarness.version) {
-        await this.finalizeRevision(claim, {
+        await refuseAdmission({
           outcome: "permanent",
           code: "HARNESS_DESCRIPTOR_MISMATCH",
         });
@@ -4647,7 +4750,7 @@ export class ControllerWorker {
         revision.compute.id !== this.compute.id ||
         revision.compute.implementation !== this.compute.implementation
       ) {
-        await this.finalizeRevision(claim, {
+        await refuseAdmission({
           outcome: "permanent",
           code: "COMPUTE_DRIVER_MISMATCH",
         });
@@ -4684,7 +4787,7 @@ export class ControllerWorker {
         }
       }
       if (agent.activeRevisionId !== undefined && previous === undefined) {
-        await this.finalizeRevision(claim, {
+        await refuseAdmission({
           outcome: "permanent",
           code: "INVALID_ACTIVE_REVISION",
         });
@@ -4695,18 +4798,31 @@ export class ControllerWorker {
         (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`) ||
           (isCandidateDeployment(claim) &&
             (repositoryWithdrawal === "removal" || repositoryWithdrawal === "retiring")));
+      const historySupported =
+        withdrawnExecutionWork ||
+        agent.desiredRuntimeState === "stopped" ||
+        (await this.canReleaseScopedRevision(revision));
+      if (!historySupported && agent.activeRevisionId !== revision.id) {
+        // A recovered candidate can predate the API history check. Fail its work
+        // before finalization can stop a predecessor. Stop and withdrawal keep their own paths.
+        await refuseAdmission({
+          outcome: "permanent",
+          code: INCOMPATIBLE_REPOSITORY_HISTORY,
+        });
+        return;
+      }
       // A removal can commit after the original deployment published its active pointer.
       // Like maintenance, unfinished activation withdraws instead of readmitting Git; cleanup
       // cannot complete setup, publish activation success or retire its predecessors.
       if (!withdrawnExecutionWork) {
         const denied = await this.authorizeRevision(claim, agent, revision, "reconcile");
         if (denied !== undefined) {
-          await this.finalizeRevision(claim, denied);
+          await refuseAdmission(denied);
           return;
         }
         const backend = await this.resolveRevisionBackend(revision);
         if (backend !== undefined) {
-          await this.finalizeRevision(claim, backend);
+          await refuseAdmission(backend);
           return;
         }
       }
@@ -4894,7 +5010,9 @@ export class ControllerWorker {
         await this.recoverPendingCredentialWithdrawals(claim, revision);
       }
       // Deploy and repair work must never re-attach a withdrawn source.
-      const secretContext = await this.resolveRevisionSecretContext(revision, "reconcile");
+      const secretContext = historySupported
+        ? await this.resolveRevisionSecretContext(revision, "reconcile")
+        : { result: { outcome: "permanent", code: "EXECUTION_ADMISSION_UNAVAILABLE" } as const };
       if ("result" in secretContext) {
         if (agent.activeRevisionId === revision.id) {
           if (
@@ -4905,7 +5023,7 @@ export class ControllerWorker {
           }
           await this.finalizeActiveRevision(claim, revision, secretContext.result.code);
         } else {
-          await this.finalizeRevision(claim, secretContext.result);
+          await refuseAdmission(secretContext.result);
         }
         return;
       }
@@ -4938,7 +5056,7 @@ export class ControllerWorker {
         if (agent.activeRevisionId === revision.id) {
           await this.finalizeActiveRevision(claim, revision, "PLUGIN_DRIVER_MISMATCH");
         } else {
-          await this.finalizeRevision(claim, {
+          await refuseAdmission({
             outcome: "permanent",
             code: "PLUGIN_DRIVER_MISMATCH",
           });
@@ -4947,7 +5065,7 @@ export class ControllerWorker {
       }
       if (this.compute.bindAgent !== undefined) {
         try {
-          await this.withClaimHeartbeat(claim, async () => {
+          await this.withRevisionDispatch(claim, revision, async () => {
             await this.compute.bindAgent!({ namespace, agent });
           });
         } catch (error) {
@@ -5392,7 +5510,7 @@ export class ControllerWorker {
     );
   }
 
-  private async authorizeRevision(
+  private async authorizeDeploymentActor(
     claim: ClaimedWork,
     agent: Readonly<Agent>,
     revision: Readonly<AgentRevision>,
@@ -5447,8 +5565,7 @@ export class ControllerWorker {
     if (
       operation === "reconcile" &&
       agent.desiredRuntimeState !== "stopped" &&
-      isCandidateDeployment(claim) &&
-      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined
+      isScopedDeployment(claim, revision)
     ) {
       const policyId = `sbp_${agent.id.slice(4)}`;
       for (const [action, kind, id] of [
@@ -5473,6 +5590,20 @@ export class ControllerWorker {
       }
     }
 
+    return undefined;
+  }
+
+  private async authorizeRevision(
+    claim: ClaimedWork,
+    agent: Readonly<Agent>,
+    revision: Readonly<AgentRevision>,
+    operation: "reconcile" | "withdraw",
+  ): Promise<RevisionDispatchResult | undefined> {
+    const denied = await this.authorizeDeploymentActor(claim, agent, revision, operation);
+    if (denied !== undefined) {
+      return denied;
+    }
+    const driver = this.iam;
     const configurationAuthorization: AuthorizationRequest = {
       principalId: claim.actorId,
       action: "read",
@@ -5674,7 +5805,9 @@ export class ControllerWorker {
         ((revision.executionAdmission.version === 6 &&
           revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
           (revision.executionAdmission.version === 5 &&
-            revision.egressPlan?.repositoryGitAuthorization === "online-request")) &&
+            revision.egressPlan?.repositoryGitAuthorization === "online-request") ||
+          (revision.executionAdmission.version === 8 &&
+            revision.egressPlan?.repositoryGitAuthorization === "network-policy")) &&
         this.compute.activationOrder !== "beforeCommit" &&
         !observation.ready &&
         observation.heldForRepositoryGitMaterial === true &&
@@ -5817,7 +5950,7 @@ export class ControllerWorker {
         );
       }
       await this.compute.validateProtectedRepositoryNetworkPolicy(revision);
-      if (revision.executionAdmission.mode === "protected") {
+      if (revision.executionAdmission.version === 8) {
         const sandbox = this.sandbox;
         if (
           sandbox?.validateProtectedRepositoryNetworkPolicy === undefined ||
@@ -6493,6 +6626,7 @@ export class ControllerWorker {
       heldFailureCode === undefined &&
       !expired &&
       resolved.cleanupFailedPreparation !== true &&
+      resolved.candidateNotStarted !== true &&
       resolved.refusedCandidateStopped !== true &&
       resolved.rejectedExecutionWithdrawal !== "withdrawn"
     ) {
@@ -6507,7 +6641,7 @@ export class ControllerWorker {
     // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
     let activeRevisionChanged = false;
     let committedOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
-    if (committedOutcome === "permanent") {
+    if (committedOutcome === "permanent" && !resolved.candidateNotStarted) {
       failureLogFields = {
         ...failureLogFields,
         ...(await this.finishYieldedPredecessorStops(claim, "wait")),
@@ -6616,10 +6750,14 @@ export class ControllerWorker {
             "failed-preparation",
           );
         }
-        await queue.fail(claim, {
-          code: resolved.code,
-          ...(resolved.data === undefined ? {} : { data: resolved.data }),
-        });
+        await queue.fail(
+          claim,
+          {
+            code: resolved.code,
+            ...(resolved.data === undefined ? {} : { data: resolved.data }),
+          },
+          resolved.candidateNotStarted ? { candidateNotStarted: true } : {},
+        );
       } else {
         await queue.retry(claim, {
           code: resolved.code,
@@ -6671,7 +6809,9 @@ export class ControllerWorker {
           resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
           (activated.executionAdmission.version === 6 ||
             (activated.executionAdmission.version === 5 &&
-              activated.egressPlan?.repositoryGitAuthorization === "online-request"))
+              activated.egressPlan?.repositoryGitAuthorization === "online-request") ||
+            (activated.executionAdmission.version === 8 &&
+              activated.egressPlan?.repositoryGitAuthorization === "network-policy"))
         ) {
           // Re-enter normal preparation after custody can install material. Do not mark this
           // deployment ready, retire a predecessor, or release traffic at the held boundary.
@@ -6791,6 +6931,7 @@ export class ControllerWorker {
       await this.stopPredecessors(
         claim,
         revisions.filter((candidate) => candidate.revision < revision.revision),
+        undefined,
         drain,
         async (listed) => revisions.find((candidate) => candidate.id === listed.id),
       );
@@ -7564,11 +7705,15 @@ export class ControllerWorker {
           }
           continue;
         }
-        // Exclusive preparation records the active predecessor's stop before
-        // touching it. A shared or unknown placement offers no such proof.
-        const failedBeforeStop =
-          exclusive && active && !held && deployment?.state === "failed_permanent";
-        if (predecessorStopping || (!runtimeAcknowledged && !failedBeforeStop)) {
+        // Placement can change after a lost claim. Only a terminal admission
+        // refusal attested by the first claimant rules out an outstanding write.
+        if (!predecessorStopping && deployment?.state === "failed_permanent") {
+          const attempt = await view.operations.findWorkAttempt(deployment.idempotencyKey);
+          if (attempt?.candidateNotStarted === true && attempt.code === deployment.reasonCode) {
+            continue;
+          }
+        }
+        if (predecessorStopping || !runtimeAcknowledged) {
           return { kind: "blocked" };
         }
       }

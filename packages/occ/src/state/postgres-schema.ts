@@ -1,4 +1,5 @@
-import type { CredentialPolicyReductionState, PredecessorReplacement } from "./platform-state.ts";
+import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type {
   InitialWorkspaceFiles,
   ProtectedEgressSource,
@@ -767,6 +768,7 @@ export const agentRevisions = occSchema.table(
       "agent_revisions_execution_admission",
       sql`COALESCE(
         jsonb_typeof(${table.admittedSpec}->'execution_admission') = 'object'
+        AND occ.repository_git_network_admission_is_valid(${table.admittedSpec})
         AND (${table.admittedSpec}->'execution_admission') ?& ARRAY['version', 'mode']
         AND ((${table.admittedSpec}->'execution_admission') - 'version' - 'mode' - 'repositoryNetworkPolicyVersion') = '{}'::jsonb
         AND (
@@ -779,12 +781,12 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND (
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7')
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7','8')
                 AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '7'
                   THEN ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
                   ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'policyReductionVersion') OR
                     (${table.admittedSpec} #>> '{execution_admission,version}' = '3' AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7'))
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7','8'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
@@ -795,6 +797,8 @@ export const agentRevisions = occSchema.table(
                       ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'
                       AND ${table.admittedSpec} #>> '{egress_plan,repositoryGit,bindings,0,profile}' = 'github-installation'
                       AND jsonb_array_length(${table.admittedSpec} #> '{egress_plan,repositoryGit,bindings}') = 1
+                    WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '8' THEN
+                      ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'network-policy'
                     ELSE NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGitAuthorization') END
                 AND
                 jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'

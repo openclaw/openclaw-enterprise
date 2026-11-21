@@ -4,16 +4,11 @@ import {
   validRepositoryGitRecipient,
 } from "@openclaw-enterprise/contracts";
 import type {
-  AgentRevision,
   EgressExecution,
   EgressInstallation,
   ProxyPlan,
   EgressRef,
 } from "@openclaw-enterprise/contracts";
-import {
-  COMPUTE_REPOSITORY_GIT_PROBE_PROFILE,
-  repositoryGitDiscoveryProbePath,
-} from "./harness-egress-enrollment.ts";
 
 export { HARNESS_EGRESS_ENROLLMENT_PATH } from "./harness-egress-enrollment.ts";
 
@@ -23,20 +18,9 @@ export interface HarnessEgressEnrollment {
   readonly plan: EgressRef;
   readonly execution: EgressExecution;
   readonly repositoryGitAuthorization?: ProxyPlan["repositoryGitAuthorization"];
-  readonly repositoryGitProbePath?: string;
 }
 
-export function harnessEgressEnrollment(
-  plan: ProxyPlan,
-  repositoryGitProbePath?: string,
-): HarnessEgressEnrollment {
-  if (
-    repositoryGitProbePath !== undefined &&
-    (plan.repositoryGitAuthorization !== "online-request" ||
-      !repositoryGitDiscoveryProbePath.test(repositoryGitProbePath))
-  ) {
-    throw new Error("Protected Harness requires a canonical repository discovery probe path.");
-  }
+export function harnessEgressEnrollment(plan: ProxyPlan): HarnessEgressEnrollment {
   // Project keys in wire order: PostgreSQL JSONB does not preserve insertion order.
   const { installationId, namespaceId, agentId, servicePrincipalId, revisionId, executionId } =
     plan.execution;
@@ -44,7 +28,6 @@ export function harnessEgressEnrollment(
     ...(plan.repositoryGitAuthorization && {
       repositoryGitAuthorization: plan.repositoryGitAuthorization,
     }),
-    ...(repositoryGitProbePath !== undefined && { repositoryGitProbePath }),
     routeCount: plan.routes.length + (plan.repositoryGit ? 1 : 0),
     inference: plan.harnessCredentialSource
       ? "credential_source"
@@ -61,24 +44,6 @@ export function harnessEgressEnrollment(
   };
 }
 
-/** Select the same canonical discovery rule for launch, observation and release. */
-export function repositoryGitStartupProbePath(
-  revision: Readonly<AgentRevision>,
-): string | undefined {
-  const policy = revision.sandboxPolicy?.repositoryNetworkPolicy;
-  if (
-    policy === undefined ||
-    revision.egressPlan?.repositoryGitAuthorization !== "online-request"
-  ) {
-    return undefined;
-  }
-  const grant = policy.grants[0];
-  if (!grant) {
-    throw new Error("Held Git startup requires an admitted repository discovery rule.");
-  }
-  return `/${grant.repository}.git/info/refs`;
-}
-
 export const COMPUTE_RELEASE_PROFILE = "oce-compute-execution-release-v1";
 export const COMPUTE_RELEASE_PUBLIC_KEY = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
 
@@ -86,27 +51,12 @@ export function computeReleasePublicKey(key: KeyObject): string {
   return createPublicKey(key).export({ format: "der", type: "spki" }).toString("base64url");
 }
 
-export function signComputeRepositoryGitProbe(
-  privateKey: KeyObject,
-  startupId: string,
-  probePath: string,
-  probeNonce: string,
-): string {
-  const transcript = JSON.stringify([
-    COMPUTE_REPOSITORY_GIT_PROBE_PROFILE,
-    startupId,
-    probePath,
-    probeNonce,
-  ]);
-  return sign(null, Buffer.from(transcript), privateKey).toString("base64url");
-}
-
 /** Called only by Compute after committed association and a fresh verification of that installation. */
 export function signComputeExecutionRelease(
   privateKey: KeyObject,
   startupId: string,
   { plan, enforcement, sandboxId }: EgressInstallation,
-  repositoryGitProbePath?: string,
+  evidenceExpiresAt?: number,
 ) {
   const installation = {
     sandboxId,
@@ -137,15 +87,27 @@ export function signComputeExecutionRelease(
   ) {
     throw new Error("The observed request hook belongs to another Harness startup.");
   }
+  if (
+    plan.repositoryGitAuthorization === "network-policy" &&
+    enforcement.repositoryGitRecipient?.nativeStartupId !== startupId
+  ) {
+    throw new Error("The network policy recipient belongs to another Harness startup.");
+  }
   const released = plan.repositoryGit
     ? { ...installation, repositoryGitRecipient: enforcement.repositoryGitRecipient }
     : installation;
   const challenge = {
     profile: COMPUTE_RELEASE_PROFILE,
-    ...harnessEgressEnrollment(plan, repositoryGitProbePath),
+    ...harnessEgressEnrollment(plan),
     startupId,
   };
-  const expiresAt = Date.now() + 30_000;
+  const now = Date.now();
+  const expiryLimit =
+    plan.repositoryGitAuthorization === "network-policy" ? evidenceExpiresAt : now + 30_000;
+  if (expiryLimit === undefined || !Number.isSafeInteger(expiryLimit) || expiryLimit <= now) {
+    throw new Error("Protected execution release expiry requires current evidence.");
+  }
+  const expiresAt = Math.min(now + 30_000, expiryLimit);
   const transcript = JSON.stringify([challenge, released, expiresAt]);
   return {
     challenge,

@@ -1,90 +1,121 @@
-import assert from "node:assert/strict";
-import { X509Certificate } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 
-/** Reject the complete bundle without retaining rejected bytes in diagnostics. */
-export function destinationCaCertificate(pem: string): X509Certificate {
-  const certificate = pem.trim();
-  const match =
+const singleCertificate =
+  "destination trust must contain exactly one certificate and no private material";
+
+export function stockDestinationCa(namespace: string, name: string, pem: string) {
+  const body =
     /^-----BEGIN CERTIFICATE-----\r?\n([A-Za-z0-9+/=\r\n]+)\r?\n-----END CERTIFICATE-----$/u.exec(
-      certificate,
-    );
-  const body = match?.[1];
+      pem.trim(),
+    )?.[1];
   if (!body) {
-    throw new Error(
-      "destination trust must contain exactly one certificate and no private material",
-    );
+    throw new Error(singleCertificate);
   }
-  let parsed: X509Certificate;
+
+  // Some X.509 parsers accept an auxiliary trust record appended to the DER.
+  const encoded = body.replace(/[\r\n]/gu, "");
+  const der = Buffer.from(encoded, "base64");
+  if (der.toString("base64") !== encoded) {
+    throw new Error(singleCertificate);
+  }
+  let certificate: X509Certificate;
   try {
-    parsed = new X509Certificate(certificate);
+    certificate = new X509Certificate(pem);
   } catch {
     throw new Error("destination trust must contain a valid certificate");
   }
-  const payload = Buffer.from(body.replace(/[\r\n]/gu, ""), "base64");
-  if (!payload.equals(parsed.raw)) {
-    throw new Error(
-      "destination trust must contain exactly one certificate and no private material",
-    );
+  if (!der.equals(certificate.raw)) {
+    throw new Error(singleCertificate);
   }
-  assert.equal(parsed.ca, true, "destination certificate must be a CA");
-  return parsed;
-}
+  if (!certificate.ca) {
+    throw new Error("destination certificate must be a CA");
+  }
 
-/** Prepare the stock chart's certificate-only destination trust input. */
-export function stockDestinationCa(
-  namespace: string,
-  name: string,
-  pem: string,
-  workspaceCa?: string,
-) {
-  assert.match(namespace, /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/u);
-  assert.match(name, /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/u);
-  destinationCaCertificate(pem);
-  if (workspaceCa !== undefined) {
-    destinationCaCertificate(workspaceCa);
-  }
-  const bundle = workspaceCa === undefined ? pem : pem.trimEnd() + "\n" + workspaceCa;
   return {
     configMap: {
       apiVersion: "v1",
       kind: "ConfigMap",
       metadata: { namespace, name },
       immutable: true,
-      data: { "ca.crt": bundle },
+      data: { "ca.crt": pem },
     },
-    network: { additionalCaConfigMapName: name },
+    normalizedPem: certificate.toString(),
   };
 }
 
-/** Check cluster readback without retaining rejected ConfigMap contents in errors. */
-export function assertStockDestinationCaReadback(value: unknown, expectedPem?: string): void {
-  const map = value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const data =
-    map.data !== null && typeof map.data === "object" && !Array.isArray(map.data)
-      ? (map.data as Record<string, unknown>)
-      : undefined;
+export function stockManagedDestinationCa(namespace: string, gatewayId: string, pem: string) {
+  // Stock OpenShell names each immutable generation by gateway ID and normalized bundle.
+  const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+  const generation = `sha256:${sha256(pem)}`;
+  const name = `openshell-additional-ca-${sha256(gatewayId).slice(0, 12)}-${sha256(generation).slice(0, 26)}`;
+  return { namespace, name, pem, owner: { gatewayId, generation } };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** Keep unexpected ConfigMap contents out of the failure diagnostics. */
+export function assertStockDestinationCaReadback(
+  value: unknown,
+  expected: {
+    namespace: string;
+    name: string;
+    pem: string;
+    owner?: { gatewayId: string; generation: string };
+  },
+): void {
+  const map = asRecord(value);
+  const identity = asRecord(map?.metadata);
   if (
+    !map ||
+    map.kind !== "ConfigMap" ||
+    identity?.namespace !== expected.namespace ||
+    identity?.name !== expected.name
+  ) {
+    throw new Error("destination CA ConfigMap identity does not match");
+  }
+  if (expected.owner) {
+    if ("ownerReferences" in identity) {
+      throw new Error("managed destination CA ConfigMap must omit ownerReferences");
+    }
+    const labels = asRecord(identity.labels);
+    const annotations = asRecord(identity.annotations);
+    if (
+      labels?.["openshell.ai/managed-by"] !== "openshell" ||
+      labels?.["openshell.ai/gateway-id"] !== expected.owner.gatewayId ||
+      annotations?.["openshell.ai/additional-ca-generation"] !== expected.owner.generation
+    ) {
+      throw new Error("managed destination CA ConfigMap generation does not match");
+    }
+  }
+  const data = asRecord(map.data);
+  if (
+    map.immutable !== true ||
+    map.binaryData !== undefined ||
     !data ||
     Object.keys(data).length !== 1 ||
-    typeof data["ca.crt"] !== "string" ||
-    (expectedPem !== undefined && data["ca.crt"] !== expectedPem) ||
-    map.binaryData !== undefined
+    data["ca.crt"] !== expected.pem
   ) {
-    throw new Error("destination CA ConfigMap readback does not match the certificate-only input");
+    throw new Error("destination CA ConfigMap does not match the certificate-only input");
   }
 }
 
-/** The stock chart projects exactly the certificate key to the mounted subpath. */
-export function assertStockDestinationCaProjection(value: unknown): void {
-  if (!Array.isArray(value) || value.length !== 1) {
-    throw new Error("Supervisor CA volume has an unexpected key-to-path mapping");
+export function assertStockDestinationCaProjection(value: unknown, expectedName: string): void {
+  const configMap = asRecord(value);
+  if (configMap?.name !== expectedName) {
+    throw new Error("Supervisor must project the managed destination CA ConfigMap");
   }
-  const item: unknown = value[0];
-  if (item === null || typeof item !== "object" || Array.isArray(item)) {
-    throw new Error("Supervisor CA volume has an unexpected key-to-path mapping");
-  }
-  const mapping = item as Record<string, unknown>;
-  if (Object.keys(mapping).length !== 2 || mapping.key !== "ca.crt" || mapping.path !== "ca.crt") {
-    throw new Error("Supervisor CA volume has an unexpected key-to-path mapping");
+  const items = configMap.items;
+  const mapping = Array.isArray(items) && items.length === 1 ? asRecord(items[0]) : undefined;
+  if (
+    !mapping ||
+    Object.keys(mapping).length !== 2 ||
+    mapping.key !== "ca.crt" ||
+    mapping.path !== "ca.crt"
+  ) {
+    throw new Error("Supervisor CA volume must project only ca.crt to ca.crt");
   }
 }

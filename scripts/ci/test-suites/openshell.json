@@ -221,17 +221,14 @@
       "expectedTests": [
         "OpenShell standing Git remains available when a controller-only upgrade refuses worker replacement",
         "OpenShell retains its runtime after Git expiry and worker restart",
-        "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward",
-        "OpenShell enforces installed Git repository ACLs with managed Basic credentials"
-      ],
-      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
+        "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
+      ]
     },
     {
       "path": "tests/integration/openshell-git-finite-removal-real.test.ts",
       "expectedTests": [
         "OpenShell retains a finite Agent after repository removal until model authority is withdrawn"
-      ],
-      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
+      ]
     }
   ],
   "focusedEnv": ["OCC_TEST_OPENSHELL_HARNESS", "OCC_TEST_OPENSHELL_MODEL_BASE_URL"],

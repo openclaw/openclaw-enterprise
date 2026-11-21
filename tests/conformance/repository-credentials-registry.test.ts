@@ -555,19 +555,6 @@ test("selected repository standing approval binds permissions and rechecks deliv
     repositories: [{ repositoryId: "34567", repository: "example/application" }],
     permissions: scope.apiPermissions,
   });
-  const enabled = structuredClone(input);
-  Object.assign(enabled.repositories[0].namespaces[0], { scopedRest: "v1" });
-  const optedIn = validateGitHubRepositoryRegistry(enabled);
-  assert.equal(resolveGitHubStandingApprovalScope(optedIn, scopeInput), undefined);
-  assert.throws(
-    () => createGitHubRepositoryDeliveryResolver(optedIn)(deliveryRevision(finiteState)),
-    /selected-repository-grant-changed/,
-  );
-  assert.notEqual(
-    resolveGitHubRepositoryBinding(optedIn, request).grant.grantId,
-    binding.grant.grantId,
-  );
-
   const reordered = structuredClone(input);
   reordered.repositories[0].namespaces[0].permissions = {
     contents: "write",

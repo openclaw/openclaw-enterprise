@@ -45,6 +45,24 @@ export async function startSkipperPrivateGitOrigin({
   if (!approvalRef.startsWith("refs/heads/") || approvalRef === "refs/heads/main") {
     throw new Error("approvalRef must be a nondefault branch");
   }
+  // Signal 0 probes the group selector without delivering a signal. PID 1
+  // would produce the broadcast selector, so leave that case to normal startup.
+  if (process.platform !== "win32" && process.pid > 1) {
+    try {
+      process.kill(-process.pid, 0);
+    } catch (error) {
+      if (error.code === "EPERM") {
+        throw new Error(
+          "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.",
+          { cause: error },
+        );
+      }
+      // The runner need not be a process-group leader.
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
   await run("git", ["check-ref-format", approvalRef]);
   const issuedNetwork = networkAcl === "issued";
   assert.ok(!scopedRest || issuedNetwork, "Scoped REST requires the controlled App issuer");
@@ -61,7 +79,8 @@ export async function startSkipperPrivateGitOrigin({
       assert.equal(new Set(repositoryScopes.map((scope) => scope[field])).size, 3);
     }
   }
-  const networkRepositories = repositoryScopes.map((scope) => scope.repository);
+  const repositoryByName = new Map(repositoryScopes.map((scope) => [scope.repository, scope]));
+  const networkRepositories = [...repositoryByName.keys()];
   const directory = await mkdtemp(join(tmpdir(), "skipper-private-git-"));
   const env = cleanEnvironment({ HOME: directory, GIT_CONFIG_GLOBAL: "/dev/null" });
   const git = (args, options = {}) => run("git", args, { env, ...options });
@@ -70,10 +89,9 @@ export async function startSkipperPrivateGitOrigin({
   const broadAuthorization = broadToken
     ? `Basic ${Buffer.from(`x-access-token:${broadToken}`).toString("base64")}`
     : undefined;
-  /** @type {{ repository: string, operation: string, method: "GET" | "HEAD" | "POST", authenticated: boolean, credentialIndex?: number }[]} */
+  /** @type {{ repository: string, operation: string, method: "GET" | "POST", authenticated: boolean, credentialIndex?: number }[]} */
   const networkRequests = [];
   let unknownNetworkRequests = 0;
-  let noncanonicalGitRequests = 0;
   const children = new Set();
   // HTTPS exposes a TLSSocket on the request and a net.Socket at TCP accept.
   // Their live TCP four-tuple identifies the same connection across both events.
@@ -94,7 +112,9 @@ export async function startSkipperPrivateGitOrigin({
       }
     }
   };
-  const issuedGit = witnessIssuedGit === true || issuedNetwork ? new Map() : undefined;
+  const issuedGit = witnessIssuedGit === true ? new Map() : undefined;
+  /** @type {(readonly [number, string])[]} */
+  const issuedFingerprints = [];
   let server;
   let closing;
   let heldDiscovery;
@@ -205,10 +225,15 @@ export async function startSkipperPrivateGitOrigin({
       };
     }
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    let shortenNextToken = false;
     const authority = createTokenAuthority({
       clock: { wallNow: Date.now },
       publicKey,
-      lifetimeMs: 3600000,
+      lifetimeMs() {
+        const lifetime = shortenNextToken ? 750_000 : 3_600_000;
+        shortenNextToken = false;
+        return lifetime;
+      },
       repositoryId,
       ...(issuedNetwork && {
         expectedRepositoryIds: repositoryScopes.map((scope) => scope.repositoryId),
@@ -237,6 +262,19 @@ export async function startSkipperPrivateGitOrigin({
       });
       return { ...pullRequest, head: side(reviewHead), base: side("main") };
     };
+    const readPullBody = async (request, reply) => {
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of request) {
+        size += chunk.length;
+        if (size > 32_768) {
+          reply(413);
+          return;
+        }
+        chunks.push(chunk);
+      }
+      return JSON.parse(Buffer.concat(chunks).toString());
+    };
     // Draft pull-request creation for the team-review topology. The caller has matched the
     // route and counted the attempt; `reply` records the outcome under that endpoint.
     const createDraftPull = async (request, reply) => {
@@ -245,15 +283,11 @@ export async function startSkipperPrivateGitOrigin({
         reply(403);
         return;
       }
-      let json = "";
-      for await (const chunk of request) {
-        if (json.length + chunk.length > 32_768) {
-          reply(413);
-          return;
-        }
-        json += chunk;
+      const fields = await readPullBody(request, reply);
+      if (fields === undefined) {
+        return;
       }
-      const { title, body, head, base, draft, maintainer_can_modify } = JSON.parse(json);
+      const { title, body, head, base, draft, maintainer_can_modify } = fields;
       const refs = await readRefs();
       if (
         pullRequest ||
@@ -287,9 +321,8 @@ export async function startSkipperPrivateGitOrigin({
     };
     // This origin delegates every selected repository to the same App token.
     // The installed network boundary must enforce its narrower A/B/C grants.
-    const serveScopedRest = async (request, match, reply) => {
-      const [, name, route] = match;
-      const scope = repositoryScopes.find(({ repository }) => repository === name);
+    const serveScopedRest = async (request, scope, route, reply) => {
+      const name = scope.repository;
       const authorization = request.headers.authorization;
       const authenticated = authority.authorize(authorization);
       const operation = {
@@ -304,11 +337,7 @@ export async function startSkipperPrivateGitOrigin({
         authenticated,
         ...(authenticated && { credentialIndex: authority.tokenIndex(authorization) }),
       });
-      if (
-        !scope ||
-        !authenticated ||
-        !authority.permitsRepository(authorization, scope.repositoryId)
-      ) {
+      if (!authenticated || !authority.permitsRepository(authorization, scope.repositoryId)) {
         reply(403);
         return;
       }
@@ -326,15 +355,11 @@ export async function startSkipperPrivateGitOrigin({
         reply(403);
         return;
       }
-      let json = "";
-      for await (const chunk of request) {
-        if (json.length + chunk.length > 32_768) {
-          reply(413);
-          return;
-        }
-        json += chunk;
+      const fields = await readPullBody(request, reply);
+      if (fields === undefined) {
+        return;
       }
-      const { title, head, base, draft = false } = JSON.parse(json);
+      const { title, head, base, draft = false } = fields;
       const refs = await readRefs(name);
       if (
         typeof title !== "string" ||
@@ -365,6 +390,7 @@ export async function startSkipperPrivateGitOrigin({
       scopedPulls.set(name, pull);
       reply(201, pull);
     };
+    /** @type {Record<string, number>} */
     const counts = {};
     const count = (endpoint, status) => {
       const key = `${endpoint}:${status}`;
@@ -395,10 +421,7 @@ export async function startSkipperPrivateGitOrigin({
       };
       try {
         const url = new URL(request.url, "https://fixture.invalid");
-        // Only the issued A/B/C fixture exercises Git behind an origin which
-        // decodes repository names and resolves dot segments before dispatch.
-        const issuedGitTarget = issuedNetwork && request.url.startsWith("/fixture/");
-        if (!issuedGitTarget && request.url !== `${url.pathname}${url.search}`) {
+        if (request.url !== `${url.pathname}${url.search}`) {
           reply(404);
           return;
         }
@@ -426,6 +449,15 @@ export async function startSkipperPrivateGitOrigin({
           }
           if (issuedGit && !closing) {
             issuedGit.set(authority.tokenIndex(`Bearer ${issued.token}`), issued.token);
+          }
+          if (issuedNetwork) {
+            const basicPayload = Buffer.from(`x-access-token:${issued.token}`).toString("base64");
+            for (const value of [issued.token, basicPayload]) {
+              issuedFingerprints.push([
+                Buffer.byteLength(value),
+                createHash("sha256").update(value).digest("hex"),
+              ]);
+            }
           }
           reply(201, {
             token: issued.token,
@@ -472,34 +504,34 @@ export async function startSkipperPrivateGitOrigin({
         const rest =
           scopedRest &&
           !url.search &&
-          /^\/repos\/(fixture\/[abc])\/(issues(?:\/42)?|pulls)$/.exec(url.pathname);
+          /^\/repos\/([^/]+\/[^/]+)\/(issues(?:\/42)?|pulls)$/.exec(url.pathname);
         if (rest) {
+          const scope = repositoryByName.get(rest[1]);
+          if (!scope) {
+            reply(404);
+            return;
+          }
           endpoint = "scoped-rest";
           unknownNetworkRequests--;
-          await serveScopedRest(request, rest, reply);
+          await serveScopedRest(request, scope, rest[2], reply);
           return;
         }
-        const gitPath = issuedGitTarget ? decodeURIComponent(url.pathname) : url.pathname;
+        const gitPath = url.pathname;
         const matchedRepository = networkRepositories.find((name) =>
           gitPath.startsWith(`/${name}.git/`),
         );
-        const requestGitPrefix = matchedRepository ? `/${matchedRepository}.git` : gitPrefix;
-        // Git's CGI parser uses the last decoded value for a repeated key.
-        const service = issuedGitTarget
-          ? url.searchParams.getAll("service").at(-1)
-          : url.searchParams.get("service");
-        const discoveryMethod = issuedGitTarget && request.method === "HEAD" ? "HEAD" : "GET";
+        const requestGitPrefix = `/${matchedRepository}.git`;
+        const service = url.searchParams.get("service");
+        const gitServices = ["git-upload-pack", "git-receive-pack"];
         const discovery =
-          request.method === discoveryMethod &&
+          request.method === "GET" &&
           gitPath === `${requestGitPrefix}/info/refs` &&
-          (service === "git-upload-pack" || service === "git-receive-pack") &&
-          (issuedGitTarget || [...url.searchParams].length === 1);
+          gitServices.includes(service) &&
+          [...url.searchParams].length === 1;
         const rpc =
           request.method === "POST" &&
-          ["git-upload-pack", "git-receive-pack"].some(
-            (name) => gitPath === `${requestGitPrefix}/${name}`,
-          ) &&
-          (issuedGitTarget || !url.search);
+          gitServices.some((name) => gitPath === `${requestGitPrefix}/${name}`) &&
+          !url.search;
         if (!matchedRepository || (!discovery && !rpc)) {
           reply(404);
           return;
@@ -514,18 +546,10 @@ export async function startSkipperPrivateGitOrigin({
           networkAcl === true ? broad : authority.authorize(authorization, "git");
         if (networkAcl) {
           unknownNetworkRequests--;
-          // Count alternate targets without retaining arbitrary request paths or queries.
-          const gitService = receive ? "git-receive-pack" : "git-upload-pack";
-          const canonicalTarget = discovery
-            ? `${requestGitPrefix}/info/refs?service=${gitService}`
-            : `${requestGitPrefix}/${gitService}`;
-          if (request.url !== canonicalTarget) {
-            noncanonicalGitRequests++;
-          }
           networkRequests.push({
             repository: matchedRepository,
             operation: endpoint,
-            method: discovery ? discoveryMethod : "POST",
+            method: discovery ? "GET" : "POST",
             authenticated,
             ...(issuedNetwork &&
               authenticated && { credentialIndex: authority.tokenIndex(authorization) }),
@@ -541,7 +565,7 @@ export async function startSkipperPrivateGitOrigin({
           issuedNetwork &&
           !authority.permitsRepository(
             authorization,
-            repositoryScopes.find((scope) => scope.repository === matchedRepository)?.repositoryId,
+            repositoryByName.get(matchedRepository)?.repositoryId,
           )
         ) {
           reply(403);
@@ -712,25 +736,25 @@ export async function startSkipperPrivateGitOrigin({
       snapshot,
       ...(networkAcl && {
         network: {
-          repositories: networkRepositories,
           token: broadToken,
+          repositories: networkRepositories,
           scopes: repositoryScopes.map((scope) => ({ ...scope })),
           /**
            * @param {number | undefined} index
            * @param {string} repository
-           * @param {{ service: string, method: "GET" | "HEAD" | "POST", body?: string, target?: string }} options
+           * @param {{ service: string, method: "GET" | "POST", body?: string }} options
            * @returns {Promise<{ status?: number, type?: string }>}
            */
-          async probeIssued(index, repository, { service, method, body, target }) {
+          async probeIssued(index, repository, { service, method, body }) {
             assert.ok(
               issuedNetwork && (index === undefined || issuedGit?.has(index)),
               "missing controlled issuer credential",
             );
             assert.ok(networkRepositories.includes(repository));
             assert.ok(["git-upload-pack", "git-receive-pack"].includes(service));
-            assert.ok(["GET", "HEAD", "POST"].includes(method));
+            assert.ok(["GET", "POST"].includes(method));
             assert.ok(method === "POST" ? typeof body === "string" : body === undefined);
-            assert.ok(target === undefined || /^\/fixture\/[a-z0-9%._/?=&-]+$/iu.test(target));
+
             const path = method === "POST" ? service : `info/refs?service=${service}`;
             const secureContext = createSecureContext({ ca: tls.ca ?? tls.cert });
             return new Promise((resolve, reject) => {
@@ -738,7 +762,7 @@ export async function startSkipperPrivateGitOrigin({
                 {
                   hostname: listener.address,
                   port: listener.port,
-                  path: target ?? `/${repository}.git/${path}`,
+                  path: `/${repository}.git/${path}`,
                   method,
                   agent: false,
                   secureContext,
@@ -778,18 +802,6 @@ export async function startSkipperPrivateGitOrigin({
             });
           },
 
-          issuedCredentialFingerprints() {
-            assert.ok(issuedNetwork && issuedGit?.size, "missing controlled issuer credential");
-            return [...issuedGit.values()].flatMap((token) =>
-              [token, Buffer.from(`x-access-token:${token}`).toString("base64")].map(
-                (value) =>
-                  /** @type {const} */ ([
-                    Buffer.byteLength(value),
-                    createHash("sha256").update(value).digest("hex"),
-                  ]),
-              ),
-            );
-          },
           /** @param {Buffer} output */
           containsIssuedCredential(output) {
             assert.ok(issuedNetwork);
@@ -799,11 +811,21 @@ export async function startSkipperPrivateGitOrigin({
                 output.includes(Buffer.from(`x-access-token:${token}`).toString("base64")),
             );
           },
+
+          shortenNextTokenForRenewal() {
+            assert.ok(issuedNetwork && !shortenNextToken);
+            shortenNextToken = true;
+          },
+          issuedCredentialFingerprints() {
+            assert.ok(issuedNetwork);
+            return issuedFingerprints.map(
+              ([length, digest]) => /** @type {const} */ ([length, digest]),
+            );
+          },
           requests: () => networkRequests.map((entry) => ({ ...entry })),
           /** @param {string} name */
           pullRequest: (name) => structuredClone(scopedPulls.get(name)),
           unknownRequests: () => unknownNetworkRequests,
-          noncanonicalGitRequests: () => noncanonicalGitRequests,
           async ref(name, ref) {
             assert.ok(networkRepositories.includes(name));
             // Only a successful enumeration can prove absence; Git can warn and skip broken refs.
@@ -841,10 +863,6 @@ export async function startSkipperPrivateGitOrigin({
               "Unexpected Git object lookup result",
             );
             return true;
-          },
-          async clearRef(name, ref) {
-            assert.ok(networkRepositories.includes(name));
-            await git(["-C", join(directory, `${name}.git`), "update-ref", "-d", ref]);
           },
         },
       }),

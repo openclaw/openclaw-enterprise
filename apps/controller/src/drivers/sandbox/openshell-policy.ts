@@ -94,26 +94,6 @@ export function openShellPolicyBaselineDigest(policy: Readonly<Record<string, un
   return sha256Hex(JSON.stringify(baseline));
 }
 
-/** Managed plugin admission checks the selected Provider's route shape. The
- * Gateway derives token-grant ownership separately from the profile. */
-export function withoutOpenShellProviderTokenGrantOwners(value: unknown): unknown {
-  const rule = asRecord(value);
-  if (!rule || !Array.isArray(rule.endpoints)) {
-    return value;
-  }
-  return {
-    ...rule,
-    endpoints: rule.endpoints.map((value: unknown) => {
-      const endpoint = asRecord(value);
-      if (!endpoint) {
-        return value;
-      }
-      const { token_grant_owner: _owner, ...route } = endpoint;
-      return route;
-    }),
-  };
-}
-
 /** The create-time policy carries static restrictions and generated workspace access. */
 export function openShellPolicyCandidate(
   baseline: Readonly<Record<string, unknown>>,

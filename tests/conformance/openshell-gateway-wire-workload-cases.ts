@@ -1,10 +1,7 @@
 import { asRecord } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import {
-  createManagedWorkloadExec,
-  UnconfirmedManagedWorkloadExecError,
-} from "../helpers/egress-managed-workload-exec.ts";
+import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import { agentClients } from "../helpers/egress-custody-observations.mjs";
 import { mutualTls } from "./openshell-gateway-wire-tls-cases.ts";
 import {
@@ -26,9 +23,7 @@ export function registerWorkloadCases(): void {
     type Dispatch = { phase: string; requestId: string; sandboxId: string };
     const phases: Dispatch[] = [];
     let selectedId = binding.sandboxId;
-    let terminalExit: number | undefined = 0;
-    let failedCheckpointPhase: string | undefined;
-    const checkpointFailure = new Error("checkpoint fixture unavailable");
+    let loseExit = false;
     const server = new grpc.Server();
     addWireService(
       server,
@@ -51,8 +46,8 @@ export function registerWorkloadCases(): void {
           call.write({ stdout: { data: Buffer.from("recipient") } });
           call.write({ stderr: { data: Buffer.from("diagnostic") } });
           call.write({ stdout: { data: Buffer.from("-bytes") } });
-          if (terminalExit !== undefined) {
-            call.write({ exit: { exit_code: terminalExit } });
+          if (!loseExit) {
+            call.write({ exit: {} });
           }
           call.end();
         },
@@ -90,9 +85,6 @@ export function registerWorkloadCases(): void {
       workspace,
       gatewayClient,
       checkpoint: (phase: string, details: { requestId: string; sandboxId: string }) => {
-        if (phase === failedCheckpointPhase) {
-          throw checkpointFailure;
-        }
         phases.push({ phase, ...details });
       },
     });
@@ -134,7 +126,7 @@ export function registerWorkloadCases(): void {
     assert.ok(first?.dispatch && second?.dispatch);
     assert.notEqual(first.dispatch.requestId, second.dispatch.requestId);
 
-    terminalExit = undefined;
+    loseExit = true;
     await assert.rejects(async () => await curl(), /Unconfirmed managed workload exec/);
     assert.equal(
       launches.length,
@@ -147,28 +139,8 @@ export function registerWorkloadCases(): void {
     assert.ok(unconfirmed && third?.dispatch);
     assert.equal(unconfirmed.requestId, third.dispatch.requestId);
 
-    for (const [exit, phase, label] of [
-      [undefined, "managed-workload-exec-unconfirmed", "missing Exit"],
-      [124, "managed-workload-exec-result", "execution deadline"],
-    ] as const) {
-      await t.test(`checkpoint failure leaves ${label} unconfirmed`, async () => {
-        terminalExit = exit;
-        failedCheckpointPhase = phase;
-        const before = launches.length;
-        await assert.rejects(
-          async () => await curl(),
-          (error: unknown) => {
-            assert.ok(error instanceof UnconfirmedManagedWorkloadExecError, "caller must halt");
-            assert.ok(error.cause === checkpointFailure, "recording error must remain the cause");
-            return true;
-          },
-        );
-        assert.equal(launches.length, before + 1, "an unconfirmed launch must never be retried");
-      });
-    }
-
     selectedId = "replaced-id";
     await assert.rejects(async () => await curl(), /supplier Sandbox replaced/);
-    assert.equal(launches.length, 5, "an old enrolled recipient never silently switches Sandbox");
+    assert.equal(launches.length, 3, "an old enrolled recipient never silently switches Sandbox");
   });
 }

@@ -453,6 +453,7 @@ export interface OpenShellGatewayClient
     workspace: string,
     sandboxId: string,
     signal: AbortSignal,
+    provider?: string,
   ): Promise<boolean>;
   getSandboxConfig?(workspace: string, sandbox: string, signal: AbortSignal): Promise<RecordValue>;
   getSandboxPolicyStatus?(
@@ -1728,7 +1729,12 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   }
 
   /** A snapshot, never a lock against a later operator attachment. */
-  async readExclusivePreviewWorkspace(workspace: string, sandboxId: string, signal: AbortSignal) {
+  async readExclusivePreviewWorkspace(
+    workspace: string,
+    sandboxId: string,
+    signal: AbortSignal,
+    provider?: string,
+  ) {
     const workspace_scope = { workspace: nonempty(workspace, "preview workspace") };
     const members = await this.unary(
       "ListWorkspaceMembers",
@@ -1744,9 +1750,36 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
     const { sandboxes, next_page_token } = await this.unary(
       "ListSandboxes",
-      { workspace_scope, page_size: 2 },
+      { workspace_scope, page_size: provider === undefined ? 2 : 100 },
       signal,
     );
+    if (provider !== undefined) {
+      if (!provider || !sandboxId || !Array.isArray(sandboxes) || next_page_token) {
+        return false;
+      }
+      const recipients: string[] = [];
+      for (const sandbox of sandboxes) {
+        const record = asRecord(sandbox);
+        const meta = asRecord(record?.metadata);
+        const spec = asRecord(record?.spec);
+        const attached = spec?.providers ?? [];
+        if (
+          !meta ||
+          meta.workspace !== workspace ||
+          typeof meta.id !== "string" ||
+          !meta.id ||
+          !spec ||
+          !Array.isArray(attached) ||
+          !attached.every((name: unknown) => typeof name === "string" && name.length > 0)
+        ) {
+          return false;
+        }
+        if (attached.includes(provider)) {
+          recipients.push(meta.id);
+        }
+      }
+      return recipients.length === 1 && recipients[0] === sandboxId;
+    }
     const only = Array.isArray(sandboxes) && sandboxes.length === 1 && asRecord(sandboxes[0]);
     const meta = only && asRecord(only.metadata);
     return (

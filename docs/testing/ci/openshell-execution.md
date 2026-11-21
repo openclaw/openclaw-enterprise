@@ -78,32 +78,6 @@ Python toolchains. Its receipt records capacity and removal duration. An explici
 selected installed browser is validated by a sandboxed launch and page evaluation;
 these jobs do not install an unused Playwright browser alongside it.
 
-## Saved Agent repository grants
-
-Use a clean checkout with the supported OpenClaw source pin. [Build the local
-controller and runtime pair](qa-advisory.md#prebuild-local-qa-images) at that
-HEAD. Keep the resulting `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` digest references
-and build metadata. Local Setup verifies both image revision labels.
-
-Export `OCC_TEST_OPENAI_MODEL` for the synthetic Responses startup endpoint, then
-select the whole file to include its Git and REST subtests.
-
-```bash
-attempt="$(mktemp -d)/saved-agent"
-file=tests/integration/openshell-saved-agent-git-policy-real.test.ts
-env -u CODEX_ACCESS_TOKEN -u OCC_DEVELOPMENT_STATE_DIRECTORY \
-  OPENAI_API_KEY=fixture-only-no-model-call \
-  OCC_TEST_OPENSHELL_SAVED_AGENT_ACL=1 \
-  OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?build the controller first}" \
-  OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?build the runtime first}" \
-  node scripts/ci/run-tests.ts run openshell-saved-agent \
-    --lifecycle complete --attempt "$attempt" --file "$file"
-```
-
-Export `OCC_TEST_OPENSHELL_SAVED_AGENT_AC5=1` for peer workspace continuity.
-Export `OCC_TEST_OPENSHELL_SAVED_AGENT_REST=1` on a scoped REST build. The fixture
-owns its k3d installation and the runner retains the selected case results.
-
 ## Select candidate images and charts
 
 For local preparation of the `openshell` lane, preload the candidate images

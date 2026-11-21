@@ -1,9 +1,13 @@
+import { selectsModel } from "./agent-harness-topology.ts";
+import { defaultDeploymentSandboxPolicy } from "./sandbox-policy-admission.ts";
 import { types } from "node:util";
 import {
   admitRepositoryNetworkPolicy,
   admitSandboxRepositoryNetworkPolicy,
   RepositoryNetworkPolicyAdmissionError,
   type Agent,
+  type AgentRevision,
+  type AgentRevisionRead,
   type Configuration,
   type CredentialSource,
   type ComputeDriver,
@@ -23,8 +27,6 @@ import { refuseStoredConfigurationSettings } from "./configuration-settings.ts";
 import { resolveConfiguredHarnessId } from "./configured-harness.ts";
 import {
   assertAgentConfiguration,
-  defaultDeploymentSandboxPolicy,
-  selectsModel,
   soleHarnessSource,
   type ConfigurationOwnership,
 } from "./deployment-policy.ts";
@@ -39,6 +41,8 @@ export type RepositoryGrantPolicy = {
 };
 
 export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
+  /** The selected registry permits deployment-scoped Git when the Agent saves an ACL. */
+  readonly nativeGit?: "v1";
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
 };
@@ -216,6 +220,7 @@ export function bindRepositoryPolicyAuthorization(current: () => IAMDriver) {
 
 export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: InstalledDriver) {
   const admit = compute.admitsProtectedRepositoryNetworkPolicySave;
+  const supportsPlacement = compute.supportsProtectedRepositoryNetworkPolicyPlacement;
   const validateFrozen = compute.validateProtectedRepositoryNetworkPolicy;
   if (typeof admit !== "function" || typeof validateFrozen !== "function") {
     return undefined;
@@ -235,11 +240,12 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
   const boundSandbox = {
     id: sandbox.id,
     implementation: sandbox.implementation,
-    admitProtectedCodexArtifactPolicy: (version: number) => admitArtifacts.call(sandbox, version),
+    admitProtectedCodexArtifactPolicy: (version: number) =>
+      Reflect.apply(admitArtifacts, sandbox, [version]),
     admitRepositoryNetworkPolicy: (
       policy: RepositoryNetworkPolicy,
       network: SandboxPolicySnapshot,
-    ) => admitRepository.call(sandbox, policy, network),
+    ) => Reflect.apply(admitRepository, sandbox, [policy, network]),
   };
   return (
     placement: NonNullable<ProtectedRepositoryNetworkPolicySaveContext["placement"]>,
@@ -252,13 +258,15 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
     ownersCurrent: () => boolean,
   ) => {
     // Row locks do not freeze process-local selections or their admission methods.
-    const assertCurrent = () => {
+    const assertCurrent = (stillApproved?: () => boolean) => {
       if (
         !approves(
           () =>
             ownersCurrent() &&
             authority?.unchanged() === true &&
+            stillApproved?.() !== false &&
             compute.admitsProtectedRepositoryNetworkPolicySave === admit &&
+            compute.supportsProtectedRepositoryNetworkPolicyPlacement === supportsPlacement &&
             compute.validateProtectedRepositoryNetworkPolicy === validateFrozen &&
             sandbox.admitProtectedCodexArtifactPolicy === admitArtifacts &&
             sandbox.admitRepositoryNetworkPolicy === admitRepository &&
@@ -273,16 +281,27 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
     const fitsSelected = (grant: RepositoryNetworkGrant) =>
       selectedRepositoryGrantAllows(resolution.selectedRepositoryNetworkGrants, grant);
     const dedicated = { id: harness.id, version: harness.version, mode: "dedicated" } as const;
+    const { type, ownerCapability, driverId } = source;
+    const topology: ProtectedRepositoryNetworkPolicySaveContext = immutableCopy({
+      placement,
+      ...(resolution.nativeGit && { nativeGit: resolution.nativeGit }),
+      harness: dedicated,
+      sandboxDriverId: boundSandbox.id,
+      protectedDriver: owner.ref,
+      repositoryBindings: resolution.bindings,
+      harnessCredentialSource: { type, ownerCapability, driverId },
+    });
+    const basePolicy = () =>
+      defaultDeploymentSandboxPolicy(boundSandbox, version, true, dedicated, {
+        repositoryCredentials: true,
+      });
     const admitEdit = (grants: readonly RepositoryNetworkGrant[]) => {
-      if (grants.length === 0 || authority === undefined) {
+      if (authority === undefined) {
         return undefined;
       }
       assertCurrent();
-      const { sandboxPolicy } = admitDeploymentRepositoryPolicy(
-        () =>
-          defaultDeploymentSandboxPolicy(boundSandbox, version, true, dedicated, {
-            repositoryCredentials: true,
-          }),
+      const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(
+        basePolicy,
         grants,
         ceiling,
         boundSandbox,
@@ -293,33 +312,32 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
       if (!policy?.grants.every(fitsSelected)) {
         return undefined;
       }
-      assertCurrent();
-      const { type, ownerCapability, driverId } = source;
-      const context: ProtectedRepositoryNetworkPolicySaveContext = immutableCopy({
-        placement,
-        harness: dedicated,
-        sandboxDriverId: boundSandbox.id,
-        protectedDriver: owner.ref,
-        repositoryBindings: resolution.bindings,
-        repositoryNetworkPolicy: policy,
-        harnessCredentialSource: { type, ownerCapability, driverId },
-      });
-      if (!approves(() => admit.call(compute, context))) {
+      const assertApproved = () => assertCurrent(ownerUnchanged);
+      assertApproved();
+      const context = immutableCopy({ ...topology, repositoryNetworkPolicy: policy });
+      if (!approves(() => Reflect.apply(admit, compute, [context]))) {
         return undefined;
       }
-      assertCurrent();
-      return { grants: policy.grants, assertCurrent };
+      assertApproved();
+      return { grants: policy.grants, assertCurrent: assertApproved };
     };
 
     return {
       supports(delegatedCeiling: RepositoryNetworkPolicyCeiling) {
-        const supportsGrant = (grant: RepositoryNetworkGrant) =>
-          fitsSelected(grant) && approves(() => admitEdit([grant]) !== undefined);
-        return delegatedCeiling.some(
-          (grant) =>
-            supportsGrant(grant) ||
-            (grant.access === "write" && supportsGrant({ ...grant, access: "read" })),
-        );
+        // Admission can depend on a combination of grants. Let the editor
+        // submit the complete list when the selected and delegated scopes overlap.
+        if (!delegatedCeiling.some((grant) => fitsSelected({ ...grant, access: "read" }))) {
+          return approves(() => admitEdit([]) !== undefined);
+        }
+        return approves(() => {
+          assertCurrent();
+          const ready =
+            basePolicy() !== undefined &&
+            (supportsPlacement === undefined ||
+              approves(() => supportsPlacement.call(compute, topology)));
+          assertCurrent();
+          return ready;
+        });
       },
       admit: admitEdit,
     };
@@ -378,7 +396,9 @@ export function admitDeploymentRepositoryPolicy(
   try {
     const requested = admitRepositoryNetworkPolicy(grants, ceiling)!.grants;
     const owner = requested.length ? authority() : undefined;
-    if (requested.length && (!owner?.approvesAll(requested) || !owner.unchanged())) {
+    const approved =
+      owner && (() => owner.unchanged() && owner.approvesAll(requested) && owner.unchanged());
+    if (requested.length && !approved?.()) {
       throw new ResourceStateConflictError(
         operation === "deploy"
           ? "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying."
@@ -395,9 +415,31 @@ export function admitDeploymentRepositoryPolicy(
     }
     return {
       sandboxPolicy: admitSandboxRepositoryNetworkPolicy(sandboxPolicy, grants, ceiling, sandbox),
-      ownerUnchanged: owner?.unchanged,
+      ownerUnchanged: approved,
     };
   } catch (error) {
     refuseRepositoryPolicy(error, operation);
+  }
+}
+
+// Stop retires the active pointer. A provider can still complete an earlier
+// unscoped write after its Worker loses the claim. Retained revisions identify
+// every deployment that could have targeted this Agent's shared resources.
+export function hasOnlyScopedRepositoryRevisions(
+  history: readonly Readonly<AgentRevisionRead>[],
+): boolean {
+  return history.every(
+    (revision, index) =>
+      !("configurationReadError" in revision) &&
+      revision.revision === index + 1 &&
+      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
+  );
+}
+
+export function assertScopedRepositoryHistory(history: readonly Readonly<AgentRevision>[]): void {
+  if (!hasOnlyScopedRepositoryRevisions(history)) {
+    throw new ResourceStateConflictError(
+      "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
+    );
   }
 }

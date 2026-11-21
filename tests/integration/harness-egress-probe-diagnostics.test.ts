@@ -7,11 +7,9 @@ import { createServer as httpsServer } from "node:https";
 import { createConnection } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import { signComputeRepositoryGitProbe } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
-  HARNESS_REPOSITORY_GIT_ENROLLMENT_HELPER,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
@@ -20,7 +18,6 @@ import { listen } from "../helpers/listen.ts";
 
 type ProbeScenario = {
   name: string;
-  repositoryProbe?: boolean;
   connectRefused?: boolean;
   invalidJson?: boolean;
   body?: Record<string, unknown>;
@@ -47,7 +44,6 @@ test(
       middleware: "oce-prepared-git",
       reason_code: "oce_hook_" + "a".repeat(36),
     };
-    const repositoryGitProbePath = "/example/project.git/info/refs";
     const scenarios: ProbeScenario[] = [
       {
         name: "CONNECT refused",
@@ -66,17 +62,14 @@ test(
         expected: { error: "preview_not_observed" },
       },
       { name: "valid denial", body: refusal, status: 200 },
-      { name: "exact repository denial", repositoryProbe: true, body: refusal, status: 200 },
     ];
     for (const scenario of scenarios) {
       await t.test(scenario.name, async (t) => {
         const privateText = "private-proxy-response-" + randomUUID();
         let connections = 0;
         let requests = 0;
-        let received: { url: string | undefined; nonce: string | string[] | undefined } | undefined;
-        const endpoint = httpsServer({ key: leaf.key, cert: leaf.cert }, (request, response) => {
+        const endpoint = httpsServer({ key: leaf.key, cert: leaf.cert }, (_request, response) => {
           requests++;
-          received = { url: request.url, nonce: request.headers["x-oce-git-startup-probe"] };
           response.writeHead(403, { "content-type": "application/json" });
           response.end(scenario.invalidJson ? privateText : JSON.stringify(scenario.body));
         });
@@ -125,9 +118,8 @@ test(
             executionId: "execution",
           },
           repositoryGitAuthorization: "online-request",
-          ...(scenario.repositoryProbe && { repositoryGitProbePath }),
         };
-        const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+        const { publicKey } = generateKeyPairSync("ed25519");
         const child = spawn(
           process.execPath,
           [
@@ -135,9 +127,7 @@ test(
             "--input-type=commonjs",
             "-e",
             "const isPlainObject = v => !!v && Object.getPrototypeOf(v) === Object.prototype;\n" +
-              (scenario.repositoryProbe
-                ? HARNESS_REPOSITORY_GIT_ENROLLMENT_HELPER
-                : HARNESS_EGRESS_ENROLLMENT_HELPER) +
+              HARNESS_EGRESS_ENROLLMENT_HELPER +
               "\nwaitForHarnessEgressEnrollment(" +
               JSON.stringify(enrollment) +
               ").catch(() => process.exitCode = 1);",
@@ -193,52 +183,16 @@ test(
         assert.ok(challenge, "generated enrollment listener must start");
         await reservation.release();
         const startupId = challenge.startupId;
-        const probePath = scenario.repositoryProbe
-          ? repositoryGitProbePath
-          : "/example/project.git/oce-observe-request/" + "b".repeat(32) + ".git/info/refs";
-        const probeNonce = scenario.repositoryProbe ? "c".repeat(32) : undefined;
-        const probeSignature =
-          probeNonce === undefined
-            ? undefined
-            : signComputeRepositoryGitProbe(privateKey, startupId, probePath, probeNonce);
-        const probe = (
-          nonce: string | undefined,
-          path = probePath,
-          signature: string | null = probeSignature ?? null,
-        ) =>
+        const probePath =
+          "/example/project.git/oce-observe-request/" + "b".repeat(32) + ".git/info/refs";
+        const probe = () =>
           fetch(url, {
             method: "POST",
             headers,
-            body: JSON.stringify({
-              startupId,
-              probePath: path,
-              probeNonce: nonce,
-              probeSignature: signature ?? undefined,
-            }),
+            body: JSON.stringify({ startupId, probePath }),
             signal: AbortSignal.timeout(15000),
           });
-        if (scenario.repositoryProbe) {
-          // A bearer holder can learn the path and startup ID. Substituting a valid-looking
-          // nonce must leave the only attempt available for the signed probe.
-          const incorrectNonce = "d".repeat(32);
-          const rejected = await probe(incorrectNonce);
-          assert.equal(rejected.status, 409);
-          assert.deepEqual(await rejected.json(), { error: "stale_probe" });
-          assert.equal(connections, 0);
-          assert.equal(requests, 0);
-          assert.equal((await probe(probeNonce, probePath, null)).status, 409);
-          assert.equal((await probe("wrong")).status, 409);
-          assert.equal((await probe(probeNonce, probePath + "?extra=1")).status, 409);
-          assert.equal((await probe(probeNonce, "/other/project.git/info/refs")).status, 409);
-          const legacyProbe = "/oce-observe-request/" + "b".repeat(32) + ".git/info/refs";
-          assert.equal((await probe(undefined, legacyProbe)).status, 409);
-        } else {
-          // Legacy enrollment must refuse a repository discovery probe before curl.
-          assert.equal((await probe("c".repeat(32), repositoryGitProbePath)).status, 409);
-        }
-        assert.equal(connections, 0);
-        assert.equal(requests, 0);
-        const response = await probe(probeNonce);
+        const response = await probe();
         assert.equal(response.status, scenario.status ?? 400);
         const result = await response.json();
         assert.deepEqual(
@@ -246,20 +200,13 @@ test(
           scenario.expected ?? {
             startupId,
             probePath,
-            ...(probeNonce !== undefined && { probeNonce }),
             reasonCode: refusal.reason_code,
           },
         );
         assert.equal(connections, 1);
         assert.equal(requests, scenario.connectRefused ? 0 : 1);
-        if (!scenario.connectRefused) {
-          assert.deepEqual(received, {
-            url: probePath + "?service=git-upload-pack",
-            nonce: probeNonce,
-          });
-        }
         // Even a failed probe consumes the one-use challenge and keeps startup held.
-        assert.deepEqual(await (await probe(probeNonce)).json(), { error: "stale_probe" });
+        assert.deepEqual(await (await probe()).json(), { error: "stale_probe" });
         assert.equal(connections, 1);
         assert.equal((await fetch(url, { headers })).status, 200);
         assert.ok(!JSON.stringify(result).includes(privateText));

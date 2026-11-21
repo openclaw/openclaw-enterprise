@@ -7,7 +7,6 @@ import {
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
 } from "./openshell-gateway-client.ts";
-import { withoutOpenShellProviderTokenGrantOwners } from "./openshell-policy.ts";
 import {
   eligibleGoogleOperations,
   googleDiscoveryRequests,
@@ -316,7 +315,7 @@ export function verifyPluginRequestGuard(
   }
   if (
     !isDeepStrictEqual(
-      wirePolicy(withoutOpenShellProviderTokenGrantOwners(routes?.[expected.providerRule.name])),
+      wirePolicy(routes?.[expected.providerRule.name]),
       wirePolicy(expected.providerRule),
     )
   ) {

@@ -33,7 +33,6 @@ on:
       - scripts/auth-maintain.ts
       - scripts/build-repository-credentials.ts
       - scripts/build-runtime-assets.ts
-      - scripts/write-inspected-workspace-image-pin.ts
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.ts
       - scripts/ci/prepare-inputs.ts
@@ -51,6 +50,7 @@ on:
       - scripts/migration-catalog.ts
       - scripts/migration-history-preflight.ts
       - scripts/production-healthcheck.ts
+      - scripts/write-inspected-workspace-image-pin.ts
       - tsconfig.base.json
       - tsconfig.json
   # The kept runtime image reaches Blacksmith's shared Docker store only if this
