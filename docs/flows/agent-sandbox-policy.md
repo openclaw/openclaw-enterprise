@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-19"
-last_updated_session: "authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca"
 ---
 
 # Agent sandbox policy flow
@@ -123,6 +123,20 @@ that keep the current policy version. The worker can record the expected provide
 resource version and set the same application to `applied` or `failed`.
 Agent deletion cascades policy removal and
 cleans its exact IAM access.
+
+Migration 0086 lets State persist an optional ordered list of repository grants
+in the versioned policy. An absent list preserves the existing policy format.
+An empty list records zero grants. Once recorded, changing the list requires
+a new version, and omitting the list is rejected. The public policy editor
+continues to accept only ordinary network additions.
+
+A revision carrying repository grants must match the saved policy version,
+grants, and canonical identity. PostgreSQL requires a reader version in its
+execution admission so older Workers refuse that revision. Current deployment
+and live application refuse saved repository grants until the runtime can
+enforce them. See
+`migrations/0086_repository_network_policy.sql` and
+`tests/integration/postgres-state-repository-network-policy-case.ts`.
 
 ### 2. Freeze deployment or enqueue live application
 
@@ -269,6 +283,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 23:58: Document repository grant persistence and revision compatibility. (authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca - 0f4a2d3d3)
 
 - 2026-11-19 07:54: Separate credential acquisition. (authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8 - 1eb271262)
 
