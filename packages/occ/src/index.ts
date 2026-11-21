@@ -186,6 +186,15 @@ import {
   unprotectedPolicyRevision,
 } from "./sandbox-policy.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createAgentAuditReader } from "./agent-audit-reader.ts";
+import {
+  createControllerWorkRecorder,
+  type ControllerWorkRecorder,
+} from "./controller-work-recorder.ts";
+import {
+  createControllerResourceValues,
+  type ControllerResourceValues,
+} from "./controller-resource-values.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { accessBindingsTargeting, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
@@ -726,8 +735,11 @@ export {
   refusePluginEntryKeyVariants,
   waitsOnVariable,
 } from "./configuration-settings.ts";
-export { PostgresCommitOutcomeUnknownError };
-export { AuditAppendUnavailableError } from "./errors.ts";
+export {
+  AgentAuditDisclosureUnavailableError,
+  AuditAppendUnavailableError,
+  PostgresCommitOutcomeUnknownError,
+} from "./errors.ts";
 export {
   PostgresHumanAuthentication,
   UserAlreadyExistsError,
@@ -832,12 +844,6 @@ export type {
 export const BOOTSTRAP_DEFAULT_NAMESPACE_NAME = "default";
 
 export type { RuntimeLogReadGrant, RuntimeLogReadAdmission } from "./agent-runtime-observations.ts";
-
-export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
-  constructor() {
-    super("The Agent audit disclosure record is unavailable.");
-  }
-}
 
 export interface ControllerOptions {
   /** Key material for sealed authentication-state payloads (device-login challenge and handle). */
@@ -1348,14 +1354,13 @@ export class OpenClawController {
   private readonly agentCredentialAccess: AgentCredentialAccess;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly deviceAuthorization: ReturnType<typeof createDeviceAuthorizationFlow>;
-  private readonly clock: () => Date;
-  private readonly identifier?: ControllerOptions["createId"];
+  private readonly resourceValues: ControllerResourceValues;
   private readonly state: PlatformStateStore;
-  private readonly agentAuditState: ControllerOptions["agentAuditState"];
+  private readonly readAgentAuditEvents: ReturnType<typeof createAgentAuditReader>;
   private readonly authority: ControllerAuthority;
   private readonly transactions: ControllerTransactions;
   private readonly requestAuditId = new AsyncLocalStorage<string>();
-  private readonly shouldRecordOperations: boolean;
+  private readonly workRecorder: ControllerWorkRecorder;
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
   private readonly installationCapabilityQueries: ReturnType<
     typeof createInstallationCapabilityQueries
@@ -1417,14 +1422,16 @@ export class OpenClawController {
     this.authorization = options.authorize;
     this.preparedTokens = options.preparedTokens;
     const pluginSourceReader = options.pluginSourceReader;
-    this.clock = options.now ?? (() => new Date());
-    this.identifier = options.createId;
+    const now = options.now ?? (() => new Date());
+    const createId = options.createId;
+    this.resourceValues = createControllerResourceValues(
+      () => Reflect.apply(now, this, []),
+      createId ? (kind) => Reflect.apply(createId, this, [kind]) : undefined,
+    );
     this.state = options.state ?? new InMemoryPlatformState();
     this.transactions = createControllerTransactions({
-      readSnapshot: (work) => this.state.read(work),
-      runTransaction: (work) => this.state.transact(work),
+      platformState: this.state,
       installation: this.installation,
-      commitOutcomeUnknown: (error) => error instanceof PostgresCommitOutcomeUnknownError,
     });
     const authorizeOverride = this.authorization;
     this.authority = createControllerAuthority({
@@ -1489,8 +1496,17 @@ export class OpenClawController {
         this.createCredentialSource(principalId, input, audit, registrationAudit),
       credentialSourceMetadata: (source) => this.credentialSourceMetadata(source),
     });
-    this.agentAuditState = options.agentAuditState;
-    this.shouldRecordOperations = options.recordOperations ?? true;
+    this.readAgentAuditEvents = createAgentAuditReader({
+      installationId: this.installation.id,
+      platformState: this.state,
+      auditState: options.agentAuditState,
+      authority: this.authority,
+      hasAuthorizationOverride: this.authorization !== undefined,
+    });
+    this.workRecorder = createControllerWorkRecorder(
+      this.requestAuditId,
+      options.recordOperations ?? true,
+    );
     this.sandboxPolicyOperations = createSandboxPolicyOperations({
       installationId: this.installation.id,
       ceiling: sandboxNetworkPolicyCeiling,
@@ -2105,40 +2121,14 @@ export class OpenClawController {
     holdSession: AuthorityFence,
     disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
   ) {
-    const state = this.agentAuditState;
-    const driver = this.authorizationAuthority(principalId);
-    const authorize = driver.authorize;
-    if (
-      state === undefined ||
-      this.authorization !== undefined ||
-      !state.supportsAuthorization(this.state, driver, authorize)
-    ) {
-      throw new NotImplementedError(
-        "The selected State and IAM Driver do not support Agent audit.",
-      );
-    }
-    const target = { kind: "agent", id: agentId, namespaceId } as const;
-    return state.transact(this.installation.id, async (unit) => {
-      await holdSession(unit);
-      // An unauthorized caller cannot lock Agent or Namespace records. Recheck after
-      // taking the locks so no policy change can commit between approval and disclosure.
-      await this.authorize(principalId, "read_audit", target, driver, authorize);
-      if (!(await state.holdResource(unit, this.installation.id, namespaceId, agentId))) {
-        throw new ScopeViolationError(
-          "The active Agent does not belong to the exact ready Namespace.",
-        );
-      }
-      const decision = await this.authorize(principalId, "read_audit", target, driver, authorize);
-      const entries = await state.list(unit, namespaceId, agentId, selection);
-      const events = entries.slice(0, selection.limit);
-      try {
-        await unit.audit.append(disclosure(events.length, decision));
-      } catch {
-        throw new AgentAuditDisclosureUnavailableError();
-      }
-      await holdSession(unit);
-      return { events, hasNextPage: entries.length > selection.limit };
-    });
+    return this.readAgentAuditEvents(
+      principalId,
+      namespaceId,
+      agentId,
+      selection,
+      holdSession,
+      disclosure,
+    );
   }
 
   async getAgentRuntimeImages(principalId: string, namespaceId: string, agentId: string) {
@@ -3130,7 +3120,7 @@ export class OpenClawController {
 
   /** Attach the server-generated HTTP request ID to any work this operation queues. */
   withRequestAuditId<T>(requestId: string, work: () => Promise<T>): Promise<T> {
-    return this.requestAuditId.run(requestId, work);
+    return this.workRecorder.withRequestAuditId(requestId, work);
   }
 
   private holdAuthority(state: PlatformUnitOfWork): Promise<void> {
@@ -8660,34 +8650,16 @@ export class OpenClawController {
     return exactConfiguration(configuration, expected);
   }
 
+  private clock(): Date {
+    return this.resourceValues.now();
+  }
+
   private nextIdentifier(kind: ResourceKind): string {
-    const prefixes: Record<ResourceKind, string> = {
-      installation: "ins",
-      namespace: "ns",
-      configuration: "cfg",
-      preset: "pre",
-      service_account: "sa",
-      secret: "sec",
-      agent: "agt",
-      agent_revision: "rev",
-      credential_source: "cs",
-      sandbox_policy: "sbp",
-    };
-    const result = this.identifier
-      ? this.identifier(kind)
-      : `${prefixes[kind]}_${crypto.randomUUID()}`;
-    if (!isNonEmptyString(result)) {
-      throw new ScopeViolationError("The server generated an invalid resource identity.");
-    }
-    return result;
+    return this.resourceValues.nextIdentifier(kind);
   }
 
   private timestamp(): string {
-    const now = this.clock();
-    if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
-      throw new ScopeViolationError("The controller clock returned an invalid timestamp.");
-    }
-    return now.toISOString();
+    return this.resourceValues.timestamp();
   }
 
   private backendId(value: BackendRef | undefined, preserve?: BackendRef): BackendRef {
@@ -8711,13 +8683,8 @@ export class OpenClawController {
     return this.transactions.transact(work);
   }
 
-  private async record(
-    state: PlatformUnitOfWork,
-    operation: ReconciliationOperation,
-  ): Promise<void> {
-    if (this.shouldRecordOperations) {
-      await state.operations.append(operation, this.requestAuditId.getStore());
-    }
+  private record(state: PlatformUnitOfWork, operation: ReconciliationOperation): Promise<void> {
+    return this.workRecorder.record(state, operation);
   }
 }
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
