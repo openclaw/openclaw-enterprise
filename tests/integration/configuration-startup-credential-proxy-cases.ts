@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { writeFile } from "node:fs/promises";
+import test, { type TestContext } from "node:test";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
   InstallationFieldError,
@@ -8,12 +9,33 @@ import {
 } from "../../apps/controller/src/composition/installation-fields.ts";
 import { openShellRepositoryConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
+import type { validateSelectedBackendDrivers as validateBackendSelection } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import type {
   StartupProcessFixtures,
   StartupSiblingWait,
 } from "./configuration-startup-resolution-cases.ts";
+
+type ProxyInput = ReturnType<typeof createCredentialProxyInstallationConfiguration>;
+type ProxySelection = ProxyInput["drivers"]["credential_proxy"];
+type RetiredProxy = string | ProxySelection | null;
+type MutableProxyInput = Omit<ProxyInput, "backend" | "drivers"> & {
+  backend: [
+    Omit<ProxyInput["backend"][0], "drivers"> & {
+      drivers: Omit<ProxyInput["backend"][0]["drivers"], "credential_proxy"> & {
+        credential_proxy?: string;
+        conduit?: RetiredProxy;
+      };
+    },
+  ];
+  drivers: Omit<ProxyInput["drivers"], "credential_proxy" | "sandbox"> & {
+    credential_proxy?: ProxySelection;
+    sandbox?: ProxyInput["drivers"]["sandbox"] & { package?: string };
+    conduit?: RetiredProxy;
+    repo?: { id: string; configuration: Record<string, never> };
+  };
+};
 
 type StartupMode = Parameters<typeof loadInstallationConfiguration>[0]["mode"];
 type ExpectedFields = readonly (readonly [path: string, code: InstallationFieldDetail["code"]])[];
@@ -121,6 +143,122 @@ function startupDiagnostic(stderr: string, source: StartupDiagnosticSource) {
     .find((line) => line?.event === source.event);
   assert.ok(typeof diagnostic?.code === "string", `expected the ${source.event} diagnostic code`);
   return { code: diagnostic.code, details: fieldDetails(diagnostic.details) };
+}
+
+export async function checkCredentialProxySelection(
+  t: TestContext,
+  configuration: ProxyInput,
+  path: string,
+  load: () => ReturnType<typeof loadInstallationConfiguration>,
+  validateSelectedBackendDrivers: typeof validateBackendSelection,
+): Promise<void> {
+  // This is real startup composition; no gateway connection or listener is started.
+  const loaded = await load();
+  assert.ok(loaded);
+  const { proxyDriver, protectedDriver, sandboxDriver, credentialGatewayDriver } = loaded;
+  assert.ok(proxyDriver && protectedDriver && sandboxDriver && credentialGatewayDriver);
+  const backend = loaded.installation.backend[0];
+  assert.ok(backend?.type === "openshell" && loaded.installation.drivers.credential_proxy);
+  assert.equal(proxyDriver.capability, "credential_proxy");
+  assert.equal(proxyDriver.id, "openshell-egress");
+  assert.equal(loaded.installation.drivers.credential_proxy.id, proxyDriver.id);
+  assert.equal(backend.drivers.credential_proxy, proxyDriver.id);
+  assert.equal(protectedDriver.require("credential_proxy"), proxyDriver);
+  assert.equal(typeof proxyDriver.bindExchange, "function");
+
+  for (const [member, selected] of [
+    [true, false],
+    [false, true],
+    [false, false],
+    [true, true],
+  ] as const) {
+    await t.test(
+      `Credential Proxy: Backend member=${member}, Installation selection=${selected}`,
+      async () => {
+        const candidate: MutableProxyInput = structuredClone(configuration);
+        if (!member) {
+          delete candidate.backend[0].drivers.credential_proxy;
+        }
+        if (!selected) {
+          delete candidate.drivers.credential_proxy;
+        }
+        await writeFile(path, JSON.stringify(candidate));
+
+        // Direct OCC composition must enforce the same membership rule as Installation startup.
+        const validateSelection = () =>
+          validateSelectedBackendDrivers(
+            candidate.backend,
+            {
+              sandbox: sandboxDriver,
+              credential_gateway: credentialGatewayDriver,
+              ...(selected ? { credential_proxy: proxyDriver } : {}),
+            },
+            protectedDriver,
+          );
+        if (member !== selected) {
+          await assert.rejects(
+            load(),
+            /credential_proxy must match the selected drivers\.credential_proxy\.id/,
+          );
+          assert.throws(validateSelection, /Credential Proxy Driver/i);
+        } else {
+          const selectedDrivers = await load();
+          assert.ok(selectedDrivers);
+          assert.equal(selectedDrivers.proxyDriver?.id, selected ? proxyDriver.id : undefined);
+          validateSelection();
+        }
+      },
+    );
+  }
+
+  for (const boundary of ["installation", "backend"]) {
+    for (const scenario of ["retired only", "both", "null retired"]) {
+      await t.test(`${boundary}: ${scenario}`, async () => {
+        const invalid: MutableProxyInput = structuredClone(configuration);
+        const drivers = boundary === "installation" ? invalid.drivers : invalid.backend[0].drivers;
+        // Even a null retired key must not silently disable or override protection.
+        assert.ok(drivers.credential_proxy);
+        drivers.conduit = scenario === "null retired" ? null : drivers.credential_proxy;
+        if (scenario !== "both") {
+          delete drivers.credential_proxy;
+        }
+        await writeFile(path, JSON.stringify(invalid));
+        await assert.rejects(load(), /drivers\.conduit is retired; use drivers\.credential_proxy/);
+      });
+    }
+  }
+
+  // Finding 2361: the retired drivers.repo refusal named only native Git, which startup refuses
+  // beside a Sandbox. It now names the path that fits the selected Sandbox.
+  for (const [sandbox, advice] of [
+    [
+      "bundled",
+      /configure repository\.openShell with repository\.preparedGitHub \(the bundled OpenShell Driver refuses git-write\), or repository\.nativeSender without drivers\.sandbox or drivers\.credential_proxy\./,
+    ],
+    [
+      "package",
+      /configure repository\.preparedGitHub with the package's drivers\.credential_proxy and no repository\.openShell, or repository\.nativeSender without drivers\.sandbox/,
+    ],
+    ["none", /then configure repository\.nativeSender with repository\.preparedGitHub\. Do not/],
+  ] as const) {
+    await t.test(`retired drivers.repo, Sandbox ${sandbox}`, async () => {
+      const invalid: MutableProxyInput = structuredClone(configuration);
+      invalid.drivers.repo = { id: "repository-credentials", configuration: {} };
+      if (sandbox === "none") {
+        delete invalid.drivers.sandbox;
+      } else if (sandbox === "package") {
+        assert.ok(invalid.drivers.sandbox);
+        invalid.drivers.sandbox.package = "@example/installed-sender";
+      }
+      await writeFile(path, JSON.stringify(invalid));
+      await assert.rejects(load(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /^drivers\.repo native admission is retired\./);
+        assert.match(error.message, advice);
+        return true;
+      });
+    });
+  }
 }
 
 export function registerStartupCredentialProxyCases({

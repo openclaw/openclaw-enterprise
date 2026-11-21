@@ -21,6 +21,7 @@
     "tests/integration/github-installation-access-policy.test.ts",
     "tests/integration/repository-credentials-github-installation-issuer.test.ts",
     "tests/integration/skipper-private-git-origin.test.mjs",
+    "tests/integration/skipper-private-git-network-origin.test.ts",
     "tests/integration/repository-credentials-github-token.test.ts",
     "tests/integration/repository-credentials-client-config.test.ts",
     "tests/browser/console-agent-overview.test.ts",
@@ -106,6 +107,13 @@
     },
     {
       "path": "tests/integration/skipper-private-git-origin.test.mjs"
+    },
+    {
+      "path": "tests/integration/skipper-private-git-network-origin.test.ts",
+      "expectedTests": [
+        "private Git network origin accepts only its broad fixture credential across three repositories",
+        "private Git network origin calibrates the exact issued A/B/C credential and observes retirement"
+      ]
     },
     {
       "path": "tests/integration/repository-credentials-github-token.test.ts"

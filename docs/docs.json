@@ -64,6 +64,10 @@
                       {
                         "page": "guides/integrations/codex-plugins",
                         "label": "Plugins"
+                      },
+                      {
+                        "page": "guides/integrations/channels",
+                        "label": "Channels"
                       }
                     ]
                   },
