@@ -584,22 +584,25 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         )
        SELECT s.admission_id AS "admissionId", b.session_id AS "sessionId",
          b.generation::text AS generation,
-         (f.source_id IS NULL OR (
-           f.source->>'adoption'=$4 AND f.admission->>'issuerAuthority'=$5
+         (f.source->>'adoption'=$4 AND f.admission->>'issuerAuthority'=$5
+           AND f.source#>>'{grant,profile}'='git-ref-write'
+           AND f.source#>>'{grant,id}'=s.cleanup_context#>>'{binding,grant,grantId}'
+           AND f.admission->'grant'=f.source->'grant'
            AND ${repositoryGitBrokerOwnerPredicate}
            AND (f.source#>>'{session,namespaceId}',f.source#>>'{session,agentId}',
                 f.source#>>'{session,installationId}')=(s.namespace_id,s.agent_id,i.id)
            AND f.source #> '{session,driver}'=s.cleanup_context->'driver'
            AND f.source #> '{session,binding}'=s.cleanup_context->'binding'
            AND NOT EXISTS (SELECT FROM ${attempts} a WHERE a.source_id=f.source_id
-             AND a.admission->>'issuerAuthority' IS DISTINCT FROM $5)
-         )) IS TRUE AS "ownerMatches",
-         f.source_id IS NULL OR (NOT f.enabled AND NOT EXISTS (
+             AND (a.admission->>'issuerAuthority' IS DISTINCT FROM $5
+               OR a.admission->'grant' IS DISTINCT FROM f.admission->'grant'))
+         ) IS TRUE AS "ownerMatches",
+         NOT f.enabled AND NOT EXISTS (
            SELECT FROM ${attempts} a WHERE a.source_id=f.source_id
-             AND NOT ${preparedAttemptSettled("a")})) AS settled
+             AND NOT ${preparedAttemptSettled("a")}) AS settled
        FROM scoped_attempts s
        JOIN occ.repository_broker_receipts b USING(admission_id)
-       LEFT JOIN ${families} f ON f.source_id='repository-git:' || s.admission_id
+       JOIN ${families} f ON f.source_id='repository-git:' || s.admission_id
        CROSS JOIN occ.installation i
        WHERE (SELECT count(*) FROM scoped_attempts)=$6
          AND s.live_revision_id=$3 AND s.phase='disposed' AND s.broker_protocol=3
@@ -622,8 +625,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         ],
       ),
     );
-    // Provider attempts require a family via a foreign key. Check for other correlated
-    // families before using absence as evidence; the removal fence prevents a later claim.
+    // The admitted git-write binding is shared by Git-only and draft PR transport. Require
+    // the original prepared grant as positive proof even when no provider token was issued.
+    // The removal fence prevents any later family from filling a gap in the evidence.
     const observed = rows as {
       admissionId: string;
       sessionId: string;

@@ -6740,9 +6740,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       !this.protectedExecution?.admits(revision, source) ||
       (plan?.repositoryGit && !this.protectedExecution.sandbox.repositoryAccess)
     ) {
-      throw new DependencyUnavailableError(
-        "Protected execution is unavailable without its exact paired Compute release.",
-      );
+      const message =
+        "Protected execution is unavailable without its exact paired Compute release.";
+      if (
+        source === "stored" &&
+        revision.executionAdmission.mode === "unprotected" &&
+        revision.repositoryCredentials !== undefined
+      ) {
+        // The selected configuration cannot run this stored native admission.
+        throw new ConfigurationFailure(message);
+      }
+      throw new DependencyUnavailableError(message);
     }
   }
 

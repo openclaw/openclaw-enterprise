@@ -131,6 +131,7 @@ import {
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
+import { ConfigurationFailure as KubernetesConfigurationFailure } from "./drivers/compute/kubernetes/failures.ts";
 import type {
   NativeRepositoryWithdrawalSession,
   PreparedRepositoryGitMaterialState,
@@ -2729,7 +2730,14 @@ export class ControllerWorker {
             ...(refusal.authorization === undefined ? {} : { denial: refusal }),
           };
         }
-        this.validateExecutionAdmission(revision);
+        try {
+          this.validateExecutionAdmission(revision);
+        } catch (error) {
+          if (!(error instanceof KubernetesConfigurationFailure)) {
+            throw error;
+          }
+          return { withdrawal: "retire-runtime" };
+        }
         if (agent.desiredRuntimeState === "running") {
           await this.recoverPendingCredentialWithdrawals(claim, revision);
         }

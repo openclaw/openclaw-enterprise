@@ -306,10 +306,9 @@ the claim and matches the receipt under the attempt lock. Committed receipts sup
 missing session IDs. An unconfirmed locked read stays pending. An initial lookup
 without a terminal receipt uses the original sender.
 
-For finite native removal, PostgreSQL fences admission. The Worker matches disposed
-broker sessions with settled prepared Git custody. It defers pending settlement.
-Kubernetes checks the existing Gateway, Harness and workspace node. The Worker resumes
-supervision of the same revision or queues terminal retirement.
+PostgreSQL fences finite native removal. The Worker matches disposed sessions to original
+Git-only grants and settled custody. Kubernetes verifies the existing Gateway, Harness
+and workspace node. The Worker rechecks model authority before retaining the revision.
 
 Only committed observations survive restart. The original issuer owns unresolved
 custody. Unpublished failures count against `pendingAuxiliary` until disposed.

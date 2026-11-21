@@ -36,6 +36,7 @@ import {
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
+import { startGitHubFixture } from "../fixtures/repository-credentials/github.ts";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
@@ -64,6 +65,8 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 
 type BrokerInput = Parameters<
@@ -333,6 +336,9 @@ for (const outcome of [
   "inference unavailable",
   "custody read recovers",
   "unexpected custody family",
+  "settled draft-capable transport",
+  "unissued draft-capable transport",
+  "stored execution admission incompatible",
   "model account changes",
   "model account binding revoked",
   "model account Backend missing",
@@ -355,13 +361,22 @@ for (const outcome of [
         drivers: { repo: driverId },
       };
       const f = await setupNativeWithdrawal(t, { backends: [...modelBackends, gitBackend] });
+      const draftTransport =
+        outcome === "settled draft-capable transport" ||
+        outcome === "unissued draft-capable transport";
+      const withoutFamily = outcome === "unissued draft-capable transport";
       const clock = createControlledClock();
       const startedWall = clock.wallNow();
       const git = await startRegistryCredentialServiceFixture(t, {
         namespaceId: f.namespace.id,
         backendId,
         repositories: [
-          { repositoryRef: "repo-a", repository: "fixture/repository", repositoryId: "73" },
+          {
+            repositoryRef: "repo-a",
+            repository: "fixture/repository",
+            repositoryId: "73",
+            ...(draftTransport && { transport: "git-and-draft-pr", pullRequestBase: "main" }),
+          },
         ],
         autoOpen: false,
         clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
@@ -388,16 +403,30 @@ for (const outcome of [
       });
       t.after(() => receipts.close());
       const subject = git.byRef.get("repo-a")!;
+      // The default registry origin admits only the built-in fixture permission maps.
+      // Exercise the original draft grant with an issuer that accepts its exact scope.
+      const provider =
+        draftTransport && !withoutFamily
+          ? await startGitHubFixture(t, {
+              clock: git.clock,
+              tls: git.tls,
+              repository: subject.repository,
+              repositoryId: subject.repositoryId,
+              additionalPermissions: [
+                { metadata: "read", contents: "write", pull_requests: "write" },
+              ],
+            })
+          : subject.github;
       const keyDirectory = await temporaryDirectory(t, "native-withdrawal-owner-");
       const privateKeyPath = join(keyDirectory, "app.pem");
       const custodyKeyPath = join(keyDirectory, "custody");
       await writeFile(
         privateKeyPath,
-        subject.github.privateKey.export({ type: "pkcs8", format: "pem" }),
+        provider.privateKey.export({ type: "pkcs8", format: "pem" }),
         { mode: 0o600 },
       );
       await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
-      const issuer = new URL(subject.github.origin);
+      const issuer = new URL(provider.origin);
       assert.equal(issuer.hostname, "127.0.0.1");
       const prepared = await startPreparedGitHubGitOwner({
         registry: git.registry,
@@ -454,6 +483,15 @@ for (const outcome of [
       let runtimeObservations = 0;
       let failFinalModelRead = false;
       let failedFinalModelReads = 0;
+      let checkIncompatibleAdmission = false;
+      const incompatibleCompute =
+        outcome === "stored execution admission incompatible"
+          ? createTestKubernetesComputeDriver(f.compute.id, {
+              protectedDriver: protectedRepositoryGitRelease(() =>
+                assert.fail("stored admission cannot call repository access"),
+              ).owner,
+            })
+          : undefined;
       const revokeModelBinding = async () => {
         assert.ok(modelAccount);
         const binding = await f.observerPool.query(
@@ -464,6 +502,12 @@ for (const outcome of [
       };
       const compute: ComputeDriver = {
         ...f.compute,
+        validateExecutionAdmission(revision, source) {
+          if (checkIncompatibleAdmission) {
+            assert.ok(incompatibleCompute);
+            incompatibleCompute.validateExecutionAdmission(revision, source);
+          }
+        },
         validateRepositoryCredentials(harness, sandboxDriverId) {
           assert.equal(harness.mode, "dedicated");
           assert.equal(sandboxDriverId, undefined);
@@ -596,19 +640,27 @@ for (const outcome of [
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
       assert.equal(deliveries.length, 1, "runtime gets one admitted broker bearer");
       const admit = deliveries[0]!;
-      await prepared.maintain();
+      if (!withoutFamily) {
+        await prepared.maintain();
+      }
       assert.equal(
-        subject.github.issuesOfTokens.length,
-        1,
-        "actual prepared owner issued one token",
+        provider.issuesOfTokens.length,
+        withoutFamily ? 0 : 1,
+        "only the prepared owner can issue a provider token",
       );
       const origin = subject.git;
       const initial = origin.traffic().requests;
-      assert.equal(
-        await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
-        200,
-      );
-      assert.equal(origin.traffic().requests, initial + 1);
+      if (!draftTransport) {
+        assert.equal(
+          await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+          200,
+        );
+        assert.equal(origin.traffic().requests, initial + 1);
+      }
+      if (draftTransport && !withoutFamily) {
+        // Let the genuine prepared owner settle the provider before the first cleanup pass.
+        await worker.stop();
+      }
       const removed = await f.controller.updateAgent(f.actor.id, {
         namespaceId: owner.namespaceId,
         agentId: owner.id,
@@ -616,6 +668,10 @@ for (const outcome of [
         repositoryBindings: [],
       });
       assert.equal(removed.activeRevisionId, candidate.id);
+      if (draftTransport && !withoutFamily) {
+        await prepared.maintain();
+        worker = await startWorker(f.createWorkerPool());
+      }
       const key = repositoryRemovalWorkKey(candidate.id);
       const readWork = async () =>
         (
@@ -660,9 +716,32 @@ for (const outcome of [
       );
       assert.equal(
         origin.traffic().requests,
-        initial + 1,
+        initial + (draftTransport ? 0 : 1),
         "fresh old-bearer request never reaches Git origin",
       );
+      if (draftTransport) {
+        const readback = await f.observerPool.query(
+          `SELECT source#>>'{grant,profile}' AS profile,
+                  (SELECT custody FROM occ.prepared_github_attempts WHERE source_id=f.source_id) AS custody
+           FROM occ.prepared_github_families f WHERE source_id=$1`,
+          ["repository-git:" + receipt.admissionId],
+        );
+        assert.deepEqual(
+          readback.rows,
+          withoutFamily ? [] : [{ profile: "git-ref-draft-pr", custody: "revoked" }],
+        );
+        assert.equal(first.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor(
+          "terminal work to stop the exact draft-capable revision",
+          async () =>
+            (await f.currentAgent(owner))?.activeRevisionId === undefined ? true : undefined,
+          10_000,
+        );
+        assert.deepEqual(stops, [candidate.id]);
+        assert.equal(runtimeObservations, 0);
+        assert.equal(deliveries.length, 1);
+        return;
+      }
       assert.equal(
         first.code,
         "REPOSITORY_CLEANUP_PENDING",
@@ -695,6 +774,23 @@ for (const outcome of [
           10_000,
         );
       };
+      if (outcome === "stored execution admission incompatible") {
+        // The replacement configuration admits a protected pair. The stock validator
+        // consequently refuses a saved unprotected native repository revision.
+        checkIncompatibleAdmission = true;
+        const retirement = await runCleanupPass();
+        assert.equal(retirement.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor(
+          "terminal work to stop the incompatible revision",
+          async () =>
+            (await f.currentAgent(owner))?.activeRevisionId === undefined ? true : undefined,
+          10_000,
+        );
+        assert.deepEqual(stops, [candidate.id]);
+        assert.equal(runtimeObservations, 0);
+        assert.equal(deliveries.length, 1);
+        return;
+      }
       if (
         outcome.startsWith("model ") &&
         outcome !== "model account binding revoked during observation" &&
