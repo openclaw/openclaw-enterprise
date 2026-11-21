@@ -31,6 +31,7 @@
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+    "tests/integration/postgres-staged-agent-credential-binding.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
     "tests/integration/postgres-secret-state.test.ts",
@@ -197,6 +198,12 @@
       "path": "tests/integration/postgres-static-token-service-lifecycle.test.ts",
       "expectedTests": [
         "staged TokenService lifecycle keeps private custody, audit, and exact update authority"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
+      "expectedTests": [
+        "Agent drafts authorize the staged source and refuse unsupported revision delivery"
       ]
     },
     {
@@ -628,6 +635,7 @@
       "expectedTests": [
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
+        "Agent policy HTTP preserves and withdraws stored repository grants",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
       ]

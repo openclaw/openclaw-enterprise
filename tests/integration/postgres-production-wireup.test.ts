@@ -45,7 +45,7 @@ import {
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
+import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,

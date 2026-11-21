@@ -17,7 +17,7 @@ import type {
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
-import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
+import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {

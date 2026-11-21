@@ -1,14 +1,9 @@
 import { createHash } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import type {
   AdmittedRepositoryBinding,
   RepositoryApprovalScope,
-  RepositoryCredentialResolution,
   RepositoryPolicyDriver,
-  RepositoryRevisionState,
 } from "@openclaw-enterprise/contracts";
-import { ResourceStateConflictError } from "./errors.ts";
-import type { RepositorySessionReadRepository } from "./ports/repository-sessions.ts";
 
 // Sort object keys recursively; arrays retain their provider-defined semantics.
 // Reject non-JSON values rather than silently omitting security-relevant fields.
@@ -55,45 +50,22 @@ export function eligibleRepositoryApprovalScope(
   return driver.standingApprovalScope?.(input);
 }
 
-export async function repositoryCredentialsWithStandingApproval(
-  sessions: Pick<RepositorySessionReadRepository, "findStandingApproval" | "listStandingApprovals">,
-  { namespaceId, agentId }: { namespaceId: string; agentId: string },
-  credentials: RepositoryRevisionState | undefined,
-  resolveBinding: (binding: AdmittedRepositoryBinding) => {
-    readonly driver: RepositoryPolicyDriver;
-    readonly resolution: RepositoryCredentialResolution;
-  },
-): Promise<RepositoryRevisionState | undefined> {
-  if (credentials?.bindings.length !== 1) {
-    const approvals = await sessions.listStandingApprovals(namespaceId, agentId);
-    if (approvals.some((approval) => !approval.revokedAt)) {
-      throw new ResourceStateConflictError(
-        "This Agent has a standing repository approval but not exactly one repository binding. Keep one binding, or remove the approval (this needs Agent administer on the Agent), then deploy again.",
-      );
-    }
-    return credentials;
-  }
-  const binding = credentials.bindings[0]!;
-  const approval = await sessions.findStandingApproval(namespaceId, agentId, binding.repositoryRef);
-  if (!approval) {
-    return credentials;
-  }
-  const resolved = resolveBinding(binding);
-  const scope = eligibleRepositoryApprovalScope(resolved.driver, { namespaceId, binding });
-  if (
-    !scope ||
-    !isDeepStrictEqual(resolved.resolution.bindings[0], binding) ||
-    !isDeepStrictEqual(approval.binding, binding) ||
-    !isDeepStrictEqual(approval.scope, scope)
-  ) {
-    throw new ResourceStateConflictError(
-      "This Agent's standing repository approval no longer matches team policy. Remove it (this needs Agent administer on the Agent) and approve the current scope again, or deploy after an Installation administrator restores the policy.",
-    );
-  }
-  return {
-    ...credentials,
-    standingApprovalId: approval.id,
-    standingApprovalGeneration: approval.generation,
-    standingApprovalScopeFingerprint: approval.scopeFingerprint,
-  };
-}
+/**
+ * Standing repository approval refusals. Agent update and deploy raise them after
+ * the caller's grant on the Agent; approving needs Agent administer. None names an approval ID
+ * or a repository, so a caller without Agent administer learns only that an approval blocks.
+ */
+export const STANDING_APPROVAL_REFUSALS = Object.freeze({
+  bindingLocked:
+    "A standing repository approval holds this Agent's repository binding, so the binding cannot change. Remove the approval first (this needs Agent administer on the Agent), then save again.",
+  oneBinding:
+    "A standing repository approval needs exactly one repository binding on the Agent. Keep one binding, then approve again.",
+  notPermitted:
+    "Team policy does not permit this standing approval: it must last until removed and name one of the Agent's repository bindings that the Installation allows standing approval for. Ask an Installation administrator to allow it.",
+  scopeChanged:
+    "The standing approval scope changed since you reviewed it. Read the current scope from repository-approval-scopes, review it, then approve again with its scopeFingerprint as expectedScopeFingerprint.",
+  deployOneBinding:
+    "This Agent has a standing repository approval but not exactly one repository binding. Keep one binding, or remove the approval (this needs Agent administer on the Agent), then deploy again.",
+  policyChanged:
+    "This Agent's standing repository approval no longer matches team policy. Remove it (this needs Agent administer on the Agent) and approve the current scope again, or deploy after an Installation administrator restores the policy.",
+});

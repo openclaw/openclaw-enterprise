@@ -65,11 +65,8 @@ import {
   AGENT_STOP_DENIED,
   askForGrant,
   BOUND_SECRET_UNLISTED,
-  DIAGNOSTICS_RUNTIME_UNAVAILABLE,
-  diagnosticsRecordedFailure,
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
-  NO_PERSISTED_STARTUP_FAILURE,
   RESOURCE_CONFLICT,
   requestedVersionUnavailable,
   stopRefused,
@@ -77,6 +74,11 @@ import {
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
+import {
+  DIAGNOSTICS_RUNTIME_UNAVAILABLE,
+  diagnosticsRecordedFailure,
+  NO_PERSISTED_STARTUP_FAILURE,
+} from "../helpers/refusal-configuration-runtime.ts";
 import {
   BACKENDS_DENIED,
   BOUND_SECRET_METADATA,

@@ -11,16 +11,27 @@ import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { RepositoryNetworkPolicy, SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
+  AgentRepository,
+  AgentRevisionRepository,
   SandboxPolicyRepository,
+  WorkspaceSetupRepository,
+} from "../ports/agents.ts";
+import type {
+  CredentialSourceRepository,
   StoredCredentialWithdrawal,
-  PredecessorReplacement,
-} from "./platform-state.ts";
+} from "../ports/credential-sources.ts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
 
-import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+import {
+  CREDENTIAL_WITHDRAWAL_TARGET,
+  credentialWithdrawalOperationId,
+  credentialWithdrawalWorkKey,
+} from "../controller-work.ts";
 import { REPOSITORY_CLEANUP_KEY_SEPARATOR } from "../repository-withdrawal.ts";
+import type { PresetRepository } from "../ports/presets.ts";
 import type { AgentAuditSelection } from "../ports/agent-audit.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
@@ -35,7 +46,7 @@ import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
-} from "./repository-credential-state.ts";
+} from "../repository-credential-validation.ts";
 import type {
   AccessBinding,
   Agent,
@@ -100,6 +111,7 @@ import {
   IAMRoleInUseError,
   NAMESPACE_NAME_CONFLICT,
   PRESET_NAME_CONFLICT,
+  PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
   SECRET_NAME_CONFLICT,
@@ -108,27 +120,19 @@ import {
   RepositorySessionWithdrawnError,
   WorkClaimLostError,
 } from "../errors.ts";
-import type {
-  AgentRepository,
-  WorkspaceSetupRepository,
-  AgentRevisionRepository,
-  ConfigurationOwnership,
-  ConfigurationRepository,
-  CredentialSourceRepository,
-  InstallationRepository,
-  IAMPolicyRepository,
-  NamespaceRepository,
-  PersistedNamespace,
-  PresetRepository,
-  PlatformAuditSink,
-  PlatformOperation,
-  PlatformReadView,
-  PlatformStateStore,
-  PlatformUnitOfWork,
-  SecretReferenceKind,
-  SecretRepository,
-  ServiceAccountRepository,
-} from "./platform-state.ts";
+
+import type { ConfigurationOwnership, ConfigurationRepository } from "../ports/configurations.ts";
+
+import type { InstallationRepository } from "../ports/installations.ts";
+import type { IAMPolicyRepository } from "@openclaw-enterprise/contracts";
+import type { NamespaceRepository, PersistedNamespace } from "../ports/namespaces.ts";
+import type { PlatformAuditSink } from "./platform-state.ts";
+import type { PlatformOperation } from "../ports/platform-operations.ts";
+import type { PlatformReadView } from "../ports/platform-read-view.ts";
+import type { PlatformStateStore } from "../ports/platform-state-store.ts";
+import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
+import type { SecretReferenceKind, SecretRepository } from "../ports/secrets.ts";
+import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
 import type { TokenServiceInstance } from "../ports/token-service.ts";
 import {
   copyProvisioningRecord,
@@ -138,12 +142,14 @@ import {
   validateProvisioningEffectSettlement,
   validateProvisioningFailure,
   validateProvisioningReplay,
-  type AgentProvisioningCheckpoint,
-  type AgentProvisioningEffectSettlement,
-  type AgentProvisioningFailure,
-  type AgentProvisioningRecord,
-  type CreateAgentProvisioningRecord,
 } from "./agent-provisioning.ts";
+import type {
+  AgentProvisioningCheckpoint,
+  AgentProvisioningEffectSettlement,
+  AgentProvisioningFailure,
+  AgentProvisioningRecord,
+  CreateAgentProvisioningRecord,
+} from "../ports/agent-provisioning.ts";
 import {
   assertHarnessAuthAvailable,
   assertRevisionAuthAvailable,
@@ -163,7 +169,6 @@ import {
   type PostgresWorkQueueOptions,
 } from "./postgres-work-queue.ts";
 import { beginProvisioningEffectProgress } from "../provisioning-effects.ts";
-import { credentialWithdrawalOperationId, credentialWithdrawalWorkKey } from "./controller-work.ts";
 
 type PostgresRow = Record<string, unknown>;
 
@@ -233,12 +238,7 @@ export interface PersistedNativeIAMPrincipalSeed {
   readonly groupIds?: readonly string[];
 }
 
-export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
-  constructor() {
-    super("The PostgreSQL transaction commit outcome is unknown.");
-    this.name = "PostgresCommitOutcomeUnknownError";
-  }
-}
+export { PostgresCommitOutcomeUnknownError };
 
 /**
  * Node and OpenSSL codes for a server certificate that failed identity or chain validation.

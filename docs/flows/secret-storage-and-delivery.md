@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-11-16"
-last_updated_session: "authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -29,11 +29,10 @@ Credential issuance and provider internals are outside this flow.
   selection.
 - Local installer: `scripts/first-agent.ts:main` uses the bootstrap service key.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
-  [OpenClawController](../../packages/occ/src/index.ts), and
+  [OpenClawController](../../packages/occ/src/controller.ts), and
   [KubernetesSecretDriver](../../apps/controller/src/drivers/secret/kubernetes/index.ts).
 - The console and [OCC CLI](../guides/cli.md#provision-integration-secrets)
-  call these HTTP operations. They initiate OCC-authorized mutations; neither
-  writes directly to SQL, Kubernetes, or credential backends.
+  use these HTTP operations for OCC-authorized writes.
 
 ## Flow
 
@@ -73,15 +72,13 @@ graph TD
 
 ### 1. Authorize storage without requiring a gateway
 
-`packages/occ/src/index.ts:OpenClawController.createSecret`
+`packages/occ/src/secret-operations.ts:createSecret`
 
-[OpenClawController.createSecret](../../packages/occ/src/index.ts) validates
-nonempty UTF-8 input of at most 65,536 bytes and locks the Namespace. The caller needs `create`
-on the Namespace's Secret collection. The Namespace must already be ready; an
-Agent record does not need to exist. OCC selects the
-Installation SecretDriver, generates the Secret identity, and prevents the
-caller from choosing Kubernetes backend identity. The value stays in protected
-request/driver memory, never in the reconciliation queue or resource metadata.
+[createSecret](../../packages/occ/src/secret-operations.ts) validates
+nonempty UTF-8 input of at most 65,536 bytes. OCC checks Secret `create` before
+and after locking the Namespace, which must be ready. This can run before Agent
+creation. OCC generates the Secret ID and the selected Driver supplies its backend
+reference. The value stays in request and Driver memory.
 
 ### 2. Store material and commit safe identity
 
@@ -114,14 +111,14 @@ before sending needs no cleanup read.
 
 ### 3. Bind a source, then admit references
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 The Agent response exposes its immutable `servicePrincipalId`. An administrator
 grants that identity `operate` on the exact Secret before deployment. OCC checks
 Installation administration, Namespace scope, and target access through the
 selected IAM Driver; policy and audit commit together.
 
-[createConfiguration and updateConfiguration](../../packages/occ/src/index.ts)
+[createConfiguration and updateConfiguration](../../packages/occ/src/configuration-operations.ts)
 keep `secretBindings` in OCC metadata, separate from native `values`. Each binding
 has a Secret source and an env delivery destination; omitted delivery normalizes
 to `env`. Unsupported sources, substitution modes, and reserved environment
@@ -130,11 +127,11 @@ Configuration. A Configuration create/update whose resulting document contains
 bindings requires `operate` on every selected Secret, including retained bindings
 when PATCH omits `secretBindings`.
 
-[createAgent and updateAgent](../../packages/occ/src/index.ts) require the normal
+[createAgent and updateAgent](../../packages/occ/src/agent-drafts.ts) require the normal
 Agent mutation permission plus `operate` on each exact Secret when selecting a
 Configuration with bindings.
 
-[deployAgent](../../packages/occ/src/index.ts) separately authorizes the deploying
+[deployAgent](../../packages/occ/src/agent-deployment-admission.ts) separately authorizes the deploying
 caller and consuming Agent service principal to `operate` every Secret, then
 checks live backend identity through the API-side driver. Namespace locking
 serializes binding/admission changes against deletion. Admission freezes
@@ -266,9 +263,9 @@ project namespace Secrets, so controller compromise remains outside workload iso
 
 ### 6. Update, restart, or remove
 
-`packages/occ/src/index.ts:OpenClawController.updateSecret`
+`packages/occ/src/secret-operations.ts:updateSecret`
 
-[updateSecret](../../packages/occ/src/index.ts) serializes the write and uses
+[updateSecret](../../packages/occ/src/secret-operations.ts) serializes the write and uses
 Kubernetes concurrency/ownership checks. It changes only the stored value; the
 response retains the same ref. No Agent revision, binding, or running environment is
 updated, and no controller automatically restarts the gateway. A successful update
@@ -291,7 +288,7 @@ Dedicated Gateway infrastructure restarts read canonical channel Secrets
 directly. Failed cutover does not restore old source values. Revoking `operate`
 blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
-[deleteSecret](../../packages/occ/src/index.ts) rejects current Configuration,
+[deleteSecret](../../packages/occ/src/secret-operations.ts) rejects current Configuration,
 Agent harness-binding draft, selected version, and pending-work dependencies under the same serialization
 boundary. One `listReferences` query returns at most 50 of them, ordered by kind and ID;
 `secretConsumers` checks `read` on each referencing resource, names the readable ones in
@@ -339,6 +336,9 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:35: Point Configuration binding writes to their OCC module. (authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea - 81cdb33c3d2d2ba64dfd783b0216b5dbcfebe395)
+- 2026-11-20 16:31: Update OCC Secret operation source pointers. (authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c - 8eb97c71e0aa0b84779e19f9bbacc2d37f22fa14)
 - 2026-11-16 14:46: Bind the first-Agent helper to confirmed Installation state and use authenticated IAM operations for exact model credential grants. (authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822 - 6255bbe8fe564e52941b311a7ce8ce8699d1f236)
 
 - 2026-11-11 08:41: Compensate confirmed but refused Installation-private Secret creation without changing ordinary ownership or cleanup custody. (authoring-run/ed486d39-4be4-45b1-a9ac-46e7f93d38bc - 228632a152f96c22a4d7c9aa7554c6ba22911bd4)

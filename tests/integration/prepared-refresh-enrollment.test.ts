@@ -14,7 +14,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -117,7 +117,7 @@ function registerPreparedPair(
     }
   })({ endpoint: "http://127.0.0.1:1" });
   t.after(() => client.close());
-  const proxy = new OpenShellCredentialProxyDriver(
+  const proxy = new OpenShellLegacyEgressProxyDriver(
     { middlewareName: "controlled", authorityScope: "execution" },
     {
       id: "proxy",

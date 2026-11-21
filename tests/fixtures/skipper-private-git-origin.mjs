@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { IncomingMessage } from "node:http";
 import { createServer, get as httpsGet } from "node:https";
 import { checkServerIdentity } from "node:tls";
@@ -11,6 +11,13 @@ import { join } from "node:path";
 import { cleanEnvironment, run } from "./repository-credentials/process.ts";
 import { createTokenAuthority } from "./repository-credentials/github/token-authority.ts";
 import { fixtureAppId, fixtureInstallationId } from "./repository-credentials/github/metadata.ts";
+
+export const scopedRestFixturePermissions = Object.freeze({
+  metadata: "read",
+  contents: "write",
+  issues: "read",
+  pull_requests: "write",
+});
 
 // Test-only origin. Callers own close(); no environment credentials or user Git
 // configuration are inherited. Only snapshot() is intended for logged evidence.
@@ -26,6 +33,8 @@ export async function startSkipperPrivateGitOrigin({
   teamReview = false,
   seedRefs = 0,
   witnessIssuedGit = false,
+  networkAcl = /** @type {boolean | "issued"} */ (false),
+  scopedRest = false,
 } = {}) {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(repository)) {
     throw new Error("repository must be owner/name");
@@ -36,11 +45,53 @@ export async function startSkipperPrivateGitOrigin({
   if (!approvalRef.startsWith("refs/heads/") || approvalRef === "refs/heads/main") {
     throw new Error("approvalRef must be a nondefault branch");
   }
+  // Signal 0 probes the group selector without delivering a signal. PID 1
+  // would produce the broadcast selector, so leave that case to normal startup.
+  if (process.platform !== "win32" && process.pid > 1) {
+    try {
+      process.kill(-process.pid, 0);
+    } catch (error) {
+      if (error.code === "EPERM") {
+        throw new Error(
+          "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.",
+          { cause: error },
+        );
+      }
+      // The runner need not be a process-group leader.
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
   await run("git", ["check-ref-format", approvalRef]);
+  const issuedNetwork = networkAcl === "issued";
+  assert.ok(!scopedRest || issuedNetwork, "Scoped REST requires the controlled App issuer");
+  const repositoryScopes = [{ repository, repositoryRef, repositoryId }];
+  if (networkAcl) {
+    repositoryScopes.push(
+      { repository: "fixture/b", repositoryRef: "private-git-b", repositoryId: "74" },
+      { repository: "fixture/c", repositoryRef: "private-git-c", repositoryId: "75" },
+    );
+    const uniqueFields = issuedNetwork
+      ? ["repository", "repositoryRef", "repositoryId"]
+      : ["repository"];
+    for (const field of uniqueFields) {
+      assert.equal(new Set(repositoryScopes.map((scope) => scope[field])).size, 3);
+    }
+  }
+  const repositoryByName = new Map(repositoryScopes.map((scope) => [scope.repository, scope]));
+  const networkRepositories = [...repositoryByName.keys()];
   const directory = await mkdtemp(join(tmpdir(), "skipper-private-git-"));
   const env = cleanEnvironment({ HOME: directory, GIT_CONFIG_GLOBAL: "/dev/null" });
   const git = (args, options = {}) => run("git", args, { env, ...options });
   const bare = join(directory, `${repository}.git`);
+  const broadToken = networkAcl === true ? randomBytes(32).toString("hex") : undefined;
+  const broadAuthorization = broadToken
+    ? `Basic ${Buffer.from(`x-access-token:${broadToken}`).toString("base64")}`
+    : undefined;
+  /** @type {{ repository: string, operation: string, method: "GET" | "POST", authenticated: boolean, credentialIndex?: number }[]} */
+  const networkRequests = [];
+  let unknownNetworkRequests = 0;
   const children = new Set();
   // HTTPS exposes a TLSSocket on the request and a net.Socket at TCP accept.
   // Their live TCP four-tuple identifies the same connection across both events.
@@ -119,13 +170,27 @@ export async function startSkipperPrivateGitOrigin({
     for (let index = 0; index < seedRefs; index++) {
       await git(["-C", bare, "update-ref", `refs/heads/seed/${index}`, initialSha]);
     }
-    // A pre-receive hook rejects the entire transaction, including mixed pushes.
-    // Network clients can only change the exact approval ref; main stays protected.
-    await writeFile(
-      join(bare, "hooks", "pre-receive"),
-      `#!/bin/sh\nwhile read old new ref; do\n  test "$ref" = "$FIXTURE_APPROVAL_REF" || { echo 'ref denied' >&2; exit 1; }\ndone\n`,
-      { mode: 0o700 },
-    );
+    // The issued ACL control must permit a real ref update with its token,
+    // independently of the Sandbox under test. Preserve the original hook for
+    // the other origin modes.
+    if (!issuedNetwork) {
+      // A pre-receive hook rejects the entire transaction, including mixed pushes.
+      // Network clients can only change the exact approval ref; main stays protected.
+      await writeFile(
+        join(bare, "hooks", "pre-receive"),
+        `#!/bin/sh\nwhile read old new ref; do\n  test "$ref" = "$FIXTURE_APPROVAL_REF" || { echo 'ref denied' >&2; exit 1; }\ndone\n`,
+        { mode: 0o700 },
+      );
+    }
+    if (networkAcl) {
+      for (const name of networkRepositories.slice(1)) {
+        const target = join(directory, `${name}.git`);
+        await mkdir(join(target, ".."), { recursive: true });
+        await git(["clone", "--bare", bare, target]);
+        await git(["-C", target, "config", "maintenance.auto", "false"]);
+        await git(["-C", target, "config", "http.receivepack", "true"]);
+      }
+    }
     if (!tls) {
       const keyFile = join(directory, "tls-key.pem");
       const certFile = join(directory, "tls-cert.pem");
@@ -163,14 +228,21 @@ export async function startSkipperPrivateGitOrigin({
       publicKey,
       lifetimeMs: 3600000,
       repositoryId,
-      additionalPermissions: teamReview
-        ? [{ metadata: "read", contents: "write", pull_requests: "write" }]
-        : [],
+      ...(issuedNetwork && {
+        expectedRepositoryIds: repositoryScopes.map((scope) => scope.repositoryId),
+      }),
+      additionalPermissions: [
+        ...(teamReview ? [{ metadata: "read", contents: "write", pull_requests: "write" }] : []),
+        ...(scopedRest ? [scopedRestFixturePermissions] : []),
+      ],
     });
     const reviewHead = approvalRef.slice("refs/heads/".length);
     const pullRoute = "/repos/" + repository + "/pulls";
     let pullRequest;
     let pullCreateRequests = 0;
+    /** @typedef {{ ref: string, sha: string, repo: { id: number, full_name: string } }} ScopedPullSide */
+    /** @type {Map<string, { number: number, title: string, state: string, draft: boolean, head: ScopedPullSide, base: ScopedPullSide }>} */
+    const scopedPulls = new Map();
     const observePullRequest = async () => {
       if (!pullRequest) {
         return null;
@@ -183,6 +255,19 @@ export async function startSkipperPrivateGitOrigin({
       });
       return { ...pullRequest, head: side(reviewHead), base: side("main") };
     };
+    const readPullBody = async (request, reply) => {
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of request) {
+        size += chunk.length;
+        if (size > 32_768) {
+          reply(413);
+          return;
+        }
+        chunks.push(chunk);
+      }
+      return JSON.parse(Buffer.concat(chunks).toString());
+    };
     // Draft pull-request creation for the team-review topology. The caller has matched the
     // route and counted the attempt; `reply` records the outcome under that endpoint.
     const createDraftPull = async (request, reply) => {
@@ -191,15 +276,11 @@ export async function startSkipperPrivateGitOrigin({
         reply(403);
         return;
       }
-      let json = "";
-      for await (const chunk of request) {
-        if (json.length + chunk.length > 32_768) {
-          reply(413);
-          return;
-        }
-        json += chunk;
+      const fields = await readPullBody(request, reply);
+      if (fields === undefined) {
+        return;
       }
-      const { title, body, head, base, draft, maintainer_can_modify } = JSON.parse(json);
+      const { title, body, head, base, draft, maintainer_can_modify } = fields;
       const refs = await readRefs();
       if (
         pullRequest ||
@@ -231,6 +312,77 @@ export async function startSkipperPrivateGitOrigin({
       };
       reply(201, await observePullRequest());
     };
+    // This origin delegates every selected repository to the same App token.
+    // The installed network boundary must enforce its narrower A/B/C grants.
+    const serveScopedRest = async (request, scope, route, reply) => {
+      const name = scope.repository;
+      const authorization = request.headers.authorization;
+      const authenticated = authority.authorize(authorization);
+      const operation = {
+        issues: "rest-issue-list",
+        "issues/42": "rest-issue-read",
+        pulls: "rest-pull-create",
+      }[route];
+      networkRequests.push({
+        repository: name,
+        operation,
+        method: request.method,
+        authenticated,
+        ...(authenticated && { credentialIndex: authority.tokenIndex(authorization) }),
+      });
+      if (!authenticated || !authority.permitsRepository(authorization, scope.repositoryId)) {
+        reply(403);
+        return;
+      }
+      const permissions = authority.permissions(authorization);
+      if (route !== "pulls" && request.method === "GET" && permissions?.issues === "read") {
+        const issue = { number: 42, title: `Fixture issue in ${name}`, state: "open" };
+        reply(200, route === "issues" ? [issue] : issue);
+        return;
+      }
+      if (
+        route !== "pulls" ||
+        request.method !== "POST" ||
+        permissions?.pull_requests !== "write"
+      ) {
+        reply(403);
+        return;
+      }
+      const fields = await readPullBody(request, reply);
+      if (fields === undefined) {
+        return;
+      }
+      const { title, head, base, draft = false } = fields;
+      const refs = await readRefs(name);
+      if (
+        typeof title !== "string" ||
+        !title ||
+        typeof draft !== "boolean" ||
+        head !== reviewHead ||
+        base !== "main" ||
+        !refs[approvalRef] ||
+        refs[approvalRef] === refs["refs/heads/main"] ||
+        scopedPulls.has(name)
+      ) {
+        reply(422);
+        return;
+      }
+      if (!authority.authorize(authorization)) {
+        reply(403);
+        return;
+      }
+      const repo = { id: Number(scope.repositoryId), full_name: name };
+      const pull = {
+        number: 1,
+        title,
+        state: "open",
+        draft,
+        head: { ref: head, sha: refs[approvalRef], repo },
+        base: { ref: base, sha: refs["refs/heads/main"], repo },
+      };
+      scopedPulls.set(name, pull);
+      reply(201, pull);
+    };
     const counts = {};
     const count = (endpoint, status) => {
       const key = `${endpoint}:${status}`;
@@ -248,6 +400,9 @@ export async function startSkipperPrivateGitOrigin({
     }
     server = createServer({ ...tls, IncomingMessage: OriginRequest }, async (request, response) => {
       let endpoint = "other";
+      if (networkAcl) {
+        unknownNetworkRequests++;
+      }
       const reply = (status, body = {}) => {
         count(endpoint, status);
         response.writeHead(status, {
@@ -292,7 +447,13 @@ export async function startSkipperPrivateGitOrigin({
             expires_at: new Date(issued.expires).toISOString(),
             permissions: issued.permissions,
             repository_selection: "selected",
-            repositories: [{ id: Number(repositoryId), full_name: repository, private: true }],
+            repositories: (issuedNetwork ? repositoryScopes : repositoryScopes.slice(0, 1)).map(
+              ({ repositoryId, repository }) => ({
+                id: Number(repositoryId),
+                full_name: repository,
+                private: true,
+              }),
+            ),
           });
           return;
         }
@@ -323,31 +484,77 @@ export async function startSkipperPrivateGitOrigin({
           await createDraftPull(request, reply);
           return;
         }
+        const rest =
+          scopedRest &&
+          !url.search &&
+          /^\/repos\/([^/]+\/[^/]+)\/(issues(?:\/42)?|pulls)$/.exec(url.pathname);
+        if (rest) {
+          const scope = repositoryByName.get(rest[1]);
+          if (!scope) {
+            reply(404);
+            return;
+          }
+          endpoint = "scoped-rest";
+          unknownNetworkRequests--;
+          await serveScopedRest(request, scope, rest[2], reply);
+          return;
+        }
+        const gitPath = url.pathname;
+        const matchedRepository = networkRepositories.find((name) =>
+          gitPath.startsWith(`/${name}.git/`),
+        );
+        const requestGitPrefix = `/${matchedRepository}.git`;
         const service = url.searchParams.get("service");
+        const gitServices = ["git-upload-pack", "git-receive-pack"];
         const discovery =
           request.method === "GET" &&
-          url.pathname === `${gitPrefix}/info/refs` &&
-          ["git-upload-pack", "git-receive-pack"].includes(service) &&
+          gitPath === `${requestGitPrefix}/info/refs` &&
+          gitServices.includes(service) &&
           [...url.searchParams].length === 1;
         const rpc =
           request.method === "POST" &&
-          ["git-upload-pack", "git-receive-pack"].some(
-            (name) => url.pathname === `${gitPrefix}/${name}`,
-          ) &&
+          gitServices.some((name) => gitPath === `${requestGitPrefix}/${name}`) &&
           !url.search;
-        if (!discovery && !rpc) {
+        if (!matchedRepository || (!discovery && !rpc)) {
           reply(404);
           return;
         }
         const receive = discovery
           ? service === "git-receive-pack"
-          : url.pathname.endsWith("/git-receive-pack");
+          : gitPath.endsWith("/git-receive-pack");
         endpoint = `${receive ? "receive" : "upload"}-${discovery ? "advertise" : "pack"}`;
-        if (!authority.authorize(request.headers.authorization, "git")) {
+        const authorization = request.headers.authorization;
+        const broad = broadAuthorization !== undefined && authorization === broadAuthorization;
+        const authenticated =
+          networkAcl === true ? broad : authority.authorize(authorization, "git");
+        if (networkAcl) {
+          unknownNetworkRequests--;
+          networkRequests.push({
+            repository: matchedRepository,
+            operation: endpoint,
+            method: discovery ? "GET" : "POST",
+            authenticated,
+            ...(issuedNetwork &&
+              authenticated && { credentialIndex: authority.tokenIndex(authorization) }),
+          });
+        }
+        if (!authenticated) {
           reply(401);
           return;
         }
-        const permissions = authority.permissions(request.headers.authorization);
+        // Only the selected token issued for all three synthetic repositories
+        // should accept every A/B/C operation independently of the Sandbox policy.
+        if (
+          issuedNetwork &&
+          !authority.permitsRepository(
+            authorization,
+            repositoryByName.get(matchedRepository)?.repositoryId,
+          )
+        ) {
+          reply(403);
+          return;
+        }
+        const permissions = broad ? { contents: "write" } : authority.permissions(authorization);
         if (!permissions.contents || (receive && permissions.contents !== "write")) {
           reply(403);
           return;
@@ -362,7 +569,7 @@ export async function startSkipperPrivateGitOrigin({
               ...env,
               GIT_PROJECT_ROOT: directory,
               GIT_HTTP_EXPORT_ALL: "1",
-              PATH_INFO: url.pathname,
+              PATH_INFO: gitPath,
               QUERY_STRING: url.search.slice(1),
               REQUEST_METHOD: request.method,
               CONTENT_TYPE: request.headers["content-type"] ?? "",
@@ -459,9 +666,16 @@ export async function startSkipperPrivateGitOrigin({
     });
     const origin = `https://${isIP(advertisedHost) === 6 ? `[${advertisedHost}]` : advertisedHost}:${server.address().port}`;
     const listener = server.address();
-    const readRefs = async () =>
+    const readRefs = async (name = repository) =>
       Object.fromEntries(
-        (await git(["-C", bare, "for-each-ref", "--format=%(refname) %(objectname)"])).stdout
+        (
+          await git([
+            "-C",
+            join(directory, `${name}.git`),
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+          ])
+        ).stdout
           .trim()
           .split("\n")
           .filter(Boolean)
@@ -503,6 +717,53 @@ export async function startSkipperPrivateGitOrigin({
         return `${input}.${sign("sha256", Buffer.from(input), privateKey).toString("base64url")}`;
       },
       snapshot,
+      ...(networkAcl && {
+        network: {
+          token: broadToken,
+          requests: () => networkRequests.map((entry) => ({ ...entry })),
+          /** @param {string} name */
+          pullRequest: (name) => structuredClone(scopedPulls.get(name)),
+          unknownRequests: () => unknownNetworkRequests,
+          async ref(name, ref) {
+            assert.ok(networkRepositories.includes(name));
+            // Only a successful enumeration can prove absence; Git can warn and skip broken refs.
+            const result = await git(
+              [
+                "-C",
+                join(directory, `${name}.git`),
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                ref,
+              ],
+              { allowFailure: true },
+            );
+            assert.ok(result.code === 0 && !result.stderr, "Git ref lookup failed");
+            return result.stdout
+              .split("\n")
+              .find((row) => row.startsWith(`${ref} `))
+              ?.slice(ref.length + 1);
+          },
+          async hasObject(name, oid) {
+            assert.ok(networkRepositories.includes(name) && /^[a-f0-9]{40}$/.test(oid));
+            const result = await git(
+              ["-C", join(directory, `${name}.git`), "cat-file", "--batch-check"],
+              { allowFailure: true, input: `${oid}\n` },
+            );
+            // Git reports a missing object on stdout with a successful exit.
+            // A failed lookup or unreadable object store is missing evidence.
+            assert.ok(result.code === 0 && !result.stderr, "Git object lookup failed");
+            if (result.stdout === `${oid} missing\n`) {
+              return false;
+            }
+            assert.ok(
+              result.stdout.startsWith(`${oid} commit `) &&
+                /^\d+\n$/u.test(result.stdout.slice(oid.length + " commit ".length)),
+              "Unexpected Git object lookup result",
+            );
+            return true;
+          },
+        },
+      }),
       observeReplacementOrigin(indexA, indexB) {
         const before = snapshot();
         const witnesses = witnessRequests;
