@@ -1063,8 +1063,12 @@ test("provider Harness protected execution is released only on current signed in
       assert.equal(await release(signed), 200);
       assert.deepEqual(await exited, [0, null]);
       const invocations = (await readFile(calls, "utf8")).trim().split("\n");
-      assert.equal(invocations.length, 1);
-      assert.match(invocations[0], /app-server/);
+      // The bundled model catalog read, then the app server. The stub prints no
+      // catalog, so the app server keeps Codex's native model metadata.
+      assert.equal(invocations.length, 2);
+      assert.equal(invocations[0], "debug models --bundled");
+      assert.match(invocations[1], /app-server/);
+      assert.doesNotMatch(invocations[1], /model_catalog_json/);
     },
   );
   await t.test(
@@ -1253,12 +1257,12 @@ test("provider Harness protected execution is released only on current signed in
             hashes,
             disabled
               ? [
-                  "e38d4be7e9e75516db4873af61295dca90bd2f2ea4d7ef00e6704a662ec92ad7",
-                  "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
+                  "cfc383fb0f3a6660fb12db66a10a099cb77c46022bc8c9b68f3ddac5aae61361",
+                  "a530ef7f0f817a7c2044017a7ca51ee3b3bfe4b27d566f8ac9cf595d3085bbfb",
                 ]
               : [
-                  "a7412cefc1b7f4cfa68243b92e3f9ea789376c9182e4291e1af2872c2bb216a0",
-                  "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
+                  "9680e0d1a3bba52621a1485d9688f942c52a9b90a07892c0547285e1fd9f5ddd",
+                  "2fa281fa01e6b9edecda146c31465982c13e4482cbf54237db3d6fb97496a3c7",
                 ],
           );
         }

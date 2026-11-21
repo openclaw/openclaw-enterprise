@@ -4882,11 +4882,51 @@ if (digest === undefined) {
   }
   digest = createHash("sha256").update(process.env.APP_SERVER_TOKEN).digest("hex");
 }
+// A model the bundled Codex catalog does not list runs on fallback metadata, which
+// leaves code mode (requested per thread by the OpenClaw Codex bridge) and freeform
+// apply_patch on. Both declare custom tools with a grammar format, and hosted
+// OpenAI-compatible endpoints such as vLLM reject every request that carries one.
+// Register such a model with direct tools instead. Listed models are untouched, and
+// any failure here leaves the native defaults in place.
+function unlistedModelCatalogArguments(modelId) {
+  const home = process.env.CODEX_HOME;
+  if (typeof home !== "string" || home.length === 0) return [];
+  const listed = spawnSync(codexExecutable(), ["debug", "models", "--bundled"], {
+    encoding: "utf8",
+    env: codexChildEnvironment(),
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 15000,
+  });
+  let models;
+  try { models = JSON.parse(listed.stdout).models; } catch { return []; }
+  if (listed.status !== 0 || !Array.isArray(models)) return [];
+  if (models.some((model) => model?.slug === modelId)) return [];
+  const template = models.find((model) => model?.slug === "gpt-5.5")
+    ?? models.find((model) => model?.tool_mode !== "code_mode_only");
+  if (template === undefined) return [];
+  const target = home.replace(/\/+$/u, "") + "/unlisted-model-catalog.json";
+  try {
+    mkdirSync(home, { recursive: true });
+    require("node:fs").writeFileSync(target, JSON.stringify({
+      models: [...models, {
+        ...template,
+        slug: modelId,
+        display_name: modelId,
+        apply_patch_tool_type: null,
+        tool_mode: "direct",
+        supports_search_tool: false,
+        input_modalities: ["text"],
+      }],
+    }), { mode: 0o600 });
+  } catch { return []; }
+  return ["-c", "model_catalog_json=" + JSON.stringify(target)];
+}
 const nativeArguments = [
     ...nativeTelemetryArguments,
 ${boxHttps ? "    ...httpsProviderArguments,\n" : ""}    // Preserve the admitted model selection for native policy readback.
     "-c",
     "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
+    ...unlistedModelCatalogArguments(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
     // Managed container tools must retain the runtime PATH, including Skill dependencies.
     // Login profiles otherwise replace it with the image's system-only PATH.
     "-c",

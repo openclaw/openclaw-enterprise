@@ -264,6 +264,20 @@ export function createCodexStartup(
       if (specifier === "node:child_process") {
         return {
           spawnSync(command, args, options) {
+            // The bundled catalog read before app-server start is not a native turn. List
+            // the selected model, so these scenarios keep Codex's native model metadata.
+            if (args.includes("debug")) {
+              assert.equal(command, "codex");
+              assert.deepEqual(Array.from(args), ["debug", "models", "--bundled"]);
+              absent(options.env ?? sandbox.process.env, transportCredentials);
+              const selected = sandbox.process.env.OPENCLAW_HARNESS_MODEL;
+              return {
+                status: 0,
+                stdout: JSON.stringify({
+                  models: [{ slug: selected.slice(selected.indexOf("/") + 1) }],
+                }),
+              };
+            }
             const step = native[nativeCalls++];
             try {
               assert.ok(step, "unexpected native invocation after script exhausted");
