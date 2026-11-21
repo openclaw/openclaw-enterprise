@@ -190,3 +190,17 @@ export const pluginDiscovery = {
     pluginCatalog.entries.map((entry): [string, PluginCatalogEntry] => [entry.remoteId, entry]),
   ),
 } satisfies Parameters<typeof servePluginDiscovery>[0];
+
+export const pluginDetailIdentityRefusal = {
+  pages: {
+    initial: {
+      plugins: [
+        { ...projectTrackerPlugin, remoteId: calendarPlugin.remoteId, available: true },
+        { ...calendarPlugin, tools: null },
+      ],
+      nextCursor: null,
+      setup: pluginSetup,
+    },
+  },
+  details: { [calendarPlugin.remoteId]: calendarPlugin },
+} satisfies Parameters<typeof servePluginDiscovery>[0];
