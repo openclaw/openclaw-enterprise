@@ -386,7 +386,7 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 ## Debugging and Verification
 
 `internal/occdev/openshell_k3d.go:upK3d` reports selected
-`controller-image-import` failures after cleanup.
+`controller-image-import` and `codex-sandbox-preparation` failures after cleanup.
 `internal/occdev/startup_failure.go` preserves routing details;
 `concurrently` retains sibling cleanup failures.
 Helpers and CI retain one allowlisted final failure record, including older formats.
