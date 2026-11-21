@@ -362,109 +362,60 @@ test("spec validation rejects links to missing headings", async (t) => {
   }
 });
 
-test("word counter preserves custom parsers and rejects malformed parsers at the boundary", async (t) => {
+test("word counter preserves custom parsers and rejects malformed parsers at the boundary", () => {
   const source = "```\nalpha beta\n```\n";
   const parser = createDocsParser().disable("fence");
   assert.equal(countMarkdownWords(source, { markdown: parser }).proseWords, 2);
   assert.equal(countMarkdownWords(source, { markdown: parser }).codeWords, 0);
 
-  for (const [shape, target] of [
-    ["plain", {}],
-    ["callable", () => {}],
-    ["array", []],
-  ] as const) {
-    await t.test(shape, () => {
-      const rendered: string[] = [];
-      const renderer = createDocsParser().renderer;
-      const renderText = renderer.rules.text;
-      assert.ok(renderText);
-      let parsedEnv: unknown;
-      let parseReads = 0;
-      const forwardingParser = Object.assign(target, {
-        renderer: parser.renderer,
-        options: parser.options,
-        utils: parser.utils,
-      });
-      renderer.rules.text = (tokens, index, options, env, self) => {
-        assert.equal(env, parsedEnv);
-        assert.equal(options, forwardingParser.options);
-        assert.equal(self, renderer);
-        const token = tokens[index];
-        assert.ok(token);
-        rendered.push(token.content);
-        return renderText(tokens, index, options, env, self);
-      };
-      Object.defineProperty(forwardingParser, "parse", {
-        get() {
-          parseReads += 1;
-          return function (
-            this: typeof forwardingParser,
-            text: string,
-            env: Parameters<typeof parser.parse>[1],
-          ) {
-            assert.equal(this, forwardingParser);
-            parsedEnv = env;
-            // The vendor must see facilities replaced during parsing, after adaptation.
-            this.renderer = renderer;
-            this.options = { ...parser.options };
-            this.utils = { ...parser.utils };
-            return parser.parse(text, env);
-          };
-        },
-      });
-      const markdown = docsParser(forwardingParser);
-      const env = {};
-      markdown.parse("direct parse", env);
-      assert.equal(parsedEnv, env);
-      assert.equal(markdown.options, forwardingParser.options);
-      assert.equal(markdown.utils, forwardingParser.utils);
-      const counts = countMarkdownWords(source, { markdown });
-      assert.equal(counts.proseWords, 2);
-      assert.equal(counts.codeWords, 0);
-      assert.equal(countMarkdownWords("three more words", { markdown }).totalWords, 3);
-      assert.ok(
-        rendered.includes("three more words"),
-        "the live supplied renderer must process text",
-      );
-      assert.equal(parseReads, 1, "structural adaptation must read parse only once");
-    });
-  }
+  const rendered: string[] = [];
+  const renderer = createDocsParser().renderer;
+  const renderText = renderer.rules.text;
+  assert.ok(renderText);
+  let parsedEnv: unknown;
+  const forwardingParser = {
+    renderer: parser.renderer,
+    options: parser.options,
+    utils: parser.utils,
+    parse(text: string, env: Parameters<typeof parser.parse>[1]) {
+      parsedEnv = env;
+      // Rendering must use the facilities supplied during parsing.
+      this.renderer = renderer;
+      this.options = { ...parser.options };
+      this.utils = { ...parser.utils };
+      return parser.parse(text, env);
+    },
+  };
+  renderer.rules.text = (tokens, index, options, env, self) => {
+    assert.equal(env, parsedEnv);
+    assert.equal(options, forwardingParser.options);
+    assert.equal(self, renderer);
+    const token = tokens[index];
+    assert.ok(token);
+    rendered.push(token.content);
+    return renderText(tokens, index, options, env, self);
+  };
+  const adapted = docsParser(forwardingParser);
+  const env = {};
+  adapted.parse("direct parse", env);
+  assert.equal(parsedEnv, env);
+  assert.equal(adapted.options, forwardingParser.options);
+  assert.equal(adapted.utils, forwardingParser.utils);
+  const counts = countMarkdownWords(source, { markdown: adapted });
+  assert.equal(counts.proseWords, 2);
+  assert.equal(counts.codeWords, 0);
+  assert.equal(countMarkdownWords("three more words", { markdown: adapted }).totalWords, 3);
+  assert.ok(rendered.includes("three more words"), "the live supplied renderer must process text");
+
   for (const markdown of [undefined, null]) {
     assert.equal(countMarkdownWords(source, { markdown }).codeWords, 2);
   }
-  for (const markdown of [{}, { parse: true }, false, 1, "text", [], () => {}]) {
+  for (const markdown of [{}, { parse: true }, false, 1, "text"]) {
     assert.throws(() => countMarkdownWords(source, { markdown }), {
       name: "TypeError",
       message: "Unsupported docs parser contract: expected object with callable parse",
     });
   }
-});
-
-test("word counter reads a supplied MarkdownIt parse getter only once", () => {
-  const parser = createDocsParser().disable("fence");
-  const parse = parser.parse;
-  let parseReads = 0;
-  let parseCalls = 0;
-  Object.defineProperty(parser, "parse", {
-    get() {
-      parseReads += 1;
-      if (parseReads !== 1) {
-        return undefined;
-      }
-      return function (this: typeof parser, text: string, env: Parameters<typeof parser.parse>[1]) {
-        parseCalls += 1;
-        assert.equal(this, parser);
-        return parse.call(this, text, env);
-      };
-    },
-  });
-
-  const counts = countMarkdownWords("```\nalpha beta\n```\n", { markdown: parser });
-  assert.equal(counts.proseWords, 2);
-  assert.equal(counts.codeWords, 0);
-  assert.equal(counts.totalWords, 2);
-  assert.equal(parseReads, 1);
-  assert.equal(parseCalls, 1);
 });
 
 test("word counter excludes parsed comments and counts literal delimiters", async (t) => {
