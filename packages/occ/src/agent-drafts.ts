@@ -186,6 +186,7 @@ export interface CreateAgentInput {
   readonly repositoryAccess?: RepositoryAccess;
 }
 
+/** Create Agent's preflight input: an Agent create body with its Configuration inline, unsaved. */
 export interface ValidateAgentCreateInput {
   readonly namespaceId: string;
   /** The name Agent create will use; absent skips the duplicate-name check. */

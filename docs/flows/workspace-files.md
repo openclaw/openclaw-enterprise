@@ -25,9 +25,9 @@ See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for
 - `apps/controller/src/index.ts:createFastifyApp` accepts initial contents through
   `POST /namespaces/:namespaceId/agents` and handles live `GET` and
   `PUT /namespaces/:namespaceId/agents/:agentId/workspace/files/:name`.
-- `packages/occ/src/agent-drafts.ts:createAgent` authorizes creation and persists private
-  setup state; `deployAgentWithAuthorization` rechecks it, completed too, before
-  each revision.
+- `packages/occ/src/agent-drafts.ts:createAgent` authorizes creation and saves private
+  setup. `packages/occ/src/index.ts:deployAgentWithAuthorization` rechecks setup before each
+  revision, even after completion.
 
 Live access requires the Agent's private HTTPRoute and native gateway. Configure
 Envoy Gateway, trust, and network restrictions through

@@ -867,7 +867,6 @@ export interface ControllerOptions {
   readonly credentialProxyCapacity?: CredentialProxyCapacity;
 }
 
-/** Create Agent's preflight input: an Agent create body with its Configuration inline, unsaved. */
 export interface LookupChannelDirectoryInput {
   readonly secretId: string;
   readonly kind: ChannelDirectoryLookupInput["kind"];

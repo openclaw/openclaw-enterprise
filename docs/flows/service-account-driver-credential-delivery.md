@@ -144,7 +144,8 @@ account lookup; a selected Driver that fails stays `503`.
 
 ### 4. Save Agent Backend intent and admit the Agent revision
 
-`packages/occ/src/agent-drafts.ts:createAgent`, `updateAgent`, `deployAgent`
+`packages/occ/src/agent-drafts.ts:createAgent`, `updateAgent`,
+`packages/occ/src/index.ts:deployAgent`
 
 Agent `backendId` is nullable. Create omission saves `null`; PATCH omission
 preserves the current value; explicit `null` clears it; and a nonnull ID must

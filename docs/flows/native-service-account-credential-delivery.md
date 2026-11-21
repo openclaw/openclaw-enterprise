@@ -20,8 +20,8 @@ see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-stor
 
 - Trigger: Agent create/PATCH with `harnessAuth`, followed by the bodyless
   exact-Agent deployment action.
-- Sources: `packages/occ/src/agent-drafts.ts:createAgent`,
-  `OpenClawController.updateAgent`, and `OpenClawController.deployAgent`.
+- Sources: `packages/occ/src/agent-drafts.ts:createAgent`, `updateAgent`,
+  and `packages/occ/src/index.ts:deployAgent`.
 - Assumptions: ready Namespace at deployment, same-Namespace source, existing
   Secret value or issued account credential, exact actor permissions, a compatible
   configured Harness/model, and selected Compute support.
