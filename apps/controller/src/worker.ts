@@ -2512,6 +2512,14 @@ export class ControllerWorker {
       cause = repositoryCleanupFailureCode(error);
     }
     await this.state.transactWithQueue(async (unit, queue) => {
+      if (nativeRemoval === true) {
+        // Configured IAM writers take this lock before Namespace and Agent.
+        await unit.installations.holdIAMConfiguration("shared");
+      }
+      const agent =
+        stoppedRevision !== undefined || (expiryRevision !== undefined && withdrawal !== undefined)
+          ? await this.lockClaimAgent(unit, claim)
+          : undefined;
       requireClaimRenewal(await queue.heartbeat(claim));
       if (denial !== undefined) {
         await this.appendRevisionDenial(unit, claim, denial);
@@ -2519,7 +2527,6 @@ export class ControllerWorker {
       if (stoppedRevision !== undefined) {
         // Record a confirmed runtime stop even when session disposal is still pending.
         // A newer active revision and the Agent's desired run state are left intact.
-        const agent = await this.lockClaimAgent(unit, claim);
         if (agent?.servicePrincipalId === stoppedRevision.servicePrincipalId) {
           await unit.agents.compareAndClearActiveRevision(
             claim.namespaceId,
@@ -2532,7 +2539,6 @@ export class ControllerWorker {
         // Recheck the exact active owner under admission's locks after the supplier call. A
         // replacement or terminal retirement wins, including over pending. Stop keeps its
         // own supersedable runtime disposition while finite withdrawal remains fenced.
-        const agent = await this.lockClaimAgent(unit, claim);
         const owner = {
           namespaceId: claim.namespaceId,
           agentId: claim.agentId!,
@@ -2540,26 +2546,39 @@ export class ControllerWorker {
         };
         const expiry = await queue.repositoryExpiryState(owner);
         const waitingForStop = expiry === "removal" && agent?.desiredRuntimeState === "stopped";
-        const requiredModelWithdrawn =
-          nativeRemoval === true &&
-          withdrawal !== "retire-runtime" &&
-          expiryRevision.harnessAuth.method === "credential_source" &&
-          (await unit.credentialSources.findCredentialWithdrawal(
-            expiryRevision.namespaceId,
-            expiryRevision.id,
-            expiryRevision.harnessAuth.sourceId,
-          )) !== undefined;
-        if (
+        let retireRuntime =
           withdrawal === "retire-runtime" ||
-          requiredModelWithdrawn ||
           (nativeRemoval === true && expiry !== "removal") ||
           agent?.status !== "active" ||
           agent.activeRevisionId !== expiryRevision.id ||
           (!waitingForStop && agent.desiredRuntimeState !== "running") ||
           agent.servicePrincipalId !== expiryRevision.servicePrincipalId ||
           (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready" ||
-          expiry === "retiring"
-        ) {
+          expiry === "retiring";
+        if (!retireRuntime && nativeRemoval === true && agent !== undefined) {
+          retireRuntime = !(await unit.installations.holdPrincipalAccount(claim.actorId));
+          if (!retireRuntime) {
+            const auth = expiryRevision.harnessAuth;
+            if (isServiceAccountHarnessAuth(auth)) {
+              // The Backend's credential and binding writers hold this same account row.
+              await unit.serviceAccounts.lockServiceAccount(
+                expiryRevision.namespaceId,
+                auth.source.id,
+              );
+            }
+            const refusal = await this.validateRetainedModelAuthority(
+              unit,
+              claim,
+              agent,
+              expiryRevision,
+            );
+            if (refusal?.authorization !== undefined) {
+              await this.appendRevisionDenial(unit, claim, refusal);
+            }
+            retireRuntime = refusal !== undefined;
+          }
+        }
+        if (retireRuntime) {
           // Transfer every outstanding session and the runtime to irrevocable retirement.
           await queue.enqueueRepositoryCleanup(claim, owner, "terminal-runtime");
           completionCode = "REPOSITORY_RUNTIME_RETIREMENT_QUEUED";
@@ -2696,6 +2715,30 @@ export class ControllerWorker {
       if (expiry === undefined || expiry === "retiring") {
         return { withdrawal: "pending" };
       }
+      if (
+        expiry === "removal" &&
+        this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision)
+      ) {
+        const refusal = await this.state.read((view) =>
+          this.validateRetainedModelAuthority(view, claim, agent, revision),
+        );
+        signal.throwIfAborted();
+        if (refusal !== undefined) {
+          return {
+            withdrawal: "retire-runtime",
+            ...(refusal.authorization === undefined ? {} : { denial: refusal }),
+          };
+        }
+        this.validateExecutionAdmission(revision);
+        if (agent.desiredRuntimeState === "running") {
+          await this.recoverPendingCredentialWithdrawals(claim, revision);
+        }
+        signal.throwIfAborted();
+        return {
+          withdrawal: await this.withdrawFiniteNativeRepositoryAccess(revision, signal),
+          nativeRemoval: true,
+        };
+      }
       // These facts are independent. A failed read cannot erase a definite authority loss
       // established by the other read, and mutable Gateway readiness cannot hide a withdrawal.
       const [authorization, modelWithdrawn] = await Promise.allSettled([
@@ -2738,37 +2781,17 @@ export class ControllerWorker {
       ) {
         return { withdrawal: "pending" };
       }
-      const nativeRemoval =
-        expiry === "removal" && this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision);
       const secrets = await this.resolveRevisionSecretContext(revision);
       if ("result" in secrets) {
-        // These results describe the required Harness source. A rejected State read
-        // still reaches the cleanup retry path.
-        const lostModelSource =
-          secrets.result.code === "CREDENTIAL_WITHDRAWN" ||
-          (nativeRemoval && secrets.result.code === "HARNESS_AUTH_SOURCE_UNAVAILABLE");
         return {
-          withdrawal: lostModelSource ? "retire-runtime" : "pending",
+          withdrawal: secrets.result.code === "CREDENTIAL_WITHDRAWN" ? "retire-runtime" : "pending",
         };
       }
-      const backend = await this.resolveRevisionBackend(revision);
-      if (backend !== undefined) {
-        // The read succeeded and this revision no longer has its admitted account
-        // credential or issued Backend binding.
-        const lostModelAccount =
-          nativeRemoval &&
-          (backend.code === "HARNESS_AUTH_SOURCE_CHANGED" ||
-            backend.code === "SERVICE_ACCOUNT_BACKEND_MISMATCH");
-        return { withdrawal: lostModelAccount ? "retire-runtime" : "pending" };
+      if ((await this.resolveRevisionBackend(revision)) !== undefined) {
+        return { withdrawal: "pending" };
       }
       // Expiry recovery observes the original operation; it must not replay source detaches.
       signal.throwIfAborted();
-      if (nativeRemoval) {
-        return {
-          withdrawal: await this.withdrawFiniteNativeRepositoryAccess(revision, signal),
-          nativeRemoval: true,
-        };
-      }
       try {
         const result =
           revision.egressPlan?.policyReductionVersion === 2
@@ -2791,6 +2814,25 @@ export class ControllerWorker {
         return { withdrawal: "pending" };
       }
     });
+  }
+
+  private async validateRetainedModelAuthority(
+    view: PlatformReadView,
+    claim: ClaimedWork,
+    agent: Readonly<Agent>,
+    revision: Readonly<AgentRevision>,
+  ): Promise<RevisionDispatchResult | undefined> {
+    // Check admitted dependencies using State only. SQL failures propagate so the
+    // claim retries without publishing retention or treating the model as revoked.
+    const backend = await this.resolveRevisionBackend(revision, view);
+    if (backend !== undefined) {
+      return backend;
+    }
+    const harness = await this.resolveRevisionHarnessAuth(revision, view);
+    if ("result" in harness) {
+      return harness.result;
+    }
+    return this.authorizeRevision(claim, agent, revision, view);
   }
 
   private async withdrawFiniteNativeRepositoryAccess(
@@ -5474,6 +5516,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     agent: Readonly<Agent>,
     revision: Readonly<AgentRevision>,
+    view?: PlatformReadView,
   ): Promise<RevisionDispatchResult | undefined> {
     const state = await this.loadIAMState();
     const driver = this.iam;
@@ -5569,12 +5612,12 @@ export class ControllerWorker {
     // revision can attach. A withdrawn source, pending or revoked, never attaches again
     // (`resolveRevisionSecretContext`), so a grant removed from it must not fail maintenance
     // before maintenance re-queues the withdrawal itself.
+    const listWithdrawals = (state: PlatformReadView) =>
+      state.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id);
+    const withdrawals =
+      view === undefined ? await this.state.read(listWithdrawals) : await listWithdrawals(view);
     const withdrawnSourceIds = new Set(
-      (
-        await this.state.read((view) =>
-          view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id),
-        )
-      ).map(({ credentialSourceId }) => credentialSourceId),
+      withdrawals.map(({ credentialSourceId }) => credentialSourceId),
     );
     for (const sourceId of revisionCredentialSourceIds(revision)) {
       if (withdrawnSourceIds.has(sourceId)) {
@@ -5648,6 +5691,7 @@ export class ControllerWorker {
 
   private async resolveRevisionBackend(
     revision: Readonly<AgentRevision>,
+    view?: PlatformReadView,
   ): Promise<RevisionDispatchResult | undefined> {
     if (
       revision.backendId !== null &&
@@ -5659,13 +5703,15 @@ export class ControllerWorker {
     if (!isServiceAccountHarnessAuth(auth)) {
       return undefined;
     }
-    const { account, binding } = await this.state.read(async (view) => ({
-      account: await view.serviceAccounts.findServiceAccount(revision.namespaceId, auth.source.id),
-      binding: await view.serviceAccounts.findServiceAccountBackendBinding(
+    const loadAccount = async (state: PlatformReadView) => ({
+      account: await state.serviceAccounts.findServiceAccount(revision.namespaceId, auth.source.id),
+      binding: await state.serviceAccounts.findServiceAccountBackendBinding(
         revision.namespaceId,
         auth.source.id,
       ),
-    }));
+    });
+    const { account, binding } =
+      view === undefined ? await this.state.read(loadAccount) : await loadAccount(view);
     if (
       account === undefined ||
       account.namespaceId !== revision.namespaceId ||
@@ -5853,26 +5899,103 @@ export class ControllerWorker {
   private async resolveRevisionCredentialSource(
     revision: Readonly<AgentRevision>,
     snapshot: CredentialSourceSnapshot,
+    view: PlatformReadView,
   ) {
     const { namespaceId, id: revisionId } = revision;
     const { sourceId } = snapshot;
-    return this.state.read(async (view) => {
-      const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
-      const withdrawal = await view.credentialSources.findCredentialWithdrawal(
-        namespaceId,
-        revisionId,
-        sourceId,
-      );
-      return {
-        source:
-          withdrawal === undefined &&
-          source?.state === "ready" &&
-          credentialSourceMatchesSnapshot(source, snapshot)
-            ? source
-            : undefined,
-        withdrawal,
-      };
-    });
+    const withdrawal = await view.credentialSources.findCredentialWithdrawal(
+      namespaceId,
+      revisionId,
+      sourceId,
+    );
+    if (withdrawal !== undefined) {
+      return { source: undefined, withdrawal };
+    }
+    const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
+    return {
+      source:
+        source?.state === "ready" && credentialSourceMatchesSnapshot(source, snapshot)
+          ? source
+          : undefined,
+      withdrawal,
+    };
+  }
+
+  /** Resolve only the admitted Harness dependency, without runtime preparation or optional projections. */
+  private async resolveRevisionHarnessAuth(
+    revision: Readonly<AgentRevision>,
+    view?: PlatformReadView,
+  ): Promise<
+    { readonly harnessAuth: ResolvedHarnessAuth } | { readonly result: RevisionDispatchResult }
+  > {
+    const secretDriverId = this.secretDriverId;
+    let harnessAuth: ResolvedHarnessAuth;
+    if (isSecretHarnessAuth(revision.harnessAuth)) {
+      const auth = revision.harnessAuth;
+      if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId) {
+        return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
+      }
+      const findSecret = (state: PlatformReadView) =>
+        state.secrets.findSecret(auth.source.namespaceId, auth.source.id);
+      const secret =
+        view === undefined ? await this.state.read(findSecret) : await findSecret(view);
+      if (
+        secret === undefined ||
+        secret.namespaceId !== revision.namespaceId ||
+        secret.namespaceId !== auth.source.namespaceId ||
+        secret.id !== auth.source.id ||
+        secret.driverId !== secretDriverId ||
+        secret.backendRef.namespaceName.trim().length === 0 ||
+        secret.backendRef.name.trim().length === 0 ||
+        secret.backendRef.key.trim().length === 0 ||
+        secret.backendRef.uid.trim().length === 0
+      ) {
+        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+      }
+      // Admission verifies the physical source. Workers project authoritative
+      // OCC metadata without requiring permission to read backend Secret values.
+      harnessAuth = { ...auth, backendRef: secret.backendRef };
+    } else if (revision.harnessAuth.method === "credential_source") {
+      const auth = revision.harnessAuth;
+      if (
+        this.credentialGateway === undefined ||
+        auth.credentialGatewayId !== this.credentialGateway.id
+      ) {
+        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
+      }
+      const loadSource = (state: PlatformReadView) =>
+        this.resolveRevisionCredentialSource(revision, auth, state);
+      const { source, withdrawal } =
+        view === undefined ? await this.state.read(loadSource) : await loadSource(view);
+      // A withdrawn source never re-attaches to its revision, for example after Pod loss.
+      if (withdrawal !== undefined) {
+        return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
+      }
+      // A deleting source can no longer be attached, even to an admitted revision.
+      if (source === undefined) {
+        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+      }
+      if (source.egress !== undefined) {
+        const control = this.proxyDriver?.sourceControl;
+        const provider = control?.providers.find((entry) =>
+          isDeepStrictEqual(entry.ref, source.egress!.key.provider),
+        );
+        if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
+          return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
+        }
+        // Provider defaults must reach the normal Harness too. In particular, a
+        // source with an omitted optional endpoint cannot escape its protected profile.
+        harnessAuth = {
+          ...auth,
+          source: { ...source, config: provider.normalizeConfig(source.config) },
+        };
+      } else {
+        harnessAuth = { ...auth, source };
+      }
+    } else {
+      harnessAuth = revision.harnessAuth;
+    }
+    return { harnessAuth };
   }
 
   private async resolveRevisionSecretContext(
@@ -5927,68 +6050,11 @@ export class ControllerWorker {
       return { result: { outcome: "permanent", code: "SECRET_BINDING_UNAVAILABLE" } };
     }
 
-    let harnessAuth: ResolvedHarnessAuth;
-    if (isSecretHarnessAuth(revision.harnessAuth)) {
-      const auth = revision.harnessAuth;
-      if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId) {
-        return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
-      }
-      const secret = await this.state.read((view) =>
-        view.secrets.findSecret(auth.source.namespaceId, auth.source.id),
-      );
-      if (
-        secret === undefined ||
-        secret.namespaceId !== revision.namespaceId ||
-        secret.namespaceId !== auth.source.namespaceId ||
-        secret.id !== auth.source.id ||
-        secret.driverId !== secretDriverId ||
-        secret.backendRef.namespaceName.trim().length === 0 ||
-        secret.backendRef.name.trim().length === 0 ||
-        secret.backendRef.key.trim().length === 0 ||
-        secret.backendRef.uid.trim().length === 0
-      ) {
-        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-      }
-      // Admission verifies the physical source. Workers project authoritative
-      // OCC metadata without requiring permission to read backend Secret values.
-      harnessAuth = { ...auth, backendRef: secret.backendRef };
-    } else if (revision.harnessAuth.method === "credential_source") {
-      const auth = revision.harnessAuth;
-      if (
-        this.credentialGateway === undefined ||
-        auth.credentialGatewayId !== this.credentialGateway.id
-      ) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
-      }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
-      // A withdrawn source never re-attaches to its revision, for example after Pod loss.
-      if (withdrawal !== undefined) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
-      }
-      // A deleting source can no longer be attached, even to an admitted revision.
-      if (source === undefined) {
-        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-      }
-      if (source.egress !== undefined) {
-        const control = this.proxyDriver?.sourceControl;
-        const provider = control?.providers.find((entry) =>
-          isDeepStrictEqual(entry.ref, source.egress!.key.provider),
-        );
-        if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
-          return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
-        }
-        // Provider defaults must reach the normal Harness too. In particular, a
-        // source with an omitted optional endpoint cannot escape its protected profile.
-        harnessAuth = {
-          ...auth,
-          source: { ...source, config: provider.normalizeConfig(source.config) },
-        };
-      } else {
-        harnessAuth = { ...auth, source };
-      }
-    } else {
-      harnessAuth = revision.harnessAuth;
+    const model = await this.resolveRevisionHarnessAuth(revision);
+    if ("result" in model) {
+      return model;
     }
+    const { harnessAuth } = model;
     const credentialSources: Readonly<CredentialSource>[] = [];
     for (const snapshot of revision.credentialSources ?? []) {
       // The Harness source is listed too; it resolves above through the Harness binding.
@@ -6004,7 +6070,9 @@ export class ControllerWorker {
       ) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
       }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, snapshot);
+      const { source, withdrawal } = await this.state.read((view) =>
+        this.resolveRevisionCredentialSource(revision, snapshot, view),
+      );
       // A withdrawn non-model source stays detached; the revision keeps running without it.
       if (withdrawal !== undefined) {
         continue;

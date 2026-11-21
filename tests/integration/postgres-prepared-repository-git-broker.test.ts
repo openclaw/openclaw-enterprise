@@ -335,6 +335,9 @@ for (const outcome of [
   "unexpected custody family",
   "model account changes",
   "model account binding revoked",
+  "model account Backend missing",
+  "model account binding revoked during observation",
+  "model account final read recovers",
   "model Secret unavailable",
 ] as const) {
   test(
@@ -449,6 +452,16 @@ for (const outcome of [
       const deliveries: Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>[] = [];
       const stops: string[] = [];
       let runtimeObservations = 0;
+      let failFinalModelRead = false;
+      let failedFinalModelReads = 0;
+      const revokeModelBinding = async () => {
+        assert.ok(modelAccount);
+        const binding = await f.observerPool.query(
+          "UPDATE occ.service_account_driver_bindings SET external_credential_id=NULL WHERE namespace_id=$1 AND service_account_id=$2",
+          [f.namespace.id, modelAccount.id],
+        );
+        assert.equal(binding.rowCount, 1);
+      };
       const compute: ComputeDriver = {
         ...f.compute,
         validateRepositoryCredentials(harness, sandboxDriverId) {
@@ -470,6 +483,14 @@ for (const outcome of [
         async observeRevision(revision) {
           assert.equal(revision.id, candidate.id);
           runtimeObservations++;
+          if (outcome === "model account binding revoked during observation") {
+            // Commit the revocation after the preliminary model checks and before a
+            // healthy runtime observation can allow this exact revision to stay.
+            await revokeModelBinding();
+          }
+          if (outcome === "model account final read recovers" && runtimeObservations === 1) {
+            failFinalModelRead = true;
+          }
           return { state: outcome === "inference unavailable" ? "unknown" : "running" };
         },
         async stopRevision(revision) {
@@ -488,7 +509,7 @@ for (const outcome of [
       const auth = candidate.harnessAuth;
       // Active references protect this Secret from deletion. Inject a successful
       // empty result at its exact storage read to exercise the authoritative miss.
-      const secretReadPool: Parameters<typeof createControllerWorker>[0]["pool"] = {
+      const modelReadPool: Parameters<typeof createControllerWorker>[0]["pool"] = {
         end: () => f.workerPool.end(),
         query: (sql, values) =>
           f.workerPool.query(sql, values === undefined ? undefined : [...values]),
@@ -497,6 +518,18 @@ for (const outcome of [
           return {
             release: (discard) => client.release(discard),
             async query(sql, values) {
+              if (
+                failFinalModelRead &&
+                sql.includes("FROM occ.service_account_driver_bindings AS b") &&
+                values?.[0] === f.namespace.id &&
+                values[1] === modelAccount?.id
+              ) {
+                failFinalModelRead = false;
+                failedFinalModelReads++;
+                throw Object.assign(new Error("controlled connection loss reading model binding"), {
+                  code: "08006",
+                });
+              }
               const result = await client.query(
                 sql,
                 values === undefined ? undefined : [...values],
@@ -520,6 +553,7 @@ for (const outcome of [
       };
       const startWorker = async (
         pool: Parameters<typeof createControllerWorker>[0]["pool"] = f.workerPool,
+        driverConfiguration = configured,
       ) => {
         const worker = createControllerWorker({
           pool,
@@ -527,7 +561,7 @@ for (const outcome of [
           leaseDurationMs: 5_000,
           maxAttempts: 12,
           drivers: {
-            ...configured,
+            ...driverConfiguration,
             secretDriver: f.secretDriver,
             repositoryPolicy: driver,
             nativeRepositorySender: sender,
@@ -553,7 +587,9 @@ for (const outcome of [
         return worker;
       };
       let worker = await startWorker(
-        outcome === "model Secret unavailable" ? secretReadPool : f.workerPool,
+        outcome === "model Secret unavailable" || outcome === "model account final read recovers"
+          ? modelReadPool
+          : f.workerPool,
       );
       t.after(() => worker.stop());
       await f.work(candidate, "succeeded");
@@ -659,7 +695,11 @@ for (const outcome of [
           10_000,
         );
       };
-      if (outcome.startsWith("model ")) {
+      if (
+        outcome.startsWith("model ") &&
+        outcome !== "model account binding revoked during observation" &&
+        outcome !== "model account final read recovers"
+      ) {
         // Leave the issuer unconfirmed after the first fenced cleanup pass.
         if (outcome === "model account changes") {
           assert.ok(modelAccount);
@@ -680,12 +720,10 @@ for (const outcome of [
             )?.credential,
           );
         } else if (outcome === "model account binding revoked") {
-          assert.ok(modelAccount);
-          const binding = await f.observerPool.query(
-            "UPDATE occ.service_account_driver_bindings SET external_credential_id=NULL WHERE namespace_id=$1 AND service_account_id=$2",
-            [f.namespace.id, modelAccount.id],
-          );
-          assert.equal(binding.rowCount, 1);
+          await revokeModelBinding();
+        } else if (outcome === "model account Backend missing") {
+          await worker.stop();
+          worker = await startWorker(f.createWorkerPool(), createBackendWorkerDrivers(compute, []));
         } else {
           omitModelSecret = true;
         }
@@ -766,14 +804,32 @@ for (const outcome of [
         assert.equal(runtimeObservations, 0);
         await prepared.maintain();
       }
-      const completion = await runCleanupPass();
+      const cleanup = runCleanupPass();
+      if (outcome === "model account final read recovers") {
+        // A successful observation is insufficient when the locked authority read fails.
+        // The lease must permit a safe retry without minting a credential or stopping the Agent.
+        await waitFor(
+          "the locked model read to fail after runtime observation",
+          async () => (failedFinalModelReads === 1 ? true : undefined),
+          4_000,
+        );
+        const work = await f.state.read((view) => view.operations.findWork(key));
+        assert.equal(work?.state, "claimed");
+        assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+        assert.deepEqual(stops, []);
+      }
+      const completion = await cleanup;
       assert.equal(
         await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
         401,
       );
       assert.equal(origin.traffic().requests, initial + 1);
       assert.equal(subject.github.issuesOfTokens.length, 1);
-      if (outcome === "inference unavailable" || outcome === "unexpected custody family") {
+      if (
+        outcome === "inference unavailable" ||
+        outcome === "unexpected custody family" ||
+        outcome === "model account binding revoked during observation"
+      ) {
         assert.equal(completion.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
         await waitFor(
           "terminal work to stop the exact original revision",
@@ -794,7 +850,11 @@ for (const outcome of [
       }
       assert.equal(
         runtimeObservations,
-        outcome === "unconfirmed revocation" || outcome === "unexpected custody family" ? 0 : 1,
+        outcome === "unconfirmed revocation" || outcome === "unexpected custody family"
+          ? 0
+          : outcome === "model account final read recovers"
+            ? 2
+            : 1,
       );
       assert.equal(
         subject.github.trace.filter(
