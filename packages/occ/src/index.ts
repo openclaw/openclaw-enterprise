@@ -10,6 +10,19 @@ export type {
   NamespaceLifecycleEvidence,
 } from "./namespace-lifecycle.ts";
 export { recognizedRuntimeFailureValues } from "./runtime-failure-cause.ts";
+import {
+  createConnectionAdministration,
+  type CreateConnectionTemplateInput,
+  type CreateOAuthClientInput,
+  type DiscoverMcp,
+  type UpdateConnectionTemplateInput,
+} from "./connection-administration.ts";
+
+export type {
+  CreateConnectionTemplateInput,
+  CreateOAuthClientInput,
+  UpdateConnectionTemplateInput,
+} from "./connection-administration.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
@@ -40,11 +53,8 @@ export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-st
 import {
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
-  connectionValuesChanged,
   isOAuthScopeToken,
   isSourceProviderPresetId,
-  normalizeConnectionDestinations,
-  validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
   MAX_AGENT_CREDENTIAL_SOURCES,
   assertExecutionAdmission,
@@ -184,9 +194,7 @@ import type {
   OAuthAccountRef,
   OAuthConnectionClient,
   OAuthClient,
-  McpAuthorizationMetadata,
   ConnectionTemplate,
-  ConnectionTemplateValues,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -422,7 +430,6 @@ import {
   validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
-import type { StoredOAuthClient } from "./ports/oauth-client.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
 import type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
 import {
@@ -1072,51 +1079,6 @@ export interface CreateSecretInput {
   readonly value: string;
 }
 
-interface ApprovedTemplateSettings {
-  readonly scopes: readonly string[];
-  readonly authorizationParameters?: Readonly<Record<string, string>>;
-  readonly oauthClientId?: string;
-}
-type TemplateInput = ApprovedTemplateSettings &
-  (
-    | {
-        readonly mode: "manual";
-        readonly issuer: string;
-        readonly authorizationUrl: string;
-        readonly tokenUrl: string;
-        readonly revocationUrl?: string;
-        readonly destinations: readonly {
-          readonly host: string;
-          readonly port?: number;
-          readonly path?: string;
-        }[];
-      }
-    | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
-  );
-function templateAcceptsAuthMethod(
-  observed: McpAuthorizationMetadata | undefined,
-  method: OAuthClient["tokenEndpointAuthMethod"],
-): boolean {
-  return (
-    !observed || (observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(method)
-  );
-}
-
-export type CreateConnectionTemplateInput = TemplateInput & {
-  readonly namespaceId?: string;
-  readonly displayName: string;
-};
-export type UpdateConnectionTemplateInput =
-  { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
-export type CreateOAuthClientInput = Pick<
-  OAuthClient,
-  "displayName" | "clientId" | "tokenEndpointAuthMethod"
-> & {
-  readonly connectionTemplateId: string;
-  readonly connectionTemplateVersion: number;
-  readonly clientSecret?: string;
-};
-type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
   readonly namespaceId: string;
   readonly name: string;
@@ -2346,6 +2308,7 @@ export class OpenClawController {
 
   readonly installation: Readonly<Installation>;
   private readonly configurations = new DriverConfigurationRegistry();
+  private readonly connectionAdministration: ReturnType<typeof createConnectionAdministration>;
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
   private readonly iamConfiguration?: InstallationIAMConfiguration;
@@ -2460,6 +2423,23 @@ export class OpenClawController {
       throw new ScopeViolationError("The configured ServiceAccount Driver ID is invalid.");
     }
     this.configuredServiceAccountDriverId = options.configuredServiceAccountDriverId;
+    this.connectionAdministration = createConnectionAdministration({
+      installationId: this.installation.id,
+      authorizeAdministration: async (principalId) => {
+        await this.authorize(principalId, "administer", {
+          kind: "installation",
+          id: this.installation.id,
+        });
+      },
+      read: (work) => this.read(work),
+      mutate: (work) => this.mutate(work),
+      lockNamespace: (unit, namespaceId) => this.lockNamespace(unit, namespaceId),
+      requireIndependentMutation: (operation) => this.requireIndependentMutation(operation),
+      secretDriver: (expectedId) => this.secretDriver(expectedId),
+      secretOperation: (operation) => this.secretOperation(operation),
+      now: () => this.clock(),
+      timestamp: () => this.timestamp(),
+    });
   }
 
   registerDriver<T extends Driver | InstalledDriver>(driver: T): T {
@@ -5514,32 +5494,17 @@ export class OpenClawController {
     }
   }
 
-  private async authorizeTemplateAdministration(principalId: string): Promise<void> {
-    await this.authorize(principalId, "administer", {
-      kind: "installation",
-      id: this.installation.id,
-    });
-  }
-
   async listConnectionTemplates(
     principalId: string,
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
-    await this.authorizeTemplateAdministration(principalId);
-    return this.read((state) => state.connectionTemplates.listConnectionTemplates());
+    return this.connectionAdministration.listConnectionTemplates(principalId);
   }
 
   async getConnectionTemplate(
     principalId: string,
     templateId: string,
   ): Promise<Readonly<ConnectionTemplate>> {
-    await this.authorizeTemplateAdministration(principalId);
-    const template = await this.read((state) =>
-      state.connectionTemplates.findConnectionTemplate(templateId),
-    );
-    if (!template) {
-      throw new ScopeViolationError("The connection template does not exist.");
-    }
-    return template;
+    return this.connectionAdministration.getConnectionTemplate(principalId, templateId);
   }
 
   async discoverConnectionTemplate(
@@ -5547,109 +5512,7 @@ export class OpenClawController {
     input: { serverUrl: string; issuer?: string },
     discover: DiscoverMcp,
   ) {
-    await this.authorizeTemplateAdministration(principalId);
-    return discover(input.serverUrl, input.issuer);
-  }
-
-  private async effectiveConnectionTemplate(
-    input: TemplateInput,
-    discover: DiscoverMcp,
-  ): Promise<ConnectionTemplateValues> {
-    const settings = {
-      scopes: [...input.scopes],
-      authorizationParameters: input.authorizationParameters ?? {},
-      ...(input.oauthClientId && { oauthClientId: input.oauthClientId }),
-    };
-    let values: ConnectionTemplateValues;
-    if (input.mode === "manual") {
-      values = {
-        ...settings,
-        mode: input.mode,
-        issuer: input.issuer,
-        authorizationUrl: input.authorizationUrl,
-        tokenUrl: input.tokenUrl,
-        ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
-        destinations: normalizeConnectionDestinations(input.destinations),
-      };
-    } else {
-      const observed = await discover(input.serverUrl, input.issuer);
-      if (observed.issuer !== input.issuer || !observed.authorizationUrl || !observed.tokenUrl) {
-        throw new ConnectionTemplateValidationError(
-          "issuer",
-          "Choose a verified issuer for this MCP server.",
-        );
-      }
-      const offered = [...observed.requestedScopes, ...(observed.resourceScopes ?? [])];
-      const allowed = new Set(offered.length ? offered : observed.supportedScopes);
-      const supported = observed.supportedScopes && new Set(observed.supportedScopes);
-      const approved = new Set(settings.scopes);
-      if (approved.size && observed.requestedScopes.some((scope) => !approved.has(scope))) {
-        throw new ConnectionTemplateValidationError(
-          "scopes",
-          "Include the scopes required by the MCP server or choose no template limit.",
-        );
-      }
-      if (
-        settings.scopes.some((scope) => !allowed.has(scope) || (supported && !supported.has(scope)))
-      ) {
-        throw new ConnectionTemplateValidationError(
-          "scopes",
-          "Choose only scopes advertised for this MCP resource.",
-        );
-      }
-      const server = new URL(observed.serverUrl);
-      values = {
-        ...settings,
-        mode: input.mode,
-        issuer: observed.issuer,
-        authorizationUrl: observed.authorizationUrl,
-        tokenUrl: observed.tokenUrl,
-        ...(observed.revocationUrl && { revocationUrl: observed.revocationUrl }),
-        destinations: normalizeConnectionDestinations([
-          {
-            host: server.hostname,
-            port: Number(server.port || 443),
-            path: server.pathname,
-          },
-        ]),
-        mcp: { serverUrl: observed.serverUrl, resource: observed.resource },
-        observed,
-      };
-    }
-    validateConnectionTemplateAuthorization(values);
-    return values;
-  }
-
-  private async assertTemplateClient(
-    state: PlatformUnitOfWork,
-    values: ConnectionTemplateValues,
-    namespaceId?: string,
-  ) {
-    if (!values.oauthClientId) {
-      return;
-    }
-    const client = await state.connectionTemplates.findOAuthClient(values.oauthClientId);
-    if (
-      !client ||
-      (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
-      client.issuer !== values.issuer ||
-      client.tokenUrl !== values.tokenUrl ||
-      (values.revocationUrl !== undefined && client.revocationUrl !== values.revocationUrl) ||
-      !templateAcceptsAuthMethod(values.observed, client.tokenEndpointAuthMethod)
-    ) {
-      throw new ResourceStateConflictError(
-        "Choose a client approved for this scope, issuer and provider endpoints.",
-      );
-    }
-  }
-
-  private async lockTemplateScope(state: PlatformUnitOfWork, namespaceId?: string) {
-    if (
-      namespaceId !== undefined &&
-      (await this.lockNamespace(state, namespaceId)).status === "deleting"
-    ) {
-      throw new ResourceStateConflictError("The Namespace is being deleted.");
-    }
+    return this.connectionAdministration.discoverConnectionTemplate(principalId, input, discover);
   }
 
   async createConnectionTemplate(
@@ -5659,27 +5522,13 @@ export class OpenClawController {
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ): Promise<Readonly<ConnectionTemplate>> {
-    await this.authorizeTemplateAdministration(principalId);
-    const values = await this.effectiveConnectionTemplate(input, discover);
-    return this.mutate(async (state) => {
-      await this.authorizeTemplateAdministration(principalId);
-      await this.lockTemplateScope(state, input.namespaceId);
-      await this.assertTemplateClient(state, values, input.namespaceId);
-      const templateId = `ctp_${crypto.randomUUID()}`;
-      const createdAt = this.timestamp();
-      const template = await state.connectionTemplates.createConnectionTemplate({
-        id: templateId,
-        displayName: input.displayName,
-        ...(input.namespaceId && { namespaceId: input.namespaceId }),
-        createdAt,
-        current: { ...values, templateId, version: 1, createdAt },
-      });
-      await holdSession?.(state);
-      if (audit) {
-        await state.audit.append(audit(templateId));
-      }
-      return template;
-    });
+    return this.connectionAdministration.createConnectionTemplate(
+      principalId,
+      input,
+      discover,
+      audit,
+      holdSession,
+    );
   }
 
   async updateConnectionTemplate(
@@ -5690,41 +5539,14 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    // Resolve the exact authorized target before any administrator-selected outbound discovery.
-    await this.getConnectionTemplate(principalId, id);
-    const values =
-      "mode" in input ? await this.effectiveConnectionTemplate(input, discover) : undefined;
-    return this.mutate(async (state) => {
-      await this.authorizeTemplateAdministration(principalId);
-      const current = await state.connectionTemplates.lockConnectionTemplate(id);
-      if (!current) {
-        throw new ScopeViolationError("The connection template does not exist.");
-      }
-      if (values) {
-        await this.assertTemplateClient(state, values, current.namespaceId);
-      }
-      const version =
-        values && connectionValuesChanged(current.current, values)
-          ? {
-              ...values,
-              templateId: id,
-              version: current.current.version + 1,
-              createdAt: this.timestamp(),
-            }
-          : undefined;
-      const updated = await state.connectionTemplates.updateConnectionTemplate(id, {
-        ...(input.displayName !== undefined && { displayName: input.displayName }),
-        ...(version && { version }),
-      });
-      if (!updated) {
-        throw new ResourceStateConflictError("The template changed during the update.");
-      }
-      await holdSession?.(state);
-      if (audit) {
-        await state.audit.append(audit);
-      }
-      return updated;
-    });
+    return this.connectionAdministration.updateConnectionTemplate(
+      principalId,
+      id,
+      input,
+      discover,
+      audit,
+      holdSession,
+    );
   }
 
   async deleteConnectionTemplate(
@@ -5733,29 +5555,16 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    await this.mutate(async (state) => {
-      await this.authorizeTemplateAdministration(principalId);
-      if (!(await state.connectionTemplates.deleteConnectionTemplate(id))) {
-        throw new ScopeViolationError("The connection template does not exist.");
-      }
-      await holdSession?.(state);
-      if (audit) {
-        await state.audit.append(audit);
-      }
-    });
-  }
-
-  private oauthClientMetadata({
-    secretDriverId: _owner,
-    ...metadata
-  }: StoredOAuthClient): OAuthClient {
-    return immutableCopy(metadata);
+    return this.connectionAdministration.deleteConnectionTemplate(
+      principalId,
+      id,
+      audit,
+      holdSession,
+    );
   }
 
   async listOAuthClients(principalId: string) {
-    await this.authorizeTemplateAdministration(principalId);
-    const clients = await this.read((view) => view.connectionTemplates.listOAuthClients());
-    return Object.freeze(clients.map((client) => this.oauthClientMetadata(client)));
+    return this.connectionAdministration.listOAuthClients(principalId);
   }
 
   async createOAuthClient(
@@ -5764,114 +5573,7 @@ export class OpenClawController {
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    this.requireIndependentMutation("OAuth client registration");
-    const template = await this.getConnectionTemplate(principalId, input.connectionTemplateId);
-    const assertSelectedVersion = (version: number | undefined) => {
-      if (version !== input.connectionTemplateVersion) {
-        throw new ResourceStateConflictError(
-          "The template changed. Choose its current version and register again.",
-        );
-      }
-    };
-    assertSelectedVersion(template.current.version);
-    const { clientSecret, tokenEndpointAuthMethod } = input;
-    if (
-      tokenEndpointAuthMethod === "none"
-        ? clientSecret !== undefined
-        : !isNonEmptyString(clientSecret)
-    ) {
-      throw new ConnectionTemplateValidationError(
-        "clientSecret",
-        "Provide a secret only for a confidential OAuth client.",
-      );
-    }
-    const { issuer, tokenUrl, revocationUrl, observed } = template.current;
-    if (!templateAcceptsAuthMethod(observed, tokenEndpointAuthMethod)) {
-      throw new ConnectionTemplateValidationError(
-        "tokenEndpointAuthMethod",
-        "Choose an authentication method supported by this template.",
-      );
-    }
-    const client: OAuthClient = {
-      id: `ccr_${crypto.randomUUID()}`,
-      displayName: input.displayName,
-      clientId: input.clientId,
-      tokenEndpointAuthMethod,
-      issuer,
-      tokenUrl,
-      ...(revocationUrl !== undefined && { revocationUrl }),
-      ...(template.namespaceId !== undefined && { namespaceId: template.namespaceId }),
-      createdAt: this.timestamp(),
-    };
-    const lockSelectedVersion = async (state: PlatformUnitOfWork) => {
-      await this.authorizeTemplateAdministration(principalId);
-      await holdSession?.(state);
-      await this.lockTemplateScope(state, template.namespaceId);
-      const current = await state.connectionTemplates.lockConnectionTemplate(template.id);
-      assertSelectedVersion(current?.current.version);
-    };
-    const publish = async (state: PlatformUnitOfWork) => {
-      const selected = !template.current.oauthClientId;
-      if (selected) {
-        // Select the first registration. Another registration never replaces a chosen client.
-        const updated = await state.connectionTemplates.updateConnectionTemplate(template.id, {
-          version: {
-            ...template.current,
-            version: template.current.version + 1,
-            oauthClientId: client.id,
-            createdAt: this.timestamp(),
-          },
-        });
-        if (!updated) {
-          throw new ResourceStateConflictError("The template changed during client registration.");
-        }
-      }
-      if (audit) {
-        const event = audit(client.id);
-        await state.audit.append({
-          ...event,
-          details: {
-            ...event.details,
-            connectionTemplateId: template.id,
-            connectionTemplateVersion: template.current.version,
-            selected,
-          },
-        });
-      }
-    };
-    await this.mutate(async (state) => {
-      await lockSelectedVersion(state);
-      // The cleanup worker can reclaim a hidden reservation if the private write fails.
-      const cleanupAfter = clientSecret
-        ? new Date(this.clock().getTime() + 5 * 60_000).toISOString()
-        : undefined;
-      const registration = clientSecret
-        ? { ...client, secretDriverId: this.oauthClientSecretDriver().id }
-        : client;
-      await state.connectionTemplates.createOAuthClient(registration, cleanupAfter);
-      if (!clientSecret) {
-        await publish(state);
-      }
-    });
-    if (clientSecret) {
-      await this.mutate(async (state) => {
-        await lockSelectedVersion(state);
-        const reserved = await state.connectionTemplates.lockOAuthClientForCleanup(
-          client.id,
-          false,
-        );
-        if (!reserved) {
-          throw new ResourceStateConflictError(
-            "The OAuth client reservation expired. Create the client again.",
-          );
-        }
-        const { store, ref } = this.oauthClientSecret(reserved);
-        await this.secretOperation(() => store.create(ref, clientSecret));
-        await state.connectionTemplates.setOAuthClientCleanup(client.id, null);
-        await publish(state);
-      });
-    }
-    return client;
+    return this.connectionAdministration.createOAuthClient(principalId, input, audit, holdSession);
   }
 
   async rotateOAuthClientSecret(
@@ -5881,40 +5583,13 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    this.requireIndependentMutation("OAuth client secret rotation");
-    await this.authorizeTemplateAdministration(principalId);
-    const lockClient = async (state: PlatformUnitOfWork) => {
-      const client = await state.connectionTemplates.lockOAuthClient(id);
-      await this.authorizeTemplateAdministration(principalId);
-      await holdSession?.(state);
-      if (!client) {
-        throw new ScopeViolationError("The OAuth client does not exist.");
-      }
-      if (client.tokenEndpointAuthMethod === "none") {
-        throw new ResourceStateConflictError("This public client authenticates without a secret.");
-      }
-      return client;
-    };
-    if (audit) {
-      // An in-place Driver write can succeed before SQL records its outcome. Persist the request first.
-      await this.mutate(async (state) => {
-        await lockClient(state);
-        await state.audit.append({
-          ...audit,
-          id: `aud_${crypto.randomUUID()}`,
-          details: { ...audit.details, phase: "requested" },
-        });
-      });
-    }
-    return this.mutate(async (state) => {
-      const client = await lockClient(state);
-      const { store, ref } = this.oauthClientSecret(client);
-      await this.secretOperation(() => store.update(ref, clientSecret));
-      if (audit) {
-        await state.audit.append({ ...audit, occurredAt: this.timestamp() });
-      }
-      return this.oauthClientMetadata(client);
-    });
+    return this.connectionAdministration.rotateOAuthClientSecret(
+      principalId,
+      id,
+      clientSecret,
+      audit,
+      holdSession,
+    );
   }
 
   async deleteOAuthClient(
@@ -5923,54 +5598,11 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    await this.authorizeTemplateAdministration(principalId);
-    await this.mutate(async (state) => {
-      const client = await state.connectionTemplates.lockOAuthClient(id);
-      await this.authorizeTemplateAdministration(principalId);
-      await holdSession?.(state);
-      if (!client) {
-        throw new ScopeViolationError("The OAuth client does not exist.");
-      }
-      // Hide confidential clients and retain their stable private reference until removal succeeds.
-      if (
-        !(await state.connectionTemplates.deleteOAuthClient(
-          id,
-          client.tokenEndpointAuthMethod !== "none",
-        ))
-      ) {
-        throw new ResourceStateConflictError(
-          "A template version still references this OAuth client.",
-        );
-      }
-      if (audit) {
-        await state.audit.append(audit);
-      }
-    });
+    return this.connectionAdministration.deleteOAuthClient(principalId, id, audit, holdSession);
   }
 
   async cleanupOAuthClients(): Promise<void> {
-    const ids = await this.read((view) => view.connectionTemplates.listOAuthClientCleanups(32));
-    for (const id of ids) {
-      await this.mutate(async (state) => {
-        const client = await state.connectionTemplates.lockOAuthClientForCleanup(id, true);
-        if (!client) {
-          return;
-        }
-        try {
-          const { store, ref } = this.oauthClientSecret(client);
-          await this.secretOperation(() => store.delete(ref));
-        } catch {
-          await state.connectionTemplates.setOAuthClientCleanup(
-            id,
-            new Date(this.clock().getTime() + 60_000).toISOString(),
-          );
-          return;
-        }
-        if (!(await state.connectionTemplates.deleteOAuthClient(id))) {
-          throw new ResourceStateConflictError("The OAuth client is still referenced.");
-        }
-      });
-    }
+    return this.connectionAdministration.cleanupOAuthClients();
   }
 
   /** Trusted, server-side OAuth operations resolve the current value at each use. */
@@ -5978,38 +5610,7 @@ export class OpenClawController {
     client: Readonly<OAuthClient>,
     use: (secret: string | undefined) => Promise<T>,
   ): Promise<T> {
-    const current = await this.read((view) => view.connectionTemplates.findOAuthClient(client.id));
-    if (
-      !current ||
-      !isDeepStrictEqual(this.oauthClientMetadata(current), this.oauthClientMetadata(client))
-    ) {
-      throw new ResourceStateConflictError("The approved OAuth client is unavailable.");
-    }
-    if (current.tokenEndpointAuthMethod === "none") {
-      return use(undefined);
-    }
-    const { store, ref } = this.oauthClientSecret(current);
-    return store.withValue(ref, use);
-  }
-
-  private oauthClientSecretDriver(expectedId?: string) {
-    const driver = this.secretDriver(expectedId);
-    if (!driver.installationSecrets) {
-      throw new DependencyUnavailableError(
-        "The selected Secret Driver cannot store Installation-private OAuth client secrets.",
-      );
-    }
-    return { id: driver.id, store: driver.installationSecrets };
-  }
-
-  private oauthClientSecret(client: StoredOAuthClient) {
-    if (!client.secretDriverId) {
-      throw new ResourceStateConflictError("The OAuth client has no private secret.");
-    }
-    return {
-      store: this.oauthClientSecretDriver(client.secretDriverId).store,
-      ref: { installationId: this.installation.id, id: client.id },
-    };
+    return this.connectionAdministration.withOAuthClientSecret(client, use);
   }
 
   async listServiceAccounts(
