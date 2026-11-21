@@ -20,8 +20,8 @@ source without that association grants no destination authority.
 - Trigger: startup selects `token_service: occ`; an internal caller requests a
   source operation in a ready Namespace.
 - Source: `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`
-- Source: `packages/occ/src/index.ts:createManagedCredentialSource`
-- Source: `packages/occ/src/index.ts:deleteManagedCredentialSource`
+- Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
+- Source: `packages/occ/src/managed-credential-sources.ts:deleteManagedCredentialSource`
 - Permissions: `create` on the Namespace's source collection; `update` or `delete`
   on the exact CredentialSource.
 
@@ -53,7 +53,7 @@ in `token_service_instances`; each source pins that instance.
 
 ### 2. Create the source and register material
 
-`packages/occ/src/index.ts:createManagedCredentialSource`,
+`packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`,
 `apps/controller/src/drivers/token-service/occ.ts:registerSource`
 
 OCC authorizes creation, locks the Namespace, and commits a `registering` source,
@@ -68,7 +68,7 @@ The completion audit identifies the approved preset on the exact source.
 
 ### 3. Update the source
 
-`packages/occ/src/index.ts:updateManagedCredentialSource`
+`packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`
 
 OCC requires `update` on the exact source and checks its recorded instance under
 the source lock. A preset-only update changes the source config and commits its
@@ -91,7 +91,7 @@ Static sources accept only empty lifecycle settings and cannot refresh.
 
 ### 4. Delete the source
 
-`packages/occ/src/index.ts:deleteManagedCredentialSource`,
+`packages/occ/src/managed-credential-sources.ts:deleteManagedCredentialSource`,
 `apps/controller/src/drivers/token-service/occ.ts:removeSource`
 
 OCC rejects blocking references, marks the source `deleting`, and audits the
@@ -101,7 +101,7 @@ bindings with the completion audit.
 
 ### 5. Recover failures
 
-`packages/occ/src/index.ts:retireCredentialSourceMaterial`
+`packages/occ/src/managed-credential-sources.ts:retireCredentialSourceMaterial`
 
 An undispatched or definitively refused registration needs no Driver cleanup. A
 possibly dispatched write without a receipt remains `deleting` until the dispatch fence passes and the recorded

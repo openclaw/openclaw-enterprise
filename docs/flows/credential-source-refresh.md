@@ -24,8 +24,8 @@ use committed tokens and cannot trigger issuance.
 - Trigger: `POST /namespaces/:namespaceId/credential-sources` with a `refresh`
   type, `PATCH`, `GET`, or `DELETE …/credential-sources/:credentialSourceId`,
   and `POST …/credential-sources/:credentialSourceId/rotate`.
-- Source: `packages/occ/src/index.ts:createCredentialSource`
-- Source: `packages/occ/src/index.ts:rotateCredentialSource`
+- Source: `packages/occ/src/credential-source-operations.ts:createCredentialSource`
+- Source: `packages/occ/src/credential-source-operations.ts:rotateCredentialSource`
 - Source: `apps/controller/src/drivers/credential-refresh/openshell.ts:OpenShellCredentialRefreshDriver`
 - Assumptions: the OpenShell Backend declares `credential_gateway` and
   `credential_refresh`; the Installation selects both Drivers. Gateway
@@ -54,7 +54,7 @@ graph TD
 
 ### 1. Registration
 
-`packages/occ/src/index.ts:createCredentialSource`
+`packages/occ/src/credential-source-operations.ts:createCredentialSource`
 
 OCC authorizes creation and validates config and Secret reference fields against
 the selected type. If the type declares `rotation: refresh` and its provider has
@@ -179,7 +179,7 @@ longer offers: that source keeps its gateway status without `refresh`.
 
 ### 4. Update and rotation
 
-`packages/occ/src/index.ts:updateCredentialSource`
+`packages/occ/src/credential-source-operations.ts:updateCredentialSource`
 
 `PATCH` locks the source, not the Namespace, so other Namespace writes do not
 wait on the issuer. A field the catalog marks `issuerRotated` (`refresh_token`)
@@ -194,7 +194,7 @@ reconfiguration, even one whose mint fails, starts a new OpenShell authorization
 epoch that revokes running Sandboxes' stable placeholders, so Agents need a
 redeploy.
 
-`packages/occ/src/index.ts:rotateCredentialSource`
+`packages/occ/src/credential-source-operations.ts:rotateCredentialSource`
 
 `POST …/rotate` requires `credential_source:update`, a `ready` source, and a
 `refresh` type; a static type returns `409`. It calls `rotate` under the source
@@ -204,7 +204,7 @@ whose outcome is unknown records neither event.
 
 ### 5. Deletion
 
-`packages/occ/src/index.ts:deleteCredentialSource`
+`packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
 After the usual reference check and `deleting` mark, OCC calls `removeRefresh`,
 then the gateway's `removeSource`. Before `DeleteProviderRefresh`,

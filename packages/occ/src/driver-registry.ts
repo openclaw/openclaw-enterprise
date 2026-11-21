@@ -14,7 +14,12 @@ import {
   driverHasCapabilityContract,
   driverHasValidLifecycleHooks,
 } from "./driver-contract.ts";
-import { DependencyUnavailableError, DriverSelectionError } from "./errors.ts";
+import {
+  ConfigurationHarnessError,
+  DependencyUnavailableError,
+  DriverSelectionError,
+  NotImplementedError,
+} from "./errors.ts";
 import { InstalledDriver } from "./installed-driver.ts";
 import {
   selectedNamespaceLifecycle,
@@ -277,6 +282,23 @@ export class DriverRegistry {
       }
       return entry.driver as PluginDriver;
     });
+  }
+
+  pluginDriver(harnessId: string, selection = false): PluginDriver {
+    const drivers = this.enabledPluginDrivers();
+    const driver = drivers.find((item) => item.harnessId === harnessId);
+    if (!driver) {
+      if (selection && drivers.length > 0) {
+        throw new ConfigurationHarnessError(
+          `No Plugin Driver is enabled for the ${harnessId} Harness. Remove the Agent's plugins or enable its catalog.`,
+        );
+      }
+      throw new NotImplementedError(
+        "agent_plugins.driver",
+        "No selected Plugin Driver can represent Agent plugin configuration.",
+      );
+    }
+    return driver;
   }
 
   private applyDriverSelection<Capability extends DriverCapability>(

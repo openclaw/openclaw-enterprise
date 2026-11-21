@@ -6,16 +6,12 @@ import {
   presetTemplateDefaultsWithPlaceholders,
   presetValueHasVariables,
   PresetValidationError,
-  type AuditEvent,
-  type AuthorizationRequest,
   type BackendRef,
   type ConfigurationDriver,
   type ConfigurationValidationOptions,
-  type IAMPolicyRepository,
   type Namespace,
   type OpenClawConfigurationDocument,
   type PluginApprovers,
-  type PluginDriver,
   type Preset,
   type PresetDraftDefinition,
   type PresetDraftTemplate,
@@ -24,6 +20,9 @@ import {
   type ResourceRef,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
+import type { DriverRegistry } from "./driver-registry.ts";
 import {
   AuthorizationDeniedError,
   DependencyUnavailableError,
@@ -33,7 +32,8 @@ import {
   ScopeViolationError,
 } from "./errors.ts";
 import { accessBindingsTargeting, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
-import type { PresetReadRepository, PresetRepository } from "./ports/presets.ts";
+import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import { exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 /** One shipped version of a bundled default Preset (`deploy/presets/archive/versions.json`). */
 export interface BundledPresetVersion extends PresetDraftDefinition {
@@ -93,47 +93,16 @@ interface PresetDefaults {
   readonly refreshBundledDefaultPresets?: boolean;
 }
 
-interface PresetReadView {
-  readonly presets: PresetReadRepository;
-}
-
-interface PresetUnitOfWork {
-  readonly presets: PresetRepository;
-  readonly namespaces: {
-    listNamespaces(): Promise<readonly Readonly<Namespace>[]>;
-    lockNamespace(namespaceId: string): Promise<Readonly<Namespace> | undefined>;
-  };
-  readonly iamPolicy: Pick<IAMPolicyRepository, "listAccessBindings" | "deleteAccessBinding">;
-  readonly audit: {
-    append(event: AuditEvent): Promise<void>;
-  };
-}
-
-/** The caller retains transaction ownership and supplies its shared authority and Driver checks. */
-interface PresetDependencies<ReadView, UnitOfWork> {
+interface PresetDependencies {
   readonly installationId: string;
-  read<T>(work: (state: ReadView) => Promise<T>): Promise<T>;
-  mutate<T>(work: (state: UnitOfWork) => Promise<T>): Promise<T>;
-  authorize(
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    target: ResourceRef,
-  ): Promise<unknown>;
-  holdAuthority(state: UnitOfWork): Promise<void>;
+  readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority" | "readableListRows">;
   bindCreator(
-    state: UnitOfWork,
+    state: PlatformUnitOfWork,
     principalId: string,
     resource: ResourceRef & { readonly namespaceId: string },
   ): Promise<void>;
-  namespaceIdentity(namespaceId: string): void;
   getNamespace(principalId: string, namespaceId: string): Promise<Readonly<Namespace>>;
-  exactNamespace(state: ReadView, namespaceId: string): Promise<Readonly<Namespace>>;
-  lockNamespace(state: UnitOfWork, namespaceId: string): Promise<Readonly<Namespace>>;
-  readablePresets(
-    principalId: string,
-    namespaceId: string,
-    rows: readonly Readonly<PresetSummary>[],
-  ): Promise<readonly Readonly<PresetSummary>[]>;
   nextPresetId(): string;
   timestamp(): string;
   configurationDriver(): Pick<ConfigurationDriver, "validateValues">;
@@ -142,15 +111,13 @@ interface PresetDependencies<ReadView, UnitOfWork> {
     options: ConfigurationValidationOptions,
   ): void;
   validateAgentBackend(backendId: BackendRef): void;
-  hasPluginDrivers(): boolean;
-  enabledPluginDrivers(): readonly PluginDriver[];
+  readonly drivers: Pick<DriverRegistry, "hasPluginDrivers" | "enabledPluginDrivers">;
   normalizeAgentPluginApprovers(approvers: unknown): PluginApprovers | undefined;
 }
 
-export function createPresetOperations<
-  ReadView extends PresetReadView,
-  UnitOfWork extends PresetUnitOfWork,
->(options: PresetDefaults, dependencies: PresetDependencies<ReadView, UnitOfWork>) {
+export function createPresetOperations(options: PresetDefaults, dependencies: PresetDependencies) {
+  const { read, transact } = dependencies.transactions;
+  const { authorize, holdAuthority, readableListRows } = dependencies.authority;
   const defaultPresets = immutableCopy(options.defaultPresets ?? []);
   const presetNames = new Set<string>();
   for (const preset of defaultPresets) {
@@ -177,9 +144,9 @@ export function createPresetOperations<
       return skipped;
     }
     const skip = options.skipRefusedRefresh ?? "none";
-    await dependencies.mutate(async (state) => {
-      await dependencies.holdAuthority(state);
-      await dependencies.authorize(principalId, "administer", {
+    await transact(async (state) => {
+      await holdAuthority(state);
+      await authorize(principalId, "administer", {
         kind: "installation",
         id: dependencies.installationId,
       });
@@ -200,7 +167,7 @@ export function createPresetOperations<
   }
 
   async function ensureNamespaceDefaultPresets(
-    state: UnitOfWork,
+    state: PlatformUnitOfWork,
     principalId: string,
     namespace: Readonly<Namespace>,
     refresh: {
@@ -229,7 +196,7 @@ export function createPresetOperations<
         continue;
       }
       try {
-        await dependencies.authorize(principalId, "create", {
+        await authorize(principalId, "create", {
           kind: "preset",
           id: namespace.id,
           namespaceId: namespace.id,
@@ -294,7 +261,7 @@ export function createPresetOperations<
    * version of it, keeping its ID and grants. Any other content is an operator edit and stays.
    */
   async function refreshSupersededDefaultPreset(
-    state: UnitOfWork,
+    state: PlatformUnitOfWork,
     principalId: string,
     namespace: Readonly<Namespace>,
     seeded: PresetDraftDefinition,
@@ -327,7 +294,7 @@ export function createPresetOperations<
       return;
     }
     try {
-      await dependencies.authorize(principalId, "update", {
+      await authorize(principalId, "update", {
         kind: "preset",
         id: copy.id,
         namespaceId: namespace.id,
@@ -391,19 +358,19 @@ export function createPresetOperations<
     if (!isName(input.name)) {
       throw new PresetValidationError("The Preset name is invalid.");
     }
-    dependencies.namespaceIdentity(input.namespaceId);
-    return dependencies.mutate(async (state) => {
-      await dependencies.holdAuthority(state);
+    namespaceIdentity(input.namespaceId);
+    return transact(async (state) => {
+      await holdAuthority(state);
       const target: ResourceRef = {
         kind: "preset",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
       };
-      await dependencies.authorize(principalId, "create", target);
-      const namespace = await dependencies.lockNamespace(state, input.namespaceId);
+      await authorize(principalId, "create", target);
+      const namespace = await lockNamespace(state, input.namespaceId);
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
       // while this write waited stops it before it leaves a durable Owner binding or grant.
-      await dependencies.authorize(principalId, "create", target);
+      await authorize(principalId, "create", target);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -430,10 +397,11 @@ export function createPresetOperations<
     namespaceId: string,
   ): Promise<readonly Readonly<PresetSummary>[]> {
     const namespace = await dependencies.getNamespace(principalId, namespaceId);
-    return dependencies.read(async (state) =>
-      dependencies.readablePresets(
+    return read(async (state) =>
+      readableListRows(
         principalId,
         namespace.id,
+        "preset",
         await state.presets.listPresetSummaries(namespace.id),
       ),
     );
@@ -444,13 +412,13 @@ export function createPresetOperations<
     namespaceId: string,
     presetId: string,
   ): Promise<Readonly<Preset>> {
-    await dependencies.authorize(principalId, "read", {
+    await authorize(principalId, "read", {
       kind: "preset",
       id: presetId,
       namespaceId,
     });
-    return dependencies.read(async (state) => {
-      await dependencies.exactNamespace(state, namespaceId);
+    return read(async (state) => {
+      await exactNamespace(state, namespaceId);
       const preset = await state.presets.findPreset(namespaceId, presetId);
       if (!preset) {
         throw new ScopeViolationError("The Preset does not belong to the exact Namespace.");
@@ -469,8 +437,8 @@ export function createPresetOperations<
     namespaceId: string,
     presetId?: string,
   ): Promise<void> {
-    dependencies.namespaceIdentity(namespaceId);
-    await dependencies.authorize(principalId, presetId === undefined ? "create" : "update", {
+    namespaceIdentity(namespaceId);
+    await authorize(principalId, presetId === undefined ? "create" : "update", {
       kind: "preset",
       id: presetId ?? namespaceId,
       namespaceId,
@@ -484,14 +452,14 @@ export function createPresetOperations<
     if (input.name !== undefined && !isName(input.name)) {
       throw new PresetValidationError("The Preset name is invalid.");
     }
-    dependencies.namespaceIdentity(input.namespaceId);
-    return dependencies.mutate(async (state) => {
-      await dependencies.authorize(principalId, "update", {
+    namespaceIdentity(input.namespaceId);
+    return transact(async (state) => {
+      await authorize(principalId, "update", {
         kind: "preset",
         id: input.presetId,
         namespaceId: input.namespaceId,
       });
-      const namespace = await dependencies.lockNamespace(state, input.namespaceId);
+      const namespace = await lockNamespace(state, input.namespaceId);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -519,27 +487,27 @@ export function createPresetOperations<
     namespaceId: string,
     presetId: string,
   ): Promise<readonly RemovedAccessBinding[]> {
-    dependencies.namespaceIdentity(namespaceId);
-    return dependencies.mutate(async (state) => {
+    namespaceIdentity(namespaceId);
+    return transact(async (state) => {
       // Authorize before any lookup to conceal target existence. Check again under the
       // Namespace lock to catch concurrent revocation.
-      await dependencies.authorize(principalId, "delete", {
+      await authorize(principalId, "delete", {
         kind: "preset",
         id: presetId,
         namespaceId,
       });
-      const namespace = await dependencies.lockNamespace(state, namespaceId);
+      const namespace = await lockNamespace(state, namespaceId);
       return deletePresetInState(state, principalId, namespace.id, presetId);
     });
   }
 
   async function deletePresetInState(
-    state: UnitOfWork,
+    state: PlatformUnitOfWork,
     principalId: string,
     namespaceId: string,
     presetId: string,
   ): Promise<readonly RemovedAccessBinding[]> {
-    await dependencies.authorize(principalId, "delete", {
+    await authorize(principalId, "delete", {
       kind: "preset",
       id: presetId,
       namespaceId,
@@ -647,13 +615,13 @@ export function createPresetOperations<
     if (literal("backendId") && agent.backendId !== null) {
       checked("backendId", () => dependencies.validateAgentBackend(agent.backendId as BackendRef));
     }
-    if (literal("pluginApprovers") && dependencies.hasPluginDrivers()) {
+    if (literal("pluginApprovers") && dependencies.drivers.hasPluginDrivers()) {
       checked("pluginApprovers", () => {
         const approvers = dependencies.normalizeAgentPluginApprovers(agent.pluginApprovers);
         // The Harness can be filled in at launch. Reject a literal here only when
         // every enabled catalog would refuse it.
         let refusal: PluginPolicyValidationError | undefined;
-        for (const driver of dependencies.enabledPluginDrivers()) {
+        for (const driver of dependencies.drivers.enabledPluginDrivers()) {
           try {
             driver.validatePolicies({}, approvers);
             return;

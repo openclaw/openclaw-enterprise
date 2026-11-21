@@ -7,13 +7,10 @@ import {
   validateSandboxNetworkGrants,
   type Agent,
   type AgentRevision,
-  type AuthorizationDecision,
-  type AuthorizationRequest,
   type ComputeDriver,
   type ConfigurationResult,
   type DriverConfigurationDescriptor,
   type ErrorDetail,
-  type Namespace,
   type ResourceRef,
   type SandboxDriver,
   type SandboxFacet,
@@ -24,6 +21,8 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type { DriverConfigurationRegistry } from "./configuration-registry.ts";
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
   DependencyUnavailableError,
   ProtectedExecutionNetworkPolicyError,
@@ -33,30 +32,13 @@ import {
 } from "./errors.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import { exactNamespace, lockNamespace } from "./resource-scope.ts";
 
 interface SandboxPolicyDependencies {
   readonly installationId: string;
   readonly ceiling: readonly SandboxNetworkGrant[];
-  readonly authorize: (
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    target: ResourceRef,
-  ) => Promise<unknown>;
-  readonly authorizationDecision: (
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    target: ResourceRef,
-  ) => Promise<{ readonly decision: Readonly<AuthorizationDecision> }>;
-  readonly exactNamespace: (
-    state: PlatformReadView,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
-  readonly lockNamespace: (
-    state: PlatformUnitOfWork,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
-  readonly read: <T>(use: (state: PlatformReadView) => Promise<T>) => Promise<T>;
-  readonly mutate: <T>(use: (state: PlatformUnitOfWork) => Promise<T>) => Promise<T>;
+  readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "authorizationDecision">;
   readonly protectedExecutionApplies: (
     state: PlatformReadView,
     agent: Readonly<Agent>,
@@ -197,20 +179,23 @@ function policyResource(namespaceId: string, agentId: string): ResourceRef {
 }
 
 export function createSandboxPolicyOperations(dependencies: SandboxPolicyDependencies) {
+  const { read, transact } = dependencies.transactions;
+  const { authorize, authorizationDecision } = dependencies.authority;
+
   async function authorizePolicyEdit(principalId: string, namespaceId: string, agentId: string) {
-    await dependencies.authorize(principalId, "manage_policy", {
+    await authorize(principalId, "manage_policy", {
       kind: "agent",
       id: agentId,
       namespaceId,
     });
     const resource = policyResource(namespaceId, agentId);
-    await dependencies.authorize(principalId, "update", resource);
+    await authorize(principalId, "update", resource);
     return resource;
   }
 
   async function authorizePolicyRead(principalId: string, namespaceId: string, agentId: string) {
-    await dependencies.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
-    await dependencies.authorize(principalId, "read", policyResource(namespaceId, agentId));
+    await authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+    await authorize(principalId, "read", policyResource(namespaceId, agentId));
   }
 
   function networkPolicyUnavailable(): string | undefined {
@@ -248,8 +233,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       "sandbox-network-policy",
     );
     const resource = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
-    const manage = await dependencies.authorizationDecision(principalId, "manage_policy", resource);
-    const update = await dependencies.authorizationDecision(principalId, "update", {
+    const manage = await authorizationDecision(principalId, "manage_policy", resource);
+    const update = await authorizationDecision(principalId, "update", {
       kind: "sandbox_policy",
       id: policy.id,
       namespaceId: agent.namespaceId,
@@ -295,8 +280,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     requireNetworkPolicyFacet(facet);
     await authorizePolicyEdit(principalId, namespaceId, agentId);
     requireNetworkPolicyAvailable();
-    return dependencies.read(async (state) => {
-      await dependencies.exactNamespace(state, namespaceId);
+    return read(async (state) => {
+      await exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
       const previous = await state.sandboxPolicies.find(namespaceId, agentId);
       if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
@@ -347,8 +332,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   ) {
     requireNetworkPolicyFacet(facet);
     await authorizePolicyRead(principalId, namespaceId, agentId);
-    return dependencies.read(async (state) => {
-      await dependencies.exactNamespace(state, namespaceId);
+    return read(async (state) => {
+      await exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
       const policy = await state.sandboxPolicies.find(namespaceId, agentId);
       if (agent === undefined || policy === undefined) {
@@ -400,17 +385,17 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     enabled: boolean,
   ): Promise<Readonly<Agent>> {
     requireNetworkPolicyFacet(facet);
-    await dependencies.authorize(principalId, "administer", {
+    await authorize(principalId, "administer", {
       kind: "installation",
       id: dependencies.installationId,
     });
-    await dependencies.authorize(principalId, "administer", {
+    await authorize(principalId, "administer", {
       kind: "agent",
       id: agentId,
       namespaceId,
     });
-    return dependencies.mutate(async (state) => {
-      await dependencies.lockNamespace(state, namespaceId);
+    return transact(async (state) => {
+      await lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       if (agent === undefined || agent.status !== "active") {
         throw new ResourceStateConflictError("The Agent is unavailable for policy configuration.");
@@ -495,7 +480,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     if (policy === undefined || policy.additions.length === 0) {
       return;
     }
-    await dependencies.authorize(principalId, "read", {
+    await authorize(principalId, "read", {
       kind: "sandbox_policy",
       id: policy.id,
       namespaceId: policy.namespaceId,
@@ -526,8 +511,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     requireNetworkPolicyFacet(facet);
     await authorizePolicyEdit(principalId, namespaceId, agentId);
     requireNetworkPolicyAvailable();
-    return dependencies.mutate(async (state) => {
-      await dependencies.lockNamespace(state, namespaceId);
+    return transact(async (state) => {
+      await lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       const previous = await state.sandboxPolicies.find(namespaceId, agentId);
       if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
@@ -585,10 +570,10 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     const sandboxPolicy = await authorizePolicyEdit(principalId, namespaceId, agentId);
     // Apply can return the saved policy or name an addition in an admission error.
     // Require SandboxPolicy read even for an empty policy.
-    await dependencies.authorize(principalId, "read", sandboxPolicy);
+    await authorize(principalId, "read", sandboxPolicy);
     requireNetworkPolicyAvailable();
-    return dependencies.mutate(async (state) => {
-      const namespace = await dependencies.lockNamespace(state, namespaceId);
+    return transact(async (state) => {
+      const namespace = await lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       const policy = await state.sandboxPolicies.find(namespaceId, agentId);
       if (
@@ -686,8 +671,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   ): Promise<SandboxPolicyRecommendations> {
     requireNetworkPolicyFacet(facet);
     await authorizePolicyRead(principalId, namespaceId, agentId);
-    const binding = await dependencies.read(async (state) => {
-      const namespace = await dependencies.exactNamespace(state, namespaceId);
+    const binding = await read(async (state) => {
+      const namespace = await exactNamespace(state, namespaceId);
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
       if (revision === undefined) {
         throw new ScopeViolationError("The revision is outside this Agent.");
