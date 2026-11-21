@@ -164,12 +164,11 @@ needs no model credential or call. Docker is default; set
 
 For prepared Docker Compose images, set `OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE`
 to an immutable development-controller reference under
-`127.0.0.1:<port>/openclaw-ci-first-images-<id>/controller`, and
-`OCC_KUBERNETES_RUNTIME_IMAGE` to an immutable runtime reference. Both must be
-locally inspectable, built from this checkout, and labeled with its revision.
-Retain provenance; never relabel images. The extra Compose file replaces
-all five services' builds, excluding build coverage but preserving assertions.
-Unset both image variables for full source-build coverage.
+`127.0.0.1:<port>/openclaw-ci-first-images-<id>/controller` and
+`OCC_KUBERNETES_RUNTIME_IMAGE` to an immutable runtime reference. Use locally
+inspectable images built from and labeled with this checkout's revision. Never
+relabel images. Retain provenance. The override replaces all five builds and preserves assertions.
+Unset both variables for source-build coverage.
 
 For Kubernetes, `OCC_TEST_NATIVE_BROWSER_RECEIPT` selects a new file in an existing
 directory for source, image identities, and assertions; otherwise a temporary
@@ -274,8 +273,8 @@ preserving access. Suggestions and decorated logs are read through OCC.
 ### Native OpenClaw with k3d
 
 The [k3d helper](kubernetes.md#develop-with-local-containers-and-k3d) prepares
-the native test and builds the sibling `../openclaw` checkout. Set
-`OCC_K3D_OPENCLAW_SOURCE` to use another absolute checkout path.
+the native test with the [pinned runtime image](../../deploy/runtime/README.md),
+the only image the dedicated Gateway accepts. It needs no OpenClaw checkout.
 
 ```sh
 ./scripts/k3d test --harness openclaw

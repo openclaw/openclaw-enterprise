@@ -2133,7 +2133,12 @@ export function createOpenShellKubernetesFixture({
             entry.resolve(message.result);
           }
         } else if (method === "item/completed") {
-          if (item?.type === "agentMessage") assistant = item.text ?? "";
+          if (item?.type === "agentMessage" && (!${gatewayTurn} ||
+              (message.id === undefined && typeof threadId === "string" && threadId &&
+               turnId && lastAcknowledged === "turn/start" &&
+               params.threadId === threadId && params.turnId === turnId))) {
+            assistant = item.text ?? "";
+          }
         } else if (message.method === "turn/completed") {
           if (${gatewayTurn && observeFailure} &&
               (message.id !== undefined || typeof threadId !== "string" || !threadId ||

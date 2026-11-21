@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-20"
-last_updated_session: "authoring-run/d0f76046-8ddd-44e6-a67f-29c2288c9e33"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Production image upgrade flow
@@ -9,8 +9,7 @@ last_updated_session: "authoring-run/d0f76046-8ddd-44e6-a67f-29c2288c9e33"
 ## Overview
 
 Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
-See [channel transitions](channel-egress.md#0-install-or-upgrade-channel-routing)
-for the explicit one-off entrypoint.
+See [one-off channel transitions](channel-egress.md#0-install-or-upgrade-channel-routing).
 
 ## Entry Points
 
@@ -19,8 +18,8 @@ for the explicit one-off entrypoint.
 - Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
 - Source: `scripts/upgrade-production-images`,
-  `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`,
-  and `packages/occ/src/index.ts:OpenClawController.deployAgent`.
+  `packages/occ/src/deployment-inventory.ts:readDeploymentInventory`,
+  and `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`.
 
 ## Flow
 
@@ -87,9 +86,10 @@ the native helper snapshots kubeconfig, refuses selected exec credentials and
 disables command defaults. Approved snapshots also refuse selected
 `auth-provider` entries. Profiled recovery rechecks the target and CA binding.
 
-Before `scripts/upgrade-production-images:prepare_upgrade`, refuse other Helm
-release stores, [Helm overrides](../guides/deploy/production-upgrade.md), source
-mismatch, chart edits or symlinks, and evidence or baseline aliases.
+Before `scripts/upgrade-production-images:prepare_upgrade`, the helper refuses
+other Helm stores, [endpoint and TLS overrides](../guides/deploy/production-upgrade.md),
+[token and impersonation overrides](../guides/deploy/production-upgrade-command.md#run-the-image-upgrade),
+source mismatch, chart edits or symlinks, and evidence or baseline aliases.
 `preprovisionedNamespace` must yield one `false` (`preprovisioned-namespace.err`).
 
 `check_migration` matches the rendered and deployed migrator inputs and
@@ -111,11 +111,11 @@ Unknown assessments block rehearsal. Runtime upgrades record replacements and
 check draft images and sizes, baseline versions and Namespace readiness.
 Stopped or deleting Agents are excluded. Pending repository cleanup is allowed.
 
-`OpenClawController.deploymentInventorySnapshot` batches deployment-work reads
+`deploymentInventorySnapshot` batches deployment-work reads
 in one State snapshot and refuses missing or mismatched work. Credential
 withdrawal is distinct from deployment work. `findRevisionForBrowsing` yields
 `unknown` for unreadable snapshots and propagates database or identity errors.
-`getInstallationDeploymentInventory` gives Compute ten seconds outside State
+`readDeploymentInventory` gives Compute ten seconds outside State
 transactions, then rechecks fleet authorization and Driver selections. Drift
 refuses inventory. Owner failures yield `unknown`.
 
@@ -373,6 +373,11 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
+
+- 2026-11-20 17:42: Refuse Helm credential overrides. (authoring-run/e16304ce-2b94-4022-a90d-9ab2e235d1d4 - aff441a5df9e3258752b034fb694e06333c0b231)
+
 - 2026-11-20 09:47: Trace immutable Installation refusals and the Certificate admission timeout. (authoring-run/d0f76046-8ddd-44e6-a67f-29c2288c9e33 - 9092839d0c3b9598e85300451f425ac6d3084fe5)
 
 - 2026-11-19 19:15: Trace the stopped writers check before Helm retry. (authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4 - d976da889bdeca6e9208821a5b4ea79a49033b0f)
@@ -406,11 +411,5 @@ requires no Agents or Secrets.
 - 2026-11-18 19:45: Tighten the upgrade trace. (authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965 - aed2f7edd530ab336bbd6cb8c7389b24cb83e397)
 
 - 2026-11-18 19:27: Trace migration-only compatibility checks through the Helm hook and Job journal. (authoring-run/7ae70bae-f8ac-425d-abbf-7039b71997b7 - 71334bb9b104662870798a29814e7171e8905baf)
-
-- 2026-11-18 10:52: Trace Installation CLI planning, status and handoff. (authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd - aeb385b97974a6bd729f58dd73a44d518aec1edc)
-
-- 2026-11-18 10:33: Reconcile profile/inventory traces. (authoring-run/251425f8-895a-4c1e-ac56-e666545f89ab - 98f60a1b965aa7129256c0802b60969519bc8a86)
-
-- 2026-11-18 10:20: Trace the private profile handoff alongside progress output. (authoring-run/f93ed972-08b6-4310-8194-a6c8c9aeef37 - 2cedf84d05b8c05d812264dffd179eb3ca537fee)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.

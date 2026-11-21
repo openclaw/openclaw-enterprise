@@ -1645,7 +1645,6 @@ export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-provi
 export {
   RegisterTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
-  TokenServiceSourceMetadata,
 } from "./api/token-service-sources.ts";
 export {
   PushAgentCredentialsBody,

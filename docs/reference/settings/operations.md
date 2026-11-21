@@ -75,7 +75,7 @@ History stages end at these migrations (stage, receipt count when specified):
 - `preOAuth`: 42, `0041_restriction_read_logs`; `preCredentialWithdrawals`: 43, `0042_oauth_harness_auth`; `preBrokerReceiptFence`: 44, `0043_credential_withdrawals`.
 - `preModelProbeFailureCause`: 45, `0045_repository_broker_receipt_fence`; `preProvisioningConfigurationRelease`: 46, `0046_model_probe_failure_cause`; `preAdministratorCredentialSourceGrants`: 47, `0047_provisioning_configuration_release`.
 - `preCodexPatSources`: 48, `0048_administrator_credential_source_grants`; `preAgentCredentialSources`: 49, `0049_codex_pat_sources`; `preCredentialWithdrawalRequester`: 50, `0050_agent_credential_sources`.
-- Later `pre*` stages add one receipt each: `preCredentialProxy` has 59; `prePreparedAttemptSettlement` has 62 through `0062_credential_delivery_custody`; `preGatewayManagedMode` has 63 after `0063_prepared_attempt_settlement`, with `0064_gateway_managed_mode` pending.
+- Later `pre*` stages add one receipt each, up to one receipt below `completed`; 60 and 61 have no stage. `catalogAtMigrationCount` in [`scripts/migration-history.mjs`](../../../scripts/migration-history.mjs) lists every stage with its receipt count.
 
 Rerun `--check` after migration and require `completed` from the same release.
 
