@@ -228,8 +228,8 @@ before the checks:
 
 For `logging.level`, see [Choose the log level](../observability.md#1-choose-the-log-level).
 [Configure native admin domains](native-admin.md#steps).
-For Slack Agents, configure both proxy paths in the
-[Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
+For Slack Agents, prepare the [managed channel egress fleet](channel-egress.md)
+and matching Helm and Installation settings before deployment. For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 
 `images.controller` must be an approved immutable image reference with a lowercase

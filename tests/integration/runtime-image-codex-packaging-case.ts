@@ -79,6 +79,9 @@ export async function verifyCodexPackaging(
   const script = renderProbe(probePackagedCodex, [
     {
       historicalCodex,
+      // Staging qualifies an already published image, even when its Codex pin matches.
+      expectBundledRepositoryRestSkill:
+        !historicalCodex && process.env.OCC_TEST_STAGING_CODEX_VERSION === undefined,
       stagingCodexVersion,
       deadlineMs: 30000 * imageSmokeTimeoutMultiplier,
     },

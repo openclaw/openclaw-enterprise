@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
-updated: 2026-11-20
-last_updated_session: authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af
+updated: 2026-11-21
+last_updated_session: authoring-run/6d2fe358-5f9b-4753-9132-92f28c31fe5c
 ---
 
 # Managed static credential source custody flow
@@ -158,11 +158,11 @@ Kubernetes Secret storage, runtime delivery, or model execution.
 
 ## Changelog
 
+- 2026-11-21 08:07: Focus the flow on the static custody lifecycle. (authoring-run/e7385b8d-4142-4c92-a621-97ae799ade24 - bd0cc5d3436f0882fbea9d1e0d647ac49ecf4a56)
+
 - 2026-11-20 16:50: Correct PATCH lock ownership and return not found before owner selection on a DELETE retry after retirement. (authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af - 00881f668ea8c2857f4e20ae562be7aa2d18a4da)
 
 - 2026-11-20 16:18: Connect public enrollment, observation, update, and retirement to the selected Source owner; describe staged proof limits. (authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af - 27b47ccbf7223c303b844af151c9712082380919)
-
-- 2026-11-20 16:06: Document staged public Source inputs and authorized refusal before custody. (authoring-run/0faa6e4e-f75e-4816-9495-10e1c22d0681 - d3297613840eda80cafbf383bef5f8a91196b13b)
 
 - 2026-11-20 15:57: Require separate preset and custody changes to prevent partial authority updates. (authoring-run/3d03cbe0-452f-4e38-baa5-5098e9a89002 - 8094be8535ce7ac130fe9d5f766bb9309bded408)
 

@@ -41,9 +41,7 @@ test("published TokenService source request schemas validate managed static mate
   const { route, validatorCompiler, published } = await publishedCredentialComponents(t);
   const writeOnlySecret = { properties: { secret: { writeOnly: true } } };
   assert.partialDeepStrictEqual(published("RegisterTokenServiceSourceBody"), writeOnlySecret);
-  assert.partialDeepStrictEqual(published("UpdateTokenServiceSourceBody"), {
-    anyOf: [writeOnlySecret, writeOnlySecret],
-  });
+  assert.partialDeepStrictEqual(published("UpdateTokenServiceSourceBody"), writeOnlySecret);
 
   const credential = { api_key: "synthetic-registration-material" };
   const refs = { api_key: { kind: "secret", namespaceId, id: `sec_${uuid}` } };
@@ -74,8 +72,7 @@ test("published TokenService source request schemas validate managed static mate
       update({ config, secret: credential } satisfies UpdateTokenServiceSourceBody),
       true,
     );
-    // @ts-expect-error Both the client type and the wire contract require at least one change.
-    assert.equal(update({} satisfies UpdateTokenServiceSourceBody), false);
+    assert.equal(update({}), false);
     assert.equal(update({ secret: credential, driverId: "chosen-owner" }), false);
     assert.equal(update({ config, connectionTemplateId }), false);
 

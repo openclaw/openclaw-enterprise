@@ -286,10 +286,7 @@ function schemaTable(schema: unknown, document: unknown): string {
       Array.isArray(variants) &&
       (variants.some((variant) => {
         const value = resolveSchema(variant, document);
-        return (
-          schemaVariantLabel(variant, document) ||
-          (optionalField(value, "title") && optionalField(value, "anyOf"))
-        );
+        return schemaVariantLabel(variant, document) || optionalField(value, "title");
       }) ||
         (optionalField(resolved, "title") &&
           variants.every((variant) =>

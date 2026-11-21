@@ -11083,21 +11083,12 @@ Update a Source through its recorded owner
 
 **UpdateTokenServiceSourceBody**
 
-Update a managed static Source through its persisted owner. Supply configuration, a credential value, or both; omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Send these changes in separate operations; repeating the current preset with replacement material is allowed.
-
-**Required fields: `config`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `config` | `object<string, string>` | Yes | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
-| `secret` | `object<string, string>` | No | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
-
-**Required fields: `secret`**
+Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
-| `secret` | `object<string, string>` | Yes | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
+| `secret` | `object<string, string>` | No | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
 
 Example request
 ```json
@@ -13709,7 +13700,7 @@ Reusable schema names are referenced by operation request and response tables.
 | `PushAgentCredentialsBody` | `object` |
 | `PushAgentCredentialsResponse` | `object` |
 | `RegisterTokenServiceSourceBody` | `object` |
-| `UpdateTokenServiceSourceBody` | `object or object` |
+| `UpdateTokenServiceSourceBody` | `object` |
 | `SafeJsonValue` | `string or boolean or number or null or array<SafeJsonValue> or object<string, SafeJsonValue>` |
 | `PluginDriverIdentity` | `object` |
 | `AgentRuntimeLogsResponse` | `object` |

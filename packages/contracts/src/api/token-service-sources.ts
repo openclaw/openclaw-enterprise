@@ -31,21 +31,14 @@ export const RegisterTokenServiceSourceBody = Type.Object(
   },
 );
 
-export const UpdateTokenServiceSourceBody = Type.Union(
-  [
-    Type.Object(
-      { config: managedConfig, secret: Type.Optional(material) },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      { config: Type.Optional(managedConfig), secret: material },
-      { additionalProperties: false },
-    ),
-  ],
+export const UpdateTokenServiceSourceBody = Type.Object(
+  { config: Type.Optional(managedConfig), secret: Type.Optional(material) },
   {
     $id: "UpdateTokenServiceSourceBody",
+    minProperties: 1,
+    additionalProperties: false,
     description:
-      "Update a managed static Source through its persisted owner. Supply configuration, a credential value, or both; omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Send these changes in separate operations; repeating the current preset with replacement material is allowed.",
+      "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
   },
 );
 

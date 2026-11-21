@@ -316,64 +316,33 @@
         "type": "object"
       },
       "UpdateTokenServiceSourceBody": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "config": {
-                "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-                "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
-                "maxProperties": 32,
-                "type": "object"
-              },
-              "secret": {
-                "additionalProperties": {
-                  "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
-                  "maxLength": 65536,
-                  "minLength": 1,
-                  "pattern": "^[^\\u0000]*$",
-                  "type": "string"
-                },
-                "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
-                "maxProperties": 1,
-                "minProperties": 1,
-                "type": "object",
-                "writeOnly": true
-              }
-            },
-            "required": ["config"],
+        "additionalProperties": false,
+        "description": "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
+        "minProperties": 1,
+        "properties": {
+          "config": {
+            "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+            "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
+            "maxProperties": 32,
             "type": "object"
           },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "config": {
-                "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-                "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
-                "maxProperties": 32,
-                "type": "object"
-              },
-              "secret": {
-                "additionalProperties": {
-                  "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
-                  "maxLength": 65536,
-                  "minLength": 1,
-                  "pattern": "^[^\\u0000]*$",
-                  "type": "string"
-                },
-                "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
-                "maxProperties": 1,
-                "minProperties": 1,
-                "type": "object",
-                "writeOnly": true
-              }
+          "secret": {
+            "additionalProperties": {
+              "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+              "maxLength": 65536,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$",
+              "type": "string"
             },
-            "required": ["secret"],
-            "type": "object"
+            "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
+            "maxProperties": 1,
+            "minProperties": 1,
+            "type": "object",
+            "writeOnly": true
           }
-        ],
-        "description": "Update a managed static Source through its persisted owner. Supply configuration, a credential value, or both; omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Send these changes in separate operations; repeating the current preset with replacement material is allowed.",
-        "title": "UpdateTokenServiceSourceBody"
+        },
+        "title": "UpdateTokenServiceSourceBody",
+        "type": "object"
       },
       "def-0": {
         "anyOf": [
