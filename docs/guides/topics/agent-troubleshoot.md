@@ -154,12 +154,13 @@ Kubernetes it holds unready on `gateway-state-lock`; the deployment fails with
 holder stops cleanly, the Gateway restarts after its next 5-minute check;
 otherwise use the same procedure, which stops the Agent first.
 
-A dedicated Harness Pod killed during Doctor or native setup (node failure)
-can leave its workspace node state locked. Later versions fail with
+A dedicated Harness Pod killed during Doctor or native setup (node failure, or
+an OpenShell Sandbox still starting when OCE's 2-minute stop wait ends) can leave
+its workspace node state locked. Later versions fail with
 `RUNTIME_STATE_LOCK_UNVERIFIED`; until OCE deletes their Pods, `occ agent logs
-AGENT_ID --source agent` shows `The Harness cannot start: …` with the holder. This applies
-to the Harness Deployment that Kubernetes Compute creates; a Harness run by a
-SandboxDriver has no such Deployment. Use the same procedure, with these changes:
+AGENT_ID --source agent` shows `The Harness cannot start: …` with the holder. For
+the Harness Deployment that Kubernetes Compute creates, use the same procedure
+with these changes:
 
 - Step 1: The holder is usually an earlier version's deleted Pod. Record the Pod
   name from the log's `holder N at POD_NAME/pid-ns` text, not the current Pod.

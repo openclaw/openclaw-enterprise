@@ -285,16 +285,17 @@ probe state use node state and Sandbox-grantable `TMPDIR`.
 `XDG_CACHE_HOME=/tmp` for node and Doctor private SQLite staging, avoiding
 group-writable persistent ancestors without weakening permission checks.
 
-On stop or retirement, the selected Sandbox Driver cleans up after Compute stops an
-ordinary Harness, or removes a provider-owned Harness. Missing Deployments do not
+On stop or retirement, the Sandbox Driver cleans up after Compute stops an ordinary
+Harness, or removes a provider-owned Harness; an Agent stop or replacement waits up to 2
+minutes, yielding, while an OpenShell Harness reports `starting`. Missing Deployments do not
 skip cleanup; failures retry. Retirement retains both owned claims after Gateway
-removal and checks the retiring version's ownership before deletion. Successors keep
+removal and checks its ownership before deletion. Successors keep
 their Gateway Deployment, identity, Service and policies.
 `apps/controller/src/worker.ts:ControllerWorker.processAgentDeletion` retires every
 version, then calls
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteAgentRuntimeCredentials`
 to delete exact-owned private and shared claims by UID across all selected targets,
-regardless of the Agent draft's mode. Cleanup retries precede database identity
+whatever the draft mode. Cleanup retries precede database identity
 removal.
 
 ## Debugging and Verification

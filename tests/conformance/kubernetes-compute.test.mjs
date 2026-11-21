@@ -272,12 +272,19 @@ import {
 import {
   checkContainmentRetirementRetry,
   checkContainmentStopOrder,
+  checkFailedHarnessStopEndsWait,
   checkForeignWorkloadPodRefusal,
   checkGatewayDrainYield,
+  checkOtherHarnessStopsDoNotWait,
   checkProviderStopTermination,
   checkRefusedCandidateStopOrder,
+  checkServingHarnessStopsAtOnce,
+  checkStartingHarnessStopBound,
+  checkStartingHarnessStopWaitsForServing,
+  checkStartingHarnessStopYields,
   checkStopPreservesReplacement,
   checkStopRetainsAgentStorage,
+  checkUnreadHarnessStopsAtOnce,
   lifecycleNamespaceReads,
 } from "./kubernetes-revision-stop-cases.ts";
 import {
@@ -7346,6 +7353,41 @@ test(
 test(
   "stopping a provider-owned Kubernetes revision waits for Sandbox workload termination",
   checkProviderStopTermination,
+);
+
+test(
+  "an ordinary stop lets a starting OpenShell Harness finish before its Sandbox is deleted",
+  checkStartingHarnessStopWaitsForServing,
+);
+
+test(
+  "an ordinary stop deletes an OpenShell Harness once it reports a held startup failure",
+  checkFailedHarnessStopEndsWait,
+);
+
+test(
+  "an ordinary stop deletes a serving OpenShell Harness at once",
+  checkServingHarnessStopsAtOnce,
+);
+
+test(
+  "a failed OpenShell Harness status read does not hold an ordinary stop",
+  checkUnreadHarnessStopsAtOnce,
+);
+
+test(
+  "the wait for a starting OpenShell Harness yields to due work",
+  checkStartingHarnessStopYields,
+);
+
+test(
+  "the wait for a starting OpenShell Harness ends 120 s after its first starting read",
+  checkStartingHarnessStopBound,
+);
+
+test(
+  "deleting an Agent and stopping a refused candidate do not wait for a starting Harness",
+  checkOtherHarnessStopsDoNotWait,
 );
 
 test("stop and retirement end credential-source access through Sandbox cleanup", async () => {

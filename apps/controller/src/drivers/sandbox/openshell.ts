@@ -637,10 +637,15 @@ function environment(
   return result;
 }
 
+/** The status read uses only the Harness port of its requirements, so a stop needs no others. */
+export type OpenShellHarnessStatusContext = Omit<SandboxHarnessStatusContext, "requirements"> & {
+  readonly requirements: Pick<HarnessWorkloadRequirements, "environment">;
+};
+
 // Served by a Codex Harness wrapper that holds a startup failure (runtime-entrypoints.ts).
 const HARNESS_RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
 
-function harnessPort(requirements: HarnessWorkloadRequirements): number {
+function harnessPort(requirements: Pick<HarnessWorkloadRequirements, "environment">): number {
   const entry = requirements.environment.find(
     (candidate) => candidate.name === APP_SERVER_PORT_ENVIRONMENT,
   );
@@ -4383,6 +4388,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
+    return this.readHarnessStatus(context);
+  }
+
+  /** The same read with only the Harness port of the requirements, as a stop knows them. */
+  async readHarnessStatus(context: OpenShellHarnessStatusContext): Promise<SandboxHarnessStatus> {
     context.signal.throwIfAborted();
     if (context.revision.harness.id === "openclaw" && context.workspaceNodeEnrolled === true) {
       // The exposure is withdrawn with enrollment, and nothing of Compute's listens there.
@@ -4467,7 +4477,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * dedicated OpenClaw worker has one because Compute asked for it. Anything else fails closed.
    */
   private async exactHarnessService(
-    context: SandboxHarnessContext,
+    context: OpenShellHarnessStatusContext | SandboxHarnessContext,
     operation: string,
   ): Promise<{
     readonly client: OpenShellGatewayClient;
