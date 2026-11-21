@@ -1638,8 +1638,6 @@ function validChannelDirectoryResult(value: unknown): value is ChannelDirectoryR
   return true;
 }
 
-// A rule about the request alone, checked before any ServiceAccount grant or lookup, so the text
-// is the same whether the named account exists (finding 2536).
 /**
  * Rejects requested Secret references (bindings and Harness authentication) that name
  * another Namespace. It compares only the request against its route Namespace, so it
