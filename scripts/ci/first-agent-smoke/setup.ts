@@ -3,6 +3,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { configureModelProviderDNS } from "../../../tests/helpers/runtime-model-provider.mjs";
+import { failureSecrets, redactedOutputTail } from "../failure-redaction.ts";
 import {
   minute,
   modelAddress,
@@ -175,10 +176,14 @@ export function watchCluster({ directory = workDirectory, intervalMs = 30_000 } 
   };
 }
 
-async function printWatchLog() {
+export async function printWatchLog(log = watchLog) {
   try {
-    const text = await readFile(watchLog, "utf8");
-    process.stdout.write(`----- cluster watch (last 60000 bytes)\n${text.slice(-60_000)}\n`);
+    const text = redactedOutputTail(
+      await readFile(log, "utf8"),
+      60_000,
+      failureSecrets([process.env]),
+    );
+    process.stdout.write(`----- cluster watch (last 60000 bytes)\n${text}\n`);
   } catch {
     process.stdout.write("----- cluster watch: nothing recorded\n");
   }

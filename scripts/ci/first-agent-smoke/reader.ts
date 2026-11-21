@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { PUBLIC_GITHUB_READ_SKILL } from "../../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
 import { installPublicGithubReadFixture } from "../../../tests/helpers/public-github-read-k3d.mjs";
+import { failureSecrets, redactedOutputTail } from "../failure-redaction.ts";
 import { compareEvents, eventObservedTime } from "../kubernetes-event-time.ts";
 import {
   log,
@@ -696,7 +697,8 @@ export async function diagnostics(stack: (LocalSetup & Partial<SmokeStack>) | un
   const attempt = async (label: string, operation: () => Promise<{ stdout: string }>) => {
     try {
       const result = await operation();
-      process.stdout.write(`----- ${label}\n${result.stdout.slice(-20_000)}\n`);
+      const shown = redactedOutputTail(result.stdout, 20_000, failureSecrets([process.env]));
+      process.stdout.write(`----- ${label}\n${shown}\n`);
     } catch (error) {
       process.stdout.write(
         `----- ${label} unavailable: ${(error as Error).message.slice(0, 500)}\n`,

@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type RequestListener } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { promisify } from "node:util";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { run } from "../../scripts/ci/first-agent-smoke/process.ts";
 import {
   STOP_PHASE_TIMEOUT_MS,
   agentStopDiagnostic,
@@ -19,8 +22,14 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.ts";
-import { withEnvironment } from "../helpers/environment.ts";
-import { commandPath } from "../helpers/fake-commands.ts";
+import {
+  assertAbsent,
+  cutCredentials,
+  cutOffsets,
+  registeredCutSecret,
+} from "../fixtures/cut-credentials.ts";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.ts";
 import {
   registerGitExpiryCase,
@@ -632,6 +641,98 @@ test("cluster events print oldest to newest by observed instant, whatever field 
     "2026-10-23T00:00:11.500000Z occ-agent Normal SeriesLatest Pod/harness-0 x4: SeriesLatest message",
     "2026-10-23T00:00:12.000001Z occ-agent Normal Newest Pod/harness-0: Newest message",
   ]);
+});
+
+// Output whose last `limit` characters start `offset` characters into `text`, followed by every
+// fixture credential uncut and by plain filler that fills the window.
+function cutOutput(text: string, offset: number, limit: number) {
+  const whole = cutCredentials.map((credential) => `uncut ${credential.text}`).join("\n");
+  const rest = `${text.slice(offset)} end\n${whole}\n`;
+  const filler = "filler ".repeat(Math.ceil(limit / 7)).slice(0, limit - rest.length - 1);
+  return `earlier line\nfixture prefix ${text.slice(0, offset)}${rest}${filler}\n`;
+}
+
+// The First Agent Smoke prints these tails to the public job log. Each must mask a credential
+// whole and must not show the piece left where the tail starts inside one.
+async function assertTailsRedacted(
+  t: TestContext,
+  limit: number,
+  shown: (output: string) => Promise<string>,
+) {
+  setEnvironment(t, { OCE_SMOKE_FIXTURE_REGISTERED: registeredCutSecret });
+  for (const credential of cutCredentials) {
+    for (const offset of cutOffsets(credential.text)) {
+      const text = await shown(cutOutput(credential.text, offset, limit));
+      const label = `${credential.name} cut ${offset} in`;
+      assert.match(text, /filler filler/u, `${label} keeps the rest of the tail`);
+      for (const value of cutCredentials) {
+        assertAbsent(text, value.secret, `${label}: ${value.name}`);
+      }
+    }
+  }
+}
+
+// Calls a smoke module's function in a new Node process, as the CI step does, and returns what
+// it wrote to the job log.
+async function smokeStdout(module: string, call: string, env: NodeJS.ProcessEnv = process.env) {
+  const url = new URL(`../../scripts/ci/first-agent-smoke/${module}`, import.meta.url).href;
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `const m = await import(${JSON.stringify(url)}); await m.${call};`,
+    ],
+    { env, maxBuffer: 16 * 1024 * 1024 },
+  );
+  return stdout;
+}
+
+test("a failed command's error message redacts its stderr tail from a whole line", async (t) => {
+  await assertTailsRedacted(t, 4_000, async (output) => {
+    const failure = await run(
+      process.execPath,
+      ["-e", "process.stderr.write(require('node:fs').readFileSync(0, 'utf8')); process.exit(3)"],
+      { input: output },
+    ).then(
+      () => assert.fail("the command must fail"),
+      (error: unknown) => error as Error,
+    );
+    assert.match(failure.message, /exited 3\n/u);
+    return failure.message;
+  });
+});
+
+test("diagnostics redact command output in the job log from a whole line", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-diagnostics-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const output = join(directory, "output");
+  // The stand-in provider's `docker logs` is the read diagnostics makes before any cluster exists.
+  await writeCommand(
+    directory,
+    "docker",
+    `process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(output)}, "utf8"));`,
+    { interpreter: process.execPath },
+  );
+  await assertTailsRedacted(t, 20_000, async (text) => {
+    await writeFile(output, text);
+    const printed = await smokeStdout("reader.ts", "diagnostics(undefined)", {
+      ...process.env,
+      PATH: commandPath(directory),
+    });
+    assert.match(printed, /----- stand-in provider events\n/u);
+    return printed;
+  });
+});
+
+test("the cluster watch log after a failed setup is redacted from a whole line", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-watch-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const log = join(directory, "cluster-watch.log");
+  await assertTailsRedacted(t, 60_000, async (text) => {
+    await writeFile(log, text);
+    return smokeStdout("setup.ts", `printWatchLog(${JSON.stringify(log)})`);
+  });
 });
 
 registerImageCases();
