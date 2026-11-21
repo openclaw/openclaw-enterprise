@@ -56,13 +56,6 @@ const podContainersSpec = Type.Object({
   template: Type.Object({ spec: Type.Object({ containers: Type.Array(Type.Unknown()) }) }),
 });
 const bootstrapContainer = Type.Object({ env: namedEnvironment });
-const jobVolumesSpec = Type.Object({
-  template: Type.Object({
-    spec: Type.Object({
-      volumes: Type.Array(Type.Object({ persistentVolumeClaim: Type.Optional(Type.Unknown()) })),
-    }),
-  }),
-});
 const jobTemplateLabelsSpec = Type.Object({
   template: Type.Object({ metadata: Type.Object({ labels }) }),
 });
@@ -1032,27 +1025,38 @@ export async function checkInitializationHookNames(t: TestContext): Promise<void
 }
 
 export async function checkRetiredBootstrapOutputs(): Promise<void> {
-  // Earlier charts refused to render without bootstrap.password.claimName, so an existing
-  // installation's own values still carry these keys when it upgrades.
-  const retired = {
-    "bootstrap.credentials.secretName": "",
-    "bootstrap.password.claimName": "bootstrap-password",
-    "bootstrap.serviceKey.fileName": "initial-admin-service-key.json",
-  };
-  const objects = await renderObjects(retired, { isUpgrade: true });
-  const initializerPod = resourceSpec(
-    objects.find(({ kind }) => kind === "Job"),
-    jobVolumesSpec,
-  ).template.spec;
-  assert.ok(!initializerPod.volumes.some(({ persistentVolumeClaim }) => persistentVolumeClaim));
-  // A fresh install still has to name the precreated credentials Secret.
-  await assert.rejects(render(retired), (error: unknown) => {
-    const stderr = asRecord(error)?.stderr;
-    return (
-      typeof stderr === "string" &&
-      /bootstrap\.credentials\.secretName must reference a precreated Secret/.test(stderr)
-    );
+  const credentials = { "bootstrap.credentials.secretName": "occ-bootstrap-credentials" };
+  const password = { "bootstrap.password.claimName": "bootstrap-password" };
+  const serviceKey = { "bootstrap.serviceKey.fileName": "initial-admin-service-key.json" };
+
+  // Supply a valid Secret so only the retired setting can cause each refusal.
+  await assert.rejects(render({ ...credentials, ...password }), {
+    stderr: /bootstrap\.password is removed\. Use bootstrap\.credentials\.secretName/,
   });
+  await assert.rejects(render({ ...credentials, ...serviceKey }), {
+    stderr: /bootstrap\.serviceKey is removed\. Use bootstrap\.credentials\.secretName/,
+  });
+
+  // A legacy release retains both settings and has no credentials Secret configured.
+  const legacy = { "bootstrap.credentials.secretName": "", ...password, ...serviceKey };
+  for (const isUpgrade of [false, true]) {
+    const objects = await renderObjects(isUpgrade ? legacy : credentials, { isUpgrade });
+    const { initialization, api, worker } = controlPlaneWorkloads(objects);
+    assert.ok(initialization && api && worker, "Expected the initializer, API and worker");
+    // The initializer is a hook, not part of Helm's ordinary saved manifest.
+    assert.equal(
+      asRecord(asRecord(initialization.metadata)?.annotations)?.["helm.sh/hook"],
+      "pre-install,pre-upgrade",
+    );
+    for (const object of objects) {
+      const resource = `${isUpgrade ? "upgrade" : "install"} ${object.kind}/${object.metadata.name}`;
+      assert.notEqual(object.kind, "PersistentVolumeClaim", `${resource} creates a PVC`);
+      assert.ok(
+        !JSON.stringify(object).includes('"persistentVolumeClaim":'),
+        `${resource} references a PVC`,
+      );
+    }
+  }
 }
 
 export async function checkPackagedProductionChart(): Promise<void> {
