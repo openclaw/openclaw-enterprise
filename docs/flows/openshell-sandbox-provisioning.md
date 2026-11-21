@@ -1,14 +1,14 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-19"
-last_updated_session: "authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-For service integration, see [managed provisioning](openshell-managed-workload.md).
+See [managed service provisioning](openshell-managed-workload.md).
 
 ## Entry Points
 
@@ -135,9 +135,9 @@ See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
 
 ### 0.1. Check Harness mode support
 
-Before Agent writes transform Configuration, `packages/occ/src/index.ts:admitsOpenClawExecutionMode`
+Before Configuration writes, `packages/occ/src/agent-harness-topology.ts:admitsOpenClawExecutionMode`
 checks `supportsHarnessExecutionMode` from `apps/controller/src/drivers/sandbox/openshell.ts:constructor`,
-native-worker support and provisioning requirements. Status reads the deployed revision's stored result.
+native-worker support and provisioning. Status reads the stored revision result.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
@@ -420,6 +420,7 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
 
 - 2026-11-19 09:27: Trace the packaged tool grant and exact Sandbox adoption. (authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a - ec602263727fa848a921a86d755cb38293bfab76)

@@ -87,9 +87,10 @@ Driver's interface, request, context, and result types. The root `index.ts` reta
 shared resource definitions and the public package exports.
 
 Within `packages/occ/src/`, `index.ts` defines the package exports and
-implements the public controller methods. `controller-composition.ts` assembles
-the operations and shared services for one controller. `ports/` owns the repository
-and transaction contracts. `state/` holds the in-memory and PostgreSQL implementations.
+`controller.ts` implements the public controller methods. `controller-composition.ts`
+assembles the operations and shared services for one controller. `ports/` owns
+the repository and transaction contracts. `state/` holds the in-memory and
+PostgreSQL implementations.
 `controller-work.ts` owns queued operation records and keys.
 `controller-work-result.ts` validates result data for storage and disclosure.
 `deployment-work-status.ts` derives deployment status, progress, and messages from queued operations.

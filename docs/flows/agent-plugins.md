@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-20
-last_updated_session: authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Agent Plugin Deployment Flow
@@ -14,10 +14,10 @@ OCC validates selections and snapshots the Driver and policy at deployment. The 
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-- Trigger: Agent create/update with `plugins`, then deployment.
+- Trigger: Save `plugins`, then deploy.
 - Requires Agent permission, valid selections and a compatible PluginDriver.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
-  [OpenClawController](../../packages/occ/src/index.ts), and
+  [OpenClawController](../../packages/occ/src/controller.ts), and
   [bundled PluginDrivers](../../apps/controller/src/drivers/plugin/index.ts).
 
 ## Flow
@@ -99,7 +99,7 @@ Details reject unmatched MCP/scheduled tasks. Optional stdio
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-HTTP validates input. [OCC](../../packages/occ/src/index.ts) checks the exact
+HTTP validates input. [OCC](../../packages/occ/src/agent-drafts.ts) checks the exact
 Namespace and Agent (`read` for reads). Create/PATCH saves `plugins` and Driver
 identity. Updates atomically save state and audit evidence. Omitted selections
 persist, `{}` clears them, and nonempty maps replace them. Clear selections with
@@ -132,11 +132,11 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 ### 2. Admit an immutable plugin deployment
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-At save and deployment, the OpenClaw Driver's
+At save and deploy, the OpenClaw
 [credential validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts)
-passes the admitted plugin identity and connections to
+passes plugin identity and connections to
 [`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts), then
 checks the returned connections against OCC-authorized sources. The description
 lists required network access; each connection identifies only requests eligible
@@ -387,6 +387,7 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:13: Update discovery source. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
 
 - 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)

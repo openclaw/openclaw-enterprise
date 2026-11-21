@@ -1,17 +1,17 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-13
-last_updated_session: authoring-run/6f9b8960-1432-46e9-97af-330142c01422
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Agent provisioning flow
 
 ## Overview
 
-Console saves Slack/model Secrets and submits inline Configuration, credential references
-and retained Preset bindings. OCC queues setup without placeholders. The worker creates
-Configuration/Agent, grants exact credential access and admits the first deployment.
-Its handle follows activation or failure; later deployments use separate handles.
+Console saves Slack/model Secrets and submits inline Configuration, credential
+references and retained Preset bindings. OCC queues setup without placeholders.
+The worker creates both, grants access and admits deployment.
+The handle tracks activation or failure. Later deployments use separate handles.
 See [worker reconciliation](controller-worker.md) and [Harness topology](harness-execution-topology.md).
 
 ## Entry Points
@@ -181,7 +181,7 @@ Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime declares native support;
 custom images still require an operator declaration in
 [Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
-`packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
+`packages/occ/src/agent-harness-topology.ts:requireDedicatedNativeSupport` enforces them.
 Admission does not prove workload delivery. Sandbox receives the setup identity and Secret
 reference through `HarnessWorkloadRequirements.workspaceSetup`; OpenShell runs
 [workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution)
@@ -238,6 +238,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
 
 - 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)

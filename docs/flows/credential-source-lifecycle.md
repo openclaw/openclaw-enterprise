@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-20"
-last_updated_session: "authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Credential source lifecycle flow
@@ -60,7 +60,7 @@ OCC authorizes `credential_source:update`, locks a ready source, and validates r
 
 OCC checks `credential_source:operate` for existing bindings without requiring a lookup, so a caller can remove an obsolete binding. New bindings require a ready same-Namespace source and its recorded owner. Harness authentication requires the legacy Credential Gateway. PostgreSQL records Agent/source references and prevents deletion while referenced.
 
-`packages/occ/src/index.ts:deployAgent`, `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`, `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable`
 
 OCC rechecks the caller's and Agent's source grants, requires a Sandbox and an offered owner type, then freezes source ID, type, owner Driver, and Harness login mode in the Agent revision. A selected Proxy cannot replace a withdrawn Gateway type or change an existing source's owner. State rejects stale or forged snapshots; PostgreSQL holds ordered Namespace, Agent, and source locks through commit. Compute accepts only supported Harness/Driver pairings and sends no model Secret to the workload.
 
@@ -105,6 +105,7 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:33: Point Harness binding and snapshot checks to their source module. (authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1 - 56b116735a3a38a48eff35bf36152d3032b1d7d3)
 
 - 2026-11-20 10:13: Name the serving protected source owner as the legacy egress Driver. (01a1f7ec-0d9e-7803-96c3-eb88548e3788 - b02e93892)

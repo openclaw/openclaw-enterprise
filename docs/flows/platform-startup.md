@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
 updated: 2026-11-20
-last_updated_session: authoring-run/38e2165b-e5b2-4007-92cf-748673a94e25
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Platform Startup Flow
@@ -171,7 +171,7 @@ The production and configured PostgreSQL development APIs pass the resolved
 `drivers.credential_proxy.requestCapacity` to the `OpenClawController` constructor.
 `packages/occ/src/controller-composition.ts:createControllerComposition` validates
 the limits again. When a protected Driver is selected, `installEgressAuthority`
-calls `packages/occ/src/index.ts:OpenClawController.createCredentialProxy` to build
+calls `packages/occ/src/controller.ts:OpenClawController.createCredentialProxy` to build
 the exchange registry with those limits. The worker validates the setting when
 loading Installation configuration and uses the default capacity for its
 provisioning controller. See the
@@ -289,6 +289,7 @@ execution begins in the adjacent
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 18:44: Update controller construction sources. (authoring-run/38e2165b-e5b2-4007-92cf-748673a94e25 - 261eb78aef5e3ae3b61bb0a0ea7e0583b5e59371)
 - 2026-11-18 01:13: Record release-metadata refusal before the migration connection. (authoring-run/9a169618-9c17-48f1-927c-556605a302b2 - 254d0a96f86744b23f2394d233f0d7728480e844)
 

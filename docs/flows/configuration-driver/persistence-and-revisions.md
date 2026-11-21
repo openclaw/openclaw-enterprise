@@ -34,7 +34,7 @@ Kubernetes, this check refuses unsupported channels, model credentials outside t
 authentication binding, and model selections or provider `apiKey`s off the
 primary model's provider. Configuration create and update, Agent provisioning and
 Preset save run this one set (`validateConfigurationContent` in
-[OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
+[OCC](../../../packages/occ/src/configuration-operations.ts)); a Preset value that waits on a
 variable is checked as far as its written text goes, and in full once filled.
 Preset save skips the catalog and runtime checks; its launch's Configuration runs them.
 Create, update and provisioning first ask the Driver's optional
