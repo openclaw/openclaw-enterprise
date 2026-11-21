@@ -5,7 +5,11 @@ import test from "node:test";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import type { PlatformOperation, PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
+import type {
+  PlatformOperation,
+  PlatformStateStore,
+  PlatformUnitOfWork,
+} from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -283,8 +287,16 @@ test("an Agent principal's deploy refusal names its bound Secret only to a calle
 });
 
 test("a staged credential source refuses an ungranted Agent principal before revision delivery", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { recordOperations: true });
+  let sourceState: PlatformStateStore | undefined;
+  const fixture = await createConsoleAppFixture(t, {
+    recordOperations: true,
+    wrapState: (state: PlatformStateStore) => {
+      sourceState = state;
+      return state;
+    },
+  });
   await fixture.bootstrap();
+  assert.ok(sourceState);
   const namespace = await fixture.createNamespace("Staged principal denial", { ready: true });
   const { driver } = useInstallationSecretDriver(fixture.controller);
   assert.ok(driver.installationSecrets);
@@ -297,6 +309,7 @@ test("a staged credential source refuses an ungranted Agent principal before rev
     fixture.controller.installation.id,
     driver.installationSecrets,
     instanceId,
+    sourceState,
   );
   fixture.controller.registerDriver(owner);
   fixture.controller.selectDriver("token_service", owner.id);

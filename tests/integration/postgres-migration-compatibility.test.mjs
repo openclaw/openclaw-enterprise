@@ -1470,8 +1470,9 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preRepositoryNetworkPolicy"],
-      [86, "preNativeGitDelivery"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preRepositoryNetworkPolicy"],
+      [87, "preNativeGitDelivery"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1658,14 +1659,14 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "egress_repository_policy", { prefix: 85 });
+    const db = await historyDatabase(context, fixture, "egress_repository_policy", { prefix: 86 });
     const namespace = `ns_${randomUUID()}`;
     const { agent, revision } = await seedCanonicalAgent(db, namespace, {
       computeAdmission: true,
       executionAdmission: true,
       harnessSettings: true,
     });
-    // Model a completed registration with opaque custody metadata and no secret material.
+    // Model a static source owned by the registered Token Service instance.
     const installation = `ins_${randomUUID()}`;
     const instance = randomUUID();
     await db.app.query(
@@ -1680,9 +1681,9 @@ test(
     await db.app.query(
       `INSERT INTO occ.credential_sources(
         id,namespace_id,name,type,config,owner_capability,state,created_at,
-        token_service_instance_id,registration,registration_dispatched_at
-      ) VALUES($1,$2,'Registered source','static','{}','token_service','ready',now(),$3,$4,now())`,
-      [`cs_${randomUUID()}`, namespace, instance, { backendRef: { key: "fixture-registration" } }],
+        token_service_instance_id
+      ) VALUES($1,$2,'Registered source','static','{}','token_service','ready',now(),$3)`,
+      [`cs_${randomUUID()}`, namespace, instance],
     );
     const successor = `rev_${randomUUID()}`;
     await db.app.query(
@@ -1741,9 +1742,8 @@ test(
     assert.equal(staticMetadata.instances.length, 1);
     assert.equal(staticMetadata.sources.length, 1);
     assert.equal(staticMetadata.sources[0].token_service_instance_id, instance);
-    assert.deepEqual(staticMetadata.sources[0].registration, {
-      backendRef: { key: "fixture-registration" },
-    });
+    assert.equal(staticMetadata.sources[0].owner_capability, "token_service");
+    assert.equal(staticMetadata.sources[0].driver_id, null);
     const before = await historySnapshot(db);
     const stockArchive = await dumpHistoryArchive(fixture, db);
     assert.deepEqual(
@@ -1753,7 +1753,7 @@ test(
         [revision, true],
       ],
     );
-    assert.equal(before.receipts.length, 85);
+    assert.equal(before.receipts.length, 86);
     assert.deepEqual(await runHistoryCommand(db, "production", "--check"), {
       ok: true,
       history: "preRepositoryNetworkPolicy",
@@ -1768,7 +1768,7 @@ test(
     assert.deepEqual(await readPolicy(), policy);
     assert.deepEqual(await readStatic(), staticMetadata);
 
-    // The archived 0085 database has the same official receipts and qualified restore catalog.
+    // The archived 0086 database has the same official receipts and qualified restore catalog.
     const upgraded = await restoreHistoryArchive(context, fixture, stockArchive);
     const restoredReceipts = await historyReceipts(upgraded.migrator);
     assert.deepEqual(restoredReceipts, before.receipts);
@@ -1921,8 +1921,9 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preRepositoryNetworkPolicy"],
-      [86, "preNativeGitDelivery"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preRepositoryNetworkPolicy"],
+      [87, "preNativeGitDelivery"],
     ]);
     for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
@@ -2231,8 +2232,9 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preRepositoryNetworkPolicy"],
-      [86, "preNativeGitDelivery"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preRepositoryNetworkPolicy"],
+      [87, "preNativeGitDelivery"],
     ])) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2343,7 +2345,7 @@ test(
     });
     assert.deepEqual(await runHistoryCommand(upgraded, "production"), {
       ok: true,
-      history: "preRepositoryNetworkPolicy",
+      history: "preTokenServiceSourceOwnership",
     });
     const current = await logicalRestoreSnapshot(upgraded);
     assert.deepEqual(current.receipts, native.receipts);
@@ -2456,8 +2458,9 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preRepositoryNetworkPolicy"],
-      [86, "preNativeGitDelivery"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preRepositoryNetworkPolicy"],
+      [87, "preNativeGitDelivery"],
     ])) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2485,8 +2488,9 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [86, "CREATE FUNCTION"],
-                [85, "CREATE TRIGGER"],
+                [87, "CREATE FUNCTION"],
+                [86, "CREATE TRIGGER"],
+                [85, "ALTER TABLE"],
                 [84, "GRANT"],
                 [83, "GRANT"],
                 [82, "CREATE TRIGGER"],
@@ -2515,14 +2519,14 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
-        } else if (prefix === 85) {
-          // Abort 0086 after it has installed the new reader-version constraint.
+        } else if (prefix === 86) {
+          // Abort 0087 after it has installed the new reader-version constraint.
           failAt = `IF NOT EXISTS (
             SELECT 1 FROM pg_constraint WHERE conrelid='occ.agent_revisions'::regclass
             AND conname='agent_revisions_repository_policy_reader_version'
           ) THEN RETURN; END IF;`;
-        } else if (prefix === 86) {
-          // Abort 0087's final function replacement after the validator and constraint exist.
+        } else if (prefix === 87) {
+          // Abort 0088 after the validator and replacement constraint are installed.
           failAt =
             "IF to_regprocedure('occ.repository_git_network_admission_is_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix >= 58) {
@@ -2787,30 +2791,83 @@ test(
         await assertHistoryRefused(db);
       });
     }
-    void context.test(
-      "unpublished repository policy at occupied migration slot 85",
-      async (child) => {
-        const db = await historyDatabase(child, fixture, "repository_policy_preview");
-        const journal = JSON.parse(
-          await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
+    for (const slot of [85, 86]) {
+      void context.test(
+        `unpublished repository policy at occupied migration slot ${slot}`,
+        async (child) => {
+          const db = await historyDatabase(child, fixture, "repository_policy_preview");
+          const journal = JSON.parse(
+            await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
+          );
+          // Apply the exact policy SQL with the occupied timestamp, as the preview did.
+          const policy = journal.entries[86];
+          const stock = journal.entries[slot - 1];
+          const entries = [
+            ...journal.entries.slice(0, slot - 1),
+            { ...policy, idx: stock.idx, when: stock.when },
+          ];
+          await installCanonicalPrefix(db, entries.length, { entries });
+          const before = await historySnapshot(db);
+          assert.equal(before.receipts.length, slot);
+          assert.equal(Number(before.receipts.at(-1).created_at), stock.when);
+          assert.equal(before.receipts.at(-1).hash, manifest.entries[86].sha256);
+          assert.notEqual(before.receipts.at(-1).hash, manifest.entries[slot - 1].sha256);
+          await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+          if (slot === 86) {
+            // Both migrations applied, but in the opposite order. Even a matching
+            // end schema cannot certify the sequence of writes on this installation.
+            entries.push({ ...stock, idx: policy.idx, when: policy.when });
+            await installCanonicalPrefix(db, entries.length, { entries });
+            const swapped = await historyReceipts(db.migrator);
+            assert.equal(swapped.length, 87);
+            assert.equal(swapped.at(-1).hash, manifest.entries[85].sha256);
+            await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+          }
+        },
+      );
+    }
+    void context.test("premerge repository ACL and native Git receipts", async (child) => {
+      // Build the old two-migration lineage with its actual SQL before testing
+      // the reader. A receipt edit alone would not reproduce its catalog.
+      const db = await historyDatabase(child, fixture, "oldnative", { prefix: 85 });
+      const directory = await mkdtemp(join(tmpdir(), "openclaw-premerge-native-"));
+      const current = manifest.entries.slice(-2);
+      assert.deepEqual(
+        current.map(({ tag }) => tag),
+        ["0087_repository_network_policy", "0088_native_git_delivery"],
+      );
+      const entries = current.map(({ tag, idx, when, sha256: _sha256, ...entry }) => ({
+        ...entry,
+        idx: idx - 1,
+        when: when - 1,
+        tag: idx === 87 ? "0086_repository_network_policy" : "0087_native_git_delivery",
+      }));
+      try {
+        await mkdir(join(directory, "meta"));
+        await Promise.all(
+          entries.map(async ({ tag }, index) => {
+            const bytes = await readFile(join(migrationsDirectory, current[index].tag + ".sql"));
+            assert.equal(createHash("sha256").update(bytes).digest("hex"), current[index].sha256);
+            await writeFile(join(directory, `${tag}.sql`), bytes);
+          }),
         );
-        // This preview applied the identical repository policy SQL at slot 85.
-        // Its receipt count and timestamp match the official static-source release.
-        const policy = journal.entries[85];
-        const stock = journal.entries[84];
-        const entries = [
-          ...journal.entries.slice(0, 84),
-          { ...policy, idx: stock.idx, when: stock.when },
-        ];
-        await installCanonicalPrefix(db, entries.length, { entries });
-        const before = await historySnapshot(db);
-        assert.equal(before.receipts.length, 85);
-        assert.equal(Number(before.receipts.at(-1).created_at), stock.when);
-        assert.equal(before.receipts.at(-1).hash, manifest.entries[85].sha256);
-        assert.notEqual(before.receipts.at(-1).hash, manifest.entries[84].sha256);
-        await assertHistoryRefused(db, /applied receipts differ from canonical history/);
-      },
-    );
+        await writeFile(
+          join(directory, "meta/_journal.json"),
+          JSON.stringify({ version: "7", dialect: "postgresql", entries }),
+        );
+        await migrate(drizzle(db.migrator), { migrationsFolder: directory });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+      const before = await historySnapshot(db);
+      assert.equal(before.receipts.length, 87);
+      assert.deepEqual(
+        before.receipts.slice(-2).map(({ hash, created_at }) => [hash, Number(created_at)]),
+        current.map(({ sha256, when }) => [sha256, when - 1]),
+      );
+      await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+    });
+
     void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");
       const journal = JSON.parse(
