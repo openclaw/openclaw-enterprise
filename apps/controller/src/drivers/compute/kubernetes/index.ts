@@ -16257,7 +16257,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     context: { readonly executionMode: HarnessExecutionMode; readonly channelsEnabled: boolean },
   ): Promise<string> {
     if (!this.channelEgress || !this.options.runtime || this.options.executionCluster) {
-      throw new ConfigurationFailure("Gateway channel Network proxy routing is unavailable.");
+      throw new ConfigurationHarnessError(
+        "The selected Compute topology does not support Gateway channel proxy routing. Select a supported topology.",
+      );
     }
     return this.channelEgress.admitProxy(selection, context);
   }

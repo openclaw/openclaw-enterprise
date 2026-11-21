@@ -15,6 +15,7 @@ import {
   DependencyUnavailableError,
   NetworkProxySecretDriverError,
   NetworkProxyValidationError,
+  NetworkProxyEnforcementUnavailableError,
   ScopeViolationError,
   type SecretDriverOwnershipError,
 } from "./errors.ts";
@@ -51,10 +52,11 @@ export async function admitNetworkProxy(
       throw new Error("Missing admission.");
     }
     return admission;
-  } catch {
-    throw new ConfigurationHarnessError(
-      "The Network proxy selection is not supported by the selected Compute configuration.",
-    );
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError) {
+      throw error;
+    }
+    throw new NetworkProxyEnforcementUnavailableError();
   }
 }
 

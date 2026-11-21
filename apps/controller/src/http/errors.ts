@@ -16,6 +16,7 @@ import {
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   NetworkProxyValidationError,
+  NetworkProxyEnforcementUnavailableError,
   ConfigurationSizeError,
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
@@ -926,6 +927,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof NotImplementedError) {
     return failure(501, "NOT_IMPLEMENTED", error.message);
+  }
+  if (error instanceof NetworkProxyEnforcementUnavailableError) {
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
   if (error instanceof PostgresCommitOutcomeUnknownError) {
     return failure(

@@ -711,4 +711,35 @@ export async function verifyPlatformStateTransactions(
       ),
     );
   });
+
+  // Both storage adapters must retain the private Compute admission for a selected proxy.
+  const proxyConfiguration = { ...configuration, id: identifier("cfg") };
+  const networkProxy = { url: "https://proxy.example:8443" };
+  const proxyAgent = {
+    ...agent,
+    id: identifier("agt"),
+    name: `Proxy owner ${randomUUID()}`,
+    configurationId: proxyConfiguration.id,
+    servicePrincipalId: identifier("service-agent"),
+    networkProxy,
+  };
+  const proxyRevision = {
+    ...revision,
+    id: identifier("rev"),
+    agentId: proxyAgent.id,
+    configurationId: proxyConfiguration.id,
+    servicePrincipalId: proxyAgent.servicePrincipalId,
+    networkProxy,
+    compute: { ...revision.compute, networkProxyAdmission: "private-admission" },
+  };
+  await store.transact(async (transaction) => {
+    await transaction.configurations.createConfiguration(proxyConfiguration, {});
+    await transaction.agents.createAgent(proxyAgent);
+    await transaction.revisions.createRevision(proxyRevision);
+  });
+  await store.read(async ({ revisions }) => {
+    const saved = await revisions.findRevision(namespace.id, proxyAgent.id, proxyRevision.id);
+    assert.deepEqual(saved?.networkProxy, networkProxy);
+    assert.equal(saved?.compute.networkProxyAdmission, "private-admission");
+  });
 }

@@ -39,6 +39,49 @@ test(
     const namespaceId = agent.namespaceId;
     const agentPath = `/namespaces/${namespaceId}/agents/${agent.id}`;
     const previousRevisionId = initialRevision.id;
+    const unsupported = await topology.request("PATCH", agentPath, {
+      networkProxy: { url: "http://unconfigured.example:8080" },
+    });
+    assert.equal(unsupported.status, 400);
+
+    // A configured endpoint is not invalid input when its enforcement fleet is unavailable.
+    const fleet = topology.channelEgress!;
+    const selector = `gateway.envoyproxy.io/owning-gateway-name=${fleet.gatewayName}`;
+    const deployments = JSON.parse(
+      await kubectl("get", "deployments", "-n", fleet.envoyNamespace, "-l", selector, "-o", "json"),
+    );
+    assert.equal(deployments.items.length, 1);
+    const deployment = deployments.items[0].metadata.name as string;
+    let fleetStopped = false;
+    const restoreFleet = async () => {
+      if (!fleetStopped) {
+        return;
+      }
+      await kubectl("scale", "deployment", deployment, "-n", fleet.envoyNamespace, "--replicas=1");
+      await kubectl(
+        "rollout",
+        "status",
+        `deployment/${deployment}`,
+        "-n",
+        fleet.envoyNamespace,
+        "--timeout=120s",
+      );
+      fleetStopped = false;
+    };
+    context.after(restoreFleet);
+    fleetStopped = true;
+    await kubectl("scale", "deployment", deployment, "-n", fleet.envoyNamespace, "--replicas=0");
+    await waitFor("channel Envoy fleet to stop", async () => {
+      const pods = JSON.parse(
+        await kubectl("get", "pods", "-n", fleet.envoyNamespace, "-l", selector, "-o", "json"),
+      );
+      return pods.items.length === 0;
+    });
+    const unavailable = await topology.request("PATCH", agentPath, { networkProxy: { url } });
+    assert.equal(unavailable.status, 503);
+    assert.equal(unavailable.error?.code, "DEPENDENCY_UNAVAILABLE");
+    assert.match(unavailable.error?.message ?? "", /Retry.*Installation administrator/);
+    await restoreFleet();
     const password = randomBytes(18).toString("hex");
     const authorization = proxy.authorization;
     const created = await topology.adminRequest("POST", `/namespaces/${namespaceId}/secrets`, {
