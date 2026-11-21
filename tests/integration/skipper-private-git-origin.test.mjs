@@ -71,6 +71,21 @@ function api(
   });
 }
 
+test("private origin reports a denied process-group probe before starting Git", async (t) => {
+  const kill = process.kill;
+  t.mock.method(process, "kill", (pid, signal) => {
+    if (pid < -1 && signal === 0) {
+      throw Object.assign(new Error("restricted runner detail"), { code: "EPERM" });
+    }
+    return kill(pid, signal);
+  });
+  // Invalid Git syntax makes the first command fail if startup reaches it.
+  await assert.rejects(startSkipperPrivateGitOrigin({ approvalRef: "refs/heads/invalid.." }), {
+    message:
+      "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.",
+  });
+});
+
 test("private Git witness remains reachable from direct and nested temporary roots", async (t) => {
   const shortRoot = await mkdtemp("/tmp/skipper-test-");
   t.after(() => rm(shortRoot, { recursive: true, force: true }));
