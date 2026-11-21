@@ -2,8 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 import {
   isSecretHarnessAuth,
   type Agent,
-  type AuthorizationDecision,
-  type AuthorizationRequest,
   type Configuration,
   type CredentialGatewayDriver,
   type CredentialSource,
@@ -17,14 +15,14 @@ import {
   type PluginDesiredState,
   type PluginDiscoveryAuthentication,
   type PluginDriver,
-  type ResourceRef,
   type RevisionHarnessDescriptor,
-  type Secret,
   type SecretDriver,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
   AgentDeletingError,
   ConfigurationHarnessError,
@@ -37,6 +35,10 @@ import {
   ScopeViolationError,
   SecretBindingValidationError,
 } from "./errors.ts";
+import type { ConfigurationOwnership } from "./ports/configurations.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
+import { exactAgent, exactNamespace } from "./resource-scope.ts";
+import { secretOperation } from "./secret-operations.ts";
 
 export type PluginDiscoveryCredential = {
   readonly accessToken?: string;
@@ -55,43 +57,11 @@ export type ManagedMcpToolReader = (
   signal?: AbortSignal,
 ) => Promise<ReadonlySet<string>>;
 
-type ConfigurationMetadata = Pick<
-  Configuration,
-  "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
->;
-
 type PluginHarness = Pick<RevisionHarnessDescriptor, "id" | "mode">;
 
-interface PluginDiscoveryReadView {
-  exactNamespace(namespaceId: string): Promise<Readonly<Namespace>>;
-  exactAgent(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<{ namespace: Readonly<Namespace>; agent: Readonly<Agent> }>;
-  findConfiguration(
-    namespaceId: string,
-    configurationId: string,
-  ): Promise<Readonly<ConfigurationMetadata> | undefined>;
-  findCredentialSource(
-    namespaceId: string,
-    sourceId: string,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  findSecret(namespaceId: string, secretId: string): Promise<Readonly<Secret> | undefined>;
-}
-
 interface PluginDiscoveryDependencies {
-  readonly read: <T>(use: (view: PluginDiscoveryReadView) => Promise<T>) => Promise<T>;
-  readonly authorize: (
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    resource: ResourceRef,
-  ) => Promise<unknown>;
-  readonly authorizationDecision: (
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    resource: ResourceRef,
-  ) => Promise<{ readonly decision: AuthorizationDecision }>;
-  readonly canRead: (principalId: string, resource: ResourceRef) => Promise<boolean>;
+  readonly transactions: Pick<ControllerTransactions, "read">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "authorizationDecision" | "canRead">;
   readonly authorizedCredentialSource: (
     principalId: string,
     namespaceId: string,
@@ -108,8 +78,9 @@ interface PluginDiscoveryDependencies {
       }
     | undefined;
   readonly secretDriver: (driverId: string) => SecretDriver;
-  readonly secretOperation: <T>(operation: () => Promise<T>) => Promise<T>;
-  readonly readConfiguration: (metadata: ConfigurationMetadata) => Promise<Readonly<Configuration>>;
+  readonly readConfiguration: (
+    metadata: ConfigurationOwnership,
+  ) => Promise<Readonly<Configuration>>;
   readonly modelPolicyAgent: (executionMode: HarnessExecutionMode) => ModelPolicyAgent;
   readonly pluginDriver: (harnessId: string) => PluginDriver;
   readonly assertPluginOwner: (driver: PluginDriver, agent: Readonly<Agent>) => void;
@@ -208,6 +179,9 @@ async function invokePluginDiscovery<T>(
 }
 
 export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies) {
+  const { read } = dependencies.transactions;
+  const { authorize, authorizationDecision, canRead } = dependencies.authority;
+
   async function discoverAgentPlugins(
     principalId: string,
     namespaceId: string,
@@ -273,8 +247,8 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     ) => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
   ): Promise<T> {
     const agentScope = { kind: "agent" as const, id: namespaceId, namespaceId };
-    await dependencies.authorize(principalId, "create", agentScope);
-    await dependencies.read((state) => state.exactNamespace(namespaceId));
+    await authorize(principalId, "create", agentScope);
+    await read((state) => exactNamespace(state, namespaceId));
     const getDriver = () => dependencies.pluginDriver(input.harnessId);
     return withPluginDiscoveryCredential(
       principalId,
@@ -284,11 +258,11 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       prepareDiscovery,
       async (driver, source) => {
         // A stored credential's backend read can outlive its grants or the selected catalog.
-        await dependencies.authorize(principalId, "create", agentScope);
+        await authorize(principalId, "create", agentScope);
         if (source) {
-          await dependencies.authorize(principalId, "operate", source);
+          await authorize(principalId, "operate", source);
         }
-        await dependencies.read((state) => state.exactNamespace(namespaceId));
+        await read((state) => exactNamespace(state, namespaceId));
         if (getDriver() !== driver) {
           throw new ResourceStateConflictError("The plugin catalog changed. Refresh and retry.");
         }
@@ -325,7 +299,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             : "Credential-source references must identify the exact Namespace.",
         );
       }
-      await dependencies.authorize(principalId, "operate", source);
+      await authorize(principalId, "operate", source);
     }
     const driver = getDriver();
     if (
@@ -402,8 +376,8 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     if (reference.namespaceId !== namespaceId) {
       throw new SecretBindingValidationError("Secret references cannot cross Namespaces.");
     }
-    const secret = await dependencies.read(async (state) => {
-      const found = await state.findSecret(namespaceId, reference.id);
+    const secret = await read(async (state) => {
+      const found = await state.secrets.findSecret(namespaceId, reference.id);
       if (!found) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
@@ -415,9 +389,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
         "The selected Secret Driver cannot use credentials for discovery.",
       );
     }
-    return dependencies.secretOperation(() =>
-      driver.withValue!(secret, (accessToken) => use({ accessToken })),
-    );
+    return secretOperation(() => driver.withValue!(secret, (accessToken) => use({ accessToken })));
   }
 
   async function getSavedAgentPluginPolicyCapabilities(
@@ -435,13 +407,15 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           for (const { sourceId } of agent.credentialSources ?? []) {
             const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
             if (
-              (await dependencies.canRead(principalId, ref)) &&
-              (await dependencies.authorizationDecision(principalId, "operate", ref)).decision
-                .allowed &&
-              (await dependencies.authorizationDecision(agent.servicePrincipalId, "operate", ref))
-                .decision.allowed
+              (await canRead(principalId, ref)) &&
+              (await authorizationDecision(principalId, "operate", ref)).decision.allowed &&
+              (await authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
+                .allowed
             ) {
-              const source = await state.findCredentialSource(namespaceId, sourceId);
+              const source = await state.credentialSources.findCredentialSource(
+                namespaceId,
+                sourceId,
+              );
               if (source?.state === "ready") {
                 sources.push(source);
               }
@@ -577,7 +551,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     namespaceId: string,
     agentId: string,
     use: (target: {
-      state: PluginDiscoveryReadView;
+      state: PlatformReadView;
       namespace: Readonly<Namespace>;
       agent: Readonly<Agent>;
       driver: PluginDriver;
@@ -586,26 +560,29 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
   ): Promise<T> {
     const resource = { kind: "agent" as const, id: agentId, namespaceId };
     const authorizeAgent = async () => {
-      await dependencies.authorize(principalId, "read", resource);
-      await dependencies.authorize(principalId, "update", resource);
+      await authorize(principalId, "read", resource);
+      await authorize(principalId, "update", resource);
     };
-    const readMetadata = async (state: PluginDiscoveryReadView) => {
-      const { namespace, agent } = await state.exactAgent(namespaceId, agentId);
+    const readMetadata = async (state: PlatformReadView) => {
+      const { namespace, agent } = await exactAgent(state, namespaceId, agentId);
       if (agent.status !== "active") {
         throw new AgentDeletingError();
       }
-      const metadata = await state.findConfiguration(namespace.id, agent.configurationId);
+      const metadata = await state.configurations.findConfiguration(
+        namespace.id,
+        agent.configurationId,
+      );
       if (!metadata) {
         throw new ScopeViolationError("The Agent Configuration is unavailable in its Namespace.");
       }
       return { namespace, agent, metadata };
     };
     await authorizeAgent();
-    const { metadata } = await dependencies.read(readMetadata);
+    const { metadata } = await read(readMetadata);
     // A Configuration Driver may read Kubernetes. Release the database connection first.
     const configuration = await dependencies.readConfiguration(metadata);
     await authorizeAgent();
-    return dependencies.read(async (state) => {
+    return read(async (state) => {
       const current = await readMetadata(state);
       if (
         current.metadata.id !== metadata.id ||
@@ -638,13 +615,16 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
   ): Promise<PluginCatalogEntry> {
     const sourceRef = { kind: "credential_source" as const, id: connection.sourceId, namespaceId };
     const currentTarget = async () => {
-      await dependencies.authorize(principalId, "operate", sourceRef);
+      await authorize(principalId, "operate", sourceRef);
       const target = await withSavedPluginTarget(
         principalId,
         namespaceId,
         agentId,
         async ({ state, namespace, agent, driver, harness }) => {
-          const source = await state.findCredentialSource(namespace.id, sourceRef.id);
+          const source = await state.credentialSources.findCredentialSource(
+            namespace.id,
+            sourceRef.id,
+          );
           const target =
             namespace.status === "ready" &&
             source?.state === "ready" &&
@@ -667,8 +647,8 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           };
         },
       );
-      await dependencies.authorize(principalId, "operate", sourceRef);
-      await dependencies.authorize(target.servicePrincipalId, "operate", sourceRef);
+      await authorize(principalId, "operate", sourceRef);
+      await authorize(target.servicePrincipalId, "operate", sourceRef);
       return target;
     };
 
@@ -679,7 +659,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     }
     const selection = { [entry.id]: { enabled: true } };
     dependencies.validatePluginPlacement(target.driver, selection, target.harness);
-    await dependencies.authorize(principalId, "operate", sourceRef);
+    await authorize(principalId, "operate", sourceRef);
     const validateCurrent = async () => {
       const current = await currentTarget();
       if (current.driver !== target.driver || !isDeepStrictEqual(current, target)) {
@@ -791,9 +771,12 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             namespaceId,
             id: binding.sourceId,
           };
-          await dependencies.authorize(principalId, "operate", reference);
-          await dependencies.authorize(agent.servicePrincipalId, "operate", reference);
-          const source = await state.findCredentialSource(namespaceId, binding.sourceId);
+          await authorize(principalId, "operate", reference);
+          await authorize(agent.servicePrincipalId, "operate", reference);
+          const source = await state.credentialSources.findCredentialSource(
+            namespaceId,
+            binding.sourceId,
+          );
           if (source?.state !== "ready") {
             throw new ScopeViolationError("The Agent's plugin credential source is unavailable.");
           }
@@ -808,9 +791,9 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
         if (binding.source.namespaceId !== namespace.id) {
           throw new ScopeViolationError("The Agent's plugin credential crosses Namespaces.");
         }
-        await dependencies.authorize(principalId, "operate", binding.source);
-        await dependencies.authorize(agent.servicePrincipalId, "operate", binding.source);
-        const secret = await state.findSecret(namespace.id, binding.source.id);
+        await authorize(principalId, "operate", binding.source);
+        await authorize(agent.servicePrincipalId, "operate", binding.source);
+        const secret = await state.secrets.findSecret(namespace.id, binding.source.id);
         if (secret === undefined) {
           throw new ScopeViolationError("The Agent's plugin credential is unavailable.");
         }

@@ -5,8 +5,6 @@ import type {
   AgentRevision,
   AgentRevisionRead,
   AgentRevisionSummary,
-  AuthorizationDecision,
-  AuthorizationRequest,
   ComputeDriver,
   Namespace,
   PermissionAction,
@@ -22,6 +20,8 @@ import {
   type DeploymentStatusError,
   type PluginDeploymentWarning,
 } from "./controller-work.ts";
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import {
   AgentDeletingError,
@@ -37,11 +37,8 @@ import {
   repositoryCleanupWorkKey,
   repositoryRetirementWorkKey,
 } from "./repository-withdrawal.ts";
-import type {
-  AgentDeploymentWorkReader,
-  AgentReadRepository,
-  AgentRevisionReadRepository,
-} from "./ports/agent-reads.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
+import { exactAgent, exactNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 /**
  * A revision summary with its deployment outcome. Both fields are null when no deployment
@@ -67,48 +64,13 @@ export interface ActiveAgentRevisionSelection {
   readonly predecessorPhase?: "pre-stop" | "stopping";
 }
 
-type AgentQueryAuthorization = (
-  principalId: string,
-  action: PermissionAction,
-  target: ResourceRef & Pick<AuthorizationRequest, "parentAgentId">,
-) => Promise<{ readonly decision: Readonly<AuthorizationDecision> }>;
-
-interface AgentQueryReadView {
-  readonly agents: Pick<
-    AgentReadRepository,
-    | "findAgentForBrowsing"
-    | "listAgentsForBrowsing"
-    | "listAgentReferences"
-    | "findPredecessorReplacement"
+interface AgentQueryDependencies {
+  readonly transactions: Pick<ControllerTransactions, "read">;
+  readonly authority: Pick<
+    ControllerAuthority,
+    "authorize" | "authorizationDecision" | "canRead" | "readableListRows"
   >;
-  readonly revisions: Pick<
-    AgentRevisionReadRepository,
-    "findRevision" | "findRevisionForBrowsing" | "listRevisionMetadata" | "pageRevisionSummaries"
-  >;
-  readonly operations: AgentDeploymentWorkReader;
-}
-
-interface AgentQueryDependencies<ReadView extends AgentQueryReadView> {
-  readonly read: <T>(query: (view: ReadView) => Promise<T>) => Promise<T>;
-  readonly authorize: AgentQueryAuthorization;
-  readonly authorizationDecision: AgentQueryAuthorization;
-  readonly canRead: (
-    principalId: string,
-    target: Parameters<AgentQueryAuthorization>[2],
-  ) => Promise<boolean>;
-  readonly namespaceIdentity: (namespaceId: string) => void;
   readonly getNamespace: (principalId: string, namespaceId: string) => Promise<Readonly<Namespace>>;
-  readonly exactNamespace: (state: ReadView, namespaceId: string) => Promise<Readonly<Namespace>>;
-  readonly exactAgent: (
-    state: ReadView,
-    namespaceId: string,
-    agentId: string,
-  ) => Promise<{ readonly namespace: Readonly<Namespace>; readonly agent: Readonly<Agent> }>;
-  readonly readableAgents: (
-    principalId: string,
-    namespaceId: string,
-    rows: readonly Readonly<AgentRead>[],
-  ) => Promise<readonly Readonly<AgentRead>[]>;
   readonly selectCompute: () => ComputeDriver;
   readonly clock: () => Date;
   readonly deploymentStatusForWork: (
@@ -124,9 +86,10 @@ interface AgentQueryDependencies<ReadView extends AgentQueryReadView> {
   readonly deploymentWarningsForWork: (work: ControllerWork) => readonly PluginDeploymentWarning[];
 }
 
-export function createAgentQueries<ReadView extends AgentQueryReadView>(
-  deps: AgentQueryDependencies<ReadView>,
-) {
+export function createAgentQueries(deps: AgentQueryDependencies) {
+  const { read } = deps.transactions;
+  const { authorize, authorizationDecision, canRead, readableListRows } = deps.authority;
+
   function requireAgentIdentity(agentId: string): void {
     if (!isNonEmptyString(agentId)) {
       throw new ScopeViolationError("The exact Agent identity is missing.");
@@ -138,10 +101,11 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     namespaceId: string,
   ): Promise<readonly Readonly<AgentRead>[]> {
     const namespace = await deps.getNamespace(principalId, namespaceId);
-    return deps.read(async (state) =>
-      deps.readableAgents(
+    return read(async (state) =>
+      readableListRows(
         principalId,
         namespace.id,
+        "agent",
         await state.agents.listAgentsForBrowsing(namespace.id),
       ),
     );
@@ -150,7 +114,7 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
   async function resolveAgentReference(
     matches: (agent: Pick<Agent, "id" | "namespaceId">) => boolean,
   ): Promise<Pick<Agent, "id" | "namespaceId"> | undefined> {
-    return deps.read(async (state) => {
+    return read(async (state) => {
       // One read of Agent identities in live Namespaces; no saved settings are decoded.
       let selected: Pick<Agent, "id" | "namespaceId"> | undefined;
       for (const agent of await state.agents.listAgentReferences()) {
@@ -183,7 +147,7 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     const outsideCredentialScope =
       namespaceScope !== undefined && reference.namespaceId !== namespaceScope;
     try {
-      const authorization = await deps.authorize(principalId, "operate", resource);
+      const authorization = await authorize(principalId, "operate", resource);
       if (outsideCredentialScope) {
         throw new AuthorizationDeniedError(
           "The Agent is outside the service credential's Namespace.",
@@ -196,15 +160,15 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
       if (
         error instanceof AuthorizationDeniedError &&
         (outsideCredentialScope ||
-          !(await deps.authorizationDecision(principalId, "read", resource)).decision.allowed)
+          !(await authorizationDecision(principalId, "read", resource)).decision.allowed)
       ) {
         throw new HiddenResourceAuthorizationDeniedError(error);
       }
       throw error;
     }
     const compute = deps.selectCompute();
-    return deps.read(async (state) => {
-      const { agent } = await deps.exactAgent(state, reference.namespaceId, agentId);
+    return read(async (state) => {
+      const { agent } = await exactAgent(state, reference.namespaceId, agentId);
       // Capability absence precedes lifecycle checks, including for a stopped Agent.
       if (!compute.getChatCompletionsEndpoint) {
         return { agent, endpoint: { status: "unsupported" } };
@@ -238,18 +202,16 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     agentId: string,
     action: PermissionAction | "browser",
   ): Promise<PermissionAction> {
-    deps.namespaceIdentity(namespaceId);
+    namespaceIdentity(namespaceId);
     requireAgentIdentity(agentId);
     const resource: ResourceRef = { kind: "agent", id: agentId, namespaceId };
     if (action === "browser") {
-      if (
-        (await deps.authorizationDecision(principalId, "administer", resource)).decision.allowed
-      ) {
+      if ((await authorizationDecision(principalId, "administer", resource)).decision.allowed) {
         return "administer";
       }
       action = "operate";
     }
-    await deps.authorize(principalId, action, resource);
+    await authorize(principalId, action, resource);
     return action;
   }
 
@@ -274,8 +236,8 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     access: PermissionAction | "browser",
   ) {
     const action = await authorizeAgentAccess(principalId, namespaceId, agentId, access);
-    return deps.read(async (state) => {
-      const { agent } = await deps.exactAgent(state, namespaceId, agentId);
+    return read(async (state) => {
+      const { agent } = await exactAgent(state, namespaceId, agentId);
       const mode = action === "administer" ? "admin" : "chat";
       return access === "browser" ? { agent, mode } : agent;
     });
@@ -286,15 +248,15 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     namespaceId: string,
     agentId: string,
   ): Promise<Readonly<AgentRead>> {
-    deps.namespaceIdentity(namespaceId);
+    namespaceIdentity(namespaceId);
     requireAgentIdentity(agentId);
-    await deps.authorize(principalId, "read", {
+    await authorize(principalId, "read", {
       kind: "agent",
       id: agentId,
       namespaceId,
     });
-    return deps.read(async (state) => {
-      const namespace = await deps.exactNamespace(state, namespaceId);
+    return read(async (state) => {
+      const namespace = await exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgentForBrowsing(namespace.id, agentId);
       if (!agent) {
         throw new ScopeViolationError(
@@ -322,7 +284,7 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     // revision beyond the page. Access can change before the next request.
     // A batch larger than the page lets a fully readable page finish in one query.
     const batch = Math.max(page.limit + 1, 100);
-    return deps.read(async (state) => {
+    return read(async (state) => {
       const readable: Readonly<AgentRevisionSummary>[] = [];
       const listing = async (nextBefore?: number) => {
         const revisions: Readonly<AgentRevisionListing>[] = [];
@@ -361,7 +323,7 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
         });
         for (const revision of listed.revisions) {
           if (
-            !(await deps.canRead(principalId, {
+            !(await canRead(principalId, {
               kind: "agent_revision",
               id: revision.id,
               namespaceId: agent.namespaceId,
@@ -390,7 +352,7 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     revisionId: string,
   ): Promise<Readonly<AgentRevision>> {
     await authorizeRevisionRead(principalId, namespaceId, agentId, revisionId);
-    return deps.read(
+    return read(
       async (state) => (await exactRevision(state, namespaceId, agentId, revisionId)).revision,
     );
   }
@@ -401,14 +363,14 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     agentId: string,
     revisionId: string,
   ): Promise<void> {
-    deps.namespaceIdentity(namespaceId);
+    namespaceIdentity(namespaceId);
     requireAgentIdentity(agentId);
     if (!isNonEmptyString(revisionId)) {
       throw new ScopeViolationError("The exact AgentRevision identity is missing.");
     }
     // The route's Agent is the parent: the lookups below accept only this Agent's revision, so a
     // revision of another Agent ends as not found, as an unknown ID does.
-    await deps.authorize(principalId, "read", {
+    await authorize(principalId, "read", {
       kind: "agent_revision",
       id: revisionId,
       namespaceId,
@@ -417,12 +379,12 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
   }
 
   async function exactRevision(
-    state: ReadView,
+    state: PlatformReadView,
     namespaceId: string,
     agentId: string,
     revisionId: string,
   ) {
-    const { namespace, agent } = await deps.exactAgent(state, namespaceId, agentId);
+    const { namespace, agent } = await exactAgent(state, namespaceId, agentId);
     const revision = await state.revisions.findRevision(namespace.id, agent.id, revisionId);
     if (!revision) {
       throw new ScopeViolationError(
@@ -439,8 +401,8 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     revisionId: string,
   ): Promise<Readonly<AgentRevisionRead>> {
     await authorizeRevisionRead(principalId, namespaceId, agentId, revisionId);
-    return deps.read(async (state) => {
-      const namespace = await deps.exactNamespace(state, namespaceId);
+    return read(async (state) => {
+      const namespace = await exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgentForBrowsing(namespace.id, agentId);
       if (!agent) {
         throw new ScopeViolationError(
@@ -468,7 +430,7 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
     deploymentId: string,
   ): Promise<DeploymentStatusResult> {
     await authorizeRevisionRead(principalId, namespaceId, agentId, deploymentId);
-    return deps.read(async (state) => {
+    return read(async (state) => {
       const { revision, agent } = await exactRevision(state, namespaceId, agentId, deploymentId);
       const idempotencyKey = `agent_revision:${revision.id}:reconcile`;
       const work = await state.operations.findWork(idempotencyKey);
@@ -506,7 +468,7 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
   }
 
   async function deploymentCleanupStatus(
-    state: ReadView,
+    state: PlatformReadView,
     revision: Readonly<AgentRevision>,
     includeSessionDisposal: boolean,
   ): Promise<DeploymentStatusResult["cleanup"]> {
@@ -578,8 +540,8 @@ export function createAgentQueries<ReadView extends AgentQueryReadView>(
   ) {
     const action = await authorizeAgentAccess(principalId, namespaceId, agentId, access);
     const browserAccess = access === "browser";
-    return deps.read(async (state) => {
-      const { namespace, agent } = await deps.exactAgent(state, namespaceId, agentId);
+    return read(async (state) => {
+      const { namespace, agent } = await exactAgent(state, namespaceId, agentId);
       if (action === "operate" && agent.status !== "active") {
         throw new AgentDeletingError();
       }
