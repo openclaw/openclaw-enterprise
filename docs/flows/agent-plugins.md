@@ -99,9 +99,10 @@ Details reject unmatched MCP/scheduled tasks. Optional stdio
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-HTTP validates input. [OCC](../../packages/occ/src/agent-drafts.ts) checks the exact
-Namespace and Agent (`read` for reads). Create/PATCH saves `plugins` and Driver
-identity. Updates atomically save state and audit evidence. Omitted selections
+HTTP validates input. [`getAgentForBrowsing`](../../packages/occ/src/agent-queries.ts)
+requires exact Agent `read` in its Namespace.
+[Create and PATCH](../../packages/occ/src/agent-drafts.ts) save `plugins` and Driver
+identity. Updates commit state and audit together. Omitted selections
 persist, `{}` clears them, and nonempty maps replace them. Clear selections with
 unknown or different owners before changing catalogs.
 

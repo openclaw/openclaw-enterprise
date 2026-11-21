@@ -10,7 +10,8 @@ last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 
 Console saves Slack/model Secrets and submits inline Configuration, credential
 references and retained Preset bindings. OCC queues setup without placeholders.
-The worker creates both, grants access and admits deployment.
+The worker creates Configuration and Agent, grants exact credential access,
+and admits initial deployment.
 The handle tracks activation or failure. Later deployments use separate handles.
 See [worker reconciliation](controller-worker.md) and [Harness topology](harness-execution-topology.md).
 
@@ -18,7 +19,7 @@ See [worker reconciliation](controller-worker.md) and [Harness topology](harness
 
 - Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mts`.
 - API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/agent-provisioning-requests.ts:provisionAgent`.
-- Preconditions: a ready Namespace, Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
+- Preconditions: ready Namespace, Dedicated runtime, selected Drivers, PostgreSQL work storage, Agent/Configuration/deploy permissions, exact Secret access and transactional IAM authority. No provisioning-input keyring required.
 
 ## Flow
 

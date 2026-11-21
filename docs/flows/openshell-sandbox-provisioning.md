@@ -135,9 +135,9 @@ See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
 
 ### 0.1. Check Harness mode support
 
-Before Configuration writes, `packages/occ/src/agent-harness-topology.ts:admitsOpenClawExecutionMode`
-checks `supportsHarnessExecutionMode` from `apps/controller/src/drivers/sandbox/openshell.ts:constructor`,
-native-worker support and provisioning. Status reads the stored revision result.
+Agent saves check Sandbox mode in `packages/occ/src/agent-harness-topology.ts:validateSavedAgentTopology`.
+Provisioning and deployment call `packages/occ/src/agent-harness-topology.ts:requireDedicatedNativeSupport`.
+Status reads the stored revision result.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
