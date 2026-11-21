@@ -145,12 +145,9 @@ import {
 export { DriverConfigurationRegistry } from "./configuration-registry.ts";
 export type { DriverConfigurationRegistration } from "./configuration-registry.ts";
 import {
-  ConfigurationValidationError,
-  requireConfiguration,
   type ConfigurationContext,
   type DriverConfigurationDescriptor,
   type ConfigurationResult,
-  type ErrorDetail,
 } from "@openclaw-enterprise/contracts";
 import type {
   SandboxPolicy,
@@ -159,10 +156,13 @@ import type {
   SandboxPolicySnapshot,
   SandboxPolicyRecommendations,
 } from "@openclaw-enterprise/contracts";
+import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import {
-  validateSandboxNetworkGrants,
-  networkGrantAdmissionDetails,
-} from "@openclaw-enterprise/contracts";
+  checkedProtectedCodexArtifactPolicy,
+  checkedSandboxPolicySnapshot,
+  createSandboxPolicyOperations,
+  unprotectedPolicyRevision,
+} from "./sandbox-policy.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -394,7 +394,6 @@ import {
   ResourceConflictError,
   ResourceStateConflictError,
   ProtectedExecutionNetworkPolicyError,
-  SandboxNetworkPolicyConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
@@ -2132,11 +2131,6 @@ const NAMESPACE_POLICY_RESOURCE_KINDS: ReadonlySet<ResourceKind> = new Set<Resou
  * and the editing switch all give the same sentence. Without a Sandbox Driver there is no
  * Sandbox at all, so the cause is the Installation's selection, not a Driver capability.
  */
-const NO_SANDBOX_DRIVER_NETWORK_POLICY =
-  "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules.";
-const SANDBOX_DRIVER_WITHOUT_NETWORK_POLICY =
-  "The selected Sandbox Driver does not support per-Agent network policy.";
-
 /**
  * Why the Namespace policy API refuses `create` Permissions. `create` is authorized against
  * the Namespace collection, never an existing resource, and this API binds only exact
@@ -2270,7 +2264,7 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
   private readonly connectionAdministration: ReturnType<typeof createConnectionAdministration>;
 
-  private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  private readonly sandboxPolicyOperations: ReturnType<typeof createSandboxPolicyOperations>;
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly deviceLoginCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
@@ -2326,7 +2320,25 @@ export class OpenClawController {
       options.sandboxNetworkPolicyCeiling ?? [],
       "/sandboxNetworkPolicyCeiling",
     );
-    this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    this.sandboxPolicyOperations = createSandboxPolicyOperations({
+      installationId: this.installation.id,
+      ceiling: immutableCopy(options.sandboxNetworkPolicyCeiling ?? []),
+      authorize: (principalId, action, target) => this.authorize(principalId, action, target),
+      authorizationDecision: (principalId, action, target) =>
+        this.authorizationDecision(principalId, action, target),
+      exactNamespace: (state, namespaceId) => this.exactNamespace(state, namespaceId),
+      lockNamespace: (state, namespaceId) => this.lockNamespace(state, namespaceId),
+      read: (use) => this.read(use),
+      mutate: (use) => this.mutate(use),
+      protectedExecutionApplies: (state, agent, revision) =>
+        this.protectedExecutionApplies(state, agent, revision),
+      record: (state, operation) => this.record(state, operation),
+      resolveConfiguration: (capability, driverId, scope, key) =>
+        this.configurations.resolve(capability, driverId, scope, key),
+      sandboxDriver: () => this.sandboxDriver(),
+      selectedCompute: () => this.selectedDriver("compute"),
+      timestamp: () => this.timestamp(),
+    });
     if (options.iamConfiguration !== undefined) {
       this.iamConfiguration = options.iamConfiguration;
     }
@@ -11055,154 +11067,12 @@ export class OpenClawController {
     return configurations;
   }
 
-  private async policyConfigurationDescriptor(
-    principalId: string,
-    agent: Readonly<Agent>,
-    policy: Readonly<SandboxPolicy>,
-    revision: Readonly<AgentRevision> | undefined,
-    facet: SandboxFacet,
-  ): Promise<DriverConfigurationDescriptor | undefined> {
-    const driver = this.sandboxDriver();
-    if (driver?.networkPolicy === undefined) {
-      return undefined;
-    }
-    const entry = this.configurations.resolve(
-      "sandbox",
-      driver.id,
-      "agent",
-      "sandbox-network-policy",
-    );
-    const resource = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
-    const manage = await this.authorizationDecision(principalId, "manage_policy", resource);
-    const update = await this.authorizationDecision(principalId, "update", {
-      kind: "sandbox_policy",
-      id: policy.id,
-      namespaceId: agent.namespaceId,
-    });
-    const editable =
-      agent.status === "active" &&
-      agent.sandboxPolicyEditing === true &&
-      policy.application?.state !== "pending";
-    const canSave = editable && manage.decision.allowed && update.decision.allowed;
-    const canApply =
-      canSave &&
-      driver.networkPolicy.live &&
-      agent.desiredRuntimeState === "running" &&
-      this.unprotectedPolicyRevision(revision) &&
-      revision?.sandboxPolicy !== undefined &&
-      revision.sandboxDriverId === driver.id;
-    const href = `/namespaces/${encodeURIComponent(agent.namespaceId)}/agents/${encodeURIComponent(agent.id)}/sandbox-policy/${facet}`;
-    return {
-      capability: entry.capability,
-      driverId: entry.driverId,
-      implementation: entry.implementation,
-      scope: entry.contribution.scope,
-      key: entry.contribution.key,
-      configurationSchema: entry.contribution.configurationSchema,
-      binding: entry.binding,
-      actions: {
-        read: { method: "GET", href, available: true },
-        validate: { method: "POST", href: `${href}/validate`, available: canSave },
-        save: { method: "PUT", href, available: canSave },
-        apply: { method: "POST", href: `${href}/apply`, available: canApply },
-      },
-    };
-  }
-
-  async validateAgentSandboxPolicy(
-    principalId: string,
-    namespaceId: string,
-    agentId: string,
-    facet: SandboxFacet,
-    expectedVersion: number,
-    additions: unknown,
-  ): Promise<ConfigurationResult<{ readonly additions: readonly SandboxNetworkGrant[] }>> {
-    this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "update", {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
-      namespaceId,
-    });
-    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
-    this.requireNetworkPolicyAvailable();
-    return this.read(async (state) => {
-      await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespaceId, agentId);
-      const previous = await state.sandboxPolicies.find(namespaceId, agentId);
-      if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
-        throw new ResourceStateConflictError("Policy editing is disabled for this Agent.");
-      }
-      if (
-        previous === undefined ||
-        previous.version !== expectedVersion ||
-        previous.application?.state === "pending"
-      ) {
-        throw new ResourceStateConflictError(
-          "The policy changed or an application is still pending. Reload before editing.",
-        );
-      }
-      try {
-        const snapshot = this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-          repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
-        });
-        if (snapshot.additions.length > 0) {
-          const active =
-            agent.activeRevisionId === undefined
-              ? undefined
-              : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
-          if (await this.protectedExecutionApplies(state, agent, active)) {
-            throw new ProtectedExecutionNetworkPolicyError("save");
-          }
-        }
-        return { success: true, data: { additions: snapshot.additions } };
-      } catch (error) {
-        if (error instanceof ResourceStateConflictError && error.details?.length) {
-          return {
-            success: false,
-            error: {
-              details: error.details as [ErrorDetail, ...ErrorDetail[]],
-            },
-          };
-        }
-        throw error;
-      }
-    });
-  }
-
-  private requireNetworkPolicyFacet(facet: SandboxFacet): void {
-    if (facet !== "networking") {
-      throw new ResourceStateConflictError(
-        `Agent policy editing is unsupported for the ${facet} facet.`,
-      );
-    }
-  }
-
-  /**
-   * Finding 2053: a protected execution keeps only its Credential Proxy egress policy, so an
-   * Agent's network policy additions are refused rather than dropped. They are refused at save
-   * while the active revision is protected or the next deploy requires protection,
-   * and live application is refused to a protected active revision.
-   * createRevision and the OpenShell Driver refuse the same rule at deploy.
-   */
-  private unprotectedPolicyRevision(revision: Readonly<AgentRevision> | undefined): boolean {
-    if (revision?.executionAdmission?.mode !== "unprotected") {
-      return false;
-    }
-    try {
-      assertExecutionAdmission(revision);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   private async protectedExecutionApplies(
     state: PlatformReadView,
     agent: Readonly<Agent>,
     activeRevision: Readonly<AgentRevision> | undefined,
   ): Promise<boolean> {
-    if (activeRevision !== undefined && !this.unprotectedPolicyRevision(activeRevision)) {
+    if (activeRevision !== undefined && !unprotectedPolicyRevision(activeRevision)) {
       return true;
     }
     if (!this.selections.has("credential_proxy")) {
@@ -11217,61 +11087,36 @@ export class OpenClawController {
     return !(await this.ordinaryModelBinding(state, agent));
   }
 
+  async validateAgentSandboxPolicy(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    facet: SandboxFacet,
+    expectedVersion: number,
+    additions: unknown,
+  ): Promise<ConfigurationResult<{ readonly additions: readonly SandboxNetworkGrant[] }>> {
+    return this.sandboxPolicyOperations.validateAgentSandboxPolicy(
+      principalId,
+      namespaceId,
+      agentId,
+      facet,
+      expectedVersion,
+      additions,
+    );
+  }
+
   async getAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,
     agentId: string,
     facet: SandboxFacet,
   ) {
-    this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "read", {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
+    return this.sandboxPolicyOperations.getAgentSandboxPolicy(
+      principalId,
       namespaceId,
-    });
-    return this.read(async (state) => {
-      await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespaceId, agentId);
-      const policy = await state.sandboxPolicies.find(namespaceId, agentId);
-      if (agent === undefined || policy === undefined) {
-        throw new ScopeViolationError("The Agent policy is unavailable in this Namespace.");
-      }
-      const revision =
-        agent.activeRevisionId === undefined
-          ? undefined
-          : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
-      const driver = this.sandboxDriver();
-      const unavailableReason = this.networkPolicyUnavailable();
-      const defaults =
-        revision?.sandboxPolicy?.defaults ??
-        driver?.admitNetworkPolicy?.([], policy.version).defaults ??
-        null;
-      return {
-        policy,
-        configuration: await this.policyConfigurationDescriptor(
-          principalId,
-          agent,
-          policy,
-          revision,
-          facet,
-        ),
-        editingEnabled: agent.sandboxPolicyEditing === true,
-        protectedExecution: await this.protectedExecutionApplies(state, agent, revision),
-        capability: this.sandboxDriver()?.networkPolicy ?? null,
-        ...(unavailableReason === undefined ? {} : { unavailableReason }),
-        ceiling: this.sandboxNetworkPolicyCeiling,
-        defaults,
-        // A fresh deploy carries the saved version into its Sandbox; no application is
-        // requested for it (D773).
-        ...(revision?.sandboxPolicy === undefined
-          ? {}
-          : {
-              defaultsRevisionId: revision.id,
-              deployedPolicyVersion: revision.sandboxPolicy.version,
-            }),
-      };
-    });
+      agentId,
+      facet,
+    );
   }
 
   // TODO: Replace this temporary admission switch with the platform Guardrails primitive.
@@ -11282,217 +11127,13 @@ export class OpenClawController {
     facet: SandboxFacet,
     enabled: boolean,
   ): Promise<Readonly<Agent>> {
-    this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "administer", {
-      kind: "installation",
-      id: this.installation.id,
-    });
-    await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
-    return this.mutate(async (state) => {
-      await this.lockNamespace(state, namespaceId);
-      const agent = await state.agents.lockAgent(namespaceId, agentId);
-      if (agent === undefined || agent.status !== "active") {
-        throw new ResourceStateConflictError("The Agent is unavailable for policy configuration.");
-      }
-      // Fail early (D774): editing could never save a rule. Turning it off stays allowed.
-      const unavailable = this.networkPolicyUnavailable();
-      if (enabled && unavailable !== undefined) {
-        throw new ResourceStateConflictError(unavailable);
-      }
-      const updated = await state.agents.setSandboxPolicyEditing(namespaceId, agentId, enabled);
-      if (updated === undefined) {
-        throw new ResourceStateConflictError("The Agent changed.");
-      }
-      return updated;
-    });
-  }
-
-  private admitAgentNetworkPolicy(
-    input: unknown,
-    version: number,
-    defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials: boolean },
-  ): SandboxPolicySnapshot {
-    const driver = this.sandboxDriver();
-    if (driver?.networkPolicy === undefined || driver.admitNetworkPolicy === undefined) {
-      throw new ResourceStateConflictError(
-        this.networkPolicyUnavailable() ?? SANDBOX_DRIVER_WITHOUT_NETWORK_POLICY,
-      );
-    }
-    const { contribution } = this.configurations.resolve(
-      "sandbox",
-      driver.id,
-      "agent",
-      "sandbox-network-policy",
+    return this.sandboxPolicyOperations.setAgentSandboxPolicyEditing(
+      principalId,
+      namespaceId,
+      agentId,
+      facet,
+      enabled,
     );
-    let admissionMessage = "The Sandbox Driver refused the requested policy.";
-    try {
-      // OCC owns the grant shape it stores and checks against the ceiling. A Driver's
-      // contribution can only narrow it, so the shared rules always run first.
-      validateSandboxNetworkGrants(input);
-      const additions = immutableCopy(input);
-      requireConfiguration(contribution, { additions });
-      const details = networkGrantAdmissionDetails(
-        additions,
-        this.sandboxNetworkPolicyCeiling,
-        driver.networkPolicy,
-        "/additions",
-      );
-      if (details.length > 0) {
-        admissionMessage = details.some((detail) => detail.code === "OUTSIDE_CEILING")
-          ? "The requested network policy exceeds the Installation delegation ceiling."
-          : "The selected Sandbox Driver does not support the requested wildcard or port range.";
-        throw new ConfigurationValidationError(details as [ErrorDetail, ...ErrorDetail[]]);
-      }
-      return this.checkedSandboxPolicySnapshot(driver, additions, version, defaults, scope);
-    } catch (error) {
-      if (error instanceof SandboxNetworkPolicyConflictError) {
-        throw error;
-      }
-      if (error instanceof ConfigurationValidationError) {
-        throw new ResourceStateConflictError(admissionMessage, error.error.details);
-      }
-      throw new ResourceStateConflictError(
-        "The Sandbox Driver cannot enforce the complete requested policy.",
-        [
-          {
-            path: "",
-            code: "INVALID_VALUE",
-            message: "The selected Driver could not validate the configuration.",
-          },
-        ],
-      );
-    }
-  }
-
-  private checkedSandboxPolicySnapshot(
-    driver: SandboxDriver,
-    additions: readonly SandboxNetworkGrant[],
-    version: number,
-    defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials: boolean },
-    producer?: () => SandboxPolicySnapshot,
-  ): SandboxPolicySnapshot {
-    const refused = () =>
-      new ResourceStateConflictError(
-        "The Sandbox Driver cannot enforce the complete requested policy.",
-        [
-          {
-            path: "",
-            code: "INVALID_VALUE",
-            message: "The selected Driver could not validate the configuration.",
-          },
-        ],
-      );
-    let returned: SandboxPolicySnapshot;
-    try {
-      returned =
-        producer === undefined
-          ? driver.admitNetworkPolicy!(immutableCopy(additions), version, defaults, scope)
-          : producer();
-    } catch (error) {
-      // Preserve structured producer diagnostics; unknown exceptions (including null)
-      // fail immediately, without retrying or inspecting their contents.
-      throw error instanceof ConfigurationValidationError ||
-        error instanceof SandboxNetworkPolicyConflictError
-        ? error
-        : refused();
-    }
-    try {
-      // Detach once before inspecting: a Driver may return mutable data or accessors.
-      // OCC owns the exact ordered grants; the Driver still owns opaque defaults.
-      const snapshot = immutableCopy(returned);
-      validateSandboxNetworkGrants(snapshot?.additions);
-      if (
-        snapshot.driverId !== driver.id ||
-        snapshot.implementation !== driver.implementation ||
-        snapshot.version !== version ||
-        snapshot.defaults === null ||
-        typeof snapshot.defaults !== "object" ||
-        Array.isArray(snapshot.defaults) ||
-        !isDeepStrictEqual(snapshot.additions, additions)
-      ) {
-        throw refused();
-      }
-      return snapshot;
-    } catch {
-      // Never include unknown Driver-returned values or exceptions in diagnostics.
-      throw refused();
-    }
-  }
-
-  private checkedProtectedCodexArtifactPolicy(
-    driver: SandboxDriver | undefined,
-    version: number,
-  ): SandboxPolicySnapshot {
-    if (driver?.admitProtectedCodexArtifactPolicy === undefined) {
-      throw new ResourceStateConflictError(
-        "Deploy requires a Sandbox Driver that supports protected Codex artifact admission. Ask your Installation administrator to check drivers.sandbox and the selected Driver version.",
-      );
-    }
-    return this.checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {
-      const result = immutableCopy(driver.admitProtectedCodexArtifactPolicy!(version));
-      const names = result?.declaredRuleNames;
-      if (
-        result?.purpose !== "protected-codex-artifacts" ||
-        !isDeepStrictEqual(Object.keys(result).sort(), [
-          "declaredRuleNames",
-          "purpose",
-          "snapshot",
-        ]) ||
-        !Array.isArray(names) ||
-        names.some((name) => typeof name !== "string" || name.length === 0) ||
-        new Set(names).size !== names.length ||
-        !isDeepStrictEqual(Object.keys(result.snapshot).sort(), [
-          "additions",
-          "defaults",
-          "driverId",
-          "implementation",
-          "version",
-        ]) ||
-        !isDeepStrictEqual([...names].sort(), Object.keys(result.snapshot.defaults).sort())
-      ) {
-        throw new ResourceStateConflictError(
-          "The Sandbox Driver did not acknowledge the exact artifact declaration.",
-        );
-      }
-      return result.snapshot;
-    });
-  }
-
-  /**
-   * Finding 2144: a Sandbox Driver may reach repository hosts only through its own route, so
-   * a repository binding saved beside the Agent's network grants gets the Driver's overlap
-   * check here, before deploy. Other policy refusals stay with save, apply and deploy.
-   */
-  private async refuseRepositoryNetworkOverlap(
-    principalId: string,
-    policy: Readonly<SandboxPolicy> | undefined,
-  ): Promise<void> {
-    if (policy === undefined || policy.additions.length === 0) {
-      return;
-    }
-    // Finding 2881: the overlap refusal names a saved grant, so it comes after SandboxPolicy
-    // read, as deploy's admission does when saved additions exist (finding 2151). An Agent
-    // update without that read learns nothing from it.
-    await this.authorize(principalId, "read", {
-      kind: "sandbox_policy",
-      id: policy.id,
-      namespaceId: policy.namespaceId,
-    });
-    const driver = this.sandboxDriver();
-    if (!driver?.admitNetworkPolicy) {
-      return;
-    }
-    try {
-      driver.admitNetworkPolicy(policy.additions, policy.version, undefined, {
-        repositoryCredentials: true,
-      });
-    } catch (error) {
-      if (error instanceof SandboxNetworkPolicyConflictError) {
-        throw error;
-      }
-    }
   }
 
   async updateAgentSandboxPolicy(
@@ -11503,59 +11144,14 @@ export class OpenClawController {
     expectedVersion: number,
     additions: readonly SandboxNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
-    this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "update", {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
+    return this.sandboxPolicyOperations.updateAgentSandboxPolicy(
+      principalId,
       namespaceId,
-    });
-    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
-    this.requireNetworkPolicyAvailable();
-    return this.mutate(async (state) => {
-      await this.lockNamespace(state, namespaceId);
-      const agent = await state.agents.lockAgent(namespaceId, agentId);
-      const previous = await state.sandboxPolicies.find(namespaceId, agentId);
-      if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
-        throw new ResourceStateConflictError("Policy editing is disabled for this Agent.");
-      }
-      if (
-        previous === undefined ||
-        previous.version !== expectedVersion ||
-        previous.application?.state === "pending"
-      ) {
-        throw new ResourceStateConflictError(
-          "The policy changed or an application is still pending. Reload before editing.",
-        );
-      }
-      if (additions.length > 0) {
-        const active =
-          agent.activeRevisionId === undefined
-            ? undefined
-            : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
-        if (await this.protectedExecutionApplies(state, agent, active)) {
-          throw new ProtectedExecutionNetworkPolicyError("save");
-        }
-      }
-      const admitted = this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-        repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
-      });
-      const updated = await state.sandboxPolicies.save(
-        {
-          id: previous.id,
-          namespaceId,
-          agentId,
-          version: expectedVersion + 1,
-          additions: admitted.additions,
-          ...(previous.applied === undefined ? {} : { applied: previous.applied }),
-        },
-        expectedVersion,
-      );
-      if (updated === undefined) {
-        throw new ResourceStateConflictError("The policy changed.");
-      }
-      return updated;
-    });
+      agentId,
+      facet,
+      expectedVersion,
+      additions,
+    );
   }
 
   async applyAgentSandboxPolicy(
@@ -11567,105 +11163,15 @@ export class OpenClawController {
     revisionId: string,
     additions?: readonly SandboxNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
-    this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    const sandboxPolicy = {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
+    return this.sandboxPolicyOperations.applyAgentSandboxPolicy(
+      principalId,
       namespaceId,
-    } as const;
-    await this.authorize(principalId, "update", sandboxPolicy);
-    // Finding 2874: apply admits the saved additions (ceiling and Driver refusals name them)
-    // and returns the saved policy, so it needs SandboxPolicy read before either, even with
-    // no additions. Deploy needs read only when saved additions exist (finding 2151).
-    await this.authorize(principalId, "read", sandboxPolicy);
-    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
-    this.requireNetworkPolicyAvailable();
-    return this.mutate(async (state) => {
-      const namespace = await this.lockNamespace(state, namespaceId);
-      const agent = await state.agents.lockAgent(namespaceId, agentId);
-      const policy = await state.sandboxPolicies.find(namespaceId, agentId);
-      if (
-        namespace.status !== "ready" ||
-        agent?.status !== "active" ||
-        agent.sandboxPolicyEditing !== true ||
-        agent.desiredRuntimeState !== "running" ||
-        agent.activeRevisionId !== revisionId ||
-        policy?.version !== expectedVersion
-      ) {
-        throw new ResourceStateConflictError(
-          "The Agent, revision, editing setting, or policy changed. Reload before applying.",
-        );
-      }
-      if (policy.application?.state === "pending") {
-        throw new ResourceStateConflictError("A policy application is already pending.");
-      }
-      const driver = this.sandboxDriver();
-      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
-      // Qualified artifact snapshots do not make protected revisions eligible for live apply.
-      if (revision?.executionAdmission?.mode === "protected") {
-        throw new ProtectedExecutionNetworkPolicyError("apply");
-      }
-      if (
-        driver === undefined ||
-        !this.unprotectedPolicyRevision(revision) ||
-        revision?.sandboxPolicy === undefined ||
-        revision.sandboxDriverId !== driver.id ||
-        driver.networkPolicy?.live !== true ||
-        driver.applyNetworkPolicy === undefined ||
-        driver.observeNetworkPolicy === undefined
-      ) {
-        throw new ResourceStateConflictError(
-          "Live policy application is unavailable for this revision. Deploy explicitly to apply the saved policy.",
-        );
-      }
-      const desired =
-        additions === undefined
-          ? policy
-          : await this.updateAgentSandboxPolicy(
-              principalId,
-              namespaceId,
-              agentId,
-              facet,
-              expectedVersion,
-              additions,
-            );
-      const snapshot = this.admitAgentNetworkPolicy(
-        desired.additions,
-        desired.version,
-        revision.sandboxPolicy.defaults,
-        { repositoryCredentials: revision.repositoryCredentials !== undefined },
-      );
-      const id = crypto.randomUUID();
-      const updated = await state.sandboxPolicies.save(
-        {
-          ...desired,
-          application: {
-            id,
-            revisionId,
-            policyVersion: desired.version,
-            snapshot,
-            state: "pending",
-            requestedBy: principalId,
-            requestedAt: this.timestamp(),
-          },
-        },
-        desired.version,
-      );
-      if (updated === undefined) {
-        throw new ResourceStateConflictError("The policy changed.");
-      }
-      await this.record(state, {
-        kind: "agent",
-        action: "reconcile",
-        target: "sandbox_policy",
-        namespaceId,
-        resourceId: agentId,
-        actorId: principalId,
-        operationId: id,
-      });
-      return updated;
-    });
+      agentId,
+      facet,
+      expectedVersion,
+      revisionId,
+      additions,
+    );
   }
 
   async readAgentSandboxRecommendations(
@@ -11678,113 +11184,14 @@ export class OpenClawController {
       read: () => Promise<SandboxPolicyRecommendations>,
     ) => Promise<SandboxPolicyRecommendations>,
   ): Promise<SandboxPolicyRecommendations> {
-    this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "read", {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
+    return this.sandboxPolicyOperations.readAgentSandboxRecommendations(
+      principalId,
       namespaceId,
-    });
-    const binding = await this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
-      if (revision === undefined) {
-        throw new ScopeViolationError("The revision is outside this Agent.");
-      }
-      return { namespace, revision };
-    });
-    const driver = this.sandboxDriver();
-    // Each refusal names why this version has no recommendations and what would give some
-    // (finding D762); all are facts about the version and the Installation the caller may read.
-    if (binding.revision.sandboxDriverId === undefined) {
-      throw new ResourceStateConflictError(
-        "This version runs without a Sandbox, so it records no network denials to recommend policy from. Policy recommendations need an Agent deployed with a Sandbox Driver such as OpenShell.",
-      );
-    }
-    if (driver?.id !== binding.revision.sandboxDriverId) {
-      throw new ResourceStateConflictError(
-        "This version runs on a Sandbox Driver that this Installation no longer selects, so its recommendations cannot be read. Deploy a new version to read them.",
-      );
-    }
-    if (driver.readPolicyRecommendations === undefined) {
-      throw new ResourceStateConflictError(
-        "The selected Sandbox Driver does not offer policy recommendations, so no version can have them.",
-      );
-    }
-    const readRecommendations = driver.readPolicyRecommendations.bind(driver);
-    return admitRead(async () => {
-      let result: SandboxPolicyRecommendations;
-      try {
-        const compute = this.selectedDriver("compute");
-        if (
-          compute.id !== binding.revision.compute.id ||
-          compute.implementation !== binding.revision.compute.implementation ||
-          compute.resolveSandboxNamespace === undefined
-        ) {
-          throw new Error("Revision placement is unavailable.");
-        }
-        const namespace = await compute.resolveSandboxNamespace(binding.namespace);
-        result = await readRecommendations(
-          { namespace, revision: binding.revision, signal: AbortSignal.timeout(15_000) },
-          32,
-        );
-      } catch {
-        throw new DependencyUnavailableError("Sandbox policy recommendations are unavailable.");
-      }
-      // Reconstruct the public projection: provider fields and full candidate policies never escape.
-      if (
-        result === null ||
-        typeof result !== "object" ||
-        !Array.isArray(result.recommendations) ||
-        result.recommendations.length > 32 ||
-        typeof result.truncated !== "boolean"
-      ) {
-        throw new DependencyUnavailableError("Invalid Sandbox recommendation response.");
-      }
-      const recommendations = result.recommendations.map((entry) => {
-        try {
-          validateSandboxNetworkGrants([entry?.grant]);
-        } catch {
-          throw new DependencyUnavailableError("Invalid Sandbox recommendation.");
-        }
-        if (
-          !/^[a-zA-Z0-9-]{1,128}$/.test(entry.id) ||
-          !["pending", "approved", "rejected"].includes(entry.status) ||
-          (entry.observations !== undefined &&
-            (!Number.isSafeInteger(entry.observations) || entry.observations < 0))
-        ) {
-          throw new DependencyUnavailableError("Invalid Sandbox recommendation.");
-        }
-        return {
-          id: entry.id,
-          status: entry.status,
-          grant: {
-            id: entry.grant.id,
-            binary: entry.grant.binary,
-            host: entry.grant.host,
-            ports: entry.grant.ports.map(({ from, to }: { from: number; to: number }) => ({
-              from,
-              to,
-            })),
-          },
-          ...(entry.observations === undefined ? {} : { observations: entry.observations }),
-        };
-      });
-      if (
-        result.providerVersion !== undefined &&
-        (typeof result.providerVersion !== "string" ||
-          !/^[A-Za-z0-9_.:-]{1,128}$/.test(result.providerVersion))
-      ) {
-        throw new DependencyUnavailableError("Invalid Sandbox recommendation version.");
-      }
-      return immutableCopy({
-        recommendations,
-        truncated: result.truncated,
-        ...(result.providerVersion === undefined
-          ? {}
-          : { providerVersion: result.providerVersion }),
-      });
-    });
+      agentId,
+      facet,
+      revisionId,
+      admitRead,
+    );
   }
 
   async createAgent(
@@ -12417,7 +11824,7 @@ export class OpenClawController {
       // The reverse of the policy save's check: a binding added beside a saved grant that
       // reaches the repository hosts (finding 2144).
       if ((repositoryBindings ?? agent.repositoryBindings ?? []).length > 0) {
-        await this.refuseRepositoryNetworkOverlap(
+        await this.sandboxPolicyOperations.refuseRepositoryNetworkOverlap(
           principalId,
           await state.sandboxPolicies.find(namespace.id, agent.id),
         );
@@ -13444,17 +12851,17 @@ export class OpenClawController {
           revisionHarness.mode === "dedicated" &&
           repositoryCredentials !== undefined
         ) {
-          sandboxPolicy = this.checkedProtectedCodexArtifactPolicy(sandbox, policy?.version ?? 1);
+          sandboxPolicy = checkedProtectedCodexArtifactPolicy(sandbox, policy?.version ?? 1);
         }
       } else if ((policy?.additions.length ?? 0) > 0) {
-        sandboxPolicy = this.admitAgentNetworkPolicy(
+        sandboxPolicy = this.sandboxPolicyOperations.admitAgentNetworkPolicy(
           policy!.additions,
           policy!.version,
           undefined,
           policyScope,
         );
       } else if (sandbox?.admitNetworkPolicy !== undefined) {
-        sandboxPolicy = this.checkedSandboxPolicySnapshot(
+        sandboxPolicy = checkedSandboxPolicySnapshot(
           sandbox,
           [],
           policy?.version ?? 1,
@@ -17689,24 +17096,6 @@ export class OpenClawController {
       );
     }
     return driver?.id ?? this.configuredServiceAccountDriverId;
-  }
-
-  private requireNetworkPolicyAvailable(): void {
-    const unavailable = this.networkPolicyUnavailable();
-    if (unavailable !== undefined) {
-      throw new ResourceStateConflictError(unavailable);
-    }
-  }
-
-  /** Why this Installation has no per-Agent network policy, or undefined when it has one. */
-  private networkPolicyUnavailable(): string | undefined {
-    const driver = this.sandboxDriver();
-    if (driver === undefined) {
-      return NO_SANDBOX_DRIVER_NETWORK_POLICY;
-    }
-    return driver.networkPolicy === undefined || driver.admitNetworkPolicy === undefined
-      ? SANDBOX_DRIVER_WITHOUT_NETWORK_POLICY
-      : undefined;
   }
 
   private sandboxDriver(): SandboxDriver | undefined {
