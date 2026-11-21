@@ -2062,11 +2062,12 @@ test("occ agent apply deploys an existing Agent only when its file changes", asy
   const cli = join(directory, "occ");
   const execute = promisify(execFile);
   await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
-  const { controller, fixture, namespace, agent } = await admittedDeploymentFixture(
-    "agent-apply",
-    "applied-agent",
-  );
+  const { controller, fixture, namespace } = await readyNamespaceFixture("agent-apply");
+  const agent = await createAgent(controller, namespace.id, "applied-agent");
+  await bindHarnessKey(fixture, namespace.id, agent);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const admitted = await controller.request("POST", `${agentPath}/deploy`);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
   const { app, origin, keyFile } = await serveCliServiceKey(
     fixture,
     directory,
