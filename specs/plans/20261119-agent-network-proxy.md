@@ -96,16 +96,17 @@ bundle fails installation or admission.
    the direct route's final-IP check to a proxy-resolved destination or claim
    that it still applies. Install only the selected proxy's egress grant.
    When upstream proxies are configured, Helm creates one blank Kubernetes
-   Secret for each existing listener slot in the Gateway configuration
-   namespace. The manifest omits Secret data and binding annotations. Give the
+   Secret, credential HTTPRouteFilter, and deny-only HTTPRoute for each existing
+   listener slot in the Gateway configuration namespace. The manifest omits
+   Secret data and binding annotations. Give the
    worker only `get` and `update` on those exact Secret names; never grant it
    unrestricted Secret access in the OCC release namespace. The worker fills
    the assigned slot's `credential` key and records the binding identity with
    a resource-version check. Envoy Gateway becomes a trusted credential reader.
-   Use a new binding-specific HTTPRouteFilter and SDS name for each allocation.
-   Generate SDS through a binding-specific HTTPRoute that matches a reserved
-   path and returns 503 through the existing deny filter; attach no forwarding
-   backend. Include the source Secret UID and resource version in the binding
+   The fixed slot route matches a reserved path and returns 503 through the
+   existing deny filter; attach no forwarding backend. Its filter and SDS name
+   belong to that listener slot. The worker needs no route or filter mutation
+   permission. Include the source Secret UID and resource version in the binding
    identity. Refuse a retry if that material version changed; a new deployment
    can select the new version.
    Activate the injector in that listener's router upstream filter chain,
@@ -113,8 +114,8 @@ bundle fails installation or admission.
    Envoy Gateway's generated route filter is disabled until a route enables it.
    Overwrite any downstream `Proxy-Authorization` header. During retirement,
    install deny and wait for the drain gauge to reach zero. Empty the slot,
-   require the controller to reject the now-empty credential route, remove
-   that route and filter, and require the old SDS name to disappear. Only then
+   require the controller to reject the now-empty credential route, and require
+   the old SDS name to disappear while the static route and filter remain. Only then
    mark the blank slot idle and release the listener port.
    Restrict inspection to exact listener and cluster resource queries and
    `dynamic_active_secrets&mask=name`. Reject full dumps, unmasked Secret
@@ -206,8 +207,10 @@ through the real caller; register new cases in CI.
   annotation while the release manifest contained no credential. Exact-name
   RBAC allowed slot `get` and denied unrelated Secret `get`, Secret creation,
   and slot deletion. With the chart's drain settings and gauge at zero,
-  emptying the slot made the controller reject the credential route; deleting
-  the route and filter removed the old active SDS resource.
+  emptying the slot made the controller reject the credential route and removed
+  the old active SDS resource. A Helm-precreated static route/filter remained
+  in place. Refilling the slot then completed CONNECT with the new credential
+  and without the old credential; outage returned 503.
 - The published stable Gateway runtime connected in Socket Mode to a controlled
   Slack-compatible provider using synthetic tokens and `SLACK_API_URL`. The
   provider recorded `auth.test`, `apps.connections.open`, and a WebSocket
@@ -248,3 +251,5 @@ through the real caller; register new cases in CI.
   trust, and exact source-pinned Gateway qualification at `c25e2879`.
 - 2026-11-21 UTC: Qualify exact-name Secret slots, retirement, and inspection
   queries that exclude credential-derived delta versions.
+- 2026-11-21 UTC: Qualify static route/filter slots and safe credential reuse
+  without new worker routing permissions.
