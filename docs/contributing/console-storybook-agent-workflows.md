@@ -240,8 +240,9 @@ sender access](../reference/console/versions-and-channel-drafts.md).
 
 In **Collaboration and safety**, Strict mode stages both locked-down values in the
 Configuration JSON and keeps focus; the viewer story shows every toggle unavailable.
-The **?** beside the card heading, each toggle, and **Gateway managed mode** opens
-the rest of that help.
+Each toggle and **Gateway managed mode** show what they do and what they risk
+without a click. The **?** beside the card heading and beside the steering toggle
+opens one more sentence of explanation.
 None proves a deployed Gateway's steering.
 
 In **Enable gateway password access**, Cancel discards the staged reference.

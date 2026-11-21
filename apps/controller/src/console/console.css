@@ -4279,8 +4279,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     gap: var(--space-4);
   }
 }
-/* A name with a "?" beside it keeps one sentence of help in view; the "?" opens the rest below
-   it. */
+/* A name with a "?" beside it: the help under the name says what the control does and risks,
+   and the "?" opens explanation the reader can do without. */
 .about-heading {
   display: flex;
   gap: var(--space-2);
@@ -4288,9 +4288,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .about-heading > h2 {
   margin: 0;
-}
-.agent-card > .about-heading {
-  margin-bottom: var(--space-3);
 }
 .about-toggle {
   flex: none;
@@ -4329,10 +4326,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .gateway-safety > * {
   max-width: var(--prose-max);
 }
-.gateway-safety > .about-heading,
-.gateway-safety .about-info,
+.gateway-safety > .about-info,
 .gateway-safety > p {
   margin: 0;
+}
+.gateway-safety-setting > .about-info {
+  margin: var(--space-1) 0 0;
 }
 .gateway-safety-settings {
   display: grid;

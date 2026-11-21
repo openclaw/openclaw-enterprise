@@ -31,7 +31,6 @@ import {
   workspaceNodeGatewayPasswordProblem,
 } from "../environment-references.mjs";
 import {
-  aboutDisclosure,
   button,
   element,
   field,
@@ -490,12 +489,7 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
 // Managed mode also keeps the Gateway tool allowlist as deployed; with it off, Gateway
 // administrators can widen it until the next managed deployment (finding 2690).
 const GATEWAY_MANAGED_MODE_HINT =
-  "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs.";
-// Behind the card's "?".
-const GATEWAY_MANAGED_MODE_MORE =
-  "With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.";
-const JSON_HINT =
-  "Edit native JSON values for future deployments. Secret bindings are preserved separately.";
+  "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs. With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.";
 // Shown instead of the control to a caller who cannot change the setting (finding 2690).
 const GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY =
   "Only an Installation administrator can change Gateway managed mode.";
@@ -4337,21 +4331,18 @@ export async function renderAgentDetail(
         },
         { disabled: true },
       );
-      // Its own card on the Configuration tab, below the collaboration and safety card.
-      const more = aboutDisclosure("Gateway managed mode", GATEWAY_MANAGED_MODE_MORE, {
-        id: "gateway-managed-mode-more",
-      });
+      // Its own card on the Configuration tab, below the collaboration and safety card. The
+      // button is described by the hint, which says what turning managed mode off allows.
+      action.setAttribute("aria-describedby", "gateway-managed-mode-hint");
       const control = element(
         "section",
         { className: "agent-card", hidden: true },
+        element("h2", {}, "Gateway managed mode"),
         element(
-          "div",
-          { className: "about-heading" },
-          element("h2", {}, "Gateway managed mode"),
-          more.button,
+          "p",
+          { className: "hint", id: "gateway-managed-mode-hint" },
+          GATEWAY_MANAGED_MODE_HINT,
         ),
-        element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_HINT),
-        more.info,
         element("div", { className: "form-actions" }, action, reload),
         feedback,
       );
@@ -6757,11 +6748,14 @@ export async function renderAgentDetail(
         element(
           "div",
           { className: "form-field" },
-          element("label", { for: "configuration-json", title: JSON_HINT }, "Configuration JSON"),
+          element("label", { for: "configuration-json" }, "Configuration JSON"),
           editor,
           editorError.node,
-          // Read with the editor, and shown as its label's tooltip: no line under the JSON.
-          element("p", { className: "visually-hidden", id: "configuration-json-hint" }, JSON_HINT),
+          element(
+            "p",
+            { className: "hint", id: "configuration-json-hint" },
+            "Edit native JSON values for future deployments. Secret bindings are preserved separately.",
+          ),
         ),
         element(
           "div",

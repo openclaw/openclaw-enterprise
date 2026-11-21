@@ -7,8 +7,11 @@ type GatewaySafetySetting = {
   readonly id: string;
   readonly path: readonly string[];
   readonly label: string;
-  // The help text for a deployment of `values`.
+  // The help shown with the toggle for a deployment of `values`: what each state does and what
+  // it risks.
   readonly help: (values: ConfigurationDocument) => string;
+  // Explanation the reader can do without, behind the toggle's "?".
+  readonly more?: string;
   // The locked-down value Strict mode sets.
   readonly strict: boolean;
   // OpenClaw's default when deployment admission leaves the setting unset.
@@ -22,7 +25,8 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     path: ["messages", "queue", "allowCollaborativeSteering"],
     label: "Other participants can steer a running turn",
     help: (values) =>
-      `On: while a turn runs, another Gateway participant in the conversation can add guidance to it. The turn keeps the identity and permissions of the participant who started it, even when the participant steering has fewer. Participants are channel users or local operators with distinct Gateway identities. OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users. ${steeringOffHelp(values)}`,
+      `On: while a turn runs, another Gateway participant in the conversation can add guidance to it. The turn keeps the identity and permissions of the participant who started it, even when the participant steering has fewer. OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users. ${steeringOffHelp(values)}`,
+    more: "Participants are channel users or local operators with distinct Gateway identities.",
     strict: false,
     gatewayDefault: true,
   },
@@ -166,18 +170,13 @@ export function withGatewaySafetyStrict(values: ConfigurationDocument, strict: b
 
 const STRICT_HELP =
   "Sets every setting below to its locked-down value. Turn it off to return each setting to its default.";
-const INTRO = "These Gateway settings apply to every conversation with this Agent.";
+const INTRO =
+  "These Gateway settings apply to every conversation with this Agent. A change here edits the Configuration JSON: save it, then deploy a new version.";
 // Behind the card's "?".
 const INTRO_MORE =
-  "The defaults let the people who share the Agent work together; Strict mode locks each setting down. A change here edits the Configuration JSON: save it, then deploy a new version.";
+  "The defaults let the people who share the Agent work together; Strict mode locks each setting down.";
 const INVALID =
   "The Configuration JSON sets this to a value the Gateway refuses. Correct it in the JSON.";
-
-// A toggle shows the first sentence of its help; the rest waits behind its "?".
-function leadAndRest(help: string): readonly [string, string] {
-  const end = help.indexOf(". ");
-  return end < 0 ? [help, ""] : [help.slice(0, end + 1), help.slice(end + 2)];
-}
 
 function sourceText(value: GatewaySafetyValue) {
   if (value.kind === "invalid") {
@@ -200,42 +199,41 @@ export function gatewaySafetyControls({
   let current: ConfigurationDocument | undefined;
   let unavailableReason: string | null = null;
   const reason = element("p", { className: "hint", id: "gateway-safety-reason", hidden: true });
-  const toggle = (id: string, label: string, helpText: string, change: (on: boolean) => void) => {
+  // A toggle with its help, which says what each state does and risks. `more` is explanation
+  // the reader can do without: it waits behind a "?" beside the label.
+  const toggle = (
+    id: string,
+    label: string,
+    helpText: string,
+    change: (on: boolean) => void,
+    more?: string,
+  ) => {
     const input = element("input", {
       type: "checkbox",
       id: `gateway-safety-${id}`,
       "aria-describedby": `gateway-safety-${id}-hint`,
     });
     const source = element("strong", { className: "gateway-safety-source" });
-    const help = element("span", { className: "gateway-safety-help" });
+    const help = element("span", { className: "gateway-safety-help" }, helpText);
     const hint = element(
       "p",
       { className: "hint field-help", id: `gateway-safety-${id}-hint` },
       source,
       help,
     );
-    const about = aboutDisclosure(label, "", { id: `gateway-safety-${id}-more` });
-    const setHelp = (text: string) => {
-      const [lead, rest] = leadAndRest(text);
-      help.textContent = lead;
-      about.more.textContent = rest;
-      about.button.hidden = !rest;
-    };
-    setHelp(helpText);
+    const about = more
+      ? aboutDisclosure(label, more, { id: `gateway-safety-${id}-more` })
+      : undefined;
+    const name = element("label", { className: "gateway-safety-toggle" }, input, label);
     input.addEventListener("change", () => change(input.checked));
     const node = element(
       "div",
       { className: "gateway-safety-setting" },
-      element(
-        "div",
-        { className: "about-heading" },
-        element("label", { className: "gateway-safety-toggle" }, input, label),
-        about.button,
-      ),
+      about ? element("div", { className: "about-heading" }, name, about.button) : name,
       hint,
-      about.info,
+      about?.info ?? null,
     );
-    return { input, source, setHelp, hint, node };
+    return { input, source, help, hint, node };
   };
   const stage = (next: ConfigurationDocument) => {
     if (current !== undefined && next !== current) {
@@ -250,9 +248,15 @@ export function gatewaySafetyControls({
   });
   const rows = GATEWAY_SAFETY_SETTINGS.map((setting) => ({
     setting,
-    ...toggle(setting.id, setting.label, setting.help({}), (on) => {
-      stage(withGatewaySafetyValue(current ?? {}, setting, on));
-    }),
+    ...toggle(
+      setting.id,
+      setting.label,
+      setting.help({}),
+      (on) => {
+        stage(withGatewaySafetyValue(current ?? {}, setting, on));
+      },
+      setting.more,
+    ),
   }));
   const about = aboutDisclosure("Collaboration and safety", INTRO_MORE, {
     id: "gateway-safety-more",
@@ -280,7 +284,7 @@ export function gatewaySafetyControls({
     reason.hidden = !unavailable;
     reason.textContent = unavailable ?? "";
     let anyBlocked = false;
-    for (const { setting, input, source, setHelp, hint } of rows) {
+    for (const { setting, input, source, help, hint } of rows) {
       const value = values === undefined ? undefined : gatewaySafetyValue(values, setting);
       const invalid = value?.kind === "invalid";
       // A non-object on the path: only the JSON editor can correct it.
@@ -292,7 +296,7 @@ export function gatewaySafetyControls({
       source.textContent = value === undefined ? "" : `${sourceText(value)} `;
       // Unreadable JSON keeps the last help shown.
       if (values !== undefined) {
-        setHelp(setting.help(values));
+        help.textContent = setting.help(values);
       }
       // An unavailable toggle stays in the Tab order, described by why (finding 2878): the
       // section's reason, or its own help when the JSON holds a value only the editor can fix.

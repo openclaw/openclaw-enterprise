@@ -2165,21 +2165,19 @@ test("Agent detail preserves admitted revision history while draft edits change 
       once: true,
     },
   );
-  // The hint says what managed mode keeps, the tool allowlist included (finding 2690). What
-  // turning it off allows waits behind the card's "?".
-  await page
-    .getByText(
-      "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs.",
-      { exact: true },
-    )
-    .waitFor();
-  const managedModeMore = page.getByText(
-    "With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.",
+  // The hint says what managed mode keeps, the tool allowlist included (finding 2690). It stays
+  // in view in the Gateway managed mode card and describes the button that turns the mode off.
+  const managedModeHint = page.getByText(
+    "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs. With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.",
     { exact: true },
   );
-  assert.equal(await managedModeMore.isVisible(), false);
-  await page.getByRole("button", { name: "About Gateway managed mode", exact: true }).click();
-  await managedModeMore.waitFor();
+  await managedModeHint.waitFor();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Turn off managed mode for next deployment" })
+      .getAttribute("aria-describedby"),
+    await managedModeHint.getAttribute("id"),
+  );
   // An administrator gets the control, not the note for callers who cannot change it.
   assert.equal(
     await page

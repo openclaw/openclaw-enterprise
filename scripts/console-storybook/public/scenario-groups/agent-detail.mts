@@ -1121,8 +1121,8 @@ export function createAgentDetailScenarios({
         description:
           "The Configuration tab shows the Gateway collaboration and safety settings a deployment runs with. By default, other participants can steer a running turn, and apply_patch changes files only in the workspace.",
         steps: [
-          "Read each toggle's state and where it comes from: Default: on. Select the ? beside the steering toggle. Check that the help it opens distinguishes channel users and local operators from OCE users who share one Gateway identity.",
-          "Select the ? beside Collaboration and safety, then the ? beside Gateway managed mode. Each opens the rest of its card's help and closes it again.",
+          "Read each toggle's state and where it comes from: Default: on. Check that the steering help, without a click, says that the turn keeps the identity and permissions of the participant who started it and that OCE users share one Gateway identity. Select the ? beside the steering toggle: it says who counts as a participant.",
+          "Select the ? beside Collaboration and safety: it opens one more sentence about the defaults and Strict mode, and closes it again. Strict mode, apply_patch and Gateway managed mode show their whole help and have no ?.",
           "Turn on Strict mode. The Configuration JSON opens with both locked-down values written, and focus stays on Strict mode.",
           "Turn steering back on. Its value leaves the JSON and Strict mode turns off. Cancel, or Save Configuration and deploy a new version.",
         ],
@@ -1148,7 +1148,7 @@ export function createAgentDetailScenarios({
           collaborativeSteeringFallback: "reject",
         },
         description:
-          "The Configuration disables collaborative steering and sets its fallback to reject. The help behind the toggle's ? explains that another participant must resend their message with /followup.",
+          "The Configuration disables collaborative steering and sets its fallback to reject. The help explains that another participant must resend their message with /followup.",
         gap: "Simulated UI proof; does not show a deployed Gateway refusing a message.",
       },
       gatewaySafetyReader: {
