@@ -157,7 +157,7 @@ export const SandboxPolicyApplyBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. If the policy is present only on the active revision, stop the Agent and confirm that its workload has stopped before investigating the mismatch.",
+      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
   },
 );
 export const SandboxPolicyEditingBody = Type.Object(

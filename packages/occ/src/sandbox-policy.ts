@@ -710,14 +710,14 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       }
       if (policy.repositoryNetworkPolicy !== undefined) {
         throw new ResourceStateConflictError(
-          "Live application is unavailable for the saved repository network policy. To end current access, stop the Agent and confirm its workload has stopped. Applying the saved policy requires a deployment that can enforce it.",
+          "Live application is unavailable for the saved repository network policy. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped. Applying the saved policy requires a deployment that can enforce it.",
         );
       }
       const driver = dependencies.sandboxDriver();
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
       if (revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
         throw new ResourceStateConflictError(
-          "The active revision has a repository network policy that is missing from the saved policy. Stop the Agent and confirm its workload has stopped before investigating the mismatch.",
+          "The active revision has a repository network policy that is missing from the saved policy. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
         );
       }
       // Qualified artifact snapshots do not make protected revisions eligible for live apply.

@@ -501,7 +501,13 @@ export async function editStoredRepositoryGrants(
     revisionId: id,
   });
   assert.equal(apply.statusCode, 409, apply.body);
-  assert.match(apply.json().error.message, /stop the Agent/i);
+  assert.ok(
+    apply
+      .json()
+      .error.message.includes(
+        "Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
+      ),
+  );
   assert.deepEqual(await stored(), preserved);
 
   const withdrawal = {
