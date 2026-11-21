@@ -859,6 +859,7 @@ let runtimeStartupFailure;
 // loaded from a config with the node), and the current reason it is not.
 let runtimeWorkspaceNodeId;
 let runtimeWorkspaceNodeFailure;
+let refreshRuntimeWorkspaceNodeBinding;
 
 function publishPluginRuntimeStatus(report) {
   if (pluginRuntimeStatusPort() === undefined) return;
@@ -919,6 +920,7 @@ function runtimeDiagnosticCheck(check, state, checkedAt, code) {
 }
 
 function runtimeStatusReport() {
+  refreshRuntimeWorkspaceNodeBinding?.();
   return {
     revisionId: requireNonEmptyString(process.env.OPENCLAW_AGENT_REVISION_ID, "Runtime status revision ID"),
     container: runtimeStatusContainer(),
@@ -2620,7 +2622,115 @@ function publishAgentPluginSkillPath() {
 
 export const GATEWAY_RUNTIME_ENTRYPOINT = gatewayRuntimeEntrypoint(false);
 
-export function gatewayRuntimeEntrypoint(managedMode: boolean): string {
+type GatewayWorkspaceNodeProfile = {
+  readonly kind: "inspected-dedicated-codex";
+  readonly revisionId: string;
+  readonly bindingPath: string;
+};
+
+function inspectedWorkspaceNodeRuntime(profile: GatewayWorkspaceNodeProfile): string {
+  return String.raw`
+const inspectedWorkspaceNode = ${JSON.stringify({
+    revisionId: profile.revisionId,
+    bindingPath: profile.bindingPath,
+  })};
+
+function requireInspectedWorkspaceNodeLaunch(initialConfigPath) {
+  if (
+    !process.env.APP_SERVER_URL ||
+    process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined ||
+    process.env.OPENCLAW_WORKSPACE_NODE_ID !== undefined ||
+    workspaceNodeBindingPath !== inspectedWorkspaceNode.bindingPath ||
+    process.env.OPENCLAW_AGENT_REVISION_ID !== inspectedWorkspaceNode.revisionId ||
+    initialConfigPath !== "/etc/openclaw/openclaw.json"
+  ) {
+    throw new Error("Inspected workspace replies require a managed dedicated Codex launch with its revision-owned node binding.");
+  }
+}
+
+function configureInspectedWorkspacePairing(config) {
+  const gateway = config.gateway ??= {};
+  const nodes = gateway.nodes ??= {};
+  const pairing = nodes.pairing === undefined ? (nodes.pairing = {}) : nodes.pairing;
+  if (
+    !isPlainObject(pairing) ||
+    (pairing.autoApproveLocal !== undefined && pairing.autoApproveLocal !== false) ||
+    (pairing.sshVerify !== undefined && pairing.sshVerify !== false) ||
+    (pairing.autoApproveCidrs !== undefined &&
+      (!Array.isArray(pairing.autoApproveCidrs) || pairing.autoApproveCidrs.length > 0))
+  ) {
+    throw new Error("Inspected workspace node pairing requires explicit approval or a node-only setup code.");
+  }
+  // Both implicit approval paths default on in OpenClaw. Setup-code pairing
+  // and saved device-token authentication have independent admission paths.
+  pairing.autoApproveLocal = false;
+  pairing.sshVerify = false;
+}
+
+function requireInspectedFileTransferPolicy(fileConfig, workspaceNodeId, remoteRoot) {
+  if (fileConfig === undefined) return;
+  const nodes = fileConfig?.nodes;
+  const workspaces = fileConfig?.workspaces;
+  if (
+    !isPlainObject(fileConfig) ||
+    (nodes !== undefined && (!isPlainObject(nodes) || hasOwn(nodes, "*"))) ||
+    (workspaces !== undefined && !isPlainObject(workspaces))
+  ) {
+    throw new Error("Inspected workspace replies require an exact File Transfer node policy.");
+  }
+  // Before the controller supplies the authenticated binding, only a new
+  // workspace may bootstrap. Existing rights could otherwise dispatch on the
+  // inspected connection before its reply bounds are configured.
+  if (!workspaceNodeId &&
+      (Object.keys(nodes ?? {}).length > 0 || Object.keys(workspaces ?? {}).length > 0)) {
+    throw new Error("Existing File Transfer policies require the enrolled inspected node binding before startup.");
+  }
+  if (workspaces && hasOwn(workspaces, "main")) {
+    const main = workspaces.main;
+    if (!workspaceNodeId || !isPlainObject(main) ||
+        main.nodeId !== workspaceNodeId || main.remoteRoot !== remoteRoot) {
+      throw new Error("The configured workspace conflicts with the enrolled inspected node.");
+    }
+  }
+  for (const [nodeId, policy] of Object.entries(nodes ?? {})) {
+    if (!isPlainObject(policy) ||
+        (policy.boundedReplies !== undefined && typeof policy.boundedReplies !== "boolean") ||
+        (nodeId !== workspaceNodeId && policy.boundedReplies === true) ||
+        (nodeId === workspaceNodeId && policy.boundedReplies === false)) {
+      throw new Error("The File Transfer reply profile conflicts with the enrolled inspected node.");
+    }
+  }
+  if (workspaceNodeId && (!nodes || !hasOwn(nodes, workspaceNodeId))) {
+    // Bootstrap defaults are for a new policy only. A new exact entry could
+    // shadow a display-name rule or override previously configured denials.
+    if (nodes !== undefined || workspaces !== undefined ||
+        fileConfig.literalGrants !== undefined || fileConfig.pendingReapprovals !== undefined) {
+      throw new Error("The enrolled inspected node has no exact File Transfer policy in the configured node map.");
+    }
+  }
+  if (fileConfig.policyVersion !== 2 &&
+      (fileConfig.policyVersion !== undefined || nodes !== undefined ||
+       fileConfig.literalGrants !== undefined || fileConfig.pendingReapprovals !== undefined)) {
+    throw new Error("Review existing File Transfer approvals before selecting inspected workspace replies.");
+  }
+}
+`;
+}
+
+export function gatewayRuntimeEntrypoint(
+  managedMode: boolean,
+  workspaceNodeProfile?: GatewayWorkspaceNodeProfile,
+): string {
+  if (
+    workspaceNodeProfile !== undefined &&
+    (!managedMode ||
+      workspaceNodeProfile.kind !== "inspected-dedicated-codex" ||
+      !workspaceNodeProfile.revisionId ||
+      !workspaceNodeProfile.bindingPath.startsWith("/"))
+  ) {
+    throw new Error("Invalid inspected workspace node launch profile.");
+  }
+  const inspected = workspaceNodeProfile !== undefined;
   return String.raw`
 const { accessSync, constants: fsConstants, mkdirSync, rmSync } = require("node:fs");
 const { dirname, join } = require("node:path");
@@ -2943,7 +3053,12 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
     appServer.remoteWorkspaceRoot ??= remoteRoot;
   }
   // The path is known at startup. Pairing supplies only the node identity, so
-  // loading file-transfer should not also replace the Codex plugin.
+  // loading file-transfer should not also replace the Codex plugin.${
+    inspected
+      ? String.raw`
+  requireInspectedFileTransferPolicy(entries["file-transfer"]?.config, workspaceNodeId, remoteRoot);`
+      : ""
+  }
   if (workspaceNodeId === undefined) return;
   const managedMcp = entries[MANAGED_MCP_POLICY_ID];
   if (managedMcp?.enabled === true) managedMcp.config.nodeId = workspaceNodeId;
@@ -2992,6 +3107,11 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
       ],
       followSymlinks: false,
     };
+  }${
+    inspected
+      ? String.raw`
+  nodes[workspaceNodeId].boundedReplies = true;`
+      : ""
   }
   fileConfig.policyVersion ??= 2;
   (fileConfig.workspaces ??= {}).main = { nodeId: workspaceNodeId, remoteRoot };
@@ -3140,7 +3260,7 @@ function pinCodexProviderTransport(config) {
 }
 
 const WORKSPACE_NODE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
-const workspaceNodeBindingPath = process.env.OPENCLAW_WORKSPACE_NODE_PATH;
+const workspaceNodeBindingPath = process.env.OPENCLAW_WORKSPACE_NODE_PATH;${workspaceNodeProfile ? inspectedWorkspaceNodeRuntime(workspaceNodeProfile) : ""}
 
 // The controller writes {revisionId, deviceId} to an optional ConfigMap volume.
 // A missing, partial or foreign file (another revision of this Agent) is absent.
@@ -3156,7 +3276,12 @@ function readWorkspaceNodeBinding() {
     !isPlainObject(binding) ||
     binding.revisionId !== process.env.OPENCLAW_AGENT_REVISION_ID ||
     typeof binding.deviceId !== "string" ||
-    !WORKSPACE_NODE_ID_PATTERN.test(binding.deviceId)
+    !WORKSPACE_NODE_ID_PATTERN.test(binding.deviceId)${
+      inspected
+        ? String.raw` ||
+    !/^[a-f0-9]{64}$/u.test(binding.deviceId)`
+        : ""
+    }
   ) {
     return undefined;
   }
@@ -3282,7 +3407,12 @@ const followsPeerStatus =
   pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime) &&
   process.env.OPENCLAW_CODEX_PLUGINS_PREPARED !== "true";
 // A respawn configures from the file a container restart would start from.
-const initialConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+const initialConfigPath = process.env.OPENCLAW_CONFIG_PATH;${
+    inspected
+      ? String.raw`
+requireInspectedWorkspaceNodeLaunch(initialConfigPath);`
+      : ""
+  }
 const appliesGatewayToolPolicy = Boolean(process.env.APP_SERVER_URL || process.env.OPENCLAW_NATIVE_WORKER_PROFILE);
 // Native human administration can use a writable config, but it is not the
 // authority for OCE-approved model tools. Keep the admitted revision snapshot.
@@ -3411,7 +3541,12 @@ function configureGateway(peerStatus) {
     process.env.APP_SERVER_URL !== undefined ||
     process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined
   ) {
-    const config = readOpenClawConfig();
+    const config = readOpenClawConfig();${
+      inspected
+        ? String.raw`
+    configureInspectedWorkspacePairing(config);`
+        : ""
+    }
     configureManagedMcpPolicy(config, installs);
     // The first pairing records its command grant before a node ID is available.
     // gateway.* changes restart OpenClaw, so this is written only before a spawn.
@@ -3448,7 +3583,13 @@ let gatewayGeneration = 0;
 // OpenClaw backs up a config file it can write. One OCC mounted read-only is
 // externally managed: say so, so OpenClaw skips that backup instead of logging
 // EROFS on every start.
-function gatewayEnvironment() {
+function gatewayEnvironment() {${
+    inspected
+      ? String.raw`
+  // Only the wrapper composes the revision-owned policy. The native Gateway
+  // still persists paired devices in its normal state directory.
+  return { ...process.env, OPENCLAW_CONFIG_READONLY: "1" };`
+      : String.raw`
   const configPath = process.env.OPENCLAW_CONFIG_PATH;
   if (configPath === undefined) return process.env;
   try {
@@ -3456,6 +3597,7 @@ function gatewayEnvironment() {
     return process.env;
   } catch {
     return { ...process.env, OPENCLAW_CONFIG_READONLY: "1" };
+  }`
   }
 }
 
@@ -3663,22 +3805,43 @@ if (workspaceNodeBindingPath !== undefined) {
       ...(reason === undefined ? {} : { reason }),
     }));
   };
-  const pollWorkspaceNode = async () => {
-    const deviceId = readWorkspaceNodeBinding();
-    if (deviceId === undefined || deviceId === runtimeWorkspaceNodeId) return;
-    if (written !== undefined && written.deviceId !== deviceId) {
-      // Another node for this revision: replace the config from a clean start.
-      if (stoppingForChangedWorkspaceNode) return;
-      stoppingForChangedWorkspaceNode = true;
+  const retireChangedWorkspaceNode = (deviceId) => {
+    if (written === undefined || written.deviceId === deviceId${inspected ? "" : " || deviceId === undefined"}) {
+      return false;
+    }
+    if (!stoppingForChangedWorkspaceNode) {
+      stoppingForChangedWorkspaceNode = true;${
+        inspected
+          ? String.raw`
+      // Drop the ack before retiring the process that holds the old File Transfer policy.
+      runtimeWorkspaceNodeId = undefined;
+      runtimeWorkspaceNodeFailure = undefined;`
+          : ""
+      }
       clearInterval(workspaceNodePoll);
       logStartupPhase("workspace-node-changed", startupPhaseOrigin);
       stopContainer("WORKSPACE_NODE_CHANGED");
+    }
+    return true;
+  };
+  const pollWorkspaceNode = async () => {
+    const deviceId = readWorkspaceNodeBinding();
+    if (retireChangedWorkspaceNode(deviceId) || deviceId === undefined || deviceId === runtimeWorkspaceNodeId) {
       return;
     }
     firstSeenAt ??= Date.now();
     const generation = gatewayGeneration;
-    // A respawn replaced the process this poll was talking to: start over.
-    const superseded = () => respawning || generation !== gatewayGeneration;
+    const superseded = () => {
+      if (respawning || stoppingForChangedWorkspaceNode || generation !== gatewayGeneration) return true;${
+        inspected
+          ? String.raw`
+      // A probe result only applies to the binding that launched it.
+      const current = readWorkspaceNodeBinding();
+      return retireChangedWorkspaceNode(current) || current !== deviceId;`
+          : String.raw`
+      return false;`
+      }
+    };
     if (written === undefined) {
       const before = await openClawFileTransferState();
       if (superseded()) return;
@@ -3726,7 +3889,7 @@ if (workspaceNodeBindingPath !== undefined) {
     }
   };
   const workspaceNodePoll = setInterval(async () => {
-    if (pollInFlight || respawning || gatewayStartupHeld) return;
+    if (pollInFlight || respawning || gatewayStartupHeld || stoppingForChangedWorkspaceNode) return;
     pollInFlight = true;
     try {
       await pollWorkspaceNode();
@@ -3737,7 +3900,15 @@ if (workspaceNodeBindingPath !== undefined) {
       pollInFlight = false;
     }
   }, 1_000);
-  workspaceNodePoll.unref?.();
+  workspaceNodePoll.unref?.();${
+    inspected
+      ? String.raw`
+  // A status read between polls may see a retired or replaced binding.
+  refreshRuntimeWorkspaceNodeBinding = () => {
+    if (written !== undefined) retireChangedWorkspaceNode(readWorkspaceNodeBinding());
+  };`
+      : ""
+  }
 }
 if (followsPeerStatus) {
   let pollInFlight = false;

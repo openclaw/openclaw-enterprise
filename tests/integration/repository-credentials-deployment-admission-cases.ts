@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { selectFixtureRelease } from "../helpers/inspected-workspace-release.ts";
 import type { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -924,6 +925,7 @@ interface ProtectedPolicyDeploymentFixtures {
       readonly harness: "codex";
       readonly bindings: readonly RepositoryBindingSelection[];
       readonly installedProfile: "repository";
+      readonly inspected?: boolean;
       readonly gatewayVersion: string;
       readonly credentialGateway: true;
       readonly repositoryNetworkPolicyCeiling: readonly RepositoryNetworkGrant[];
@@ -970,6 +972,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       credentialGateway: true,
       repositoryNetworkPolicyCeiling: [writeGrant, unselected, foreign],
       configureRegistry: selectedRepositoryRegistry("read", nativeGit),
+      inspected: nativeGit === "v1",
     });
     const fixtureCompute = f.controller.selectedDriver("compute");
     const sandbox = f.controller.selectedDriver("sandbox");
@@ -996,9 +999,10 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       201,
     );
     const sourceId = model.id;
-    async function createSelectedAgent() {
+    async function createSelectedAgent(gatewayManagedMode?: boolean) {
       const agent = await f.createAgent({
         executionMode: "dedicated",
+        ...(gatewayManagedMode === undefined ? {} : { gatewayManagedMode }),
         repositoryBindings: [...bindings],
         harnessAuth: { method: "credential_source", sourceId },
         credentialSources: [{ sourceId }],
@@ -1032,16 +1036,53 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     };
   }
 
+  test("an unpinned Compute cannot offer repository policy editing", async (t) => {
+    const { f, createSelectedAgent } = await scopedFixture(t, "v1");
+    const unqualified = await createSelectedAgent();
+    const path = `${f.collection}/${unqualified.id}/sandbox-policy/networking`;
+    assert.equal((await f.request("PATCH", path + "/editing", { enabled: true })).status, 200);
+    const { data: disabled } = checkedEnvelope(
+      await f.request("GET", path),
+      SandboxPolicyViewResponse,
+      200,
+    );
+    assert.equal(disabled.repositoryNetworkPolicySaveSupported, false);
+  });
+
+  test("a pinned unmanaged Gateway refuses the repository policy hint and first saves", async (t) => {
+    selectFixtureRelease(t);
+    const { f, selected, createSelectedAgent } = await scopedFixture(t, "v1");
+    const agent = await createSelectedAgent(false);
+    const path = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+    assert.equal((await f.request("PATCH", path + "/editing", { enabled: true })).status, 200);
+    const read = async () =>
+      checkedEnvelope(await f.request("GET", path), SandboxPolicyViewResponse, 200).data;
+    const before = await read();
+    assert.equal(agent.gatewayManagedMode, false);
+    assert.ok(
+      before.repositoryNetworkPolicyCeiling.some(
+        ({ repository }) => repository === selected.repository,
+      ),
+    );
+    for (const repositoryNetworkPolicy of [[selected], []]) {
+      checkedEnvelope(
+        await f.request("PUT", path, {
+          expectedVersion: before.policy.version,
+          additions: [],
+          repositoryNetworkPolicy,
+        }),
+        ErrorResponse,
+        409,
+      );
+    }
+    assert.deepEqual((await read()).policy, before.policy);
+    assert.equal(before.repositoryNetworkPolicySaveSupported, false);
+  });
+
   test("a saved repository grant selects native Git for its deployment only", async (t) => {
-    const { f, selected, fixtureCompute, createSelectedAgent } = await scopedFixture(t, "v1");
-    // Emulate an eligible placement. The Repo, Sandbox, proxy and both API admissions are real.
-    Object.assign(fixtureCompute, {
-      admitRevision: () => undefined,
-      snapshotRuntimeInputs: () => undefined,
-      admitsProtectedRepositoryNetworkPolicySave: () => true,
-      validateProtectedRepositoryNetworkPolicy: () => {},
-      getAgentRuntimeCredentialStatus: async () => ({ transportConfigured: true }),
-    });
+    selectFixtureRelease(t);
+    const { f, selected, createSelectedAgent } = await scopedFixture(t, "v1");
+
     for (const grants of [undefined, [], [selected]]) {
       const agent = await createSelectedAgent();
       const path = `${f.collection}/${agent.id}`;
@@ -1067,6 +1108,12 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
           200,
         );
         assert.deepEqual(saved.repositoryNetworkPolicy, grants);
+      }
+      if (grants?.length) {
+        const changed = selectFixtureRelease(t, "sha256:" + "c".repeat(64));
+        checkedEnvelope(await f.request("POST", path + "/deploy"), ErrorResponse, 409);
+        assert.deepEqual((await f.request("GET", path + "/revisions")).data, []);
+        changed.mock.restore();
       }
       const reply = await f.request("POST", path + "/deploy");
       if (grants?.length === 0) {
@@ -1319,10 +1366,17 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
         });
         repo.repositoryNetworkPolicyAllows = ({ grant }) =>
           pair.some((item) => item.repository === grant.repository);
-        fixtureCompute.admitsProtectedRepositoryNetworkPolicySave = ({ repositoryNetworkPolicy }) =>
-          isDeepStrictEqual(repositoryNetworkPolicy?.grants, pair);
+        const requests: (readonly RepositoryNetworkGrant[] | undefined)[] = [];
+        fixtureCompute.admitsProtectedRepositoryNetworkPolicySave = ({
+          repositoryNetworkPolicy,
+        }) => {
+          const grants = repositoryNetworkPolicy?.grants;
+          requests.push(grants);
+          return isDeepStrictEqual(grants, pair);
+        };
         try {
           await savedPolicyAgent(pair, [[], [unselected], [writeGrant]]);
+          assert.deepEqual(requests, [[], [unselected], [writeGrant], pair]);
         } finally {
           repo.resolveBindings = originalResolver;
           repo.repositoryNetworkPolicyAllows = originalAllows;

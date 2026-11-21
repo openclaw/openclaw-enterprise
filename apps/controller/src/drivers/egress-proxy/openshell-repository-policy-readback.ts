@@ -6,6 +6,10 @@ import {
   type OpenShellProviderProfile,
   type OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
+import {
+  inspectedWorkspaceNodeRule,
+  type InspectedWorkspaceNodeRoute,
+} from "../sandbox/openshell-workspace-node-policy.ts";
 import type { OpenShellPreparedGitInstalled } from "./openshell-prepared-git-provider.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 
@@ -113,7 +117,11 @@ export function openShellEffectiveBoundGitRule(
 const inspectedProtocols = new Set(["rest", "websocket", "graphql", "json-rpc", "mcp"]);
 
 /** An ambiguous destination or opaque relay could route around the exact Git rule. */
-function hasOnlyInspectedNonGitEndpoints(rule: unknown, gitRule: GitRule): boolean {
+function hasOnlyInspectedNonGitEndpoints(
+  rule: unknown,
+  gitRule: GitRule,
+  workspaceHost?: string,
+): boolean {
   const policy = asRecord(rule);
   if (!policy) {
     return false;
@@ -129,6 +137,7 @@ function hasOnlyInspectedNonGitEndpoints(rule: unknown, gitRule: GitRule): boole
         typeof host === "string" &&
         /^[a-z0-9-]+(?:[.][a-z0-9-]+)*[.][a-z][a-z0-9-]*$/i.test(host) &&
         !/(?:^|[.])github[.]com$/i.test(host) &&
+        host.toLowerCase() !== workspaceHost &&
         gitRule.endpoints.every((git) => git.host.toLowerCase() !== host.toLowerCase()) &&
         typeof endpoint.protocol === "string" &&
         inspectedProtocols.has(endpoint.protocol) &&
@@ -147,6 +156,7 @@ function matchesPolicy(
   effective: Record<string, unknown>,
   gitRule: GitRule,
   expectedProviders: readonly OpenShellExpectedProviderRule[],
+  workspaceRoute: InspectedWorkspaceNodeRoute | undefined,
   gitProvider: string,
   boundGitRule?: GitRule | undefined,
 ): boolean {
@@ -160,6 +170,11 @@ function matchesPolicy(
     Object.keys(sourceRules).some((name) => name.startsWith("_provider_")) ||
     !isDeepStrictEqual(wirePolicy(staticSource), wirePolicy(staticEffective))
   ) {
+    return false;
+  }
+  const workspaceName = "workspace-node-enrollment";
+  const workspaceRule = workspaceRoute && inspectedWorkspaceNodeRule(workspaceRoute);
+  if (!isDeepStrictEqual(wirePolicy(sourceRules[workspaceName]), wirePolicy(workspaceRule))) {
     return false;
   }
   const expectedSourceRules = { ...sourceRules };
@@ -192,7 +207,8 @@ function matchesPolicy(
     Object.entries(effectiveRules).every(
       ([name, rule]) =>
         name === (boundGitRule?.name ?? gitRule.name) ||
-        hasOnlyInspectedNonGitEndpoints(rule, boundGitRule ?? gitRule),
+        (name === workspaceName && workspaceRule !== undefined) ||
+        hasOnlyInspectedNonGitEndpoints(rule, boundGitRule ?? gitRule, workspaceRoute?.host),
     )
   );
 }
@@ -206,6 +222,7 @@ export async function verifyOpenShellRepositoryPolicy(
   expectedProviders: readonly OpenShellExpectedProviderRule[] | undefined,
   signal: AbortSignal,
   verifyManagedSandbox?: OpenShellGitSandboxVerifier,
+  workspaceRoute?: InspectedWorkspaceNodeRoute,
   boundGitRule?: GitRule | undefined,
 ): Promise<boolean> {
   if (!expectedProviders || !client.getSandboxPolicyStatus || !client.getSandboxConfig) {
@@ -240,7 +257,15 @@ export async function verifyOpenShellRepositoryPolicy(
     config.policy_hash !== policyHash ||
     config.config_revision !== installed.configRevision ||
     config.provider_env_revision !== installed.providerEnvRevision ||
-    !matchesPolicy(source, effective, gitRule, expectedProviders, installed.provider, boundGitRule)
+    !matchesPolicy(
+      source,
+      effective,
+      gitRule,
+      expectedProviders,
+      workspaceRoute,
+      installed.provider,
+      boundGitRule,
+    )
   ) {
     return false;
   }

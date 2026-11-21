@@ -1,3 +1,4 @@
+import { admitsFrozenWorkspace } from "./inspected-workspace-release.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
 import { compileOpenShellBoundGitRule } from "./openshell-git-network-policy.ts";
 import { posix } from "node:path";
@@ -58,7 +59,12 @@ import {
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
-import { workspaceNodeNetworkPolicy } from "./openshell-workspace-node-policy.ts";
+import {
+  inspectedWorkspaceNodeRoute,
+  inspectedWorkspaceNodeTrustPrelude,
+  workspaceNodeNetworkPolicy,
+  workspaceNodePathFor,
+} from "./openshell-workspace-node-policy.ts";
 import {
   AGENT_POLICY_PREFIX,
   openShellAgentNetworkRules,
@@ -386,6 +392,7 @@ const APP_TOKEN_SHA_ENVIRONMENT = "APP_TOKEN_SHA";
 const PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT = "OPENCLAW_PLUGIN_RUNTIME_MANIFEST";
 const PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT = "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML";
 const WORKSPACE_NODE_SETUP_ENVIRONMENT = "OPENCLAW_NODE_SETUP_CODE";
+const WORKSPACE_NODE_ROUTE_ENVIRONMENT = "OCE_INSPECTED_WORKSPACE_NODE_URL";
 const WORKSPACE_NODE_ENVELOPE_ENVIRONMENT = "OPENCLAW_NODE_SETUP_ENVELOPE";
 const WORKSPACE_NODE_ENVELOPE_FILE = "node-setup.json";
 const WORKSPACE_NODE_SETUP_CONFIG = "node_setup_json";
@@ -618,7 +625,7 @@ function environment(
 ): Record<string, string> {
   const result: Record<string, string> = {};
   for (const entry of requirements.environment) {
-    if (providerEnvironment.has(entry.name)) {
+    if (entry.name === WORKSPACE_NODE_ROUTE_ENVIRONMENT || providerEnvironment.has(entry.name)) {
       continue;
     }
     if ("valueFrom" in entry) {
@@ -963,6 +970,7 @@ export interface WorkspaceNodeBinding {
   readonly port: number;
   readonly path: string;
   readonly tls: boolean;
+  readonly inspected?: true;
 }
 
 interface HarnessRuntimeCredentialMaterial {
@@ -972,12 +980,30 @@ interface HarnessRuntimeCredentialMaterial {
   readonly binding?: WorkspaceNodeBinding;
 }
 
-async function harnessRuntimeCredentials(
+export async function harnessRuntimeCredentials(
   context: SandboxHarnessContext,
 ): Promise<HarnessRuntimeCredentialMaterial> {
   const projected = context.requirements.environment.filter((entry) => "valueFrom" in entry);
-  if (projected.length === 0) {
+  const routes = context.requirements.environment.filter(
+    ({ name }) => name === WORKSPACE_NODE_ROUTE_ENVIRONMENT,
+  );
+  const scoped = context.revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined;
+  if (projected.length === 0 && routes.length === 0) {
     return { credentials: {}, credentialExpirationTimes: {}, config: {} };
+  }
+  const marker = routes[0];
+  if (
+    scoped
+      ? routes.length !== 1 ||
+        marker === undefined ||
+        !("value" in marker) ||
+        context.revision.harness.id !== "codex" ||
+        context.revision.harness.mode !== "dedicated"
+      : routes.length !== 0
+  ) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "Workspace inspection requires the protected Codex Compute route.",
+    );
   }
   if (projected.length !== 1 || projected[0]!.name !== WORKSPACE_NODE_SETUP_ENVIRONMENT) {
     const unsupported = projected.find((entry) => entry.name !== WORKSPACE_NODE_SETUP_ENVIRONMENT);
@@ -1010,6 +1036,14 @@ async function harnessRuntimeCredentials(
     throw error;
   }
   const endpoint = new URL(setupEnvelope.url);
+  const inspected =
+    marker && "value" in marker
+      ? inspectedWorkspaceNodeRoute(
+          marker.value,
+          setupEnvelope,
+          workspaceNodePathFor(context.revision.namespaceId, context.revision.agentId),
+        )
+      : undefined;
   // TODO(openshell-workspace-node-proof-binding): Return the bootstrap token to
   // OpenShell credential storage after OpenClaw can sign a stable public binding
   // instead of the token value that OpenShell rewrites on the WebSocket.
@@ -1023,6 +1057,7 @@ async function harnessRuntimeCredentials(
         endpoint.port === "" ? (endpoint.protocol === "wss:" ? 443 : 80) : Number(endpoint.port),
       path: endpoint.pathname === "" ? "/" : endpoint.pathname,
       tls: endpoint.protocol === "wss:",
+      ...(inspected && { inspected: true as const }),
     }),
   });
 }
@@ -1343,6 +1378,8 @@ export function sandboxCommand(
   native: boolean,
   loginMode: HarnessWorkloadRequirements["loginMode"],
   workspaceSetup: HarnessWorkloadRequirements["workspaceSetup"],
+  repositoryPolicy = false,
+  inspectedWorkspace?: true,
 ): readonly string[] {
   const loaderIndex = RUNTIME_WRAPPER_COMMAND.length;
   const loader = nodeProgramArguments("")[0]!;
@@ -1359,19 +1396,19 @@ export function sandboxCommand(
   const bootstrap = `{\nconst fs = require("node:fs");\nconst path = require("node:path");\nfor (const [link, target] of ${JSON.stringify(
     links.map(({ path, target }) => [path, target]),
   )}) {\n  fs.mkdirSync(path.dirname(link), { recursive: true });\n  try {\n    const existing = fs.lstatSync(link);\n    if (!existing.isSymbolicLink() || fs.readlinkSync(link) !== target) {\n      throw new Error("OpenShell workspace link conflicts with existing runtime state: " + link);\n    }\n  } catch (error) {\n    if (error?.code !== "ENOENT") {\n      throw error;\n    }\n    fs.symlinkSync(target, link);\n  }\n}\n}\n`;
-  const prelude = `${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
+  const prelude = `${bootstrap}${inspectedWorkspace ? inspectedWorkspaceNodeTrustPrelude : ""}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
   const composed = [
     ...command.slice(0, loaderIndex),
     prelude + loader,
     ...command.slice(loaderIndex + 1),
   ];
-  // Keep the existing command encoding. Pack larger preludes with the program
-  // to reduce their size, including for revisions above the 64 KiB design target.
+  // Preserve the immutable command of existing Sandboxes. Large repository
+  // policy launches use Brotli to fit the Workspace trust prelude.
   return Buffer.byteLength(JSON.stringify(composed)) <= 65_536
     ? composed
     : [
         ...command.slice(0, loaderIndex),
-        ...prependNodeProgramArguments(prelude, command.slice(loaderIndex)),
+        ...prependNodeProgramArguments(prelude, command.slice(loaderIndex), repositoryPolicy),
       ];
 }
 
@@ -2337,6 +2374,8 @@ function sandboxSpec(
         revision.harness.id === "openclaw",
         requirements.loginMode,
         requirements.workspaceSetup,
+        revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
+        workspaceNodeBinding?.inspected,
       ),
     },
     runtimeProvider,
@@ -3452,13 +3491,28 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Repository network policy requires protected selected-repository Git with an admitted Harness credential source.",
       );
     }
+    const workspaceRoute = context.requirements.environment.find(
+      ({ name }) => name === WORKSPACE_NODE_ROUTE_ENVIRONMENT,
+    );
     if (
-      nativeGit &&
-      context.requirements.environment.some(({ name }) => name === WORKSPACE_NODE_SETUP_ENVIRONMENT)
+      context.revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined &&
+      (workspaceRoute ||
+        context.revision.compute.runtimeInputs !== undefined ||
+        context.requirements.environment.some(
+          ({ name }) => name === WORKSPACE_NODE_SETUP_ENVIRONMENT,
+        )) &&
+      (!workspaceRoute ||
+        !("value" in workspaceRoute) ||
+        !admitsFrozenWorkspace(
+          context.revision,
+          context.requirements.image,
+          workspaceRoute.value,
+          this.options.integrationMode ?? "legacy",
+        ))
     ) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "Repository network policy requires inspected Workspace node enrollment.",
+        "Repository network policy cannot use OpenShell Workspace node enrollment until its inspected transport is qualified.",
       );
     }
     if (
@@ -3535,6 +3589,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         gitRouteOverlapMessage(gitOverlap),
       );
     }
+    // For scoped policy, verify the Setup Secret and Compute route before preparing a Provider.
+    const scopedWorkspace =
+      context.revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
+      context.requirements.environment.some(({ name }) => name === WORKSPACE_NODE_ROUTE_ENVIRONMENT)
+        ? await harnessRuntimeCredentials(context)
+        : undefined;
     const git =
       context.revision.repositoryCredentials === undefined
         ? undefined
@@ -3556,6 +3616,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
                   this.gitRuntimeProviderName(context.revision),
                   runtimeFileProviderNetwork,
                 ),
+            scopedWorkspace?.binding?.inspected ? scopedWorkspace.binding : undefined,
           );
     if (git && context.requirements.proxyWiring && !context.revision.egressPlan?.repositoryGit) {
       throw new OpenShellSandboxConfigurationFailure(
@@ -3583,7 +3644,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       codex ? "codex" : "openclaw",
       context.revision.egressPlan,
     );
-    const runtimeCredentialMaterial = await harnessRuntimeCredentials(context);
+    const runtimeCredentialMaterial = scopedWorkspace ?? (await harnessRuntimeCredentials(context));
     await this.ensureRuntimeProfile(client, workspace, runtimeFiles.profile, context.signal);
     const { name: runtimeProvider } = await this.ensureRuntimeProvider(
       client,
