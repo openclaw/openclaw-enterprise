@@ -2195,7 +2195,7 @@ function renderAgentForm(
     "Create Agent",
   );
   const startOver = button("Start over", () => {
-    if (!isTouched() || window.confirm("Discard this draft and start again?")) {
+    if (!discardsWork() || window.confirm("Discard this draft and start again?")) {
       context.drafts.forget("channels");
       renderCreateAgent(context);
     }
@@ -2422,7 +2422,7 @@ function renderAgentForm(
     { className: "form-actions" },
     // Cancel is the explicit discard; other exits keep the draft (finding 1902).
     button("Cancel", () => {
-      if (!isTouched() || window.confirm("Discard this draft?")) {
+      if (!discardsWork() || window.confirm("Discard this draft?")) {
         context.setDiscardOnExit(true);
         context.navigate("agents");
       }
@@ -2630,6 +2630,9 @@ function renderAgentForm(
   toggleModel.addEventListener("click", markTouched);
   // Repository edits and other button-only changes set `edited`.
   const isTouched = () => touched || edited;
+  // Cancel and Start over also discard Preset variables the reader changed and has not used yet,
+  // so they ask first for those too (finding 1902).
+  const discardsWork = () => isTouched() || presets.capture()?.touched === true;
   const captureDraft = (): CreateAgentDraft => ({
     touched: isTouched(),
     presetChoice: presets.capture(),

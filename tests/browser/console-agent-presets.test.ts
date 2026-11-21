@@ -4251,6 +4251,51 @@ test("a default starter creation form survives every exit but a confirmed Cancel
   assert.equal(result.data.name, "Saved Agent");
 });
 
+test("Cancel and Start over ask before discarding changed Preset variables not used yet", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pending variables", { ready: true });
+  // The default Preset needs a variable, so a new form shows the chooser's variable and Use
+  // Preset instead of applying the Preset by itself.
+  const starter = await defaultPresetSummary(fixture, namespace.id);
+  const defaults = await presetTemplate(fixture, namespace.id, starter.id);
+  const updated = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/presets/${starter.id}`,
+    {
+      body: {
+        template: {
+          ...defaults,
+          variables: { name: { type: "string" } },
+          agent: { ...defaults.agent, name: "{{ vars.name }}" },
+        },
+      },
+    },
+  );
+  assert.equal(updated.status, 200);
+
+  const { page } = await newPage(t, fixture);
+  const dialogs: string[] = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(`${dialog.type()}: ${dialog.message()}`);
+    await dialog.dismiss();
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.locator("#create-agent-form").waitFor();
+  const variable = page.getByLabel("Name", { exact: true });
+  // The reader types a variable and does not select Use Preset: the form itself is untouched,
+  // and the typed value is the only work on the page.
+  await variable.fill("Typed and not used");
+
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.deepEqual(dialogs.splice(0), ["confirm: Discard this draft?"]);
+  assert.equal(await variable.inputValue(), "Typed and not used");
+
+  await page.getByRole("button", { name: "Start over", exact: true }).click();
+  assert.deepEqual(dialogs.splice(0), ["confirm: Discard this draft and start again?"]);
+  assert.equal(await variable.inputValue(), "Typed and not used");
+});
+
 test("a restored default starter chooser keeps its applied form across navigation", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
