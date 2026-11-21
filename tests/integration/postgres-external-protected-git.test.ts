@@ -131,6 +131,12 @@ test(
 );
 
 test(
+  "an installed external Driver retains one exact-dispatch draft claim through rotation and withdrawal",
+  journeyOptions,
+  externalGitJourney("exact-dispatch-git-write"),
+);
+
+test(
   "built-in repository policy admits authenticated native Git, survives worker restart, and denies withdrawn access",
   journeyOptions,
   externalGitJourney("built-in-installation"),
@@ -535,7 +541,8 @@ function externalGitJourney(
     | "built-in-installation"
     | "reducible-installation"
     | "lost-rotation"
-    | "git-write",
+    | "git-write"
+    | "exact-dispatch-git-write",
   artifactAdmissionOnly = false,
   finiteRemoval = false,
   stopDuringRemoval = false,
@@ -642,8 +649,8 @@ function externalGitJourney(
     const { id: namespaceId } = namespace;
     const authenticatedJourney = scope === "built-in-installation";
     // Repository write access with one draft pull request, authorized per request.
-    const writes = scope === "git-write";
-    const online = scope === "online-installation" || authenticatedJourney || writes;
+    const writes = scope === "git-write" || scope === "exact-dispatch-git-write";
+    const online = scope === "online-installation" || authenticatedJourney || scope === "git-write";
     const lostRotation = scope === "lost-rotation";
     const reducible = scope === "reducible-installation" || lostRotation;
     const broad =
@@ -1601,11 +1608,12 @@ function externalGitJourney(
       };
       const initialFetch = await transfer(await origin.ref("main"));
       rehearsal?.gitFetched(initialFetch);
-      if (writes) {
+      const exerciseWrites = async () => {
         // The sender reports each request's ref and draft scope; the Worker's owner decides
         // against the registry grant (push ref, base, one draft) and records every allow.
         assert.ok("pulls" in gh);
         const { pulls } = gh;
+        const admitted = online ? "allow" : "permit";
         const start = peer.decisions.length;
         const secret = peer.clientHeader.slice("Authorization: ".length);
         const receivePacks = () =>
@@ -1675,9 +1683,9 @@ function externalGitJourney(
         assert.deepEqual(
           outcomes(start),
           [
-            ["advertise-receive-pack", "allow"],
-            ["receive-pack", "allow"],
-            ["advertise-receive-pack", "allow"],
+            ["advertise-receive-pack", admitted],
+            ["receive-pack", admitted],
+            ["advertise-receive-pack", admitted],
             ["receive-pack", "unavailable"],
           ],
           JSON.stringify({ code: elsewhere.code, stderr: elsewhere.stderr }),
@@ -1709,18 +1717,118 @@ function externalGitJourney(
           [(created.data.head as { ref: string }).ref, (created.data.base as { ref: string }).ref],
           ["review", "main"],
         );
-        assert.equal((await draft("main")).status, 403, "the grant allows one draft");
+        let verifyExactDraft: ((materialVersion?: string) => Promise<void>) | undefined;
+        if (!online) {
+          // Bind the successful response to the exact permit and spent claim before trying a
+          // second valid draft. The same records must survive rotation and withdrawal.
+          assert.equal(await origin.ref("refs/heads/review"), commit);
+          const authorization = peer.decisions.at(-1);
+          assert.ok(authorization);
+          assert.equal(authorization.operation, "create-draft-pull");
+          const permit = authorization.decision as RepositoryGitSendPermit;
+          assert.equal(permit.kind, "permit");
+          assert.equal(permit.materialVersion, first.materialVersion);
+
+          const readPermit = async () =>
+            (
+              await pool.query(
+                `SELECT operation, send_start_by, authorization_reply_by, material_version,
+                        attempt_id, request_digest_sha256
+                   FROM occ.prepared_repository_git_uses WHERE exchange_id=$1`,
+                [permit.exchangeId],
+              )
+            ).rows;
+          const durablePermit = await readPermit();
+          assert.deepEqual(durablePermit, [
+            {
+              operation: "create-draft-pull",
+              send_start_by: new Date(permit.sendStartBy),
+              authorization_reply_by: null,
+              material_version: permit.materialVersion,
+              attempt_id: permit.preparationAttemptId,
+              request_digest_sha256: permit.requestDigestSha256,
+            },
+          ]);
+          const readClaims = async (materialVersion = first.materialVersion) =>
+            (
+              await pool.query<{
+                receipt_id: string;
+                operation_id: string;
+                material_version: string;
+                scope: Record<string, unknown>;
+                outcome: string;
+                authorization_reply_by: Date | null;
+              }>(
+                `SELECT receipt_id, operation_id, material_version, scope, outcome, authorization_reply_by
+                   FROM occ.prepared_repository_draft_pulls
+                  WHERE material_version::text = ANY($1::text[]) ORDER BY receipt_id`,
+                [[first.materialVersion, materialVersion]],
+              )
+            ).rows;
+          const claims = await readClaims();
+          assert.equal(claims.length, 1);
+          const [claim] = claims;
+          assert.ok(claim);
+          assert.equal(claim.receipt_id, permit.exchangeId);
+          assert.equal(claim.material_version, permit.materialVersion);
+          assert.match(claim.operation_id, /^[0-9a-f-]{36}$/);
+          assert.equal(claim.outcome, "outcome_unknown");
+          assert.equal(claim.authorization_reply_by, null);
+          assert.partialDeepStrictEqual(claim.scope, {
+            operationId: claim.operation_id,
+            apiOrigin: gh.origin,
+            repository: origin.repository,
+            head: "review",
+            base: "main",
+          });
+
+          assert.equal(draftPosts(), 1);
+          assert.equal(pulls.size, 1);
+          const [opened] = pulls.values();
+          assert.ok(opened);
+          assert.partialDeepStrictEqual(opened, {
+            title: "Review",
+            draft: true,
+            state: "open",
+            head: { ref: "review" },
+            base: { ref: "main" },
+          });
+          const providerPulls = structuredClone([...pulls.entries()]);
+          verifyExactDraft = async (materialVersion) => {
+            assert.deepEqual(await readPermit(), durablePermit, "the first permit is retained");
+            assert.deepEqual(
+              await readClaims(materialVersion),
+              claims,
+              "the first claim is retained",
+            );
+            assert.equal(draftPosts(), 1, "only the first draft reached the provider");
+            assert.deepEqual(
+              [...pulls.entries()],
+              providerPulls,
+              "the provider retained only the first draft",
+            );
+          };
+        }
+        const secondDraft = await draft(
+          "main",
+          online ? undefined : { draft: true, title: "Review another change" },
+        );
+        assert.equal(secondDraft.status, 403, "the grant allows one draft");
         assert.equal(pulls.size, 1, "the second draft never reaches the provider");
         assert.equal(draftPosts(), 1, "only the allowed draft reaches provider ingress");
         assert.deepEqual(outcomes(start), [
-          ["advertise-receive-pack", "allow"],
-          ["receive-pack", "allow"],
-          ["advertise-receive-pack", "allow"],
+          ["advertise-receive-pack", admitted],
+          ["receive-pack", admitted],
+          ["advertise-receive-pack", admitted],
           ["receive-pack", "unavailable"],
           ["create-draft-pull", "unavailable"],
-          ["create-draft-pull", "allow"],
+          ["create-draft-pull", admitted],
           ["create-draft-pull", "draft_already_opened"],
         ]);
+        if (verifyExactDraft) {
+          await verifyExactDraft();
+          return verifyExactDraft;
+        }
         // Evidence is OCC's own: one online use row per allow, each joined to the attempt the
         // owner prepared with the App key, and the grant's spent draft allowance.
         const allowed = peer.decisions
@@ -1826,6 +1934,9 @@ function externalGitJourney(
             tokensIssued: before.issues,
           }),
         );
+      };
+      const verifyExactDraft = writes ? await exerciseWrites() : undefined;
+      if (writes && online) {
         return;
       }
       if (broad) {
@@ -2469,6 +2580,7 @@ function externalGitJourney(
         }
         assert.notEqual(first.materialVersion, second.materialVersion);
         await transfer(await origin.addCommit());
+        await verifyExactDraft?.(second.materialVersion);
       }
       const receiptCount = () =>
         pool
@@ -3133,6 +3245,7 @@ function externalGitJourney(
         before,
         "withdrawal through maintenance reaches no issuer or workload provider endpoint",
       );
+      await verifyExactDraft?.(second.materialVersion);
       if (authenticatedJourney) {
         assert.deepEqual(await materialCounts(), materialBeforeWithdrawal);
         t.diagnostic(
