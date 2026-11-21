@@ -784,7 +784,7 @@ test("repository API credential issuance is refused while ordinary collaboration
   });
   const send = (input) =>
     invoke(client, "EvaluateHttpRequest", input, token(keys, "supervisor", binding.sandboxId));
-  const evaluate = async (path, method = "POST", body) => {
+  const evaluate = async (path, method = "POST", body, query = "") => {
     const input = request(
       path,
       method,
@@ -792,6 +792,7 @@ test("repository API credential issuance is refused while ordinary collaboration
       body === undefined ? [] : [{ name: "content-type", value: "application/json" }],
     );
     input.middleware_name = registration;
+    input.target.query = query;
     input.target.host = "api.github.com";
     return send(input);
   };
@@ -802,13 +803,19 @@ test("repository API credential issuance is refused while ordinary collaboration
     });
     const path = "/repos/" + binding.repository + "/pulls";
     const pull = { title: "Fix", head: "topic", base: "main" };
-    const create = () => evaluate(path, "POST", pull);
+    const create = (query = "") => evaluate(path, "POST", pull, query);
     const before = approvals;
     registration = "online-git-rest-writes";
     assert.equal((await create()).decision, 2, "ordinary grant on filtered registration");
     restBinding = { nativeGit: true };
     assert.equal((await create()).decision, 2, "missing write authority");
     restBinding = { nativeGit: true, ...writes([binding.repository]) };
+    for (const query of ["head_repo=other", "issue=3"]) {
+      const result = await create(query);
+      assert.equal(result.decision, 2, query);
+      assert.equal(result.reason_code, "request_not_allowed", query);
+      assert.equal(approvals, before, "POST query must be refused before owner authorization");
+    }
     assert.equal((await evaluate(path, "GET")).decision, 2);
     assert.equal((await evaluate(path, "POST", { ...pull, head: "fork:topic" })).decision, 2);
     const git = pushRequest();
