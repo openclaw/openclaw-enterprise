@@ -4,7 +4,7 @@ For development, use [OpenShell v0.1.8](https://github.com/NVIDIA/OpenShell/tree
 the pinned OCE runtime, [Kubernetes Compute](kubernetes-compute.md) and dedicated
 Codex or native OpenClaw. Embedded OpenClaw is unsupported.
 OCC owns Agents, revisions, Namespaces, routing, credentials and authorization.
-The [Credential Gateway](openshell-credential-gateway.md) delivers model credentials.
+Model credentials use the [Credential Gateway](openshell-credential-gateway.md) or [Credential Proxy](credential-proxy.md).
 Revision providers supply node enrollment and Codex files.
 [Production qualification](#qualification-contract) remains open.
 
@@ -30,12 +30,8 @@ routing, and the per-Agent Gateway. Sandbox owns:
   resources, and NetworkPolicies, then owns the exact active Workspace. A
   [preprovisioned namespace](kubernetes-compute/preprovisioned-namespace.md)
   only verifies them.
-- `provisionHarness` creates one Workspace Sandbox. Dedicated Codex exposes its
-  app-server. A native OpenClaw worker connects outbound and can expose a
-  temporary status endpoint until its workspace node enrolls. The Driver adds each
-  [credential attachment](openshell-sandbox/harness-providers.md#credential-attachments) and that Agent revision's Harness runtime provider
-  to the Sandbox's providers, validates any Codex route, and returns the stable Sandbox reference.
-  Private [workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before execution.
+- `provisionHarness` creates a Sandbox with [credential attachments](openshell-sandbox/harness-providers.md#credential-attachments) and runtime Provider, validates Codex routing, and returns its reference. Codex exposes app-server; OpenClaw connects outbound with status until node enrollment. [Workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before execution.
+- Staged `provisionStagedHarness` creates an idle target; preparation installs launch inputs, and activation starts the Harness through a fresh `ExecSandbox`. See the [staged lifecycle](../../flows/credential-source-lifecycle.md#pending-native-integration).
 - OpenShell's controller creates and owns the Sandbox's Harness Pod.
 - `cleanup` derives the stable Sandbox identity during Agent revision retirement, even
   without its Pod. Namespace cleanup verifies Workspace ownership and

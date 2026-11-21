@@ -8,7 +8,7 @@ last_updated_session: 01a1ec21-b384-7472-887f-945ae0ab16fc
 
 ## Overview
 
-OpenClaw Control Plane (OCC) authorizes CredentialSource operations and records the Source owner. The legacy serving path records `CredentialGatewayDriver` as owner; its OpenShell implementation stores the value. The serving protected path instead records `LegacyEgressProxyDriver` as owner. The new design separates OCC TokenService Source ownership and [internal custody](token-service-static-custody.md) from native Credential Proxy delivery. An OpenShell Provider in that path is a delivery copy, not the Source owner. OCC freezes source identity and delivery policy in the Agent revision. The worker calls the selected native delivery Driver, but production admission and release remain blocked until its enforcement and readiness can be qualified.
+OpenClaw Control Plane (OCC) authorizes CredentialSource operations and records the Source owner. The legacy serving path records `CredentialGatewayDriver` as owner; its OpenShell implementation stores the value. The serving protected path instead records `LegacyEgressProxyDriver` as owner. OCC TokenService Source ownership and [internal custody](token-service-static-custody.md) are separate from native Credential Proxy delivery. An OpenShell Provider in that path is a delivery copy, not the Source owner. OCC freezes source identity and delivery policy in the Agent revision. Production admission supports the reviewed native model route; full strict-policy qualification remains pending.
 
 ## Entry Points
 
@@ -73,19 +73,19 @@ The worker rechecks actor and Agent grants, selected Driver identity, live sourc
 
 #### Pending native integration
 
-`apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`, `apps/controller/src/drivers/compute/kubernetes/index.ts:activateCredentialDeployment`, `apps/controller/src/worker.ts:prepareRevision`
+`apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`, `apps/controller/src/drivers/compute/kubernetes/index.ts:activateRevision`, `apps/controller/src/worker.ts:prepareRevision`
 
 The native Proxy checks the admitted binding and target before resolving material. It creates and conditionally attaches an OpenShell Provider delivery copy; compatible reuse neither resolves nor repairs material. The Gateway client validates the attachment receipt. The Proxy checks Provider identity, version, and membership before returning a runtime placeholder projection.
 
-For OCC TokenService, composition registers `credential_proxy_delivery` on the selected Sandbox owner. OCC refuses competing deployments while the first staged deployment is pending. OCC and Worker refuse a staged managed-credential replacement before preparing the candidate. Worker checks source authority, withdrawal, and the held target before supplying a source-bound resolver. Compute reports preparation only after the Proxy, effective policy, and projections are ready; the Harness remains held. Worker selects the revision, reauthorizes the source, and calls activation. Compute rechecks the held startup and policy, records release dispatch, and releases that exact startup. The Agent route and deployment completion wait for serving and node readiness. Status fails closed because current source-version authority and exact native executable enforcement remain unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)).
+For OCC TokenService, composition registers `credential_proxy_delivery` on the selected Sandbox owner. OCC refuses a staged managed-credential replacement before preparing the candidate. Worker checks source authority and withdrawal before supplying a source-bound resolver. Compute provisions an idle Sandbox, configures the Proxy and intended policy, and prepares fresh Harness launch inputs only after the effective policy and Proxy are ready. Preparation does not start the Harness. Worker selects the revision, authorizes the Agent and exact source once, and invokes activation. The Sandbox starts the Harness, and Compute waits for authenticated serving and node readiness before publishing the Agent route and completing deployment. Stop deletes the Sandbox, then asks the Proxy to remove its frozen bindings.
 
-Compute records provisioning and release dispatch on the revision's release-key Secret. Retries observe the exact Sandbox and startup without reprovisioning or sending another release. An unknown release outcome stays pending; an identity mismatch fails closed.
+OpenShell activation uses a fresh `ExecSandbox` request by Workspace and Sandbox name. Until [upstream issue #5872](https://github.com/ai-openshell/openshell/issues/5872) is fixed, that request can reach a same-name replacement. A Provider update can also reach a same-name replacement before its ID is checked ([issue #5794](https://github.com/NVIDIA/OpenShell/issues/5794)). These risks are accepted for the first run; full strict-policy qualification remains pending.
 
 ### 5. Withdraw or delete a source
 
 `packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
-Withdrawal requires `agent:operate` and queues version-scoped work without deploying a revision. The worker rechecks each requester's grant. For legacy Gateway delivery, Compute detaches the OpenShell Provider and confirms its receipt; protected Proxy sources instead reduce the approved policy. Denied requesters require replay. Unconfirmed revocation retries, and replay or maintenance recovers pending work. Deploy and repair never restore withdrawn access, including after a late Sandbox create.
+Withdrawal requires `agent:operate` and queues version-scoped work without deploying a revision. OCC refuses withdrawal of a staged TokenService source with `409` before recording state or queuing work; that capability is deferred. The worker rechecks each requester's grant. For legacy Gateway delivery, Compute detaches the OpenShell Provider and confirms its receipt; protected Proxy sources instead reduce the approved policy. Denied requesters require replay. Unconfirmed revocation retries, and replay or maintenance recovers pending work. Deploy and repair never restore withdrawn access, including after a late Sandbox create.
 
 DELETE requires `credential_source:delete` and refuses Agent, revision, or pending-deployment references and unfinished withdrawal. OCC marks `deleting` and removes material through the recorded owner. Prepared sources first withdraw issuer tokens; an unsettled token blocks deletion. For legacy Gateway sources, Refresh removes refresh state before the Gateway removes its owned Provider and profile. Credential-free sources have no material to remove. OCC then deletes the record and commits audit. Uncertain cleanup retains `deleting`.
 
@@ -108,6 +108,7 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 
 ## Changelog
 
+- 2026-11-21 21:24: Prepare an idle target, start the fresh Harness at activation, and refuse unsupported TokenService source withdrawal. (01a1ec21-b384-7472-887f-945ae0ab16fc - 840e8ac00)
 - 2026-11-21 20:59: Hold the first staged startup until activation and refuse competing or replacement deployments. (01a1ec21-b384-7472-887f-945ae0ab16fc - 6baee5df7)
 - 2026-11-21 20:21: Reauthorize the source before activation. (01a1ec21-b384-7472-887f-945ae0ab16fc - 9c11a8786)
 - 2026-11-21 19:51: Reconcile OCC service owners. (01a1ec21-b384-7472-887f-945ae0ab16fc - e12513764)

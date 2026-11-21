@@ -201,7 +201,7 @@
     {
       "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
       "expectedTests": [
-        "Agent drafts authorize staged sources and refuse unqualified model credential delivery"
+        "Agent drafts authorize staged sources and production composition admits one exact model route"
       ]
     },
     {

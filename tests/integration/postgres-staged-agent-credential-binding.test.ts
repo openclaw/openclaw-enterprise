@@ -25,7 +25,7 @@ import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 
 test(
-  "Agent drafts authorize staged sources and refuse unqualified model credential delivery",
+  "Agent drafts authorize staged sources and production composition admits one exact model route",
   { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to a migrated PostgreSQL fixture." },
   async (t) => {
     const { app, controller, createApp, inject, pool, principal, state, adminAccount } =
@@ -49,7 +49,7 @@ test(
     });
     await controller.applyIAMConfiguration();
     // The selected owner and Secret Driver are concrete; only the Kubernetes API transport is simulated.
-    const { driver } = useInstallationSecretDriver(controller);
+    const { core, driver } = useInstallationSecretDriver(controller);
     assert.ok(driver.installationSecrets);
     const storeIdentity = randomUUID();
     const instanceId = await controller.activateTokenServiceInstance(
@@ -426,54 +426,70 @@ test(
     const noDeploymentEffects = { roles: 0, bindings: 0, grant_audits: 0, revisions: 0, work: 0 };
     assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
 
-    // The production C5 composition selects native delivery and Sandbox from the same owner.
-    // Controlled qualification metadata lets OCC inspect those real selections; it is not native
-    // proof. Real Compute must still refuse before C2 because the Sandbox has no staged recipient.
+    // Production composition must admit the actual selected Sandbox and native delivery Proxy,
+    // rather than relying on a test-supplied qualification callback.
     const grant = {
       id: "model-egress",
       binary: "/app/bin/model-client",
       host: "api.openai.com",
       ports: [{ from: 443, to: 443 }],
     };
-    const installation = buildSandboxInstallation();
+    const ambiguousGrant = { ...grant, id: "alternate-model-egress", binary: "/usr/bin/other" };
+    const installation = {
+      ...buildSandboxInstallation(),
+      sandboxNetworkPolicyCeiling: [grant, ambiguousGrant],
+      runtime: { nativeWorkerSupport: "custom-image" },
+    };
     Reflect.deleteProperty(installation.drivers, "credential_gateway");
     Reflect.deleteProperty(installation.backend[0]!.drivers, "credential_gateway");
     Object.assign(installation.drivers, { token_service: { id: "occ", configuration: {} } });
     installation.drivers.compute.id = controller.selectedDriver("compute").id;
+    Reflect.deleteProperty(installation.drivers.compute.configuration.network, "gatewayClients");
+    Object.assign(installation.drivers.compute.configuration, {
+      gatewayRouting: {
+        hostname: "agents.example.test",
+        gatewayName: "gateways",
+        gatewayNamespace: "occ-system",
+        envoyNamespace: "envoy",
+      },
+    });
     const baseline = installation.drivers.sandbox.configuration.policy.networkPolicies[0]!;
     baseline.name = "baseline";
     baseline.endpoints[0]!.host = "baseline.example.test";
     const runtime = await loadInstallationFile(t, installation);
     assert.ok(runtime);
+    // Substitute the Kubernetes SDK transport only. The selected Compute still performs its
+    // real Namespace, workload, Secret ownership, and runtime-credential admission operations.
+    const kubernetesNamespace = core.addNamespace(namespaceId);
+    Object.assign(core.namespaces.get(kubernetesNamespace), {
+      apiVersion: "v1",
+      kind: "Namespace",
+    });
+    assert.ok(
+      Reflect.set(
+        runtime.computeDriver,
+        "apiClients",
+        Promise.resolve({
+          core,
+          apps: {
+            async listNamespacedDeployment() {
+              return { items: [] };
+            },
+          },
+        }),
+      ),
+    );
     const credentialDeliveryRegistration = runtime.credentialDeliveryRegistration;
     assert.ok(credentialDeliveryRegistration);
     const sandbox = credentialDeliveryRegistration.require("sandbox");
     const proxy = credentialDeliveryRegistration.require("credential_proxy_delivery");
     assert.ok(proxy instanceof OpenShellCredentialProxyDriver);
     assert.equal(sandbox, runtime.sandboxDriver);
-    let qualificationCalls = 0;
     const nativeController = new OpenClawController(controller.installation, {
       state,
       ...installationControllerOptions(runtime.installation),
-      nativeWorkerSupport: "custom-image",
-      sandboxNetworkPolicyCeiling: [grant],
       namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
       backends: runtime.installation.backend,
-      credentialDeploymentCapabilities: (selected) => {
-        qualificationCalls += 1;
-        assert.equal(selected.sandbox, sandbox);
-        assert.equal(selected.proxy, proxy);
-        return {
-          binary: grant.binary,
-          sandbox: { wildcards: false, portRanges: false, supportsNetworkPolicy: () => false },
-          proxy: {
-            distinguishesExecutable: true,
-            distinguishesPort: true,
-            rejectsStaleAndMisplacedPlaceholders: true,
-            supportsBindingRequest: () => true,
-          },
-        };
-      },
       recordOperations: true,
     });
     for (const capability of ["iam", "configuration", "secret", "token_service"] as const) {
@@ -490,6 +506,7 @@ test(
     installSelectedSandboxDrivers(nativeController, runtime);
     assert.equal(nativeController.selectedDriver("credential_proxy_delivery"), proxy);
     const nativeApp = createApp(nativeController);
+    const nativeSource = await createManagedSource("Production admission source", "openai");
     const dedicated = await inject(
       "POST",
       `${base}/agents`,
@@ -497,22 +514,22 @@ test(
         name: `Native saved grant ${randomUUID()}`,
         configurationId,
         executionMode: "dedicated",
-        harnessAuth: { method: "credential_source", sourceId },
-        credentialSources: [{ sourceId }],
+        harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
+        credentialSources: [{ sourceId: nativeSource.id }],
       },
       nativeApp,
     );
     assert.equal(dedicated.statusCode, 201, dedicated.body);
     const dedicatedAgent = dedicated.json().data;
     const dedicatedId = dedicatedAgent.id;
-    assert.deepEqual(dedicatedAgent.credentialSources, [{ sourceId }]);
+    assert.deepEqual(dedicatedAgent.credentialSources, [{ sourceId: nativeSource.id }]);
     const networking = `${base}/agents/${dedicatedId}/sandbox-policy/networking`;
     const editing = await inject("PATCH", `${networking}/editing`, { enabled: true }, nativeApp);
     assert.equal(editing.statusCode, 200, editing.body);
     const savedGrant = await inject(
       "PUT",
       networking,
-      { expectedVersion: 1, additions: [grant] },
+      { expectedVersion: 1, additions: [grant, ambiguousGrant] },
       nativeApp,
     );
     assert.equal(savedGrant.statusCode, 200, savedGrant.body);
@@ -520,7 +537,7 @@ test(
       "SELECT document->'additions' AS additions FROM occ.sandbox_policies WHERE namespace_id=$1 AND agent_id=$2",
       [namespaceId, dedicatedId],
     );
-    assert.deepEqual(persistedPolicy.rows[0]?.additions, [grant]);
+    assert.deepEqual(persistedPolicy.rows[0]?.additions, [grant, ambiguousGrant]);
     const refusedGrant = await inject(
       "POST",
       `${base}/agents/${dedicatedId}/deploy`,
@@ -530,11 +547,38 @@ test(
     assert.equal(refusedGrant.statusCode, 409, refusedGrant.body);
     assert.equal(
       refusedGrant.json().error.message,
-      "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
+      "The staged model credential needs one exact, unambiguous network grant for its approved inference route.",
       refusedGrant.body,
     );
-    assert.equal(qualificationCalls, 1);
-    assert.deepEqual(await deploymentEffects(sourceId, dedicatedAgent), noDeploymentEffects);
+    assert.deepEqual(await deploymentEffects(nativeSource.id, dedicatedAgent), noDeploymentEffects);
+    const exactGrant = await inject(
+      "PUT",
+      networking,
+      { expectedVersion: 2, additions: [grant] },
+      nativeApp,
+    );
+    assert.equal(exactGrant.statusCode, 200, exactGrant.body);
+    const admitted = await inject("POST", `${base}/agents/${dedicatedId}/deploy`, {}, nativeApp);
+    assert.equal(admitted.statusCode, 202, admitted.body);
+    const revision = await nativeController.transact((unit) =>
+      unit.revisions.findRevision(namespaceId, dedicatedId, admitted.json().data.id),
+    );
+    assert.equal(revision?.executionAdmission.version, 8);
+    assert.deepEqual(revision?.credentialDeployment?.injectionPolicies, [
+      {
+        bindingRef: "model",
+        allowedRequests: [
+          {
+            binary: grant.binary,
+            host: grant.host,
+            ports: grant.ports,
+            requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+          },
+        ],
+      },
+    ]);
+    // The granted role is shared within the Namespace; later refusal checks must preserve it.
+    noDeploymentEffects.roles = 1;
     const persistedDedicated = await inject(
       "GET",
       `${base}/agents/${dedicatedId}`,
@@ -542,7 +586,9 @@ test(
       nativeApp,
     );
     assert.equal(persistedDedicated.statusCode, 200, persistedDedicated.body);
-    assert.deepEqual(persistedDedicated.json().data.credentialSources, [{ sourceId }]);
+    assert.deepEqual(persistedDedicated.json().data.credentialSources, [
+      { sourceId: nativeSource.id },
+    ]);
     const detachedDedicated = await inject(
       "PATCH",
       `${base}/agents/${dedicatedId}`,

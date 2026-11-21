@@ -1829,9 +1829,3 @@ export type {
   PluginDeploymentDescription,
   PluginDeploymentContract,
 } from "./drivers/plugin/deployment.ts";
-
-export type {
-  HarnessStartupObservation,
-  HarnessStartupRef,
-  SandboxDeploymentContract,
-} from "./drivers/sandbox/deployment.ts";

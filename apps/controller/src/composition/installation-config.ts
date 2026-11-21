@@ -2,6 +2,7 @@ import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
+import { supportsOpenShellModelCredentialDeployment } from "./openshell-model-admission.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
   openShellProxyConfiguration,
@@ -46,7 +47,6 @@ import { createHash, X509Certificate } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
-  AgentRevision,
   Backend,
   GitHubRepositoryCredentialBackendDefinition,
   ComputeDriver,
@@ -63,10 +63,8 @@ import type {
   BackendSummary,
   RepositoryPolicyDriver,
   NativeRepositorySender,
-  Namespace,
   PluginDriver,
   SandboxDriver,
-  SandboxHarnessStatusContext,
   SecretDriver,
 } from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver, type NativeIAMStateStore } from "@openclaw-enterprise/iam";
@@ -224,11 +222,11 @@ export function installationControllerOptions(
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
   | "modelCredentialPreset"
+  | "supportsModelCredentialDeployment"
 > {
   return {
-    // TODO(staged credential deployment): select the new Credential Proxy Driver, then wire
-    // capabilities after process identity, enforcement, cleanup and source updates qualify.
     modelCredentialPreset: resolveModelCredentialPreset,
+    supportsModelCredentialDeployment: supportsOpenShellModelCredentialDeployment,
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
     ...(installation?.iam === undefined ? {} : { iamConfiguration: installation.iam }),
@@ -266,13 +264,6 @@ export interface InstallationRuntimeDrivers {
   readonly credentialDeliveryRegistration?: InstalledDriver;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[];
   readonly proxyDriver?: LegacyEgressProxyDriver;
-  readonly resolveCredentialDeploymentContext?: (
-    namespace: Readonly<Namespace>,
-    revision: Readonly<AgentRevision>,
-    signal: AbortSignal,
-  ) => Promise<
-    Pick<SandboxHarnessStatusContext, "namespace" | "revision" | "kubernetes" | "transportToken">
-  >;
   /** Present only when this registration owns protected repository delivery. */
   readonly repositoryGitDriver?: InstalledDriver;
   readonly tokenService?: TokenService;
@@ -1724,7 +1715,6 @@ async function composeInstallationConfiguration(
     },
   ]);
   let computeDriver: ComputeDriver;
-  let resolveCredentialDeploymentContext: InstallationRuntimeDrivers["resolveCredentialDeploymentContext"];
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
       computePackage.module,
@@ -1781,8 +1771,6 @@ async function composeInstallationConfiguration(
       selection,
     );
     computeDriver = kubernetesCompute;
-    resolveCredentialDeploymentContext =
-      kubernetesCompute.resolveCredentialDeploymentContext.bind(kubernetesCompute);
   }
   const sandboxOwner = credentialDeliveryRegistration ?? protectedDriver ?? sandboxDriver;
   const namespaceLifecycleBindings =
@@ -1812,7 +1800,6 @@ async function composeInstallationConfiguration(
     bundledPresetVersions,
     installation,
     computeDriver,
-    ...(resolveCredentialDeploymentContext && { resolveCredentialDeploymentContext }),
     namespaceLifecycleBindings,
     configurationDriver,
     secretDriver,
