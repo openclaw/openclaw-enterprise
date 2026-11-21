@@ -35,6 +35,9 @@ export function createApi(origin: string, key: string): Api {
         redirect: "error",
         signal: AbortSignal.timeout(30_000),
         headers: {
+          // This smoke rolls the API Deployment. Do not retain a NodePort connection
+          // to a Pod that can be removed during the next rollout.
+          connection: "close",
           "x-api-key": key,
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
