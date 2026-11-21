@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { createServer } from "node:http";
 import { request } from "node:https";
+import { promisify } from "node:util";
 import { selfSigned } from "../helpers/certificates.ts";
 import { createUpgradeResponseProxy } from "../helpers/channel-upgrade-response-proxy.ts";
+
+const execute = promisify(execFile);
 
 async function fixture(t: TestContext, enabled = true) {
   const directory = await mkdtemp(join(tmpdir(), "oce-channel-upgrade-"));
@@ -366,6 +369,253 @@ test("one-off preparation refuses wrong release, external proxy, and unprotected
   const publicInput = f.run("prepare", ["--out-dir", output]);
   assert.equal(publicInput.status, 1);
   assert.match(publicInput.stderr, /private regular files/);
+});
+
+test("one-off checks original Harness overrides before stopping any Agent", async (t) => {
+  const build = await mkdtemp(join(tmpdir(), "oce-channel-cli-"));
+  t.after(() => rm(build, { recursive: true, force: true }));
+  const occ = join(build, "occ");
+  await execute("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
+  const writeJson = (path: string, value: unknown) =>
+    writeFile(path, JSON.stringify(value), { mode: 0o600 });
+  const keyFile = join(build, "service-key.json");
+  await writeJson(keyFile, { data: { key: "fixture-key" } });
+  const overrides = {
+    modelProvider: { protocol: "openai-responses", baseUrl: "https://models.example.com/v1" },
+  };
+  const id = (prefix: string, digit: number) =>
+    `${prefix}_00000000-0000-4000-8000-00000000000${digit}`;
+  const namespaceId = id("ns", 1);
+  const installationId = id("ins", 2);
+
+  async function lifecycleFixture(
+    t: TestContext,
+    unavailable?: { index: number; kind: "missing-overrides" | "missing-revision" },
+    recordedStops?: readonly ["complete" | "unsent", "unsent" | "sending"],
+  ) {
+    const directory = await mkdtemp(join(build, "operations-"));
+    const inventory = join(directory, "inventory");
+    const target = (index: 0 | 1) => {
+      const agentId = id("agt", 3 + index);
+      const originalRevisionId = id("rev", 5 + index);
+      const deploymentId = id("rev", 7 + index);
+      const base = `/namespaces/${namespaceId}/agents/${agentId}`;
+      return {
+        index,
+        agentId,
+        originalRevisionId,
+        deploymentId,
+        base,
+        agent: {
+          id: agentId,
+          namespaceId,
+          status: "active",
+          desiredRuntimeState: "running",
+          activeRevisionId: originalRevisionId,
+        },
+        revisionRead: `GET ${base}/revisions/${originalRevisionId}`,
+        stopWrite: `POST ${base}/stop?expectedActiveRevisionId=${originalRevisionId}`,
+        deployWrite: `POST ${base}/deploy`,
+      };
+    };
+    const targets = [target(0), target(1)] as const;
+    const previouslyStopped = {
+      ...targets[0].agent,
+      id: id("agt", 9),
+      desiredRuntimeState: "stopped",
+      activeRevisionId: null,
+    };
+    const agents = [...targets.map(({ agent }) => agent), previouslyStopped].map((agent) => ({
+      ...agent,
+      executionMode: "dedicated",
+      deploymentInProgress: false,
+    }));
+    await mkdir(inventory);
+    await writeJson(join(inventory, "restart-preflight.json"), {
+      installationId,
+      namespaces: [{ id: namespaceId, status: "ready", agents }],
+    });
+    const journal = join(directory, "channel-agent-operations.json");
+    if (recordedStops) {
+      const operations = targets.map(({ agentId, originalRevisionId, agent, index }) => {
+        const stop = recordedStops[index];
+        if (stop === "complete") {
+          agent.desiredRuntimeState = "stopped";
+          agent.activeRevisionId = "";
+        }
+        return { namespaceId, agentId, originalRevisionId, stop, deploy: "unsent" };
+      });
+      await writeJson(journal, { installationId, targets: operations });
+    }
+
+    const requests: string[] = [];
+    const deployBodies: string[] = [];
+    // The real CLI resolves and serializes overrides; this loopback server only
+    // supplies revision/lifecycle responses and records the resulting wire effects.
+    const server = createServer((incoming, outgoing) => {
+      const wire = `${incoming.method} ${incoming.url}`;
+      requests.push(wire);
+      const send = (data: unknown, status = 200) =>
+        outgoing
+          .writeHead(status, { "content-type": "application/json" })
+          .end(JSON.stringify({ data, meta: { requestId: "fixture" } }));
+      const selected = targets.find(({ base }) => incoming.url?.startsWith(base));
+      if (!selected) {
+        return outgoing.writeHead(404).end();
+      }
+      const { agent, agentId, base, deploymentId, index, originalRevisionId } = selected;
+      switch (wire) {
+        case `GET ${base}`:
+          return send(agent);
+        case selected.stopWrite:
+          agent.desiredRuntimeState = "stopped";
+          agent.activeRevisionId = "";
+          return send({ ...agent, activeRevisionId: originalRevisionId }, 202);
+        case selected.revisionRead:
+          if (unavailable?.index === index && unavailable.kind === "missing-revision") {
+            return outgoing.writeHead(404).end();
+          }
+          return send({
+            id: originalRevisionId,
+            namespaceId,
+            agentId,
+            revision: 1,
+            harness: {
+              id: "codex",
+              version: "fixture",
+              mode: "dedicated",
+              overrides: unavailable?.index === index ? undefined : index === 0 ? overrides : {},
+            },
+          });
+        case selected.deployWrite: {
+          let body = "";
+          incoming.setEncoding("utf8");
+          incoming.on("data", (chunk: string) => (body += chunk));
+          incoming.on("end", () => {
+            deployBodies.push(body);
+            agent.desiredRuntimeState = "running";
+            agent.activeRevisionId = deploymentId;
+            send({ id: deploymentId, namespaceId, agentId, revision: 2 }, 202);
+          });
+          return;
+        }
+        case `GET ${base}/deployments/${deploymentId}`:
+          return send({ deploymentId, namespaceId, agentId, status: "succeeded" });
+        default:
+          return outgoing.writeHead(404).end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const env = {
+      PATH: process.env.PATH,
+      OCC_URL: `http://127.0.0.1:${address.port}`,
+      OCC_SERVICE_KEY_FILE: keyFile,
+    };
+    const run = (action: "stop" | "deploy", binary = occ) => {
+      const args = [
+        "scripts/upgrade-channel-egress",
+        action,
+        "--evidence-dir",
+        directory,
+        "--occ",
+        binary,
+        "--timeout-seconds",
+        "5",
+      ];
+      return execute("python3", args, { env, timeout: 15_000 });
+    };
+    return { requests, deployBodies, journal, run, targets };
+  }
+
+  await t.test(
+    "all exact reads precede Stop and Deploy re-reads the original revision",
+    async (t) => {
+      const f = await lifecycleFixture(t);
+      const [first, second] = f.targets;
+      await f.run("stop");
+      await f.run("deploy");
+      assert.deepEqual(
+        f.requests.filter((wire) => wire.startsWith("POST") || wire.includes("/revisions/")),
+        [
+          first.revisionRead,
+          second.revisionRead,
+          first.stopWrite,
+          second.stopWrite,
+          first.revisionRead,
+          first.deployWrite,
+          second.revisionRead,
+          second.deployWrite,
+        ],
+      );
+      assert.deepEqual(
+        f.deployBodies.map((body) => (body === "" ? undefined : JSON.parse(body))),
+        [{ harnessOverrides: overrides }, undefined],
+      );
+    },
+  );
+
+  for (const kind of ["missing-overrides", "missing-revision"] as const) {
+    await t.test(`a later Agent with ${kind} prevents every Stop and Deploy request`, async (t) => {
+      const f = await lifecycleFixture(t, { index: 1, kind });
+      await assert.rejects(f.run("stop"), /Harness override retention/);
+      assert.deepEqual(
+        f.requests,
+        f.targets.map(({ revisionRead }) => revisionRead),
+      );
+      const journal = JSON.parse(await readFile(f.journal, "utf8"));
+      assert.deepEqual(
+        journal.targets.map(({ stop, deploy }: { stop: string; deploy: string }) => [stop, deploy]),
+        [
+          ["unsent", "unsent"],
+          ["unsent", "unsent"],
+        ],
+      );
+    });
+  }
+
+  await t.test("resume checks an already completed Stop before sending another", async (t) => {
+    const f = await lifecycleFixture(t, { index: 0, kind: "missing-revision" }, [
+      "complete",
+      "unsent",
+    ]);
+    const original = await readFile(f.journal, "utf8");
+    await assert.rejects(f.run("stop"), /Harness override retention/);
+    assert.deepEqual(f.requests, [f.targets[0].revisionRead]);
+    assert.equal(await readFile(f.journal, "utf8"), original);
+  });
+
+  await t.test(
+    "a later uncertain Stop blocks new requests and preserves its receipt",
+    async (t) => {
+      const f = await lifecycleFixture(t, undefined, ["unsent", "sending"]);
+      const original = await readFile(f.journal, "utf8");
+      await assert.rejects(f.run("stop"), /stop outcome is unknown/);
+      assert.deepEqual(f.requests, []);
+      assert.equal(await readFile(f.journal, "utf8"), original);
+    },
+  );
+
+  await t.test("an unsupported OCC binary refuses before any Stop", async (t) => {
+    const f = await lifecycleFixture(t);
+    const unsupported = join(build, "occ-unsupported");
+    // Let Cobra reject an unknown option while preserving working lifecycle
+    // commands, as with an OCC binary predating the check.
+    await writeFile(
+      unsupported,
+      `#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+occ = Path(__file__).with_name("occ")
+os.execv(occ, [str(occ), *["--unknown-option" if arg == "--check-retain-harness-overrides" else arg for arg in sys.argv[1:]]])
+`,
+      { mode: 0o700 },
+    );
+    await assert.rejects(f.run("stop", unsupported), /Harness override retention/);
+    assert.deepEqual(f.requests, []);
+  });
 });
 
 test("one-off refuses an uncertain deployment before invoking any OCC command", async (t) => {

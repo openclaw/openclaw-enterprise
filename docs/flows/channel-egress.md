@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
-updated: 2026-11-20
-last_updated_session: authoring-run/bf16e7c9-029c-4a8c-8fba-00d9249599e2
+updated: 2026-11-21
+last_updated_session: authoring-run/b9e0b8fc-0057-44bd-b184-c3de7be3267b
 ---
 
 # Channel egress flow
@@ -44,13 +44,16 @@ graph TD
   K -->|yes| L["Verify Envoy dependencies and patch delivery"]
   L --> Z["Worker startup Job forecasts the direct-egress guard"]
   Z -->|refused or result missing| W["Refuse upgrade before Stop"]
-  Z -->|no refusal, unavailable, or no input| M["Journal original running set; Stop on old controller"]
-  M --> N{"Stops settled; expected inventory?"}
+  Z -->|no refusal, unavailable, or no input| H["Journal original running set"]
+  H --> C0{"All required original revisions can retain overrides?"}
+  C0 -->|no| W
+  C0 -->|yes| M["Compare and Stop on old controller"]
+  M --> N{"Stops settled and expected inventory?"}
   N -->|no| X
   N -->|yes| O
   O --> P{"Channels were enabled?"}
   P -->|no| Q["Finish without Agent transitions"]
-  P -->|yes| Y["Deploy saved drafts; record responses"]
+  P -->|yes| Y["Deploy saved drafts and record responses"]
   Y -->|unknown response| X
   Y -->|accepted| A
   A["Worker reads saved Agent revision"] --> B["Resolve current Channel Drivers"]
@@ -118,24 +121,30 @@ warns when targets do not fit or the candidate image reports that the check is
 unavailable. With targets mounted, a successful Job must report a direct-egress
 guard result or explicit unavailability before Stop.
 
-For enabled channels, `lifecycle` flushes the complete original running set to
-its private journal before Stop. It records request intent and returned IDs.
-Guarded Stop requires the original revision; completion requires the Agent to
-be stopped with no active revision. Pending Stops and deletions must settle
-under the old controller. `stopped_inventory` checks only the expected selection
-changes before OCC writer shutdown. After both writers are quiesced, resume
-validates the recorded stopped inventory without calling the offline API. Shared
-Deployment identity, generation and Pod-absence checks still apply.
+For enabled channels, `scripts/upgrade-channel-egress:lifecycle` saves the
+complete original running set in a private journal. Before any new Stop, it
+refuses an uncertain Stop submission anywhere in that set. It then checks every
+original revision still needed by Deploy, including those whose Stop completed,
+through `occ --output json --namespace NAMESPACE_ID agent revision AGENT_ID REVISION_ID --check-retain-harness-overrides`.
+The hidden JSON mode in `internal/occcli/cli.go:agentCommand` invokes
+`readRetainedHarnessOverrides`, the same reader as Deploy. It accepts a readable overrides object, including
+`{}`. For unreadable settings, the exact revision's listed Harness summary must
+record an overrides object or certify that none were recorded. Missing or invalid
+evidence, denied reads, an unsupported CLI, or a receipt with different Namespace,
+Agent or revision IDs refuses the pass before another Stop. The receipt contains
+those IDs and `canRetainHarnessOverrides: true`, without override values.
 
-After authenticated access to the same Installation and channel fleet readiness
-recover, plain Deploy
-creates revisions from current saved drafts. Requests are sequential. Accepted
-requests are observed to completion; an uncertain `sending` state refuses
-resubmission until manual inspection resolves it. Completion and resume also check
-that each Agent still selects the recorded new revision. Disabled channels skip both
-Envoy preparation and Agent transitions. Ordinary upgrades do not select this
-mode. Follow [One Off Upgrades](../guides/deploy/one-off-upgrades.md) for commands
-and recovery; then the normal revision path below owns policy preparation.
+Each Stop still compares the original active revision. Completion requires the
+Agent to be stopped with no active revision. `stopped_inventory` checks the
+expected selection changes before OCC writer shutdown. While both writers are
+quiesced, resume verifies the recorded inventory offline. After access to the
+same Installation and channel fleet recovers, Deploy rereads each original
+revision through `--retain-harness-overrides` and submits its requested overrides
+with the current saved draft. An empty object uses current Installation defaults.
+The script waits for each accepted deployment and checks the recorded new
+revision. An uncertain submission requires manual inspection and is not replayed.
+Disabled channels skip Agent transitions. Follow [One Off
+Upgrades](../guides/deploy/one-off-upgrades.md) for commands and recovery.
 
 ### 1. Resolve one coherent set of requirements
 
@@ -233,9 +242,13 @@ and remaining acceptance evidence.
 
 ## Changelog
 
+- 2026-11-21 04:15: Check every required original revision before a new one-off Stop in the accompanying uncommitted changes (authoring-run/b9e0b8fc-0057-44bd-b184-c3de7be3267b - 67ecfd947c8969dec25777d7caebf77459ac978f)
+
 - 2026-11-20 18:02: Forecast the Worker's direct-egress guard before Stop and verify execution and Gateway namespace ownership (authoring-run/bf16e7c9-029c-4a8c-8fba-00d9249599e2 - 499592f85223d2a36369d6e230915c549ff09864)
 
 - 2026-11-20 14:26: Check Helm display headings and parse values from one file read (authoring-run/1298084c-0ccd-44f1-84ab-4170b4c56d21 - d2c019d17f3c4471b6a10579b1e8c9876240689f)
+
+- 2026-11-20 11:37: Retain requested Harness overrides during the one-off deployment (authoring-run/450eca24-b9e6-4940-9ee5-9ec1200643b0 - d215c0d95c2336244519eca4968df04ec4376ae2)
 
 - 2026-11-20 11:06: Reject either Helm display heading in one-off upgrade values (authoring-run/6cc6b66e-34c0-474e-98fb-7b1a6de5c987 - c86f69daac0044e7a4f770e43aead2121b05f8bd)
 - 2026-11-20 10:51: Preserve valid Helm values mappings that share the display heading (authoring-run/ee570ea2-5d17-4170-a37b-0f46c4fbd8ea - d26c1eb9420d4ec22662f390534a73653325d42f)
