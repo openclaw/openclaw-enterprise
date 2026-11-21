@@ -196,7 +196,7 @@ Use a disposable installed OpenShell environment, an authorized Admin and regula
 Develop Git and REST in parallel. Require installed AC-1–AC-5 for native Git, AC-6 for REST v1 and AC-7 for the v2 follow-up. Keep existing Agents on their current credential delivery until equivalent protections pass. Controlled-origin runs provide partial evidence:
 
 - [#6588](https://github.com/openclaw/openclaw-enterprise/pull/6588) established the earlier stock OpenShell Git control with a directly attached Provider.
-- A k3d trial with a method-filter-capable supplier passed saved-Agent Git, issue reads, PR/v2 issue creation, rotation and downgrade. Writes had independent readback; denied writes never reached origin. Git/reads added no callbacks. Stock mixed writes, live GitHub, redirects and v1-only installation remain unqualified.
+- Separate controlled k3d v1/v2 trials each passed 4/4 installed cases on patched OpenShell 0.1.8, verifying writes, pre-origin denials, local Git/reads, rotation and downgrade. Qualify stock native POSTs, published heads, releases, live GitHub and redirects separately; follow [#6716](https://github.com/openclaw/openclaw-enterprise/pull/6716) and [#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) for status.
 
 <a id="alternatives-and-open-decisions"></a>
 
