@@ -231,9 +231,13 @@ confirms that all workers removed those chains and their connections. It replace
 grants with empty policies. Before marking the slot idle, it requires the old
 Gateway Pods to be absent and their Deployments and ReplicaSets to have no
 desired replicas. The stop and retirement callers remove the Gateway first;
-NetworkPolicy readback alone does not confirm CNI revocation. Stable resource versions fence late writes by old workers. Missing
-inspection or uncertain ownership leaves the reservation for retry.
-For an authenticated proxy, Compute empties the exact Secret slot, waits for
+NetworkPolicy readback alone does not confirm CNI revocation. Stable resource
+versions fence late writes by old workers. Missing inspection or uncertain
+ownership leaves the reservation for retry.
+For an authenticated proxy, Compute updates the exact Secret slot even when it
+is empty, so a delayed fill using its former resource version cannot succeed.
+Fill also checks that the listener still belongs to the non-revoking binding.
+Compute then waits for
 the controller to reject its empty route and for the old SDS name to disappear,
 marks the slot idle, and only then releases the listener port.
 
