@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: "2026-11-20"
-last_updated_session: "authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c"
+last_updated_session: "authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -118,7 +118,7 @@ grants that identity `operate` on the exact Secret before deployment. OCC checks
 Installation administration, Namespace scope, and target access through the
 selected IAM Driver; policy and audit commit together.
 
-[createConfiguration and updateConfiguration](../../packages/occ/src/index.ts)
+[createConfiguration and updateConfiguration](../../packages/occ/src/configuration-operations.ts)
 keep `secretBindings` in OCC metadata, separate from native `values`. Each binding
 has a Secret source and an env delivery destination; omitted delivery normalizes
 to `env`. Unsupported sources, substitution modes, and reserved environment
@@ -336,6 +336,7 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-11-20 16:35: Point Configuration binding writes to their OCC module. (authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea - 81cdb33c3d2d2ba64dfd783b0216b5dbcfebe395)
 - 2026-11-20 16:31: Update OCC Secret operation source pointers. (authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c - 8eb97c71e0aa0b84779e19f9bbacc2d37f22fa14)
 - 2026-11-16 14:46: Bind the first-Agent helper to confirmed Installation state and use authenticated IAM operations for exact model credential grants. (authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822 - 6255bbe8fe564e52941b311a7ce8ce8699d1f236)
 
