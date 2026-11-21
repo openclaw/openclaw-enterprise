@@ -1398,7 +1398,7 @@ export class OpenClawController {
       readConfiguration: (metadata) => this.savedConfigurationReader(metadata)(),
       modelPolicyAgent: (executionMode) => this.modelPolicyAgent(executionMode),
       pluginDriver: (harnessId) => this.pluginDriver(harnessId),
-      assertPluginOwner: (driver, agent) => this.pluginOwner(driver, agent),
+      assertPluginOwner: pluginOwner,
       validatePluginPlacement: (driver, plugins, harness) =>
         this.agentPlugins.validatePluginPlacement(driver, plugins, harness),
     });
