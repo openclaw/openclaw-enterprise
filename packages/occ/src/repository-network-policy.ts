@@ -1,9 +1,13 @@
+import { selectsModel } from "./agent-harness-topology.ts";
+import { defaultDeploymentSandboxPolicy } from "./sandbox-policy.ts";
 import { types } from "node:util";
 import {
   admitRepositoryNetworkPolicy,
   admitSandboxRepositoryNetworkPolicy,
   RepositoryNetworkPolicyAdmissionError,
   type Agent,
+  type AgentRevision,
+  type AgentRevisionRead,
   type Configuration,
   type CredentialSource,
   type ComputeDriver,
@@ -23,8 +27,6 @@ import { refuseStoredConfigurationSettings } from "./configuration-settings.ts";
 import { resolveConfiguredHarnessId } from "./configured-harness.ts";
 import {
   assertAgentConfiguration,
-  defaultDeploymentSandboxPolicy,
-  selectsModel,
   soleHarnessSource,
   type ConfigurationOwnership,
 } from "./deployment-policy.ts";
@@ -45,16 +47,14 @@ export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
 
 type RepositoryGrantMethod = NonNullable<RepositoryGrantPolicy["repositoryNetworkPolicyAllows"]>;
 
-function concreteMethod<Method>(target: object, key: PropertyKey): Method | undefined {
+function repositoryGrantMethod(policy: RepositoryGrantPolicy): RepositoryGrantMethod | undefined {
   // Inspect the first definition without invoking an accessor or a Proxy trap.
-  for (let owner: object | null = target; owner; owner = Reflect.getPrototypeOf(owner)) {
+  for (let owner: object | null = policy; owner; owner = Reflect.getPrototypeOf(owner)) {
     if (types.isProxy(owner)) {
       return undefined;
     }
-    const descriptor: TypedPropertyDescriptor<Method> | undefined = Object.getOwnPropertyDescriptor(
-      owner,
-      key,
-    );
+    const descriptor: TypedPropertyDescriptor<RepositoryGrantMethod> | undefined =
+      Object.getOwnPropertyDescriptor(owner, "repositoryNetworkPolicyAllows");
     if (descriptor) {
       if (!Object.hasOwn(descriptor, "value")) {
         return undefined;
@@ -64,10 +64,6 @@ function concreteMethod<Method>(target: object, key: PropertyKey): Method | unde
     }
   }
   return undefined;
-}
-
-function repositoryGrantMethod(policy: RepositoryGrantPolicy) {
-  return concreteMethod<RepositoryGrantMethod>(policy, "repositoryNetworkPolicyAllows");
 }
 
 type RepositoryGrantAuthority = {
@@ -187,21 +183,15 @@ export async function readRepositoryEditTopology(
   return { harness, source };
 }
 
-export function bindRepositoryPolicyAuthorization(current: () => IAMDriver | undefined) {
+export function bindRepositoryPolicyAuthorization(current: () => IAMDriver) {
   const driver = current();
   try {
-    const authorize = driver && concreteMethod<IAMDriver["authorize"]>(driver, "authorize");
-    if (driver && authorize) {
+    const authorize = driver.authorize;
+    if (typeof authorize === "function") {
       return {
         inputs: [driver, authorize] as const,
         assertCurrent() {
-          if (
-            !approves(
-              () =>
-                concreteMethod<IAMDriver["authorize"]>(driver, "authorize") === authorize &&
-                current() === driver,
-            )
-          ) {
+          if (!approves(() => current() === driver && driver.authorize === authorize)) {
             throw new ResourceStateConflictError(
               "The selected authorization Driver changed during repository network policy admission. Reload before editing.",
             );
@@ -238,11 +228,12 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
   const boundSandbox = {
     id: sandbox.id,
     implementation: sandbox.implementation,
-    admitProtectedCodexArtifactPolicy: (version: number) => admitArtifacts.call(sandbox, version),
+    admitProtectedCodexArtifactPolicy: (version: number) =>
+      Reflect.apply(admitArtifacts, sandbox, [version]),
     admitRepositoryNetworkPolicy: (
       policy: RepositoryNetworkPolicy,
       network: SandboxPolicySnapshot,
-    ) => admitRepository.call(sandbox, policy, network),
+    ) => Reflect.apply(admitRepository, sandbox, [policy, network]),
   };
   return (
     harness: HarnessDescriptor,
@@ -254,12 +245,13 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
     ownersCurrent: () => boolean,
   ) => {
     // Row locks do not freeze process-local selections or their admission methods.
-    const assertCurrent = () => {
+    const assertCurrent = (stillApproved?: () => boolean) => {
       if (
         !approves(
           () =>
             ownersCurrent() &&
             authority?.unchanged() === true &&
+            stillApproved?.() !== false &&
             compute.admitsProtectedRepositoryNetworkPolicySave === admit &&
             compute.validateProtectedRepositoryNetworkPolicy === validateFrozen &&
             sandbox.admitProtectedCodexArtifactPolicy === admitArtifacts &&
@@ -275,16 +267,17 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
     const fitsSelected = (grant: RepositoryNetworkGrant) =>
       selectedRepositoryGrantAllows(resolution.selectedRepositoryNetworkGrants, grant);
     const dedicated = { id: harness.id, version: harness.version, mode: "dedicated" } as const;
+    const basePolicy = () =>
+      defaultDeploymentSandboxPolicy(boundSandbox, version, true, dedicated, {
+        repositoryCredentials: true,
+      });
     const admitEdit = (grants: readonly RepositoryNetworkGrant[]) => {
-      if (grants.length === 0 || authority === undefined) {
+      if (authority === undefined) {
         return undefined;
       }
       assertCurrent();
-      const { sandboxPolicy } = admitDeploymentRepositoryPolicy(
-        () =>
-          defaultDeploymentSandboxPolicy(boundSandbox, version, true, dedicated, {
-            repositoryCredentials: true,
-          }),
+      const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(
+        basePolicy,
         grants,
         ceiling,
         boundSandbox,
@@ -295,7 +288,8 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
       if (!policy?.grants.every(fitsSelected)) {
         return undefined;
       }
-      assertCurrent();
+      const assertApproved = () => assertCurrent(ownerUnchanged);
+      assertApproved();
       const { type, ownerCapability, driverId } = source;
       const context: ProtectedRepositoryNetworkPolicySaveContext = immutableCopy({
         harness: dedicated,
@@ -305,27 +299,26 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
         repositoryNetworkPolicy: policy,
         harnessCredentialSource: { type, ownerCapability, driverId },
       });
-      if (!approves(() => admit.call(compute, context))) {
+      if (!approves(() => Reflect.apply(admit, compute, [context]))) {
         return undefined;
       }
-      assertCurrent();
-      return { grants: policy.grants, assertCurrent };
+      assertApproved();
+      return { grants: policy.grants, assertCurrent: assertApproved };
     };
 
     return {
-      editableGrants(delegatedCeiling: RepositoryNetworkPolicyCeiling) {
-        const candidates = delegatedCeiling.flatMap((grant) =>
-          grant.access === "write" ? [{ ...grant, access: "read" } as const, grant] : [grant],
-        );
-        const grants = candidates.filter(
-          (grant) => fitsSelected(grant) && approves(() => admitEdit([grant]) !== undefined),
-        );
+      supports(delegatedCeiling: RepositoryNetworkPolicyCeiling) {
+        // Admission can depend on a combination of grants. Let the editor
+        // submit the complete list when the selected and delegated scopes overlap.
+        if (!delegatedCeiling.some((grant) => fitsSelected({ ...grant, access: "read" }))) {
+          return approves(() => admitEdit([]) !== undefined);
+        }
         return approves(() => {
           assertCurrent();
-          return true;
-        })
-          ? grants
-          : [];
+          const ready = basePolicy() !== undefined;
+          assertCurrent();
+          return ready;
+        });
       },
       admit: admitEdit,
     };
@@ -384,7 +377,9 @@ export function admitDeploymentRepositoryPolicy(
   try {
     const requested = admitRepositoryNetworkPolicy(grants, ceiling)!.grants;
     const owner = requested.length ? authority() : undefined;
-    if (requested.length && (!owner?.approvesAll(requested) || !owner.unchanged())) {
+    const approved =
+      owner && (() => owner.unchanged() && owner.approvesAll(requested) && owner.unchanged());
+    if (requested.length && !approved?.()) {
       throw new ResourceStateConflictError(
         operation === "deploy"
           ? "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying."
@@ -401,9 +396,31 @@ export function admitDeploymentRepositoryPolicy(
     }
     return {
       sandboxPolicy: admitSandboxRepositoryNetworkPolicy(sandboxPolicy, grants, ceiling, sandbox),
-      ownerUnchanged: owner?.unchanged,
+      ownerUnchanged: approved,
     };
   } catch (error) {
     refuseRepositoryPolicy(error, operation);
+  }
+}
+
+// Stop retires the active pointer. A provider can still complete an earlier
+// unscoped write after its Worker loses the claim. Retained revisions identify
+// every deployment that could have targeted this Agent's shared resources.
+export function hasOnlyScopedRepositoryRevisions(
+  history: readonly Readonly<AgentRevisionRead>[],
+): boolean {
+  return history.every(
+    (revision, index) =>
+      !("configurationReadError" in revision) &&
+      revision.revision === index + 1 &&
+      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
+  );
+}
+
+export function assertScopedRepositoryHistory(history: readonly Readonly<AgentRevision>[]): void {
+  if (!hasOnlyScopedRepositoryRevisions(history)) {
+    throw new ResourceStateConflictError(
+      "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
+    );
   }
 }

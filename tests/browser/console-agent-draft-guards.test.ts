@@ -8,7 +8,12 @@ import {
   type NamespaceLifecycleBinding,
 } from "../../packages/occ/src/index.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
+import { loadedProxyInstallation } from "../helpers/loaded-proxy-installation.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import type { Locator, Page, Route } from "playwright";
 import type { SandboxPolicyViewWire } from "../../packages/contracts/src/api/sandbox-policy.ts";
 import type {
@@ -20,12 +25,15 @@ import type {
   SecretBindings,
   OpenClawConfigurationDocument,
   Permission,
-  RepositoryNetworkGrant,
+  ResourceKind,
+  ProtectedRepositoryNetworkPolicySaveContext,
+  ComputeDriver,
+  SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
-import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
+import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -85,7 +93,7 @@ import {
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   NO_SANDBOX_DRIVER_NETWORK_POLICY,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
@@ -1075,151 +1083,322 @@ test("Agent policy under protected execution offers only removal of saved networ
   );
 });
 
-test("repository policy choices save and narrow a scoped repository list", async (t) => {
-  const { fixture, namespace, agent, base } = await createPolicyConsole(t);
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
+test("the Console saves repository choices, first deny-all, and withdrawals through the policy API", async (t) => {
+  const namespaceId = `ns_${crypto.randomUUID()}`;
   const app = { repository: "example/application", access: "read" } as const;
   const tooling = { repository: "example/tooling", access: "write" } as const;
-  const choices = [app, { ...tooling, access: "read" }, tooling] as const;
-  const desired = [[app, tooling], choices.slice(0, 2), []];
-  let version = 1;
-  let saved: readonly RepositoryNetworkGrant[] | undefined;
-  let editSupported = true;
-
-  // The selected Drivers are a fixture at the API boundary. The real Console reads the
-  // advertised choices and must send the versioned list without using the Namespace ceiling.
-  await page.route(fixture.origin + base, async (route) => {
-    if (route.request().method() === "GET") {
-      const response = await route.fetch();
-      assert.equal(response.status(), 200);
-      const body = await response.json();
-      await route.fulfill({
-        response,
-        json: {
-          ...body,
-          data: {
-            ...body.data,
-            policy: { ...body.data.policy, version, repositoryNetworkPolicy: saved },
-            protectedExecution: true,
-            repositoryNetworkPolicyCeiling: [
-              { ...app, access: "write" },
-              tooling,
-              { repository: "example/private", access: "read" },
-            ],
-            repositoryNetworkPolicySaveSupported: editSupported || saved !== undefined,
-            ...(editSupported && { repositoryNetworkPolicyEditableGrants: choices }),
-          },
+  const grants = [app, tooling];
+  const repositoryRefs = ["application", "tooling"];
+  const registry = {
+    version: 1,
+    backendId: "console-repository",
+    providerInstanceId: "console-test",
+    appId: "123",
+    githubInstallationId: "456",
+    maximumDurationSeconds: 3600,
+    repositories: grants.map(({ repository }, index) => ({
+      repositoryRef: repositoryRefs[index],
+      repositoryId: String(789 + index),
+      repository,
+      namespaces: [
+        {
+          namespaceId,
+          profiles: ["github-repository"],
+          permissions: { contents: "write", metadata: "read" },
         },
-      });
-      return;
-    }
-    if (route.request().method() !== "PUT") {
-      await route.fallback();
-      return;
-    }
-    const input = record(route.request().postDataJSON());
-    assert.equal(input.expectedVersion, version);
-    assert.deepEqual(input.additions, []);
-    const next = desired[version - 1];
-    assert.ok(next);
-    assert.deepEqual(input.repositoryNetworkPolicy, next);
-    const existing = await fixture.request("GET", base);
-    assert.equal(existing.status, 200);
-    version += 1;
-    saved = next;
-    if (next.length === 0) {
-      editSupported = false;
-    }
-    await route.fulfill({
-      status: 200,
-      json: {
-        data: { ...record(record(existing.data).policy), version, repositoryNetworkPolicy: saved },
-      },
-    });
+      ],
+    })),
+  };
+  const sandboxId = "console-repository-sandbox";
+  const workspaceProtocol = openShellWorkspaceProtocol();
+  const installation = await loadedProxyInstallation(t, {
+    profile: "repository",
+    id: sandboxId,
+    registry,
+    createOpenShellBackend: (definition) =>
+      createOpenShellBackend(definition, {
+        gatewayClient: completeOpenShellGatewayClient({
+          ...workspaceProtocol,
+          async getGatewayInfo() {
+            return {
+              gateway_version: "0.1.8",
+              extensions: [{ configured_name: "oce-prepared-git", kind: 4, protocol_major: 1 }],
+            };
+          },
+        }),
+      }),
   });
+  const owner = installation.protectedDriver;
+  const { credentialGatewayDriver: credentialGateway, repositoryAdmission } = installation;
+  assert.ok(owner && credentialGateway && repositoryAdmission);
+  t.after(() => owner.close());
+  const sandbox = owner.require("sandbox");
+  // The supported Driver pair and model credential store are external boundaries.
+  // The controller still checks all permissions, computes admission and saves through HTTP.
+  t.mock.method(credentialGateway, "registerSource", async () => ({ state: "ready" }));
+  let createdNamespaces = 0;
+  const prefixes: Partial<Record<ResourceKind, string>> = {
+    namespace: "ns",
+    agent: "agt",
+    agent_revision: "rev",
+    configuration: "cfg",
+    credential_source: "cs",
+    secret: "sec",
+    sandbox_policy: "sbp",
+  };
+  const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
+  const fixture = await createConsoleAppFixture(t, {
+    createId(kind: ResourceKind) {
+      if (kind === "namespace" && createdNamespaces++ === 1) {
+        return namespaceId;
+      }
+      const prefix = prefixes[kind];
+      assert.ok(prefix, `Unexpected resource kind: ${kind}`);
+      return `${prefix}_${crypto.randomUUID()}`;
+    },
+    backends: [...backendFixtures, ...installation.installation.backend],
+    repositoryAdmission: {
+      backendId: repositoryAdmission.backendId,
+      policy: repositoryAdmission.policy,
+    },
+    repositoryNetworkPolicyCeiling: grants,
+    repositoryCredentials: true,
+    namespaceLifecycleBindings,
+    driverConfigurations: [
+      {
+        capability: "sandbox",
+        driverId: sandbox.id,
+        implementation: sandbox.implementation,
+        definition: OpenShellSandboxDriver,
+      },
+    ],
+  });
+  await fixture.bootstrap();
+  const controller = checkedController(fixture.controller);
+  const compute = controller.selectedDriver("compute");
+  namespaceLifecycleBindings.push(sandboxNamespaceLifecycleBinding(compute, sandbox, owner));
+  controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+  controller.registerDriver(repositoryAdmission.policy);
+  controller.selectDriver("repo", repositoryAdmission.policy.id);
+  controller.registerDriver(credentialGateway);
+  controller.selectDriver("credential_gateway", credentialGateway.id);
+  let editsAllowed = true;
+  // Admission is real; the test does not start a Compute runtime.
+  Object.defineProperty(compute, "requiresAgentRuntimeCredentials", { value: undefined });
+  Object.assign(compute, {
+    validateRepositoryCredentials() {},
+    validateHarnessAuth() {},
+    validateExecutionAdmission() {},
+    admitsProtectedRepositoryNetworkPolicySave: ({
+      repositoryBindings,
+      repositoryNetworkPolicy: policy,
+    }: ProtectedRepositoryNetworkPolicySaveContext) =>
+      editsAllowed &&
+      (policy === undefined || repositoryBindings.length === 1 || policy.grants.length === 2),
+    validateProtectedRepositoryNetworkPolicy() {},
+  } satisfies Pick<
+    ComputeDriver,
+    | "validateRepositoryCredentials"
+    | "validateHarnessAuth"
+    | "validateExecutionAdmission"
+    | "admitsProtectedRepositoryNetworkPolicySave"
+    | "validateProtectedRepositoryNetworkPolicy"
+  >);
+  Object.assign(sandbox, {
+    admitRepositoryNetworkPolicy: (_policy, network) => network.defaults,
+    validateProtectedRepositoryNetworkPolicy() {},
+  } satisfies Pick<
+    SandboxDriver,
+    "admitRepositoryNetworkPolicy" | "validateProtectedRepositoryNetworkPolicy"
+  >);
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  const namespace = await fixture.createNamespace("Repository grants", { ready: true });
+  assert.equal(namespace.id, namespaceId);
+  const secret = await fixture.createSecret(
+    namespaceId,
+    "console-model",
+    "synthetic-console-model",
+  );
+  const sourceResponse = await fixture.request(
+    "POST",
+    `/namespaces/${namespaceId}/credential-sources`,
+    {
+      body: { name: "Console model", type: "openai", secrets: { api_key: secret.ref } },
+    },
+  );
+  assert.equal(sourceResponse.status, 201, JSON.stringify(sourceResponse.body));
+  const source = resource(sourceResponse.data);
+  const bindings = repositoryRefs.map((repositoryRef) => ({
+    repositoryRef,
+    profile: "github-repository",
+  }));
+  async function createAgent(name: string, selectedBindings = bindings) {
+    const agent = agentFields(
+      await fixture.createAgent(namespaceId, name, createHarnessConfiguration("codex", "gpt-5.1"), {
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: source.id },
+        credentialSources: [{ sourceId: source.id }],
+      }),
+    );
+    const path = `/namespaces/${namespaceId}/agents/${agent.id}`;
+    const saved = await fixture.request("PATCH", path, {
+      body: { configurationId: agent.configurationId, repositoryBindings: selectedBindings },
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const base = `${path}/sandbox-policy/networking`;
+    const enabled = await fixture.request("PATCH", `${base}/editing`, { body: { enabled: true } });
+    assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
+    const read = async () => {
+      const response = await fixture.request("GET", base);
+      assert.equal(response.status, 200);
+      return record(response.data);
+    };
+    const view = await read();
+    assert.equal(view.repositoryNetworkPolicySaveSupported, true, JSON.stringify(view));
+    assert.equal(Object.hasOwn(record(view.policy), "repositoryNetworkPolicy"), false);
+    const deploy = async () => {
+      fixture.policy.identities.push({
+        kind: "service_principal",
+        id: agent.servicePrincipalId,
+        namespaceId,
+        agentId: agent.id,
+      });
+      grantRole(fixture.policy, agent.servicePrincipalId, {
+        id: `deployment-model-${agent.id}`,
+        namespaceId,
+        permissions: { credential_source: ["operate"] },
+        resource: { kind: "credential_source", id: source.id },
+      });
+      const response = await fixture.request("POST", `${path}/deploy`);
+      assert.equal(response.status, 202, JSON.stringify(response.body));
+      const revisions = await controller.transact((unit) =>
+        unit.revisions.listRevisions(namespaceId, agent.id),
+      );
+      assert.equal(revisions.length, 1);
+      assert.ok(revisions[0]);
+      assert.equal(revisions[0].id, resource(response.data).id);
+      return revisions[0];
+    };
+    return { agent, base, read, deploy };
+  }
+
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  // The overlapping grants allow submission. The Driver only admits the full pair.
+  const mixedAgent = await createAgent("Mixed grants");
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespaceId, mixedAgent.agent.id, "draft", "policy"),
+  );
   const manage = page.getByRole("button", { name: "Manage rules", exact: true });
   const panel = page.getByRole("region", { name: "Repository network policy" });
   const a = panel.getByRole("combobox", { name: app.repository });
   const b = panel.getByRole("combobox", { name: tooling.repository });
   const save = panel.getByRole("button", { name: "Save repository policy", exact: true });
-  const responseToSave = () =>
-    page.waitForResponse(
-      (response) => response.request().method() === "PUT" && response.url().endsWith(base),
-    );
+  const confirm = page.getByRole("button", { name: "Save deny-all policy", exact: true });
+  const put = (path: string) => responseTo(page, "PUT", fixture.origin + path);
   await manage.click();
-  await save.waitFor();
-  assert.equal(await save.isEnabled(), false);
+  await panel.getByText(/Legacy repository access applies/).waitFor();
+  await panel.getByText("Save the first list before deploying this Agent.").waitFor();
+  const legacyPolicy = (await mixedAgent.read()).policy;
+  await panel.getByRole("button", { name: "Deny all repositories", exact: true }).click();
+  const emptyRefusal = put(mixedAgent.base);
+  await confirm.click();
+  assert.equal((await emptyRefusal).status(), 409);
+  assert.deepEqual((await mixedAgent.read()).policy, legacyPolicy);
   assert.deepEqual(await a.locator("option").allTextContents(), ["No access", "Read"]);
-  assert.equal(await panel.getByRole("combobox", { name: "example/private" }).count(), 0);
+  assert.equal(await save.isEnabled(), false);
   await a.selectOption("read");
   await b.selectOption("write");
-  await page.getByText("No changes to ordinary network rules", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Done", exact: true }).click();
-  assert.equal(pathRequests(requests, "PUT", base).length, 0, "closing discards the choice draft");
-
-  await manage.click();
-  await waitForInputValue(a, "");
-  await waitForInputValue(b, "");
-  await a.selectOption("read");
-  await b.selectOption("write");
-  const firstSave = responseToSave();
+  const firstSave = put(mixedAgent.base);
   await save.click();
-  assert.equal((await firstSave).status(), 200);
-  await page
-    .getByText("Repository policy v2 saved for the next deployment.", { exact: true })
-    .waitFor();
+  const saved = await firstSave;
+  assert.equal(saved.status(), 200, await saved.text());
+  assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, grants);
+
+  await page.reload();
   await manage.click();
   await waitForInputValue(a, "read");
   await waitForInputValue(b, "write");
-
   await b.selectOption("read");
-  const downgrade = responseToSave();
+  const downgrade = put(mixedAgent.base);
   await save.click();
   assert.equal((await downgrade).status(), 200);
-  await page
-    .getByText("Repository policy v3 saved for the next deployment.", { exact: true })
-    .waitFor();
-  editSupported = false;
-  await page.reload();
-  await manage.click();
-  await panel
-    .getByRole("button", { name: "Withdraw saved repository grants", exact: true })
-    .waitFor();
-  assert.equal(await panel.getByRole("combobox").count(), 0);
-  assert.equal(await save.count(), 0);
-  assert.deepEqual(saved, choices.slice(0, 2));
+  const narrowed = [app, { ...tooling, access: "read" }];
+  assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, narrowed);
 
-  // The cached choices were available before withdrawal. Only a new GET can reveal their loss.
-  editSupported = true;
-  await page.reload();
+  // The general hint still supports withdrawal while the Driver rejects a new list.
+  editsAllowed = false;
   await manage.click();
-  await waitForInputValue(b, "read");
+  await a.selectOption("");
+  const refused = put(mixedAgent.base);
+  await save.click();
+  assert.equal((await refused).status(), 409);
+  assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, narrowed);
   await panel
     .getByRole("button", { name: "Withdraw saved repository grants", exact: true })
     .click();
-  const withdrawal = responseToSave();
-  const readback = page.waitForResponse(
-    (response) =>
-      version === 4 && response.request().method() === "GET" && response.url().endsWith(base),
-  );
-  await page.getByRole("button", { name: "Save deny-all policy", exact: true }).click();
+  const withdrawal = put(mixedAgent.base);
+  await confirm.click();
   assert.equal((await withdrawal).status(), 200);
-  const refreshed = await readback;
-  assert.equal(refreshed.status(), 200);
-  const refreshedView = record(record(await refreshed.json()).data);
-  assert.deepEqual(record(refreshedView.policy).repositoryNetworkPolicy, []);
-  assert.equal(Object.hasOwn(refreshedView, "repositoryNetworkPolicyEditableGrants"), false);
+  assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, []);
+
+  editsAllowed = true;
+  // The same supported installation also serves a fresh Agent with one bound repository.
+  const emptyAgent = await createAgent("Deny all on first save", [
+    { repositoryRef: "application", profile: "github-repository" },
+  ]);
+  await page.goto(detailUrl(fixture, namespaceId, emptyAgent.agent.id, "draft", "policy").href);
+  await manage.click();
+  await panel.getByRole("button", { name: "Deny all repositories", exact: true }).click();
+  await page.getByRole("heading", { name: "Deny all repository access?" }).waitFor();
+  assert.equal(pathRequests(requests, "PUT", emptyAgent.base).length, 0);
+  const initialEmpty = put(emptyAgent.base);
+  await confirm.click();
+  assert.equal((await initialEmpty).status(), 200);
+  const denyAll = record((await emptyAgent.read()).policy);
+  assert.deepEqual(denyAll.repositoryNetworkPolicy, []);
+  await page.reload();
   await manage.click();
   await panel
     .getByText("Saved repository policy: Deny all repositories", { exact: true })
     .waitFor();
+  assert.equal(await panel.getByText(/Legacy repository access applies/).count(), 0);
+  assert.equal(pathRequests(requests, "POST", `${mixedAgent.base}/apply`).length, 0);
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByText(/Deploying this policy requires supporting Drivers/).waitFor();
+  const scopedRevision = await emptyAgent.deploy();
+  assert.equal(scopedRevision.sandboxPolicy?.version, denyAll.version);
+  assert.deepEqual(scopedRevision.sandboxPolicy?.repositoryNetworkPolicy?.grants, []);
+
+  // A real deployment creates history even before a Worker selects an active revision.
+  const legacy = await createAgent("Previously deployed");
+  const previous = await legacy.deploy();
+  assert.equal(previous.sandboxPolicy?.repositoryNetworkPolicy, undefined);
+  const legacyView = await legacy.read();
+  assert.equal(legacyView.repositoryNetworkPolicySaveSupported, false);
+  assert.equal(legacyView.protectedExecution, true);
+  assert.equal(legacyView.defaultsRevisionId, undefined);
+  assert.equal(Object.hasOwn(record(legacyView.policy), "repositoryNetworkPolicy"), false);
+  await page.goto(detailUrl(fixture, namespaceId, legacy.agent.id, "draft", "policy").href);
+  await manage.click();
+  await panel.getByText(/create a new Agent and save its policy before deploying/).waitFor();
   assert.equal(await panel.getByRole("combobox").count(), 0);
   assert.equal(await save.count(), 0);
-  assert.equal(pathRequests(requests, "PUT", base).length, 3);
-  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
+  assert.equal(await panel.getByRole("button", { name: "Deny all repositories" }).count(), 0);
+  assert.equal(pathRequests(requests, "PUT", legacy.base).length, 0);
+
+  const refusedLegacy = await fixture.request("PUT", legacy.base, {
+    body: {
+      expectedVersion: record(legacyView.policy).version,
+      additions: [],
+      repositoryNetworkPolicy: grants,
+    },
+  });
+  assert.equal(refusedLegacy.status, 409);
+  assert.match(JSON.stringify(refusedLegacy.body), /Create a new Agent/);
+  assert.deepEqual((await legacy.read()).policy, legacyView.policy);
 });
 
 test("protected execution can withdraw saved repository grants using the current policy version", async (t) => {
@@ -1237,7 +1416,7 @@ test("protected execution can withdraw saved repository grants using the current
   });
   await fixture.bootstrap();
   const options = { middlewareName: "console-egress", authorityScope: "execution" } as const;
-  const proxy = new OpenShellCredentialProxyDriver(options, {
+  const proxy = new OpenShellLegacyEgressProxyDriver(options, {
     id: sandboxDriver.id,
     backend,
     sandbox: sandboxDriver,
@@ -1327,7 +1506,10 @@ test("protected execution can withdraw saved repository grants using the current
   await page
     .getByRole("heading", { name: "Withdraw saved repository grants?", exact: true })
     .waitFor();
-  assert.match(await page.getByRole("dialog").innerText(), /stop the Agent and confirm/);
+  assert.match(
+    await page.getByRole("dialog").innerText(),
+    /This saves a deny-all repository policy/,
+  );
   const cancelled = await confirm.elementHandle();
   await page.getByRole("button", { name: "Back to editing", exact: true }).click();
   // A confirm from the detached review cannot save after returning to the editor.
@@ -1341,7 +1523,7 @@ test("protected execution can withdraw saved repository grants using the current
   const deniedPut = put();
   await confirm.click();
   assert.equal((await deniedPut).status(), 403);
-  await page.getByText(/withdrawing this Agent’s saved repository grants/).waitFor();
+  await page.getByText(/saving this Agent’s deny-all repository policy/).waitFor();
   assert.equal(await withdraw.count(), 0);
   liftRestriction(fixture.policy, denied);
   await refresh.click();
@@ -1358,6 +1540,17 @@ test("protected execution can withdraw saved repository grants using the current
   await page.getByText(/Reload before editing/).waitFor();
   const stillSaved = await fixture.request("GET", base);
   assert.deepEqual(record(record(stillSaved.data).policy).repositoryNetworkPolicy, savedGrants);
+  // The replacement capability has no networking editor or live operations.
+  Object.defineProperties(sandboxDriver, {
+    networkPolicy: { value: undefined },
+    admitNetworkPolicy: { value: undefined },
+    observeNetworkPolicy: { value: undefined },
+    applyNetworkPolicy: { value: undefined },
+  });
+  const afterDriverLoss = await fixture.request("GET", base);
+  assert.equal(afterDriverLoss.status, 200, JSON.stringify(afterDriverLoss.body));
+  assert.equal(record(afterDriverLoss.data).configuration, undefined);
+  assert.equal(record(afterDriverLoss.data).capability, null);
   await refresh.click();
   await withdraw.click();
 

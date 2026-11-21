@@ -38,6 +38,7 @@ type PolicyState =
   | "noCredential"
   | "repositoryLimits"
   | "repositoryEditor"
+  | "repositoryRecovery"
   | "protected"
   | "withheldOne"
   | "withheldMany";
@@ -48,8 +49,8 @@ type AgentDetailPolicyScenario = {
   group: "Pages/Agent detail";
   name: string;
   path: string;
-  deployed: true;
-  candidateDeploymentStatus: "succeeded";
+  deployed: boolean;
+  candidateDeploymentStatus?: "succeeded";
   policyState: PolicyState;
   description: string;
   steps: string[];
@@ -79,6 +80,11 @@ export function createAgentDetailPolicyScenarios({
     ["policyDenials", "ready", "Policy denials and reviewed network additions"],
     ["policyUnicodeExecutable", "unicode", "Unicode executable path remains complete"],
     ["policyRepositoryLimits", "repositoryLimits", "Inspect Namespace repository limits"],
+    [
+      "policyRepositoryRecovery",
+      "repositoryRecovery",
+      "Withdraw grants with an unreadable active revision",
+    ],
     [
       "policyRepositoryEditor",
       "repositoryEditor",
@@ -163,9 +169,9 @@ export function createAgentDetailPolicyScenarios({
         {
           group: "Pages/Agent detail",
           name,
-          path: `${candidateVersion}&tab=policy`,
-          deployed: true,
-          candidateDeploymentStatus: "succeeded",
+          path: `${state === "repositoryEditor" ? candidateVersion.replace(/([?&]revision=)[^&]+/, "$1draft") : candidateVersion}&tab=policy`,
+          deployed: state !== "repositoryEditor",
+          ...(state === "repositoryEditor" ? {} : { candidateDeploymentStatus: "succeeded" }),
           policyState: state,
           ...(["many", "populated"].includes(state)
             ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
@@ -248,20 +254,31 @@ export function createAgentDetailPolicyScenarios({
             ? {
                 policyCeiling: [],
                 description:
-                  "The Namespace delegates repository access and the Agent has no saved repository policy.",
+                  "The Namespace delegates repository access. An earlier version was deployed without a repository policy.",
                 steps: [
                   "Open View network limits. Check that example/application is read and example/tooling is write.",
-                  "Open Manage rules. Check that the Agent has no saved repository policy or withdrawal action.",
+                  "Open Manage rules. Check the guidance to create a new Agent and verify that no repository save controls appear.",
                 ],
               }
             : {}),
           ...(state === "repositoryEditor"
             ? {
                 policyCeiling: [],
-                description: "An Agent has exact repository choices and no saved policy.",
+                description:
+                  "An Agent can propose repository access within the Namespace limits before its first deployment.",
                 steps: [
                   "Open Manage rules, select Read for example/application and Write for example/tooling, and save.",
                   "Reopen Manage rules, change example/tooling to Read, and save again.",
+                  "Reload the story from its initial state and choose Deny all repositories. Confirm the empty policy remains distinct from legacy access.",
+                ],
+              }
+            : {}),
+          ...(state === "repositoryRecovery"
+            ? {
+                steps: [
+                  "Check that the active policy is unavailable and the saved grants are readable.",
+                  "Open Manage rules and choose Withdraw saved repository grants.",
+                  "Check the compatible controller and Worker guidance, then save the deny-all policy.",
                 ],
               }
             : {}),

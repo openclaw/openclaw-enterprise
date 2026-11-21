@@ -11,72 +11,6 @@ argument. The current implementation supports `networking`; `filesystem` and
 The console discovers the owner’s contextual action URLs; the CLI exposes
 `--facet networking`.
 
-## Repository network policy contract
-
-The contracts package can bind an explicit repository access list to a
-SandboxPolicy snapshot. Each entry uses a lowercase `owner/name` and grants
-`read` for clone and fetch or `write` for clone, fetch, and push. Each list and
-its delegation ceiling can contain up to 32 entries, one per repository.
-Repository policy admission checks canonical names, unique entries, the
-Installation delegation ceiling, and the repository policy owner's approval
-for the Namespace. A write limit allows read and write grants.
-An absent ceiling delegates no access. Policy GET shows Namespace delegation.
-It shows whether current Drivers admit a first-save candidate or the state
-adapter supports withdrawal of a saved list. PUT checks each requested grant.
-
-`PUT /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking`
-accepts optional `repositoryNetworkPolicy` with `expectedVersion` and `additions`.
-Omitting the field keeps the saved list. A new Agent has no saved list.
-A first list or nonempty replacement requires Agent `manage_policy`,
-SandboxPolicy `update`, and read access to the Agent's Configuration and Harness
-credential source. Leave ordinary additions empty. A first empty list is
-refused. Each grant must fit the Agent's selected Git credential and the Repo
-owner must approve its exact access level. The selected Sandbox checks the
-protected Codex artifact snapshot and repository grants at the next saved
-version. Compute checks the same grants and protected topology before OCC
-saves the list.
-The bundled Drivers do not currently admit first saves or nonempty
-replacements.
-
-To withdraw existing grants, enable editing and send empty arrays for `additions` and
-`repositoryNetworkPolicy`. You need Agent `manage_policy` and SandboxPolicy
-`read` and `update`. This saves deny-all even under protected execution or
-without Sandbox Driver support. To end existing access, stop the Agent and
-confirm its workload has stopped. Omit the repository field to clear ordinary
-additions alone.
-
-A stored list, including deny-all, can take effect only through a deployment
-that can enforce it. Deployment checks edit authority before Channel credential validation and new
-deployment effects. It checks each grant against the current Installation ceiling
-and Namespace approval. Both the selected Sandbox and Compute Drivers
-must admit the policy and topology before runtime credential preparation.
-For protected execution, Compute checks the frozen revision and its pinned
-runtime inputs. The bundled Drivers refuse this protected policy before
-preparing runtime credentials.
-Deployment returns `409 RESOURCE_CONFLICT`
-if an admitting Driver or the repository policy owner that approved the list
-changes before runtime credential provisioning or revision creation. A successful
-deployment saves the list, its identity, and the effective policy in the Agent
-revision. Before preparing a queued revision, the Worker rechecks the actor's
-Agent `manage_policy` and SandboxPolicy `read` and `update` permissions. Losing
-one of them blocks deployment with `AUTHORIZATION_DENIED`. The Worker checks
-Compute support again, including after restart. After activation-time policy
-validation, the Worker renews its work claim before calling Compute. These checks
-cover empty lists.
-Losing policy-edit permission or Compute support for a new deployment still
-allows the Worker to remove Git access from a serving revision.
-Live application refuses a saved list or an active revision that has a list.
-If the active revision has a list and the saved policy lacks it, stop the Agent,
-confirm its workload has stopped, and investigate the mismatch.
-
-The Sandbox Driver's side-effect-free `admitRepositoryNetworkPolicy` method
-receives the validated list and an immutable base snapshot. It returns the
-effective policy synchronously as a plain JSON object. Arrays must contain only
-consecutive elements starting at index zero. The Driver must inspect HTTPS,
-enforce the list alongside other rules, and deny ungranted repositories. It
-must refuse bypass paths and weaker protected execution. Ordinary deployment
-refuses a list supplied by the Driver.
-
 ## Discovery and preview
 
 The selected Sandbox implementation contributes the shared definition for
@@ -104,12 +38,9 @@ User editing is disabled by default. Enabling or disabling
 `Agent.sandboxPolicyEditing` requires both Installation and exact-Agent
 `administer`. Changing additions or requesting live application requires exact-Agent
 `manage_policy` and exact-SandboxPolicy `update`. Live application also requires
-SandboxPolicy `read` because it admits and returns the saved additions. Ordinary
-deployment and fresh first deployment need SandboxPolicy `read` for saved
-network policy additions or an explicit repository network policy list, even an
-empty list. Deploying an explicit list also requires exact-Agent `manage_policy`
-and exact-SandboxPolicy `update`. An Agent update that leaves repository bindings still needs
-SandboxPolicy `read` when saved network policy additions exist. Reads require
+SandboxPolicy `read`: it admits and returns the saved additions. When saved
+additions exist, Agent deploy and an Agent update that leaves repository bindings
+also require SandboxPolicy `read` before any refusal that names them. Reads require
 `read` on both resources. Ordinary Agent `update` does not authorize these operations.
 The editing switch is temporary until the platform Guardrails primitive owns
 these restrictions. Its controller and HTTP operation are named
@@ -117,13 +48,16 @@ these restrictions. Its controller and HTTP operation are named
 expect this API to change when Guardrails replaces it.
 Disabling editing preserves approved additions and previously admitted work.
 Revocation requires an explicit policy change or Agent shutdown.
-Without per-Agent network policy support, an administrator also needs
-SandboxPolicy `read` to enable editing. The Installation must support storing
-repository policies and the Agent must have an existing list to withdraw.
-Otherwise enabling editing returns HTTP 409 for an authorized reader.
-Disabling editing remains available. Validate, apply, and ordinary saves return
-HTTP 409 after authorization if the capability is unavailable. Policy GET then
-returns `capability: null` and the cause in `unavailableReason`.
+Without per-Agent network policy support, enabling editing returns HTTP 409;
+disabling it stays allowed. When the Installation selects no Sandbox Driver,
+validate, save and apply return the same 409 right after authorization. Policy GET
+then returns `capability: null` and the cause in `unavailableReason`.
+
+If the controller cannot read the active revision of an Agent with saved
+repository grants, GET returns the saved policy with `protectedExecution`,
+`capability` and `defaults` set to `null`. See `unavailableReason`. An
+authorized editor can clear saved grants. Use a compatible controller and
+Worker to inspect or stop the workload and confirm retirement.
 
 The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
 the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS
@@ -227,6 +161,36 @@ for `GetSandbox` and `GetSandboxPolicyStatus`, and `config:write` and Workspace
 role `admin` for `UpdateConfig`. Recommendations through `GetDraftPolicy` need
 `config:read` and Workspace role `user`. OpenShell scope enforcement must be configured
 on its OIDC gateway; these permissions are separate from OCE resource authority.
+
+## Repository network policy
+
+Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository delegation. It accepts up to 32 unique repositories in lowercase `owner/name` form without `.git`, each with `read` or `write` access. Startup rejects invalid entries. An absent or empty ceiling delegates nothing. The policy GET returns the subset approved for this Namespace.
+
+`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. PUT validates the whole list because a Driver can require multiple grants together.
+
+PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. The first empty list requests denial of all repositories. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []` with policy read permission.
+
+A save updates desired policy. Deployment checks the current grants and selected Drivers, validates the frozen revision, and rechecks authority before credential operations. The Worker refuses stale or unsupported policy before dispatch. Live apply refuses an explicit list. To end current access, use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
+
+When a Channel needs a bound Secret, the controller checks the saved repository
+policy and the caller's Secret access before handing the value to the Channel.
+The handoff shares the lock used by permission changes. The controller releases
+the lock before waiting for the provider and checks deployment admission again
+before saving the revision.
+
+To opt into repository policy, an Agent must have an explicit list from its
+first deployment. Ordinary Agents can keep deploying without a list.
+A delayed write to its Gateway can outlive a Worker claim and a completed
+stop. Deployment returns 409 if any earlier revision has no list. The Worker
+checks the same history before preparing a queued scoped revision. For a
+previously deployed Agent with that history, create a new Agent and save
+the list before deploying it. An Agent that started with a list can
+deploy subsequent policy changes under the same Agent ID.
+
+After refusing a scoped replacement before its first provider call, the Worker
+can maintain the serving predecessor if the deployment has no earlier attempt.
+If earlier work could have changed the Gateway, the Worker keeps that repair
+blocked. Stop the Agent and confirm its workload has retired.
 
 ## Denials and recommendations
 

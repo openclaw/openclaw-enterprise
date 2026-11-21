@@ -9,7 +9,7 @@ import {
   deploymentErrorForWork,
   deploymentProgressForWork,
   deploymentStatusForWork,
-} from "../../packages/occ/src/state/controller-work.ts";
+} from "../../packages/occ/src/deployment-work-status.ts";
 import { describeGatewayAppServerDeclaration } from "../helpers/egress-native-exec-observation.ts";
 import {
   observeConnectedOperation,

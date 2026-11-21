@@ -1326,6 +1326,16 @@ test("a turn the model answered at capacity runs again only for its own final er
         method: "item/completed",
         params: { ...at, item: { ...command, status, exitCode } },
       });
+      const agentReply = (turnId: string, text: string) => ({
+        method: "item/completed",
+        params: { threadId, turnId, item: { id: `reply-${turnId}`, type: "agentMessage", text } },
+      });
+      const reply = agentReply(turn.id, "OCC-TURN-OK");
+      const foreignReply = agentReply("other-turn", "OCC-FOREIGN-REPLY");
+      const finished = {
+        method: "turn/completed",
+        params: { threadId, turn: { ...turn, status: "completed" } },
+      };
       const eventsByScript: Record<string, readonly (object | "close")[]> = {
         capacity: [atCapacity(at)],
         // Our own turn's final error before any action, but not the at-capacity answer.
@@ -1384,16 +1394,9 @@ test("a turn the model answered at capacity runs again only for its own final er
             },
           }),
         ],
-        reply: [
-          {
-            method: "item/completed",
-            params: { ...at, item: { id: "reply", type: "agentMessage", text: "OCC-TURN-OK" } },
-          },
-          {
-            method: "turn/completed",
-            params: { threadId, turn: { ...turn, status: "completed" } },
-          },
-        ],
+        "foreign reply only": [foreignReply, finished],
+        reply: [reply, finished],
+        "reply followed by a foreign reply": [reply, foreignReply, finished],
       };
       assert.ok(script);
       const events = eventsByScript[script];
@@ -1429,6 +1432,12 @@ test("a turn the model answered at capacity runs again only for its own final er
     nativeExecutionSummary(error.stderr);
   const notRetried =
     'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt 1/3).';
+
+  await t.test("Gateway replies come from the acknowledged turn", async () => {
+    // A matching terminal can arrive with no reply of its own, and another turn may speak last.
+    assert.equal((await turn(["foreign reply only"])).assistant, "");
+    assert.equal((await turn(["reply followed by a foreign reply"])).assistant, "OCC-TURN-OK");
+  });
 
   // Our turn's final error at capacity before any action: the same turn runs again.
   for (const script of ["capacity", "capacity after a message"]) {
