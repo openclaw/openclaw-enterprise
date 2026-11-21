@@ -300,6 +300,9 @@ ${NATIVE_WORKER_ENTRYPOINT}
   });
   events.push("attach-provider");
   gateway.updatePolicy = async (request) => {
+    // Native UpdateConfig admits only a nonzero, hyphenated UUID for replay.
+    assert.match(request.requestId, /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i);
+    assert.notEqual(request.requestId, "00000000-0000-0000-0000-000000000000");
     const current = gateway.sandboxes.get(request.sandbox)!;
     validateBindings(request.policy, current.spec!.providers as string[]);
     assert.equal(request.expectedResourceVersion, current.resourceVersion);

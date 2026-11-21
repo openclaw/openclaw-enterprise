@@ -5209,11 +5209,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Live policy application is unsupported.");
     }
     const baseline = await this.networkPolicyBaseline(client, request, sandbox, context.signal);
-    const candidate =
+    const staged =
       context.revision.executionAdmission.mode === "standalone" &&
-      context.revision.credentialDeployment !== undefined
-        ? stagedCredentialPolicies(baseline, context.revision, input.snapshot).admitted
-        : openShellPolicyCandidate(baseline, input.snapshot);
+      context.revision.credentialDeployment !== undefined;
+    const candidate = staged
+      ? stagedCredentialPolicies(baseline, context.revision, input.snapshot).admitted
+      : openShellPolicyCandidate(baseline, input.snapshot);
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);
@@ -5253,7 +5254,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ...request,
         policy: candidate,
         expectedResourceVersion: input.expectedProviderVersion,
-        requestId: input.operationId,
+        requestId:
+          staged && input.operationId === context.revision.id
+            ? revisionUuid(input.operationId)
+            : input.operationId,
       },
       context.signal,
     );
