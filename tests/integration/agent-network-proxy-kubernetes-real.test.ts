@@ -25,7 +25,9 @@ test(
     // A controlled endpoint lets the scenario prove that a no-channel Agent never contacts it.
     const proxy = await createControlledChannelProxy(context, { forward: false });
     const { url, address, port } = proxy;
-    const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+    // This focused no-channel case uses supported embedded execution; dedicated Slack/Codex proof is a separate lane.
+    const topology = await arrangeProductionTopology(context, "embedded", undefined, {
+      workspaceGateway: true,
       channelEgressCapacity: 1,
       channelEgress: { upstreamProxies: [{ url, addresses: [`${address}/32`] }] },
     });
