@@ -198,12 +198,17 @@ export function registerInstallationRecoveryCases({
       const state = await f.state();
       mapping(state.secret).immutable = true;
       await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-      await assert.rejects(
-        f.run(...(preflightOnly ? ["--preflight-only"] : [])),
-        /Installation Secret .* is immutable/,
-      );
+      await assert.rejects(f.run(...(preflightOnly ? ["--preflight-only"] : [])), (error) => {
+        const stderr = commandStderr(error);
+        assert.match(stderr, /Installation Secret .* is immutable/);
+        assert.match(stderr, /stage a versioned immutable successor/i);
+        assert.match(stderr, /--candidate-values.*installation\.secretName/);
+        assert.match(stderr, /immutable-installation-upgrade\.md/);
+        return true;
+      });
       assert.deepEqual(await f.events(), []);
       const after = await f.state();
+      assert.deepEqual(after.secret, state.secret);
       assert.equal(after.api, 1);
       assert.equal(after.worker, 1);
       assert.equal(after.helmSubmissions ?? 0, 0);
@@ -231,7 +236,18 @@ export function registerInstallationRecoveryCases({
     const state = await f.state();
     mapping(state.secret).immutable = true;
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-    await assert.rejects(f.run("--resume"), /Installation Secret .* is immutable/);
+    await assert.rejects(f.run("--resume"), (error) => {
+      const stderr = commandStderr(error);
+      assert.match(stderr, /Installation Secret .* is immutable/);
+      assert.match(stderr, /prepared upgrade.*recorded Installation Secret/);
+      assert.match(stderr, /Keep the maintenance freeze/);
+      assert.match(
+        stderr,
+        /production-upgrade-command\.md#stop-when-the-recorded-installation-secret-is-immutable/,
+      );
+      assert.doesNotMatch(stderr, /--candidate-values|stage a versioned immutable successor/i);
+      return true;
+    });
     assert.deepEqual(await f.events(), events);
     const after = await f.state();
     assert.equal(after.helmSubmissions ?? 0, 0);

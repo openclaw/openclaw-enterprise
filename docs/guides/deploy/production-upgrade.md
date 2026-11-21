@@ -270,18 +270,16 @@ scripts/upgrade-production-images "${target[@]}" \
   --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
-Output:
-
 ```text
-Upgrade: Preparing the upgrade.
+Upgrade: Preparing the upgrade. [2026-11-20T10:00:00Z]
 ...
-Upgrade: Verifying upgrade completion.
+Upgrade: Verifying upgrade completion. [2026-11-20T10:05:12Z]
 Upgraded controller image; no Agent deployments were requested.
 ```
 
-Phases use stderr; completion uses stdout. Use `--verbose` for native output.
-Otherwise, private evidence retains scale/rollout logs. Reconcile uncertain writes;
-progress does not prove completion.
+Stderr shows phases with UTC timestamps when available. Stdout reports
+completion. `--verbose` shows native output. Private evidence retains
+scale/rollout logs. Reconcile uncertain writes.
 
 Repository-enabled releases also require immutable `--broker-image "$BROKER_IMAGE"`.
 Keep protected values equal to live values. The helper preserves the broker hostname,

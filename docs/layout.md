@@ -86,6 +86,12 @@ such as `drivers/compute/index.ts` or `drivers/iam/index.ts`, containing that
 Driver's interface, request, context, and result types. The root `index.ts` retains
 shared resource definitions and the public package exports.
 
+Within `packages/occ/src/`, `ports/` owns the repository and transaction
+contracts. `state/` holds the in-memory and PostgreSQL implementations.
+`controller-work.ts` owns queued operation records and keys.
+`controller-work-result.ts` validates result data for storage and disclosure.
+`deployment-work-status.ts` derives deployment status, progress, and messages from queued operations.
+
 The container release command starts at `scripts/ci/container-release.ts`.
 Its modules under `scripts/ci/container-release/` own release admission,
 receipt validation, OCI verification, native smoke, and registry publication.

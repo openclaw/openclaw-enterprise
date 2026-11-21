@@ -69,7 +69,7 @@ hides the Stop or Delete row, and the card when neither remains. If the dialog i
 confirmation, focuses Cancel and keeps the row. A missing answer keeps the rows; late advice cannot recall a request.
 
 `apps/controller/src/console/agents/stop.mts:createAgentStop` sends a bodyless `POST` to the
-Agent’s `/stop` route. OCC’s `packages/occ/src/index.ts:stopAgent` checks Agent `operate`,
+Agent’s `/stop` route. OCC’s `packages/occ/src/agent-termination.ts:stopAgent` checks Agent `operate`,
 persists the requested stopped state, and queues reconciliation. Success means admission,
 not that Compute has shut down. Cancel restores focus to the invoking button; submission focuses
 **Refresh stop status**. A `403` about grants shows the Console's refusal with the Agent's name
@@ -142,7 +142,7 @@ Agent read. A deleting read clears that guard even when the view was already del
 a failed read does not. Cancel returns focus to the repeat-request button, and
 successful writes retain status refresh. The browser never retries DELETE automatically.
 
-`packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
+`packages/occ/src/agent-termination.ts:deleteAgent` owns deletion admission. The
 [Agent deletion reference](../../reference/agents.md#deletion) covers
 worker cleanup and the Namespace-owned resources it preserves.
 
@@ -175,7 +175,7 @@ Agent to choose advice for an idle Agent, an earlier stop request, or a new stop
 With `--if-active-revision`, it validates the revision ID and sends one bodyless
 POST with `expectedActiveRevisionId`, without the advisory GET. The HTTP route
 `apps/controller/src/http/agents.ts:stopAgent` passes the query to
-`packages/occ/src/index.ts:stopAgent`. OCC rechecks exact-Agent `operate` under
+`packages/occ/src/agent-termination.ts:stopAgent`. OCC rechecks exact-Agent `operate` under
 the lock and rejects a guard mismatch before changing state or queuing work.
 The [stop reference](../../reference/agents.md#identity-and-deployment)
 defines the admission conditions and recovery steps. A refusal or uncertain

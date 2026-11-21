@@ -103,7 +103,7 @@ Agent and `stopped` or `deleted` target without a version. Reusing an idempotenc
 key with a different actor, owner, or target is rejected. The API returns accepted
 state before the worker invokes Compute.
 
-For an already-deleting Agent, `OpenClawController.deleteAgent` leaves active
+For an already-deleting Agent, `packages/occ/src/agent-termination.ts:deleteAgent` leaves active
 work unchanged. After terminal failure, `operations.retryFailedAgentDeletion`
 checks delete permission and resets only the stopped, deleting Agent's terminal
 work, keeping prior audits ([who can retry](../reference/agents.md#deletion)); a
@@ -332,7 +332,7 @@ path, including unready Harnesses without plugins, and verifies runtime
 incarnation without repeating the model probe. Missing or invalid evidence
 leaves the cause unspecified.
 
-`packages/occ/src/state/controller-work.ts:validateFailureData` validates reads
+`packages/occ/src/controller-work-result.ts:validateFailureData` validates reads
 and writes and rejects data for other failure reasons; the PostgreSQL constraint
 enforces the persisted shape.
 `PostgresWorkQueue.complete` and `PostgresWorkQueue.fail` publish only under the
