@@ -408,6 +408,7 @@ export function createSecretReferenceField({
   selectClassName,
   disabled = false,
   required = false,
+  loadOnFocus = false,
 }: {
   context: SecretContext;
   id: string;
@@ -424,6 +425,7 @@ export function createSecretReferenceField({
   selectClassName?: string;
   disabled?: boolean;
   required?: boolean;
+  loadOnFocus?: boolean;
 }) {
   const inputClassName = ["secret-typeahead-input", selectClassName].filter(Boolean).join(" ");
   const input = element("input", {
@@ -1221,8 +1223,13 @@ export function createSecretReferenceField({
   } else {
     setSecretOptions();
     readCreateAnswer();
-    status.textContent = "Loading available Secrets...";
-    void loadSecrets();
+    if (loadOnFocus) {
+      status.textContent =
+        currentSecretId() === null ? "Choose a Secret when needed." : BOUND_SECRET_METADATA;
+    } else {
+      status.textContent = "Loading available Secrets...";
+      void loadSecrets();
+    }
   }
 
   const withinListbox = (node: EventTarget | null) =>
@@ -1249,6 +1256,9 @@ export function createSecretReferenceField({
       return;
     }
     openListbox();
+    if (loadOnFocus && !secretsListed) {
+      void loadSecrets(true);
+    }
   });
   input.addEventListener("click", () => {
     if (!listboxOpen) {

@@ -3,6 +3,7 @@ import "./console-agent-detail-deployment.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import type { Locator, Page, Route, Request } from "playwright";
 import type { TSchema } from "typebox";
 import { IsSchema } from "typebox/schema";
@@ -251,6 +252,43 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   assert.equal(
     await page.getByRole("link", { name: /View harness authentication Secret metadata/ }).count(),
     0,
+  );
+});
+
+test("the Agent Network proxy editor never sends URL credentials to OCC", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Network proxy editor", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Proxy editor Agent",
+    nativeValues("proxy-editor"),
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const input = page.getByLabel("Network proxy URL");
+  await input.waitFor();
+  const password = randomUUID();
+  const unsafe = syntheticCredentialUrl({
+    protocol: "https",
+    username: "proxy-user",
+    password,
+    host: "proxy.example",
+  });
+
+  // A URL can contain a password before server validation runs. The browser must refuse it locally.
+  await input.fill(unsafe);
+  await page.getByRole("button", { name: "Save Network proxy for next deployment" }).click();
+  await page
+    .getByText("Use an HTTP or HTTPS proxy endpoint without credentials.", { exact: true })
+    .waitFor();
+  assert.equal(
+    requests.some(
+      ({ method, path }) =>
+        method === "PATCH" && path === `/namespaces/${namespace.id}/agents/${agent.id}`,
+    ),
+    false,
   );
 });
 

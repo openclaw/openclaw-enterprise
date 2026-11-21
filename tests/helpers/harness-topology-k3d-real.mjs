@@ -782,8 +782,9 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     configuration.drivers.compute.configuration.gatewayRouting = options.gatewayRouting;
     delete configuration.drivers.compute.configuration.network.gatewayClients;
   }
-  if (slack !== undefined) {
-    configuration.drivers.compute.configuration.runtime.channelEgress = slack.channelEgress;
+  const channelEgress = slack?.channelEgress ?? options.channelEgress;
+  if (channelEgress !== undefined) {
+    configuration.drivers.compute.configuration.runtime.channelEgress = channelEgress;
   }
   return configuration;
 }
@@ -1413,23 +1414,31 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     import("../../apps/controller/src/drivers/compute/kubernetes/index.ts"),
   ]);
 
-  if (slack !== undefined) {
-    assert.ok(workspaceGateway, "Slack topology requires the production Gateway");
-    Object.assign(
-      slack,
-      await installManagedChannelEgressFixture({
-        ...(options.channelEgressCapacity === undefined
-          ? {}
-          : { listenerCapacity: options.channelEgressCapacity }),
-        controller,
-        namespace: platformNamespace,
-        controllerImage,
-        workspaceGateway,
-        resource,
-        kubectl,
-        applyManifest,
-      }),
-    );
+  let managedChannelEgress;
+  if (slack !== undefined || options.channelEgress !== undefined) {
+    assert.ok(workspaceGateway, "Channel egress topology requires the production Gateway");
+    const installed = await installManagedChannelEgressFixture({
+      ...(options.channelEgressCapacity === undefined
+        ? {}
+        : { listenerCapacity: options.channelEgressCapacity }),
+      ...(options.channelEgress?.upstreamProxies === undefined
+        ? {}
+        : { upstreamProxies: options.channelEgress.upstreamProxies }),
+      ...(options.channelEgress?.proxyTrust === undefined
+        ? {}
+        : { proxyTrust: options.channelEgress.proxyTrust }),
+      controller,
+      namespace: platformNamespace,
+      controllerImage,
+      workspaceGateway,
+      resource,
+      kubectl,
+      applyManifest,
+    });
+    managedChannelEgress = installed.channelEgress;
+    if (slack !== undefined) {
+      Object.assign(slack, installed);
+    }
   }
   const directory = await mkdtemp(join(tmpdir(), `oce-k3d-production-${mode}-`));
   const startupPath = join(directory, "api-installation.yaml");
@@ -1445,6 +1454,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           namespaceQuota: options.namespaceQuota,
           gatewayRouting: workspaceGateway.routing,
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
+          ...(managedChannelEgress === undefined ? {} : { channelEgress: managedChannelEgress }),
         },
   );
   // Cases share an Installation, so keep its policy after the Default user case
@@ -2474,6 +2484,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     namespaceId,
     installation: activeInstallation,
     platformNamespace,
+    channelEgress: managedChannelEgress,
     gatewayImage,
     workspaceGateway,
     get controllerApiPod() {

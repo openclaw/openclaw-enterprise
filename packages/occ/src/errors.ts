@@ -237,6 +237,15 @@ export class PersistedStateInvalidError extends DependencyUnavailableError {}
  */
 export abstract class SecretDriverOwnershipError extends DependencyUnavailableError {}
 
+export class NetworkProxySecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own the Network proxy credential Secret. Select a Secret stored through the current driver.",
+    );
+    this.name = "NetworkProxySecretDriverError";
+  }
+}
+
 /**
  * A Configuration Secret binding the selected Secret Driver cannot serve. Only a Configuration
  * write can replace the binding, so the fixed message says so.
@@ -459,6 +468,28 @@ export class ConfigurationHarnessError extends ScopeViolationError {
   constructor(message: string) {
     super(message);
     this.name = "ConfigurationHarnessError";
+  }
+}
+
+/** Proxy validation discloses only fixed rules, never submitted values or Secret state. */
+export class NetworkProxyValidationError extends ScopeViolationError {
+  constructor(reason: "selection" | "credential") {
+    super(
+      reason === "selection"
+        ? "Invalid Network proxy selection. Use an HTTP or HTTPS endpoint without credentials and an exact Secret reference."
+        : "The Network proxy credential Secret must contain a valid Basic authorization value.",
+    );
+    this.name = "NetworkProxyValidationError";
+  }
+}
+
+/** A fixed operational recovery message; supplier errors can contain sensitive values. */
+export class NetworkProxyEnforcementUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super(
+      "Gateway channel proxy enforcement is unavailable. Retry; if the problem continues, ask an Installation administrator to check the Envoy fleet, trust bundle, and DNS.",
+    );
+    this.name = "NetworkProxyEnforcementUnavailableError";
   }
 }
 

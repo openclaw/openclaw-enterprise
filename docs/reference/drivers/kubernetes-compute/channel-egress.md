@@ -58,6 +58,42 @@ includes candidate revisions and incomplete cleanup. The packaged fleet has
 64 configured listeners, including OCC and inspection. Capacity exhaustion
 rejects activation; it does not combine destination sets or add another fleet.
 
+## Upstream proxy configuration
+
+Single-cluster Kubernetes Compute can admit an [Agent Gateway channel proxy](../../agents/network-proxy.md).
+Set the same `upstreamProxies` and optional `proxyTrust` inputs in Helm
+`channelEgress` and Compute `runtime.channelEgress`:
+
+```yaml
+upstreamProxies:
+  - url: https://proxy.example.internal:8443
+    addresses: [10.20.30.40/32]
+proxyTrust:
+  caSecretName: channel-proxy-ca
+  caKey: ca.pem
+```
+
+Use actual endpoint addresses from the Installation network inventory. Each of
+at most 32 endpoints has 1–16 unique IPv4 `/32` addresses. Metadata, special-use,
+and Installation Pod, Service, and node exclusions remain denied. DNS must
+resolve only inside the endpoint's configured address set. Compute saves the
+resolved addresses and Gateway identity in private revision admission. A changed
+answer or Installation selection requires a new deployment.
+
+For HTTPS, Envoy verifies the proxy hostname and certificate. Without
+`proxyTrust`, it uses its public root bundle. With `proxyTrust`, the named
+Secret in the Envoy namespace supplies the complete public/private CA bundle;
+EnvoyProxy mounts it read-only. It contains public certificates only. Provider
+TLS remains inside CONNECT.
+
+When endpoints are configured, Helm precreates blank credential Secret, filter,
+and deny-only route slots for the existing listener ports. The worker can
+`get` and `update` only those exact Secret names and read the exact routes and
+filters. Helm manifests contain no credential data. Envoy Gateway is a trusted
+reader of the staged credential. Inspection permits only exact listener,
+cluster, and names-only SDS queries; full Secret dumps and credential-derived
+delta versions are unavailable.
+
 ## Enforcement
 
 Trusted composition maps each enabled provider to one
@@ -123,13 +159,13 @@ Slack tokens stay with their authorized consumers; Envoy receives none.
   revision. Do not delete allocation records or reuse ports manually.
 - For denied directory requests, check the OCC listener and Secret permissions.
   A working Gateway listener does not prove that the OCC listener works.
-- For a denied public endpoint, check its current DNS answers and the configured
-  exclusions. Do not allow private addresses to make a test pass.
+- For a denied public endpoint, check its DNS answers and exclusions. Direct
+  channel destinations remain public-only. Configure a private proxy through
+  its exact Installation endpoint entry; never remove global exclusions.
 
 Use the [Kubernetes tests](../../../testing/kubernetes.md) and
 [Slack proof](../../../testing/slack.md) for real enforcement and model execution.
 Per-Agent ports are temporary until verified Gateway workload identity supports
-authenticated shared listeners. Customer upstream proxies and Microsoft Teams
-are not implemented by this change.
+authenticated shared listeners. Microsoft Teams is not implemented.
 
 See the [source-backed flow](../../../flows/channel-egress.md) for reconciliation.

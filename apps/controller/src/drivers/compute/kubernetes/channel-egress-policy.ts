@@ -1,6 +1,16 @@
 import type { JSONSchema, NetworkDestinationRule } from "@openclaw-enterprise/contracts";
-import { normalizeNetworkDestinationRules } from "@openclaw-enterprise/contracts";
+import {
+  normalizeAgentNetworkProxy,
+  normalizeNetworkDestinationRules,
+} from "@openclaw-enterprise/contracts";
+import { isIP } from "node:net";
 import { match } from "ts-pattern";
+import {
+  CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS,
+  proxyAddressForbidden,
+} from "./channel-proxy-address.ts";
+
+export { CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS } from "./channel-proxy-address.ts";
 
 export interface ChannelEgressOptions {
   readonly gatewayName: string;
@@ -13,6 +23,20 @@ export interface ChannelEgressOptions {
   readonly inspectionPort: number;
   /** Administrator-supplied Pod, Service and node ranges, including public node addresses. */
   readonly excludedCidrs: readonly string[];
+  readonly upstreamProxies?: readonly ChannelUpstreamProxyEndpoint[];
+  readonly proxyTrust?: { readonly caSecretName: string; readonly caKey: string };
+}
+
+export interface ChannelUpstreamProxyEndpoint {
+  readonly url: string;
+  readonly addresses: readonly string[];
+}
+
+export interface ChannelProxyPolicy {
+  readonly clusterName: string;
+  readonly addresses: readonly string[];
+  readonly port: number;
+  readonly credential?: { readonly filterName: string; readonly sdsName: string };
 }
 
 export const CHANNEL_EGRESS_IMAGE =
@@ -32,24 +56,6 @@ export const CHANNEL_EGRESS_FORWARD_CLUSTER = {
     },
   },
 } as const;
-
-export const CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS = Object.freeze([
-  "0.0.0.0/8",
-  "10.0.0.0/8",
-  "100.64.0.0/10",
-  "127.0.0.0/8",
-  "169.254.0.0/16",
-  "172.16.0.0/12",
-  "192.0.0.0/24",
-  "192.0.2.0/24",
-  "192.88.99.0/24",
-  "192.168.0.0/16",
-  "198.18.0.0/15",
-  "198.51.100.0/24",
-  "203.0.113.0/24",
-  "224.0.0.0/4",
-  "240.0.0.0/4",
-]);
 
 const portSchema = { type: "integer", minimum: 1024, maximum: 65535 };
 export const channelEgressConfigurationSchema: JSONSchema = {
@@ -76,6 +82,28 @@ export const channelEgressConfigurationSchema: JSONSchema = {
     occListenerPort: portSchema,
     inspectionPort: portSchema,
     excludedCidrs: { type: "array", minItems: 1, maxItems: 128, items: { type: "string" } },
+    upstreamProxies: {
+      type: "array",
+      maxItems: 32,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["url", "addresses"],
+        properties: {
+          url: { type: "string", minLength: 1, maxLength: 2048 },
+          addresses: { type: "array", minItems: 1, maxItems: 16, items: { type: "string" } },
+        },
+      },
+    },
+    proxyTrust: {
+      type: "object",
+      additionalProperties: false,
+      required: ["caSecretName", "caKey"],
+      properties: {
+        caSecretName: { type: "string", minLength: 1, maxLength: 63 },
+        caKey: { type: "string", minLength: 1, maxLength: 253 },
+      },
+    },
   },
 };
 
@@ -118,6 +146,44 @@ export function validateChannelEgressOptions(options: ChannelEgressOptions): voi
   normalizeNetworkDestinationRules(
     options.excludedCidrs.map((cidr) => ({ destination: { kind: "cidr", cidr }, ports: [1] })),
   );
+  const endpoints = new Set<string>();
+  if ((options.upstreamProxies?.length ?? 0) > 32) {
+    throw new Error("Channel upstream proxies accept at most 32 endpoints.");
+  }
+  for (const endpoint of options.upstreamProxies ?? []) {
+    if (
+      normalizeAgentNetworkProxy({ url: endpoint.url }).url !== endpoint.url ||
+      endpoints.has(endpoint.url) ||
+      endpoint.addresses.length < 1 ||
+      endpoint.addresses.length > 16 ||
+      new Set(endpoint.addresses).size !== endpoint.addresses.length
+    ) {
+      throw new Error(
+        "Channel upstream proxies require unique normalized endpoints and addresses.",
+      );
+    }
+    endpoints.add(endpoint.url);
+    for (const cidr of endpoint.addresses) {
+      const address = cidr.endsWith("/32") ? cidr.slice(0, -3) : "";
+      if (isIP(address) !== 4 || proxyAddressForbidden(address, options.excludedCidrs)) {
+        throw new Error(
+          "A channel upstream proxy address is outside the permitted endpoint scope.",
+        );
+      }
+    }
+  }
+  if (
+    options.proxyTrust &&
+    (options.proxyTrust.caSecretName.length > 63 ||
+      !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(options.proxyTrust.caSecretName) ||
+      options.proxyTrust.caKey.length > 253 ||
+      options.proxyTrust.caKey === "." ||
+      options.proxyTrust.caKey.startsWith("..") ||
+      !/^[A-Za-z0-9._-]+$/.test(options.proxyTrust.caKey) ||
+      endpoints.size === 0)
+  ) {
+    throw new Error("Channel proxy trust requires an exact public CA Secret and key.");
+  }
 }
 
 export function requireSupportedChannelDestinations(
@@ -192,6 +258,7 @@ export function channelEgressFilterChain(
   generation: string,
   destinations: readonly NetworkDestinationRule[],
   options: ChannelEgressOptions,
+  proxy?: ChannelProxyPolicy,
 ): Record<string, unknown> {
   requireSupportedChannelDestinations(destinations);
   const permissions = (upstream: boolean): Record<string, unknown> => ({
@@ -235,6 +302,60 @@ export function channelEgressFilterChain(
             },
           },
   });
+  const upstreamRules = proxy
+    ? {
+        action: "ALLOW",
+        policies: {
+          proxy: {
+            principals: [{ any: true }],
+            permissions: [
+              {
+                or_rules: {
+                  rules: proxy.addresses.map((address) => ({
+                    matcher: {
+                      name: "envoy.rbac.matchers.upstream_ip_port",
+                      typed_config: {
+                        "@type":
+                          "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                        upstream_ip: { address_prefix: address, prefix_len: 32 },
+                        upstream_port_range: {
+                          start: String(proxy.port),
+                          end: String(proxy.port + 1),
+                        },
+                      },
+                    },
+                  })),
+                },
+              },
+            ],
+          },
+        },
+      }
+    : permissions(true);
+  const credentialFilter = proxy?.credential
+    ? [
+        {
+          name: proxy.credential.filterName,
+          typed_config: {
+            "@type":
+              "type.googleapis.com/envoy.extensions.filters.http.credential_injector.v3.CredentialInjector",
+            overwrite: true,
+            credential: {
+              name: "envoy.http.injected_credentials.generic",
+              typed_config: {
+                "@type":
+                  "type.googleapis.com/envoy.extensions.http.injected_credentials.generic.v3.Generic",
+                credential: {
+                  name: proxy.credential.sdsName,
+                  sds_config: { ads: {}, resource_api_version: "V3" },
+                },
+                header: "Proxy-Authorization",
+              },
+            },
+          },
+        },
+      ]
+    : [];
   return {
     name: generation,
     filters: [
@@ -256,9 +377,13 @@ export function channelEgressFilterChain(
                   {
                     match: { connect_matcher: {} },
                     route: {
-                      cluster: "channel-egress-forward",
+                      cluster: proxy?.clusterName ?? "channel-egress-forward",
                       timeout: "0s",
-                      upgrade_configs: [{ upgrade_type: "CONNECT", connect_config: {} }],
+                      upgrade_configs: [
+                        proxy
+                          ? { upgrade_type: "CONNECT" }
+                          : { upgrade_type: "CONNECT", connect_config: {} },
+                      ],
                     },
                   },
                 ],
@@ -273,14 +398,18 @@ export function channelEgressFilterChain(
                 rules: permissions(false),
               },
             },
-            {
-              name: "envoy.filters.http.dynamic_forward_proxy",
-              typed_config: {
-                "@type":
-                  "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
-                sub_cluster_config: {},
-              },
-            },
+            ...(!proxy
+              ? [
+                  {
+                    name: "envoy.filters.http.dynamic_forward_proxy",
+                    typed_config: {
+                      "@type":
+                        "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
+                      sub_cluster_config: {},
+                    },
+                  },
+                ]
+              : []),
             {
               name: "envoy.filters.http.router",
               typed_config: {
@@ -290,9 +419,10 @@ export function channelEgressFilterChain(
                     name: "envoy.filters.http.upstream_rbac",
                     typed_config: {
                       "@type": "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
-                      rules: permissions(true),
+                      rules: upstreamRules,
                     },
                   },
+                  ...credentialFilter,
                   {
                     name: "envoy.filters.http.upstream_codec",
                     typed_config: {

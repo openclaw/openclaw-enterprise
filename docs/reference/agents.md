@@ -24,6 +24,8 @@ returns the saved Agent revision (`AgentRevision`). Stop sets
 `desiredRuntimeState` to `stopped`. Lists require each Agent's exact `read`.
 See [API schemas, envelopes, and permissions](api.md).
 
+An Agent can select a [Gateway channel Network proxy](agents/network-proxy.md) for its next deployment.
+
 Responses include immutable `servicePrincipalId` for
 [Namespace IAM bindings](authorization.md#manage-namespace-policy). Do not derive
 it from the Agent ID; create/update reject caller-supplied values.

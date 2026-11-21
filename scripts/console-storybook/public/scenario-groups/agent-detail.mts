@@ -1,5 +1,6 @@
 import type {
   AgentCredentialSourceBinding,
+  AgentNetworkProxy,
   AgentDeploymentStatusWire,
   AgentRevisionSummaryWire,
   AgentRuntimeHarnessStatus,
@@ -49,6 +50,8 @@ type AgentDetailScenario = {
   harnessOverrides?: Record<string, unknown>;
   agentPlugins?: PluginDesiredState;
   agentPluginApprovers?: PluginApprovers;
+  agentNetworkProxy?: AgentNetworkProxy;
+  extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
   pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
   pluginDiscoveryCredential?: "none";
@@ -405,6 +408,124 @@ export function createAgentDetailScenarios({
           "Inspect the admitted version and its deployment activity.",
         ],
         gap: "The fixture simulates saves, admission, and worker completion; it does not run a live Agent or Gateway.",
+      },
+      networkProxyEmpty: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy empty",
+        path: draft,
+        deployed: true,
+        description:
+          "The draft has no upstream proxy. The editor labels its Gateway-channel-only scope and the next-deployment lifecycle.",
+        steps: [
+          "Enter an HTTP or HTTPS endpoint and optionally select a proxy credential Secret.",
+          "Save the setting, then inspect the current version to confirm its snapshot did not change.",
+        ],
+        gap: "Simulated UI proof; no proxy, Secret backend, or Gateway runs.",
+      },
+      networkProxySaved: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy saved",
+        path: draft,
+        deployed: true,
+        agentNetworkProxy: {
+          url: "https://proxy.example:8443",
+          credentialSecretId: "sec_00000000-0000-4000-8000-000000000010",
+        },
+        extraSecrets: [
+          { id: "sec_00000000-0000-4000-8000-000000000010", name: "Proxy credential (simulated)" },
+        ],
+        description:
+          "The draft shows the endpoint and a safe Secret reference. Clearing applies only to the next deployment.",
+        steps: ["Clear the proxy, inspect the current version, then deploy the cleared draft."],
+        gap: "Simulated UI proof; revision and deployment results are fixture state.",
+      },
+      networkProxyValidation: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy validation",
+        path: draft,
+        deployed: true,
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "socks5://proxy.example:1080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description: "The editor rejects an unsupported proxy URL before sending an Agent update.",
+        gap: "Simulated UI proof; server admission is separate.",
+      },
+      networkProxySaveError: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy save error",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+            method: "PATCH",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              "The Network proxy endpoint is not configured by the Installation. Select an installed endpoint.",
+          },
+        ],
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "http://proxy.example:8080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description:
+          "A refused save keeps the edit visible and leaves Deploy blocked until it is fixed or canceled.",
+        gap: "Simulated UI refusal; no Compute admission runs.",
+      },
+      networkProxyEnforcementUnavailable: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy enforcement unavailable",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+            method: "PATCH",
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+            message:
+              "Gateway channel proxy enforcement is unavailable. Retry; if the problem continues, ask an Installation administrator to check the Envoy fleet, trust bundle, and DNS.",
+          },
+        ],
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "http://proxy.example:8080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description:
+          "An enforcement outage shows safe recovery guidance and requires a draft reload before another save.",
+        gap: "Simulated UI refusal; no Envoy fleet is stopped.",
+      },
+      networkProxyPermission: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy permission",
+        path: draft,
+        deployed: true,
+        agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+        description:
+          "A viewer can inspect the saved selection but cannot edit it without exact Agent update permission.",
+        gap: "Simulated permission response.",
+      },
+      networkProxySecretLoading: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy Secrets loading",
+        path: draft,
+        deployed: true,
+        rules: [{ suffix: "/secrets", method: "GET", delayMs: 4000 }],
+        description:
+          "The existing Secret selector reports loading while its Namespace list is pending.",
+        gap: "Simulated delayed Secret list.",
+      },
+      networkProxySecretError: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy Secrets error",
+        path: draft,
+        deployed: true,
+        rules: [{ suffix: "/secrets", method: "GET", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+        description:
+          "The existing Secret selector reports an unavailable list without treating it as empty.",
+        gap: "Simulated Secret list failure.",
       },
       editCurrentConfiguration: {
         group: "Pages/Agent detail",
