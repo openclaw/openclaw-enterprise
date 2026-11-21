@@ -22,7 +22,7 @@ export async function createQaBrowser(f, { themed }) {
   let relay;
   let upstream;
   const sockets = new Set();
-  if (f.controlPlane === "compose") {
+  if (!f.browserCA) {
     const key = join(f.directory, "browser-tls.key");
     // The native relay has its own identity; preserve the launcher's Console CA.
     const relayCa = join(f.directory, "native-browser-ca.crt");
@@ -137,7 +137,7 @@ export async function createQaBrowser(f, { themed }) {
     tls: new URL(f.consoleUrl).protocol === "https:",
   });
   return {
-    nativeOrigin: f.controlPlane === "compose" ? nativeOrigin : undefined,
+    nativeOrigin: f.browserCA ? undefined : nativeOrigin,
     async verifySecrets(agent) {
       const secretsPage = await browser.newPage();
       const base = `/namespaces/${agent.namespaceId}`;
@@ -293,10 +293,12 @@ export async function createQaBrowser(f, { themed }) {
           "/console/theme/logo.png",
         );
         operation = "native UI Gateway discovery";
-        const gateway = await f.gatewayUrl(agent);
+        const gateway = f.browserCA
+          ? { pod: await f.pod(agent, "gateway") }
+          : await f.gatewayUrl(agent);
         operation = "native UI origin discovery";
         let origin = nativeOrigin;
-        if (f.controlPlane === "compose") {
+        if (!f.browserCA) {
           upstream = new URL(gateway.url);
         } else {
           const path = `/namespaces/${agent.namespaceId}/agents/${agent.id}/native-admin`;
@@ -320,20 +322,19 @@ export async function createQaBrowser(f, { themed }) {
           const response = await native.goto(origin);
           assert.ok(response?.ok(), "native UI must load through its trusted endpoint");
           operation = "native UI WebSocket turn";
-          const authenticate =
-            f.controlPlane === "compose"
-              ? async () => {
-                  const credential = native.locator("#login-gate-credential");
-                  await credential.waitFor({ state: "attached", timeout: 60_000 });
-                  // The stock login failure view nests credentials in a collapsed
-                  // connection disclosure. Wait for that view before opening it.
-                  if (!(await credential.isVisible())) {
-                    await native.locator("details.login-gate__connection > summary").click();
-                  }
-                  await credential.fill(gateway.gatewayPassword);
-                  await native.getByRole("button", { name: "Connect", exact: true }).click();
+          const authenticate = !f.browserCA
+            ? async () => {
+                const credential = native.locator("#login-gate-credential");
+                await credential.waitFor({ state: "attached", timeout: 60_000 });
+                // The stock login failure view nests credentials in a collapsed
+                // connection disclosure. Wait for that view before opening it.
+                if (!(await credential.isVisible())) {
+                  await native.locator("details.login-gate__connection > summary").click();
                 }
-              : undefined;
+                await credential.fill(gateway.gatewayPassword);
+                await native.getByRole("button", { name: "Connect", exact: true }).click();
+              }
+            : undefined;
           await waitForStockUi(native);
           const nonce = `QA_NATIVE_${randomUUID()}`;
           await submitChatTurnWithAssistantProof(native, nonce, frames, waitFor, authenticate);
@@ -353,7 +354,7 @@ export async function createQaBrowser(f, { themed }) {
           const verificationOperation = operation;
           operation = "native UI cleanup";
           await native.close();
-          await gateway.close();
+          await gateway.close?.();
           operation = verificationOperation;
         }
       } catch (error) {

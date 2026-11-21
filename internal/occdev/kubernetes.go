@@ -218,6 +218,16 @@ func dockerHubReference(reference string) (string, bool) {
 	}
 }
 
+// Both local control-plane profiles import images that have no pullable registry
+// reference. Retain them until dev-down removes the node, including while no
+// Agent uses them. Disk-pressure eviction remains independently configured.
+func developmentImageGCArgs() []string {
+	return []string{
+		"--k3s-arg", "--kubelet-arg=image-gc-high-threshold=100@server:*",
+		"--k3s-arg", "--kubelet-arg=image-gc-low-threshold=99@server:*",
+	}
+}
+
 // runtimeFirstBuildNote matches scripts/dev-up's note for the Docker profile.
 const runtimeFirstBuildNote = "Building the runtime image. With no build cache, this compiles Node.js from source first: " +
 	"15-60 minutes or longer, depending on CPUs and memory; later builds reuse the cache."

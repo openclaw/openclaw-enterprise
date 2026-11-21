@@ -38,7 +38,7 @@ results. For triggers and failure consequences across workflows, use the
 | ---------------------------------------------- | ---------------------------------------------------------------------------- |
 | [CI required checks](ci/required-checks.md)    | Verify source, component workflows, persistence, and packaging for a change. |
 | [First Agent Smoke](ci/first-agent-smoke.md)   | Exercise the installed Agent lifecycle with a simulated model provider.      |
-| [QA Matrix Advisory](ci/qa-advisory.md)        | Test Agent workflows with real providers and OpenShell.                      |
+| [QA Matrix Advisory](ci/qa-advisory.md)        | Test Agent workflows with real providers and OpenShell, plus rootful Podman. |
 | [Full Integration](ci/full-integration.md)     | Dispatch selected integration lanes and inspect their aggregate result.      |
 | [Observability Demo](ci/observability-demo.md) | Verify fixture telemetry and rendered monitoring dashboards.                 |
 | [Local k3d Quickstart](ci/k3d-quickstart.md)   | Exercise browser onboarding, Linear, and Git on one Agent.                   |
@@ -85,3 +85,16 @@ It does not establish CI test coverage or staging installation readiness.
   or run the local installation rehearsal.
 - [Document a CI check](../contributing/ci-check-template.md): use the shared
   template when changing coverage documentation.
+
+### Native Podman advisory
+
+The `dev-up-podman` lane uses native rootful Podman and the pinned
+`podman-compose` version. It checks rollback after failed and blocked
+initialization and an interrupted build. It also checks private Envoy routing
+from the fixture's pinned Compose addresses. The accompanying QA matrix job
+exercises the Codex model and Console through the trusted browser endpoint.
+
+Both jobs follow the trusted full-advisory selection on main and on eligible
+same-repository PRs with `full-qa`. The required checks omit this lane, and a fork
+PR cannot select it. For local prerequisites, see the [rootful Podman setup](../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
+and the [lane manifest](../../scripts/ci/test-suites/dev-up-podman.json).

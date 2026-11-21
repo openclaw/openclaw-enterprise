@@ -114,7 +114,8 @@ func (r *runner) imageCommand(ctx context.Context, args ...string) ([]byte, bool
 					diagnostic == "Error response from daemon: No such image: "+query ||
 					diagnostic == "Error: "+reference+": image not known")) ||
 				(r.engine == "podman" && exited.ExitCode() == 125 &&
-					diagnostic == fmt.Sprintf("Error: unable to inspect %q: failed to find image %s: %s: image not known", query, query, reference)))
+					(diagnostic == "Error: "+reference+": image not known" ||
+						diagnostic == fmt.Sprintf("Error: unable to inspect %q: failed to find image %s: %s: image not known", query, query, reference))))
 		if exited != nil && output == "" {
 			exited.Stderr = append([]byte(nil), stderr.Bytes()...)
 		}

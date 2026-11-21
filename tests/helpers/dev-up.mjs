@@ -249,6 +249,9 @@ function engineCommand(fake, { args, env }, { stdout, exit }) {
     exit(0);
   }
   if (command === "ps") {
+    if (engine === "podman" && args.at(-1) === "bootstrap") {
+      exit(2, "podman-compose ps does not accept a service argument");
+    }
     if (args.includes("--quiet")) {
       stdout("bootstrap-container");
       exit(0);
@@ -454,10 +457,16 @@ function lifecycleCommand(fake, invocation, io) {
       );
     } else if (
       args[0] === "ps" &&
-      state.compose &&
-      args.includes("label=com.docker.compose.service=browser-proxy")
+      args.some((arg) => arg.startsWith("label=com.docker.compose.service="))
     ) {
-      output("browser-proxy-container-id");
+      if (state.compose) {
+        output(
+          args
+            .find((arg) => arg.startsWith("label=com.docker.compose.service="))
+            .split("=")
+            .at(-1) + "-container-id",
+        );
+      }
     } else if (args[0] === "compose" && args.includes("--quiet") && args.at(-1) === "bootstrap") {
       output("bootstrap-container-id");
     } else if (args[0] === "run" && args.includes("-p")) {
@@ -541,7 +550,12 @@ function lifecycleCommand(fake, invocation, io) {
         save();
       } else if (args.includes("ps")) {
         output(args.at(-1) + "-container-id");
-      } else if (!args.includes("exec") && !args.includes("logs") && !args.includes("stop")) {
+      } else if (
+        !args.includes("build") &&
+        !args.includes("exec") &&
+        !args.includes("logs") &&
+        !args.includes("stop")
+      ) {
         fail("unexpected compose: " + args.join(" "));
       }
     } else {
@@ -627,6 +641,8 @@ async function createFixture(t, options = {}) {
     "compose.podman.yaml",
     "compose.native-admin.yaml",
     "compose.postgres.yaml",
+    "compose.kubernetes.yaml",
+    "migrations",
   ]) {
     await symlink(join(repository, source), join(fixtureRepository, source));
   }

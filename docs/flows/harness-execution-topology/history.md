@@ -8,6 +8,14 @@ This record preserves the dated changes to the harness execution topology flow. 
 
 ## Changelog
 
+- 2026-11-18 03:53: Preserve the merged proxy-probe trace and both source histories. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - b3a67847915ca3d9884bc0b4b14bd7f63f79ff1e)
+
+- 2026-11-18 03:05: Refresh restart-resume source provenance. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - f98453d0adf83a53c549c5198c3c388a5ca7fc95)
+
+- 2026-11-18 02:11: Explain when Codex probes inherit Sandbox proxy settings and why existing revisions keep their commands. (authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6 - db2845858eec2f026747f6618a285a76c59fc63f)
+
+- 2026-11-17 23:51: A turn cut by stop, replacement or deletion does not resume; the Gateway's restart recovery is scoped to its revision. (finding 3347)
+
 - 2026-11-14 12:21: Trace active Sandbox maintenance. (authoring-run/dce9f5be-2cf2-41aa-8215-c338ffa2e285 - a411a7eba68705e57330acfd2057083c367cbd9d)
 
 - 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
