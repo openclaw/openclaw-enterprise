@@ -583,6 +583,37 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           );
         }
       }
+      const activeRevision =
+        lockedAgent.activeRevisionId === undefined
+          ? undefined
+          : await state.revisions.findRevision(
+              namespace.id,
+              lockedAgent.id,
+              lockedAgent.activeRevisionId,
+            );
+      if (activeRevision?.executionAdmission.version === 8) {
+        throw new ResourceStateConflictError(
+          "Replacing an active staged managed-credential revision is not supported. Complete Stop before deploying again.",
+        );
+      }
+      const newest = (await state.revisions.listRevisionMetadata(namespace.id, lockedAgent.id)).at(
+        -1,
+      );
+      if (newest !== undefined) {
+        const work = await state.operations.findWork(`agent_revision:${newest.id}:reconcile`);
+        if (work?.state === "queued" || work?.state === "claimed") {
+          const pendingRevision = await state.revisions.findRevision(
+            namespace.id,
+            lockedAgent.id,
+            newest.id,
+          );
+          if (pendingRevision?.executionAdmission.version === 8) {
+            throw new ResourceStateConflictError(
+              "A staged managed-credential deployment is still pending. Wait for it to finish before deploying another revision.",
+            );
+          }
+        }
+      }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -669,6 +700,15 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         principalId,
         lockedAgent,
       );
+      if (
+        lockedAgent.activeRevisionId !== undefined &&
+        harnessAuth.method === "credential_source" &&
+        harnessAuth.tokenServiceInstanceId !== undefined
+      ) {
+        throw new ResourceStateConflictError(
+          "Replacing an active Agent revision with a staged managed credential is not supported.",
+        );
+      }
       const stagedModel = await prepareModelCredentialDeployment(
         state,
         lockedAgent,

@@ -236,6 +236,7 @@ type Outcome = "success" | "pending" | "retry" | "permanent";
 const REVISION_READINESS_RECHECK_MS = 500;
 const REVISION_READINESS_RECHECK_MAX_MS = 5_000;
 const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
+const STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED = "STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED";
 
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
@@ -245,6 +246,7 @@ const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
   WORKSPACE_SETUP_RETRYING: "WORKSPACE_SETUP_RETRYING",
   HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
+  CREDENTIAL_ACTIVATION_PENDING: "CREDENTIAL_ACTIVATION_PENDING",
   REPOSITORY_GIT_ROUTE_PENDING: "REPOSITORY_GIT_ROUTE_PENDING",
 });
 const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
@@ -1069,7 +1071,28 @@ function validObservation(value: unknown, namespaceId: string, target: "ready" |
     : typeof observation.namespaceDeleted === "boolean";
 }
 
-function validRevisionObservation(value: unknown, revision: Readonly<AgentRevision>): boolean {
+function credentialActivationPending(
+  observation: Readonly<ComputeReadiness>,
+  revision: Readonly<AgentRevision>,
+  compute: ComputeDriver,
+): boolean {
+  return (
+    revision.executionAdmission.version === 8 &&
+    revision.executionAdmission.mode === "standalone" &&
+    revision.credentialDeployment !== undefined &&
+    compute.activationOrder !== "beforeCommit" &&
+    typeof compute.activateRevision === "function" &&
+    !observation.ready &&
+    observation.pendingReason === "CREDENTIAL_ACTIVATION_PENDING" &&
+    observation.runtimeFailure === undefined
+  );
+}
+
+function validRevisionObservation(
+  value: unknown,
+  revision: Readonly<AgentRevision>,
+  compute: ComputeDriver,
+): boolean {
   if (typeof value !== "object" || value === null || Object.hasOwn(value, "installationId")) {
     return false;
   }
@@ -1077,6 +1100,13 @@ function validRevisionObservation(value: unknown, revision: Readonly<AgentRevisi
   if (
     observation.warnings !== undefined &&
     computePluginWarnings(observation.warnings, revision) === undefined
+  ) {
+    return false;
+  }
+  if (
+    observation.preparedForCredentialActivation !== undefined &&
+    (observation.preparedForCredentialActivation !== true ||
+      !credentialActivationPending(value as ComputeReadiness, revision, compute))
   ) {
     return false;
   }
@@ -2431,7 +2461,7 @@ export class ControllerWorker {
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
     );
-    if (!validRevisionObservation(observation, revision)) {
+    if (!validRevisionObservation(observation, revision, this.compute)) {
       throw new RepositoryCredentialAuthorityError("INVALID_DRIVER_OBSERVATION");
     }
     if (observation.ready) {
@@ -2468,7 +2498,7 @@ export class ControllerWorker {
         this.compute.prepareRevision(revision, prepared),
       );
       if (
-        !validRevisionObservation(observation, revision) ||
+        !validRevisionObservation(observation, revision, this.compute) ||
         observation.repositoryCredentialMaterialMissing !== undefined
       ) {
         throw new RepositoryCredentialAuthorityError("INVALID_DRIVER_OBSERVATION");
@@ -4206,7 +4236,10 @@ export class ControllerWorker {
       for (const revision of revisions) {
         if (revision.id !== activeRevisionId) {
           const deployment = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
-          if (deployment?.state !== "failed_permanent") {
+          if (
+            deployment?.state !== "failed_permanent" ||
+            deployment.reasonCode === STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED
+          ) {
             continue;
           }
         }
@@ -4684,6 +4717,18 @@ export class ControllerWorker {
         });
         return;
       }
+      if (
+        isCandidateDeployment(claim) &&
+        agent.activeRevisionId !== undefined &&
+        agent.activeRevisionId !== revision.id &&
+        (revision.executionAdmission.version === 8 || previous?.executionAdmission.version === 8)
+      ) {
+        await this.finalizeRevision(claim, {
+          outcome: "permanent",
+          code: STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED,
+        });
+        return;
+      }
       const repositoryWithdrawal =
         revision.repositoryCredentials !== undefined &&
         agent.activeRevisionId === revision.id &&
@@ -5030,7 +5075,7 @@ export class ControllerWorker {
           );
           const observation = prepared.observation;
           const context = prepared.context;
-          if (!validRevisionObservation(observation, revision)) {
+          if (!validRevisionObservation(observation, revision, compute)) {
             await this.finalizeRevision(claim, {
               outcome: "permanent",
               code: "INVALID_DRIVER_OBSERVATION",
@@ -5040,7 +5085,7 @@ export class ControllerWorker {
           resultData = pluginWarningsResultData(
             computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]),
           );
-          if (!observation.ready) {
+          if (!observation.ready && !credentialActivationPending(observation, revision, compute)) {
             await this.finalizeActiveRevision(
               claim,
               revision,
@@ -5054,14 +5099,24 @@ export class ControllerWorker {
               await this.assertRepositoryAuthority(claim, revision);
               this.repositoryCredentials.validate(revision);
             }
-            if (revision.credentialDeployment !== undefined) {
-              await this.withClaimHeartbeat(claim, (signal) =>
-                this.authorizedCredentialDeployment(claim, revision, signal),
+            await this.withClaimHeartbeat(claim, async (signal) => {
+              if (revision.credentialDeployment !== undefined) {
+                await this.authorizedCredentialDeployment(claim, revision, signal);
+              }
+              await this.stagedRevision("activateRevision", revision, context);
+            });
+          }
+          if (revision.executionAdmission.version === 8) {
+            const confirmed = (await this.prepareRevision(claim, revision, context)).observation;
+            if (!confirmed.ready) {
+              await this.finalizeActiveRevision(
+                claim,
+                revision,
+                revisionPendingCode(confirmed),
+                runtimeFailureFromObservation(confirmed),
               );
+              return;
             }
-            await this.withClaimHeartbeat(claim, () =>
-              this.stagedRevision("activateRevision", revision, context),
-            );
           }
           await this.assertRepositoryGitMaterial(claim, revision);
           await this.retireEarlierRevisions(claim, revision);
@@ -5694,7 +5749,7 @@ export class ControllerWorker {
       const prepared = await this.prepareRevision(claim, revision, context);
       const observation = prepared.observation;
       context = prepared.context;
-      if (!validRevisionObservation(observation, revision)) {
+      if (!validRevisionObservation(observation, revision, this.compute)) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
       }
       const resultData = pluginWarningsResultData(
@@ -5714,7 +5769,10 @@ export class ControllerWorker {
         observation.heldForRepositoryGitMaterial === true &&
         observation.pendingReason === "REPOSITORY_GIT_ROUTE_PENDING" &&
         observation.runtimeFailure === undefined;
-      if (!observation.ready && !held) {
+      const credentialPrepared =
+        credentialActivationPending(observation, revision, this.compute) &&
+        observation.preparedForCredentialActivation === true;
+      if (!observation.ready && !held && !credentialPrepared) {
         const runtimeFailure = runtimeFailureFromObservation(observation);
         return {
           outcome: "pending",
@@ -5746,13 +5804,20 @@ export class ControllerWorker {
       } else if (
         this.mode === "production" &&
         revision.harness.mode === "dedicated" &&
-        expectedActiveRevisionId === undefined
+        expectedActiveRevisionId === undefined &&
+        !credentialPrepared
       ) {
         await this.stagedRevision("deactivateRevision", revision);
       }
+      let code = "REVISION_ACTIVATED";
+      if (held) {
+        code = "REPOSITORY_GIT_ROUTE_PENDING";
+      } else if (credentialPrepared) {
+        code = "CREDENTIAL_ACTIVATION_PENDING";
+      }
       return {
         outcome: "success",
-        code: held ? "REPOSITORY_GIT_ROUTE_PENDING" : "REVISION_ACTIVATED",
+        code,
         revision,
         ...(resultData === undefined ? {} : { resultData }),
         context,
@@ -6808,7 +6873,8 @@ export class ControllerWorker {
       !expired &&
       resolved.cleanupFailedPreparation !== true &&
       resolved.refusedCandidateStopped !== true &&
-      resolved.rejectedExecutionWithdrawal !== "withdrawn"
+      resolved.rejectedExecutionWithdrawal !== "withdrawn" &&
+      resolved.code !== STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED
     ) {
       await this.stopRefusedCandidate(claim, resolved.code);
     }
@@ -6821,7 +6887,10 @@ export class ControllerWorker {
     // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
     let activeRevisionChanged = false;
     let committedOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
-    if (committedOutcome === "permanent") {
+    if (
+      committedOutcome === "permanent" &&
+      resolved.code !== STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED
+    ) {
       failureLogFields = {
         ...failureLogFields,
         ...(await this.finishYieldedPredecessorStops(claim, "wait")),
@@ -6961,7 +7030,8 @@ export class ControllerWorker {
     if (
       committedOutcome === "permanent" &&
       !activeRevisionChanged &&
-      isCandidateDeployment(claim)
+      isCandidateDeployment(claim) &&
+      resolved.code !== STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED
     ) {
       try {
         await this.scheduleFailedCandidateExposureWithdrawal(claim);
@@ -6997,15 +7067,39 @@ export class ControllerWorker {
             await this.assertRepositoryAuthority(claim, activated);
             this.repositoryCredentials.validate(activated);
           }
-          await this.withClaimHeartbeat(claim, () =>
-            this.stagedRevision("activateRevision", activated!, resolved.context),
-          );
+          const activatedRevision = activated;
+          await this.withClaimHeartbeat(claim, async (signal) => {
+            if (activatedRevision.credentialDeployment !== undefined) {
+              await this.authorizedCredentialDeployment(claim, activatedRevision, signal);
+            }
+            await this.stagedRevision("activateRevision", activatedRevision, resolved.context);
+          });
+        }
+        if (activated.executionAdmission.version === 8) {
+          if (resolved.context === undefined) {
+            throw new Error("The staged activation context is unavailable.");
+          }
+          const confirmed = (await this.prepareRevision(claim, activated, resolved.context))
+            .observation;
+          if (!confirmed.ready) {
+            await this.finalizeActiveRevision(
+              claim,
+              activated,
+              revisionPendingCode(confirmed),
+              runtimeFailureFromObservation(confirmed),
+            );
+            return;
+          }
         }
         await this.assertRepositoryGitMaterial(claim, activated);
         await this.retireEarlierRevisions(claim, activated);
       } catch (error) {
         if (error instanceof WorkClaimLostError) {
           throw error;
+        }
+        if (error instanceof CredentialDeploymentAuthorizationError) {
+          await this.finalizeRevision(claim, error.denial);
+          return;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
           await this.finalizeRevision(
@@ -7035,7 +7129,12 @@ export class ControllerWorker {
         );
         return;
       }
-      await this.completeActivatedRevision(claim, resolved);
+      await this.completeActivatedRevision(
+        claim,
+        resolved.code === "CREDENTIAL_ACTIVATION_PENDING"
+          ? { ...resolved, code: "REVISION_ACTIVATED" }
+          : resolved,
+      );
       return;
     }
     let stopYields: number | undefined;

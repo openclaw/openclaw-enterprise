@@ -136,6 +136,8 @@ export type ComputePendingReason =
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_SETUP_RETRYING"
   | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"
+  /** Staged credential activation is prepared, pending, or awaiting a confirmed startup outcome. */
+  | "CREDENTIAL_ACTIVATION_PENDING"
   /** The worker has not yet verified the Sandbox's prepared Git route (OpenShell). */
   | "REPOSITORY_GIT_ROUTE_PENDING";
 
@@ -144,6 +146,8 @@ export interface ComputeReadiness extends Scope {
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
+  /** Only v8: credentials, effective network policy, and projections are ready while startup remains held. */
+  readonly preparedForCredentialActivation?: true;
   /** Only v6: select this execution for material while its launcher and user work remain held. */
   readonly heldForRepositoryGitMaterial?: true;
   readonly warnings?: readonly PluginDeploymentWarning[];

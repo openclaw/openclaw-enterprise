@@ -774,7 +774,7 @@ function dedicatedFirstDeployFixture({
   };
 }
 
-test("staged Compute release requires both ready observations, this held acknowledgement, and Worker verifier acceptance", async () => {
+test("staged Compute prepares a held startup and releases it once only during post-commit activation", async () => {
   // Controlled Drivers supply observations and a controlled callback stands in for the
   // Worker verifier. The real Compute driver gates release and adoption on their results.
   const auth = {
@@ -868,6 +868,7 @@ test("staged Compute release requires both ready observations, this held acknowl
       // authenticated serving observation or workspace enrollment becomes visible.
       startupExposure = false;
       observation = { state: "pending" };
+      throw new Error("release acknowledgement was lost");
     },
   };
   const sandboxDriver = {
@@ -932,6 +933,12 @@ test("staged Compute release requires both ready observations, this held acknowl
     async verifyCredentialDeploymentRelease(held) {
       events.push("verify");
       assert.deepEqual(held, startup);
+      const fenced = read("Secret", driver.executionReleaseSecretName(revision));
+      assert.equal(
+        JSON.parse(fenced.metadata.annotations["openclaw.dev/credential-deployment-target"]).state,
+        "release-dispatched",
+        "the final source verifier must run after the awaited dispatch CAS",
+      );
       if (!verifyAllowed) {
         throw new Error("Worker authority withdrawn");
       }
@@ -992,13 +999,24 @@ test("staged Compute release requires both ready observations, this held acknowl
   );
   assert.equal(events.includes("sandbox-cleanup"), false);
 
-  const { driver, gatewayName, markReady, namespace, prepare, read, revision, save, state } =
-    dedicatedFirstDeployFixture({
-      sandboxDriver,
-      credentialDeliveryRegistration: selectedOwner,
-      context,
-      revision: stagedRevision,
-    });
+  const {
+    driver,
+    gatewayName,
+    key,
+    markReady,
+    namespace,
+    objects,
+    prepare,
+    read,
+    revision,
+    save,
+    state,
+  } = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: selectedOwner,
+    context,
+    revision: stagedRevision,
+  });
   assert.doesNotThrow(() => driver.validateExecutionAdmission(revision, selectedOwner));
   assert.throws(
     () =>
@@ -1026,8 +1044,28 @@ test("staged Compute release requires both ready observations, this held acknowl
   assert.equal(events.includes("release"), false);
 
   acknowledgeExactStartup = true;
-  await assert.rejects(prepare(), /Worker authority withdrawn/);
+  const prepared = await prepare();
+  assert.equal(prepared.ready, false);
+  assert.equal(prepared.preparedForCredentialActivation, true);
+  assert.equal(prepared.pendingReason, "CREDENTIAL_ACTIVATION_PENDING");
+  assert.equal(events.includes("verify"), false, "preparation must not authorize release");
   assert.equal(events.includes("release"), false);
+  assert.equal(
+    objects.has(key("HTTPRoute", gatewayName)),
+    false,
+    "preparation must not expose the Agent route",
+  );
+  await assert.rejects(driver.activateRevision(revision, context), /Worker authority withdrawn/);
+  assert.equal(events.includes("release"), false);
+  assert.equal(
+    JSON.parse(
+      read("Secret", driver.executionReleaseSecretName(revision)).metadata.annotations[
+        "openclaw.dev/credential-deployment-target"
+      ],
+    ).state,
+    "provisioned",
+    "a known verifier denial before dispatch rolls the fence back for an authorized retry",
+  );
 
   verifyAllowed = true;
   currentProjection = {
@@ -1039,12 +1077,29 @@ test("staged Compute release requires both ready observations, this held acknowl
   await assert.rejects(prepare(), /conflicting projections/);
   assert.equal(events.includes("release"), false);
   currentProjection = projection;
-  assert.equal((await prepare()).ready, false, "release alone does not prove serving");
-  assert.deepEqual(events.slice(-3), ["verify", "release", "status:pending"]);
+  assert.equal((await prepare()).preparedForCredentialActivation, true);
+  await assert.rejects(
+    driver.activateRevision(revision, context),
+    /release acknowledgement was lost/,
+  );
+  assert.deepEqual(events.slice(-2), ["verify", "release"]);
   const configured = events.filter((event) => event === "configure").length;
   const provisionsAtRelease = events.filter((event) => event === "provision").length;
   const deploysAtRelease = events.filter((event) => event === "deploy").length;
-  assert.equal((await prepare()).ready, false, "pending release remains unready before enrollment");
+  const pending = await prepare();
+  assert.equal(pending.ready, false, "pending release remains unready before enrollment");
+  assert.equal(pending.preparedForCredentialActivation, undefined);
+  assert.equal(pending.pendingReason, "CREDENTIAL_ACTIVATION_PENDING");
+  await assert.rejects(driver.activateRevision(revision, context), {
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  // Even if an uncertain provider still reports the same held startup, the retained dispatch
+  // fence forbids sending release again. Recovery must observe that startup serving instead.
+  observation = { state: "held", startup, projections: "installed" };
+  await assert.rejects(driver.activateRevision(revision, context), {
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  observation = { state: "pending" };
   assert.equal(
     events.filter((event) => event === "provision").length,
     provisionsAtRelease,
@@ -1058,6 +1113,14 @@ test("staged Compute release requires both ready observations, this held acknowl
   state.providerPod = readyNativeHarnessPod(namespace, workloadLabels);
   state.connected = true;
   assert.equal((await prepare()).ready, false, "node enrollment leaves Gateway binding pending");
+  await assert.rejects(driver.activateRevision(revision, context), {
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  assert.equal(
+    objects.has(key("HTTPRoute", gatewayName)),
+    false,
+    "a serving Harness cannot publish its Agent route before the Gateway binding is ready",
+  );
   const enrolled = read("Secret", driver.workspaceNodeName(revision));
   assert.equal(
     Buffer.from(enrolled.data.enrolledRevisionId, "base64").toString("utf8"),
@@ -1071,8 +1134,10 @@ test("staged Compute release requires both ready observations, this held acknowl
   const releaseSecret = read("Secret", driver.executionReleaseSecretName(revision));
   const annotation = "openclaw.dev/credential-deployment-target";
   assert.deepEqual(JSON.parse(releaseSecret.metadata.annotations[annotation]), {
-    state: "provisioned",
+    state: "release-dispatched",
     sandboxId: startup.targetRef.sandboxId,
+    processInstanceId: startup.processInstanceId,
+    startupId: startup.startupId,
   });
   const missingTarget = structuredClone(releaseSecret);
   delete missingTarget.metadata.annotations[annotation];
@@ -1098,6 +1163,12 @@ test("staged Compute release requires both ready observations, this held acknowl
   markReady(gatewayName);
   state.gatewayWorkspaceNodeId = "node-1";
   assert.equal((await prepare()).ready, true, "a serving retry adopts the enrolled node");
+  await driver.activateRevision(revision, context);
+  assert.equal(
+    objects.has(key("HTTPRoute", gatewayName)),
+    true,
+    "activation publishes the Agent route only after readiness",
+  );
   assert.equal(events.filter((event) => event === "provision").length, provisionsAtEnrollment);
   assert.equal(events.filter((event) => event === "configure").length, configured);
   assert.equal(events.filter((event) => event === "release").length, 1);

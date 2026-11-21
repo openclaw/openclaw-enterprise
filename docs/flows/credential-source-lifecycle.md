@@ -73,13 +73,13 @@ The worker rechecks actor and Agent grants, selected Driver identity, live sourc
 
 #### Pending native integration
 
-`apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`, `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:attachSandboxProviderWithReceipt`
+`apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`, `apps/controller/src/drivers/compute/kubernetes/index.ts:activateCredentialDeployment`, `apps/controller/src/worker.ts:prepareRevision`
 
-The staged native Proxy compares the binding and injection policy with the frozen v8 admission. The binding's runtime provider key is distinct from the catalog ModelProvider ID. It rejects a mismatched target before resolving material. First use transfers material into an OpenShell Provider delivery copy and attaches it with a Sandbox resource-version precondition; compatible reuse does not resolve or repair material. The OpenShell Gateway API client validates the receipt and returned Sandbox, and the Proxy checks Provider identity/version and final membership before returning a runtime placeholder projection.
+The native Proxy compares the binding and injection policy with the frozen v8 admission and checks the target before resolving material. The binding uses the runtime provider key, which is distinct from the catalog ModelProvider ID. The Proxy creates and conditionally attaches an OpenShell Provider delivery copy; compatible reuse neither resolves nor repairs material. The Gateway client validates the attachment receipt. The Proxy checks Provider identity, version, and membership before returning a runtime placeholder projection.
 
-For OCC TokenService, composition registers `credential_proxy_delivery` on the selected Sandbox owner. Worker and Compute use that registration for delivery and cleanup. Worker checks source authority, withdrawal, and the held target before supplying a source-bound resolver, then repeats release checks after configuration. Status fails closed because current source-version authority and exact native executable enforcement remain unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)). The native RPC rejects malformed receipts and sanitizes errors; legacy serving keeps its separate Attach operation.
+For OCC TokenService, composition registers `credential_proxy_delivery` on the selected Sandbox owner. OCC refuses competing deployments while the first staged deployment is pending. OCC and Worker refuse a staged managed-credential replacement before preparing the candidate. Worker checks source authority, withdrawal, and the held target before supplying a source-bound resolver. Compute reports preparation only after the Proxy, effective policy, and projections are ready; the Harness remains held. Worker selects the revision, reauthorizes the source, and calls activation. Compute rechecks the held startup and policy, records release dispatch, and releases that exact startup. The Agent route and deployment completion wait for serving and node readiness. Status fails closed because current source-version authority and exact native executable enforcement remain unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)).
 
-Compute records dispatch, then the provider's exact Sandbox ID, on the revision's release-key Secret. Retries observe that target without redeploying or reprovisioning. Pending startup stays unready; uncertainty or identity mismatch fails closed. Enrolled retries complete exposure withdrawal.
+Compute records provisioning and release dispatch on the revision's release-key Secret. Retries observe the exact Sandbox and startup without reprovisioning or sending another release. An unknown release outcome stays pending; an identity mismatch fails closed.
 
 ### 5. Withdraw or delete a source
 
@@ -108,8 +108,9 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 
 ## Changelog
 
+- 2026-11-21 20:59: Hold the first staged startup until activation and refuse competing or replacement deployments. (01a1ec21-b384-7472-887f-945ae0ab16fc - 6baee5df7)
+- 2026-11-21 20:21: Reauthorize the source before activation. (01a1ec21-b384-7472-887f-945ae0ab16fc - 9c11a8786)
 - 2026-11-21 20:14: Validate native delivery against the admitted runtime binding and policy. (authoring-run/f9a96a90-7e99-4a4b-a6d8-d40f4bf1b797 - 28a98dda9)
-
 - 2026-11-21 19:51: Reconcile OCC service owners. (01a1ec21-b384-7472-887f-945ae0ab16fc - e12513764)
 - 2026-11-20 23:19: Record staged provision dispatch and observe the saved target on every retry. (01a1ec21-b384-7472-887f-945ae0ab16fc - 63d179f67)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
