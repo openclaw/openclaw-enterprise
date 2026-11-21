@@ -424,9 +424,8 @@ test(
                     async (agent, step) => {
                       const { verifyQaAgentAutomations } =
                         await import("../helpers/qa-agent-automations.ts");
-                      await step(
-                        "OCC scheduling, revision conflicts, tool execution and retained history",
-                        () => verifyQaAgentAutomations(f, agent),
+                      await step("OCC execution qualification refusal", () =>
+                        verifyQaAgentAutomations(f, agent),
                       );
                     },
                   ],

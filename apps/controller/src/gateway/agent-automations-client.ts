@@ -30,7 +30,7 @@ const methods = [
 type Method = (typeof methods)[number];
 type GatewayHello = Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0];
 export type AutomationGatewayErrorCode =
-  "unavailable" | "invalid" | "missing" | "conflict" | "unsupported" | "unknown";
+  "unavailable" | "invalid" | "missing" | "conflict" | "unsupported" | "unknown" | "unqualified";
 export class AutomationGatewayError extends Error {
   readonly code: AutomationGatewayErrorCode;
   constructor(code: AutomationGatewayErrorCode) {
@@ -423,6 +423,11 @@ export function createNativeAgentAutomationsAccess(
           const current = requireSupported(await read(record));
           if (current.configRevision !== input.expectedConfigRevision) {
             throw new AutomationGatewayError("conflict");
+          }
+          // TODO: Permit enabled state only when AC3's non-owner service authority
+          // is established. Use this same read and native CAS to prevent races.
+          if (input.enabled ?? current.enabled) {
+            throw new AutomationGatewayError("unqualified");
           }
           const patch = {
             ...(input.name === undefined ? {} : { name: input.name }),

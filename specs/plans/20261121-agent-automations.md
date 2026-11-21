@@ -16,13 +16,15 @@ rfc: ../rfcs/20261121-agent-automations.md
 Implement six real HTTP operations through OCC and the existing native scheduler.
 OCE is the sole automation manager. Native edits, imports and reconciliation with
 other managers are out of scope. OCC records the human creator and enforces
-management permissions; execution uses the deployed Agent's service authority
-and approved tools. Retained ownership authorizes native history after deletion.
+management permissions. Scheduled execution must use the deployed Agent's non-owner
+service authority and approved tools; the current operator route does not satisfy this. Retained ownership authorizes native history after deletion.
 
-No upstream writes, dependency patches or new upstream scope are required.
-The implementation provides broker dispatch, durable ownership and native ID
-binding. Protocol and PostgreSQL checks pass. Model execution, policy enforcement,
-deployed replacement and independent review remain incomplete.
+No upstream edits are authorized. The current gate refuses creation and enabling,
+and refuses edits that would leave a job enabled. Safe disabling edits, deletion,
+reads and recovery remain available. Native cron and other Agent functions are
+unchanged. The [authority limitation](../rfcs/20261121-agent-automations.md#unresolved-execution-authority)
+requires a product decision before positive scheduled execution can be implemented
+and qualified. Working credentials alone cannot resolve that hold.
 
 ## Owners and touchpoints
 
@@ -79,14 +81,14 @@ deployed replacement and independent review remain incomplete.
 
 | Required outcome | Proof | Current result |
 | --- | --- | --- |
-| Human and exact-Agent admission | Real HTTP app, sessions and Native IAM | HTTP checks pass; native protocol case verifies creator filtering and successful dispatch |
-| Ownership constraints and cleanup | Disposable migrated PostgreSQL, application role, actual repository operations | Reservation, one-time binding, uniqueness, immutable creator and audit rollback pass. Real deletion worker removes ownership after a teardown retry and preserves sibling ownership |
-| Normalization and lifecycle | OCC HTTP calls to a real packaged Gateway in the regular Agent workflow | Real Gateway protocol case passes all three schedule forms, CRUD and stale revisions; installed workflow reaches Agent deployment but model authentication fails |
-| Approved and denied tools | Scheduled real model turn in each selected Harness; include current policy reduction and app/MCP boundaries | Embedded OpenClaw and dedicated Codex both fail model authentication. No scheduled model turn ran. Policy-reduction and app/MCP cases still need implementation and real proof |
-| History after deletion | Successful one-shot and explicit deletion, then creator/admin and foreign-creator history requests | Never-run deleted job correctly returns 404 in native proof; completed-run history remains unverified |
-| Unknown outcomes | Lost mutation reply, post-dispatch revision change and failed audit append; count native dispatches | Real Gateway fault cases pass without create replay; lost create reply leaves a disabled recoverable job |
-| Revision replacement | Owned disposable Gateway workload and persistent state across replacement | Genuine Gateway container replacement on retained native storage preserves a paused job and unchanged in-memory OCC ownership, without create/update replay. Production Kubernetes cutover with PostgreSQL-backed OCC remains unverified |
-| Independent review | Canonical autoreview, without provider or isolation bypass | CLI and sandbox preflight repaired; review of `b50e0e4704` returns `reviewer_unavailable`, `report_produced=false`, authentication failure |
+| Human admission and qualification gate | Real HTTP, sessions, Native IAM and genuine native protocol | Creation/activation refused before native mutation; management remains creator/admin scoped |
+| Ownership and cleanup | Disposable PostgreSQL and real controller/worker calls | Atomic reservation, binding, failed-create cleanup/audit, binding race and Agent deletion with sibling preservation pass |
+| Positive scheduling and lifecycle | Scheduled turns through the installed Agent workflow | Unmet. Pre-gate normalization/CRUD evidence is historical and does not qualify final gated creation or enabling |
+| Approved/denied tools and policy reduction | Real scheduled turns in both Harnesses, including app/MCP restrictions | Unmet. No verified non-owner broker route; no test-only authority bypass or mocked model outcomes are admitted |
+| Completed-run history | Successful one-shot then authorized post-deletion history | Unverified; never-run deleted history correctly returns 404 |
+| Safe mutation recovery | Lost pause reply, native CAS, post-commit audit/revision failure | Final native case covers explicit disabling edits without replay and retained unbound-record recovery |
+| Physical replacement | Genuine Gateway on retained native storage | Paused job and unchanged in-memory OCC ownership verified; PostgreSQL-backed production cutover remains unverified |
+| Independent review | Canonical autoreview, same host/model/authentication route | `b50e0e4704`: `reviewer_unavailable`, `report_produced=false`, authentication failure. Later changes are not independently reviewed |
 
 Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
 [PostgreSQL setup](../../docs/testing/postgresql.md) and
@@ -98,11 +100,19 @@ lane. Fixture or source-only checks do not satisfy native runtime acceptance.
 
 | Criterion | Established | Remaining |
 | --- | --- | --- |
-| AC1: Scheduling | Three schedule forms and normalization through the real native protocol | Approved-tool scheduled execution in both Harnesses |
-| AC2: Lifecycle | CRUD, pause/resume, stale-revision refusal and two concurrent OCC edits exercising native atomic CAS | Successful one-shot execution and retained history after deletion |
-| AC3: Authority | HTTP session, exact-Agent, creator, service-key and Origin refusals | Real approved/denied tools, policy reduction and app/MCP restrictions in embedded and dedicated execution |
-| AC4: Recovery | Lost replies, native CAS, failed audit and revision fencing without create replay; physical Gateway replacement retains paused state and native identity with unchanged in-memory OCC ownership | PostgreSQL-backed production cutover and completed-run history across replacement |
-| AC5: Persistence and audit | PostgreSQL invariants, atomic audit, native-ID binding and deletion-worker cleanup with sibling preservation | Model-run evidence required by the other criteria; no persistence-specific gap remains in the selected cases |
+| AC1: Scheduling | Pre-gate protocol normalization only; final gate rejects create/enable | Positive approved-tool scheduled execution in both Harnesses; criterion unmet |
+| AC2: Lifecycle | Safe disabling edits/delete and native CAS for retained fixture jobs | Positive create/resume, successful one-shot execution and retained history; criterion incomplete |
+| AC3: Authority | Human authorization and refusal of the unqualified operator route | Non-owner execution authority, real approved/denied tools, policy reduction and app/MCP restrictions; criterion unmet |
+| AC4: Recovery | Safe-update uncertainty, real Gateway replacement, retained native state and in-memory OCC ownership | PostgreSQL-backed production cutover and completed-run history across replacement |
+| AC5: Persistence and audit | Real PostgreSQL constraints, atomic audit, one-time binding, conditional failed-create cleanup and Agent deletion | Model-dependent evidence remains with the other criteria |
+
+No supported deterministic stock broker route currently supplies signed Agent-run
+identity. Finite tool caps do not repair action-level authority and can remove
+approved dedicated Codex capabilities. AC3 positive tests must wait for a selected,
+supported route; a passing refusal test does not satisfy them. This API-key QA
+setup also cannot exercise curated Codex app approval: the platform requires a
+ChatGPT-backed login for those apps. That documented capability is not replaced
+with a made-up fixture or API.
 
 The runtime guide's `OCC_TEST_QA_OPENAI_KEY_FILE` and `OCC_TEST_QA_MODEL_API_KEY`
 are unset in the task environment. The selected `OPENAI_API_KEY` reached the
@@ -177,12 +187,31 @@ no token extraction, manual refresh or provider fallback was attempted.
   containers, network and retained-state volume were removed. Type checking,
   lint, documentation checks and flow validation passed.
 
+- `cec8f267eef4488dd566f09b1c060fab285ff40e` records the rejected-create fix
+  before the execution gate. The original HTTP/transport path failed the real
+  invalid-schedule regression by retaining an unbound row; the repaired path
+  passed 2 native tests with no model calls. PostgreSQL cleanup, rollback and an
+  actual binding/deletion lock race passed 1 test. Current gated HTTP cannot reach
+  native create rejection; those results are explicitly pre-gate evidence.
+- The final QA scenario checks installed execution refusal only. Its positive
+  scheduling/tool-policy checks are not reported as passed or replaced by that
+  refusal. The current model key remains invalid, so the installed case is unrun
+  on the final gate. The final native fixture seeds real retained state as setup;
+  it does not provide a production qualification override or native-edit feature.
+- The narrow gate's genuine Gateway suite passed 2 tests with no failures, skips
+  or model calls. Native cron remained enabled; fixture jobs used far-future
+  schedules. Creation and unsafe edits dispatched no native mutation. Atomic pause,
+  deletion, recovery, concurrent CAS, mutation uncertainty and retained-state
+  replacement passed. The focused HTTP suite passed 5 tests. Type checking, lint,
+  formatting, OpenAPI, workspace, CI manifest, docs and flow checks passed.
+
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
 
+- 2026-11-21: Gate the confirmed operator-schedule authority gap; preserve atomic disable/delete/recovery and ordinary native cron. Mark positive AC1–AC3 and model history unmet, independent of credentials.
 - 2026-11-21: Fix rejected-create reservation retention. The real HTTP/native regression fails before the fix and passes afterward; PostgreSQL proves atomic cleanup/audit rollback, creator isolation and a row-lock race that preserves a concurrent native binding.
 - 2026-11-21: Add genuine Gateway replacement and concurrent native CAS proof without model calls; retain the PostgreSQL-backed production cutover and model-history gaps.
 - 2026-11-21: Repair local infrastructure, record both Harness authentication failures and canonical review status, add deletion-worker ownership proof, and audit AC1–AC5 without claiming model qualification.

@@ -18,15 +18,48 @@ author: kevinlin-openai
 OpenClaw Control Plane (OCC) brokers six HTTP operations for Agent automations.
 OCC authorizes the human, retains ownership records, and calls the selected
 Agent's private Gateway with platform-owned administrative transport. OpenClaw
-owns job definitions, scheduling, execution and run history. Scheduled turns use
-the deployed Agent's service authority, constrained by its approved tools and
+owns job definitions, scheduling, execution and run history. Scheduled turns must use
+the deployed Agent's non-owner service authority, constrained by its approved tools and
 runtime policy. Human creator identity governs management and disclosure in OCC;
 it does not supply personal credentials to a scheduled turn.
 
 OCE manages all automations in this supported workflow. Native edits, importing
 native jobs, and reconciliation with another automation manager are out of scope.
 This replaces the earlier proposal for a new upstream human automation delegation.
-No upstream changes are required by this broker design.
+The management protocol needs no upstream changes; the execution-authority
+requirement below is unresolved. No upstream edits are authorized.
+
+## Unresolved execution authority
+
+At the pinned `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`, direct administrative
+cron creation stamps trusted operator authority. Native
+[execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
+and [sender projection](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context-registry.ts#L176)
+do not establish a non-owner caller. The approved `sessions` tool can therefore
+receive controls that [explicit non-owner callers lack](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/agents/tools/sessions-tool.ts#L193).
+Target visibility still applies; cross-session effects have not been demonstrated.
+OCE's [managed tool policy](../../apps/controller/src/drivers/compute/gateway-tool-policy.ts)
+forbids Gateway administration tools, so Gateway restart is not a demonstrated
+reachable consequence in deployed OCE.
+
+No verified stock broker route supplies the signed identity of a genuinely
+admitted Agent run. A finite tool allowlist does not change actor or action
+restrictions and [disables Codex's native shell/file surface](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/extensions/codex/src/app-server/dynamic-tool-build.ts#L523).
+Dropping approved tools
+or redefining the required authority is not an accepted resolution.
+
+Restricting the whole Agent through its existing tool policy is an investigation
+candidate, not a qualified per-automation route. It changes ordinary Agent behavior,
+does not create a non-owner identity, and needs a complete review of action-level
+controls, delegation and app/MCP authority. Disabling only Gateway administration
+or `sessions` is not established as a complete safe policy. No deny-list workaround
+is enabled by this proposal.
+
+Until a route is qualified, creation and enabling remain gated. Safe disabling
+edits, deletion and recovery remain available. The gate does not disable
+Gateway-wide cron or reconcile native jobs. Positive scheduled-turn, tool-policy
+and history criteria remain unmet. The product decision
+is pending; this RFC does not select an alternative.
 
 ## Motivation
 

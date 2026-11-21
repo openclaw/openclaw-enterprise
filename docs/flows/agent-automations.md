@@ -11,7 +11,8 @@ last_updated_session: "01a1fc52-9d88-7223-b8a1-3c98595d3fbe"
 OCC authorizes a human and managed job ownership, resolves the selected Agent
 runtime, then calls native cron through private administrative transport. OCC
 retains creator records; OpenClaw owns scheduling, execution and run history.
-This flow describes source behavior, not completed runtime qualification.
+Creation and enabling are gated because native operator authority does not satisfy
+non-owner Agent service execution. The current flow manages retained jobs only.
 
 ## Entry Points
 
@@ -29,17 +30,13 @@ graph TD
   B -->|"denied"| E["Return protected-route error and audit"]
   B --> C["Authorize creator or Agent administrator"]
   C -->|"foreign or absent record"| E
-  C --> D["Select running revision and verify runtime provenance"]
-  D -->|"unavailable"| U["Return 503 without dispatch"]
+  C --> Q{"Create or explicitly enable?"}
+  Q -->|"yes"| U["Return 503 without dispatch"]
+  Q -->|"no"| D["Select running revision and verify runtime provenance"]
+  D -->|"unavailable"| U
   D --> G["Connect to private native operator endpoint"]
-  G --> R{"Create?"}
-  R -->|"yes"| P["Commit ownership reservation and admission audit"]
-  R -->|"no"| N["Read or mutate native job"]
-  P --> C0["Create disabled with native declaration key"]
-  C0 -->|"lost reply"| X
-  C0 --> B0["Commit native ID binding"]
-  B0 -->|"failed"| X
-  B0 --> N
+  G --> N["Read, safely edit or delete retained job"]
+  N -->|"edit would leave job enabled"| U
   N -->|"lost mutation reply"| X["Audit unknown outcome; return 503; do not replay"]
   N --> V["Recheck caller and selected revision"]
   V -->|"changed after mutation"| X
@@ -78,23 +75,22 @@ selection. It owns connection deadlines and closes on disconnect without
 replaying requests. Each RPC rechecks the human session, authorization and
 selected revision through the HTTP handler's `assertCurrent` callback.
 
-### 3. Reserve and dispatch
+### 3. Gate execution and manage retained jobs
 
-For POST, `packages/occ/src/agent-automations.ts:createAgentAutomations` reserves a
-new public UUID, creator and native Agent in the same transaction as admission audit.
-The native client creates disabled with a declaration key derived from that UUID.
-OCC binds the returned native ID before requesting activation. Native create
-never receives an OCC-selected native job ID.
-`packages/occ/src/state/postgres-agent-automations.ts:postgresAgentAutomations`
-implements the immutable repository; the schema constrains parent ownership and
-removes rows when the Agent is deleted. A reservation persists if a native reply
-is lost, but does not prove a native job exists.
+`apps/controller/src/http/agent-automations.ts:createAgentAutomationHandlers`
+rejects POST and explicit enabling after human authorization
+and ownership checks. For other edits, the native adapter reads the current job,
+checks the expected revision, and refuses any resulting enabled state. Safe
+edits and DELETE carry that same revision to native atomic mutation.
 
-The native client maps prompt and schedule to an isolated Agent turn with no
-result delivery and the deployed Agent's tool policy. It preserves native
-schedule normalization. PATCH compares the caller revision with the same full
-read used for eligibility, then passes it to native atomic update. DELETE also
-passes its precondition. Native conflicts become 409 responses.
+The gate does not alter native cron or other Agent runtime functions. It creates
+no background reconciliation or native-import path.
+
+The deferred create path reserves ownership with admission audit, creates disabled,
+binds the native ID once and requests activation. It is unreachable through the
+current HTTP gate. Its pre-gate regression evidence is recorded separately in the
+[plan](../../specs/plans/20261121-agent-automations.md#verification); it is not current
+supported creation proof.
 
 ### 4. Project inventory and history
 
@@ -141,14 +137,14 @@ The native protocol case uses real OpenClaw and a transparent fault proxy, with
 fixture Compute and in-memory OCC state. It checks concurrent native CAS and
 replaces the Gateway container on retained native storage while preserving a
 paused job and its OCC ownership record. It executes no model. The registered
-`agent-automations` QA scenario owns deployed scheduling, tool effects and history.
+`agent-automations` QA scenario now proves installed execution refusal. Positive scheduling, tool-policy and history criteria remain unmet.
 See the [plan](../../specs/plans/20261121-agent-automations.md#verification) for
 actual results and outstanding proof. Missing model credentials are not mock proof.
 
 ## Related docs
 
 - [Automation contract](../reference/agent-automations.md)
-- [Schedule an automation](../guides/agent-automations.md)
+- [Manage retained automations](../guides/agent-automations.md)
 - [Native browser access](agent-native-admin.md)
 - [Broker RFC](../../specs/rfcs/20261121-agent-automations.md)
 

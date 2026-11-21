@@ -1,30 +1,28 @@
-# Schedule an Agent automation
+# Inspect and pause Agent automations
 
-Use the OCC HTTP API to create and manage scheduled Agent turns. OCE must be the
-sole automation manager; native edits and imports are outside this workflow.
-Review [runtime and verification limits](../reference/agent-automations.md#verification-status)
-before selecting a runtime.
+Creation and activation are unavailable until a native route satisfies the
+[execution-authority requirement](../reference/agent-automations.md#execution-qualification).
+Use the OCC HTTP API to inspect, pause or delete retained OCE-owned jobs. Native
+edits and imports are outside this workflow.
 
 ## Prepare
 
-Deploy the Agent with native access enabled. Sign in with a human session using
-the [HTTP API guide](http-api.md). Creation requires `operate` on the exact Agent;
-`administer` alone is insufficient. Service keys cannot call these routes.
+Use a running Agent with native access enabled. Sign in with a human session using
+the [HTTP API guide](http-api.md). Exact-Agent `operate` admits your own records;
+`administer` admits all OCE-owned records for that Agent. Service keys are refused.
 
 Set `OCC_URL`, `NAMESPACE_ID`, `AGENT_ID` and `COOKIE` from that session. Use the
 configured public origin for `OCC_URL`; never place the cookie in a shared script.
 
 ```sh
 AUTOMATIONS="$OCC_URL/namespaces/$NAMESPACE_ID/agents/$AGENT_ID/automations"
-curl --fail-with-body --cookie "$COOKIE" \
-  -H "Origin: $OCC_URL" -H 'Content-Type: application/json' \
-  --data '{"name":"Daily report","enabled":true,"schedule":{"kind":"cron","expr":"0 9 * * *","tz":"America/Los_Angeles"},"prompt":"Generate the daily report"}' \
-  "$AUTOMATIONS"
+curl --fail-with-body --cookie "$COOKIE" "$AUTOMATIONS?offset=0&limit=50"
 ```
 
-Success returns 201 with the public `data.id`, `data.configRevision`, the normalized schedule
-and the next run time. Native staggering can affect the exact execution time.
-Scheduled turns use the Agent's service authority and approved tools.
+POST returns `503 AUTOMATIONS_UNQUALIFIED` without reserving ownership or
+sending native create. The gate does not cancel work from a retained enabled job.
+Pause/delete it, or use the ordinary Agent stop operation if a turn is in flight.
+Gateway-wide scheduling and other native Agent functions are unchanged.
 
 ## Inspect, pause and remove
 
@@ -42,8 +40,9 @@ jq -n --arg revision "$CONFIG_REVISION" \
     --data-binary @- "$AUTOMATIONS/$JOB_ID"
 ```
 
-Set `enabled` to `true` to resume. PATCH can also change the name, schedule or
-prompt. A stale revision returns 409; read the job again before editing.
+Enabling is refused. An edit must leave the job disabled; include `enabled:false`
+to pause and edit atomically. An already-paused job can change its name, schedule
+or prompt. A stale revision returns 409; read the job again before editing.
 
 DELETE `$AUTOMATIONS/$JOB_ID?expectedConfigRevision=$CONFIG_REVISION` with the
 same session and Origin to stop future scheduling and remove the native job.
@@ -62,5 +61,5 @@ that Agent.
 automatically. Keep the response's `Location` path: it identifies the automation
 even if a successful one-shot has already disappeared. Inspect that path or its
 `/runs` history. A recovered create can be disabled because activation did not
-commit; inspect its current revision before explicitly enabling it. See the
+commit. Inspect its current revision; enabling remains unavailable. See the
 [error and persistence contract](../reference/agent-automations.md#runtime-and-failure-boundaries).

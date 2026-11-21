@@ -250,6 +250,7 @@ test(
       };
       // Background memory indexing is separate from the file API's no-turn guarantee.
       configuration.memory = { search: { enabled: false } };
+      configuration.cron = { enabled: true }; // The narrow OCC gate must preserve native scheduling.
       const { explicitAgentId, ...agents } = roster;
       const agentsConfiguration = { ...configurationRecord(configuration.agents), ...agents };
       configuration.agents = agentsConfiguration;
@@ -377,8 +378,12 @@ test(
                 JSON.parse(records[0]!.slice("OCC_AUTOMATION_PROTOCOL_PROOF ".length)),
                 {
                   automationProtocol: true,
-                  nativeCreates: 9,
-                  rejectedCreates: 3,
+                  nativeCreates: 5,
+                  executionQualified: false,
+                  unsafeDispatchBlocked: true,
+                  nativeSchedulerUnchanged: true,
+                  retainedEnabledJobPaused: true,
+                  legacyFixtureSetup: true,
                   concurrentNativeCas: true,
                   physicalGatewayReplacement: true,
                   pausedJobRetained: true,

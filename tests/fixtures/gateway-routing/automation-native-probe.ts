@@ -9,10 +9,11 @@ import { createRequire } from "node:module";
 import { once } from "node:events";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { InMemoryAuditSink } from "../../../packages/audit/src/index.ts";
+import { AuditEventFactory, InMemoryAuditSink } from "../../../packages/audit/src/index.ts";
 import type {
   AuditEvent,
   AgentAutomationData,
+  AgentAutomationCreateInput,
   AgentAutomationOwnership,
 } from "../../../packages/contracts/src/index.ts";
 import { createAgentAutomationsAccess } from "../../../apps/controller/src/composition/agent-automations.ts";
@@ -23,6 +24,7 @@ import { createHarnessConfiguration } from "../../helpers/harness-configuration.
 import { grantRole } from "../../helpers/iam-grants.ts";
 import { runDocker } from "../../helpers/runtime-image-docker.ts";
 import { waitForContainerReady } from "../../helpers/runtime-image-gateway-observations.ts";
+import { GatewayClient } from "../../../apps/controller/tests/fixtures/plugin-approval-client.ts";
 import { cpuScaledImageTimeoutMs } from "../../helpers/image-smoke-timeout.ts";
 
 // Use the SDK's installed WebSocket transport for a transparent, test-owned fault proxy.
@@ -76,12 +78,10 @@ const sockets = new websocket.WebSocketServer({ noServer: true });
 const proxy = createServer({ cert: await readFile(certPath), key: await readFile(tlsKeyPath) });
 let nativeCreates = 0;
 let nativeUpdates = 0;
-let verifiedBindingBeforeActivation = false;
-let beforeActivation: undefined | ((id: string) => Promise<void>);
 let beforeUpdate: undefined | (() => Promise<void>);
-const nativeErrors: string[] = [];
 let loseCreateReply = false;
-let afterCreate: undefined | (() => Promise<void>);
+let loseUpdateReply = false;
+let afterUpdate: undefined | (() => Promise<void>);
 proxy.on("upgrade", (request, socket, head) => {
   sockets.handleUpgrade(request, socket, head, (downstream) => {
     const upstream = new websocket.WebSocket(endpoint, { headers: { "x-api-key": apiKey } });
@@ -89,6 +89,7 @@ proxy.on("upgrade", (request, socket, head) => {
     peers.add(upstream);
     const queue: Buffer[] = [];
     const creating = new Set<string>();
+    const updating = new Set<string>();
     downstream.on("message", (bytes) => {
       const frame = JSON.parse(bytes.toString()) as {
         type?: string;
@@ -114,13 +115,13 @@ proxy.on("upgrade", (request, socket, head) => {
       };
       if (frame.method === "cron.update") {
         nativeUpdates++;
+        if (frame.id) {
+          updating.add(frame.id);
+        }
         const action = beforeUpdate;
         beforeUpdate = undefined;
         void (async () => {
           await action?.();
-          if (frame.params?.patch?.enabled === true && frame.params.id) {
-            await beforeActivation?.(frame.params.id);
-          }
         })()
           .then(forward)
           .catch(() => {
@@ -144,18 +145,27 @@ proxy.on("upgrade", (request, socket, head) => {
           ok?: boolean;
           error?: { message?: string };
         };
-        if (frame.type === "res" && frame.ok === false && nativeErrors.length < 3) {
-          nativeErrors.push(String(frame.error?.message).slice(0, 300));
+        if (
+          frame.type === "res" &&
+          frame.id &&
+          frame.ok &&
+          creating.delete(frame.id) &&
+          loseCreateReply
+        ) {
+          loseCreateReply = false;
+          downstream.terminate();
+          upstream.terminate();
+          return;
         }
-        if (frame.type === "res" && frame.id && frame.ok && creating.delete(frame.id)) {
-          if (loseCreateReply) {
-            loseCreateReply = false;
+        if (frame.type === "res" && frame.id && frame.ok && updating.delete(frame.id)) {
+          if (loseUpdateReply) {
+            loseUpdateReply = false;
             downstream.terminate();
             upstream.terminate();
             return;
           }
-          const action = afterCreate;
-          afterCreate = undefined;
+          const action = afterUpdate;
+          afterUpdate = undefined;
           await action?.();
         }
         if (downstream.readyState === 1) {
@@ -186,7 +196,7 @@ assert.ok(address && typeof address !== "string");
 class FaultAudit extends InMemoryAuditSink {
   failSuccess = false;
   override async append(event: AuditEvent): Promise<void> {
-    if (this.failSuccess && event.action === "openclaw.agents.automations.create.success") {
+    if (this.failSuccess && event.action === "openclaw.agents.automations.update.success") {
       this.failSuccess = false;
       throw new Error("owned audit sink unavailable after native commit");
     }
@@ -266,69 +276,157 @@ try {
       headers: result.response.headers,
     };
   }
-  beforeActivation = async (nativeJobId) => {
-    const records = await f.controller.listAgentAutomationOwnership(
-      f.principal.id,
-      namespace.id,
-      agent.id,
-    );
-    assert.ok(
-      records.some((entry: AgentAutomationOwnership) => entry.nativeJobId === nativeJobId),
-      "native activation requires a committed OCC binding",
-    );
-    verifiedBindingBeforeActivation = true;
-  };
-  const input = {
-    name: "Inactive protocol job",
+  // Read-only native observation proves the narrow API gate does not disable
+  // ordinary native scheduling. This fixture never qualifies scheduled execution.
+  const connected = Promise.withResolvers<void>();
+  const observer = new GatewayClient({
+    url: endpoint,
+    clientName: "gateway-client",
+    mode: "backend",
+    role: "operator",
+    deviceIdentity: null,
+    scopes: [],
+    edgeAuthHeaders: { "x-api-key": apiKey },
+    onHelloOk: () => connected.resolve(),
+    onConnectError: connected.reject,
+    hostDeps: { logError: () => {}, logDebug: () => {} },
+  });
+  cleanups.push(async () => {
+    observer.stop();
+    await observer.stopAndWait({ timeoutMs: 1000 });
+  });
+  observer.start();
+  await connected.promise;
+  assert.equal((await observer.request<{ enabled: boolean }>("cron.status", {})).enabled, true);
+  const input: AgentAutomationCreateInput = {
+    name: "Retained operator job",
     enabled: false,
-    schedule: { kind: "every", everyMs: 60_000 },
+    schedule: { kind: "every", everyMs: 86_400_000 },
     prompt: "This job must not execute during protocol proof.",
   };
-  // These pass OCC's envelope schema but are rejected by the real scheduler.
-  // Rejected requests must not accumulate invisible ownership reservations.
-  for (const schedule of [
-    { kind: "cron", expr: "not a cron expression", tz: "UTC" },
-    { kind: "cron", expr: "0 9 * * *", tz: "Invalid/Zone" },
-    { kind: "cron", expr: "not a cron expression", tz: "UTC" },
-  ]) {
-    const before = nativeCreates;
-    const rejected = await request("POST", base, { body: { ...input, schedule } });
-    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
-    assert.equal(nativeCreates, before + 1, "the actual scheduler must reject the request");
-    assert.deepEqual(
-      await f.controller.listAgentAutomationOwnership(f.principal.id, namespace.id, agent.id),
-      [],
-      "a definite native rejection must discard its unbound reservation",
-    );
+  for (const enabled of [false, true]) {
+    const refused = await request("POST", base, { body: { ...input, enabled } });
+    assert.equal(refused.status, 503);
+    assert.equal(refused.body.error.code, "AUTOMATIONS_UNQUALIFIED");
   }
-  assert.equal(auditSink.events.filter((event) => event.action.endsWith(".discarded")).length, 3);
-  const created = await request("POST", base, { body: input });
-  assert.equal(created.status, 201, JSON.stringify({ response: created.body, nativeErrors }));
-  const job = created.data as AgentAutomationData;
-  for (const schedule of [
-    { kind: "at", at: new Date(Date.now() + 3_600_000).toISOString() },
-    { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
-  ]) {
-    const response = await request("POST", base, {
-      body: {
-        ...input,
-        name: `Protocol ${schedule.kind}`,
-        schedule,
-        enabled: schedule.kind === "at",
-      },
+  assert.equal(nativeCreates, 0, "unqualified HTTP create must never reach native dispatch");
+  assert.deepEqual(
+    await f.controller.listAgentAutomationOwnership(f.principal.id, namespace.id, agent.id),
+    [],
+  );
+
+  // Seed retained pre-gate state through real OCC storage and the real native
+  // adapter. This is fixture setup, never a qualification bypass or HTTP-create proof.
+  const legacyRevisionId = revision.id;
+  const legacy = await createAgentAutomationsAccess(compute, keyPath).open({
+    revision,
+    signal: new AbortController().signal,
+    deadline: new Date(Date.now() + 120_000),
+    assertCurrent: async () => {
+      await f.controller.getOperableAgent(f.principal.id, namespace.id, agent.id);
+      const selected = await f.controller.getBrowserAccessibleActiveAgentRevision(
+        f.principal.id,
+        namespace.id,
+        agent.id,
+      );
+      assert.equal(selected.revision.id, legacyRevisionId);
+    },
+  });
+  cleanups.push(() => legacy.close());
+  const factory = new AuditEventFactory();
+  const fixtureAudit = (record: Readonly<AgentAutomationOwnership>) =>
+    factory.create({
+      installationId: f.controller.installation.id,
+      namespaceId: namespace.id,
+      actorId: f.principal.id,
+      kind: "mutation",
+      action: "fixture.automation.retained",
+      resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
+      details: { jobId: record.id },
     });
-    assert.equal(response.status, 201, JSON.stringify(response.body));
-    assert.equal(response.data.schedule.kind, schedule.kind);
+  async function seedLegacy(value: AgentAutomationCreateInput, lost = false) {
+    const record = await f.controller.reserveAgentAutomation(
+      f.principal.id,
+      {
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        revisionId: revision.id,
+        nativeAgentId: legacy.nativeAgentId,
+      },
+      fixtureAudit,
+    );
+    if (lost) {
+      loseCreateReply = true;
+    }
+    const created = await legacy.create(record.id, value);
+    const bound = await f.controller.bindAgentAutomation(
+      f.principal.id,
+      {
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        id: record.id,
+        nativeJobId: created.nativeJobId,
+        requireOperate: true,
+      },
+      fixtureAudit,
+    );
+    if (value.enabled) {
+      // Historical fixture setup only: current OCC routes and its update adapter
+      // refuse activation. This retained fixture uses only far-future schedules.
+      await observer.request("cron.update", {
+        id: bound.nativeJobId,
+        expectedConfigRevision: created.job.configRevision,
+        patch: { enabled: true },
+      });
+    }
+    return legacy.get(bound);
+  }
+  const job = await seedLegacy({ ...input, enabled: true });
+  const heldCalls = await runDocker([
+    "exec",
+    nativeContainer,
+    "node",
+    "-e",
+    'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
+  ]);
+  assert.equal(
+    heldCalls.stdout.trim(),
+    "0",
+    "far-future fixture jobs must not run during management proof",
+  );
+  for (const schedule of [
+    { kind: "at" as const, at: new Date(Date.now() + 3_600_000).toISOString() },
+    { kind: "cron" as const, expr: "0 9 * * *", tz: "UTC" },
+  ]) {
+    const retained = await seedLegacy({ ...input, schedule });
     assert.equal(
-      (await request("GET", `${base}/${response.data.id}`)).data.configRevision,
-      response.data.configRevision,
+      (await request("GET", `${base}/${retained.id}`)).data.configRevision,
+      retained.configRevision,
     );
   }
+  const retainedEnabled = await seedLegacy({
+    ...input,
+    name: "Retained future job",
+    enabled: true,
+  });
+  const updatesBeforeRefusal = nativeUpdates;
+  for (const patch of [{ enabled: true }, { name: "Must explicitly pause" }]) {
+    const refused = await request("PATCH", `${base}/${job.id}`, {
+      body: { ...patch, expectedConfigRevision: job.configRevision },
+    });
+    assert.equal(refused.status, 503);
+    assert.equal(refused.body.error.code, "AUTOMATIONS_UNQUALIFIED");
+  }
+  assert.equal(nativeUpdates, updatesBeforeRefusal, "unsafe HTTP updates must not dispatch");
 
   assert.equal(job.schedule.kind, "every");
   assert.ok("anchorMs" in job.schedule && Number.isSafeInteger(job.schedule.anchorMs));
   const changed = await request("PATCH", `${base}/${job.id}`, {
-    body: { name: "Updated through OCC", expectedConfigRevision: job.configRevision },
+    body: {
+      name: "Updated through OCC",
+      enabled: false,
+      expectedConfigRevision: job.configRevision,
+    },
   });
   assert.equal(changed.status, 200);
   let current = changed.data as AgentAutomationData;
@@ -357,13 +455,21 @@ try {
     await updateRelease;
   };
   const losingEdit = request("PATCH", `${base}/${job.id}`, {
-    body: { name: "Losing concurrent OCC edit", expectedConfigRevision: current.configRevision },
+    body: {
+      name: "Losing concurrent OCC edit",
+      enabled: false,
+      expectedConfigRevision: current.configRevision,
+    },
   });
   await held;
   let winningEdit: Awaited<ReturnType<typeof request>>;
   try {
     winningEdit = await request("PATCH", `${base}/${job.id}`, {
-      body: { name: "Winning concurrent OCC edit", expectedConfigRevision: current.configRevision },
+      body: {
+        name: "Winning concurrent OCC edit",
+        enabled: false,
+        expectedConfigRevision: current.configRevision,
+      },
     });
   } finally {
     releaseUpdate();
@@ -416,49 +522,70 @@ try {
   assert.deepEqual(guestList.data.jobs, []);
   assert.equal(guestList.data.total, 0);
 
-  const beforeLost = nativeCreates;
-  const updatesBeforeLost = nativeUpdates;
-  loseCreateReply = true;
-  const lost = await request("POST", base, {
-    body: { ...input, name: "Lost reply", enabled: true },
+  // A retained pre-gate lost create remains discoverable and can bind once.
+  const updatesBeforeRecovery = nativeUpdates;
+  await assert.rejects(seedLegacy({ ...input, name: "Retained lost reply" }, true), {
+    code: "unknown",
+  });
+  const recovered = (await request("GET", base)).data.jobs.find(
+    (entry: { name: string }) => entry.name === "Retained lost reply",
+  );
+  assert.ok(recovered);
+  assert.equal(recovered.enabled, false);
+  assert.equal(
+    nativeUpdates,
+    updatesBeforeRecovery,
+    "read recovery must not enable or rewrite jobs",
+  );
+  assert.equal("prompt" in recovered, false);
+
+  const beforeLost = nativeUpdates;
+  loseUpdateReply = true;
+  const lost = await request("PATCH", `${base}/${job.id}`, {
+    body: {
+      enabled: false,
+      name: "Lost pause reply",
+      expectedConfigRevision: current.configRevision,
+    },
   });
   assert.equal(lost.status, 503);
   assert.equal(lost.body.error.code, "UNKNOWN_OUTCOME");
-  assert.equal(nativeCreates, beforeLost + 1, "a lost reply must not replay native create");
-  const inventory = await request("GET", base);
-  const recovered = inventory.data.jobs.find(
-    (entry: { name: string }) => entry.name === "Lost reply",
-  );
-  assert.ok(recovered, "the reservation retained before dispatch authorizes discovery");
-  assert.equal(recovered.enabled, false, "lost creation cannot activate before binding");
-  assert.equal(nativeUpdates, updatesBeforeLost, "read recovery must not replay or enable the job");
-  assert.equal(lost.headers.get("location"), `${base}/${recovered.id}`);
-  assert.equal("prompt" in recovered, false);
+  assert.equal(lost.headers.get("location"), `${base}/${job.id}`);
+  assert.equal(nativeUpdates, beforeLost + 1, "lost pause reply must not replay the mutation");
+  current = (await request("GET", `${base}/${job.id}`)).data;
+  assert.equal(current.name, "Lost pause reply");
+  assert.equal(current.enabled, false);
 
   auditSink.failSuccess = true;
-  const beforeAudit = nativeCreates;
-  const uncertain = await request("POST", base, { body: { ...input, name: "Audit failure" } });
+  const beforeAudit = nativeUpdates;
+  const uncertain = await request("PATCH", `${base}/${job.id}`, {
+    body: { enabled: false, name: "Audit failure", expectedConfigRevision: current.configRevision },
+  });
   assert.equal(uncertain.status, 503);
   assert.equal(uncertain.body.error.code, "UNKNOWN_OUTCOME");
-  assert.equal(nativeCreates, beforeAudit + 1);
-  assert.ok(
-    (await request("GET", base)).data.jobs.some(
-      (entry: { name: string }) => entry.name === "Audit failure",
-    ),
-  );
+  assert.equal(nativeUpdates, beforeAudit + 1);
+  current = (await request("GET", `${base}/${job.id}`)).data;
+  assert.equal(current.name, "Audit failure");
 
-  // Change the actual OCC revision after native commit and before forwarding its reply.
-  // This first transition tests the post-dispatch fence. Physical replacement follows below.
-  afterCreate = async () => {
+  // Change the OCC revision after a real native pause commit and before its reply.
+  afterUpdate = async () => {
     const next = await f.deployAgent(namespace.id, agent.id);
     await f.activateRevision(namespace.id, agent.id, next.id, revision.id);
     revision = next;
   };
-  const beforeRevision = nativeCreates;
-  const replaced = await request("POST", base, { body: { ...input, name: "Revision changed" } });
+  const beforeRevision = nativeUpdates;
+  const replaced = await request("PATCH", `${base}/${job.id}`, {
+    body: {
+      enabled: false,
+      name: "Revision changed",
+      expectedConfigRevision: current.configRevision,
+    },
+  });
   assert.equal(replaced.status, 503);
   assert.equal(replaced.body.error.code, "UNKNOWN_OUTCOME");
-  assert.equal(nativeCreates, beforeRevision + 1);
+  assert.equal(nativeUpdates, beforeRevision + 1);
+  current = (await request("GET", `${base}/${job.id}`)).data;
+  assert.equal(current.name, "Revision changed");
 
   // Replace the real Gateway process and container, retaining its named state volume.
   // OCC and Compute remain fixtures: this proves native persistence and broker identity,
@@ -522,9 +649,31 @@ try {
     "replacement must not rewrite or activate jobs",
   );
 
+  // An enabled far-future record survives on disk too. Its explicit atomic
+  // disabling edit must remain available despite the execution qualification gate.
+  const callsAfterReplacement = await runDocker([
+    "exec",
+    nativeContainer,
+    "node",
+    "-e",
+    'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
+  ]);
+  assert.equal(callsAfterReplacement.stdout.trim(), "0");
+  const queued = await request("GET", `${base}/${retainedEnabled.id}`);
+  assert.equal(queued.status, 200);
+  assert.equal(queued.data.enabled, true);
+  const pausedQueued = await request("PATCH", `${base}/${retainedEnabled.id}`, {
+    body: {
+      enabled: false,
+      name: "Paused retained queue",
+      expectedConfigRevision: queued.data.configRevision,
+    },
+  });
+  assert.equal(pausedQueued.status, 200);
+  assert.equal(pausedQueued.data.enabled, false);
+
   const all = (await request("GET", base)).data.jobs as AgentAutomationData[];
-  assert.equal(all.length, 6);
-  assert.ok(verifiedBindingBeforeActivation);
+  assert.equal(all.length, 5);
   for (const entry of all) {
     assert.equal(
       (
@@ -562,7 +711,11 @@ process.stdout.write(
     JSON.stringify({
       automationProtocol: true,
       nativeCreates,
-      rejectedCreates: 3,
+      executionQualified: false,
+      unsafeDispatchBlocked: true,
+      nativeSchedulerUnchanged: true,
+      retainedEnabledJobPaused: true,
+      legacyFixtureSetup: true,
       concurrentNativeCas: true,
       physicalGatewayReplacement: true,
       pausedJobRetained: true,

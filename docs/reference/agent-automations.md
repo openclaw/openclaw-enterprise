@@ -1,12 +1,26 @@
 # Agent automations
 
-The OpenClaw Control Plane (OCC) automation broker schedules turns in a deployed
-Agent. OCC owns human authorization and immutable creator records. OpenClaw owns
-job definitions, scheduling, execution and run history.
+The OpenClaw Control Plane (OCC) automation broker retains human ownership and
+manages native jobs. Creation and activation are gated; safe disabling edits,
+deletion, reads and recovery remain available for retained OCE-owned jobs.
+See the [management guide](../guides/agent-automations.md).
 
-This implementation is under verification. See [verification status](#verification-status)
-before relying on a particular runtime or Harness. Start with the
-[scheduling guide](../guides/agent-automations.md) for HTTP usage.
+## Execution qualification
+
+The RFC requires non-owner Agent service authority. The pinned direct native
+administrative route instead produces trusted `operator-schedule` authority.
+Tool allowlists do not establish the required actor or action restrictions.
+The [RFC's source-backed limitation](../../specs/rfcs/20261121-agent-automations.md#unresolved-execution-authority)
+records the gap and pending decision. Valid model credentials cannot resolve it.
+
+POST and explicit activation return `503 AUTOMATIONS_UNQUALIFIED`. PATCH also
+refuses an edit that would leave an existing job enabled, using the same native
+read and revision precondition as the mutation. An atomic disabling edit is allowed.
+
+The gate does not disable Gateway-wide cron, which also serves native Agent
+functions. It is not cancellation of existing work. Pause/delete a retained enabled
+job, or use ordinary Agent stop if a turn is already in flight. There is no native
+import/reconciliation service or caller-controlled qualification override.
 
 ## Ownership and authority
 
@@ -20,10 +34,10 @@ OCE is the sole automation manager. Native edits, imports and reconciliation wit
 other managers are outside the supported workflow. Native jobs without an OCC
 ownership record are not exposed through this API.
 
-Execution uses the deployed Agent's service credentials and approved tool policy,
-not the human creator's personal credentials. Runtime, sandbox, Harness and tool
-restrictions still apply. Revoking the creator's `operate` grant removes their
-management access; existing jobs continue unless disabled or stopped with the Agent.
+Scheduled execution under the Agent's service authority remains a requirement,
+not verified behavior of this operator transport. Human creator identity controls
+management access and does not supply personal credentials. Revoking `operate`
+removes that human's management access; it does not delete retained jobs.
 
 ## Requests and responses
 
@@ -31,7 +45,7 @@ All paths start with `/namespaces/{namespaceId}/agents/{agentId}/automations`.
 
 | Method | Suffix                 | Request                                           | Success                   |
 | ------ | ---------------------- | ------------------------------------------------- | ------------------------- |
-| POST   | Collection             | Required `name`, `enabled`, `schedule`, `prompt`  | 201, job                  |
+| POST   | Collection             | Required `name`, `enabled`, `schedule`, `prompt`  | 503, unqualified          |
 | GET    | Collection             | Optional `offset`, `limit`                        | 200, authorized summaries |
 | GET    | `/{automationId}`      | No query                                          | 200, job                  |
 | PATCH  | `/{automationId}`      | Expected revision and at least one editable field | 200, job                  |
@@ -64,8 +78,9 @@ another request's changes blindly.
 
 ## Persistence and history
 
-OCC reserves a new UUID and its creator, exact Namespace, Agent and native Agent
-before native create. The reservation and admission audit commit together.
+The deferred create path reserves a new UUID and its creator, exact Namespace,
+Agent and native Agent before native create. The current HTTP gate prevents entry
+to that path. The reservation and admission audit commit together.
 OpenClaw chooses the native job ID. OCC creates disabled using its unique
 declaration key, binds the returned native ID durably, then enables the job if
 requested. A native ID cannot be rebound or shared by two records for the Agent.
@@ -97,7 +112,8 @@ Both Installation and Agent native access must be enabled. OCC requires a runnin
 selected revision, matching Compute ownership, a usable private endpoint and
 runtime-image provenance for each main Gateway/Harness container. The current
 source eligibility pin is `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`; a new pin
-needs the automation proof before admission is extended. Missing provenance or
+needs management-protocol proof before admission is extended. This pin does not
+qualify scheduled execution. Missing provenance or
 an unsupported source is refused before native cron dispatch.
 
 The private connection must grant native administration, advertise all six cron
@@ -106,7 +122,7 @@ the six-method surface; the underlying native credential has broader authority
 and never reaches the caller. Browser chat scopes are unchanged.
 
 A stopped, replacing or unavailable runtime returns `503 DEPENDENCY_UNAVAILABLE`.
-A controller without automation transport returns `503 AUTOMATIONS_UNQUALIFIED`.
+Missing transport and unqualified creation or enabling return `503 AUTOMATIONS_UNQUALIFIED`.
 Invalid requests return 400; human/Agent denials return 403; absent or hidden jobs
 return 404; conflicts and unsupported job shapes return 409.
 
@@ -135,7 +151,7 @@ OCC storage and Compute remain fixtures; this is not PostgreSQL-backed OCC resta
 or production Kubernetes cutover proof.
 
 The `agent-automations` [QA scenario](../testing/ci/qa-advisory.md) exercises the
-regular deployed Agent workflow, including a scheduled tool effect, native one-shot
-history and redeployment. Required model/tool-policy and production-runtime proof
+regular deployed Agent workflow to verify execution refusal. It does not prove scheduled turns or tool policy. Required positive
+model/tool-policy, one-shot history and production-runtime proof
 remain recorded in the [implementation plan](../../specs/plans/20261121-agent-automations.md).
 See the [source-backed flow](../flows/agent-automations.md) for implementation order.
