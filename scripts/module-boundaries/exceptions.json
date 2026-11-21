@@ -43,18 +43,6 @@
       "removeWhen": "Remove when default store selection moves to composition."
     },
     {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/postgres-state.ts",
-      "specifier": "./state/postgres-state.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:PostgresCommitOutcomeUnknownError"],
-      "owner": "Transaction outcomes",
-      "reason": "The OCC resource service imports the shared commit-outcome-unknown error from the PostgreSQL adapter.",
-      "removeWhen": "Move the single commit-outcome-unknown constructor to neutral transaction errors and update all consumers."
-    },
-    {
       "rule": "cross-package-source",
       "from": "apps/controller/src/console-assets.ts",
       "to": "packages/contracts/src/workspace-defaults.ts",

@@ -295,15 +295,12 @@ import type {
   ResourceRef,
   Role,
   SandboxDriver,
-  Secret,
   SecretBindings,
   SecretReference,
   SecretDetail,
-  SecretDriver,
   SecretMetadata,
   ServiceAccount,
   ServiceAccountCredential,
-  ServiceAccountDriver,
   ServicePrincipal,
   HarnessAuthBinding,
   HarnessAuthSnapshot,
@@ -338,6 +335,7 @@ import {
   type DriverFor,
   type RegisteredDriver,
 } from "./driver-registry.ts";
+import { driverOperation } from "./driver-operation.ts";
 import { readDeploymentInventory } from "./deployment-inventory.ts";
 import { SetupDiscovery, type LookupChannelDirectoryInput } from "./setup-discovery.ts";
 import { createInstallationCapabilityQueries } from "./installation-capabilities.ts";
@@ -376,6 +374,7 @@ import {
   SecretBindingDriverError,
   SecretBindingValidationError,
   SecretDriverOwnershipError,
+  PostgresCommitOutcomeUnknownError,
 } from "./errors.ts";
 import {
   createAgentCredentialWithdrawal,
@@ -451,11 +450,6 @@ import type { PlatformStateStore } from "./ports/platform-state-store.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { DeploymentStatusResult } from "./controller-work.ts";
 import {
-  controllerWorkDeploymentStatus,
-  deploymentErrorForWork,
-} from "./deployment-work-status.ts";
-import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
-import {
   validAdmittedRepositoryBindings,
   validRepositoryAccess,
   normalizedRepositoryAccess,
@@ -481,6 +475,7 @@ import {
 } from "./agent-provisioning-worker.ts";
 import {
   createSecretOperations,
+  sameSecretBackend,
   secretOperation,
   type CreateSecretInput,
   type UpdateSecretInput,
@@ -1245,18 +1240,6 @@ function normalizeAgentPluginApprovers(approvers: unknown): PluginApprovers | un
   return normalizePluginApprovers(approvers, invalidPluginRequest);
 }
 
-function sameSecretBackend(left: Secret, right: Secret): boolean {
-  return (
-    left.id === right.id &&
-    left.namespaceId === right.namespaceId &&
-    left.driverId === right.driverId &&
-    left.backendRef.uid === right.backendRef.uid &&
-    left.backendRef.name === right.backendRef.name &&
-    left.backendRef.namespaceName === right.backendRef.namespaceName &&
-    left.backendRef.key === right.backendRef.key
-  );
-}
-
 // Internal Installation composition only; the public Repo Driver contract is unchanged.
 type InstallationRepositoryAdmission = Readonly<{
   policyMode?: "built-in";
@@ -1360,7 +1343,6 @@ export class OpenClawController {
   private readonly harnessAuthOperations: ReturnType<typeof createHarnessAuthOperations>;
   private readonly validateSavedAgentTopology: ReturnType<typeof createSavedAgentTopologyValidator>;
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
-  private readonly configuredServiceAccountDriverId: string | undefined;
 
   constructor(installation: Installation, options: ControllerOptions = {}) {
     this.drivers = new DriverRegistry({
@@ -1417,27 +1399,6 @@ export class OpenClawController {
         ? (request) => Reflect.apply(authorizeOverride, this, [request])
         : undefined,
     });
-    this.configurationOperations = createConfigurationOperations({
-      read: this.transactions.read,
-      transact: this.transactions.transact,
-      authorize: this.authority.authorize,
-      registerRollback: (compensate) => this.registerRollback(compensate),
-      holdAuthority: this.authority.holdAuthority,
-      lockNamespaceForPolicyDelete: (state, principalId, target) =>
-        this.lockNamespaceForPolicyDelete(state, principalId, target),
-      guardProvisioningConfiguration: (state, namespaceId, id, readOnly) =>
-        this.guardProvisioningConfiguration(state, namespaceId, id, readOnly),
-      configurationDriver: () => this.configurationDriver(),
-      validateComputeConfiguration: (values, options) =>
-        this.validateComputeConfiguration(values, options),
-      requireBundledChannelBindings: (values, secretBindings) =>
-        this.requireBundledChannelBindings(values, secretBindings),
-      ownedSecretDriver: (driverId, failure) => this.ownedSecretDriver(driverId, failure),
-      bindCreator: (state, principalId, target) => this.bindCreator(state, principalId, target),
-      nextIdentifier: (kind) => this.nextIdentifier(kind),
-      timestamp: () => this.timestamp(),
-      driverOperation: (operation) => this.driverOperation(operation),
-    });
     this.iamPolicy = createIAMPolicyOperations({
       installationId: this.installation.id,
       configuration: options.iamConfiguration,
@@ -1448,6 +1409,47 @@ export class OpenClawController {
       ownsPolicy: (driver) =>
         !(driver instanceof NativeIAMDriver) ||
         NativeIAMDriver.usesStateForAuthorization(driver, driver.authorize, this.state),
+      timestamp: () => this.timestamp(),
+    });
+    this.secretOperations = createSecretOperations(this.installation.id, {
+      transactions: this.transactions,
+      authority: this.authority,
+      bindCreator: this.iamPolicy.bindCreator,
+      getNamespace: (principalId, namespaceId) => this.getNamespace(principalId, namespaceId),
+      lockNamespaceForPolicyDelete: this.iamPolicy.lockNamespaceForPolicyDelete,
+      selectDriver: () => this.selectedDriver("secret"),
+      nextIdentifier: (kind) => this.nextIdentifier(kind),
+      timestamp: () => this.timestamp(),
+      registerRollback: (compensate) => this.registerRollback(compensate),
+      provisioningPlan: (record) => this.provisioningPlan(record),
+    });
+    this.egressAdmission = createCredentialEgressAdmission({
+      installationId: () => this.installation.id,
+      authorize: (principalId, action, resource) => this.authorize(principalId, action, resource),
+      hasProxy: () => this.drivers.hasSelection("credential_proxy"),
+      proxyDriver: () => this.selectedDriver("credential_proxy"),
+      proxyRegistrationOwner: () => this.drivers.selection("credential_proxy")?.owner,
+      selectedProxyOwner: () => this.selectedProxyOwner(),
+      hasGateway: () => this.drivers.hasSelection("credential_gateway"),
+      sourceDrivers: this.credentialSourceDrivers,
+      secretDriver: this.secretOperations.secretDriver,
+      issuer: (ref) => this.preparedTokens?.issuer(ref),
+    });
+    this.configurationOperations = createConfigurationOperations({
+      transactions: this.transactions,
+      authority: this.authority,
+      registerRollback: (compensate) => this.registerRollback(compensate),
+      lockNamespaceForPolicyDelete: this.iamPolicy.lockNamespaceForPolicyDelete,
+      guardProvisioningConfiguration: (state, namespaceId, id, readOnly) =>
+        this.guardProvisioningConfiguration(state, namespaceId, id, readOnly),
+      selectDriver: () => this.selectedDriver("configuration"),
+      validateComputeConfiguration: (values, options) =>
+        this.validateComputeConfiguration(values, options),
+      requireBundledChannelBindings: (values, secretBindings) =>
+        this.requireBundledChannelBindings(values, secretBindings),
+      ownedSecretDriver: this.secretOperations.ownedSecretDriver,
+      bindCreator: this.iamPolicy.bindCreator,
+      nextIdentifier: (kind) => this.nextIdentifier(kind),
       timestamp: () => this.timestamp(),
     });
     this.deviceAuthorization = createDeviceAuthorizationFlow({
@@ -1494,7 +1496,8 @@ export class OpenClawController {
       record: (state, operation) => this.record(state, operation),
       resolveConfiguration: (capability, driverId, scope, key) =>
         this.configurations.resolve(capability, driverId, scope, key),
-      sandboxDriver: () => this.sandboxDriver(),
+      hasSandboxSelection: () => this.drivers.hasSelection("sandbox"),
+      selectSandbox: () => this.selectedDriver("sandbox"),
       selectedCompute: () => this.selectedDriver("compute"),
       timestamp: () => this.timestamp(),
     });
@@ -1505,8 +1508,9 @@ export class OpenClawController {
         this.authorizedCredentialSource(principalId, namespaceId, sourceId),
       credentialGatewayOperation: (operation) => this.credentialGatewayOperation(operation),
       sourceReader: pluginSourceReader,
-      secretDriver: (driverId) => this.secretDriver(driverId),
-      readConfiguration: (metadata) => this.savedConfigurationReader(metadata)(),
+      secretDriver: this.secretOperations.secretDriver,
+      readConfiguration: (metadata) =>
+        this.configurationOperations.savedConfigurationReader(metadata)(),
       modelPolicyAgent: (executionMode) => this.modelPolicyAgent(executionMode),
       pluginDriver: (harnessId) => this.pluginDriver(harnessId),
       assertPluginOwner: (driver, agent) => this.pluginOwner(driver, agent),
@@ -1525,13 +1529,12 @@ export class OpenClawController {
       installationId: this.installation.id,
       transactions: this.transactions,
       authority: this.authority,
-      bindCreator: (state, principalId, resource) => this.bindCreator(state, principalId, resource),
+      bindCreator: this.iamPolicy.bindCreator,
       getNamespace: (principalId, namespaceId) => this.getNamespace(principalId, namespaceId),
       nextPresetId: () => this.nextIdentifier("preset"),
       timestamp: () => this.timestamp(),
-      configurationDriver: () => this.configurationDriver(),
-      validateConfigurationContent: (values, validation) =>
-        this.validateConfigurationContent(values, validation),
+      configurationDriver: this.configurationOperations.selectedDriver,
+      validateConfigurationContent: this.configurationOperations.validateConfigurationContent,
       validateAgentBackend: (backendId) => this.backendId(backendId),
       drivers: this.drivers,
       normalizeAgentPluginApprovers,
@@ -1587,31 +1590,8 @@ export class OpenClawController {
     }
     this.credentialProxyCapacity = capacity.capacity;
     this.backendMap = backendDefinitionMap(this.backends);
-    this.harnessAuthOperations = createHarnessAuthOperations({
-      authority: this.authority,
-      authorizeBoundCredentialSources: (principalId, namespaceId, sources) =>
-        this.authorizeBoundCredentialSources(principalId, namespaceId, sources),
-      backends: this.backendMap,
-      ownedSecretDriver: (driverId, failure) => this.ownedSecretDriver(driverId, failure),
-      secretDriver: (id) => this.secretDriver(id),
-      secretOperation: (operation) => this.secretOperation(operation),
-      isManagedTokenServiceSource,
-      hasCredentialGateway: () => this.drivers.hasSelection("credential_gateway"),
-      assertCredentialGatewaySelected: () => this.assertCredentialGatewaySelected(),
-      ownedTokenServiceDriver: (id) => this.ownedTokenServiceDriver(id),
-      ownedCredentialGatewayDriver: (source) => this.ownedCredentialGatewayDriver(source),
-      credentialGatewayDriver: (id) => this.credentialGatewayDriver(id),
-      credentialSourceType: (driver, type) => this.credentialSourceType(driver, type),
-      hasServiceAccountDriver: () =>
-        this.drivers.hasSelection("service_account") ||
-        this.configuredServiceAccountDriverId !== undefined,
-      serviceAccountDriverId: () => this.serviceAccountDriverId(),
-      sandboxDriver: () => this.sandboxDriver(),
-      agentRuntimeConfiguration: (values, harness, compute, sandbox) =>
-        this.agentRuntimeConfiguration(values, harness, compute, sandbox),
-    });
     this.validateSavedAgentTopology = createSavedAgentTopologyValidator({
-      sandboxDriver: () => this.sandboxDriver(),
+      sandboxDriver: this.sandboxPolicyOperations.sandboxDriver,
       selectedCompute: () => this.drivers.selection("compute")?.driver as ComputeDriver | undefined,
       validatePluginPlacement: (driver, plugins, harness) =>
         this.validatePluginPlacement(driver, plugins, harness),
@@ -1625,13 +1605,13 @@ export class OpenClawController {
     ) {
       throw new ScopeViolationError("The configured ServiceAccount Driver ID is invalid.");
     }
-    this.configuredServiceAccountDriverId = options.configuredServiceAccountDriverId;
+    const configuredServiceAccountDriverId = options.configuredServiceAccountDriverId;
     this.installationCapabilityQueries = createInstallationCapabilityQueries({
       installation: this.installation,
       nativeWorkers: this.nativeWorkers,
       authority: this.authority,
       transactions: this.transactions,
-      sandboxDriver: () => this.sandboxDriver(),
+      sandboxDriver: this.sandboxPolicyOperations.sandboxDriver,
       admitOpenClawExecutionMode: admitsOpenClawExecutionMode,
       readGatewaySourceTypes: () =>
         this.drivers.hasSelection("credential_gateway")
@@ -1670,8 +1650,7 @@ export class OpenClawController {
         this.getAgentSandboxPolicy(principalId, namespaceId, agentId, facet),
       selectCompute: () => this.selectedDriver("compute"),
       selectChannel: () => this.selectedDriver("channel"),
-      secretDriver: (driverId) => this.secretDriver(driverId),
-      sameSecretBackend,
+      secretDriver: this.secretOperations.secretDriver,
     });
     this.runtimeCredentials = new AgentRuntimeCredentials({
       transactions: this.transactions,
@@ -1684,7 +1663,7 @@ export class OpenClawController {
       installationId: this.installation.id,
       transactions: this.transactions,
       authority: this.authority,
-      secretDriver: (expectedId) => this.secretDriver(expectedId),
+      secretDriver: this.secretOperations.secretDriver,
       now: () => this.clock(),
       timestamp: () => this.timestamp(),
     });
@@ -1698,7 +1677,7 @@ export class OpenClawController {
       iamPolicyOperation,
       connectionTokenIssuer: () => this.connectionTokenIssuer(),
       tokenService: () => this.tokenService(),
-      secretDriver: () => this.secretDriver(),
+      secretDriver: this.secretOperations.secretDriver,
       withOAuthClientSecret: (client, use) => this.withOAuthClientSecret(client, use),
       retireCredentialSourceMaterial: (namespace, source) =>
         this.retireCredentialSourceMaterial(namespace, source, undefined),
@@ -1715,32 +1694,53 @@ export class OpenClawController {
       nextIdentifier: (kind) => this.nextIdentifier(kind),
       timestamp: () => this.timestamp(),
     });
-    this.secretOperations = createSecretOperations(this.installation.id, {
-      transactions: this.transactions,
-      authority: this.authority,
-      bindCreator: (state, principalId, target) => this.bindCreator(state, principalId, target),
-      getNamespace: (principalId, namespaceId) => this.getNamespace(principalId, namespaceId),
-      lockNamespaceForPolicyDelete: (state, principalId, target) =>
-        this.lockNamespaceForPolicyDelete(state, principalId, target),
-      secretDriver: () => this.secretDriver(),
-      ownedSecretDriver: (driverId, failure) => this.ownedSecretDriver(driverId, failure),
-      nextIdentifier: (kind) => this.nextIdentifier(kind),
-      timestamp: () => this.timestamp(),
-      registerRollback: (compensate) => this.registerRollback(compensate),
-      provisioningPlan: (record) => this.provisioningPlan(record),
-    });
     this.serviceAccountOperations = createServiceAccountOperations({
       transactions: this.transactions,
       authority: this.authority,
-      bindCreator: (state, principalId, target) => this.bindCreator(state, principalId, target),
+      bindCreator: this.iamPolicy.bindCreator,
       getNamespace: (principalId, namespaceId) => this.getNamespace(principalId, namespaceId),
-      lockNamespaceForPolicyDelete: (state, principalId, target) =>
-        this.lockNamespaceForPolicyDelete(state, principalId, target),
-      serviceAccountDriver: () => this.serviceAccountDriver(),
+      lockNamespaceForPolicyDelete: this.iamPolicy.lockNamespaceForPolicyDelete,
+      hasSelection: () => this.drivers.hasSelection("service_account"),
+      selectDriver: () => this.selectedDriver("service_account"),
       computeDriver: () => this.selectedDriver("compute"),
-      hasConfiguredDriver: () => this.configuredServiceAccountDriverId !== undefined,
-      driverOperation: (operation, capability) => this.driverOperation(operation, capability),
+      configuredDriverId: configuredServiceAccountDriverId,
       nextIdentifier: (kind) => this.nextIdentifier(kind),
+    });
+    this.harnessAuthOperations = createHarnessAuthOperations({
+      authority: this.authority,
+      authorizeBoundCredentialSources: (principalId, namespaceId, sources) =>
+        this.authorizeBoundCredentialSources(principalId, namespaceId, sources),
+      backends: this.backendMap,
+      secrets: this.secretOperations,
+      isManagedTokenServiceSource,
+      hasCredentialGateway: () => this.drivers.hasSelection("credential_gateway"),
+      assertCredentialGatewaySelected: () => this.assertCredentialGatewaySelected(),
+      ownedTokenServiceDriver: (id) => this.ownedTokenServiceDriver(id),
+      ownedCredentialGatewayDriver: (source) => this.ownedCredentialGatewayDriver(source),
+      credentialGatewayDriver: (id) => this.credentialGatewayDriver(id),
+      credentialSourceType: (driver, type) => this.credentialSourceType(driver, type),
+      serviceAccounts: this.serviceAccountOperations,
+      sandboxDriver: this.sandboxPolicyOperations.sandboxDriver,
+      agentRuntimeConfiguration: (values, harness, compute, sandbox) =>
+        this.agentRuntimeConfiguration(values, harness, compute, sandbox),
+    });
+    this.provisioningWorker = createProvisioningWorker({
+      installationId: () => this.installation.id,
+      now: this.resourceValues.now,
+      timestamp: this.resourceValues.timestamp,
+      nextId: this.resourceValues.nextIdentifier,
+      transactions: this.transactions,
+      authorizeRecord: this.provisioningRequests.authorizeProvisioningRecord,
+      bindCreator: this.iamPolicy.bindCreator,
+      ensureAgentOperateGrants: this.agentCredentialAccess.ensureAgentOperateGrants,
+      backendId: (ref) => this.backendId(ref),
+      savedAgentOptions: (namespaceId, plan) =>
+        this.provisioningSavedAgentOptions(namespaceId, plan),
+      hasConfigurationDriver: () => this.drivers.hasSelection("configuration"),
+      configuration: this.configurationOperations,
+      runtimeCredentials: this.runtimeCredentials,
+      deploy: (principalId, input, resolveHarness) =>
+        this.deployAgent(principalId, input, resolveHarness),
     });
   }
 
@@ -1980,7 +1980,7 @@ export class OpenClawController {
         "The selected Compute Driver cannot support repository options.",
       );
     }
-    const sandboxDriverId = this.sandboxDriver()?.id;
+    const sandboxDriverId = this.sandboxPolicyOperations.sandboxDriver()?.id;
     try {
       compute.validateRepositoryCredentialSupport(sandboxDriverId);
     } catch (error) {
@@ -2153,8 +2153,7 @@ export class OpenClawController {
     nextIdentifier: (kind) => this.nextIdentifier(kind),
     requestAuditId: () => this.requestAuditId.getStore(),
     backendId: (value) => this.backendId(value),
-    exactServiceAccount: (state, namespaceId, id) =>
-      this.exactServiceAccount(state, namespaceId, id),
+    exactServiceAccount: (state, namespaceId, id) => exactServiceAccount(state, namespaceId, id),
     refuseTakenAgentName: (state, namespaceId, name) =>
       this.refuseTakenAgentName(state, namespaceId, name),
     transactions: {
@@ -2173,12 +2172,15 @@ export class OpenClawController {
       lockNamespace: (state, namespaceId) => this.lockNamespace(state, namespaceId),
     },
     drivers: {
-      compute: () => this.runtimeCredentialComputeDriver("provision"),
-      configuration: () => this.configurationDriver(),
-      sandbox: () => this.sandboxDriver(),
+      compute: () => this.runtimeCredentials.runtimeCredentialComputeDriver("provision"),
+      configuration: () => this.configurationOperations.selectedDriver(),
+      sandbox: () => this.sandboxPolicyOperations.sandboxDriver(),
       iam: () => this.selectedDriver("iam"),
       ownedSecretDriver: (driverId) =>
-        this.ownedSecretDriver(driverId, () => new ProvisioningSecretDriverError()),
+        this.secretOperations.ownedSecretDriver(
+          driverId,
+          () => new ProvisioningSecretDriverError(),
+        ),
     },
     configuration: {
       validateChannelCredentials: (principalId, namespaceId, configuration, authorizeUse) =>
@@ -2191,7 +2193,12 @@ export class OpenClawController {
           authorizeUse,
         ),
       validateContent: (values, bindings, mode) =>
-        this.validateConfigurationContent(values, undefined, bindings, this.modelPolicyAgent(mode)),
+        this.configurationOperations.validateConfigurationContent(
+          values,
+          undefined,
+          bindings,
+          this.modelPolicyAgent(mode),
+        ),
       resolveHarness: (values, mode) =>
         resolveConfiguredHarnessId(values, this.modelPolicyAgent(mode)),
     },
@@ -2257,43 +2264,7 @@ export class OpenClawController {
     return this.provisioningRequests.retryAgentProvisioning(principalId, namespaceId, workId);
   }
 
-  private readonly provisioningWorker = createProvisioningWorker({
-    installationId: () => this.installation.id,
-    now: () => this.clock(),
-    timestamp: () => this.timestamp(),
-    nextId: (kind) => this.nextIdentifier(kind),
-    transactions: {
-      read: (read) => this.read(read),
-      mutate: (mutate) => this.mutate(mutate),
-      isCommitOutcomeUnknown: (error) => error instanceof PostgresCommitOutcomeUnknownError,
-    },
-    lockNamespace: (state, id) => this.lockNamespace(state, id),
-    authorizeRecord: (state, principalId, record) =>
-      this.provisioningRequests.authorizeProvisioningRecord(state, principalId, record),
-    bindCreator: (state, principalId, resource) => this.bindCreator(state, principalId, resource),
-    ensureAgentOperateGrants: (state, namespaceId, agent, sources) =>
-      this.ensureAgentOperateGrants(state, namespaceId, agent, sources),
-    backendId: (ref) => this.backendId(ref),
-    savedAgentOptions: (namespaceId, plan) => this.provisioningSavedAgentOptions(namespaceId, plan),
-    configurations: {
-      hasSelection: () => this.drivers.hasSelection("configuration"),
-      selected: () => this.configurationDriver(),
-      run: (operation) => this.driverOperation(operation),
-    },
-    transport: {
-      admit: (principalId, namespaceId, agentId) =>
-        this.admitAgentRuntimeCredentialProvisioning(principalId, namespaceId, agentId),
-      driver: () => this.runtimeCredentialComputeDriver("provision"),
-      run: (operation) => this.runtimeCredentialOperation(operation),
-      status: (status) => this.runtimeCredentialStatus(status),
-    },
-    deployment: {
-      deploy: (principalId, input, resolveHarness) =>
-        this.deployAgent(principalId, input, resolveHarness),
-      status: controllerWorkDeploymentStatus,
-      error: deploymentErrorForWork,
-    },
-  });
+  private readonly provisioningWorker: ReturnType<typeof createProvisioningWorker>;
 
   async processAgentProvisioning(
     claim: ClaimedWork,
@@ -2725,14 +2696,6 @@ export class OpenClawController {
     return this.authority.holdAuthority(state);
   }
 
-  private bindCreator(
-    state: PlatformUnitOfWork,
-    principalId: string,
-    resource: ResourceRef & { readonly namespaceId: string },
-  ): Promise<void> {
-    return this.iamPolicy.bindCreator(state, principalId, resource);
-  }
-
   private applyConfiguredPolicy(
     state: PlatformUnitOfWork,
     actorId: string,
@@ -2818,33 +2781,6 @@ export class OpenClawController {
       principalId,
       namespaceId,
       configurationId,
-    );
-  }
-
-  /**
-   * The Configuration content rules every write runs, in one order, so a value one refuses is
-   * refused, with the same message, wherever it is written: Configuration create and update,
-   * Agent provisioning and Preset defaults (finding 1311). A Preset save passes `options`,
-   * locating its unfilled variables. The model provider settings; the Codex approval policy and
-   * a literal Gateway password; the agents shape, fallback provider and Gateway roster rules
-   * (findings 1305 and 1308); then the selected Compute Driver's rules. A write that saves Secret
-   * bindings with the values passes them: on the bundled Kubernetes Compute, which delivers
-   * channel credentials only from bindings, a channel credential reference without one is then
-   * refused with the rule its deployment admission applies (finding 2319). Agent provisioning,
-   * whose Configuration serves only the new Agent, passes that `agent` for the model policy
-   * refusals' offers (finding 3036).
-   */
-  private validateConfigurationContent(
-    values: OpenClawConfigurationDocument,
-    options?: ConfigurationValidationOptions,
-    secretBindings?: SecretBindings,
-    agent?: ModelPolicyAgent,
-  ): void {
-    return this.configurationOperations.validateConfigurationContent(
-      values,
-      options,
-      secretBindings,
-      agent,
     );
   }
 
@@ -2965,7 +2901,7 @@ export class OpenClawController {
         lockNamespace: (state, namespaceId) => this.lockNamespace(state, namespaceId),
         proxyDriver: () => this.selectedDriver("credential_proxy"),
         selectedProxyOwner: () => this.selectedProxyOwner(),
-        secretDriver: (id) => this.secretDriver(id),
+        secretDriver: this.secretOperations.secretDriver,
         computeDriver: () => this.selectedDriver("compute"),
         credentialPlacement: this.credentialSourceDrivers.credentialPlacement,
         credentialNamespace: this.credentialSourceDrivers.credentialNamespace,
@@ -3035,18 +2971,7 @@ export class OpenClawController {
     selectedProxyOwner: () => this.selectedProxyOwner(),
   });
 
-  private readonly egressAdmission = createCredentialEgressAdmission({
-    installationId: () => this.installation.id,
-    authorize: (principalId, action, resource) => this.authorize(principalId, action, resource),
-    hasProxy: () => this.drivers.hasSelection("credential_proxy"),
-    proxyDriver: () => this.selectedDriver("credential_proxy"),
-    proxyRegistrationOwner: () => this.drivers.selection("credential_proxy")?.owner,
-    selectedProxyOwner: () => this.selectedProxyOwner(),
-    hasGateway: () => this.drivers.hasSelection("credential_gateway"),
-    sourceDrivers: this.credentialSourceDrivers,
-    secretDriver: (id) => this.secretDriver(id),
-    issuer: (ref) => this.preparedTokens?.issuer(ref),
-  });
+  private readonly egressAdmission: ReturnType<typeof createCredentialEgressAdmission>;
 
   /** Bind the configured adapter to the actual durable credential store before use. */
   async activateTokenServiceInstance(driverId: string, storeIdentity: string): Promise<string> {
@@ -3144,7 +3069,7 @@ export class OpenClawController {
           createdAt: this.timestamp(),
         });
         const ref = credentialSourceRef(source);
-        await this.bindCreator(state, principalId, ref);
+        await this.iamPolicy.bindCreator(state, principalId, ref);
         // Custody can outlive an uncertain owner response, so commit attributable intent
         // with the source identity and creator binding before the owner can receive material.
         await state.audit.append(audit(ref, "registration_started"));
@@ -3241,7 +3166,7 @@ export class OpenClawController {
           );
         }
         registrationStarted = true;
-        registration = await this.driverOperation(
+        registration = await driverOperation(
           () =>
             owner.registerSource(
               {
@@ -3317,7 +3242,7 @@ export class OpenClawController {
             };
           }
           try {
-            await this.driverOperation(
+            await driverOperation(
               () =>
                 owner.removeSource(
                   {
@@ -3464,7 +3389,7 @@ export class OpenClawController {
     return this.mutate(async (state) => {
       const { source, owner } = await authorizeUpdate(state, true);
       this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_SOURCE_UPDATE_FAILED");
-      await this.driverOperation(
+      await driverOperation(
         () =>
           owner.updateSource(
             {
@@ -3655,7 +3580,7 @@ export class OpenClawController {
           createdAt: this.timestamp(),
         }),
       );
-      await this.bindCreator(state, principalId, {
+      await this.iamPolicy.bindCreator(state, principalId, {
         kind: "credential_source",
         id: registering.id,
         namespaceId: locked.id,
@@ -3819,14 +3744,14 @@ export class OpenClawController {
       if (secret === undefined) {
         throw new ScopeViolationError("The credential source Secret is unavailable.");
       }
-      const secretDriver = this.secretDriver(secret.driverId);
+      const secretDriver = this.secretOperations.secretDriver(secret.driverId);
       if (secretDriver.withValue === undefined) {
         throw new DependencyUnavailableError(
           "The selected Secret Driver cannot supply values to a Credential Gateway.",
         );
       }
       const withValue = secretDriver.withValue.bind(secretDriver);
-      values[field] = await this.secretOperation(() => withValue(secret, async (value) => value));
+      values[field] = await secretOperation(() => withValue(secret, async (value) => value));
     }
     return values;
   }
@@ -4337,7 +4262,7 @@ export class OpenClawController {
       const locked =
         connection === PENDING_CONNECTION
           ? await this.lockNamespace(state, namespaceId)
-          : await this.lockNamespaceForPolicyDelete(state, principalId, {
+          : await this.iamPolicy.lockNamespaceForPolicyDelete(state, principalId, {
               kind: "credential_source",
               id: credentialSourceId,
               namespaceId,
@@ -4449,7 +4374,7 @@ export class OpenClawController {
           throw new RetryLaterError("registrationFence", remaining / 1000);
         }
       }
-      await this.driverOperation(
+      await driverOperation(
         () =>
           owner.removeSource(
             {
@@ -5015,11 +4940,11 @@ export class OpenClawController {
         harnessAuth,
       );
       const agentId = this.nextIdentifier("agent");
-      await this.authorizeBindings(
+      await this.configurationOperations.authorizeBindings(
         state,
         principalId,
         namespace.id,
-        this.bindings(configuration.secretBindings),
+        storedSecretBindings(configuration.secretBindings),
       );
       if (configurationPreparation !== undefined) {
         await this.authorize(principalId, "update", {
@@ -5038,7 +4963,8 @@ export class OpenClawController {
             "Browser access setup requires a Configuration that no Agent references.",
           );
         }
-        const previous = await this.savedConfigurationReader(configuration)();
+        const previous =
+          await this.configurationOperations.savedConfigurationReader(configuration)();
         const prepared = await this.updateConfiguration(principalId, {
           namespaceId: namespace.id,
           configurationId: configuration.id,
@@ -5050,7 +4976,8 @@ export class OpenClawController {
         });
         configuration = { ...configuration, generation: prepared.generation };
       }
-      const savedConfiguration = this.savedConfigurationReader(configuration);
+      const savedConfiguration =
+        this.configurationOperations.savedConfigurationReader(configuration);
       const driver = await this.validateAgentPlugins(
         plugins,
         pluginApprovers,
@@ -5096,7 +5023,7 @@ export class OpenClawController {
         status: "active",
         createdAt: this.timestamp(),
       });
-      await this.bindCreator(state, principalId, {
+      await this.iamPolicy.bindCreator(state, principalId, {
         kind: "agent",
         id: agent.id,
         namespaceId: namespace.id,
@@ -5185,7 +5112,7 @@ export class OpenClawController {
       // The form saves the Configuration first, so its content rules answer first, in
       // createConfiguration's order.
       rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
-      const configurationDriver = this.configurationDriver();
+      const configurationDriver = this.configurationOperations.selectedDriver();
       // Use one unsaved Configuration for Driver admission and Agent topology checks.
       const configuration: Configuration = Object.freeze({
         id: "cfg_00000000-0000-4000-8000-000000000000",
@@ -5196,7 +5123,7 @@ export class OpenClawController {
         createdAt: this.timestamp(),
       });
       await configurationDriver.validateSize?.(values);
-      this.validateConfigurationContent(values, undefined, secretBindings);
+      this.configurationOperations.validateConfigurationContent(values, undefined, secretBindings);
       await configurationDriver.validate(configuration);
       const driver = await this.validateAgentPlugins(plugins, pluginApprovers, () => values);
       rejectCrossNamespaceSecretSources(
@@ -5499,9 +5426,15 @@ export class OpenClawController {
       // full check even when `configurationId` is unchanged: deploy needs them usable, and only a
       // Configuration write (or naming another Configuration) can replace them, so loosening this
       // would not unblock the Agent. SecretBindingDriverError names that fix.
-      const secretBindings = this.bindings(configuration.secretBindings);
-      await this.authorizeBindings(state, principalId, namespace.id, secretBindings);
-      const savedConfiguration = this.savedConfigurationReader(configuration);
+      const secretBindings = storedSecretBindings(configuration.secretBindings);
+      await this.configurationOperations.authorizeBindings(
+        state,
+        principalId,
+        namespace.id,
+        secretBindings,
+      );
+      const savedConfiguration =
+        this.configurationOperations.savedConfigurationReader(configuration);
       const selections = plugins ?? agent.plugins;
       const driver = await this.validateAgentPlugins(
         selections,
@@ -5758,7 +5691,10 @@ export class OpenClawController {
     if (!isNonEmptyString(target.agentId)) {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
-    this.configurationIdentity(target.namespaceId, capturedIntent.expectedConfigurationId);
+    this.configurationOperations.configurationIdentity(
+      target.namespaceId,
+      capturedIntent.expectedConfigurationId,
+    );
     const digest = createHash("sha256")
       .update(
         JSON.stringify([
@@ -5954,7 +5890,7 @@ export class OpenClawController {
         "Channel validation must run outside a controller transaction.",
       );
     }
-    const bindings = this.bindings(configuration.secretBindings);
+    const bindings = storedSecretBindings(configuration.secretBindings);
     await driver.validateCredentials(configuration.values, async (binding, path, validate) => {
       const source = bindings[binding]?.source;
       if (source === undefined) {
@@ -5971,13 +5907,13 @@ export class OpenClawController {
       if (secret === undefined) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
-      const storage = this.ownedSecretDriver(secret.driverId, driverFailure);
+      const storage = this.secretOperations.ownedSecretDriver(secret.driverId, driverFailure);
       if (storage.withValue === undefined) {
         throw new ChannelCredentialError("unavailable", path);
       }
       await authorizeUse?.();
       await this.authorize(principalId, "operate", source);
-      const outcome = await this.secretOperation(() =>
+      const outcome = await secretOperation(() =>
         storage.withValue!(secret, async (value) => {
           // Reauthorize after backend I/O and before sending a credential to its provider.
           try {
@@ -5990,7 +5926,7 @@ export class OpenClawController {
             if (
               current === undefined ||
               !sameSecretBackend(secret, current) ||
-              this.ownedSecretDriver(current.driverId, driverFailure) !== storage
+              this.secretOperations.ownedSecretDriver(current.driverId, driverFailure) !== storage
             ) {
               throw new ChannelCredentialError("unavailable", path);
             }
@@ -6073,9 +6009,9 @@ export class OpenClawController {
     const namespaceId = input.namespaceId;
     const agentId = input.agentId;
     const configurationId = metadata.id;
-    const configurationDriver = this.configurationDriver();
-    const configuration = this.exactConfiguration(
-      await this.driverOperation(() => configurationDriver.read(metadata)),
+    const configurationDriver = this.configurationOperations.selectedDriver();
+    const configuration = exactConfiguration(
+      await driverOperation(() => configurationDriver.read(metadata)),
       metadata,
     );
     // Before the Channel Driver, which reads only an env SecretRef and answers any other channel
@@ -6245,7 +6181,7 @@ export class OpenClawController {
       } catch {
         throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
       }
-      const sandbox = this.sandboxDriver();
+      const sandbox = this.sandboxPolicyOperations.sandboxDriver();
 
       if (!isNonEmptyString(lockedAgent.servicePrincipalId)) {
         throw new ScopeViolationError(
@@ -6282,9 +6218,9 @@ export class OpenClawController {
             : "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
         );
       }
-      const configurationDriver = this.configurationDriver();
-      const configuration = this.exactConfiguration(
-        await this.driverOperation(() =>
+      const configurationDriver = this.configurationOperations.selectedDriver();
+      const configuration = exactConfiguration(
+        await driverOperation(() =>
           configurationDriver.read({ id: metadata.id, namespaceId: namespace.id }),
         ),
         metadata,
@@ -6334,7 +6270,7 @@ export class OpenClawController {
         state,
         principalId,
         lockedAgent,
-        this.bindings(metadata.secretBindings),
+        storedSecretBindings(metadata.secretBindings),
       );
       const [harnessAuth, credentialSourceType] = await this.harnessAuthOperations.admitHarnessAuth(
         state,
@@ -6371,22 +6307,22 @@ export class OpenClawController {
         revisionHarness,
         compute,
       );
-      const secretBindings = this.bindings(metadata.secretBindings);
-      const sources = await this.authorizeBindings(
+      const secretBindings = storedSecretBindings(metadata.secretBindings);
+      const sources = await this.configurationOperations.authorizeBindings(
         state,
         principalId,
         namespace.id,
         secretBindings,
       );
       const secretDriver =
-        Object.keys(secretBindings).length === 0 ? undefined : this.secretDriver();
+        Object.keys(secretBindings).length === 0 ? undefined : this.secretOperations.secretDriver();
       for (const secret of sources) {
         await this.authorizeAgentPrincipal(principalId, lockedAgent, "operate", {
           kind: "secret",
           id: secret.id,
           namespaceId: namespace.id,
         });
-        const resolved = await this.secretOperation(() => secretDriver!.resolve(secret));
+        const resolved = await secretOperation(() => secretDriver!.resolve(secret));
         if (
           Object.keys(secret.backendRef).some(
             (key) =>
@@ -6628,10 +6564,8 @@ export class OpenClawController {
           );
         }
         const binding = { namespace, agent: lockedAgent };
-        const status = this.runtimeCredentialStatus(
-          await this.runtimeCredentialOperation(() =>
-            compute.getAgentRuntimeCredentialStatus!(binding),
-          ),
+        const status = runtimeCredentialStatus(
+          await runtimeCredentialOperation(() => compute.getAgentRuntimeCredentialStatus!(binding)),
         );
         if (!status.transportConfigured) {
           if (previous.length > 0) {
@@ -6648,8 +6582,8 @@ export class OpenClawController {
           }
           // The Driver creates only missing owned Secrets; a failed admission can reuse them.
           proxyAdmission?.assertProvidersCurrent();
-          const provisioned = this.runtimeCredentialStatus(
-            await this.runtimeCredentialOperation(() =>
+          const provisioned = runtimeCredentialStatus(
+            await runtimeCredentialOperation(() =>
               compute.provisionAgentRuntimeCredentials!(binding, {}),
             ),
           );
@@ -6944,33 +6878,6 @@ export class OpenClawController {
     return lockNamespace(state, namespaceId);
   }
 
-  private lockNamespaceForPolicyDelete(
-    state: PlatformUnitOfWork,
-    principalId: string,
-    target: ResourceRef & { readonly namespaceId: string },
-  ): Promise<Readonly<Namespace>> {
-    return this.iamPolicy.lockNamespaceForPolicyDelete(state, principalId, target);
-  }
-
-  private bindings(input: unknown): SecretBindings {
-    return storedSecretBindings(input);
-  }
-
-  /** Called under the Namespace lock, also taken by deletion and assignment. */
-  private async authorizeBindings(
-    state: PlatformUnitOfWork,
-    principalId: string,
-    namespaceId: string,
-    bindings: SecretBindings,
-  ): Promise<readonly Secret[]> {
-    return this.configurationOperations.authorizeBindings(
-      state,
-      principalId,
-      namespaceId,
-      bindings,
-    );
-  }
-
   /** Namespace lock serializes binding, source deletion, and admission. */
   private agentCredentialSources(
     value: unknown,
@@ -7176,59 +7083,6 @@ export class OpenClawController {
     return Object.freeze({});
   }
 
-  private runtimeCredentialStatus(
-    status: AgentRuntimeCredentialStatus,
-  ): Readonly<AgentRuntimeCredentialStatus> {
-    return runtimeCredentialStatus(status);
-  }
-
-  private async admitAgentRuntimeCredentialProvisioning(
-    principalId: string,
-    namespaceId: string,
-    agentId: string,
-  ): Promise<{
-    readonly namespace: Readonly<Namespace>;
-    readonly agent: Readonly<Agent>;
-    readonly driver: ComputeDriver;
-  }> {
-    return this.runtimeCredentials.admitAgentRuntimeCredentialProvisioning(
-      principalId,
-      namespaceId,
-      agentId,
-    );
-  }
-
-  /**
-   * The selected Secret Driver when it owns a Secret the caller has already been granted and
-   * looked up; otherwise the path's own SecretDriverOwnershipError, whose fixed message names
-   * that path's fix. Call it only after the grant and the lookup, so it is no existence oracle.
-   * No usable selected driver is an outage, not an ownership problem: it keeps the generic 503.
-   */
-  private ownedSecretDriver(
-    driverId: string,
-    failure: () => SecretDriverOwnershipError,
-  ): SecretDriver {
-    const driver = this.secretDriver();
-    if (driver.id !== driverId) {
-      throw failure();
-    }
-    return driver;
-  }
-
-  private secretDriver(expectedId?: string): SecretDriver {
-    try {
-      const driver = this.selectedDriver("secret");
-      if (expectedId !== undefined && driver.id !== expectedId) {
-        throw new Error("Driver identity mismatch.");
-      }
-      return driver;
-    } catch {
-      throw new DependencyUnavailableError(
-        "The selected Secret Driver is unavailable or does not own this Secret.",
-      );
-    }
-  }
-
   private ownedCredentialGatewayDriver(source: CredentialSource): CredentialGatewayDriver {
     return this.credentialSourceDrivers.ownedCredentialGatewayDriver(source);
   }
@@ -7318,14 +7172,6 @@ export class OpenClawController {
     });
   }
 
-  private runtimeCredentialComputeDriver(operation: "status" | "provision"): ComputeDriver {
-    return this.runtimeCredentials.runtimeCredentialComputeDriver(operation);
-  }
-
-  private async runtimeCredentialOperation<T>(operation: () => Promise<T>): Promise<T> {
-    return runtimeCredentialOperation(operation);
-  }
-
   private iamPolicyDriver<Method extends keyof IAMDriver>(method: Method): IAMDriver {
     return this.iamPolicy.iamPolicyDriver(method);
   }
@@ -7338,69 +7184,8 @@ export class OpenClawController {
     return this.iamPolicy.holdNamespacePolicyActor(state, principalId);
   }
 
-  /** Secret SDK error bodies can contain request bytes; never propagate their message or cause. */
-  private async secretOperation<T>(operation: () => Promise<T>): Promise<T> {
-    return secretOperation(operation);
-  }
-
-  private configurationIdentity(namespaceId: string, configurationId: string): void {
-    return this.configurationOperations.configurationIdentity(namespaceId, configurationId);
-  }
-
   private namespaceIdentity(namespaceId: string): void {
     namespaceIdentity(namespaceId);
-  }
-
-  private async exactServiceAccount(
-    state: PlatformReadView,
-    namespaceId: string,
-    serviceAccountId: string,
-  ): Promise<Readonly<ServiceAccount>> {
-    return exactServiceAccount(state, namespaceId, serviceAccountId);
-  }
-
-  private configurationDriver(): ConfigurationDriver {
-    try {
-      return this.selectedDriver("configuration");
-    } catch {
-      throw new DependencyUnavailableError("The selected Configuration Driver is unavailable.");
-    }
-  }
-
-  private serviceAccountDriver(): ServiceAccountDriver | undefined {
-    if (!this.drivers.hasSelection("service_account")) {
-      return undefined;
-    }
-    try {
-      return this.selectedDriver("service_account");
-    } catch {
-      throw new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
-    }
-  }
-
-  private serviceAccountDriverId(): string | undefined {
-    const driver = this.serviceAccountDriver();
-    if (
-      driver !== undefined &&
-      this.configuredServiceAccountDriverId !== undefined &&
-      driver.id !== this.configuredServiceAccountDriverId
-    ) {
-      throw new DependencyUnavailableError(
-        "The selected ServiceAccount Driver does not match Installation configuration.",
-      );
-    }
-    return driver?.id ?? this.configuredServiceAccountDriverId;
-  }
-
-  private sandboxDriver(): SandboxDriver | undefined {
-    if (!this.drivers.hasSelection("sandbox")) {
-      return undefined;
-    }
-    try {
-      return this.selectedDriver("sandbox");
-    } catch {
-      throw new DependencyUnavailableError("The selected Sandbox Driver is unavailable.");
-    }
   }
 
   /**
@@ -7429,7 +7214,7 @@ export class OpenClawController {
         }
         let sandbox: SandboxDriver | undefined;
         try {
-          sandbox = this.sandboxDriver();
+          sandbox = this.sandboxPolicyOperations.sandboxDriver();
         } catch (error) {
           if (error instanceof DependencyUnavailableError) {
             return true;
@@ -7536,15 +7321,6 @@ export class OpenClawController {
     if ("refusal" in proxy) {
       throw new ConfigurationHarnessError(proxy.refusal);
     }
-  }
-
-  private savedConfigurationReader(
-    metadata: Pick<
-      Configuration,
-      "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
-    >,
-  ): () => Promise<Readonly<Configuration>> {
-    return this.configurationOperations.savedConfigurationReader(metadata);
   }
 
   private agentRuntimeConfiguration(
@@ -7816,34 +7592,6 @@ export class OpenClawController {
       );
     }
     return immutableCopy(snapshot);
-  }
-
-  private async driverOperation<T>(
-    operation: () => Promise<T>,
-    capability: "Configuration" | "ServiceAccount" | "Compute" | "TokenService" = "Configuration",
-  ): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      if (
-        error instanceof DependencyUnavailableError ||
-        error instanceof ScopeViolationError ||
-        error instanceof ResourceConflictError
-      ) {
-        throw error;
-      }
-      throw new DependencyUnavailableError(`The selected ${capability} Driver is unavailable.`);
-    }
-  }
-
-  private exactConfiguration(
-    configuration: Configuration,
-    expected: Pick<
-      Configuration,
-      "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
-    >,
-  ): Readonly<Configuration> {
-    return exactConfiguration(configuration, expected);
   }
 
   private clock(): Date {

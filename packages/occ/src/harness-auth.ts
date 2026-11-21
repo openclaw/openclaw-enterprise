@@ -14,7 +14,6 @@ import {
   type OpenClawConfigurationDocument,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
-  type SecretDriver,
   type SecretReference,
   type ServiceAccountReference,
 } from "@openclaw-enterprise/contracts";
@@ -30,8 +29,9 @@ import {
   ScopeViolationError,
   SecretBindingValidationError,
   ServiceAccountDriverNotConfiguredError,
-  type SecretDriverOwnershipError,
 } from "./errors.ts";
+import { secretOperation, type SecretOperations } from "./secret-operations.ts";
+import type { ServiceAccountOperations } from "./service-account-operations.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { exactServiceAccount } from "./service-account-operations.ts";
@@ -49,12 +49,7 @@ interface HarnessAuthDependencies {
     sources: readonly { readonly sourceId: string }[],
   ) => Promise<void>;
   readonly backends: ReadonlyMap<string, BackendDefinition>;
-  readonly ownedSecretDriver: (
-    driverId: string,
-    failure: () => SecretDriverOwnershipError,
-  ) => SecretDriver;
-  readonly secretDriver: (expectedId?: string) => SecretDriver;
-  readonly secretOperation: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly secrets: Pick<SecretOperations, "ownedSecretDriver" | "secretDriver">;
   readonly isManagedTokenServiceSource: (
     source: Readonly<CredentialSource> | undefined,
   ) => source is Readonly<ManagedSource>;
@@ -69,8 +64,10 @@ interface HarnessAuthDependencies {
     driver: CredentialGatewayDriver,
     type: string,
   ) => Promise<CredentialSourceType>;
-  readonly hasServiceAccountDriver: () => boolean;
-  readonly serviceAccountDriverId: () => string | undefined;
+  readonly serviceAccounts: Pick<
+    ServiceAccountOperations,
+    "hasServiceAccountDriver" | "serviceAccountDriverId"
+  >;
   readonly sandboxDriver: () => SandboxDriver | undefined;
   readonly agentRuntimeConfiguration: (
     values: Readonly<OpenClawConfigurationDocument>,
@@ -120,6 +117,7 @@ export function requireCredentialSourceSandbox(sandbox: SandboxDriver | undefine
 }
 
 export function createHarnessAuthOperations(dependencies: HarnessAuthDependencies) {
+  const { secrets, serviceAccounts } = dependencies;
   async function authorizeHarnessAuthSource(
     state: PlatformUnitOfWork,
     principalId: string,
@@ -138,7 +136,7 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
       if (source === undefined) {
         throw new ScopeViolationError("The Harness Secret does not belong to the exact Namespace.");
       }
-      dependencies.ownedSecretDriver(source.driverId, () => new HarnessAuthSecretDriverError());
+      secrets.ownedSecretDriver(source.driverId, () => new HarnessAuthSecretDriverError());
     } else if (binding.method === "credential_source") {
       await dependencies.authority.authorize(principalId, "operate", {
         kind: "credential_source",
@@ -228,8 +226,8 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
       if (source === undefined) {
         throw new ScopeViolationError("The Harness Secret is unavailable.");
       }
-      const driver = dependencies.secretDriver(source.driverId);
-      const resolved = await dependencies.secretOperation(() => driver.resolve(source));
+      const driver = secrets.secretDriver(source.driverId);
+      const resolved = await secretOperation(() => driver.resolve(source));
       if (
         Object.keys(source.backendRef).some(
           (key) =>
@@ -306,7 +304,7 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
       binding.source.id,
     );
     validateServiceAccountBackendBinding(dependencies.backends, backendId, backendBinding);
-    const driverId = dependencies.serviceAccountDriverId();
+    const driverId = serviceAccounts.serviceAccountDriverId();
     if (backendBinding === undefined || driverId !== backendBinding.driverId) {
       throw new DependencyUnavailableError(
         "The Harness ServiceAccount Driver does not match the admitted Backend.",
@@ -366,7 +364,7 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
   function secretHarnessAuthSnapshot(
     binding: Extract<HarnessAuthBinding, { readonly source: SecretReference }>,
   ): HarnessAuthSnapshot {
-    return immutableCopy({ ...binding, secretDriverId: dependencies.secretDriver().id });
+    return immutableCopy({ ...binding, secretDriverId: secrets.secretDriver().id });
   }
 
   function assertCredentialGatewayDelivery(binding: HarnessAuthBinding | null): void {
@@ -434,7 +432,7 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
 
   // API calls see the selected Driver. Workers can identify its configured ID.
   function missingAccessTokenError() {
-    return dependencies.hasServiceAccountDriver()
+    return serviceAccounts.hasServiceAccountDriver()
       ? new ResourceStateConflictError(
           "ChatGPT Harness authentication requires an issued account access-token credential.",
         )

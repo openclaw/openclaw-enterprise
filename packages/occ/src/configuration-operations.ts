@@ -10,10 +10,10 @@ import {
   type ResourceRef,
   type Secret,
   type SecretBindings,
-  type SecretDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import { normalizeRequestSecretBindings } from "./agent-provisioning.ts";
+import { driverOperation } from "./driver-operation.ts";
 import type { ModelPolicyAgent } from "./configured-harness.ts";
 import {
   freezeConfigurationValues,
@@ -27,7 +27,6 @@ import {
   ScopeViolationError,
   SecretBindingDriverError,
   SecretBindingValidationError,
-  type SecretDriverOwnershipError,
 } from "./errors.ts";
 import { accessBindingsTargeting, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
@@ -36,6 +35,7 @@ import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
+import type { SecretOperations } from "./secret-operations.ts";
 import { exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 export interface CreateConfigurationInput {
@@ -81,10 +81,10 @@ export function rejectCrossNamespaceSecretSources(
   }
 }
 
-interface ConfigurationOperationsDependencies
-  extends
-    Pick<ControllerAuthority, "authorize" | "holdAuthority">,
-    Pick<ControllerTransactions, "read" | "transact" | "registerRollback"> {
+interface ConfigurationOperationsDependencies {
+  readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
+  readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
+  readonly registerRollback: ControllerTransactions["registerRollback"];
   readonly lockNamespaceForPolicyDelete: (
     state: PlatformUnitOfWork,
     principalId: string,
@@ -96,7 +96,7 @@ interface ConfigurationOperationsDependencies
     configurationId: string,
     readOnly?: boolean,
   ) => Promise<void>;
-  readonly configurationDriver: () => ConfigurationDriver;
+  readonly selectDriver: () => ConfigurationDriver;
   readonly validateComputeConfiguration: (
     values: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
@@ -105,10 +105,7 @@ interface ConfigurationOperationsDependencies
     values: Readonly<OpenClawConfigurationDocument>,
     secretBindings: SecretBindings,
   ) => void;
-  readonly ownedSecretDriver: (
-    driverId: string,
-    failure: () => SecretDriverOwnershipError,
-  ) => SecretDriver;
+  readonly ownedSecretDriver: SecretOperations["ownedSecretDriver"];
   readonly bindCreator: (
     state: PlatformUnitOfWork,
     principalId: string,
@@ -116,7 +113,6 @@ interface ConfigurationOperationsDependencies
   ) => Promise<void>;
   readonly nextIdentifier: (kind: "configuration") => string;
   readonly timestamp: () => string;
-  readonly driverOperation: <T>(operation: () => Promise<T>) => Promise<T>;
 }
 
 export function exactConfiguration(
@@ -185,6 +181,17 @@ function requestSecretBindings(
 }
 
 export function createConfigurationOperations(deps: ConfigurationOperationsDependencies) {
+  const { authorize, holdAuthority } = deps.authority;
+  const { read, transact } = deps.transactions;
+
+  function selectedDriver(): ConfigurationDriver {
+    try {
+      return deps.selectDriver();
+    } catch {
+      throw new DependencyUnavailableError("The selected Configuration Driver is unavailable.");
+    }
+  }
+
   async function authorizeConfigurationWrite(
     principalId: string,
     namespaceId: string,
@@ -195,7 +202,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     } else {
       configurationIdentity(namespaceId, configurationId);
     }
-    await deps.authorize(principalId, configurationId === undefined ? "create" : "update", {
+    await authorize(principalId, configurationId === undefined ? "create" : "update", {
       kind: "configuration",
       id: configurationId ?? namespaceId,
       namespaceId,
@@ -211,18 +218,18 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     }
     const values = freezeConfigurationValues(input.values);
     namespaceIdentity(input.namespaceId);
-    return deps.transact(async (state) => {
-      await deps.holdAuthority(state);
+    return transact(async (state) => {
+      await holdAuthority(state);
       const target: ResourceRef = {
         kind: "configuration",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
       };
-      await deps.authorize(principalId, "create", target);
+      await authorize(principalId, "create", target);
       const namespace = await lockNamespace(state, input.namespaceId);
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
       // while this write waited stops it before it leaves a durable Owner binding or grant.
-      await deps.authorize(principalId, "create", target);
+      await authorize(principalId, "create", target);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new Configurations.");
@@ -232,7 +239,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
       }
       const secretBindings = requestSecretBindings(namespace.id, input.secretBindings);
       await authorizeBindings(state, principalId, namespace.id, secretBindings);
-      const driver = deps.configurationDriver();
+      const driver = selectedDriver();
       const configuration: Configuration = Object.freeze({
         id: deps.nextIdentifier("configuration"),
         namespaceId: namespace.id,
@@ -267,15 +274,15 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
             return;
           }
         } else if (
-          (await deps.driverOperation(() => driver.inspectExact!(configuration))) === undefined
+          (await driverOperation(() => driver.inspectExact!(configuration))) === undefined
         ) {
           return;
         }
-        await deps.driverOperation(() =>
+        await driverOperation(() =>
           driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
         );
       });
-      const result = await deps.driverOperation(() => driver.create(configuration));
+      const result = await driverOperation(() => driver.create(configuration));
       created = true;
       return exactConfiguration(result, metadata);
     });
@@ -287,19 +294,19 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     configurationId: string,
   ): Promise<Readonly<Configuration>> {
     configurationIdentity(namespaceId, configurationId);
-    await deps.authorize(principalId, "read", {
+    await authorize(principalId, "read", {
       kind: "configuration",
       id: configurationId,
       namespaceId,
     });
-    const driver = deps.configurationDriver();
-    return deps.read(async (state) => {
+    const driver = selectedDriver();
+    return read(async (state) => {
       const namespace = await exactNamespace(state, namespaceId);
       const metadata = await requireConfigurationRecord(
         state.configurations.findConfiguration(namespace.id, configurationId),
       );
       await deps.guardProvisioningConfiguration(state, namespace.id, configurationId, true);
-      const configuration = await deps.driverOperation(() =>
+      const configuration = await driverOperation(() =>
         driver.read({ id: metadata.id, namespaceId: namespace.id }),
       );
       return exactConfiguration(configuration, metadata);
@@ -317,9 +324,9 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     let read: Promise<Readonly<Configuration>> | undefined;
     return () => {
       read ??= (async () => {
-        const driver = deps.configurationDriver();
+        const driver = selectedDriver();
         return exactConfiguration(
-          await deps.driverOperation(() =>
+          await driverOperation(() =>
             driver.read({ id: metadata.id, namespaceId: metadata.namespaceId }),
           ),
           metadata,
@@ -335,12 +342,12 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     configurationId: string,
   ): Promise<Readonly<Record<string, Readonly<ResourceRef>>>> {
     configurationIdentity(namespaceId, configurationId);
-    await deps.authorize(principalId, "read", {
+    await authorize(principalId, "read", {
       kind: "configuration",
       id: configurationId,
       namespaceId,
     });
-    return deps.read(async (state) => {
+    return read(async (state) => {
       const namespace = await exactNamespace(state, namespaceId);
       const metadata = await requireConfigurationRecord(
         state.configurations.findConfiguration(namespace.id, configurationId),
@@ -364,14 +371,14 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
       throw new ScopeViolationError("The Configuration kind cannot be changed.");
     }
     const values = freezeConfigurationValues(input.values);
-    return deps.transact(async (state) => {
-      await deps.authorize(principalId, "update", {
+    return transact(async (state) => {
+      await authorize(principalId, "update", {
         kind: "configuration",
         id: input.configurationId,
         namespaceId: input.namespaceId,
       });
       const namespace = await lockNamespace(state, input.namespaceId);
-      const driver = deps.configurationDriver();
+      const driver = selectedDriver();
       const metadata = await requireConfigurationRecord(
         state.configurations.lockConfiguration(namespace.id, input.configurationId),
       );
@@ -436,7 +443,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
           await driver.update(previous);
         }
       });
-      const updated = await deps.driverOperation(() => driver.update(configuration));
+      const updated = await driverOperation(() => driver.update(configuration));
       return exactConfiguration(updated, advanced);
     });
   }
@@ -447,13 +454,13 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     configurationId: string,
   ): Promise<readonly RemovedAccessBinding[]> {
     configurationIdentity(namespaceId, configurationId);
-    return deps.transact(async (state) => {
+    return transact(async (state) => {
       const namespace = await deps.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "configuration",
         id: configurationId,
         namespaceId,
       });
-      const driver = deps.configurationDriver();
+      const driver = selectedDriver();
       const configuration = await requireConfigurationRecord(
         state.configurations.lockConfiguration(namespace.id, configurationId),
       );
@@ -497,16 +504,14 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
             if (!deleted) {
               return;
             }
-          } else if (
-            (await deps.driverOperation(() => driver.inspectExact!(previous))) !== undefined
-          ) {
+          } else if ((await driverOperation(() => driver.inspectExact!(previous))) !== undefined) {
             return;
           }
           if (await configurationRecordUnchanged(configuration)) {
-            await deps.driverOperation(() => driver.create(previous));
+            await driverOperation(() => driver.create(previous));
           }
         });
-        await deps.driverOperation(() =>
+        await driverOperation(() =>
           driver.delete({ id: configuration.id, namespaceId: namespace.id }),
         );
         deleted = true;
@@ -543,9 +548,9 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
   async function configurationRecordUnchanged(
     expected: Pick<Configuration, "id" | "namespaceId" | "generation" | "createdAt">,
   ): Promise<boolean> {
-    const current = await deps
-      .read((state) => state.configurations.findConfiguration(expected.namespaceId, expected.id))
-      .catch(() => "unreadable" as const);
+    const current = await read((state) =>
+      state.configurations.findConfiguration(expected.namespaceId, expected.id),
+    ).catch(() => "unreadable" as const);
     if (current === "unreadable") {
       return true;
     }
@@ -576,7 +581,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
       "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
     >,
   ): Promise<Readonly<Configuration>> {
-    const stored = await deps.driverOperation(() =>
+    const stored = await driverOperation(() =>
       driver.read({ id: record.id, namespaceId: record.namespaceId }),
     );
     const lead = Number.isSafeInteger(stored?.generation)
@@ -670,7 +675,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
       if (source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Secret references cannot cross Namespaces.");
       }
-      await deps.authorize(principalId, "operate", source);
+      await authorize(principalId, "operate", source);
       const secret = await state.secrets.lockSecret(namespaceId, source.id);
       if (!secret) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
@@ -682,6 +687,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
   }
 
   return {
+    selectedDriver,
     authorizeBindings,
     authorizeConfigurationWrite,
     createConfiguration,
@@ -694,3 +700,5 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     validateConfigurationContent,
   };
 }
+
+export type ConfigurationOperations = ReturnType<typeof createConfigurationOperations>;
