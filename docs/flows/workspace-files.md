@@ -149,7 +149,7 @@ completion metadata. Drivers remove or replace private delivery bytes with
 metadata.
 
 Failed or never-deployed Agents retain pending inputs. Agent deletion removes
-the setup record through `packages/occ/src/index.ts:deleteAgent`; Driver
+the setup record through `packages/occ/src/agent-termination.ts:deleteAgent`; Driver
 cleanup owns runtime storage. No public endpoint reads or updates setup, and
 live edits after activation do not update it.
 

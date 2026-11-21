@@ -7,8 +7,12 @@ import type {
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import { HARNESS_EXECUTION_MODES } from "@openclaw-enterprise/contracts";
+import { immutableCopy } from "@openclaw-enterprise/utils";
+import type { ControllerAuthority } from "./controller-authority.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import { ConfigurationHarnessError, DependencyUnavailableError } from "./errors.ts";
 import type { NativeWorkerSupportSource } from "./native-worker-support.ts";
+import { exactNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 interface InstallationCapabilityDependencies {
   readonly readGatewaySourceTypes: () => Promise<readonly CredentialSourceType[]> | undefined;
@@ -23,7 +27,7 @@ interface InstallationCapabilityDependencies {
   ) => true | Error;
 }
 
-export async function readInstallationCapabilities(
+async function readInstallationCapabilities(
   installation: Readonly<Installation>,
   nativeWorkerSupport: NativeWorkerSupportSource | undefined,
   dependencies: InstallationCapabilityDependencies,
@@ -117,4 +121,52 @@ function openClawExecutionModes(
     executionModes,
     ...(Object.keys(settingRefusals).length ? { settingRefusals } : {}),
   };
+}
+
+interface InstallationCapabilityQueryDependencies extends InstallationCapabilityDependencies {
+  readonly installation: Readonly<Installation>;
+  readonly nativeWorkers: NativeWorkerSupportSource | undefined;
+  readonly authority: Pick<ControllerAuthority, "authorize">;
+  readonly transactions: Pick<ControllerTransactions, "read">;
+}
+
+export function createInstallationCapabilityQueries(
+  dependencies: InstallationCapabilityQueryDependencies,
+) {
+  const readCapabilities = () =>
+    readInstallationCapabilities(
+      dependencies.installation,
+      dependencies.nativeWorkers,
+      dependencies,
+    );
+
+  async function getInstallation(principalId: string): Promise<Readonly<Installation>> {
+    await dependencies.authority.authorize(principalId, "read", {
+      kind: "installation",
+      id: dependencies.installation.id,
+    });
+    return immutableCopy({ ...dependencies.installation, capabilities: await readCapabilities() });
+  }
+
+  /**
+   * The capabilities Agent creation in a Namespace needs, for a caller who may create Agents
+   * there but cannot read the Installation, such as a Default user (RFC-0026). Browser access
+   * is available to resource owners; guided provisioning still requires Installation administration.
+   */
+  async function getNamespaceAgentCapabilities(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<Readonly<Omit<InstallationCapabilities, "agentProvisioning">>> {
+    namespaceIdentity(namespaceId);
+    await dependencies.authority.authorize(principalId, "create", {
+      kind: "agent",
+      namespaceId,
+      id: namespaceId,
+    });
+    await dependencies.transactions.read((state) => exactNamespace(state, namespaceId));
+    const { agentProvisioning: _administratorOnly, ...capabilities } = await readCapabilities();
+    return immutableCopy(capabilities);
+  }
+
+  return { getInstallation, getNamespaceAgentCapabilities };
 }
