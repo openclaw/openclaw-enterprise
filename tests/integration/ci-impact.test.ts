@@ -3191,13 +3191,35 @@ test("test graph advisory reports indexed runtime consumers and retains fallback
 test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {
   const path = "tests/integration/postgres-a.test.mjs";
   const broad: string[] = [];
-  const narrow = ["postgres"];
+  const narrow = ["postgres", "postgres-application"];
   const extraLane = present(suiteFiles()["scripts/ci/test-suites.json"]).replaceAll(
     "postgres",
     "unknown-lane",
   );
+  // Keep these edits bound to the maintained index and lane manifests. The
+  // worker shutdown case also needs the TypeScript checks lane.
+  const indexPath = "scripts/ci/test-suites.json";
+  const registered: Files = { [indexPath]: read(indexPath) };
+  for (const target of Object.values(indexData(read(indexPath)).lanes)) {
+    const manifest = join("scripts/ci", target);
+    registered[manifest] = read(manifest);
+  }
+  const registeredEdit = (stem: string, extension: string): [Change, Files] => {
+    const file = `tests/integration/${stem}.test.${extension}`;
+    return [editTest(file), { ...registered, [file]: "// original\n" }];
+  };
   const cases: [Change, Files, string[], boolean?][] = [
+    [
+      ...registeredEdit("postgres-worker-process-shutdown", "ts"),
+      ["checks-baseline-2", "postgres-application", "postgres-platform"],
+    ],
     [editTest(path), {}, narrow],
+    [
+      ...registeredEdit("postgres-external-session-provider", "mjs"),
+      ["postgres-application", "postgres-auth"],
+    ],
+    [...registeredEdit("postgres-worker-agent-revision-health", "mjs"), ["postgres-application"]],
+    [...registeredEdit("production-kubernetes-packaging", "mjs"), ["images-packaging"]],
     [postgresEdit(({ put }) => put("docs/change.md")), {}, broad],
     [postgresEdit(editTest("tests/integration/postgres-b.test.mjs")), {}, broad],
     [({ repo }) => chmodSync(join(repo, path), 0o755), {}, broad],
@@ -3234,6 +3256,7 @@ test("main test advisory reports only a verified single modification and leaves 
       lanes: string[],
       event: Record<string, string | boolean | null> = {},
       environment: NodeJS.ProcessEnv = {},
+      rows = matrix.matrix,
     ) => {
       mainPushEvent(f, event);
       const env = { ...mainPushEnvironment, ...environment };
@@ -3243,13 +3266,13 @@ test("main test advisory reports only a verified single modification and leaves 
         ...env,
         SELECTION: "success-full-" + present(selected.split("reason=")[1]).trim(),
         MATRIX_OUTCOME: "success",
-        MATRIX: JSON.stringify(matrix.matrix),
+        MATRIX: JSON.stringify(rows),
         IMAGES: JSON.stringify(matrix.images),
       });
       const prediction = {
         prediction: lanes.length ? "one_modified_test" : "broad",
         lanes,
-        ...(bound && selected === "mode=full\nreason=ineligible_change\n"
+        ...(bound && rows === matrix.matrix && selected === "mode=full\nreason=ineligible_change\n"
           ? { before: f.base, after: f.tested }
           : {}),
       };
@@ -3260,9 +3283,18 @@ test("main test advisory reports only a verified single modification and leaves 
       );
       assert.equal(result.output, "");
     };
+    if (i === 0) {
+      await checkout.expectTests(["checks-baseline-2", "postgres-platform"]);
+    }
     await check(expected);
     if (i === 0) {
       await checkout.expect("full", mainPushEnvironment, "ineligible_change");
+      await check(
+        broad,
+        {},
+        {},
+        matrix.matrix?.filter((row) => row.lane !== "postgres-application"),
+      );
       for (const event of [
         { forced: true },
         { deleted: true },
