@@ -424,9 +424,18 @@ test(
                     async (agent, step) => {
                       const { verifyQaAgentAutomations } =
                         await import("../helpers/qa-agent-automations.ts");
-                      await step("OCC execution qualification refusal", () =>
-                        verifyQaAgentAutomations(f, agent),
+                      const evidence = await step(
+                        "OCC model-only scheduling, observed no-tool behavior, history and replacement",
+                        () => verifyQaAgentAutomations(f, agent),
                       );
+                      await step("complete scheduled no-tool qualification", () => {
+                        assert.ok(evidence, "blocked by incomplete model-only runtime evidence");
+                        assert.deepEqual(
+                          evidence.qualificationGaps,
+                          [],
+                          "native tool-surface qualification remains incomplete",
+                        );
+                      });
                     },
                   ],
                   [
