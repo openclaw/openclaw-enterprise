@@ -162,6 +162,11 @@ export async function verifyStagedHarnessActivation(t: TestContext): Promise<voi
 
   await driver.ensureNamespace(context);
   assert.equal((await driver.provisionStagedHarness(context)).sandboxId, "sandbox-fixture");
+  assert.equal(
+    [...gateway.sandboxes.values()][0]!.annotations["openclaw.dev/configuration-id"],
+    revision.configurationId,
+    "the native Credential Proxy must be able to verify the staged target's configuration",
+  );
   const sourcePolicy = [...gateway.sandboxes.values()][0]!.spec!.policy as {
     network_policies: Record<string, { endpoints: Record<string, unknown>[] }>;
   };

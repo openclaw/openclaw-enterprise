@@ -5999,6 +5999,10 @@ export class ControllerWorker {
         "The selected Credential Proxy cannot configure a staged target.",
       );
     }
+    const namespace = await this.compute.resolveSandboxNamespace?.(current.namespace);
+    if (namespace === undefined || namespace.id !== revision.namespaceId) {
+      throw new DependencyUnavailableError("The staged Sandbox placement is unavailable.");
+    }
     const resolved = new Map<string, Promise<ResolvedCredential>>();
     let open = true;
     const requireOpen = () => {
@@ -6010,7 +6014,7 @@ export class ControllerWorker {
     try {
       const result = await proxy.configureDeployment(
         {
-          namespace: current.namespace,
+          namespace,
           revision,
           signal,
         } satisfies CredentialDeploymentContext,

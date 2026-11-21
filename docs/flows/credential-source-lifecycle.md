@@ -63,7 +63,7 @@ OCC requires exact `credential_source:operate` for a new binding to a ready Sour
 
 `apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker.ts:resolveRevisionSecretContext`
 
-Worker checks actor and Agent grants, selected Driver identity, Source ownership, and withdrawal state. It gives the Proxy a resolver bound to the exact Source reference and TokenService instance. Compute provisions an idle Sandbox, configures the Proxy and intended network policy, and prepares fresh launch inputs after both status checks succeed. Worker commits the selected revision and authorizes the Agent and exact Source once before activation. The Sandbox starts the Harness, and Compute waits for authenticated readiness before publishing the route.
+Worker checks actor and Agent grants, selected Driver identity, Source ownership, and withdrawal state. It asks Compute for the placed Sandbox Namespace and gives the Proxy a resolver bound to the exact Source reference and TokenService instance. Compute provisions an idle Sandbox, configures the Proxy and intended network policy, and prepares fresh launch inputs after both status checks succeed. Worker commits the selected revision and authorizes the Agent and exact Source once before activation. The Sandbox starts the Harness, and Compute waits for authenticated readiness before publishing the route.
 
 #### Pending native integration
 

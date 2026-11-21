@@ -3835,6 +3835,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       "openclaw.dev/namespace-id": context.revision.namespaceId,
       "openclaw.dev/agent-id": context.revision.agentId,
       "openclaw.dev/revision-id": context.revision.id,
+      ...(staged ? { "openclaw.dev/configuration-id": context.revision.configurationId } : {}),
       ...this.gitScopeAnnotations(context.revision),
     };
     const selector = { name: sandbox.resourceName, workspace };
