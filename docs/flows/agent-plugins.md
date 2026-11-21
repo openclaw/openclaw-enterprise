@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-21
+last_updated_session: authoring-run/c4d8dbfd-1681-4b5b-a0d6-45a805b2aa68
 ---
 
 # Agent Plugin Deployment Flow
@@ -69,31 +69,28 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a
-Harness, Agent `create`, and stored-source `operate`. Wrong Namespace `400`,
-missing Secret `404`, unavailable explicit CredentialSource `409`.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) returns
+`400` (wrong Namespace), `404` (missing Secret), or `409` (unavailable explicit
+CredentialSource). Saved discovery requires a dedicated Agent.
+Missing/unready bound sources return `404`. Hosted catalogs need credentials, curated none.
 
-Saved discovery requires a dedicated Agent and caller `read`/`update`. Bound sources
-require caller and Agent `operate`; explicit sources require caller `operate`.
-Missing or unready bound sources return `404`. Hosted catalogs require credentials;
-curated catalogs do not.
-
-OpenShell uses operator mTLS for metadata and exports. External Gateways may use
-`withSourceToken`. OCC checks source and Gateway ownership, then rechecks authority,
-attachment, and catalog before dispatch. Owners refresh credentials. Cancellation
-discards late credentials.
+OpenShell metadata/exports use operator mTLS. External Gateways may use
+`withSourceToken`. OCC rechecks attachment before dispatch. Owners refresh credentials.
+Cancellation discards late credentials.
 
 `packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools`
 
 Managed MCP uses Secret Driver, rechecking before `tools/list`.
 `driverPolicy.toolNames` pins upstream names across runtimes.
 
-Closing cancels. Account changes clear results. Harness changes clear selections and approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-bound size and time, reject redirects and credential echoes, and set `Cache-Control: no-store`.
+Closing cancels. Account changes clear results. Harness changes clear selections/approvers.
+[Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) cap size and time,
+reject redirects and credential echoes, and set `Cache-Control: no-store`.
+The Driver rejects pages repeating canonical selection IDs. The API returns HTTP 503 `PLUGIN_DISCOVERY_INVALID_RESPONSE`.
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
-`requires_local_executor`; explicit `true` without skills remains unavailable.
+`requires_local_executor`. With `true` and no skills, the entry is unavailable.
 Details reject unmatched MCP/scheduled tasks. Optional stdio
-`NativeCodexPluginCatalogReader` rejects invalid `plugin/list` results and stops its child.
+`NativeCodexPluginCatalogReader` rejects invalid `plugin/list`, stopping its child.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -388,6 +385,7 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-21 12:38: Document rejection of duplicate hosted catalog selections. (authoring-run/c4d8dbfd-1681-4b5b-a0d6-45a805b2aa68 - 7dd321619d7400e144f805ec7b9bde5e98b59ed2)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:13: Update discovery source. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
 
