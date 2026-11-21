@@ -853,13 +853,17 @@ test("deletion retry stays unavailable after a lost delete grant until permissio
   const { page } = await newPage(t, fixture, browserOptions);
   const requests = apiRequests(page, fixture.origin);
   const deletes = () => pathRequests(requests, "DELETE", agentPath).length;
-  const initialPermission = responseTo(page, "GET", permissionsUrl);
+  const nextPermission = () => responseTo(page, "GET", permissionsUrl);
+  const checkPermission = async (pending: ReturnType<typeof nextPermission>, expected: boolean) => {
+    const response = await pending;
+    assert.equal(response.status(), 200);
+    const body: unknown = await response.json();
+    assert.ok(isRecord(body) && isRecord(body.data));
+    assert.equal(body.data.delete, expected);
+  };
+  const initialPermission = nextPermission();
   await login(page, fixture, url);
-  const initial = await initialPermission;
-  assert.equal(initial.status(), 200);
-  const initialBody: unknown = await initial.json();
-  assert.ok(isRecord(initialBody) && isRecord(initialBody.data));
-  assert.equal(initialBody.data.delete, true);
+  await checkPermission(initialPermission, true);
 
   const row = page.getByRole("region", { name: "Delete Agent", exact: true });
   const repeatLabel = "Request deletion again";
@@ -888,7 +892,8 @@ test("deletion retry stays unavailable after a lost delete grant until permissio
   await alert.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
   assert.equal(await repeat.getAttribute("aria-disabled"), "true");
 
-  // Manual Refresh returns the same Agent in the deleting state.
+  // Status still says deleting; the separate permission read confirms the lost grant.
+  const deniedPermission = nextPermission();
   const status = responseTo(page, "GET", agentUrl);
   await refresh.click();
   const refreshed = await status;
@@ -900,6 +905,7 @@ test("deletion retry stays unavailable after a lost delete grant until permissio
     { id, namespaceId, lifecycle },
     { id: agent.id, namespaceId: namespace.id, lifecycle: "deleting" },
   );
+  await checkPermission(deniedPermission, false);
   await waitForEnabled(refresh);
   assert.equal(page.url(), url);
   assert.equal(
@@ -912,15 +918,19 @@ test("deletion retry stays unavailable after a lost delete grant until permissio
   await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
   assert.equal(deletes(), 1, "refresh and disabled activation send no extra DELETE");
 
-  // Reload the same deleting Agent to read the restored permission.
+  // Refresh can recover in place, but only after the grant is actually restored.
   liftRestriction(fixture.policy, restriction);
-  const permission = responseTo(page, "GET", permissionsUrl);
+  const restoredPermission = nextPermission();
+  await refresh.click();
+  await checkPermission(restoredPermission, true);
+  await waitForEnabled(repeat);
+  await alert.waitFor({ state: "hidden" });
+  assert.equal(await accessibleDescription(repeat), "");
+  assert.equal(deletes(), 1, "permission recovery sends no DELETE");
+
+  const permission = nextPermission();
   await page.reload();
-  const allowed = await permission;
-  assert.equal(allowed.status(), 200);
-  const allowedBody: unknown = await allowed.json();
-  assert.ok(isRecord(allowedBody) && isRecord(allowedBody.data));
-  assert.equal(allowedBody.data.delete, true);
+  await checkPermission(permission, true);
   await waitForEnabled(repeat);
   assert.equal(await accessibleDescription(repeat), "");
   await repeat.click();

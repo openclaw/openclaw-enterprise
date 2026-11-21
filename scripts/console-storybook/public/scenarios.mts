@@ -110,6 +110,8 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
   };
 
+const deletionRetryDeniedAgentPath =
+  "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001";
 const draft =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=draft";
 const revision =
@@ -1812,8 +1814,9 @@ const authoredScenarios = {
     path: draft,
     deleting: true,
     rules: [
+      { path: `${deletionRetryDeniedAgentPath}/permissions`, method: "GET", skip: 1, status: 503 },
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        path: deletionRetryDeniedAgentPath,
         method: "DELETE",
         status: 403,
         code: "FORBIDDEN",
@@ -1822,7 +1825,7 @@ const authoredScenarios = {
         once: true,
       },
       {
-        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        path: deletionRetryDeniedAgentPath,
         method: "GET",
         skip: 1,
         delayMs: 1300,
@@ -1836,12 +1839,12 @@ const authoredScenarios = {
       { text: "Refresh deletion status" },
     ],
     description:
-      "The repeated deletion is denied for a missing Agent delete grant. A completed status read still finds the Agent deleting and does not restore permission.",
+      "Refresh confirms the Agent is deleting but cannot verify the delete grant. The refusal remains and retry stays unavailable.",
     steps: [
       "Tab to Request deletion again. It remains unavailable and is described by the refusal; the Request ID remains visible. Enter, Space or a click sends no deletion request.",
-      "In a live Console, after an administrator restores Agent delete, reload the Agent page to obtain an affirmative permission response before opening the confirmation again.",
+      "In a live Console, after an administrator restores Agent delete, use Refresh deletion status or reload the Agent page to verify permission before retrying.",
     ],
-    gap: "The fixture simulates the refusal and status response. It does not change IAM grants or demonstrate recovery after a real grant is restored.",
+    gap: "The fixture simulates a refused DELETE and a failed permission recheck. It does not change IAM grants or demonstrate real grant recovery.",
   } satisfies LocalScenario,
   deletionRetryAccessEnded: {
     group: "Components/Deletion",

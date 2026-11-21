@@ -30,6 +30,7 @@ export function createAgentDeletion(
   onDeleting: () => void,
   allowed?: Promise<boolean | undefined>,
   permissionReadsStarted: () => number = () => 0,
+  rereadDeletePermission?: (afterReads: number) => Promise<unknown>,
 ) {
   // One row of the Agent page's danger zone (UX spec 3.9); the confirmation carries the detail.
   const section = element("section", {
@@ -111,7 +112,7 @@ export function createAgentDeletion(
         : state.notice;
     replaceChildrenIfChanged(feedback, [
       ...(status ? [statusBlock("info", null, status)] : []),
-      ...(state.forbidden && !state.accessEnded
+      ...(state.forbidden && !state.accessEnded && state.refusal === null
         ? [statusBlock("info", null, permissionNotice, [], { id: "agent-deletion-refused" })]
         : []),
       ...[
@@ -232,6 +233,10 @@ export function createAgentDeletion(
           schedulePoll();
         } else {
           setDeleting();
+        }
+        // A manual Refresh can also adopt an in-flight poll. Status alone never restores a grant.
+        if (!state.polling && state.refusal) {
+          await rereadDeletePermission?.(state.refusal.afterReads);
         }
       } else if (current.status === "active" && !state.deleting) {
         state.needsRefresh = false;

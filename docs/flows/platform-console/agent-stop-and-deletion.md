@@ -128,13 +128,14 @@ work stays unchanged; terminal work can restart under the controller's existing
 current-permission and retry-ownership checks. The view does not infer a worker
 outcome from the Agent's deleting state or add a separate status contract.
 
-If that repeated DELETE returns a grant-related `403`, **Request deletion again** stays
-unavailable and is described by the refusal, including its Request ID. A successful
-status read, whether manual or polled, does not clear the refusal: it reads the Agent,
-not the caller's delete permission. An older permission answer cannot clear it either.
-After the grant is restored, reload the Agent page to obtain a new affirmative delete
-permission response. A repeat refused for another reason, such as retry ownership,
-shows the API's text and does not impose this grant restriction.
+If a repeated DELETE returns a grant-related `403`, **Request deletion again** stays
+unavailable. The refusal explains why and includes the Request ID. Background polling
+checks status only. **Refresh deletion status** also rechecks permissions if the same
+Agent is still deleting and the refusal remains. Only a permission read started after
+the refusal that confirms `delete: true` restores retry. A failed read or a status
+response alone cannot do so. After the grant is restored, refresh or reload the page.
+Neither sends a DELETE. Other refusals, such as retry ownership, keep the API's
+explanation and do not impose this grant restriction.
 
 An uncertain initial or repeated deletion blocks writes until a successful exact
 Agent read. A deleting read clears that guard even when the view was already deleting;
