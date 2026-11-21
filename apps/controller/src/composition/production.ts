@@ -235,7 +235,7 @@ export async function composeProduction(
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
     installSelectedSandboxDrivers(controller, config.drivers);
-    await installTokenServiceDriver(controller, config.drivers);
+    await installTokenServiceDriver(controller, config.drivers, state);
     if (credentialGatewayDriver !== undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
