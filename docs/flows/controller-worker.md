@@ -332,7 +332,7 @@ path, including unready Harnesses without plugins, and verifies runtime
 incarnation without repeating the model probe. Missing or invalid evidence
 leaves the cause unspecified.
 
-`packages/occ/src/state/controller-work.ts:validateFailureData` validates reads
+`packages/occ/src/controller-work-result.ts:validateFailureData` validates reads
 and writes and rejects data for other failure reasons; the PostgreSQL constraint
 enforces the persisted shape.
 `PostgresWorkQueue.complete` and `PostgresWorkQueue.fail` publish only under the
