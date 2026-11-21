@@ -1,3 +1,4 @@
+import type { InspectedWorkspaceNodeRoute } from "../sandbox/openshell-workspace-node-policy.ts";
 import { openShellGitNetworkDefaults } from "../sandbox/openshell-git-network-policy.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -363,6 +364,7 @@ function gitProvider(
   observedHookPreview?: true,
   expectedProviders?: readonly OpenShellExpectedProviderRule[],
   managedSandbox?: true,
+  workspaceRoute?: InspectedWorkspaceNodeRoute,
 ) {
   return new OpenShellPreparedGitProvider(client, {
     workspace,
@@ -373,6 +375,7 @@ function gitProvider(
     ...(repositoryNetworkPolicy !== undefined && { repositoryNetworkPolicy }),
     ...(expectedProviders !== undefined && { expectedProviders }),
     ...(managedSandbox && { managedSandbox }),
+    ...(workspaceRoute && { workspaceRoute }),
     ...(observedHookPreview && { observedHookPreview }),
     ...openShellGitNetworkDefaults(delivery),
   });
@@ -667,6 +670,7 @@ export class OpenShellGitRuntime {
     otherHosts: readonly string[] = [],
     retainedSandbox?: (sandbox: OpenShellSandboxResponse) => Promise<void>,
     runtimeFileRule?: OpenShellExpectedProviderRule,
+    workspaceRoute?: InspectedWorkspaceNodeRoute,
   ) {
     if (retainedSandbox && !this.routes) {
       throw new Error("Retained Git replacement requires a durable route store.");
@@ -771,6 +775,7 @@ export class OpenShellGitRuntime {
             ? undefined
             : [...expectedProviders, ...(runtimeFileRule ? [runtimeFileRule] : [])],
           retainedSandbox ? true : undefined,
+          workspaceRoute,
         );
         const bindingId = admittedExecutionId;
         const route = {

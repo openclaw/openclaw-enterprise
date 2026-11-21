@@ -948,6 +948,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         dependencies.configurationDriver() === configuration &&
         dependencies.credentialSourceOwner(source).driver === sourceDriver;
       return validate(
+        topology.placement,
         harness,
         source,
         repository.resolution,

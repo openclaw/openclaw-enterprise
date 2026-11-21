@@ -209,6 +209,8 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         context.revision.harness.id === "openclaw",
         context.requirements.loginMode,
         context.requirements.workspaceSetup,
+        context.revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
+        binding?.inspected,
       ),
     ];
     const index = RUNTIME_WRAPPER_COMMAND.length;

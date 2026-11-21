@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-19"
-last_updated_session: authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268
+updated: "2026-11-21"
+last_updated_session: authoring-run/e0eab11e-42e2-49a4-bb29-18490c7d2429
 ---
 
 # Managed OpenShell workload flow
@@ -158,6 +158,15 @@ its service for the app-server transport.
 
 ### 3. Select storage paths and connect the node
 
+For a saved native Git grant, Kubernetes Compute freezes the inspected image
+pair and the Agent's Gateway node URL. The Sandbox verifies the node setup
+against that URL and checks the exact Workspace rule during policy readback.
+The generated Gateway pairs the node identified by the revision's binding.
+If an installed binding disappears, becomes invalid, or changes, the Gateway
+drops its acknowledgment and stops the process that holds the old File Transfer
+policy. The restart reads the current binding and rebuilds the policy from the
+admitted configuration. A changed image or route blocks startup.
+
 `deploy/runtime/openshell-bootstrap.cjs:prepareManaged` creates the private
 home at `/opt/oce/managed/private/home` and links retained workspace, generated images
 and Codex sessions from `/sandbox/oce`. The node state variable points to a real
@@ -224,6 +233,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-21 08:42: Require a current Workspace binding for the Gateway acknowledgment. (authoring-run/e0eab11e-42e2-49a4-bb29-18490c7d2429 - 785f76cca5bf3e6fa2f836c86389016dbc6f31db)
 
 - 2026-11-19 22:19: Condense the managed workload trace. (authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268 - 0173500d9e950c1722fb6738af08f9857e44be3d)
 

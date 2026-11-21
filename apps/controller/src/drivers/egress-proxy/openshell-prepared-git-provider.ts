@@ -3,6 +3,7 @@ import {
   type OpenShellGitNetworkTarget,
   compileOpenShellBoundGitRule,
 } from "../sandbox/openshell-git-network-policy.ts";
+import type { InspectedWorkspaceNodeRoute } from "../sandbox/openshell-workspace-node-policy.ts";
 import type { RepositoryGitRecipient } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -52,6 +53,7 @@ export type OpenShellPreparedGitScope = OpenShellGitNetworkTarget & {
   readonly expectedProviders?: readonly OpenShellExpectedProviderRule[];
   /** Verify the current revision's policy on a managed Sandbox. */
   readonly managedSandbox?: true;
+  readonly workspaceRoute?: InspectedWorkspaceNodeRoute;
 };
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
@@ -682,6 +684,7 @@ export class OpenShellPreparedGitProvider {
       this.scope.expectedProviders,
       signal,
       verifyManagedSandbox,
+      this.scope.workspaceRoute,
       this.boundNetworkRule(),
     );
   }
