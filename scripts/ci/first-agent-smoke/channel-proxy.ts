@@ -597,6 +597,37 @@ async function waitSocket(caller: string, previous = 0) {
   );
 }
 
+async function agentAuditRows(stack: SmokeStack, agentId: string): Promise<unknown[]> {
+  assert.match(stack.namespaceId, /^ns_[a-f0-9-]+$/u);
+  assert.match(agentId, /^agt_[a-f0-9-]+$/u);
+  // The public audit endpoint requires a human session. Inspect the persisted
+  // rows through the disposable PostgreSQL Pod's local socket instead.
+  const sql = `SELECT coalesce(json_agg(to_jsonb(event)), '[]'::json)
+    FROM occ.audit_events AS event
+    WHERE namespace_id = '${stack.namespaceId}'
+      AND (resource_id = '${agentId}' OR details->>'agentId' = '${agentId}');`;
+  const { stdout } = await kubectl(
+    stack,
+    [
+      "-n",
+      stack.state.platformNamespace,
+      "exec",
+      "-i",
+      "postgres-0",
+      "-c",
+      "postgres",
+      "--",
+      "sh",
+      "-c",
+      'exec psql -X -qAt -v ON_ERROR_STOP=1 -U postgres -d "$POSTGRES_DB"',
+    ],
+    { input: sql },
+  );
+  const rows: unknown = JSON.parse(stdout);
+  assert.ok(Array.isArray(rows) && rows.length > 0, "Agent audit rows are missing");
+  return rows;
+}
+
 async function containment(
   stack: SmokeStack,
   admission: CodexAdmission,
@@ -630,7 +661,7 @@ async function containment(
   ] = await Promise.all([
     stack.api("GET", base),
     stack.api("GET", `${base}/revisions/${revisionId}`),
-    stack.api("GET", `${base}/audit-events`),
+    agentAuditRows(stack, admission.agent.id),
     stack.api("GET", `${base}/deployments/${revisionId}/runtime`),
     stack.api("GET", `${base}/deployments/${revisionId}/runtime/logs?source=gateway`),
     kubectl(stack, ["-n", gateway.namespace, "get", "pod", gateway.pod, "-o", "json"]),
