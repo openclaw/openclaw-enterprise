@@ -733,7 +733,7 @@ export async function verifyPlatformStateTransactions(
     compute: { ...revision.compute, networkProxyAdmission: "private-admission" },
   };
   await store.transact(async (transaction) => {
-    await transaction.configurations.createConfiguration(proxyConfiguration, {});
+    await transaction.configurations.createConfiguration(proxyConfiguration);
     await transaction.agents.createAgent(proxyAgent);
     await transaction.revisions.createRevision(proxyRevision);
   });
