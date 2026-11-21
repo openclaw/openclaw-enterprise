@@ -527,7 +527,8 @@ export interface CredentialProxyDriver extends Driver {
     input: CredentialDeploymentConfiguration & {
       readonly bindings: readonly {
         readonly binding: DeploymentCredentialBinding;
-        /** Authorized only for binding.sourceRef; use for first-use transfer, never shared-provider attachment. */
+        /** Authorized only for binding.sourceRef. Resolve once for initial or refreshed pushed
+         * material, never solely to attach an already-current shared Provider. */
         readonly resolveCredential: () => Promise<ResolvedCredential>;
         /** Nonsecret provider locator for an implementation that owns both services. */
         readonly sharedProviderRef?: Readonly<Record<string, string>>;
