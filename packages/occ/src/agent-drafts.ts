@@ -352,7 +352,11 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         namespace.id,
         input.configurationId,
       );
-      await dependencies.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
+      await dependencies.guardProvisioningConfiguration(
+        state,
+        namespace.id,
+        existingConfiguration.id,
+      );
       dependencies.rejectCrossNamespaceSecretSources(namespace.id, undefined, harnessAuth);
       await dependencies.harnessAuth.authorizeHarnessAuthSource(
         state,
@@ -412,7 +416,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         id: agentId,
         namespaceId: namespace.id,
         name: input.name,
-        configurationId: input.configurationId,
+        configurationId: configuration.id,
         backendId,
         harnessAuth,
         ...(credentialSources === undefined || credentialSources.length === 0
