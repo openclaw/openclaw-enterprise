@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -399,20 +400,19 @@ process.stdin.on('data', () => { clearInterval(interval); agent.destroy(); proce
   return { child, done, count: () => (output.match(/^ok$/gm) ?? []).length, closed: () => closed };
 }
 
-// One line per proveRetirement sub-wait, so a slow retirement step names its slow wait
-// (61fba7ca2 spent 357 s of that step in silence). Logged on failure too.
-async function retirementWait<T>(name: string, operation: () => Promise<T>): Promise<T> {
-  const started = Date.now();
-  let outcome = "FAILED";
-  try {
-    const result = await operation();
-    outcome = "ok";
-    return result;
-  } finally {
-    log(
-      `reader retirement: ${name} ${outcome} at ${new Date().toISOString()} after ${Date.now() - started} ms`,
-    );
-  }
+const retirementWaitNames = {
+  "held-sockets": "held sockets",
+  "peer-withdrawal": "observeReaderPeer withdraw",
+  "old-harness-pod-termination": "old Harness Pod termination",
+  "retired-sockets-closed": "retired sockets closed",
+  "successor-deploy": "successor deploy",
+  "selected-control-after-unselected-probe": "selected control after unselected probe",
+};
+type RetirementStage = keyof typeof retirementWaitNames;
+
+export interface RetirementNotices {
+  completed: number;
+  rows: { stage: RetirementStage; durationMs: number; outcome: "ok" | "failed" }[];
 }
 
 export async function proveRetirement(
@@ -421,13 +421,56 @@ export async function proveRetirement(
   control: CodexAdmission,
   reader: Reader,
   proofResults: string[],
+  notices: RetirementNotices,
 ) {
+  // Keep the human timing line on both outcomes. Use a monotonic clock for the
+  // Actions notice and retain a row only after the complete annotation is written.
+  async function retirementWait<T>(
+    stage: RetirementStage,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const started = Date.now();
+    let observedAt: number | undefined;
+    if (process.env.GITHUB_ACTIONS === "true") {
+      try {
+        observedAt = performance.now();
+      } catch {
+        // A clock failure leaves the wait unobserved.
+      }
+    }
+    let outcome: "ok" | "failed" = "failed";
+    try {
+      const result = await operation();
+      outcome = "ok";
+      return result;
+    } finally {
+      notices.completed += 1;
+      log(
+        `reader retirement: ${retirementWaitNames[stage]} ${outcome === "ok" ? "ok" : "FAILED"} at ${new Date().toISOString()} after ${Date.now() - started} ms`,
+      );
+      if (observedAt !== undefined) {
+        try {
+          const durationMs = Math.round(performance.now() - observedAt);
+          if (Number.isSafeInteger(durationMs) && durationMs >= 0) {
+            const notice = { stage, durationMs, outcome };
+            const line = `::notice title=First Agent Smoke retirement wait::${JSON.stringify(notice)}\n`;
+            if (writeSync(process.stderr.fd, line) === Buffer.byteLength(line)) {
+              notices.rows.push(notice);
+            }
+          }
+        } catch {
+          // Optional timing must preserve the operation's result or rejection.
+        }
+      }
+    }
+  }
+
   const old = await revisionHarness(stack, selected.agent, selected.revisionId);
   const live = await revisionHarness(stack, control.agent, control.revisionId);
   const held = holdReaderSocket(stack, old, reader.peer.address, 28);
   const stillSelected = holdReaderSocket(stack, live, reader.peer.address, 30);
   try {
-    await retirementWait("held sockets", () =>
+    await retirementWait("held-sockets", () =>
       waitFor(
         "both selected Harness sockets",
         async () => ({
@@ -457,9 +500,7 @@ export async function proveRetirement(
       controlRequests.filter((event) => event.connection === controlConnection).length >= 2,
       "control Harness did not complete two requests on its held socket",
     );
-    await retirementWait("observeReaderPeer withdraw", () =>
-      observeReaderPeer(stack, selected, "withdraw"),
-    );
+    await retirementWait("peer-withdrawal", () => observeReaderPeer(stack, selected, "withdraw"));
     const deployment = `agent-${idHash(selected.agent.id)}-rev-${idHash(selected.revisionId)}`;
     const { stdout: oldDeployment } = await kubectl(stack, [
       "-n",
@@ -472,7 +513,7 @@ export async function proveRetirement(
       "name",
     ]);
     assert.equal(oldDeployment.trim(), "", "withdrawn revision still has a Deployment");
-    await retirementWait("old Harness Pod termination", () =>
+    await retirementWait("old-harness-pod-termination", () =>
       waitFor(
         "old Harness Pod to terminate",
         async () => {
@@ -511,7 +552,7 @@ export async function proveRetirement(
     const oldProviderAtBarrier = count(barrier, "provider", 28);
     const controlReaderAtBarrier = count(barrier, "reader", 30);
     const controlProviderAtBarrier = count(barrier, "provider", 30);
-    await retirementWait("retired sockets closed", () =>
+    await retirementWait("retired-sockets-closed", () =>
       waitFor(
         "retired Harness process and sockets to close",
         async () => {
@@ -538,7 +579,7 @@ export async function proveRetirement(
       `/namespaces/${stack.namespaceId}/configurations/${selected.configurationId}`,
       { values: unselected },
     );
-    const successor = await retirementWait("successor deploy", () =>
+    const successor = await retirementWait("successor-deploy", () =>
       deployAgent(stack, selected.agent),
     );
     const current = await revisionHarness(stack, selected.agent, successor);
@@ -606,7 +647,7 @@ req.on('error', error => { clearTimeout(timer); process.exit(error.message === '
       ],
       { timeout: 15_000 },
     );
-    await retirementWait("selected control after unselected probe", () =>
+    await retirementWait("selected-control-after-unselected-probe", () =>
       waitFor(
         "selected control after unselected probe",
         async () => {
