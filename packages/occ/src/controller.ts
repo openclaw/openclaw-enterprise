@@ -1,3 +1,4 @@
+import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import {
   createControllerComposition,
   type ControllerComposition,
@@ -1615,6 +1616,7 @@ export class OpenClawController {
     facet: SandboxFacet,
     expectedVersion: number,
     additions: readonly SandboxNetworkGrant[],
+    repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     return this.composition.sandboxPolicyOperations.updateAgentSandboxPolicy(
       principalId,
@@ -1623,6 +1625,7 @@ export class OpenClawController {
       facet,
       expectedVersion,
       additions,
+      repositoryNetworkPolicy,
     );
   }
 

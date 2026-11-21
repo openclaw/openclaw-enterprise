@@ -12,6 +12,7 @@ import {
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { editStoredRepositoryGrants } from "./postgres-state-repository-network-policy-case.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
@@ -1141,5 +1142,14 @@ test(
       ).rows,
       jobs.rows,
     );
+  },
+);
+
+test(
+  "Agent policy HTTP preserves and withdraws stored repository grants",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t);
+    await editStoredRepositoryGrants(fixture, fixture.grant);
   },
 );

@@ -165,6 +165,11 @@ export {
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
 } from "./sandbox-policy.ts";
+export {
+  isCanonicalRepositoryGrantList,
+  type RepositoryNetworkGrant,
+  type RepositoryNetworkPolicy,
+} from "./repository-network-policy.ts";
 
 export type {
   OAuthClient,
