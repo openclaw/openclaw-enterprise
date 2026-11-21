@@ -1020,10 +1020,17 @@ async function retainRuntimeProvenance(
             "containerd",
           )
         ).stdout;
-      const selection = parseJson(
-        await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
-      );
-      const selected: unknown = Array.isArray(selection) ? selection[0] : undefined;
+      // Classic stores return the config ID directly. Docker 28.0.4 rejects
+      // --platform on image inspect, even for an immutable local image ID.
+      let selected: unknown = inspected;
+      if (inspected.Descriptor !== undefined) {
+        const selection = parseJson(
+          await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
+        );
+        selected = Array.isArray(selection) ? selection[0] : undefined;
+      } else if (inspected.Id !== image.hostImageId) {
+        return;
+      }
       if (!configInspection(selected)) {
         return;
       }
