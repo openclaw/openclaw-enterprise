@@ -291,6 +291,8 @@ node scripts/ci/run-tests.ts run gateway-routing \
 Use `scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/gateway-routing.json"`
 to remove the lane's resources.
 
+See [cert-manager image mirrors](ci/run-lanes.md#cert-manager-image-mirrors).
+
 ### Native workspace identity
 
 Prepare native runtime and Envoy images, then set both `OCC_TEST_RUNTIME_IMAGE`

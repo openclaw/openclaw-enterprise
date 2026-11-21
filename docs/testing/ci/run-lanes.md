@@ -179,6 +179,24 @@ variables to bypass that check. Retain this evidence when planning separately
 verified local reuse or a source build. For release-qualified image transfer,
 follow [native image checks](../../release/containers.md#check-native-images-without-publication).
 
+## Cert-manager image mirrors
+
+For shared Gateway Routing preparation on AMD64, set `OCC_CI_CERT_MANAGER_IMAGE_MIRROR` to a
+registry prefix such as `registry.example.com/mirrors`. The mirror must
+already hold the pinned cert-manager v1.18.4 manifests in
+`cert-manager-cainjector`, `cert-manager-controller`, and
+`cert-manager-webhook` repositories under that prefix. Use the runner's
+regular registry login if the mirror requires authentication.
+
+Lane preparation imports all three pinned images and verifies their image
+configurations on the owned k3d nodes before applying any cert-manager
+Deployment. Use the same lane cleanup if preparation fails. Leave the
+variable unset to use the upstream image references.
+
+The runner still needs the checksum-pinned release manifests and the Envoy
+images. The shared routing fixture uses a CA issuer. ACME HTTP-01 deployments
+also need access to their solver image.
+
 ## Results and cleanup
 
 A lane fails if required cases are missing, skipped, marked TODO, or failed, or if cleanup fails. This includes skipped suites and Go tests. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.

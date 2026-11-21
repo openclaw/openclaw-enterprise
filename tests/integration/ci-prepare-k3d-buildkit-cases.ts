@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import {
@@ -140,6 +140,49 @@ export function registerBuildKitCases() {
 }
 
 export function registerVerifiedRuntimePublicationCase() {
+  test("Gateway Routing rejects a malformed cert-manager mirror before preparation", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "gateway-routing", {
+      NODE_BASE_IMAGE: nodeBaseImage,
+      OCC_CI_CERT_MANAGER_IMAGE_MIRROR: "https://registry.example.test/cert-manager",
+      OPENAI_API_KEY: "test-only-key",
+      OCC_TEST_OPENAI_MODEL: "test-model",
+    });
+    let dockerAttempted = false;
+    await interceptFixtureDocker(t, commands, () => {
+      dockerAttempted = true;
+      return "printf 'unexpected Docker invocation\\n' >&2; exit 1";
+    });
+
+    const result = await commands.prepare();
+
+    assert.equal(result.status, 1, result.stderr);
+    assertStderrMatch(
+      result.stderr,
+      /OCC_CI_CERT_MANAGER_IMAGE_MIRROR must be a qualified registry\/repository prefix/,
+    );
+    assert.equal(dockerAttempted, false);
+    await assert.rejects(commands.commands(), { code: "ENOENT" });
+    await assert.rejects(stat(commands.statePath), { code: "ENOENT" });
+    await assert.rejects(stat(commands.githubEnv), { code: "ENOENT" });
+  });
+
+  test("self-provisioned OpenShell preparation ignores the shared cert-manager mirror", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "openshell", {
+      OCC_CI_CERT_MANAGER_IMAGE_MIRROR: "https://registry.example.test/cert-manager",
+      OPENAI_API_KEY: "test-only-key",
+      OCC_TEST_OPENAI_MODEL: "test-model",
+    });
+    const result = await commands.prepare([
+      "--selected-file",
+      "tests/integration/local-first-agent-openshell-real.test.mjs",
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual((await commands.readState()).resources, []);
+    await assert.rejects(commands.commands(), { code: "ENOENT" });
+    await commands.cleanupSuccessfully();
+  });
+
   test("preselected runtime preparation publishes the verified host image for Docker relays", async (t) => {
     const preload = join(await fixture(t), "runtime-selection.mjs");
     const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {
@@ -155,9 +198,11 @@ export function registerVerifiedRuntimePublicationCase() {
     // Exercise the real preparation CLI, image verification and environment publication.
     // Routing installation and seccomp generation are separate from image selection.
     const prepareUrl = new URL("../../scripts/ci/prepare.ts", import.meta.url).href;
+    const routingUrl = new URL("../../scripts/ci/routing.ts", import.meta.url).href;
     await writeFile(
       preload,
       `import { registerHooks } from "node:module";
+export { assertCertManagerMirrorPrefix } from ${JSON.stringify(routingUrl)};
 export async function prepareGatewayRouting() { return { env: {} }; }
 export async function prepareCodexSeccompProfile() { return { profileName: "fixture-profile", nodes: [] }; }
 registerHooks({
