@@ -151,8 +151,8 @@ A dedicated Gateway does not recover a killed container's locks. On
 Kubernetes it holds unready on `gateway-state-lock`; the deployment fails with
 `RUNTIME_STATE_LOCK_UNVERIFIED` while the Pod waits. `occ agent logs AGENT_ID
 --source gateway` shows `The Gateway cannot start: …` with the holder. If the
-holder stops cleanly, the Gateway restarts within 5 minutes; otherwise use the
-same procedure, which stops the Agent first.
+holder stops cleanly, the Gateway restarts after its next 5-minute check;
+otherwise use the same procedure, which stops the Agent first.
 
 A dedicated Harness Pod killed during Doctor or native setup (node failure)
 can leave its workspace node state locked. Later versions fail with
@@ -268,12 +268,12 @@ logs](agent-logs.md#sandbox-source) for the cause.
 OCE does not replace a Sandbox whose Pod was deleted or evicted, or that a node
 restart stopped. The Agent stays `active` while every chat fails. `occ agent get`
 and `occ agent runtime` show `Harness Sandbox: lost (CODE)` (`SANDBOX_FAILED`
-here, `SANDBOX_STOPPED` after a node restart, or `HARNESS_EXITED` for an older
-version whose Harness exited), the Console's **Live serving** shows
-**Sandbox lost**, and the version's diagnostics lead with a
-failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
-(`occ agent deploy AGENT_ID`): the new version gets a new Sandbox and the old one
-is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
+here, `SANDBOX_STOPPED` after a node restart or supervisor Pod deletion, or
+`HARNESS_EXITED` for an older version whose Harness exited), the Console's
+**Live serving** shows **Sandbox lost**, and the version's diagnostics lead with
+a failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
+(`occ agent deploy AGENT_ID`): the new version replaces the old Sandbox.
+`unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
 
 If a controller upgrade changes an older development Sandbox's immutable
 command, exact-content adoption can fail; deploy the Agent again.

@@ -37,7 +37,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import { PresetResponse, PresetListResponse } from "../../packages/contracts/src/api/resources.ts";
 
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 import {
   CodexPluginDriver,
@@ -1821,7 +1821,7 @@ test("Agent creation edits Preset plugin policies through the modal and persists
 
   // Codex advertises plugin-wide reviewers only; tool approval still inherits independently.
   const toolReviewer = dialog.getByLabel("app_knowledge/search reviewer", { exact: true });
-  assert.equal(await toolReviewer.count(), 0);
+  assert.equal(await toolReviewer.isDisabled(), true);
   await searchTool.getByRole("button", { name: "Set reviewer for all tools" }).click();
   assert.equal(await reviewer.evaluate((node) => node === node.ownerDocument.activeElement), true);
   await toolApproval.selectOption("none");
@@ -2931,7 +2931,9 @@ function humanAllowlistVariable(template: VariablePresetTemplate) {
     password: (gateway.auth as { password: unknown }).password,
   };
   auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
-  auth.trustedProxy.deviceAutoApprove.scopes = ["operator.read", "operator.write"];
+  Object.assign(auth.trustedProxy, {
+    deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
+  });
   gateway.controlUi = { enabled: true, allowedOrigins: ["http://127.0.0.1:18789"] };
   gateway.auth = auth;
 }

@@ -11,8 +11,8 @@ test(
 );
 
 // Keep approval active while a real session deadline passes with the worker stopped.
-// Kubernetes records are controlled; their validation and witness come from the real Sandbox Driver.
-for (const outcome of ["expired-original-pods", "expired-replaced-supervisor"] as const) {
+// The gateway fixture supplies execution identities and the Sandbox Driver validates their continuity.
+for (const outcome of ["expired-original-execution", "expired-replaced-supervisor"] as const) {
   test(
     `a cold worker after session expiry checks ${outcome}`,
     { ...requiresPostgres, timeout: 180_000 },

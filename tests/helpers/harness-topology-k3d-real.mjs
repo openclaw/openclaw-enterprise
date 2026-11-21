@@ -58,9 +58,11 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
 import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
+import { installedGatewayRpc } from "./installed-gateway-rpc.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
-import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
+import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.mjs";
+import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -238,6 +240,11 @@ async function createScopedController(context, identifier, platformNamespace, ku
         op: "add",
         path: "/rules/-",
         value: { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["get", "list"] },
       },
       {
         op: "add",
@@ -439,6 +446,8 @@ async function startInClusterControllers(
     apiConfiguration,
     authBaseURL,
     controller,
+    controllerImage: selectedControllerImage = controllerImage,
+    databaseUrl: selectedDatabaseUrl = databaseUrl,
     controllerPort,
     databaseAddress,
     events,
@@ -451,7 +460,7 @@ async function startInClusterControllers(
   },
 ) {
   const databaseServiceName = "occ-test-postgres";
-  const inClusterDatabaseUrl = new URL(databaseUrl);
+  const inClusterDatabaseUrl = new URL(selectedDatabaseUrl);
   inClusterDatabaseUrl.hostname = `${databaseServiceName}.${platformNamespace}.svc`;
   inClusterDatabaseUrl.port = "5432";
   const kubernetesEndpoint = await resource("endpoints", "kubernetes", "default");
@@ -472,7 +481,7 @@ async function startInClusterControllers(
       authBaseURL,
       authSecret,
       controller,
-      controllerImage,
+      controllerImage: selectedControllerImage,
       databaseAddress,
       databaseServiceName,
       inClusterDatabaseUrl,
@@ -491,16 +500,6 @@ async function startInClusterControllers(
       workerOptions,
       workspaceGateway,
     });
-  const channels = apiConfiguration.drivers.compute.configuration.runtime?.channels;
-  if (channels !== undefined) {
-    assert.ok(channels.managedProxy, "Slack topology requires the chart-managed proxy");
-    // Admission validates Slack credentials before deployment. The chart grants
-    // only the API this proxy route; the worker keeps its existing isolation.
-    apiContainer.env.push(
-      { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: channels.proxyUrl },
-      { name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST", value: channels.managedProxy.hostname },
-    );
-  }
   if (oidc !== undefined) {
     await configureInClusterOidc({
       oidc,
@@ -513,7 +512,7 @@ async function startInClusterControllers(
   }
   await applyManifest(JSON.stringify(manifests), {
     redactions: [
-      databaseUrl,
+      selectedDatabaseUrl,
       authSecret,
       workspaceGateway.apiKey,
       ...(oidc ? [oidc.clientSecret] : []),
@@ -564,12 +563,13 @@ async function startInClusterControllers(
   let logError;
   let logStderr = "";
   let stopping = false;
+  let observationStopped = false;
   logs.once("error", (error) => {
     logError = error;
   });
   const logExit = new Promise((resolve) =>
     logs.once("close", (code) => {
-      if (!stopping) {
+      if (!stopping && !observationStopped) {
         logError ??= new Error(`Worker log stream exited unexpectedly (${code}): ${logStderr}`);
       }
       resolve();
@@ -586,12 +586,23 @@ async function startInClusterControllers(
         events.push(event);
       }
     } catch {
-      if (!stopping) {
+      if (!stopping && !observationStopped) {
         logError ??= new Error("Worker emitted an invalid structured log record.");
       }
     }
   });
   const worker = {
+    async stopObservation() {
+      if (logError !== undefined) {
+        throw logError;
+      }
+      if (!observationStopped) {
+        observationStopped = true;
+        logs.kill("SIGTERM");
+        await logExit;
+        lines.close();
+      }
+    },
     assertHealthy() {
       if (logError !== undefined) {
         throw logError;
@@ -646,6 +657,49 @@ async function startInClusterControllers(
     pod: pods[0],
     url: forwarding.url,
     worker,
+    async stop() {
+      const port = Number(new URL(forwarding.url).port);
+      await worker.stop();
+      await forwarding.stop();
+      await kubectl(
+        "delete",
+        "deployment",
+        name,
+        "--namespace",
+        platformNamespace,
+        "--cascade=foreground",
+        "--wait=true",
+        "--timeout=120s",
+      );
+      const remaining = await resources("pods", platformNamespace);
+      assert.equal(
+        remaining.filter(({ metadata }) =>
+          [labels, workerLabels].some((expected) =>
+            Object.entries(expected).every(([key, value]) => metadata.labels?.[key] === value),
+          ),
+        ).length,
+        0,
+        "both old controller writers must have no remaining Pods before migration",
+      );
+      return port;
+    },
+    async imageReceipt() {
+      const current = await resources("pods", platformNamespace);
+      return [labels, workerLabels].map((expected) => {
+        const matching = current.filter(({ metadata }) =>
+          Object.entries(expected).every(([key, value]) => metadata.labels?.[key] === value),
+        );
+        assert.equal(matching.length, 1);
+        const pod = matching[0];
+        const container = pod.spec.containers.find(
+          ({ name }) => name === "api" || name === "worker",
+        );
+        assert.equal(container.image, selectedControllerImage);
+        const status = pod.status.containerStatuses.find(({ name }) => name === container.name);
+        assert.match(status.imageID, /sha256:[a-f0-9]{64}$/);
+        return { uid: pod.metadata.uid, image: container.image, imageID: status.imageID };
+      });
+    },
     async restart() {
       const previousUid = activeApiPod.metadata.uid;
       const port = Number(new URL(forwarding.url).port);
@@ -684,8 +738,8 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   const configuration = createKubernetesInstallationConfiguration({
     authentication,
     platformNamespace,
-    gatewayImage,
-    codexImage,
+    gatewayImage: options.images?.runtime ?? gatewayImage,
+    codexImage: options.images?.runtime ?? codexImage,
     codexSeccompProfile,
     cluster: "k3d-production-harness-topology",
   });
@@ -721,6 +775,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     "limits.cpu": "8",
     // Two embedded Agents plus one replacement Gateway may coexist during cutover.
     "limits.memory": `${3 * productionGatewayMemoryLimitGi}Gi`,
+    ...options.namespaceQuota,
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   if (options.gatewayRouting !== undefined) {
@@ -728,10 +783,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     delete configuration.drivers.compute.configuration.network.gatewayClients;
   }
   if (slack !== undefined) {
-    configuration.drivers.compute.configuration.runtime.channels = {
-      proxyUrl: slack.proxyUrl,
-      managedProxy: slack.managedProxy,
-    };
+    configuration.drivers.compute.configuration.runtime.channelEgress = slack.channelEgress;
   }
   return configuration;
 }
@@ -1230,6 +1282,11 @@ function registerProductionTopologyCleanups(context, operations) {
 async function arrangeProductionTopology(testContext, mode, slack, options = {}) {
   // node:test would run these cleanups oldest-first and stop at the first failure (finding 1711).
   const context = withBoundedTeardown(testContext, { label: "production topology teardown" });
+  const controllerImage =
+    options.images?.controller ?? process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+  const gatewayImage =
+    options.images?.runtime ?? process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE ?? runtimeImage;
+  const databaseUrl = options.databaseUrl ?? process.env.OCC_TEST_DATABASE_URL;
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
   if (mode === "dedicated") {
@@ -1241,7 +1298,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   }
   const kubeconfig = await validatePrerequisites();
   const identifier = randomUUID();
-  const credentials =
+  let credentials =
     options.credentials ??
     Object.freeze({
       email: `admin-kubernetes-${hash(identifier)}@example.test`,
@@ -1264,6 +1321,8 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     options.gatewayPassword === false ? undefined : randomBytes(32).toString("base64url");
   let inClusterWorker;
   let restartInClusterApi;
+  let activeInClusterControllers;
+  let baselineInitialization;
   const workerOptions = {
     pollIntervalMs: 50,
     leaseDurationMs: 60_000,
@@ -1358,7 +1417,11 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     assert.ok(workspaceGateway, "Slack topology requires the production Gateway");
     Object.assign(
       slack,
-      await installManagedSlackProxyFixture({
+      await installManagedChannelEgressFixture({
+        ...(options.channelEgressCapacity === undefined
+          ? {}
+          : { listenerCapacity: options.channelEgressCapacity }),
+        controller,
         namespace: platformNamespace,
         controllerImage,
         workspaceGateway,
@@ -1378,6 +1441,8 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     workspaceGateway === undefined
       ? {}
       : {
+          images: options.images,
+          namespaceQuota: options.namespaceQuota,
           gatewayRouting: workspaceGateway.routing,
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
@@ -1540,10 +1605,28 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     }, options.oidc);
     oidc = { ...options.oidc, address };
   }
-  let activeInstallation = await platformState.loadInstallation();
+  // The upgrade database has roles/schemas only. Let the old image own its
+  // first migration and bootstrap before the current observer reads any tables.
+  let activeInstallation =
+    options.upgrade === undefined ? await platformState.loadInstallation() : undefined;
 
   let createdFreshInstallation = false;
-  if (activeInstallation !== undefined) {
+  if (options.upgrade !== undefined) {
+    baselineInitialization = await initializeNativeUpgradeInstallation(context, {
+      image: options.upgrade.initializerImages.baseline,
+      migrationUrl: options.upgrade.migrationUrl,
+      databaseUrl,
+      email: credentials.email,
+      authSecret,
+      authBaseURL: controllerAuthBaseURL,
+      agentDomain: nativeAdmin.domain,
+      installationName,
+    });
+    credentials = baselineInitialization.credentials;
+    activeInstallation = await platformState.loadInstallation();
+    assert.ok(activeInstallation, "the old image must persist the initial Installation");
+    createdFreshInstallation = true;
+  } else if (activeInstallation !== undefined) {
     await ensureHarnessAdminPrincipal(
       observerPool,
       createPostgresControllerAuth,
@@ -1592,6 +1675,8 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       apiConfiguration,
       authBaseURL: controllerAuthBaseURL,
       controller,
+      controllerImage,
+      databaseUrl,
       databaseAddress,
       controllerPort: options.controllerPort,
       events,
@@ -1602,6 +1687,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       workerOptions,
       workspaceGateway,
     });
+    activeInClusterControllers = controllerApi;
     inClusterWorker = controllerApi.worker;
     restartInClusterApi = controllerApi.restart;
     controllerApiPod = controllerApi.pod;
@@ -2390,7 +2476,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     platformNamespace,
     gatewayImage,
     workspaceGateway,
-    controllerApiPod,
+    get controllerApiPod() {
+      return controllerApiPod;
+    },
     workspaceRequest,
     publicGithubRead,
     approvedClient,
@@ -2402,6 +2490,74 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     adminRequest: (...args) => adminRequest(...args),
     request: (...args) => request(...args),
     restartControllerApi,
+    async upgradeInstallation() {
+      assert.ok(
+        options.upgrade && activeInClusterControllers,
+        "only the explicit old-to-new fixture may replace controller software",
+      );
+      const before = await activeInClusterControllers.imageReceipt();
+      const port = await activeInClusterControllers.stop();
+      const candidate = {
+        controller: process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
+        runtime: process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE ?? runtimeImage,
+      };
+      assert.notEqual(
+        candidate.controller,
+        controllerImage,
+        "upgrade must replace the old controller image",
+      );
+      const candidateInitialization = await initializeNativeUpgradeInstallation(context, {
+        image: options.upgrade.initializerImages.candidate,
+        migrationUrl: options.upgrade.migrationUrl,
+        databaseUrl,
+        email: credentials.email,
+        authSecret,
+        authBaseURL: controllerAuthBaseURL,
+        agentDomain: nativeAdmin.domain,
+        installationName,
+        expectedInstallationId: activeInstallation.id,
+      });
+      const next = structuredClone(apiConfiguration);
+      // This is an operator Installation image configuration change. Agent
+      // configuration and browser credentials are changed only by normal deploy.
+      next.drivers.compute.configuration.images.gateway = candidate.runtime;
+      next.drivers.compute.configuration.images.agent = candidate.runtime;
+      activeInClusterControllers = await startInClusterControllers(context, {
+        apiConfiguration: next,
+        authBaseURL: controllerAuthBaseURL,
+        controller,
+        controllerImage: candidate.controller,
+        databaseUrl,
+        databaseAddress,
+        controllerPort: port,
+        events,
+        nativeAdminDomain: nativeAdmin.domain,
+        nativeAdminEnabled: nativeAdmin.enabled,
+        oidc,
+        platformNamespace,
+        workerOptions,
+        workspaceGateway,
+      });
+      inClusterWorker = activeInClusterControllers.worker;
+      controllerApiPod = activeInClusterControllers.pod;
+      controllerUrl = activeInClusterControllers.url;
+      restartInClusterApi = activeInClusterControllers.restart;
+      adminRequest = await requestFactory(credentials);
+      request = adminRequest;
+      assert.equal((await platformState.loadInstallation()).id, activeInstallation.id);
+      const after = await activeInClusterControllers.imageReceipt();
+      assert.ok(after.every((pod) => before.every((old) => old.uid !== pod.uid)));
+      return {
+        before,
+        after,
+        initialization: {
+          baseline: baselineInitialization.receipt,
+          candidate: candidateInitialization.receipt,
+        },
+      };
+    },
+    controllerImageReceipt: () => activeInClusterControllers.imageReceipt(),
+    stopWorkerObservation: () => inClusterWorker?.stopObservation(),
     events,
     agent: topologyAgent,
     persistedAgent,
@@ -3167,6 +3323,7 @@ const gatewayPrivatePaths = [
   ["media", "/home/node/.openclaw/media"],
   ["worktrees", "/home/node/.openclaw/worktrees"],
   ["worktree-sources", "/home/node/.openclaw/worktree-sources"],
+  ["skill-library", "/home/node/.openclaw/skill-library"],
 ];
 
 async function assertGatewayPrivateResources(topology) {
@@ -3208,36 +3365,15 @@ async function assertGatewayPrivateResources(topology) {
   return claim;
 }
 
-async function gatewayCall(topology, method, params, timeoutMs = 180_000) {
-  // The real CLI authenticates from the Pod's env/config; credentials never enter kubectl args.
-  const result = JSON.parse(
-    await execNode(
-      topology.gatewayPlacement,
-      topology.gatewayPod.metadata.name,
-      `
-    const { execFileSync } = require("node:child_process");
-    try {
-      process.stdout.write(execFileSync(process.execPath, ["/app/openclaw.mjs", "gateway", "call",
-      ${JSON.stringify(method)}, "--params", ${JSON.stringify(JSON.stringify(params))},
-      "--json", "--timeout", ${JSON.stringify(String(timeoutMs))}], { encoding: "utf8", timeout: ${timeoutMs + 30_000} }));
-    } catch (error) {
-      if (error.status !== 1 || error.signal !== null) throw error;
-      let failure;
-      try {
-        failure = JSON.parse(error.stdout);
-      } catch {
-        throw error;
-      }
-      if (failure?.ok !== false || failure.error?.type !== "gateway_request_error") throw error;
-      process.stdout.write(JSON.stringify(failure));
-    }
-  `,
-    ),
+function gatewayRpc(topology) {
+  return installedGatewayRpc(
+    (script) => execNode(topology.gatewayPlacement, topology.gatewayPod.metadata.name, script),
+    180_000,
   );
-  if (result?.ok === false && result.error?.type === "gateway_request_error") {
-    throw new Error(result.error.message, { cause: result.error });
-  }
-  return result;
+}
+
+function gatewayCall(topology, method, params, timeoutMs) {
+  return gatewayRpc(topology).call(method, params, timeoutMs);
 }
 
 async function assertDedicatedSkillSources(topology) {
@@ -3399,22 +3535,8 @@ function assertNativeToolSucceeded(history, marker, expectedText) {
   }
 }
 
-async function readAvailableGatewayHistory(topology, sessionKey, limit = 30) {
-  try {
-    return await gatewayCall(topology, "chat.history", { sessionKey, limit });
-  } catch (error) {
-    const failure = error.cause;
-    if (
-      failure?.type === "gateway_request_error" &&
-      failure.code === "UNAVAILABLE" &&
-      failure.retryable === true &&
-      failure.details?.method === "chat.history"
-    ) {
-      // Startup can still be preparing history after the Pod becomes ready.
-      return undefined;
-    }
-    throw error;
-  }
+function readAvailableGatewayHistory(topology, sessionKey, limit) {
+  return gatewayRpc(topology).readAvailableHistory(sessionKey, limit);
 }
 
 async function waitForGatewayHistory(topology, sessionKey, description, select) {
@@ -3911,7 +4033,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     [completedKey, completed],
     [cancelled.sessionKey, cancelledHistory],
   ];
-  async function assertRefusedWork(replacement, interrupted, queuedNonce) {
+  async function assertRefusedWork(replacement, interrupted) {
     const probeKey = `agent:main:replacement-ready-${randomUUID()}`;
     const probeNonce = `READY-${randomUUID()}`;
     await gatewayCall(topology, "chat.send", {
@@ -3931,16 +4053,6 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     });
     assert.equal(session.hasActiveRun, false);
     assert.equal(stoppedHistory.sessionId, interrupted.sessionId);
-    if (queuedNonce !== undefined) {
-      assert.equal(stoppedHistory.pendingInputs.queuedCount, 0);
-      assert.equal(
-        stoppedHistory.messages.some(
-          (message) => message.role === "assistant" && messageText(message).trim() === queuedNonce,
-        ),
-        false,
-        "an explicit stop must not replay accepted queued input after redeployment",
-      );
-    }
     assert.equal(
       stoppedHistory.messages.some(
         (message) => message.__openclaw?.continuation?.source === "restart",
@@ -3969,7 +4081,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
   for (const replacement of [
     "owner",
     "revoked-owner",
-    "incompatible",
+    "configuration-change",
     "gateway-pod",
     "workload-pods",
     "gateway-process",
@@ -4031,7 +4143,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       });
       assert.equal(topology.gatewayPod.metadata.uid, previousUid);
     } else if (
-      ["owner", "deployment", "explicit-stop", "revoked-owner", "incompatible"].includes(
+      ["owner", "deployment", "explicit-stop", "revoked-owner", "configuration-change"].includes(
         replacement,
       )
     ) {
@@ -4041,8 +4153,8 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
           role: "reader",
         });
       }
-      if (replacement === "incompatible") {
-        // A supported policy edit changes the compatibility domain while retaining storage.
+      if (replacement === "configuration-change") {
+        // A harmless supported settings edit retains the Harness and its saved conversation.
         const changedValues = structuredClone(recoveryValues);
         (changedValues.skills ??= {}).install ??= {};
         changedValues.skills.install.allowUploadedArchives = true;
@@ -4053,7 +4165,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       }
       if (replacement === "explicit-stop") {
         // Deny workload deletion only for this fixture's scoped worker. A committed
-        // stop must end continuity even when its Kubernetes teardown cannot finish.
+        // stop must save the desired state even when Kubernetes teardown cannot finish.
         const role = await resource("clusterrole", topology.controllerTenantRole);
         const blockedRules = role.rules.map((rule) => ({
           ...rule,
@@ -4096,11 +4208,10 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
               : undefined;
           });
           const state = await topology.observerPool.query(
-            "SELECT restart_generation, restart_domain FROM occ.agents WHERE id = $1",
+            "SELECT desired_runtime_state FROM occ.agents WHERE id = $1",
             [topology.agent.id],
           );
-          assert.equal(state.rows[0].restart_generation, null);
-          assert.equal(state.rows[0].restart_domain, null);
+          assert.equal(state.rows[0].desired_runtime_state, "stopped");
         } finally {
           await kubectl(
             "patch",
@@ -4125,7 +4236,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
                   profiles.find((profile) => profile.id === interrupted.ownerProfileId)?.role,
                   "reader",
                 );
-                revokedHistory = await assertRefusedWork(replacement, interrupted, queuedNonce);
+                revokedHistory = await assertRefusedWork(replacement, interrupted);
               } finally {
                 await gatewayCall(topology, "users.setRole", {
                   profileId: interrupted.ownerProfileId,
@@ -4135,9 +4246,9 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
             }
           : undefined,
       );
-      if (!["owner", "deployment"].includes(replacement)) {
+      if (replacement === "revoked-owner") {
         const stoppedHistory =
-          revokedHistory ?? (await assertRefusedWork(replacement, interrupted, queuedNonce));
+          revokedHistory ?? (await assertRefusedWork(replacement, interrupted));
         finished.push([interrupted.sessionKey, stoppedHistory]);
         context.diagnostic(`${replacement} left interrupted work stopped after redeployment`);
         console.info(`k3d dedicated: ${replacement} refusal passed.`);
@@ -4145,8 +4256,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       }
     } else if (replacement === "workload-pods") {
       const previousHarnessUid = topology.harnessPod.metadata.uid;
-      // Replace both Pods without changing the Agent revision or its recovery
-      // scope. The actual retained volumes and native shutdown paths remain in use.
+      // Replace both Pods with the same Agent revision and retained volumes.
       await Promise.all([
         kubectl(
           "delete",
@@ -4249,7 +4359,20 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       "started\n",
       "continuation must inspect the retained effect without repeating it",
     );
-    finished.push([interrupted.sessionKey, recovered]);
+    if (queuedNonce !== undefined) {
+      // Stop shuts down the workload; deployment admits eligible native continuation.
+      // The follow-up was accepted before Stop and must not require another user send.
+      await assertConversation(topology, interrupted.sessionKey, queuedNonce);
+      finished.push([
+        interrupted.sessionKey,
+        await gatewayCall(topology, "chat.history", {
+          sessionKey: interrupted.sessionKey,
+          limit: 100,
+        }),
+      ]);
+    } else {
+      finished.push([interrupted.sessionKey, recovered]);
+    }
     context.diagnostic(`automatic interrupted-turn recovery passed: ${replacement}`);
     console.info(`k3d dedicated: ${replacement} recovery passed.`);
   }

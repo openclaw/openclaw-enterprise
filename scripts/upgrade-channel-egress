@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""One-off Slack-proxy transition. Ordinary image upgrades never invoke this mode."""
+import argparse
+import copy
+import ipaddress
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def require_private_regular_file(info):
+    require(stat.S_ISREG(info.st_mode) and info.st_mode & 0o077 == 0,
+            "inputs and receipts must be private regular files")
+
+
+def private(path):
+    require_private_regular_file(Path(path).lstat())
+
+
+def command(args, *, data=None, failure_hint=""):
+    result = subprocess.run(args, input=data, capture_output=True, text=data is None, timeout=120)
+    # Native diagnostics can contain Installation configuration or credentials.
+    require(result.returncode == 0, f"{Path(args[0]).name} failed; inspect the selected resource with the operator tools{failure_hint}")
+    return result.stdout if data is None else result.stdout.decode("utf-8")
+
+
+def yaml(path, *, data=None):
+    if data is None:
+        private(path)
+    result = json.loads(command(["yq", "-o=json", ".", str(path)], data=data))
+    require(isinstance(result, dict), "configuration must be a YAML object")
+    return result
+
+
+def helm_values(path, option):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        require_private_regular_file(os.fstat(descriptor))
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            data = source.read()
+    finally:
+        os.close(descriptor)
+    line_end = data.find(b"\n")
+    first_line = (data if line_end == -1 else data[:line_end]).rstrip(b" \t\r")
+    if first_line in (b"USER-SUPPLIED VALUES:", b"COMPUTED VALUES:"):
+        heading = first_line[:-1].decode("ascii")
+        recapture = (
+            "recapture with 'helm get values RELEASE --output yaml' using the same kubeconfig, "
+            "context, namespace, and revision. Write to a new private .yaml file and prepare the candidate again."
+        )
+        # Classify the first entry as YAML even if the filename selects another format.
+        # An implicit null is on the key's line. An indented value starts later.
+        expression = r"""
+          select(document_index == 0 and tag == "!!map") | to_entries | .[0]
+          | select((.value | tag) == "!!null" and (.value | line) == (.key | line)) | .key
+        """
+        display = command(
+            ["yq", "-p=yaml", "-r", expression, "-"],
+            data=data,
+            failure_hint=f". If {option} came from Helm display output, {recapture}",
+        )
+        require(display.strip() != heading, f"{option} contains Helm's {heading} display header. To recover, {recapture}")
+    with tempfile.TemporaryDirectory(prefix="oce-channel-values-") as directory:
+        # Let yq infer the format from the original basename while reading the
+        # checked bytes through stdin. The temporary directory holds only a symlink.
+        input_path = Path(directory) / Path(path).name
+        input_path.symlink_to("/dev/stdin")
+        return yaml(input_path, data=data)
+
+
+def sync_parent(path):
+    descriptor = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def save(path, value, *, exclusive=False):
+    path = Path(path)
+    data = json.dumps(value, indent=2) + "\n"
+    if exclusive:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        sync_parent(path)
+        return
+    private(path)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+    try:
+        with os.fdopen(fd, "w") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        sync_parent(path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def runtime(installation):
+    compute = installation["drivers"]["compute"]
+    require(compute["id"] == "compute-kubernetes", "the one-off supports the Kubernetes Compute Driver only")
+    return compute["configuration"]["runtime"]
+
+
+def source(values, installation, namespace, release):
+    settings = runtime(installation)
+    require("channelEgress" not in values and "channelEgress" not in settings,
+            "already transitioned or mixed channel configuration; use the ordinary upgrade for current installations")
+    legacy = values.get("slackProxy", {})
+    require(isinstance(legacy, dict), "slackProxy must be an object")
+    enabled = legacy.get("enabled", False)
+    require(type(enabled) is bool, "slackProxy.enabled must be a boolean")
+    if enabled:
+        host = f'{legacy.get("serviceName", "openclaw-enterprise-slack-proxy")}.{namespace}.svc'
+        port = legacy.get("port", 3128)
+        expected = {"proxyUrl": f"http://{host}:{port}", "managedProxy": {
+            "hostname": host, "namespace": namespace, "port": port,
+            "podLabels": {"app.kubernetes.io/name": "openclaw-enterprise",
+                          "app.kubernetes.io/instance": release,
+                          "app.kubernetes.io/component": "slack-proxy"}}}
+        require(settings.get("channels") == expected,
+                "enabled source must use this release's chart-managed Slack proxy with matching runtime settings")
+        require(not values.get("api", {}).get("channelDirectoryProxyUrl"),
+                "external directory proxies are outside this transition")
+    else:
+        require(not settings.get("channels") and not values.get("api", {}).get("channelDirectoryProxyUrl"),
+                "external channel proxies are outside this transition; disabled source must have no active proxy settings")
+    return enabled
+
+
+def remainder(values, installation):
+    values, installation = copy.deepcopy(values), copy.deepcopy(installation)
+    for name in ("slackProxy", "channelEgress"):
+        values.pop(name, None)
+    values.get("api", {}).pop("channelDirectoryProxyUrl", None)
+    values.get("installation", {}).pop("secretName", None)
+    if values.get("installation") == {}:
+        values.pop("installation")
+    if values.get("api") == {}:
+        values.pop("api")
+    for name in ("channels", "channelEgress"):
+        runtime(installation).pop(name, None)
+    return values, installation
+
+
+def validate(before_values, before_installation, values, installation, namespace, release):
+    enabled = source(before_values, before_installation, namespace, release)
+    require(json.dumps(remainder(before_values, before_installation), sort_keys=True, allow_nan=False) ==
+            json.dumps(remainder(values, installation), sort_keys=True, allow_nan=False),
+            "one-off candidate changes unrelated settings; only named channel fields may change")
+    require("slackProxy" not in values and "channels" not in runtime(installation) and
+            "channelDirectoryProxyUrl" not in values.get("api", {}), "candidate retains obsolete channel keys")
+    egress = values.get("channelEgress")
+    require(isinstance(egress, dict) and egress.get("enabled") is enabled,
+            "candidate must preserve whether legacy channels were enabled")
+    if not enabled:
+        require(egress == {"enabled": False} and "channelEgress" not in runtime(installation),
+                "disabled channels require only channelEgress.enabled: false")
+        return False
+    # The release startup preflight validates the full Driver contract. This check
+    # limits the transformation and makes Helm and the external Installation agree.
+    defaults = json.loads(command(["yq", "-o=json", ".channelEgress", str(ROOT / "deploy/helm/openclaw-enterprise/values.yaml")]))
+    require(set(egress) <= set(defaults) | {"gatewayNamespace"}, "unknown channel Helm field")
+    require(egress.get("image", defaults["image"]) == defaults["image"], "use the qualified Envoy image")
+    require(egress.get("gatewayNamespace", namespace) == namespace, "channel Gateway must belong to the selected release namespace")
+    fields = ("gatewayName", "envoyNamespace", "serviceName", "listenerPortStart", "listenerPortEnd", "occListenerPort", "inspectionPort", "excludedCidrs")
+    expected = {key: egress.get(key, defaults[key]) for key in fields}
+    expected["gatewayNamespace"] = namespace
+    require(runtime(installation).get("channelEgress") == expected,
+            "Helm and Installation channel settings differ")
+    require(expected["excludedCidrs"], "supply the complete Pod, Service and node ranges, including public node addresses")
+    for cidr in expected["excludedCidrs"]:
+        require(str(ipaddress.ip_network(cidr, strict=True)) == cidr, "exclusions must be canonical CIDRs")
+    return True
+
+
+def prepare(args):
+    values, installation = helm_values(args.values, "--values"), yaml(args.installation)
+    before_values, before_installation = copy.deepcopy(values), copy.deepcopy(installation)
+    enabled = source(values, installation, args.namespace, args.release)
+    values.pop("slackProxy", None)
+    values.get("api", {}).pop("channelDirectoryProxyUrl", None)
+    runtime(installation).pop("channels", None)
+    values["channelEgress"] = {"enabled": enabled}
+    if args.installation_secret:
+        values.setdefault("installation", {})["secretName"] = args.installation_secret
+    if enabled:
+        defaults = json.loads(command(["yq", "-o=json", ".channelEgress", str(ROOT / "deploy/helm/openclaw-enterprise/values.yaml")]))
+        routing = values.get("gatewayRouting", {})
+        defaults.update(enabled=True, gatewayClassName=routing.get("gatewayClassName", "eg"),
+                        envoyNamespace=routing.get("envoyNamespace", "envoy-gateway-system"),
+                        excludedCidrs=args.excluded_cidr)
+        values["channelEgress"] = defaults
+        fields = ("gatewayName", "envoyNamespace", "serviceName", "listenerPortStart", "listenerPortEnd", "occListenerPort", "inspectionPort", "excludedCidrs")
+        runtime(installation)["channelEgress"] = {key: defaults[key] for key in fields}
+        runtime(installation)["channelEgress"]["gatewayNamespace"] = args.namespace
+    validate(before_values, before_installation, values, installation, args.namespace, args.release)
+    directory = Path(args.out_dir)
+    directory.mkdir(mode=0o700)
+    save(directory / "values.yaml", values, exclusive=True)
+    save(directory / "installation.yaml", installation, exclusive=True)
+    print("Prepared field-only candidates; normalized unrelated configuration is unchanged. No cluster changes made.")
+
+
+def inventory_rows(inventory):
+    return {(ns["id"], agent["id"]): agent for ns in inventory["namespaces"] for agent in ns["agents"]}
+
+
+def stopped_inventory(before, after):
+    expected = copy.deepcopy(before)
+    for agent in inventory_rows(expected).values():
+        if agent["status"] == "active" and agent["desiredRuntimeState"] == "running":
+            agent["desiredRuntimeState"] = "stopped"
+            agent.pop("activeRevisionId", None)
+            # No revision remains for the worker to reverify after completed Stop.
+            agent.pop("repositoryWorkerRestart", None)
+    # Normalize absence in the same way as the shared upgrade inventory projection.
+    for document in (expected, after):
+        for agent in inventory_rows(document).values():
+            for key in ("activeRevisionId", "repositoryWorkerRestart"):
+                agent.setdefault(key, None)
+    require(expected == after, "inventory changed outside the recorded Stops; inspect all Agent selections before proceeding")
+
+
+def lifecycle(action, args):
+    directory = Path(args.evidence_dir)
+    original = json.loads((directory / "inventory/restart-preflight.json").read_text())
+    journal = directory / "channel-agent-operations.json"
+    base = [args.occ, "--output", "json", "--timeout-seconds", str(args.timeout_seconds)]
+    def occ(*tail):
+        return json.loads(command([*base, *tail]))
+    def agent_state(target):
+        agent = occ("--namespace", target["namespaceId"], "agent", "get", target["agentId"])
+        require(agent.get("id") == target["agentId"] and agent.get("namespaceId") == target["namespaceId"],
+                "Agent read identity does not match the recorded operation")
+        return agent
+
+    def confirm_completed(target):
+        agent = agent_state(target)
+        require(agent["status"] == "active", "recorded Agent is no longer active")
+        if action == "stop":
+            require(agent["desiredRuntimeState"] == "stopped" and not agent.get("activeRevisionId"),
+                    "a completed Stop changed before upgrade quiescence")
+        else:
+            require(agent["desiredRuntimeState"] == "running" and agent.get("activeRevisionId") == target["deploymentId"] and
+                    target["deploymentId"] != target["originalRevisionId"],
+                    "the recorded deployment is not the Agent's running new revision; inspect concurrent changes or manual recovery")
+
+    if not journal.exists():
+        require(action == "stop", "missing original running-Agent journal; do not infer it from the upgraded fleet")
+        rows = inventory_rows(original)
+        require(all(agent["status"] == "active" and not (agent["desiredRuntimeState"] == "stopped" and agent.get("activeRevisionId")) for agent in rows.values()),
+                "settle deleting Agents and pending Stops on the old controller before upgrading")
+        targets = []
+        for (ns, agent_id), agent in rows.items():
+            if agent["status"] != "active" or agent["desiredRuntimeState"] != "running":
+                continue
+            require(agent.get("activeRevisionId") and not agent["deploymentInProgress"],
+                    "settle running Agents without an active revision before this transition")
+            targets.append({"namespaceId": ns, "agentId": agent_id, "originalRevisionId": agent["activeRevisionId"], "stop": "unsent", "deploy": "unsent"})
+        # This complete list reaches stable storage before the first mutation.
+        save(journal, {"installationId": original["installationId"], "targets": targets}, exclusive=True)
+    private(journal)
+    state = json.loads(journal.read_text())
+    require(state["installationId"] == original["installationId"], "Agent journal Installation mismatch")
+    expected_targets = {(ns, agent_id, agent["activeRevisionId"]) for (ns, agent_id), agent in inventory_rows(original).items()
+                        if agent["status"] == "active" and agent["desiredRuntimeState"] == "running"}
+    require({(item["namespaceId"], item["agentId"], item["originalRevisionId"]) for item in state["targets"]} == expected_targets and len(state["targets"]) == len(expected_targets),
+            "Agent journal no longer matches the original running set")
+    if action == "verify-stopped":
+        require(all(item["stop"] == "complete" for item in state["targets"]),
+                "quiesced recovery requires every original Stop to be complete")
+        observed = directory / "inventory/before-stop-selection.json"
+        private(observed)
+        stopped_inventory(original, json.loads(observed.read_text()))
+        print("Recorded Agent Stops and the pre-quiescence inventory are confirmed.")
+        return
+    for target in state["targets"]:
+        ns, agent_id = target["namespaceId"], target["agentId"]
+        if target[action] == "complete":
+            confirm_completed(target)
+            continue
+        require(target[action] != "sending", f"{action} outcome is unknown for Agent {agent_id}; inspect Agent revision history, deployment status and audit records. Do not resubmit automatically. Preserve this journal for manual recovery.")
+        if target[action] == "unsent":
+            agent = agent_state(target)
+            require(agent["status"] == "active", "recorded Agent is no longer active; manual recovery required")
+            if action == "stop":
+                require(agent.get("activeRevisionId") == target["originalRevisionId"] and agent["desiredRuntimeState"] == "running", "Agent changed since inventory; Stop was not submitted")
+            else:
+                require(agent["desiredRuntimeState"] == "stopped" and not agent.get("activeRevisionId"), "recorded Agent is not fully stopped; Deploy was not submitted")
+            target[action] = "sending"
+            save(journal, state)
+            response = occ("--namespace", ns, "agent", action, agent_id,
+                           *(["--if-active-revision", target["originalRevisionId"]] if action == "stop" else []))
+            if action == "stop":
+                require(response.get("id") == agent_id and response.get("namespaceId") == ns and response.get("desiredRuntimeState") == "stopped", "Stop response is uncertain; inspect Agent state before manual recovery")
+                target["stopResponse"] = response
+            else:
+                require(isinstance(response.get("id"), str) and response["id"] and response.get("agentId") == agent_id and response.get("namespaceId") == ns, "Deploy response is uncertain; inspect revision history and audit records before manual recovery")
+                target["deploymentId"] = response["id"]
+            target[action] = "accepted"
+            save(journal, state)
+        deadline = time.monotonic() + args.timeout_seconds
+        while time.monotonic() < deadline:
+            if action == "stop":
+                observed = agent_state(target)
+                require(observed["status"] == "active" and observed["desiredRuntimeState"] == "stopped", "Agent changed while Stop was pending")
+                complete = not observed.get("activeRevisionId")
+            else:
+                observed = occ("--namespace", ns, "agent", "deployment-status", agent_id, target["deploymentId"])
+                require(observed.get("deploymentId") == target["deploymentId"] and observed.get("agentId") == agent_id and observed.get("namespaceId") == ns, "deployment status identity mismatch")
+                require(observed["status"] != "failed", f"deployment {target['deploymentId']} failed; inspect its status and recover manually")
+                complete = observed["status"] == "succeeded"
+            if complete:
+                confirm_completed(target)
+                target[action] = "complete"
+                save(journal, state)
+                break
+            time.sleep(2)
+        require(target[action] == "complete", f"{action} still pending; inspect its recorded response before resuming")
+    print(f"Channel transition: recorded {action} operations completed.")
+
+
+def main():
+    os.umask(0o077)
+    if len(sys.argv) > 1 and sys.argv[1] == "run":
+        os.chdir(ROOT)
+        os.execv(str(ROOT / "scripts/upgrade-production-images"), ["upgrade-production-images", "--channel-egress-one-off", *sys.argv[2:]])
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="action", required=True)
+    prep = sub.add_parser("prepare", help="prepare channel-only candidate files without cluster mutations")
+    for key in ("values", "installation", "namespace", "release", "out-dir"):
+        prep.add_argument("--" + key, required=True)
+    prep.add_argument("--excluded-cidr", action="append", default=[])
+    prep.add_argument("--installation-secret", help="already staged immutable replacement Secret; the shared upgrader verifies ownership and data")
+    sub.add_parser("run", help="execute through the shared upgrader; accepts its flags, including --preflight-only and --resume")
+    check = sub.add_parser("validate", help=argparse.SUPPRESS)
+    for key in ("before-values", "before-installation", "values", "installation", "namespace", "release"):
+        check.add_argument("--" + key, required=True)
+    inventory = sub.add_parser("check-stopped-inventory", help=argparse.SUPPRESS)
+    inventory.add_argument("before")
+    inventory.add_argument("after")
+    for action in ("stop", "deploy", "verify-stopped"):
+        step = sub.add_parser(action, help=argparse.SUPPRESS)
+        step.add_argument("--evidence-dir", required=True)
+        step.add_argument("--occ", required=True)
+        step.add_argument("--timeout-seconds", type=int, required=True)
+    args = parser.parse_args()
+    if args.action == "prepare":
+        prepare(args)
+    elif args.action == "validate":
+        enabled = validate(
+            helm_values(args.before_values, "--before-values"), yaml(args.before_installation),
+            helm_values(args.values, "--values"), yaml(args.installation), args.namespace, args.release,
+        )
+        print(str(enabled).lower())
+    elif args.action == "check-stopped-inventory":
+        stopped_inventory(json.loads(Path(args.before).read_text()), json.loads(Path(args.after).read_text()))
+    else:
+        lifecycle(args.action, args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
+        # Do not echo native exception text: it can contain sensitive configuration.
+        error = sys.exc_info()[1]
+        print(f"upgrade-channel-egress: {error if isinstance(error, ValueError) else 'operation failed; inspect protected inputs and recorded operations before retrying'}", file=sys.stderr)
+        sys.exit(1)

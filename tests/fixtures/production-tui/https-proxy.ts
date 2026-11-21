@@ -75,7 +75,21 @@ createServer(
       },
     );
     upstream.setTimeout(upstreamTimeoutMs, () => upstream.destroy());
-    upstream.on("error", () => {
+    upstream.on("error", (error: NodeJS.ErrnoException) => {
+      const code =
+        typeof error.code === "string" && /^[A-Z0-9_]{1,64}$/.test(error.code)
+          ? error.code
+          : "UNKNOWN";
+      const socket = error as NodeJS.ErrnoException & { address?: string; port?: number };
+      console.error(
+        JSON.stringify({
+          event: "operator.upstream.error",
+          code,
+          address: socket.address,
+          port: socket.port,
+          target: target.host,
+        }),
+      );
       if (!outgoing.headersSent) {
         outgoing.writeHead(502);
       }

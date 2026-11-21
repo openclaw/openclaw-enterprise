@@ -47,6 +47,7 @@ import {
   AgentParams,
   FirstDeploymentIntent,
   AgentDeploymentBody,
+  AgentStopQuery,
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
@@ -1282,13 +1283,13 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "Register a credential source with the selected Credential Gateway",
+    summary: "Register a Credential Gateway source; managed static registration is staged",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      body: CreateCredentialSourceBody,
-      response: { 201: CredentialSourceResponseRef, ...createErrors },
+      body: Type.Union([CreateCredentialSourceBody, Type.Ref("RegisterTokenServiceSourceBody")]),
+      response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1315,7 +1316,7 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Get one credential source and its live Credential Gateway status",
+    summary: "Get one readable credential source and its available status",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
@@ -1331,13 +1332,13 @@ export const occApiRoutes = [
     iamAction: "update",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Push current or replacement Secret values to the Credential Gateway copy",
+    summary: "Update a Credential Gateway source; managed updates are staged",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      body: UpdateCredentialSourceBody,
-      response: { 200: CredentialSourceResponseRef, ...createErrors },
+      body: Type.Union([UpdateCredentialSourceBody, Type.Ref("UpdateTokenServiceSourceBody")]),
+      response: { 200: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1364,7 +1365,7 @@ export const occApiRoutes = [
     iamAction: "delete",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Remove an unreferenced credential source from the Credential Gateway",
+    summary: "Remove an unreferenced credential source",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
@@ -2290,7 +2291,7 @@ export const occApiRoutes = [
     summary: "Stop one Agent and keep its saved Agent revision and persistent state",
     tags: ["Agents"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: AgentStopQuery,
       params: AgentParams,
       response: { 202: AgentResponse, ...mutationErrors },
     },

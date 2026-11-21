@@ -1,3 +1,5 @@
+import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
+import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -13,7 +15,10 @@ import { openAiStaticProviderRef } from "../drivers/egress-proxy/openai-provider
 import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
 import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
-import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
+import type {
+  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
+} from "@openclaw-enterprise/contracts";
 import type { OpenShellProxyOptions } from "../drivers/egress-proxy/openshell.ts";
 import type { EgressAuthorityConfiguration } from "./egress-authority.ts";
 import {
@@ -46,7 +51,6 @@ import type {
   ConfigurationDriver,
   CredentialGatewayDriver,
   CredentialRefreshDriver,
-  DriverCapability,
   DriverImplementation,
   IAMDriver,
   Identity,
@@ -85,10 +89,11 @@ import {
   PreprovisionedKubernetesNamespace,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
+import { ManagedOpenShellSandbox } from "../drivers/sandbox/openshell/managed.ts";
 import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import {
   createExternalDriver,
-  createExternalSandboxRegistration,
+  createExternalProtectedDriver,
   loadDriverPackage,
 } from "./driver-packages.ts";
 import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
@@ -124,6 +129,7 @@ import {
   type OpenShellCredentialGatewayOptions,
 } from "../drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../drivers/credential-refresh/openshell.ts";
+import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
 
 import { loadInstallationPresets, type ShadowedDefaultPreset } from "./installation-presets.ts";
 
@@ -168,6 +174,7 @@ export interface InstallationStartupConfiguration {
     readonly credential_gateway?: SelectedDriverConfiguration;
     readonly credential_refresh?: SelectedDriverConfiguration;
     readonly credential_proxy?: SelectedDriverConfiguration;
+    readonly token_service?: SelectedDriverConfiguration;
     readonly plugin?: readonly SelectedDriverConfiguration[];
     readonly service_account?: { readonly id: string };
   };
@@ -232,6 +239,7 @@ export type ServiceAccountDriverFactory = (
 ) => void;
 
 export interface InstallationRuntimeDrivers {
+  readonly channelDrivers?: readonly ChannelProviderDriver[];
   readonly defaultPresets?: readonly PresetDraftDefinition[];
   /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
   readonly shadowedDefaultPresets?: readonly ShadowedDefaultPreset[];
@@ -243,13 +251,13 @@ export interface InstallationRuntimeDrivers {
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
-  /** Process-local owner when the Gateway is selected from the Sandbox package. */
-  readonly packagedGatewayRegistration?: InstalledDriver;
   readonly pluginSourceReader?: ControllerOptions["pluginSourceReader"];
   readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly protectedDriver?: InstalledDriver;
+  /** Same selected Sandbox owner, with the native delivery capability when available. */
+  readonly credentialDeliveryRegistration?: InstalledDriver;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[];
-  readonly proxyDriver?: CredentialProxyDriver;
+  readonly proxyDriver?: LegacyEgressProxyDriver;
   /** Present only when this registration owns protected repository delivery. */
   readonly repositoryGitDriver?: InstalledDriver;
   readonly tokenService?: TokenService;
@@ -272,40 +280,6 @@ export interface InstallationRuntimeDrivers {
     backendId: string;
   }>;
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
-}
-
-/** Register the exact selected package views together in both process registries. */
-export function installPackagedGatewayRegistration(
-  controller: OpenClawController,
-  owner: InstalledDriver,
-  selections: {
-    readonly sandbox: SandboxDriver | undefined;
-    readonly gateway: CredentialGatewayDriver | undefined;
-    readonly proxy: CredentialProxyDriver | undefined;
-    readonly protectedOwner: InstalledDriver | undefined;
-  },
-): void {
-  if (
-    owner.require("sandbox") !== selections.sandbox ||
-    owner.require("credential_gateway") !== selections.gateway
-  ) {
-    throw new Error(
-      "The selected Credential Gateway and Sandbox must use the same installed Driver.",
-    );
-  }
-  const capabilities: DriverCapability[] = ["sandbox", "credential_gateway"];
-  if (selections.proxy !== undefined || selections.protectedOwner !== undefined) {
-    if (
-      owner !== selections.protectedOwner ||
-      owner.require("credential_proxy") !== selections.proxy
-    ) {
-      throw new Error(
-        "The selected Credential Proxy must use the same installed Driver as Sandbox.",
-      );
-    }
-    capabilities.push("credential_proxy");
-  }
-  controller.installDriver(owner, capabilities);
 }
 
 /**
@@ -692,7 +666,6 @@ function backendConfiguration(
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
   repoSelection: InstallationStartupConfiguration["repository"],
   credentialGatewayId: string | undefined,
-  packagedCredentialGateway: boolean,
   credentialRefreshId: string | undefined,
   credentialProxyId: string | undefined,
 ): readonly BackendDefinition[] {
@@ -707,16 +680,7 @@ function backendConfiguration(
     throw new Error("drivers.credential_refresh requires drivers.credential_gateway.");
   }
   if (
-    packagedCredentialGateway &&
-    (credentialRefreshId !== undefined || backends.some((backend) => backend.type === "openshell"))
-  ) {
-    throw new Error(
-      "A packaged Credential Gateway cannot use a bundled OpenShell Backend or Credential Refresh.",
-    );
-  }
-  if (
     credentialGatewayId !== undefined &&
-    !packagedCredentialGateway &&
     !backends.some((backend) => backend.type === "openshell")
   ) {
     throw new Error(
@@ -793,6 +757,7 @@ function selected(
     | "credential_gateway"
     | "credential_refresh"
     | "credential_proxy"
+    | "token_service"
     | "plugin"
     | "repo",
   implementation: string,
@@ -955,6 +920,7 @@ async function composeInstallationConfiguration(
       "credential_gateway",
       "credential_refresh",
       "credential_proxy",
+      "token_service",
       "plugin",
       "service_account",
       "repo",
@@ -1018,35 +984,16 @@ async function composeInstallationConfiguration(
   const nativeRepositorySelection = repositoryConfiguration?.nativeSender;
   const preparedRepositoryGit = repositoryConfiguration?.prepared;
   let repositoryTransportConfiguration = repositoryConfiguration?.transport;
-  const sandboxSelection =
-    drivers.sandbox === undefined ? undefined : object(drivers.sandbox, "drivers.sandbox");
   let credentialGateway: SelectedDriverConfiguration | undefined;
-  let packageGatewayId: string | undefined;
   if (drivers.credential_gateway !== undefined) {
     const selection = object(drivers.credential_gateway, "drivers.credential_gateway");
     closed(selection, ["id", "configuration"], "drivers.credential_gateway");
-    if (sandboxSelection?.package !== undefined) {
-      if (options.mode !== "production") {
-        throw new Error("A packaged Credential Gateway requires production startup.");
-      }
-      const id = nonempty(selection.id, "drivers.credential_gateway.id");
-      if (id !== sandboxSelection.id) {
-        throw new Error("Credential Gateway must select the same installed Driver as Sandbox.");
-      }
-      closed(
-        object(selection.configuration, "drivers.credential_gateway.configuration"),
-        [],
-        "drivers.credential_gateway.configuration",
-      );
-      packageGatewayId = id;
-    } else {
-      credentialGateway = selected(
-        selection,
-        "credential_gateway",
-        "openshell",
-        OpenShellCredentialGatewayDriver,
-      );
-    }
+    credentialGateway = selected(
+      selection,
+      "credential_gateway",
+      "openshell",
+      OpenShellCredentialGatewayDriver,
+    );
   }
   let credentialRefresh: SelectedDriverConfiguration | undefined;
   if (drivers.credential_refresh !== undefined) {
@@ -1059,6 +1006,8 @@ async function composeInstallationConfiguration(
       OpenShellCredentialRefreshDriver,
     );
   }
+  const sandboxSelection =
+    drivers.sandbox === undefined ? undefined : object(drivers.sandbox, "drivers.sandbox");
   let proxySelection: SelectedDriverConfiguration | undefined;
   let packageProxyId: string | undefined;
   let egressAuthority: EgressAuthorityConfiguration | undefined;
@@ -1103,13 +1052,13 @@ async function composeInstallationConfiguration(
           await readPublicCaBundle(configuredProxy.prepared.issuerCaPath),
         );
       }
-      const { OpenShellCredentialProxyDriver } =
+      const { OpenShellLegacyEgressProxyDriver } =
         await import("../drivers/egress-proxy/openshell.ts");
       proxySelection = selected(
         { ...selection, configuration: configuredProxy.policy },
         "credential_proxy",
         "openshell",
-        OpenShellCredentialProxyDriver,
+        OpenShellLegacyEgressProxyDriver,
       );
     }
   }
@@ -1125,8 +1074,7 @@ async function composeInstallationConfiguration(
     configuration.backend,
     serviceAccount,
     repoSelection,
-    credentialGateway?.id ?? packageGatewayId,
-    packageGatewayId !== undefined,
+    credentialGateway?.id,
     credentialRefresh?.id,
     proxySelection?.id ?? packageProxyId,
   );
@@ -1219,10 +1167,49 @@ async function composeInstallationConfiguration(
           packageRoot,
           options.packageRoot !== undefined,
         );
+  const boxPackage =
+    sandboxSelection?.id === "strands-box-sandbox" && sandboxPackage === undefined
+      ? await import("../drivers/sandbox/strands-box.ts")
+      : undefined;
   const bundledSandboxPackage =
-    sandboxSelection !== undefined && sandboxPackage === undefined
+    sandboxSelection !== undefined && sandboxPackage === undefined && boxPackage === undefined
       ? await loadBundledOpenShellSandboxDriver()
       : undefined;
+
+  const sandbox =
+    sandboxSelection === undefined
+      ? undefined
+      : selected(
+          sandboxSelection,
+          "sandbox",
+          sandboxPackage?.implementation ?? (boxPackage ? "strands-box" : "openshell"),
+          sandboxPackage?.module ?? boxPackage ?? bundledSandboxPackage!,
+        );
+  let tokenServiceSelection: SelectedDriverConfiguration | undefined;
+  if (drivers.token_service !== undefined) {
+    const selection = object(drivers.token_service, "drivers.token_service");
+    closed(selection, ["id", "configuration"], "drivers.token_service");
+    if (selection.id !== "occ") {
+      throw new Error("drivers.token_service.id must select occ.");
+    }
+    tokenServiceSelection = selected(
+      selection,
+      "token_service",
+      "occ/token-service",
+      OCCTokenServiceDriver,
+    );
+  }
+  const openShellServiceIntegration =
+    kubernetesCompute &&
+    sandbox !== undefined &&
+    sandboxPackage === undefined &&
+    (sandbox.configuration as unknown as OpenShellSandboxDriverOptions).integrationMode ===
+      "service";
+  if (openShellServiceIntegration && options.createSandboxDriver !== undefined) {
+    throw new Error(
+      "Managed Kubernetes + OpenShell Compute requires its bundled Sandbox collaborator.",
+    );
+  }
 
   const configured = selected(
     configurationSelection,
@@ -1236,11 +1223,14 @@ async function composeInstallationConfiguration(
     iamPackage?.implementation ?? "occ/native-iam",
     iamPackage?.module ?? NativeIAMDriver,
   );
+  const bundledCompute = sshCompute
+    ? { implementation: "occ/ssh", module: SshComputeDriver }
+    : { implementation: "occ/kubernetes", module: KubernetesComputeDriver };
   const compute = selected(
     computeSelection,
     "compute",
-    computePackage?.implementation ?? (sshCompute ? "occ/ssh" : "occ/kubernetes"),
-    computePackage?.module ?? (sshCompute ? SshComputeDriver : KubernetesComputeDriver),
+    computePackage?.implementation ?? bundledCompute.implementation,
+    computePackage?.module ?? bundledCompute.module,
   );
   if (kubernetesCompute) {
     requireChartGatewayRouting(
@@ -1248,6 +1238,16 @@ async function composeInstallationConfiguration(
       environment,
     );
   }
+  const createOpenShellSandbox = (
+    configuration: Readonly<Record<string, unknown>>,
+    selection: OpenShellSandboxDriverSelection,
+  ): SandboxDriver =>
+    openShellServiceIntegration
+      ? new ManagedOpenShellSandbox(
+          configuration as unknown as OpenShellSandboxDriverOptions,
+          selection,
+        )
+      : new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection);
   const secret = selected(
     secretSelection,
     "secret",
@@ -1323,26 +1323,6 @@ async function composeInstallationConfiguration(
       },
     ]);
   }
-  const sandbox =
-    sandboxSelection === undefined
-      ? undefined
-      : selected(
-          sandboxSelection,
-          "sandbox",
-          sandboxPackage?.implementation ?? "openshell",
-          sandboxPackage?.module ?? bundledSandboxPackage!,
-        );
-  if (sandbox !== undefined && packageGatewayId !== undefined) {
-    credentialGateway = selected(
-      { id: packageGatewayId, configuration: {} },
-      "credential_gateway",
-      sandbox.implementation,
-      {
-        configurationSchema: { type: "object", properties: {}, additionalProperties: false },
-        validateConfiguration: () => [],
-      },
-    );
-  }
   if (sandbox?.package !== undefined && packageProxyId !== undefined) {
     // The package owns one startup configuration. Its Sandbox-only agent
     // contributions must not be registered a second time as Credential Proxy.
@@ -1358,7 +1338,24 @@ async function composeInstallationConfiguration(
   if (sandbox !== undefined && computePackage !== undefined) {
     throw new Error("drivers.sandbox requires the bundled Kubernetes Compute Driver.");
   }
-  if (sandbox !== undefined && sandboxPackage === undefined && openShellBackend === undefined) {
+  if (
+    boxPackage &&
+    (openShellBackend ||
+      proxySelection ||
+      !kubernetesCompute ||
+      (compute.configuration as unknown as KubernetesComputeDriverOptions).executionCluster !==
+        undefined)
+  ) {
+    throw new Error(
+      "The Strands Box Pod driver requires same-cluster Kubernetes Compute and a sandbox-only installation.",
+    );
+  }
+  if (
+    sandbox !== undefined &&
+    sandboxPackage === undefined &&
+    !boxPackage &&
+    openShellBackend === undefined
+  ) {
     throw new Error(
       "The bundled OpenShell drivers.sandbox requires a backend entry with type openshell.",
     );
@@ -1423,6 +1420,7 @@ async function composeInstallationConfiguration(
       ...(credentialGateway === undefined ? {} : { credential_gateway: credentialGateway }),
       ...(credentialRefresh === undefined ? {} : { credential_refresh: credentialRefresh }),
       ...(proxySelection === undefined ? {} : { credential_proxy: proxySelection }),
+      ...(tokenServiceSelection === undefined ? {} : { token_service: tokenServiceSelection }),
       plugin: plugins.map(({ config }) => config),
       ...(serviceAccount === undefined ? {} : { service_account: serviceAccount }),
     }),
@@ -1482,8 +1480,8 @@ async function composeInstallationConfiguration(
     configuration: repositoryTransportConfiguration,
     resolveDelivery: repositoryRuntime?.resolveRepositoryDelivery,
   };
-  const bundledCredentialGateway =
-    credentialGateway === undefined || packageGatewayId !== undefined
+  const credentialGatewayDriver =
+    credentialGateway === undefined
       ? undefined
       : new OpenShellCredentialGatewayDriver(
           credentialGateway.configuration as unknown as OpenShellCredentialGatewayOptions,
@@ -1494,9 +1492,9 @@ async function composeInstallationConfiguration(
           },
         );
   const pluginSourceReader =
-    bundledCredentialGateway === undefined
+    credentialGatewayDriver === undefined
       ? undefined
-      : bindOpenShellPluginSourceReader(openShell!, bundledCredentialGateway);
+      : bindOpenShellPluginSourceReader(openShell!, credentialGatewayDriver);
   if (
     proxySelection !== undefined &&
     sandboxPackage === undefined &&
@@ -1532,110 +1530,154 @@ async function composeInstallationConfiguration(
       tokenService,
     );
   }
-  const { sandboxDriver, protectedDriver, packagedGatewayRegistration, repositoryTransport } =
-    await (async (): Promise<
-      Pick<
-        InstallationRuntimeDrivers,
-        "sandboxDriver" | "protectedDriver" | "packagedGatewayRegistration" | "repositoryTransport"
-      >
-    > => {
-      if (sandbox === undefined) {
-        return {};
-      }
-      if (
-        proxySelection === undefined &&
-        packageGatewayId === undefined &&
-        options.createSandboxDriver !== undefined
-      ) {
-        return {
-          sandboxDriver: validateCreatedSandboxDriver(
-            options.createSandboxDriver(sandbox, openShell),
-            sandbox,
-          ),
-        };
-      }
-      if (sandboxPackage !== undefined) {
-        if (proxySelection === undefined && packageGatewayId === undefined) {
-          return {
-            sandboxDriver: createExternalDriver(
-              sandboxPackage.module,
-              sandbox,
-              "sandbox",
-            ) as SandboxDriver,
-          };
-        }
-        // One registration supplies every selected view of the package.
-        const owner = await createExternalSandboxRegistration(
-          sandboxPackage.module,
-          sandbox,
-          [
-            ...(packageGatewayId === undefined ? [] : (["credential_gateway"] as const)),
-            ...(proxySelection === undefined ? [] : (["credential_proxy"] as const)),
-          ],
-          repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
-        );
-        loaded.externalOwner = owner;
-        return {
-          sandboxDriver: owner.require("sandbox"),
-          ...(proxySelection === undefined ? {} : { protectedDriver: owner }),
-          ...(packageGatewayId === undefined ? {} : { packagedGatewayRegistration: owner }),
-        };
-      }
-      const { createOpenShellCapabilities } =
-        await import("../drivers/egress-proxy/openshell-registration.ts");
-      const capabilities = createOpenShellCapabilities({
-        sandbox,
-        backend: openShell!,
-        operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
-        createSandbox: (configuration, selection) =>
-          new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
-        ...(proxySelection === undefined
-          ? {}
-          : {
-              repository: repositoryDelivery,
-              proxy: {
-                id: proxySelection.id,
-                configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
-                preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
-                ...(egressAuthority && { exchangeAuthority: egressAuthority }),
-              },
-            }),
-      });
-      if (proxySelection === undefined) {
-        return { sandboxDriver: capabilities.sandbox };
-      }
-      // One configured OpenShell owner, with the original capability IDs retained for v2 revisions.
-      const repositoryTransport = capabilities.repositoryTransport;
-      const owner = new InstalledDriver(
-        {
-          ...sandbox,
-          retiredStaticProviderRefs: [openAiStaticProviderRef],
-          repositoryOnly: repositoryTransport !== undefined && egressAuthority === undefined,
-          configuration: {
-            sandbox: sandbox.configuration,
-            backend: openShellBackend,
-            proxy: drivers.credential_proxy,
-            ...(repositoryTransport && {
-              repositoryAuthorityIdentity: repositoryRuntime!.authorityIdentity,
-              modelGateway: drivers.credential_gateway,
-            }),
-            namespaceBinding,
-          },
-        },
-        {
-          capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy! },
-          close: capabilities.close,
-        },
-        { sandbox: sandbox.id, credential_proxy: proxySelection.id },
-      );
+  const createCredentialDeliveryProxy = async (
+    pairedSandbox: SandboxDriver,
+  ): Promise<CredentialProxyDriver> => {
+    const { OpenShellCredentialProxyDriver } =
+      await import("../drivers/credential-proxy/openshell.ts");
+    return new OpenShellCredentialProxyDriver({
+      id: pairedSandbox.id,
+      implementation: pairedSandbox.implementation,
+      backend: openShell!,
+      sandbox: pairedSandbox,
+    });
+  };
+  const { sandboxDriver, protectedDriver, repositoryTransport } = await (async (): Promise<
+    Pick<InstallationRuntimeDrivers, "sandboxDriver" | "protectedDriver" | "repositoryTransport">
+  > => {
+    if (sandbox === undefined) {
+      return {};
+    }
+    if (proxySelection === undefined && options.createSandboxDriver !== undefined) {
       return {
-        sandboxDriver: owner.require("sandbox"),
-        protectedDriver: owner,
-        ...(repositoryTransport && { repositoryTransport }),
+        sandboxDriver: validateCreatedSandboxDriver(
+          options.createSandboxDriver(sandbox, openShell),
+          sandbox,
+        ),
       };
-    })();
-  const credentialGatewayDriver =
-    packagedGatewayRegistration?.require("credential_gateway") ?? bundledCredentialGateway;
+    }
+    if (boxPackage) {
+      const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
+      if (kubernetes.executionCluster || !kubernetes.gatewayRouting) {
+        throw new Error("Strands Box requires a single cluster with Gateway routing.");
+      }
+      return {
+        sandboxDriver: new boxPackage.StrandsBoxSandboxDriver(
+          sandbox.configuration as unknown as import("../drivers/sandbox/strands-box.ts").StrandsBoxOptions,
+          {
+            id: sandbox.id,
+            authentication: kubernetes.authentication,
+            dns: kubernetes.network.dns,
+            routing: kubernetes.gatewayRouting,
+          },
+        ),
+      };
+    }
+    if (sandboxPackage !== undefined) {
+      if (proxySelection === undefined) {
+        return {
+          sandboxDriver: createExternalDriver(
+            sandboxPackage.module,
+            sandbox,
+            "sandbox",
+          ) as SandboxDriver,
+        };
+      }
+      const owner = await createExternalProtectedDriver(
+        sandboxPackage.module,
+        sandbox,
+        repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
+      );
+      loaded.externalOwner = owner;
+      return { sandboxDriver: owner.require("sandbox"), protectedDriver: owner };
+    }
+    if (proxySelection === undefined) {
+      return {
+        sandboxDriver: createOpenShellSandbox(sandbox.configuration, {
+          id: sandbox.id,
+          implementation: sandbox.implementation,
+          backend: openShell!,
+          operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
+        }),
+      };
+    }
+    const { createOpenShellCapabilities } =
+      await import("../drivers/egress-proxy/openshell-registration.ts");
+    const capabilities = createOpenShellCapabilities({
+      sandbox,
+      backend: openShell!,
+      operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
+      createSandbox: createOpenShellSandbox,
+      repository: repositoryDelivery,
+      proxy: {
+        id: proxySelection.id,
+        configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
+        preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
+        ...(egressAuthority && { exchangeAuthority: egressAuthority }),
+      },
+    });
+    // One configured OpenShell owner, with the original capability IDs retained for v2 revisions.
+    const repositoryTransport = capabilities.repositoryTransport;
+    const deliveryProxy =
+      tokenServiceSelection === undefined
+        ? undefined
+        : await createCredentialDeliveryProxy(capabilities.sandbox);
+    const owner = new InstalledDriver(
+      {
+        ...sandbox,
+        retiredStaticProviderRefs: [openAiStaticProviderRef],
+        repositoryOnly: repositoryTransport !== undefined && egressAuthority === undefined,
+        configuration: {
+          sandbox: sandbox.configuration,
+          backend: openShellBackend,
+          proxy: drivers.credential_proxy,
+          ...(repositoryTransport && {
+            repositoryAuthorityIdentity: repositoryRuntime!.authorityIdentity,
+            modelGateway: drivers.credential_gateway,
+          }),
+          namespaceBinding,
+        },
+      },
+      {
+        capabilities: {
+          sandbox: capabilities.sandbox,
+          credential_proxy: capabilities.proxy!,
+          ...(deliveryProxy === undefined ? {} : { credential_proxy_delivery: deliveryProxy }),
+        },
+        close: capabilities.close,
+      },
+      { sandbox: sandbox.id, credential_proxy: proxySelection.id },
+    );
+    return {
+      sandboxDriver: owner.require("sandbox"),
+      protectedDriver: owner,
+      ...(repositoryTransport && { repositoryTransport }),
+    };
+  })();
+  let credentialDeliveryRegistration =
+    tokenServiceSelection !== undefined &&
+    protectedDriver?.capabilities.includes("credential_proxy_delivery")
+      ? protectedDriver
+      : undefined;
+  if (
+    credentialDeliveryRegistration === undefined &&
+    tokenServiceSelection !== undefined &&
+    openShell !== undefined &&
+    sandboxDriver !== undefined &&
+    sandboxPackage === undefined &&
+    !boxPackage &&
+    options.createSandboxDriver === undefined
+  ) {
+    const deliveryProxy = await createCredentialDeliveryProxy(sandboxDriver);
+    credentialDeliveryRegistration = new InstalledDriver(
+      {
+        id: sandboxDriver.id,
+        implementation: sandboxDriver.implementation,
+        configuration: { sandbox: sandbox!.configuration, backend: openShellBackend },
+      },
+      { capabilities: { sandbox: sandboxDriver, credential_proxy_delivery: deliveryProxy } },
+    );
+  }
   const credentialRefreshDriver =
     credentialRefresh === undefined
       ? undefined
@@ -1648,6 +1690,24 @@ async function composeInstallationConfiguration(
   // This check admits an implementation to try installation. Compute still verifies its
   // actual recipient and enforcement before release or the first eligible material read.
   repositoryGitDriver?.requireRepositoryGitTransport();
+  const channelOptions = (compute.configuration as unknown as KubernetesComputeDriverOptions)
+    .runtime?.channelEgress;
+  const channelHost =
+    channelOptions === undefined
+      ? undefined
+      : `${channelOptions.serviceName}.${channelOptions.envoyNamespace}.svc`;
+  const channelDrivers: readonly ChannelProviderDriver[] = Object.freeze([
+    {
+      provider: "slack",
+      driver: new SlackChannelDriver(
+        globalThis.fetch,
+        channelOptions === undefined
+          ? undefined
+          : `http://${channelHost}:${channelOptions.occListenerPort}`,
+        { expectProxy: true, managedProxyHosts: channelHost === undefined ? [] : [channelHost] },
+      ),
+    },
+  ]);
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -1665,54 +1725,50 @@ async function composeInstallationConfiguration(
       },
     );
   } else {
+    const selection: NonNullable<ConstructorParameters<typeof KubernetesComputeDriver>[1]> = {
+      id: compute.id,
+      implementation: compute.implementation,
+      lifecycleDrivers: [configurationDriver],
+      channelDrivers,
+      ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+      ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+      // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
+      ...(openShell !== undefined &&
+      sandboxDriver !== undefined &&
+      sandboxPackage === undefined &&
+      options.createSandboxDriver === undefined &&
+      credentialGatewayDriver !== undefined
+        ? {
+            openShellAttachments: {
+              sandboxDriver,
+              credentialGatewayDriver,
+              attachments: credentialGatewayDriver.attachments,
+            },
+          }
+        : {}),
+      ...(protectedDriver === undefined ? {} : { protectedDriver }),
+      preparedTokens: tokenService,
+      ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
+        ? {}
+        : { preparedRepositoryIngress: true }),
+      preprovisionedNamespace,
+      nodeEnrollment: createGatewayNodeEnrollment(() =>
+        readWorkspaceFilesApiKey(
+          nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
+        ),
+      ),
+      readNodeCa: () => readHarnessNodeCa(environment),
+    };
     computeDriver = new KubernetesComputeDriver(
       compute.configuration as unknown as KubernetesComputeDriverOptions,
-      {
-        id: compute.id,
-        implementation: compute.implementation,
-        lifecycleDrivers: [configurationDriver],
-        ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
-        ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-        // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
-        ...(openShell !== undefined &&
-        sandboxDriver !== undefined &&
-        sandboxPackage === undefined &&
-        options.createSandboxDriver === undefined &&
-        bundledCredentialGateway !== undefined
-          ? {
-              openShellAttachments: {
-                sandboxDriver,
-                credentialGatewayDriver: bundledCredentialGateway,
-                attachments: bundledCredentialGateway.attachments,
-              },
-            }
-          : {}),
-        ...(protectedDriver === undefined ? {} : { protectedDriver }),
-        preparedTokens: tokenService,
-        ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
-          ? {}
-          : { preparedRepositoryIngress: true }),
-        preprovisionedNamespace,
-        nodeEnrollment: createGatewayNodeEnrollment(() =>
-          readWorkspaceFilesApiKey(
-            nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
-          ),
-        ),
-        readNodeCa: () => readHarnessNodeCa(environment),
-      },
+      selection,
     );
   }
+  const sandboxOwner = credentialDeliveryRegistration ?? protectedDriver ?? sandboxDriver;
   const namespaceLifecycleBindings =
-    sandboxDriver === undefined ||
-    (protectedDriver ?? sandboxDriver).namespaceLifecycleHooks !== undefined
+    sandboxDriver === undefined || sandboxOwner?.namespaceLifecycleHooks !== undefined
       ? []
-      : [
-          sandboxNamespaceLifecycleBinding(
-            computeDriver,
-            sandboxDriver,
-            protectedDriver ?? sandboxDriver,
-          ),
-        ];
+      : [sandboxNamespaceLifecycleBinding(computeDriver, sandboxDriver, sandboxOwner!)];
   const createIAMDriver = (state: NativeIAMStateStore): IAMDriver => {
     return iamPackage === undefined
       ? new NativeIAMDriver(state, { id: iam.id, implementation: iam.implementation })
@@ -1730,6 +1786,7 @@ async function composeInstallationConfiguration(
   }
   const { repositoryPolicy: _repositoryPolicy, ...repositoryServices } = repositoryRuntime ?? {};
   return Object.freeze({
+    channelDrivers,
     defaultPresets: Object.freeze(defaultPresets),
     shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
     bundledPresetVersions,
@@ -1739,8 +1796,8 @@ async function composeInstallationConfiguration(
     configurationDriver,
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+    ...(credentialDeliveryRegistration === undefined ? {} : { credentialDeliveryRegistration }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-    ...(packagedGatewayRegistration === undefined ? {} : { packagedGatewayRegistration }),
     ...(pluginSourceReader === undefined ? {} : { pluginSourceReader }),
     ...(credentialRefreshDriver === undefined ? {} : { credentialRefreshDriver }),
     ...(protectedDriver === undefined

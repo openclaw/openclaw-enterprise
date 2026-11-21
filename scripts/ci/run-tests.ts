@@ -6,8 +6,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { sanitizeError } from "./failure-redaction.ts";
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.ts";
+import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
-import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
+import { openShellRequiredEnv } from "./openshell-model-inputs.ts";
 import { aggregateGroup } from "./runner-aggregate.ts";
 import {
   case2PhaseEnv,
@@ -108,6 +109,8 @@ function imageDigests(env: NodeJS.ProcessEnv) {
     runtime: "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
     controllerUpgrade: "OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE",
     runtimeUpgrade: "OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE",
+    nativeBaselineController: "OCC_TEST_NATIVE_BASELINE_CONTROLLER_IMAGE",
+    nativeBaselineRuntime: "OCC_TEST_NATIVE_BASELINE_RUNTIME_IMAGE",
     repositoryCredentials: "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE",
     postgres: "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
     node: "OCC_TEST_PRODUCTION_NODE_IMAGE",
@@ -620,6 +623,11 @@ async function runLane(
     };
     const results = new Array<ScheduledFileResult>(lane.files.length);
     let annotateFailure = process.env.GITHUB_ACTIONS === "true";
+    // The Full Integration view splits the OpenShell lane before selection.
+    const splitOpenShellLane =
+      process.env.OCC_CI_SUITE_VIEW === "full-integration" && isOpenShellLane(lane.name);
+    const originalFileOrder =
+      lane.files.length === manifest.lanes.get(lane.name)?.files.length && !splitOpenShellLane;
     const runAt = async (index: number, mode: FileMode) => {
       const file = lane.files[index];
       if (!file) {
@@ -646,9 +654,16 @@ async function runLane(
           result.counts.failed > 0 && result.cleanup?.status === "passed"
             ? "A test file reported failed tests and its cleanup passed."
             : "A test file failed.";
+        const ordinal = originalFileOrder ? index + 1 : "UNKNOWN";
         process.stderr.write(
-          `::error title=Test lane failure::${message} Final lane results will follow.\n`,
+          `::error title=Test lane failure::${message} Final lane results will follow.\n` +
+            `::notice title=Test lane first failed file hint::Original manifest file ordinal ${ordinal}.\n`,
         );
+        if (splitOpenShellLane && selectedFile === undefined && testName === undefined) {
+          process.stderr.write(
+            `::notice title=Test lane first failed split file hint::Split-lane file position ${index + 1}.\n`,
+          );
+        }
       }
       process.stderr.write(
         `run-tests: ${result.status} ${result.path} ${(wallDurationMs / 1000).toFixed(1)}s${mode === "parallel" ? " (parallel)" : ""}\n`,

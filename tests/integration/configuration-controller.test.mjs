@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { registerConfigurationChannelCredentialCases } from "./configuration-channel-credential-cases.ts";
 import { registerConfigurationSizeAdmissionCases } from "./configuration-size-admission-cases.ts";
@@ -26,6 +26,7 @@ import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { presetVariableTemplate } from "../helpers/configuration-preset-template.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -274,7 +275,14 @@ async function saveFixture(t, computeDriver = createReadyComputeDriver("compute-
   await context.controller.transact((state) =>
     state.namespaces.transitionNamespaceStatus(id, "provisioning", "ready"),
   );
-  return { ...context, root, stored: () => readdir(join(root, id)).catch(() => []) };
+  return {
+    ...context,
+    root,
+    stored: async () => {
+      const entries = await readdir(root);
+      return entries.includes(id) ? readdir(join(root, id)) : [];
+    },
+  };
 }
 
 /**
@@ -1032,27 +1040,18 @@ test("Configuration save refuses a Gateway tool policy that every OpenClaw topol
   // A Preset save refuses the same text. A tool that waits on a variable without a default is
   // checked when a Configuration is created from the Preset; a default fills it here.
   await refusedOnSave(context, withPolicy({ allow: ["gateway"] }), administrative);
-  const waiting = withPolicy({ allow: ["{{ vars.tool }}"] });
-  const filled = await savePreset(context, {
-    variables: { tool: { type: "string", default: "terminal" } },
-    configuration: { values: waiting },
-  });
+  const toolTemplate = presetVariableTemplate("tool", withPolicy({ allow: ["{{ vars.tool }}"] }));
+  const filled = await savePreset(context, toolTemplate({ type: "string", default: "terminal" }));
   assertRefused(filled, administrative);
-  const deferred = await savePreset(
-    context,
-    { variables: { tool: { type: "string" } }, configuration: { values: waiting } },
-    "Tool-deferred",
-  );
+  const deferred = await savePreset(context, toolTemplate({ type: "string" }), "Tool-deferred");
   assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
   // A variable can also name an action key; that policy waits too.
   const keyed = await savePreset(
     context,
-    {
-      variables: { tool: { type: "string" } },
-      configuration: {
-        values: withPolicy({ allow: ["dashboard"], actions: { "{{ vars.tool }}": ["read"] } }),
-      },
-    },
+    presetVariableTemplate(
+      "tool",
+      withPolicy({ allow: ["dashboard"], actions: { "{{ vars.tool }}": ["read"] } }),
+    )({ type: "string" }),
     "Tool-key-deferred",
   );
   assert.equal(keyed.status, 201, JSON.stringify(keyed.body));
@@ -1118,48 +1117,41 @@ test("Configuration save refuses workspace bootstrap settings native setup refus
     context,
     withDefaults({ skipBootstrap: true, skipOptionalBootstrapFiles: [] }),
   );
-  const waitingFile = withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}"] });
+  const fileTemplate = presetVariableTemplate(
+    "file",
+    withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}"] }),
+  );
   assertRefused(
-    await savePreset(context, {
-      variables: { file: { type: "string", default: "NOPE.md" } },
-      configuration: { values: waitingFile },
-    }),
+    await savePreset(context, fileTemplate({ type: "string", default: "NOPE.md" })),
     optionalFiles,
   );
-  const deferredFile = await savePreset(
-    context,
-    { variables: { file: { type: "string" } }, configuration: { values: waitingFile } },
-    "File-deferred",
-  );
+  const deferredFile = await savePreset(context, fileTemplate({ type: "string" }), "File-deferred");
   assert.equal(deferredFile.status, 201, JSON.stringify(deferredFile.body));
   // Written text around the variable that no accepted name can spell is refused now.
   assertRefused(
     await savePreset(
       context,
-      {
-        variables: { file: { type: "string" } },
-        configuration: {
-          values: withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}.txt"] }),
-        },
-      },
+      presetVariableTemplate(
+        "file",
+        withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}.txt"] }),
+      )({ type: "string" }),
       "File-suffix",
     ),
     optionalFiles,
   );
   // A boolean variable fills skipBootstrap with a boolean; a string variable cannot.
-  const waitingSkip = withDefaults({ skipBootstrap: "{{ vars.skip }}" });
+  const skipTemplate = presetVariableTemplate(
+    "skip",
+    withDefaults({ skipBootstrap: "{{ vars.skip }}" }),
+  );
   const deferredSkip = await savePreset(
     context,
-    { variables: { skip: { type: "boolean" } }, configuration: { values: waitingSkip } },
+    skipTemplate({ type: "boolean" }),
     "Skip-deferred",
   );
   assert.equal(deferredSkip.status, 201, JSON.stringify(deferredSkip.body));
   assertRefused(
-    await savePreset(
-      context,
-      { variables: { skip: { type: "string" } }, configuration: { values: waitingSkip } },
-      "Skip-string",
-    ),
+    await savePreset(context, skipTemplate({ type: "string" }), "Skip-string"),
     skipBootstrap,
   );
 });
@@ -1324,26 +1316,15 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
   });
   // A Preset value that waits on a string variable is checked once filled when its written text
   // can still spell "off"; a default fills it here, and a boolean variable never can.
-  const waiting = withSandbox({ mode: "{{ vars.mode }}" });
+  const modeTemplate = presetVariableTemplate("mode", withSandbox({ mode: "{{ vars.mode }}" }));
   assertRefused(
-    await savePreset(context, {
-      variables: { mode: { type: "string", default: "all" } },
-      configuration: { values: waiting },
-    }),
+    await savePreset(context, modeTemplate({ type: "string", default: "all" })),
     defaultsMode,
   );
-  const deferred = await savePreset(
-    context,
-    { variables: { mode: { type: "string" } }, configuration: { values: waiting } },
-    "Mode-deferred",
-  );
+  const deferred = await savePreset(context, modeTemplate({ type: "string" }), "Mode-deferred");
   assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
   assertRefused(
-    await savePreset(
-      context,
-      { variables: { mode: { type: "boolean" } }, configuration: { values: waiting } },
-      "Mode-boolean",
-    ),
+    await savePreset(context, modeTemplate({ type: "boolean" }), "Mode-boolean"),
     defaultsMode,
   );
   // The exec host follows the same rule, for every Agent and for one Agent's entry.
@@ -1352,19 +1333,16 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
     [withHost(undefined, "{{ vars.host }}"), entryHost],
   ]) {
     assertRefused(
-      await savePreset(context, {
-        variables: { host: { type: "string", default: "sandbox" } },
-        configuration: { values },
-      }),
+      await savePreset(
+        context,
+        presetVariableTemplate("host", values)({ type: "string", default: "sandbox" }),
+      ),
       message,
     );
   }
   const deferredHost = await savePreset(
     context,
-    {
-      variables: { host: { type: "string" } },
-      configuration: { values: withHost("{{ vars.host }}") },
-    },
+    presetVariableTemplate("host", withHost("{{ vars.host }}"))({ type: "string" }),
     "Host-deferred",
   );
   assert.equal(deferredHost.status, 201, JSON.stringify(deferredHost.body));
@@ -1557,6 +1535,19 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
         assert.ok(Date.now() - started < 5_000, JSON.stringify(values));
       }
     });
+  }
+  await assertNothingStored(context);
+
+  // An empty Preset response must not hide a missing Configuration store.
+  const heldStore = join(await temporaryDirectory(t, "occ-store-backup-"), "original");
+  await rename(context.root, heldStore);
+  try {
+    const presets = await request(context.app, "GET", context.presets);
+    assert.equal(presets.status, 200);
+    assert.deepEqual(presets.body.data, []);
+    await assert.rejects(assertNothingStored(context), { code: "ENOENT" });
+  } finally {
+    await rename(heldStore, context.root);
   }
   await assertNothingStored(context);
 

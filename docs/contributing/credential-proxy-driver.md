@@ -1,11 +1,8 @@
-# Implement a Credential Proxy Driver
+# Implement a legacy egress Proxy Driver
 
-Start with the [Credential Proxy contract](../reference/drivers/credential-proxy.md)
-and choose a delivery profile that your backend can enforce. This guide connects
-one package's Sandbox and Credential Proxy capabilities to the normal Agent
-workflow. You will register the pair, implement installation and request
-handling for the chosen profile, and then qualify those guarantees through a
-real Agent and backend. An implementation does not need to use OpenShell.
+This guide covers `LegacyEgressProxyDriver`, which serves existing protected-egress deployments through the `credential_proxy` capability. Start with the [legacy contract](../reference/drivers/credential-proxy.md#legacy-protected-egress) and choose a delivery profile that your Backend can enforce. Register the Driver with its paired Sandbox, implement installation and request handling, and qualify the result through a real Agent and Backend. An implementation does not need to use OpenShell.
+
+For the canonical `CredentialProxyDriver`, see the [staged delivery contract](../reference/drivers/credential-proxy.md#interface). The regular Agent workflow does not call that contract yet.
 
 ## 1. Choose the enforcement boundary
 
@@ -94,12 +91,6 @@ upstream response pipe is not an implementation of the stronger exchange
 response-custody profile. Do not copy its test controls or treat it as production
 qualification. Use its public authority calls as the example, not its simulated
 placement or provider behavior.
-
-For GitHub, let the second `bindRepositoryGit` argument decide each request:
-[`requests.authorize`](../reference/drivers/credential-proxy.md#github-request-decisions)
-classifies it, checks the ref and draft rules and returns the header to inject. The
-[request injector fixture](../../tests/fixtures/driver-packages/protected-execution-driver/request-sender.ts)
-keeps no GitHub rules of its own.
 
 ## 5. Exercise the normal Agent path
 

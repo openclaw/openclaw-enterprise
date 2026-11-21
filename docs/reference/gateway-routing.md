@@ -110,13 +110,7 @@ HOME (a SandboxDriver's `harnessHome`, else `/home/node`), outside the workspace
 and file-transfer roots. This directory is Harness runtime state (on OpenShell, the
 version's runtime PVC subpath). Each Codex start replaces it with an empty private
 directory. It is not an isolation boundary against compromised Harness code running as
-the same user. On a Sandbox whose filesystem grants are per execution rather than
-per process (for example an external Sandbox that grants the credential directory
-to the whole execution), the workload can read the capability and POST callbacks
-to this route for its own relay and generation; because every check binds the
-callback to this Agent's live relay and generation, such a callback can at most
-influence or deny this Agent's own tool admission, never another Agent's, and the
-start-time qualification refuses to report ready when admission cannot run. Gateway checks bind each
+the same user. Gateway checks bind each
 capability to this Agent's live provider/relay and exact generation; it grants
 neither another Agent's callbacks nor node or operator access. Native hooks use the installation's public CA bundle
 (the node's CA) with normal HTTPS certificate verification.
@@ -155,12 +149,13 @@ cluster-wide binding for it. The worker
 is part of the trusted control plane. Harnesses receive a node-only setup code
 and public CA bundle, never this administrative service key.
 
-The HTTPRoute sets `x-occ-identity: occ-workspace-files`, `x-openclaw-scopes:
+The machine HTTPRoute sets `x-occ-identity: occ-workspace-files`, `x-openclaw-scopes:
 operator.admin` and direct-connection `x-real-ip`, removing `authorization`,
-`cookie`, `x-forwarded-for`, `forwarded`. Compute renders `network.gatewayTrustedProxyCidrs`,
+`cookie`, `x-forwarded-for`, `forwarded`, and `x-occ-browser-key`. Compute renders `network.gatewayTrustedProxyCidrs`,
 `allowRealIpFallback: true`, and the machine identity's exact `operator.admin` grant.
 Agent Configuration may add human grants, never replace machine access or
-Driver-owned trust. Humans need [separate ingress](drivers/kubernetes-compute/gateway-authentication.md).
+Driver-owned trust. Humans use [OCC browser delegation](#native-admin-ui-routing)
+or [separate static-user ingress](drivers/kubernetes-compute/gateway-authentication.md#human-ingress).
 Loopback access requires the Driver-managed password's
 [environment SecretRef](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 Keep that password separate from the Envoy service key. See
@@ -285,16 +280,17 @@ so every matching console and Agent subdomain must be a trusted OCE ingress
 endpoint. OCC authenticates and authorizes the human session before proxying,
 then strips browser cookies and credentials before forwarding to Envoy.
 
-The private Compute endpoint remains:
+Both browser modes use the private Compute browser endpoint:
 
 ```text
-wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>
+wss://<private-host>/native-browser/namespaces/<namespaceId>/agents/<agentId>
 ```
 
-OCC converts that endpoint to `https:` for native UI HTTP traffic while keeping
-the same private authority and exact Agent base path. Workspace-file traffic
-continues to use the original WSS endpoint. Native-host requests are intercepted before the
-normal API not-found path and resolve to the host's exact Agent and its selected version before the API proxies HTTP or WebSocket traffic through the private route.
+OCC converts this endpoint to HTTPS for browser HTTP traffic. Workspace files
+retain their machine WSS endpoint. The browser route preserves
+OCC's delegated identity, revision credential, and selected scope under the same
+service-key and exact-peer protections. Machine and node routes strip the
+delegation credential. Native-host admission resolves the exact Agent and selected version before proxying.
 
 ## Public preview routing
 

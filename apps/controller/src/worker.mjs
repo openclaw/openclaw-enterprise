@@ -16,8 +16,7 @@ import {
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
-import { closeWorkerComposition, startWorkerComposition } from "./worker/shutdown.ts";
-import { closeResources } from "./composition/close-resources.ts";
+import { closeWorkerComposition } from "./worker/shutdown.ts";
 import { workerEnvironmentSettings } from "./worker/timer-settings.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
@@ -94,8 +93,7 @@ function workerStartupFailureCode(error) {
   return "WORKER_STARTUP_FAILED";
 }
 
-let drivers;
-let startupOwnsComposition = false;
+let worker;
 let pool;
 let readinessPath;
 let livenessPath;
@@ -109,6 +107,7 @@ let receiptServer;
 let repositoryGitTransport;
 let preparedRepositoryGit;
 let preparedGitHub;
+let protectedDriver;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -171,7 +170,8 @@ try {
       throw markerRefusal("OCC_WORKER_READINESS_PATH", cause);
     }
   }
-  drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
+  const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
+  protectedDriver = drivers?.protectedDriver;
   let computeDriver;
   if (drivers === undefined && mode === "development") {
     const { createDevelopmentDockerComputeDriver } =
@@ -241,7 +241,7 @@ try {
     metrics = createOccMetrics("worker", () => snapshot.collect());
     metricsListener = await startMetricsListener(metrics, metricsSettings);
   }
-  const worker = createControllerWorker({
+  worker = createControllerWorker({
     metrics,
     pool,
     mode,
@@ -266,25 +266,10 @@ try {
         }),
   });
   preparedGitHub = drivers?.preparedGitHub;
-  const composition = {
-    readinessPath,
-    repositoryGitTransport,
-    preparedRepositoryGit,
-    receiptServer,
-    closeMetrics,
-    preparedGitHub,
-    worker,
-  };
-  startupOwnsComposition = true;
-  await startWorkerComposition(
-    composition,
-    async () => {
-      await preparedGitHub?.connect(pool);
-    },
-    () =>
-      preparedGitHub?.startWorker((code, context, severity = "error") =>
-        emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
-      ),
+  await preparedGitHub?.connect(pool);
+  await worker.start();
+  preparedGitHub?.startWorker((code, context, severity = "error") =>
+    emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
   );
 
   let closing = false;
@@ -294,7 +279,15 @@ try {
     }
     closing = true;
     try {
-      await closeWorkerComposition(composition);
+      await closeWorkerComposition({
+        readinessPath,
+        repositoryGitTransport,
+        preparedRepositoryGit,
+        receiptServer,
+        closeMetrics,
+        preparedGitHub,
+        worker,
+      });
       process.exitCode = 0;
     } catch {
       emitOccLogEvent(logger, { event: "worker.error", code: "SHUTDOWN_FAILED" });
@@ -304,19 +297,20 @@ try {
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 } catch (error) {
-  if (!startupOwnsComposition) {
-    await closeResources(
-      readinessPath === undefined
-        ? undefined
-        : { close: () => unlink(readinessPath).catch(() => {}) },
-      repositoryGitTransport,
-      preparedRepositoryGit,
-      receiptServer,
-      { close: closeMetrics },
-      preparedGitHub,
-      drivers?.packagedGatewayRegistration ?? drivers?.protectedDriver,
-      pool === undefined ? undefined : { close: () => pool.end() },
-    ).catch(() => {});
+  await preparedGitHub?.close().catch(() => {});
+  await repositoryGitTransport?.close().catch(() => {});
+  await preparedRepositoryGit?.close().catch(() => {});
+  await receiptServer?.close().catch(() => {});
+  await closeMetrics().catch(() => {});
+  if (readinessPath !== undefined) {
+    await unlink(readinessPath).catch(() => {});
+  }
+  if (worker !== undefined) {
+    // The worker closes its protected Driver; before it exists, close the loaded registration.
+    await worker.stop().catch(() => {});
+  } else {
+    await protectedDriver?.close().catch(() => {});
+    await pool?.end();
   }
   try {
     const mode = process.env.NODE_ENV === "production" ? "production" : "development";

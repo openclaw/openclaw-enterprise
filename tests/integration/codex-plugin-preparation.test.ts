@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
+import { once, type EventEmitter } from "node:events";
 import { createRequire } from "node:module";
-import test from "node:test";
+import type { AddressInfo } from "node:net";
+import test, { type TestContext } from "node:test";
 import {
   generatedPreparation,
   scopedPreparationCaller,
@@ -23,80 +24,117 @@ const disabled = {
   plugins: { _default: { enabled: false } },
 };
 
+type FixtureSocket = {
+  on(event: "message", callback: (data: Buffer) => void): void;
+  send(data: string): void;
+  terminate(): void;
+};
+type FixtureServer = EventEmitter & {
+  clients: Set<FixtureSocket>;
+  address(): AddressInfo;
+  close(callback: (error?: Error) => void): void;
+};
+type RpcRequest = { id: number | undefined; method: string; params: unknown };
+type Edit = { keyPath: string; value: unknown };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseRpcRequest(data: Buffer): RpcRequest {
+  const value: unknown = JSON.parse(data.toString());
+  assert.ok(isRecord(value));
+  assert.ok(typeof value.method === "string");
+  assert.ok(value.id === undefined || typeof value.id === "number");
+  return { id: value.id, method: value.method, params: value.params };
+}
+
+function parseEdits(params: unknown): Edit[] {
+  assert.ok(isRecord(params));
+  assert.equal(params.reloadUserConfig, true);
+  assert.ok(Array.isArray(params.edits));
+  return params.edits.map((edit: unknown) => {
+    assert.ok(isRecord(edit));
+    assert.ok(typeof edit.keyPath === "string");
+    return { keyPath: edit.keyPath, value: edit.value };
+  });
+}
+
+async function startPreparationServer(t: TestContext, credential: string) {
+  const server: FixtureServer = new WebSocketServer({
+    host: "127.0.0.1",
+    port: 0,
+    verifyClient: (
+      { req }: { req: { headers: { authorization?: string } } },
+      done: (valid: boolean, code: number) => void,
+    ) => done(req.headers.authorization === "Bearer " + credential, 401),
+  });
+  t.after(async () => {
+    for (const socket of server.clients) {
+      socket.terminate();
+    }
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  });
+
+  const methods: string[] = [];
+  let written = false;
+  server.on("connection", (socket: FixtureSocket) => {
+    socket.on("message", (data) => {
+      const request = parseRpcRequest(data);
+      if (request.method === "initialized") {
+        return;
+      }
+      assert.equal(typeof request.id, "number");
+      methods.push(request.method);
+      let result: unknown = {};
+      switch (request.method) {
+        case "initialize":
+          break;
+        case "config/read":
+          result = {
+            config: written
+              ? disabled
+              : { ...disabled, apps: { ...disabled.apps, inherited: { enabled: true } } },
+          };
+          break;
+        case "config/batchWrite": {
+          const edits = parseEdits(request.params);
+          for (const key of ["apps", "plugins"]) {
+            assert.deepEqual(edits.find((edit) => edit.keyPath === key)?.value, {
+              _default: { enabled: false },
+            });
+          }
+          assert.ok(
+            edits.some((edit) => edit.keyPath === "apps.inherited.enabled" && edit.value === false),
+          );
+          written = true;
+          break;
+        }
+        default:
+          assert.fail("Unexpected preparation RPC method: " + request.method);
+      }
+      socket.send(JSON.stringify({ id: request.id, result }));
+    });
+  });
+  await once(server, "listening");
+  return { port: server.address().port, methods };
+}
+
 test(
   "Codex no-account preparation uses its supplied caller for disable and readback",
   { timeout: 10_000 },
   async (t) => {
     const credential = "connection-owned-fixture";
-    const server = new WebSocketServer({
-      host: "127.0.0.1",
-      port: 0,
-      verifyClient: (
-        { req }: { req: { headers: { authorization?: string } } },
-        done: (valid: boolean, code: number) => void,
-      ) => done(req.headers.authorization === "Bearer " + credential, 401),
-    });
-    t.after(() => {
-      for (const socket of server.clients) {
-        socket.terminate();
-      }
-      server.close();
-    });
-    await once(server, "listening");
-    const methods: string[] = [];
-    let written = false;
-    server.on(
-      "connection",
-      (socket: {
-        on(event: string, callback: (data: Buffer) => void): void;
-        send(data: string): void;
-      }) => {
-        socket.on("message", (data) => {
-          const { id, method, params } = JSON.parse(data.toString());
-          if (method === "initialized") {
-            return;
-          }
-          methods.push(method);
-          let result = {};
-          if (method === "config/read") {
-            result = {
-              config: written
-                ? disabled
-                : { ...disabled, apps: { ...disabled.apps, inherited: { enabled: true } } },
-            };
-          } else if (method === "config/batchWrite") {
-            assert.equal(params.reloadUserConfig, true);
-            for (const key of ["apps", "plugins"]) {
-              assert.deepEqual(
-                params.edits.find((edit: { keyPath: string }) => edit.keyPath === key).value,
-                { _default: { enabled: false } },
-              );
-            }
-            assert.ok(
-              params.edits.some(
-                (edit: { keyPath: string; value: boolean }) =>
-                  edit.keyPath === "apps.inherited.enabled" && edit.value === false,
-              ),
-            );
-            written = true;
-          } else {
-            assert.equal(method, "initialize");
-          }
-          socket.send(JSON.stringify({ id, result }));
-        });
-      },
-    );
+    const { port, methods } = await startPreparationServer(t, credential);
     const generated = generatedPreparation({
       CODEX_LOGIN_MODE: "api_key",
       APP_SERVER_TOKEN: "hostile-ambient-fixture",
       OPENCLAW_PLUGIN_STATUS_PORT: "18791",
       OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS: "25",
     });
-    const caller = scopedPreparationCaller(
-      server.address().port,
-      credential,
-      generated.CodexAppServerRequestError,
-    );
+    const caller = scopedPreparationCaller(port, credential, generated.CodexAppServerRequestError);
     t.after(caller.close);
     const runtime = { manifest: { kind: "codex", selections } };
 

@@ -90,8 +90,7 @@ permit live Agent policy apply. See
 
 ### Sandbox-provided Harness transport
 
-When a provider supplies `harnessEndpoint`, Compute routes the Agent Gateway to
-the provider-owned Harness. For Codex, Compute derives the native hook credential
+For a provider-owned endpoint, Compute routes Gateway traffic through the [configured peer](kubernetes-compute/networking-and-isolation.md#networking). For Codex, Compute derives the native hook credential
 directory from `harnessHome`. The Sandbox creates that owner-only directory
 outside the Harness workspace and file-transfer roots. Compute validates the path
 and owns the relay URL and authentication.
@@ -115,15 +114,13 @@ The endpoint can select `codexPermissionProfile: ":danger-full-access"` when the
 provider supplies the sandbox boundary. Kubernetes Compute projects the selection
 to the Gateway. Without it, the Codex bridge keeps its configured sandbox behavior.
 
-For WSS, `tls.caBundle` accepts public PEM CA certificates only. Otherwise
-the Gateway uses system trust. Kubernetes Compute mounts the combined
-`NODE_EXTRA_CA_CERTS` bundle from the revision's immutable ConfigMap before
-Gateway rollout. TLS verification stays enabled. Compute removes the ConfigMap
-after workloads terminate. Certificate changes require a new revision.
-
-For ordinary dedicated Codex with WSS trust, `externalWorkspaceOwner.generationSha256`
-binds `/home/node/workspace` to the live provider. The Driver and Gateway check
-the same generation on native upgrades.
+The endpoint can supply `tls.caBundle` with public PEM CA certificates for a WSS
+origin. It accepts no private keys, client credentials, or source paths. Without a bundle, the Gateway uses system trust. Kubernetes Compute mounts one combined `NODE_EXTRA_CA_CERTS`
+bundle read-only into the dedicated Agent Gateway. Certificate and hostname
+verification remain enabled. Compute creates the revision's ConfigMap with
+`immutable: true` before Gateway rollout and removes it after the revision
+workloads terminate.
+Changing its certificates requires a new revision.
 
 `enrollHarness(context, installation, release)` receives a callback from Compute.
 Compute commits and rechecks the verified installation before it signs the startup
@@ -164,10 +161,11 @@ describes how that provider maps its phases to these states.
 
 ### Provisioning inputs
 
-Compute supplies the Namespace, Kubernetes client, and cancellation signal.
-For Harness provisioning it also supplies the Agent revision and
-[`HarnessWorkloadRequirements`](../../../packages/contracts/src/drivers/sandbox/index.ts).
-Use the identity, mounts, login mode, and credential references Compute selected.
+Use Compute's [context and launch requirements](../../../packages/contracts/src/drivers/sandbox/index.ts)
+without changing identity, login mode or credentials.
+`retainedDirectories` describes storage-independent paths and environment bindings.
+`workspaceMounts` supplies approved PVC subpaths/modes; provider-owned storage
+(`workspaceStorage: "provider"`) leaves it empty.
 
 If `workspaceSetup` is present, read only the specified key of the Agent-owned
 Secret in the same Namespace. Initialize the approved workspace and verify its
@@ -185,9 +183,11 @@ provider. Compute waits for the gateway to report every attachment
 
 ### Sandbox resource identity
 
-`SandboxResourceRef` contains `namespaceName`, `resourceName`, `agentId`, and
-`revisionId`. It stays stable when a controller replaces the underlying Pod;
-retirement must find the provider resource even if that Pod is already gone.
+`SandboxResourceRef` retains `namespaceName`, `resourceName`, `agentId` and
+`revisionId` across Pod replacement/removal.
+
+[Managed OpenShell](kubernetes-openshell-compute.md) uses the authenticated Envoy
+node route without Kubernetes namespace or Pod selectors for its Sandboxes.
 
 ### Optional network policy operations
 
@@ -330,7 +330,7 @@ inputs as Sandbox startup fields.
 - Sandbox selection is optional. Only dedicated execution with bundled Kubernetes Compute supports a Sandbox, including one from an installed package.
 - Supported facets are `networking`, `filesystem`, and `process`. The Sandbox
   does not authorize commands or create a Sandbox for each tool invocation.
-- The Sandbox reports Harness status. Compute decides when to activate traffic.
+- Each Sandbox reports Harness status, including [Strands](strands-box.md). Compute activates traffic.
 
 ## Troubleshooting
 
@@ -351,5 +351,5 @@ inputs as Sandbox startup fields.
 ## Related
 
 - [Kubernetes ComputeDriver](kubernetes-compute.md) and [Compute Sandbox coordination](compute.md#sandboxdriver-coordination)
-- [OCC deployment admission](../../../packages/occ/src/index.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
+- [OCC deployment admission](../../../packages/occ/src/agent-deployment-admission.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 - [OpenShell verification guide](../../testing/openshell.md)

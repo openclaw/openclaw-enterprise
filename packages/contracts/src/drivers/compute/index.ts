@@ -260,12 +260,6 @@ export interface ComputeDriver extends Driver {
   readonly maintenanceIntervalMs?: number;
   /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
   admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
-  /**
-   * Side-effect-free compatibility domain for retained sessions and exclusive writers.
-   * Equal domains permit continuity; missing support keeps revision-scoped recovery.
-   * The Driver must enforce the admitted generation for graceful and crash recovery.
-   */
-  restartContinuationDomain?(revision: Readonly<AgentRevision>): string | undefined;
   /** Optional immutable launch inputs, separate from execution authority. No side effects. */
   snapshotRuntimeInputs?(revision: Readonly<AgentRevision>): string | undefined;
   /**
@@ -406,11 +400,28 @@ export interface ComputeDriver extends Driver {
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   /**
-   * Private WSS base for native chat, with an equivalent HTTPS UI endpoint. The Driver
-   * must enforce a session-writing ceiling across HTTP and WebSocket, including device
-   * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
+   * Resolve a private browser transport for an already-authorized, exact AgentRevision.
+   * Installation and Principal IDs are server-owned. Returned headers are credentials:
+   * never serialize them to a browser or fall back to a shared machine endpoint.
+   * Subject is the non-secret native identity for connection attribution; never derive it from headers.
+   * Reads existing revision credentials only; absence is a dependency failure.
    */
-  getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
+  getGatewayBrowserRequest?(
+    revision: AgentRevision,
+    input: {
+      readonly installationId: string;
+      readonly principalId: string;
+      readonly mode: "admin" | "chat";
+    },
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        readonly endpoint: string;
+        readonly subject: string;
+        readonly headers: Readonly<Record<string, string>>;
+      }
+    | undefined
+  >;
   /** Resolve only the private HTTP completion route for this exact revision. */
   getChatCompletionsEndpoint?(revision: AgentRevision): AgentChatCompletionsResolution;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;

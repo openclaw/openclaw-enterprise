@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-18
-last_updated_session: authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99
+updated: 2026-11-19
+last_updated_session: authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4
 ---
 
 # Protected credential request flow
@@ -66,15 +66,21 @@ reads; deployment refusal precedes counterpart probes. Retained revisions keep
 their provider, authorization, withdrawal and cleanup under the
 [current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
-OCC checks source and Secret permissions; existing sources need opt-in. Version 3
-binds Sandbox and Proxy to one registered Driver.
-The plan records digest, execution, source generation, grant, and routes;
-empty routes deny all. `admitProxyPlan` derives routes from saved Harness settings
-and source consent. `checkEgressUseIn` rechecks before delivery and send authorization.
-`apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
-settings at submission. OCC normalizes them and checks caller and Agent grants.
+Static admission hides incompatible types from capabilities. Creation and adoption
+return 409 on mismatch; refused adoption preserves the Gateway copy.
+`packages/occ/src/credential-egress-admission.ts:admitStaticEgressSource` rechecks both declarations before reading and injecting material.
 
-For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
+OCC checks source and Secret grants; adoption requires consent. Version 3 binds
+Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from Harness
+settings and consent; empty routes deny all. Plans pin execution, digest, grant
+and source generation. Deployment rechecks the unique compatible provider before
+provisioning transport credentials and saving the revision.
+`packages/occ/src/credential-egress-authority.ts:createEgressAuthority` rechecks
+source ownership before reading material and loads fresh policy before each send.
+`apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
+submitted settings for OCC normalization and grant checks.
+
+For credential-free metadata, `packages/occ/src/credential-egress-admission.ts:admitProxyPlan` rejects
 a Driver grant that differs from the source. Equivalent grants have the same
 digest across property orders. Unprotected revisions remain v2. Only the bundled
 Driver recognizes historical protected plans by original capability IDs for stored
@@ -94,7 +100,7 @@ Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, and Installation limits.
 Agents with ordinary Gateway sources and no protected sources or Git bindings
 need no Proxy plan. Agents with no sources retain selected Proxy admission.
-`packages/occ/src/index.ts:admitProxyPlan` checks availability before saving an
+`packages/occ/src/credential-egress-admission.ts:admitProxyPlan` checks availability before saving an
 empty protected plan; Kubernetes uses it for runtime-authenticated Dedicated
 Codex without inference access. Preparation repeats both Git refusals.
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
@@ -165,8 +171,7 @@ Ambiguity refuses. OCC rechecks pins around provider calls and at material acces
 send and response release; changes restored between checks escape detection.
 Only one exact route match reserves a UUIDv7 ID before capture or policy I/O.
 Creation fixes its 30-second replay horizon; [capacity is bounded](../reference/drivers/credential-proxy.md#request-time-capacity).
-Unsupported or ambiguous operations refuse before reservation. `createCredentialProxy`
-audits only when exactly one refused route reports, exactly once with a valid rule.
+Unsupported or ambiguous operations refuse before reservation. The authority audits only a unique refusal with a valid rule.
 It records execution and exact request ID before capture or credential access.
 Persistence failure refuses as authority-unavailable.
 
@@ -178,7 +183,7 @@ cannot be substituted by an old executable-restricted grant.
 Each check requires a fresh platform transaction; enclosing transactions refuse to
 prevent IAM snapshot reuse. It verifies current Namespace/Agent state, admitted revision,
 installation, source generation, withdrawal and exact Agent source permission.
-`credentialNamespace` supplies Compute's runtime placement to the Driver; IAM and audit
+`packages/occ/src/credential-source-drivers.ts:credentialNamespace` supplies Compute's runtime placement to the Driver; IAM and audit
 retain logical Namespace identity. The Driver requeries policy-status evidence against
 the stored fence. Replacement, missing evidence or changed configuration refuses even
 if the saved installation was valid. Denials record phase and internal request attribution
@@ -346,6 +351,10 @@ Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-19 10:37: Check admitted provider identity. (authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4 - 6ff25175b)
+- 2026-11-19 09:31: Check static source lifecycles. (authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf - d3749595bd)
+- 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
 

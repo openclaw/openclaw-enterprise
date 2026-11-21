@@ -1,6 +1,6 @@
 import type {
   Backend,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   CredentialProviderDefinition,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
@@ -9,9 +9,8 @@ import type { EgressAuthorityConfiguration } from "../../composition/egress-auth
 import type { RepositoryTransportBinding } from "../../composition/repository-credentials/contracts.ts";
 import type { RepositoryGitDeliveryResolver } from "../repo/access/delivery.ts";
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
-import { createRepositoryGitRequests } from "../repo/github/access/protected-requests.ts";
 import { PostgresOpenShellGitRouteStore } from "./openshell-git-route-store.ts";
-import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
+import { OpenShellLegacyEgressProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
 import {
   OpenShellGitRuntime,
   type OpenShellGitRuntimeConfiguration,
@@ -62,9 +61,9 @@ export function createOpenShellCapabilities(input: {
       ...(git && { openShellGit: git }),
     },
   );
-  const proxy: CredentialProxyDriver | undefined =
+  const proxy: LegacyEgressProxyDriver | undefined =
     input.proxy &&
-    new OpenShellCredentialProxyDriver(input.proxy.configuration, {
+    new OpenShellLegacyEgressProxyDriver(input.proxy.configuration, {
       id: input.proxy.id,
       backend: input.backend,
       sandbox,
@@ -86,7 +85,7 @@ export function createOpenShellCapabilities(input: {
         throw new Error("Missing the selected Driver's protected repository Git authority.");
       }
       git.connectRouteStore(pool, emit);
-      return proxy.bindRepositoryGit(authority, createRepositoryGitRequests(authority));
+      return proxy.bindRepositoryGit(authority);
     },
   };
   return {

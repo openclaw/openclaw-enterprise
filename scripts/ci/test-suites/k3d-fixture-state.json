@@ -11,7 +11,8 @@
   "prepare": {
     "postgres": true,
     "k3d": true,
-    "requiresPreparedStateForFile": true
+    "requiresPreparedStateForFile": true,
+    "selfProvisionedFiles": ["tests/integration/production-preflight-cleanup-k3d.test.ts"]
   },
   "fileConcurrency": 2,
   "parallelFiles": [
@@ -40,6 +41,15 @@
       "path": "tests/integration/production-install-retained-job-k3d.test.ts",
       "expectedTests": [
         "Helm install preserves the initialization Job when release history is absent"
+      ]
+    },
+    {
+      "path": "tests/integration/production-preflight-cleanup-k3d.test.ts",
+      "env": {
+        "OCC_TEST_PRODUCTION_OBSERVABILITY": "1"
+      },
+      "expectedTests": [
+        "interrupted preflight recovery respects real Kubernetes identity and consumer lifetime"
       ]
     }
   ]

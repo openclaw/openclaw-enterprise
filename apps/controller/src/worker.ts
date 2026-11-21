@@ -4,16 +4,12 @@ import {
   assertExecutionReleaseAllowed,
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
-  credentialSourceOwnedByGateway,
   revisionCredentialSourceSnapshot,
 } from "@openclaw-enterprise/contracts";
-import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
+import type { LegacyEgressProxyDriver } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
-import {
-  installationDriverConfigurations,
-  installPackagedGatewayRegistration,
-} from "./composition/installation-config.ts";
+import { installationDriverConfigurations } from "./composition/installation-config.ts";
 import {
   DriverConfigurationRegistry,
   type DriverConfigurationRegistration,
@@ -29,6 +25,7 @@ import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { OAuthAccountTokens } from "./backends/token-service/oauth-connection.ts";
+import { installSelectedSandboxDrivers } from "./composition/sandbox-drivers.ts";
 import { isSandboxFacet, normalizeSecretBindings } from "@openclaw-enterprise/contracts";
 import type {
   Agent,
@@ -126,14 +123,11 @@ import {
 } from "@openclaw-enterprise/occ";
 import {
   backendDefinitionMap,
-  DriverSelectionError,
   removeNamespacePolicy,
   removedPolicyDetails,
   validateBackendDefinitions,
-  validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
-import type { WorkerStartupHooks } from "./worker/shutdown.ts";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
@@ -192,7 +186,7 @@ export interface ControllerWorkerOptions {
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
-  readonly proxyDriver?: CredentialProxyDriver;
+  readonly proxyDriver?: LegacyEgressProxyDriver;
   readonly pollIntervalMs?: number;
   readonly leaseDurationMs?: number;
   readonly maxAttempts?: number;
@@ -496,10 +490,6 @@ class ClaimLeaseLostError extends WorkClaimLostError {
     super();
     this.lossCause = lossCause;
   }
-}
-
-class RestartContinuationEndedError extends Error {
-  readonly code = "RESTART_CONTINUATION_ENDED";
 }
 
 /**
@@ -1255,9 +1245,9 @@ export class ControllerWorker {
   private connectionRevocationScanAfter = 0;
   private connectionMaintenance: Promise<void> | undefined;
   private nextClientCleanup = 0;
-  private readonly proxyDriver: CredentialProxyDriver | undefined;
+  private readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
-  private readonly packagedGatewayRegistration: InstalledDriver | undefined;
+  private readonly credentialDeliveryRegistration: InstalledDriver | undefined;
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
@@ -1286,11 +1276,9 @@ export class ControllerWorker {
   private readonly repositoryGitMaterial: ControllerWorkerOptions["repositoryGitMaterial"];
   private readonly abort = new AbortController();
   private installation: Readonly<Installation> | undefined;
-  private starting: Promise<void> | undefined;
   private loop: Promise<void> | undefined;
   private stopping = false;
-  private draining: Promise<void> | undefined;
-  private closing: Promise<void> | undefined;
+  private closing = false;
   private lastHealthAt = 0;
   private pendingHealth: Promise<void> | undefined;
   // Set once the first health check after start has ended. That check always only warns.
@@ -1412,7 +1400,7 @@ export class ControllerWorker {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
     this.protectedDriver = drivers?.protectedDriver;
-    this.packagedGatewayRegistration = drivers?.packagedGatewayRegistration;
+    this.credentialDeliveryRegistration = drivers?.credentialDeliveryRegistration;
     this.preparedTokens = drivers?.tokenService;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
@@ -1422,14 +1410,6 @@ export class ControllerWorker {
       this.protectedDriver?.require("credential_proxy") ??
       drivers?.proxyDriver ??
       options.proxyDriver;
-    if (
-      this.packagedGatewayRegistration !== undefined &&
-      (drivers?.sandboxDriver !== this.sandbox || drivers?.proxyDriver !== this.proxyDriver)
-    ) {
-      throw new Error(
-        "The selected packaged Sandbox or Credential Proxy view differs from its registration.",
-      );
-    }
     if (
       (drivers?.installation.drivers.credential_gateway === undefined) !==
       (drivers?.credentialGatewayDriver === undefined)
@@ -1528,40 +1508,17 @@ export class ControllerWorker {
     });
   }
 
-  async start(hooks: WorkerStartupHooks = {}): Promise<void> {
-    if (this.starting !== undefined || this.loop !== undefined || this.stopping) {
-      throw new Error("The controller worker is already running or has stopped.");
-    }
-    this.starting = Promise.resolve()
-      .then(() => this.startWork(hooks))
-      .finally(() => {
-        this.starting = undefined;
-      });
-    return this.starting;
-  }
-
-  private throwIfStopping(): void {
-    if (this.stopping) {
-      throw new Error("The controller worker stopped during startup.");
-    }
-  }
-
-  private async startWork({ connect, afterStart }: WorkerStartupHooks): Promise<void> {
-    this.throwIfStopping();
-    if (connect !== undefined) {
-      await connect();
-      this.throwIfStopping();
+  async start(): Promise<void> {
+    if (this.loop !== undefined) {
+      throw new Error("The controller worker is already running.");
     }
     const installation = await this.state.loadInstallation();
-    this.throwIfStopping();
     if (installation === undefined) {
       throw new Error("The platform Installation must be bootstrapped before starting the worker.");
     }
     this.installation = installation;
     this.startedAt = this.healthClock();
-    const iamState = await this.loadIAMState();
-    this.throwIfStopping();
-    validatePersistedNativeIAMState(iamState);
+    validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
       namespaceLifecycleBindings: this.namespaceLifecycleBindings,
@@ -1595,22 +1552,25 @@ export class ControllerWorker {
         ),
       );
     }
-    const protectedDriver = this.protectedDriver;
-    const packagedGatewayRegistration = this.packagedGatewayRegistration;
-    if (packagedGatewayRegistration !== undefined) {
-      installPackagedGatewayRegistration(provisioning, packagedGatewayRegistration, {
-        sandbox: this.sandbox,
-        gateway: this.credentialGateway,
-        protectedOwner: protectedDriver,
-        proxy: this.proxyDriver,
-      });
-    } else if (protectedDriver !== undefined) {
-      provisioning.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
+    const sandboxOwner = this.protectedDriver ?? this.credentialDeliveryRegistration;
+    const selectedSandboxDrivers = {
+      sandboxDriver: this.sandbox,
+      protectedDriver: this.protectedDriver,
+      credentialDeliveryRegistration: this.credentialDeliveryRegistration,
+    };
+    if (sandboxOwner !== undefined) {
+      installSelectedSandboxDrivers(provisioning, selectedSandboxDrivers);
+    }
+    if (this.configuration !== undefined) {
+      provisioning.registerDriver(this.configuration);
+      provisioning.selectDriver(this.configuration.capability, this.configuration.id);
+    }
+    if (sandboxOwner === undefined) {
+      installSelectedSandboxDrivers(provisioning, selectedSandboxDrivers);
     }
     for (const driver of [
-      this.configuration,
-      ...(protectedDriver || packagedGatewayRegistration ? [] : [this.sandbox, this.proxyDriver]),
-      ...(packagedGatewayRegistration ? [] : [this.credentialGateway]),
+      ...(sandboxOwner ? [] : [this.proxyDriver]),
+      this.credentialGateway,
       this.credentialRefresh,
       this.iam,
       this.secretDriver,
@@ -1623,15 +1583,10 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
-    if (packagedGatewayRegistration !== undefined) {
-      this.validatePackagedGatewayBackends(packagedGatewayRegistration);
-    }
-    this.throwIfStopping();
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {
       const result = await compute.preflight();
-      this.throwIfStopping();
       if (result !== undefined) {
         for (const warning of result.warnings) {
           this.emit({
@@ -1644,48 +1599,13 @@ export class ControllerWorker {
     } else if (this.requireComputePreflight) {
       throw new Error("The selected bundled production Compute Driver requires preflight.");
     }
-    this.throwIfStopping();
     this.emit({
       event: "worker.started",
       computeDriverId: this.compute.id,
       ...(this.sandbox === undefined ? {} : { sandboxDriverId: this.sandbox.id }),
     });
-    this.throwIfStopping();
     this.loop = this.run();
     this.connectionMaintenance = this.maintainConnections(provisioning, installation.id);
-    this.throwIfStopping();
-    afterStart?.();
-  }
-
-  private validatePackagedGatewayBackends(owner: InstalledDriver): void {
-    // Only the API constructs the ChatGPT ServiceAccount Driver and reads its admin key.
-    // The Worker binds that Backend to the configured identity and validates the views it uses.
-    const chatgpt = this.backends.find((backend) => backend.type === "chatgpt");
-    if (chatgpt?.drivers.service_account !== this.configuredServiceAccountDriverId) {
-      throw new DriverSelectionError("The configured Backend requires its ServiceAccount Driver.");
-    }
-    // Under built-in repository admission the Installation loader hands the Worker its
-    // repository Driver only as the bound admission policy (never as repositoryPolicy), so
-    // the GitHub Backend is checked against that policy, as OCC's own Backend validation does.
-    const repository =
-      this.repositoryAdmission?.policyMode === "built-in"
-        ? this.repositoryAdmission.policy
-        : this.repositoryPolicy;
-    const selected = [
-      repository,
-      this.sandbox,
-      this.credentialGateway,
-      this.credentialRefresh,
-      this.proxyDriver,
-    ];
-    validateSelectedBackendDrivers(
-      this.backends.filter((backend) => backend.type !== "chatgpt"),
-      Object.fromEntries(
-        selected.flatMap((driver) => (driver ? [[driver.capability, driver]] : [])),
-      ),
-      this.protectedDriver,
-      owner,
-    );
   }
 
   /**
@@ -1693,42 +1613,26 @@ export class ControllerWorker {
    * in flight end, so shutdown closes the worker's other parts only after the loop that uses
    * them (finding 2997). The database pool stays open until `stop()`.
    */
-  stopLoop(): Promise<void> {
-    this.stopping = true;
-    return (this.draining ??= Promise.resolve().then(() => this.drainWork()));
-  }
-
-  private async drainWork(): Promise<void> {
-    this.abort.abort();
-    // Startup can still be using these resources. Its caller owns its outcome.
-    await this.starting?.catch(() => {});
-    // Wait for every owner user, including the independent health and OAuth work,
-    // before closing dependencies even when one rejects.
-    const settled = await Promise.allSettled([
-      this.loop,
-      this.connectionMaintenance,
-      this.pendingHealth,
-    ]);
-    for (const result of settled) {
-      if (result.status === "rejected") {
-        throw result.reason;
-      }
+  async stopLoop(): Promise<void> {
+    if (!this.stopping) {
+      this.stopping = true;
+      this.abort.abort();
     }
+    // Let an in-flight OAuth exchange persist a rotated grant before closing its dependencies.
+    await Promise.all([this.loop, this.connectionMaintenance]);
+    // A claim's heartbeat starts health checks that the loop does not await.
+    await this.pendingHealth;
   }
 
-  stop(): Promise<void> {
-    this.stopping = true;
-    return (this.closing ??= Promise.resolve()
-      .then(() =>
-        closeResources(
-          { close: () => this.stopLoop() },
-          this.packagedGatewayRegistration ?? this.protectedDriver,
-          this.state,
-        ),
-      )
-      .then(() => {
-        this.emit({ event: "worker.stopped" });
-      }));
+  async stop(): Promise<void> {
+    if (this.closing) {
+      return;
+    }
+    this.closing = true;
+    await this.stopLoop();
+    // A failed protected Driver close must not leave the database pool open.
+    await closeResources(this.protectedDriver, this.state);
+    this.emit({ event: "worker.stopped" });
   }
 
   private async run(): Promise<void> {
@@ -2034,8 +1938,7 @@ export class ControllerWorker {
     if (this.configuration?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(this.configuration);
     }
-    const owner = this.packagedGatewayRegistration ?? this.protectedDriver;
-    const lifecycle = owner === undefined ? this.sandbox : owner.lifecycleDriver;
+    const lifecycle = this.protectedDriver ? this.protectedDriver.lifecycleDriver : this.sandbox;
     if (lifecycle?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(lifecycle);
     }
@@ -2078,17 +1981,6 @@ export class ControllerWorker {
     return decision;
   }
 
-  private async assertRestartContinuation(revision: Readonly<AgentRevision>): Promise<void> {
-    const current = await this.state.read((view) =>
-      view.agents.findRestartContinuation(revision.namespaceId, revision.agentId),
-    );
-    if (!isDeepStrictEqual(current, revision.restartContinuation)) {
-      throw new RestartContinuationEndedError(
-        "The Agent ended this revision's recovery generation.",
-      );
-    }
-  }
-
   private async stagedRevision(
     operation: "activateRevision" | "deactivateRevision",
     revision: Readonly<AgentRevision>,
@@ -2099,7 +1991,6 @@ export class ControllerWorker {
       throw new Error(`The selected production Compute Driver requires ${operation}.`);
     }
     if (operation === "activateRevision") {
-      await this.assertRestartContinuation(revision);
       if (!this.revisionPluginDriverAvailable(revision)) {
         throw new Error("PLUGIN_DRIVER_MISMATCH");
       }
@@ -2414,6 +2305,7 @@ export class ControllerWorker {
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {
         await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
+        await this.retireEgressInstallation(previous);
       } else {
         try {
           await this.stopYieldingDrain(claim, previous);
@@ -2467,7 +2359,6 @@ export class ControllerWorker {
       this.repositoryCredentials.validate(revision);
     }
     await this.recheckRevokedCredentialSources(claim, revision);
-    await this.assertRestartContinuation(revision);
     this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
@@ -2505,7 +2396,6 @@ export class ControllerWorker {
       prepared = { ...prepared, repositoryCredentials };
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
-      await this.assertRestartContinuation(revision);
       observation = await this.withClaimHeartbeat(claim, () =>
         this.compute.prepareRevision(revision, prepared),
       );
@@ -2588,6 +2478,7 @@ export class ControllerWorker {
             }
           } else {
             await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+            await this.retireEgressInstallation(revision);
             stoppedRevision = revision;
           }
         }
@@ -3194,12 +3085,29 @@ export class ControllerWorker {
    * yielding. Stops that yielded during their own drain do not count as due Work (see
    * withClaimHeartbeat; finding 1093).
    */
-  private stopYieldingDrain(claim: ClaimedWork, revision: Readonly<AgentRevision>): Promise<void> {
-    return this.withClaimHeartbeat(claim, () =>
+  private async stopYieldingDrain(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    await this.withClaimHeartbeat(claim, () =>
       stopWithDrainYield(this.workAgeMs(claim), this.convergenceTimeoutMs, () =>
         this.compute.stopRevision(revision),
       ),
     );
+    await this.retireEgressInstallation(revision);
+  }
+
+  private async retireEgressInstallation(revision: Readonly<AgentRevision>): Promise<void> {
+    if (revision.egressPlan === undefined) {
+      return;
+    }
+    // Only confirmed runtime retirement releases this Sandbox's current enrollment.
+    // Keep the revision's receipt for policy reduction and cleanup evidence.
+    await this.state.transact(async (state) => {
+      await state.namespaces.lockNamespace(revision.namespaceId);
+      await state.agents.lockAgent(revision.namespaceId, revision.agentId);
+      await state.credentialSources.retireEgressInstallation(revision.namespaceId, revision.id);
+    });
   }
 
   /** When work whose stop yielded to other Work runs again: 1 s, growing with its age to 5 s. */
@@ -3366,6 +3274,7 @@ export class ControllerWorker {
       for (const revision of revisions) {
         await this.closeRevisionCredentials(claim, revision, { awaitCleanup: false });
         await this.withClaimHeartbeat(claim, () => this.compute.retireRevision(revision));
+        await this.retireEgressInstallation(revision);
       }
       if (this.compute.deleteAgentRuntimeCredentials !== undefined) {
         await this.withClaimHeartbeat(claim, () =>
@@ -3422,6 +3331,10 @@ export class ControllerWorker {
     return undefined;
   }
 
+  private outcomeWithAttemptLimit(claim: ClaimedWork, outcome: Outcome): Outcome {
+    return outcome === "retry" && claim.attemptCount >= this.maxAttempts ? "permanent" : outcome;
+  }
+
   private async finalizeAgentDeletion(
     claim: ClaimedWork,
     result: AgentDeletionDispatchResult,
@@ -3461,9 +3374,7 @@ export class ControllerWorker {
         if ((await queue.heartbeat(claim)) === undefined) {
           throw new WorkClaimLostError();
         }
-        const terminalFailure =
-          result.outcome === "permanent" ||
-          (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+        const terminalFailure = this.outcomeWithAttemptLimit(claim, result.outcome) === "permanent";
         if (result.decision !== undefined) {
           await this.appendAgentDenial(unit, claim, result, "deletion");
         } else if (terminalFailure) {
@@ -3483,10 +3394,7 @@ export class ControllerWorker {
         }
       }, this.queueOptions);
     }
-    this.passOutcome =
-      result.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : result.outcome;
+    this.passOutcome = this.outcomeWithAttemptLimit(claim, result.outcome);
     this.emit({
       event: "worker.completed",
       ...agentWorkLogFields(claim),
@@ -3548,9 +3456,7 @@ export class ControllerWorker {
           );
         }
       }
-      const terminalFailure =
-        result.outcome === "permanent" ||
-        (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+      const terminalFailure = this.outcomeWithAttemptLimit(claim, result.outcome) === "permanent";
       if (result.decision !== undefined) {
         await this.appendAgentDenial(unit, claim, result, "stop");
       } else if (result.outcome === "success" || terminalFailure) {
@@ -3573,10 +3479,7 @@ export class ControllerWorker {
         await queue.retry(claim, { code: result.code });
       }
     }, this.queueOptions);
-    this.passOutcome =
-      result.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : result.outcome;
+    this.passOutcome = this.outcomeWithAttemptLimit(claim, result.outcome);
     if (result.outcome === "success" && result.code !== "STOP_SUPERSEDED") {
       this.metrics?.observeAgentOperation("stop", this.workAgeMs(claim) / 1000);
     }
@@ -4468,10 +4371,8 @@ export class ControllerWorker {
   private assertCredentialWithdrawalOwner(revision: AgentRevision, source: CredentialSource): void {
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
     const owner =
-      source.ownerCapability === "credential_gateway"
-        ? this.ownsCredentialGatewaySource(source)
-        : source.driverId === this.proxyDriver?.id;
-    if (!owner || !credentialSourceMatchesSnapshot(source, snapshot)) {
+      source.ownerCapability === "credential_gateway" ? this.credentialGateway : this.proxyDriver;
+    if (source.driverId !== owner?.id || !credentialSourceMatchesSnapshot(source, snapshot)) {
       throw new CredentialWithdrawalRefusedError(
         "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
         "The source and selected owner must match the revision's credential source admission.",
@@ -5095,7 +4996,6 @@ export class ControllerWorker {
           // A yielded predecessor stop ends the pass pending below, like a candidate's.
           if (
             error instanceof WorkClaimLostError ||
-            error instanceof RestartContinuationEndedError ||
             error instanceof RepositoryCredentialAuthorityError ||
             error instanceof RepositorySessionWithdrawnError ||
             error instanceof ComputeStopYieldedError ||
@@ -5242,7 +5142,6 @@ export class ControllerWorker {
           // could not authenticate retries within the attempt budget first (finding 1694).
           result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
-          error instanceof RestartContinuationEndedError ||
           error instanceof RepositoryCredentialAuthorityError ||
           // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
           // can never enroll, so it fails now instead of at the convergence deadline.
@@ -5880,22 +5779,12 @@ export class ControllerWorker {
         source:
           withdrawal === undefined &&
           source?.state === "ready" &&
-          (source.ownerCapability !== "credential_gateway" ||
-            this.ownsCredentialGatewaySource(source)) &&
           credentialSourceMatchesSnapshot(source, snapshot)
             ? source
             : undefined,
         withdrawal,
       };
     });
-  }
-
-  private ownsCredentialGatewaySource(source: CredentialSource): boolean {
-    return credentialSourceOwnedByGateway(
-      source,
-      this.credentialGateway?.id,
-      this.packagedGatewayRegistration?.credentialGatewayOwnerId,
-    );
   }
 
   private async resolveRevisionSecretContext(
@@ -6049,15 +5938,32 @@ export class ControllerWorker {
           ? {}
           : {
               recordEgressInstallation: async (installation) => {
-                await this.state.transact(async (state) => {
-                  await state.agents.lockAgent(revision.namespaceId, revision.agentId);
+                await this.state.transactWithQueue(async (state, queue) => {
+                  const namespace = await state.namespaces.lockNamespace(revision.namespaceId);
+                  const agent = await state.agents.lockAgent(
+                    revision.namespaceId,
+                    revision.agentId,
+                  );
+                  if (
+                    namespace?.status !== "ready" ||
+                    agent?.status !== "active" ||
+                    agent.desiredRuntimeState !== "running" ||
+                    agent.servicePrincipalId !== revision.servicePrincipalId
+                  ) {
+                    throw new Error("The protected execution is no longer current.");
+                  }
                   const current = await state.credentialSources.findRevisionEgressInstallation(
                     revision.namespaceId,
                     revision.id,
                   );
-                  // Re-observing the same installation may advance its timestamp, not its authority.
+                  const active = await state.credentialSources.findEgressInstallation(
+                    installation.sender.id,
+                    installation.sandboxId,
+                  );
+                  // Re-observing a current receipt cannot reactivate a retired execution.
                   if (
                     current &&
+                    isDeepStrictEqual(active, current) &&
                     isDeepStrictEqual(current, {
                       ...installation,
                       installedAt: current.installedAt,
@@ -6065,7 +5971,19 @@ export class ControllerWorker {
                   ) {
                     return;
                   }
+                  const newest = (
+                    await state.revisions.listRevisionMetadata(
+                      revision.namespaceId,
+                      revision.agentId,
+                    )
+                  ).at(-1);
+                  const deployment = await queue.findWork(
+                    `agent_revision:${revision.id}:reconcile`,
+                  );
                   if (
+                    newest?.id !== revision.id ||
+                    deployment === undefined ||
+                    deployment.state === "failed_permanent" ||
                     current ||
                     !isDeepStrictEqual(installation.plan, revision.egressPlan) ||
                     (
@@ -6138,7 +6056,18 @@ export class ControllerWorker {
                       "Credential policy reduction is not observed.",
                     );
                   }
-                  return view.credentialSources.findRevisionEgressInstallation(namespaceId, id);
+                  const receipt = await view.credentialSources.findRevisionEgressInstallation(
+                    namespaceId,
+                    id,
+                  );
+                  if (receipt === undefined) {
+                    return undefined;
+                  }
+                  const active = await view.credentialSources.findEgressInstallation(
+                    receipt.sender.id,
+                    receipt.sandboxId,
+                  );
+                  return isDeepStrictEqual(active, receipt) ? receipt : undefined;
                 }),
             }),
         secretEnvironment: Object.freeze(resolved),
@@ -6501,10 +6430,7 @@ export class ControllerWorker {
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
     let activeRevisionChanged = false;
-    let committedOutcome: WorkOutcome =
-      resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : resolved.outcome;
+    let committedOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
     if (committedOutcome === "permanent") {
       failureLogFields = {
         ...failureLogFields,
@@ -6543,14 +6469,7 @@ export class ControllerWorker {
           activeRevisionChanged = true;
           return;
         }
-        const continuation = await unit.agents.findRestartContinuation(
-          claim.namespaceId,
-          current.id,
-        );
-        if (
-          current.desiredRuntimeState !== "running" ||
-          !isDeepStrictEqual(continuation, resolved.revision.restartContinuation)
-        ) {
+        if (current.desiredRuntimeState !== "running") {
           stoppedCandidate = resolved.revision;
           return;
         }
@@ -6698,10 +6617,7 @@ export class ControllerWorker {
         if (error instanceof WorkClaimLostError) {
           throw error;
         }
-        if (
-          error instanceof RestartContinuationEndedError ||
-          error instanceof RepositoryCredentialAuthorityError
-        ) {
+        if (error instanceof RepositoryCredentialAuthorityError) {
           await this.finalizeRevision(
             claim,
             { outcome: "permanent", code: error.code },
@@ -6893,6 +6809,7 @@ export class ControllerWorker {
       await this.withClaimHeartbeat(claim, () =>
         withYieldingComputeStop(() => compute.stopRevision(revision)),
       );
+      await this.retireEgressInstallation(revision);
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
         // A graceful shutdown aborts a slow stop (a Pod-termination wait) like a lost claim.
@@ -7128,6 +7045,7 @@ export class ControllerWorker {
     for (const previous of earlier) {
       await this.closeRevisionCredentials(claim, previous);
       await this.withClaimHeartbeat(claim, () => this.compute.retireRevision(previous));
+      await this.retireEgressInstallation(previous);
     }
   }
 
@@ -7802,10 +7720,7 @@ export class ControllerWorker {
       }
       this.auditedPendingLifecycle.set(claim.idempotencyKey, pendingAudit);
     }
-    this.passOutcome =
-      resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
-        ? "permanent"
-        : resolved.outcome;
+    this.passOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
     // The Compute Driver's bounded reason for a failed Namespace pass; the lifecycle audit
     // and Namespace status keep only the failure class.
     const reason =

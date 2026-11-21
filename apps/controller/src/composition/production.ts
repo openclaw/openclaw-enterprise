@@ -8,10 +8,9 @@ import {
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
-import {
-  installationControllerOptions,
-  installPackagedGatewayRegistration,
-} from "./installation-config.ts";
+import { installationControllerOptions } from "./installation-config.ts";
+import { installTokenServiceDriver } from "./token-service.ts";
+import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
   createPostgresPool,
@@ -69,13 +68,6 @@ export interface ProductionConfig {
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
-  readonly channelDirectoryProxyUrl?: string;
-  readonly channelDirectoryManagedProxyHost?: string;
-  /**
-   * OCC_API_HTTPS_EGRESS_OPEN: a sign-in egress rule lets the API reach any address on TCP 443,
-   * so Slack can answer without a proxy. Default: closed.
-   */
-  readonly apiHttpsEgressOpen?: boolean;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
@@ -96,35 +88,14 @@ export interface CompositionDependencies {
   readonly passwordHasher?: PasswordHasher;
 }
 
-function validateProductionStartup(config: ProductionConfig): void {
-  if (config.mode !== "production") {
-    throw new Error("Production OCC composition requires explicit production mode.");
-  }
-  validateAuthSecret(config.authSecret);
-  if (
-    (config.drivers.installation.drivers.service_account === undefined) !==
-    (config.serviceAccountDriverFactory === undefined)
-  ) {
-    throw new Error(
-      "The selected ServiceAccount Driver requires API-only PostgreSQL initialization.",
-    );
-  }
-  if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("Google sign-in does not support native administration.");
-  }
-}
-
 export async function composeProduction(
   config: ProductionConfig,
   dependencies: CompositionDependencies = {},
 ) {
-  try {
-    validateProductionStartup(config);
-  } catch (error) {
-    // A refused startup still owns the packaged registration it was handed, so the process can exit.
-    await config.drivers?.packagedGatewayRegistration?.close().catch(() => {});
-    throw error;
+  if (config.mode !== "production") {
+    throw new Error("Production OCC composition requires explicit production mode.");
   }
+  validateAuthSecret(config.authSecret);
   const {
     installation,
     computeDriver,
@@ -132,7 +103,6 @@ export async function composeProduction(
     secretDriver,
     sandboxDriver,
     credentialGatewayDriver,
-    packagedGatewayRegistration,
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
@@ -140,8 +110,19 @@ export async function composeProduction(
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
+  if (
+    (installation.drivers.service_account === undefined) !==
+    (config.serviceAccountDriverFactory === undefined)
+  ) {
+    throw new Error(
+      "The selected ServiceAccount Driver requires API-only PostgreSQL initialization.",
+    );
+  }
 
   const driverId = installation.drivers.iam.id;
+  if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
+    throw new Error("Google sign-in does not support native administration.");
+  }
 
   let phaseStartedAt = performance.now();
   const phaseCompleted = (phase: ProductionStartupPhase) => {
@@ -151,25 +132,14 @@ export async function composeProduction(
   };
 
   const auditEnabled = config.controlPlaneAuditEnabled === true;
-  let pool: Awaited<ReturnType<typeof createPostgresPool>>;
-  try {
-    pool = await createPostgresPool(config.databaseUrl, {
-      ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
-      ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
-    });
-  } catch (error) {
-    await packagedGatewayRegistration?.close().catch(() => {});
-    throw error;
-  }
+  const pool = await createPostgresPool(config.databaseUrl, {
+    ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
+    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
+  });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(
-      exchange,
-      packagedGatewayRegistration ?? protectedDriver,
-      preparedGitHub,
-      database,
-    );
+    closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
@@ -232,19 +202,9 @@ export async function composeProduction(
     }
 
     phaseCompleted("computePreflight");
-    const channelDriver = new SlackChannelDriver(
-      globalThis.fetch,
-      config.channelDirectoryProxyUrl,
-      {
-        managedProxyHosts:
-          config.channelDirectoryManagedProxyHost === undefined
-            ? []
-            : [config.channelDirectoryManagedProxyHost],
-        // A closed egress reaches Slack only through a proxy; an open one may reach it
-        // directly, so a timeout there stays a retryable outage (finding 2533).
-        expectProxy: config.apiHttpsEgressOpen !== true,
-      },
-    );
+    const channelDriver =
+      config.drivers.channelDrivers?.find(({ provider }) => provider === "slack")?.driver ??
+      new SlackChannelDriver(globalThis.fetch, undefined, { expectProxy: true });
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
@@ -274,20 +234,9 @@ export async function composeProduction(
     controller.selectDriver("secret", secretDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    if (packagedGatewayRegistration !== undefined) {
-      installPackagedGatewayRegistration(controller, packagedGatewayRegistration, {
-        sandbox: sandboxDriver,
-        gateway: credentialGatewayDriver,
-        protectedOwner: protectedDriver,
-        proxy: config.drivers.proxyDriver,
-      });
-    } else if (protectedDriver !== undefined) {
-      controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
-    } else if (sandboxDriver !== undefined) {
-      controller.registerDriver(sandboxDriver);
-      controller.selectDriver("sandbox", sandboxDriver.id);
-    }
-    if (credentialGatewayDriver !== undefined && packagedGatewayRegistration === undefined) {
+    installSelectedSandboxDrivers(controller, config.drivers);
+    await installTokenServiceDriver(controller, config.drivers);
+    if (credentialGatewayDriver !== undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
     }

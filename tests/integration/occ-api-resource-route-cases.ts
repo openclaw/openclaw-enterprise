@@ -10,8 +10,8 @@ import {
   type NamespaceWire,
   type Permission,
 } from "../../packages/contracts/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { AGENT_NAME_CONFLICT, NAMESPACE_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
@@ -606,6 +606,16 @@ export async function runNamespaceIsolation({
     `/namespaces/${tenantBId}/agents/${ownAgentId}`,
   );
   assert.equal(visibleAgent.status, 200);
+  assertApiError(
+    await injectedRequest(
+      readerApp,
+      "POST",
+      `/namespaces/${tenantBId}/agents/${ownAgentId}/stop?expectedActiveRevisionId=${missingRevisionId}`,
+    ),
+    403,
+    "FORBIDDEN",
+    "Agent read does not grant guarded stop or reveal a revision conflict",
+  );
 
   const { principal: revisionReader } = await fixture.createAuthPrincipal("revision-only-reader");
   fixture.state.identities.push(revisionReader);

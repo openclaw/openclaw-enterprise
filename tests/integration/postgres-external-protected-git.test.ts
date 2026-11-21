@@ -24,7 +24,6 @@ import {
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
-import { createRepositoryGitRequests } from "../../apps/controller/src/drivers/repo/github/access/protected-requests.ts";
 import { repositoryGitAuthority } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
@@ -39,7 +38,7 @@ import {
 import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
-import { injectJson } from "../helpers/inject-json.mjs";
+import { injectJson } from "../helpers/inject-json.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
@@ -1005,6 +1004,7 @@ function externalGitJourney(
                 image: "fixture",
                 command: [],
                 workspaceMounts: [],
+                retainedDirectories: [],
                 files: [],
                 environment: [],
                 labels: {},
@@ -3200,7 +3200,7 @@ test("external Git reduction authenticates and observes exact policy without mut
       },
     },
   ) as import("../../packages/contracts/src/index.ts").ProtectedRepositoryGitAuthority;
-  const binding = await proxy.bindRepositoryGit!(authority, createRepositoryGitRequests(authority));
+  const binding = await proxy.bindRepositoryGit!(authority);
   t.after(() => binding.close());
   const reducer = proxy.policyReduction!;
   assert.equal(reducer.version, 2);

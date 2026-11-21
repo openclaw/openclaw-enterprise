@@ -9,6 +9,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
@@ -33,6 +34,7 @@ import type {
   RecoveryFixture,
   RecoveryFixtureFactory,
 } from "../helpers/production-upgrade-recovery-fixture.ts";
+import { renderedDocuments } from "../helpers/production-upgrade-recovery-render.ts";
 import {
   field,
   list,
@@ -41,6 +43,7 @@ import {
   type RecoveryState,
 } from "../helpers/production-upgrade-recovery-state.ts";
 import {
+  execute,
   runtime,
   skipWithoutHelm,
   upgradeDiagnosticLines,
@@ -96,6 +99,7 @@ export function registerWriterHandoffCases({
       candidates: true,
       chart: { installation: (installation) => installation },
       databaseAnswer: () => ({ rows: [{ id: databaseId }] }),
+      migrationSecrets: true,
     });
     // This handoff changes migration ownership, not the example's Plugin Drivers.
     await writeFile(
@@ -109,6 +113,30 @@ export function registerWriterHandoffCases({
     assert.ok(database, "expected staged database settings");
     values.database = { ...database, upgradeMigration: "separate" };
     await writeFile(path, JSON.stringify(values));
+    const { stdout } = await execute(
+      realHelm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "system",
+        "--values",
+        join(f.directory, "values.json"),
+      ],
+      { cwd: repository },
+    );
+    const initializer = renderedDocuments(stdout).find(
+      (resource) => field(field(resource, "metadata"), "name") === "oce-initialization",
+    );
+    assert.ok(initializer);
+    await writeFile(
+      join(f.directory, "state.json"),
+      JSON.stringify({
+        ...(await f.state()),
+        installationRelease: { hooks: [{ manifest: JSON.stringify(initializer) }] },
+      }),
+    );
     await runWithInjectedFault(f, "fail-scale-worker");
     await assert.rejects(f.run("--resume", "--migration-history-checked"), (error: unknown) => {
       const failure = readUpgradeFailure(error);
@@ -149,9 +177,59 @@ export function registerWriterHandoffCases({
     assert.equal(refused.helmSubmissions ?? 0, 0);
     assert.deepEqual([refused.api, refused.worker], [0, 0]);
     databaseId = "ins_test";
-    // Completing the handoff requires no further patch.
-    await f.run("--resume", "--migration-history-checked");
-    assert.equal((await f.state()).helmSubmissions, 1);
+    const resume = ["--resume", "--migration-history-checked"];
+    await runWithInjectedFault(f, "reject-helm-submission", ...resume);
+    const rejected = await f.state();
+    const intent = await assertHelmIntent(f, 1, 2);
+    assert.equal(rejected.version, 1);
+    assert.equal(rejected.helmSubmissions, 1);
+    const handoff = join(f.evidence, "database-migration-handoff.json");
+    const savedHandoff = join(f.directory, "saved-handoff.json");
+    const settingsPaths = [
+      join(f.directory, "values.json"),
+      join(f.directory, "installation.json"),
+    ];
+    const settings = () =>
+      Promise.all(
+        settingsPaths.map(async (path) => ({
+          bytes: await readFile(path),
+          inode: (await stat(path)).ino,
+        })),
+      );
+    const attempts = () => readdir(join(f.evidence, "helm-attempts")).then((names) => names.sort());
+    const preflights = () =>
+      readdir(f.evidence).then((names) =>
+        names.filter((name) => name.startsWith("upgrade-preflight-resume.")).sort(),
+      );
+    const before = [await settings(), await attempts(), await preflights(), await f.events()];
+
+    // Manual migration has no sibling journal to reject a missing handoff.
+    assert.equal(existsSync(`${f.evidence}.migration-state.json`), false);
+    await rename(handoff, savedHandoff);
+    try {
+      await assert.rejects(
+        f.run(...resume),
+        /original separate database deployment handoff is missing/,
+      );
+      const held = await f.state();
+      assert.deepEqual(
+        [held.api, held.worker, held.version, held.helmSubmissions, held.dispatches],
+        [0, 0, 1, 1, 0],
+      );
+      assert.deepEqual(await assertHelmIntent(f, 1, 2), intent);
+      assert.deepEqual(
+        [await settings(), await attempts(), await preflights(), await f.events()],
+        before,
+      );
+      assert.equal(existsSync(handoff), false);
+    } finally {
+      await rename(savedHandoff, handoff);
+    }
+
+    // The original evidence allows completion without stopping either writer again.
+    await f.run(...resume);
+    assert.equal((await f.state()).helmSubmissions, 2);
+    assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
   });
 
   test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {

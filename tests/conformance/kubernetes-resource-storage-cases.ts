@@ -7,7 +7,6 @@ import {
   type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
-  type SandboxWorkspaceMount,
   requireConfiguration,
   ConfigurationValidationError,
 } from "../../packages/contracts/src/index.ts";
@@ -513,6 +512,9 @@ function checkPrivateStatePreparation(
     );
     assert.ok(initialization.includes(`/${name}/${subPath}`));
   }
+  if (privateMount.mountPath === "/gateway-state") {
+    assert.ok(initialization.includes("/gateway-state/skill-library"));
+  }
   // Avoid recursively changing ownership of retained data on every start.
   assert.equal(security.fsGroup, 1000);
   assert.equal(security.fsGroupChangePolicy, "OnRootMismatch");
@@ -596,6 +598,7 @@ export function checkGatewayAndHarnessStorage() {
         [`${home}/media`, "media"],
         [`${home}/worktrees`, "worktrees"],
         [`${home}/worktree-sources`, "worktree-sources"],
+        [`${home}/skill-library`, "skill-library"],
         embedded
           ? [`${home}/workspace`, "workspace"]
           : [`${home}/agents/main/sessions`, "sessions"],
@@ -699,16 +702,13 @@ export function checkGatewayAndHarnessStorage() {
     assert.deepEqual(security, rendered.security);
     assert.match(initialization, /chmodSync\(path, 0o700\)/);
     assert.ok(initialization.includes(`/harness-workspace-state/${nodeName}`));
-    const sandboxMounts: readonly SandboxWorkspaceMount[] = driver["sandboxWorkspaceMounts"](
-      volumes,
-      mounts,
-      true,
-    );
-    assert.ok(sandboxMounts.every(({ claimName }) => claimName === workspaceClaim));
+    const sandboxMounts = mounts.filter(({ name }) => name === workspace);
+    const persistentVolume = volumes.find(({ name }) => name === workspace);
+    assert.deepEqual(persistentVolume?.persistentVolumeClaim, { claimName: workspaceClaim });
     const node = sandboxMounts.at(-1);
     assert.ok(node && node.mountPath === "/home/node/.openclaw-node");
     assert.equal(node.readOnly, false);
-    assert.ok(node.subPath && !node.subPath.includes("/"));
+    assert.ok(typeof node.subPath === "string" && !node.subPath.includes("/"));
     return { mounts: sandboxMounts, node };
   };
   const original = withNode(revision);

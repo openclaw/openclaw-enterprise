@@ -14,7 +14,7 @@ import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
-} from "../helpers/runtime-logs.mjs";
+} from "../helpers/runtime-logs.ts";
 import {
   deploymentStatusResponse,
   persistedDeploymentError,
@@ -60,8 +60,6 @@ import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.
 
 import {
   CONFIGURATION_EDITS_PENDING,
-  LOG_TEXT_DENIED,
-  NEW_VERSIONS_READ,
   STOP_CANCELS_FIRST_DEPLOYMENT,
   STOP_CONFIRMATION,
   STOP_FIRST_DEPLOYMENT_CONFIRMATION,
@@ -70,6 +68,7 @@ import {
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
+import { LOG_TEXT_DENIED, NEW_VERSIONS_READ } from "../helpers/refusal-access.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type DeploymentResponseOptions = Parameters<typeof deploymentStatusResponse>[1];
@@ -2107,9 +2106,9 @@ test("Every failed deployment code has its own message and next step", async () 
     Object.keys(DEPLOYMENT_FAILURE_STEPS).sort(),
     Object.values(steps).flat().sort(),
   );
-  // The codes OCC's message switch handles (`deploymentErrorMessage` in controller-work.ts).
+  // The codes OCC's message switch handles (`deploymentErrorMessage` in deployment-work-status.ts).
   const source = await readFile(
-    new URL("../../packages/occ/src/state/controller-work.ts", import.meta.url),
+    new URL("../../packages/occ/src/deployment-work-status.ts", import.meta.url),
     "utf8",
   );
   const start = source.indexOf("function deploymentErrorMessage(");

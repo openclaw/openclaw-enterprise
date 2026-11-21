@@ -1,23 +1,22 @@
 ---
 created: 2026-10-15
-updated: "2026-11-13"
-last_updated_session: "authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc"
 ---
 
 # Agent sandbox policy flow
 
 ## Overview
 
-OCC persists governed network additions for one Agent, freezes them at deployment,
-and optionally applies a later version through its Sandbox Driver. Denial logs
-and provider recommendations supply independent context for a user review.
-This trace describes the implemented source; runtime proof has separate limits.
+OCC saves governed network additions per Agent, freezes them at deployment,
+and can apply a later version through its Sandbox Driver. Operators review denial
+logs and provider recommendations.
 
 ## Entry Points
 
 - Trigger: the console Policy denials tab or `occ agent policy` commands.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
-  `packages/occ/src/index.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
+  `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
 - Assumptions: a ready Namespace, active Agent, exact grants, enabled editing for
   mutations, and an Installation ceiling shared by API and worker.
 
@@ -40,40 +39,37 @@ graph TD
   V --> R["Record applied<br/>or unconfirmed failure"]
 ```
 
-The solid arrows trace source paths, not a claim that all providers are verified.
+Solid arrows trace source paths, not provider verification.
 
 ## Execution Trace
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
-output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
-omitted and refuses unsupported explicit formats before any request. It then
-prints the acknowledged result through
-`internal/occcli/output.go:printStructured`. A successful mutation therefore
-returns its result without a later table-format error.
+The CLI supports JSON and YAML for policy commands
+(`internal/occcli/agent_policy.go:agentPolicyCommand`). It defaults to JSON
+and rejects an unsupported format before the request. It prints the
+acknowledged result as structured output.
 
-`OpenClawController.discoverConfigurations` filters registry contributions by the
-server-selected Driver, scope, and resource-owner read authority. Installation
-inspection exposes [Driver-projected startup values](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
-Agent discovery and policy GET
-use the same descriptor with owner-generated facet action URLs and current
-availability. The registry never selects a Driver from submitted additions.
+`SetupDiscovery.discoverConfigurations` lists selected Driver contributions.
+Installation `administer` permits [startup inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
+Agent discovery requires Agent and policy `read` and shares the policy GET descriptor.
+Submitted additions cannot select a Driver.
 
-`validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
-current editing flag, expected version, and pending application, then runs shared
-schema/semantic validation, the Driver contribution (which can only narrow it), and
-current ceiling/provider admission. An empty or reversed port range is never inside
-the ceiling. It returns a configuration result without entering a mutation
-transaction. Schema and semantic refusals carry safe `error.details`; stale or
-unauthorized requests retain their resource errors. Every later mutation repeats
-these checks. Ceiling refusal keeps its Installation-delegation cause; unsupported
-wildcard/range refusal names the Driver capability limit. Both retain field details.
-`internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
-records as escaped JSON and omits records with Unicode control characters, so
-CLI callers retain the same field and cause without terminal controls.
+`validateAgentSandboxPolicy` checks Agent and policy authorization, editing, version,
+pending work, grant schemas and Driver rules. `networkGrantAdmissionDetails` in
+`packages/contracts/src/deployment-policy.ts` checks executables, hosts and ports against the
+Installation ceiling and Sandbox wildcard and range support. Preview writes nothing; save and deploy repeat admission.
 
-`packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
+Validation names failed fields and checks. Stale or denied requests retain resource errors.
+`internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details without Unicode controls.
+
+Staged `validateDeploymentPolicy(policy, context)` checks source approval, reviewed requests and
+projections using trusted binding, source and consumer authority. Only proposed proxy configuration
+receives a source-bound resolver. The proxy qualifies bindings and requests. Static approvals match
+method, host, port and path (`null` permits any method). The Sandbox qualifies HTTP rules and exact
+MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
+
+`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
 and registry-resolved Driver admission. The saved additions come from the
@@ -126,15 +122,15 @@ cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
 
-`packages/occ/src/index.ts:deployAgent` freezes the Driver's defaults and additions
-into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
-snapshot rather than re-reading changed defaults.
+`packages/occ/src/sandbox-policy.ts:admitDeploymentSnapshot` freezes Driver
+defaults and additions in `AgentRevision.sandboxPolicy`. The OpenShell Driver
+provisions from that snapshot.
 
-`applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
-`update` and `read` before any refusal that names saved additions, then requires
-the exact active revision and supporting Driver. When the caller supplies reviewed additions, the same transaction saves the new
-policy version, records its pending application and enqueues Agent-target work.
-Omitting additions retains the saved policy version. Neither saving nor enqueueing establishes enforcement.
+`applyAgentSandboxPolicy` checks Agent `manage_policy` and SandboxPolicy
+`update` and `read` before disclosing saved additions. It requires the exact
+active revision and a supporting Driver. One transaction saves supplied
+changes, records the pending application and queues work. Omitting additions
+keeps the saved policy version. Provider readback confirms enforcement.
 
 ### 3. Reconcile provider effects
 
@@ -269,6 +265,24 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 16:58: Point to deployment admission and its request module. (authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc - 48e378422c0f6527682d305cac5ca3992a00c5ad)
+
+- 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
+
+- 2026-11-20 16:26: Point policy admission and live application to their Sandbox policy module. (authoring-run/f1915f3d-1425-495a-b3d9-3ed171e6cf74 - c153a2bbf59310a74974a455c11152460d486af4)
+
+- 2026-11-19 07:54: Separate credential acquisition. (authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8 - 1eb271262)
+
+- 2026-11-19 09:03: Separate policy and validation context. (authoring-run/2ca60020-2ed8-48c5-943c-ba2890e5bb12 - 9dd2694f3cdbbed2c2e26222d503a2253af93ee9)
+
+- 2026-11-18 21:48: Preserve source-approved HTTP methods. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 7ee6a09585aa160de6feab9c133bf5c090ff05f5)
+
+- 2026-11-18 15:56: Trace HTTP unions and UTF-8 paths. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 2fcc0a88cc29bbdc5c3a744ebdd15c6d62ad8934)
+
+- 2026-11-18 15:37: Clarify projection and request matching. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - f099db22a50b4929601520d156b5b14d6bb63613)
+
+- 2026-11-18 05:50: Trace per-binding static request admission. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 913c717d12f78645b5f8d47216aaddd2dfe90c0e)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 

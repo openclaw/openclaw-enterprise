@@ -155,16 +155,24 @@ export function imageBuildBudgetMs() {
   return deadline === undefined ? undefined : deadline - Date.now();
 }
 
+type LaneImageOperation = "current-build" | "baseline-build" | "cache-probe";
+
 // The lane cannot pass once its image build has used the time its tests need, so it stops
 // with this instead of building on and cutting every test file at the deadline.
-function imageBuildOutOfTime(role: ImageRole, limitMs: number) {
+function imageBuildOutOfTime(role: ImageRole, limitMs: number, operation: LaneImageOperation) {
+  const revision = operation === "baseline-build" ? "Baseline" : "Current";
+  const action = operation === "cache-probe" ? "cache probe" : "build";
+  const title =
+    limitMs > 0
+      ? `${revision} ${role} image ${action} timed out`
+      : `Insufficient lane time to start the ${revision.toLowerCase()} ${role} image ${action}`;
   const message =
     `The ${role} image did not finish building within this lane's time` +
     (limitMs > 0 ? ` (stopped after ${Math.round(limitMs / 1000)} s)` : "") +
     `; the lane keeps ${Math.round(imageBuildTestReserveMs / 1000)} s before its deadline ` +
     "for the rest of preparation and its tests, so it stops here. A build that misses the " +
     "image cache, for example after a change to the image inputs, can take about 20 min.";
-  process.stdout.write(`::error title=Image build out of lane time::${message}\n`);
+  process.stdout.write(`::error title=${title}::${message}\n`);
   return Object.assign(new Error(message), { imageBuildOutOfTime: true });
 }
 
@@ -180,9 +188,10 @@ export async function laneImageCommand(
   role: ImageRole,
   args: string[],
   budgetMs = imageBuildBudgetMs(),
+  operation: LaneImageOperation = "current-build",
 ) {
   if (budgetMs !== undefined && budgetMs < 1_000) {
-    throw imageBuildOutOfTime(role, 0);
+    throw imageBuildOutOfTime(role, 0, operation);
   }
   try {
     return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs: budgetMs });
@@ -196,7 +205,7 @@ export async function laneImageCommand(
           `[image-build] the ${role} image build's last output:\n${tail.join("\n")}\n`,
         );
       }
-      throw imageBuildOutOfTime(role, budgetMs);
+      throw imageBuildOutOfTime(role, budgetMs, operation);
     }
     throw error;
   }
@@ -289,7 +298,7 @@ export async function reuseEngineImage(
       probeResult = await execFile(docker, probeArgs, { timeoutMs: 20 * 60_000 });
     } else {
       try {
-        probeResult = await laneImageCommand(role, probeArgs, budgetMs);
+        probeResult = await laneImageCommand(role, probeArgs, budgetMs, "cache-probe");
       } catch (error) {
         if (asRecord(error)?.imageBuildOutOfTime === true) {
           outcome = "out-of-time";
@@ -374,10 +383,8 @@ export async function warmImageBuildCache(
 ): Promise<void> {
   const exportArgs = imageCacheExportArgs(role, args);
   // A failed or overrunning build fails the job and keeps nothing. The first
-  // stage and the image build share one limit. Cold runtime builds compile
-  // Node; give them the native runtime assembly budget, retaining 20 min
-  // for controller builds.
-  const buildTimeoutMs = (role === "runtime" ? 180 : 20) * 60_000;
+  // stage and the image build share one 20-minute limit.
+  const buildTimeoutMs = 20 * 60_000;
   const deadline = performance.now() + buildTimeoutMs;
   if (role === "runtime") {
     await warmCommand(

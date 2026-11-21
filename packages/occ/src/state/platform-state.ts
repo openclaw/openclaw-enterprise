@@ -1,26 +1,66 @@
-import {
-  cancelledDeviceAuthorization,
-  type DeviceAuthorizationSession,
-} from "../device-authorization.ts";
-import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type {
-  RestartContinuation,
-  PreparedTokenCurrentProof,
-} from "@openclaw-enterprise/contracts";
+  WorkspaceSetupRepository,
+  SandboxPolicyRepository,
+  AgentRepository,
+  AgentRevisionRepository,
+} from "../ports/agents.ts";
+import type {
+  OAuthAuthenticationState,
+  AuthenticationState,
+  OAuthSourceRef,
+  AuthenticationStateRepository,
+} from "../ports/authentication-states.ts";
+import type {
+  ConfigurationOwnership,
+  ConfigurationReadRepository,
+  ConfigurationRepository,
+} from "../ports/configurations.ts";
+import type {
+  ConnectionTemplateReadRepository,
+  ConnectionTemplateRepository,
+} from "../ports/connection-templates.ts";
+import type {
+  StoredCredentialWithdrawal,
+  CredentialSourceReadRepository,
+  CredentialSourceRepository,
+} from "../ports/credential-sources.ts";
+import type { InstallationRepository } from "../ports/installations.ts";
+import type { PersistedNamespace, NamespaceRepository } from "../ports/namespaces.ts";
+import type { PlatformOperation } from "../ports/platform-operations.ts";
+import type { PlatformStateStore } from "../ports/platform-state-store.ts";
+import type {
+  ConnectionTokenCustody,
+  SavedConnectionRepository,
+} from "../ports/saved-connections.ts";
+import type {
+  SecretReferenceKind,
+  SecretReferenceEntry,
+  SecretReadRepository,
+  SecretRepository,
+} from "../ports/secrets.ts";
+import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
+import type { PlatformReadView } from "../ports/platform-read-view.ts";
+import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
+import type { PresetReadRepository, PresetRepository } from "../ports/presets.ts";
+import { cancelledDeviceAuthorization } from "../device-authorization.ts";
+import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
+import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
 } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
-import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
+import type { StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
 import type {
   ProtectedEgressSource,
   EgressInstallation,
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type { StoredOAuthClient } from "../ports/oauth-client.ts";
+import type { TokenServiceInstance } from "../ports/token-service.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
@@ -29,61 +69,43 @@ import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   RepositorySessionAttempt,
-  RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
   RepositoryStandingApproval,
-  RepositorySessionReadRepository,
-  RepositorySessionRepository,
 } from "../ports/repository-sessions.ts";
 import { memoryRepositorySessions } from "./memory-repository-sessions.ts";
 import {
   normalizedRepositoryBindings,
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
-} from "./repository-credential-state.ts";
+} from "../repository-credential-validation.ts";
 import type {
   ConnectionTemplate,
   OAuthConnectionTemplateVersion,
-  ConnectionSession,
   SavedConnection,
   AccessBinding,
   Agent,
-  AgentRead,
-  AgentRevisionMetadata,
-  AgentRevisionSummaryPage,
-  AgentRevisionRead,
   WorkspaceSetup,
-  AgentDesiredRuntimeState,
-  AgentStatus,
   AgentRevision,
-  FirstDeploymentReceipt,
   AuditEvent,
   CredentialSource,
   CredentialSourceSnapshot,
   CredentialWithdrawal,
   SecretReference,
-  HarnessExecutionMode,
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
   HarnessAuthSnapshot,
   Identity,
   Installation,
-  Namespace,
-  NamespaceStatus,
   PluginDesiredState,
   PluginDriverIdentity,
   PluginApprovers,
   Preset,
-  PresetSummary,
-  RepositoryBindingSelection,
-  RepositoryAccess,
   Secret,
   SecretBindings,
   ServiceAccount,
   ServiceAccountCredential,
   ServicePrincipal,
   Role,
-  IAMPolicyReadRepository,
   IAMPolicyRepository,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -108,6 +130,7 @@ import {
   DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
   EGRESS_REVISION_INSTALLED_CONFLICT,
+  EGRESS_SANDBOX_INSTALLED_CONFLICT,
   IAMPolicyValidationError,
   IAMRoleInUseError,
   NAMESPACE_NAME_CONFLICT,
@@ -118,654 +141,8 @@ import {
   SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
 } from "../errors.ts";
-import {
-  CREDENTIAL_WITHDRAWAL_TARGET,
-  credentialWithdrawalWorkKey,
-  type ControllerWork,
-  type ControllerWorkAttempt,
-  type ControllerWorkLookup,
-} from "./controller-work.ts";
-import type {
-  AgentProvisioningReadRepository,
-  AgentProvisioningRepository,
-} from "./agent-provisioning.ts";
-
-export type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
-
-export interface InstallationReadRepository {
-  findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
-  getInstallation(): Promise<Readonly<Installation> | undefined>;
-}
-
-export interface InstallationRepository extends InstallationReadRepository {
-  createInstallation(installation: Installation): Promise<Readonly<Installation>>;
-  /**
-   * Holds a human Principal's account until COMMIT so a disable cannot commit first.
-   * False when the account is disabled; true when it is enabled or the Principal has
-   * no human account (its IAM bindings alone decide).
-   */
-  holdPrincipalAccount(principalId: string): Promise<boolean>;
-  /** Holds the user/session through COMMIT and validates expiry at commit; authentication validates its profile. */
-  holdAuthenticationSession(sessionId: string, userId: string): Promise<boolean>;
-  /**
-   * Holds the Installation's IAM configuration lock until COMMIT: shared before a write of
-   * durable authority (an Owner binding, a deploy-time grant, or a Group membership), exclusive
-   * while OCC applies the `iam` configuration, so the two commit one after the other.
-   */
-  holdIAMConfiguration(mode: "shared" | "exclusive"): Promise<void>;
-}
-
-export interface NamespaceReadRepository {
-  findNamespace(namespaceId: string): Promise<Readonly<Namespace> | undefined>;
-  listNamespaces(): Promise<readonly Readonly<Namespace>[]>;
-}
-
-export interface PersistedNamespace extends Namespace {
-  readonly deletedAt?: string;
-}
-
-export interface NamespaceRepository extends NamespaceReadRepository {
-  createNamespace(namespace: Namespace): Promise<Readonly<Namespace>>;
-  lockNamespace(
-    namespaceId: string,
-    options?: { readonly includeDeleted?: boolean },
-  ): Promise<Readonly<PersistedNamespace> | undefined>;
-  hasAgents(namespaceId: string): Promise<boolean>;
-  hasConfigurations(namespaceId: string): Promise<boolean>;
-  /** IDs of the Namespace's Configurations, oldest first; nothing else lists them. */
-  listConfigurationIds(namespaceId: string): Promise<readonly string[]>;
-  hasPresets(namespaceId: string): Promise<boolean>;
-  hasServiceAccounts(namespaceId: string): Promise<boolean>;
-  hasSecrets(namespaceId: string): Promise<boolean>;
-  hasCredentialSources(namespaceId: string): Promise<boolean>;
-  transitionNamespaceStatus(
-    namespaceId: string,
-    expected: NamespaceStatus | readonly NamespaceStatus[],
-    next: NamespaceStatus,
-  ): Promise<Readonly<PersistedNamespace> | undefined>;
-  markNamespaceDeleted(
-    namespaceId: string,
-    deletedAt: string,
-  ): Promise<Readonly<PersistedNamespace> | undefined>;
-}
-
-export interface WorkspaceSetupReadRepository {
-  find(namespaceId: string, agentId: string): Promise<Readonly<WorkspaceSetup> | undefined>;
-}
-
-export interface WorkspaceSetupRepository extends WorkspaceSetupReadRepository {
-  create(setup: WorkspaceSetup): Promise<Readonly<WorkspaceSetup>>;
-  complete(
-    namespaceId: string,
-    agentId: string,
-    id: string,
-  ): Promise<Readonly<WorkspaceSetup> | undefined>;
-  delete(namespaceId: string, agentId: string): Promise<boolean>;
-}
-
-export interface SandboxPolicyReadRepository {
-  find(namespaceId: string, agentId: string): Promise<Readonly<SandboxPolicy> | undefined>;
-}
-export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
-  save(
-    policy: SandboxPolicy,
-    expectedVersion: number,
-  ): Promise<Readonly<SandboxPolicy> | undefined>;
-}
-
-export interface AgentReadRepository {
-  findRestartContinuation(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<RestartContinuation> | undefined>;
-  findPredecessorReplacement(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<PredecessorReplacement> | undefined>;
-  findAgentForBrowsing(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<AgentRead> | undefined>;
-  listAgentsForBrowsing(namespaceId: string): Promise<readonly Readonly<AgentRead>[]>;
-  findAgent(namespaceId: string, agentId: string): Promise<Readonly<Agent> | undefined>;
-  listAgents(namespaceId: string): Promise<readonly Readonly<Agent>[]>;
-  /**
-   * Whether an Agent in the Namespace has exactly this name: the names the unique name
-   * constraint covers, Agents being deleted included. Reads no Agent settings.
-   */
-  hasAgentNamed(namespaceId: string, name: string): Promise<boolean>;
-  /**
-   * The identity of every Agent in every live Namespace, in one read that decodes no saved
-   * settings, for callers that resolve an opaque Agent address before authorizing it.
-   */
-  listAgentReferences(): Promise<readonly Readonly<Pick<Agent, "id" | "namespaceId">>[]>;
-}
-
-export interface AgentRepository extends AgentReadRepository {
-  /** Caller holds the Agent lock. The running lifecycle and revision admission share this transaction. */
-  setRestartContinuation(
-    namespaceId: string,
-    agentId: string,
-    continuation: Readonly<RestartContinuation> | undefined,
-  ): Promise<void>;
-  /** Caller holds the Namespace and Agent locks. Never reopens a committed stop. */
-  recordPredecessorReplacement(
-    namespaceId: string,
-    agentId: string,
-    input: {
-      readonly predecessorRevisionId: string;
-      readonly candidateRevisionId: string;
-      readonly phase: "pre-stop" | "stopping";
-    },
-  ): Promise<Readonly<PredecessorReplacement> | undefined>;
-  createAgent(
-    agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
-  ): Promise<Readonly<Agent>>;
-  setSandboxPolicyEditing(
-    namespaceId: string,
-    agentId: string,
-    enabled: boolean,
-  ): Promise<Readonly<Agent> | undefined>;
-  lockAgent(namespaceId: string, agentId: string): Promise<Readonly<Agent> | undefined>;
-  updateConfiguration(
-    namespaceId: string,
-    agentId: string,
-    configurationId: string,
-    executionMode?: HarnessExecutionMode,
-    harnessAuth?: HarnessAuthBinding | null,
-    backendId?: string | null,
-    plugins?: PluginDesiredState,
-    repositoryBindings?: readonly RepositoryBindingSelection[],
-    pluginApprovers?: PluginApprovers | null,
-    repositoryAccess?: RepositoryAccess | null,
-    credentialSources?: readonly AgentCredentialSourceBinding[],
-    gatewayManagedMode?: boolean,
-    pluginDriver?: PluginDriverIdentity | null,
-  ): Promise<Readonly<Agent> | undefined>;
-  compareAndSetActiveRevision(
-    namespaceId: string,
-    agentId: string,
-    expectedRevisionId: string | undefined,
-    candidateRevisionId: string,
-  ): Promise<Readonly<Agent> | undefined>;
-  compareAndClearActiveRevision(
-    namespaceId: string,
-    agentId: string,
-    expectedRevisionId: string,
-  ): Promise<Readonly<Agent> | undefined>;
-  transitionAgentDesiredRuntimeState(
-    namespaceId: string,
-    agentId: string,
-    expected: AgentDesiredRuntimeState | readonly AgentDesiredRuntimeState[],
-    next: AgentDesiredRuntimeState,
-  ): Promise<Readonly<Agent> | undefined>;
-  /**
-   * Moves the Agent between lifecycle states, returning undefined when the
-   * Agent is absent or does not currently hold one of `expected`. Deletion is
-   * asynchronous, so the transition is the boundary that stops concurrent
-   * mutations from admitting work the teardown has already enumerated. Callers
-   * that treat an already-deleting Agent as success check its status first,
-   * as `deleteNamespace` does for a Namespace.
-   */
-  transitionAgentStatus(
-    namespaceId: string,
-    agentId: string,
-    expected: AgentStatus | readonly AgentStatus[],
-    next: AgentStatus,
-  ): Promise<Readonly<Agent> | undefined>;
-}
-
-/** One Agent lifecycle fact, superseded when a different predecessor is replaced. */
-export interface PredecessorReplacement {
-  readonly predecessorRevisionId: string;
-  readonly candidateRevisionId: string;
-  readonly phase: "pre-stop" | "stopping";
-  readonly startedAt: string;
-  readonly stoppingAt?: string;
-}
-
-export interface AgentRevisionReadRepository {
-  findFirstDeploymentReceipt(
-    namespaceId: string,
-    agentId: string,
-    digest: string,
-  ): Promise<Readonly<FirstDeploymentReceipt> | undefined>;
-  findRevisionForBrowsing(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-  ): Promise<Readonly<AgentRevisionRead> | undefined>;
-  listRevisionsForBrowsing(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<readonly Readonly<AgentRevisionRead>[]>;
-  findRevision(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-  ): Promise<Readonly<AgentRevision> | undefined>;
-  listRevisions(namespaceId: string, agentId: string): Promise<readonly Readonly<AgentRevision>[]>;
-  /**
-   * The Agent's revisions in revision order, as listRevisions returns them but without their
-   * saved settings, so a caller that counts or picks revisions decodes only the one it uses.
-   */
-  listRevisionMetadata(
-    namespaceId: string,
-    agentId: string,
-  ): Promise<readonly Readonly<AgentRevisionMetadata>[]>;
-  /**
-   * One page of the Agent's revision summaries, newest first: at most `limit` revisions numbered
-   * below `before` (from the newest when omitted). It decodes no saved settings, so a list route
-   * costs about the same whatever the admitted snapshots weigh (finding 1323).
-   */
-  pageRevisionSummaries(
-    namespaceId: string,
-    agentId: string,
-    page: { readonly before?: number; readonly limit: number },
-  ): Promise<Readonly<AgentRevisionSummaryPage>>;
-}
-
-export interface AgentRevisionRepository extends AgentRevisionReadRepository {
-  /**
-   * Returns the stored revision. A store with a database clock stamps `createdAt` on that
-   * clock, the one that stamps controller work, so the worker can order a revision against a
-   * stop or deletion without controller clock skew (finding 1195); use the returned value.
-   */
-  createRevision(
-    revision: AgentRevision,
-    firstDeploymentDigest?: string,
-  ): Promise<Readonly<AgentRevision>>;
-}
-
-export interface ConfigurationOwnership {
-  readonly id: string;
-  readonly namespaceId: string;
-  readonly kind: "agent";
-  readonly generation: number;
-  readonly secretBindings?: SecretBindings;
-  readonly createdAt: string;
-}
-
-export interface ConfigurationReadRepository {
-  findConfiguration(
-    namespaceId: string,
-    configurationId: string,
-  ): Promise<Readonly<ConfigurationOwnership> | undefined>;
-}
-
-export interface ConfigurationRepository extends ConfigurationReadRepository {
-  createConfiguration(
-    configuration: ConfigurationOwnership,
-  ): Promise<Readonly<ConfigurationOwnership>>;
-  lockConfiguration(
-    namespaceId: string,
-    configurationId: string,
-  ): Promise<Readonly<ConfigurationOwnership> | undefined>;
-  advanceConfigurationGeneration(
-    namespaceId: string,
-    configurationId: string,
-    expectedGeneration: number,
-    secretBindings?: SecretBindings,
-  ): Promise<Readonly<ConfigurationOwnership> | undefined>;
-  deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
-}
-
-export interface ConnectionTemplateReadRepository {
-  listOAuthClientCleanups(limit: number): Promise<readonly string[]>;
-  findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
-  hasOtherConnectionIssuer(issuer: string): Promise<boolean>;
-  countNamespaceConnectionTemplates(namespaceId: string): Promise<number>;
-  listConnectionTemplates(): Promise<readonly Readonly<ConnectionTemplate>[]>;
-  findOAuthConnectionTemplateVersion(
-    templateId: string,
-    version: number,
-  ): Promise<Readonly<OAuthConnectionTemplateVersion> | undefined>;
-  listOAuthClients(): Promise<readonly Readonly<StoredOAuthClient>[]>;
-  countNamespaceOAuthClients(namespaceId: string): Promise<number>;
-  findOAuthClient(registrationId: string): Promise<Readonly<StoredOAuthClient> | undefined>;
-}
-
-export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepository {
-  lockOAuthClient(id: string): Promise<Readonly<StoredOAuthClient> | undefined>;
-  lockOAuthClientForCleanup(
-    id: string,
-    dueOnly: boolean,
-  ): Promise<Readonly<StoredOAuthClient> | undefined>;
-  setOAuthClientCleanup(id: string, cleanupAfter: string | null): Promise<void>;
-  lockConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
-  createOAuthClient(
-    registration: StoredOAuthClient,
-    cleanupAfter?: string,
-  ): Promise<Readonly<StoredOAuthClient>>;
-  /** False while a connection template version still names the registration. */
-  deleteOAuthClient(registrationId: string, retainForCleanup?: boolean): Promise<boolean>;
-  /** Inserts the template and its first version together. */
-  createConnectionTemplate(template: ConnectionTemplate): Promise<Readonly<ConnectionTemplate>>;
-  /** Renames, or appends `version` as the next version and makes it current. */
-  updateConnectionTemplate(
-    templateId: string,
-    changes: { readonly displayName?: string; readonly version?: OAuthConnectionTemplateVersion },
-  ): Promise<Readonly<ConnectionTemplate> | undefined>;
-  deleteConnectionTemplate(templateId: string): Promise<boolean>;
-}
-
-/** Private Secret identity used only by the Token Service. No credential material is stored here. */
-export interface ConnectionTokenCustody {
-  readonly namespaceId: string;
-  readonly sourceId: string;
-  readonly secret: Readonly<Secret>;
-  readonly scheduledVersion?: string;
-  readonly nextRefreshAt?: string;
-}
-
-export interface SavedConnectionReadRepository {
-  findTokenCustody(
-    namespaceId: string,
-    sourceId: string,
-  ): Promise<Readonly<ConnectionTokenCustody & { due: boolean }> | undefined>;
-  listDueConnectionTokens(
-    installationId: string,
-    limit: number,
-    afterSourceId?: string,
-  ): Promise<readonly Readonly<SavedConnection>[]>;
-  findSavedConnection(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<SavedConnection> | undefined>;
-  listRevokingConnections(
-    installationId: string,
-    limit: number,
-    afterSourceId?: string,
-  ): Promise<readonly Readonly<SavedConnection>[]>;
-  listNamespaceConnections(namespaceId: string): Promise<readonly Readonly<SavedConnection>[]>;
-}
-
-export interface SavedConnectionRepository extends SavedConnectionReadRepository {
-  createTokenCustody(custody: ConnectionTokenCustody): Promise<void>;
-  recordTokenSchedule(
-    namespaceId: string,
-    sourceId: string,
-    schedule:
-      | "due"
-      | "stopped"
-      | {
-          readonly scheduledVersion: string;
-          readonly nextRefreshAt: string;
-          readonly grantedScopes: readonly string[];
-        },
-  ): Promise<void>;
-  requestConnectionRevocation(
-    namespaceId: string,
-    sourceId: string,
-    principalId: string,
-  ): Promise<void>;
-  confirmConnectionRevocation(namespaceId: string, sourceId: string, at: string): Promise<void>;
-  createSavedConnection(connection: SavedConnection): Promise<Readonly<SavedConnection>>;
-  deleteSavedConnection(namespaceId: string, credentialSourceId: string): Promise<boolean>;
-}
-
-export interface PresetReadRepository {
-  findPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
-  listPresets(namespaceId: string): Promise<readonly Readonly<Preset>[]>;
-  /** The Namespace's Presets in listPresets order, without their templates. */
-  listPresetSummaries(namespaceId: string): Promise<readonly Readonly<PresetSummary>[]>;
-}
-
-export interface PresetRepository extends PresetReadRepository {
-  createPreset(preset: Preset): Promise<Readonly<Preset>>;
-  lockPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
-  updatePreset(
-    namespaceId: string,
-    presetId: string,
-    changes: Partial<Pick<Preset, "name" | "template">>,
-  ): Promise<Readonly<Preset> | undefined>;
-  deletePreset(namespaceId: string, presetId: string): Promise<boolean>;
-}
-
-/**
- * The current platform state that keeps a Secret from deletion. An Agent appears once,
- * whether its draft, active revision, or a pending deployment holds the reference.
- */
-export type SecretReferenceKind =
-  "agent" | "configuration" | "credential_source" | "provisioning_request";
-
-export interface SecretReferenceEntry {
-  readonly kind: SecretReferenceKind;
-  readonly id: string;
-}
-
-/** At most `limit` references, ordered by kind then ID; `truncated` when more exist. */
-export interface SecretReferencePage {
-  readonly references: readonly Readonly<SecretReferenceEntry>[];
-  readonly truncated: boolean;
-}
-
-export type OAuthAuthenticationState = Omit<ConnectionSession, "stateHash"> & {
-  readonly kind: "oauth_connection";
-  readonly id: string;
-};
-
-export type DeviceAuthenticationState = DeviceAuthorizationSession & {
-  readonly kind: "device_authorization";
-  readonly id: string;
-  readonly version: number;
-};
-
-export type AuthenticationState = OAuthAuthenticationState | DeviceAuthenticationState;
-export type DeviceAuthenticationChanges = Pick<
-  DeviceAuthorizationSession,
-  "phase" | "expiresAt" | "nextPollAt" | "privateState" | "encryptedChallenge"
->;
-export type OAuthSourceRef = Pick<OAuthAuthenticationState, "namespaceId" | "credentialSourceId">;
-
-export interface AuthenticationStateReadRepository {
-  findDevice(namespaceId: string, id: string): Promise<DeviceAuthenticationState | undefined>;
-}
-
-export interface AuthenticationStateRepository extends AuthenticationStateReadRepository {
-  create(state: AuthenticationState): Promise<void>;
-  replaceDevice(
-    namespaceId: string,
-    id: string,
-    version: number,
-    changes: DeviceAuthenticationChanges,
-  ): Promise<boolean>;
-  consumeOAuth(
-    id: string,
-    actorId: string,
-    sessionId: string,
-    at: string,
-  ): Promise<OAuthAuthenticationState | undefined>;
-  expire(at: string, limit: number): Promise<readonly OAuthSourceRef[]>;
-}
-
-export interface SecretReadRepository {
-  findSecret(namespaceId: string, secretId: string): Promise<Readonly<Secret> | undefined>;
-  listSecrets(namespaceId: string): Promise<readonly Readonly<Secret>[]>;
-  listReferences(
-    namespaceId: string,
-    secretId: string,
-    limit: number,
-  ): Promise<Readonly<SecretReferencePage>>;
-}
-
-export interface SecretRepository extends SecretReadRepository {
-  lockSecret(namespaceId: string, secretId: string): Promise<Readonly<Secret> | undefined>;
-  createSecret(secret: Secret): Promise<Readonly<Secret>>;
-  deleteSecret(namespaceId: string, secretId: string): Promise<boolean>;
-  hasReferences(namespaceId: string, secretId: string): Promise<boolean>;
-}
-
-export type StoredCredentialWithdrawal = CredentialWithdrawal;
-
-export interface CredentialSourceReadRepository {
-  listCredentialPolicyReductions(
-    namespaceId: string,
-    revisionId: string,
-  ): Promise<readonly CredentialPolicyReductionState[]>;
-  isEgressMaterialRejected(evidence: EgressMaterialEvidence): Promise<boolean>;
-  findEgressInstallation(
-    senderId: string,
-    sandboxId: string,
-  ): Promise<Readonly<EgressInstallation> | undefined>;
-
-  findRevisionEgressInstallation(
-    namespaceId: string,
-    revisionId: string,
-  ): Promise<Readonly<EgressInstallation> | undefined>;
-
-  findCredentialSource(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  listCredentialSources(namespaceId: string): Promise<readonly Readonly<CredentialSource>[]>;
-  findCredentialWithdrawal(
-    namespaceId: string,
-    revisionId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<StoredCredentialWithdrawal> | undefined>;
-  listCredentialWithdrawals(
-    namespaceId: string,
-    revisionId: string,
-  ): Promise<readonly Readonly<StoredCredentialWithdrawal>[]>;
-}
-
-export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
-
-export interface CredentialSourceRepository extends CredentialSourceReadRepository {
-  rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
-  recordEgressInstallation(installation: EgressInstallation): Promise<void>;
-  saveCredentialPolicyReduction(
-    namespaceId: string,
-    revisionId: string,
-    sourceId: string,
-    expected: CredentialPolicyReductionState | undefined,
-    next: CredentialPolicyReductionState,
-  ): Promise<boolean>;
-  admitEgressSource(
-    namespaceId: string,
-    sourceId: string,
-    expectedGeneration: number,
-    egress: ProtectedEgressSource,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-
-  lockCredentialSource(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  createCredentialSource(source: CredentialSource): Promise<Readonly<CredentialSource>>;
-  /**
-   * Points each existing Secret input field at a replacement same-Namespace Secret. The field
-   * set is fixed by the source type; only the referenced Secret IDs change.
-   */
-  replaceCredentialSourceSecrets(
-    namespaceId: string,
-    credentialSourceId: string,
-    secrets: Readonly<Record<string, SecretReference>>,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  /** Moves a registering source to `ready` once the gateway confirms its copy. */
-  markCredentialSourceReady(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  /** Moves a registering or ready source to `deleting`; the record stays until the gateway copy is gone. */
-  markCredentialSourceDeleting(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<Readonly<CredentialSource> | undefined>;
-  deleteCredentialSource(namespaceId: string, credentialSourceId: string): Promise<boolean>;
-  /** True while an Agent draft, revision, deployment, or queued/running provisioning references the source. */
-  hasReferences(namespaceId: string, credentialSourceId: string): Promise<boolean>;
-  /**
-   * What keeps the source from being deleted: `reference` while an Agent draft, active
-   * revision, or pending deployment references it, which wins over `withdrawal_work`, a
-   * withdrawal attempt or retry series still queued or running for a revision that holds it.
-   */
-  findBlockingReference(
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<CredentialSourceBlockingReference | undefined>;
-  /** Records a pending withdrawal, or returns the existing one for the same revision and source. */
-  requestCredentialWithdrawal(
-    withdrawal: CredentialWithdrawal,
-  ): Promise<Readonly<CredentialWithdrawal>>;
-  /**
-   * Makes `requestedBy` the requester of a pending withdrawal: the principal whose
-   * `agent:operate` the worker rechecks. `requestedAt` keeps the first request's time, and a
-   * revoked withdrawal never changes.
-   */
-  reassignCredentialWithdrawal(
-    namespaceId: string,
-    revisionId: string,
-    credentialSourceId: string,
-    requestedBy: string,
-  ): Promise<Readonly<CredentialWithdrawal> | undefined>;
-  /** Records the worker's latest outcome code on a pending withdrawal. */
-  recordCredentialWithdrawalAttempt(
-    namespaceId: string,
-    revisionId: string,
-    credentialSourceId: string,
-    attempt: { readonly reason: string; readonly at: string },
-  ): Promise<Readonly<CredentialWithdrawal> | undefined>;
-  /** Moves a pending withdrawal to `revoked`; a revoked withdrawal never changes again. */
-  markCredentialWithdrawalRevoked(
-    namespaceId: string,
-    revisionId: string,
-    credentialSourceId: string,
-    completedAt: string,
-  ): Promise<Readonly<CredentialWithdrawal> | undefined>;
-}
-
-export interface ServiceAccountReadRepository {
-  findServiceAccount(
-    namespaceId: string,
-    serviceAccountId: string,
-  ): Promise<Readonly<ServiceAccount> | undefined>;
-  listServiceAccounts(namespaceId: string): Promise<readonly Readonly<ServiceAccount>[]>;
-  findServiceAccountBackendBinding(
-    namespaceId: string,
-    serviceAccountId: string,
-  ): Promise<
-    | Readonly<{
-        readonly backendId: string;
-        readonly driverId: string;
-        readonly workspaceId: string;
-        readonly credentialIssued: boolean;
-      }>
-    | undefined
-  >;
-}
-
-export interface ServiceAccountRepository extends ServiceAccountReadRepository {
-  createServiceAccount(account: ServiceAccount): Promise<Readonly<ServiceAccount>>;
-  lockServiceAccount(
-    namespaceId: string,
-    serviceAccountId: string,
-  ): Promise<Readonly<ServiceAccount> | undefined>;
-  updateCredential(
-    namespaceId: string,
-    serviceAccountId: string,
-    credential: ServiceAccountCredential,
-  ): Promise<Readonly<ServiceAccount> | undefined>;
-  deleteServiceAccount(namespaceId: string, serviceAccountId: string): Promise<boolean>;
-  hasReferences(namespaceId: string, serviceAccountId: string): Promise<boolean>;
-  /**
-   * The Backend binding of an issued provider credential, for the audit record of a forced
-   * deletion that cannot revoke it. Credential and upstream IDs otherwise stay private.
-   */
-  findIssuedCredentialBinding(
-    namespaceId: string,
-    serviceAccountId: string,
-  ): Promise<
-    | Readonly<{
-        readonly backendId: string;
-        readonly workspaceId: string;
-        readonly externalAccountId: string;
-        readonly credentialId: string;
-      }>
-    | undefined
-  >;
-}
+import { CREDENTIAL_WITHDRAWAL_TARGET, credentialWithdrawalWorkKey } from "../controller-work.ts";
+import type { ControllerWork } from "../controller-work.ts";
 
 const serviceAccountIdentifier =
   /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -1099,23 +476,6 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
   });
 }
 
-function validRestartContinuation(value: unknown): boolean {
-  if (value === undefined) {
-    return true;
-  }
-  const entry = asRecord(value);
-  return (
-    entry !== undefined &&
-    Object.keys(entry).sort().join(",") === "domain,generation" &&
-    typeof entry.generation === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-      entry.generation,
-    ) &&
-    typeof entry.domain === "string" &&
-    /^[\x20-\x7e]{1,1024}$/.test(entry.domain)
-  );
-}
-
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   assertExecutionAdmission(revision);
   if (
@@ -1151,7 +511,6 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     !Object.hasOwn(revision.compute, "implementation") ||
     !isNonEmptyString(revision.compute.id) ||
     !isNonEmptyString(revision.compute.implementation) ||
-    !validRestartContinuation(revision.restartContinuation) ||
     (revision.compute.admission !== undefined &&
       (typeof revision.compute.admission !== "string" ||
         !/^[\x20-\x7e]{1,1024}$/.test(revision.compute.admission))) ||
@@ -1172,143 +531,6 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
       "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
     );
   }
-}
-
-export interface PlatformAuditRepository {
-  append(event: AuditEvent): Promise<void>;
-  list(): Promise<readonly Readonly<AuditEvent>[]>;
-}
-
-interface PlatformOperationBase {
-  readonly action: "reconcile";
-  readonly namespaceId: string;
-  readonly resourceId: string;
-  readonly actorId: string;
-}
-
-export type PlatformOperation =
-  | (PlatformOperationBase & {
-      readonly kind: "namespace";
-      readonly target: "ready" | "deleted";
-    })
-  | (PlatformOperationBase & {
-      readonly kind: "agent_revision";
-      readonly target?: never;
-    })
-  | (PlatformOperationBase & {
-      /** Revokes pending credential withdrawals from an active revision; never deploys it. */
-      readonly kind: "agent_revision";
-      readonly target: typeof CREDENTIAL_WITHDRAWAL_TARGET;
-      readonly operationId: string;
-    })
-  | (PlatformOperationBase & {
-      readonly kind: "agent";
-      readonly target: "stopped" | "sandbox_policy";
-      readonly operationId: string;
-    })
-  | (PlatformOperationBase & {
-      /**
-       * Agent teardown is scoped to the Agent, not one revision: it retires
-       * every revision the Agent owns.
-       */
-      readonly kind: "agent";
-      readonly target: "deleted";
-      readonly operationId?: never;
-    });
-
-export interface PlatformOperationReadRepository {
-  list(): Promise<readonly Readonly<PlatformOperation>[]>;
-  findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
-  findWorkByKeys(idempotencyKeys: readonly string[]): Promise<ControllerWorkLookup>;
-  findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
-  /** Whether this revision completed maintenance requiring fresh repository execution. */
-  hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean>;
-  /** True while credential withdrawal work for the revision is queued or claimed. */
-  hasOutstandingCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
-}
-
-export interface PlatformOperationRepository extends PlatformOperationReadRepository {
-  append(operation: PlatformOperation, requestId?: string): Promise<void>;
-  /**
-   * Requeue the exact deleting Agent's terminal teardown initiated by
-   * `initiatingActorId`, assigning it to `actorId` (the same actor for a plain
-   * retry, another for a takeover).
-   */
-  retryFailedAgentDeletion(
-    namespaceId: string,
-    agentId: string,
-    initiatingActorId: string,
-    actorId: string,
-  ): Promise<boolean>;
-  /**
-   * Requeue the exact deleting Namespace's terminal teardown initiated by
-   * `initiatingActorId`, assigning it to `actorId` (the same actor for a plain
-   * retry, another for a takeover).
-   */
-  retryFailedNamespaceDeletion(
-    namespaceId: string,
-    initiatingActorId: string,
-    actorId: string,
-  ): Promise<boolean>;
-  /**
-   * Makes the revision's queued credential withdrawal work claimable now instead of at its
-   * scheduled time. Claimed work is left alone. True when any queued work was waiting.
-   */
-  expediteCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
-}
-
-export type { AgentProvisioningRecord } from "./agent-provisioning.ts";
-
-export type { IAMPolicyReadRepository, IAMPolicyRepository } from "@openclaw-enterprise/contracts";
-
-export interface PlatformReadView {
-  readonly sandboxPolicies: SandboxPolicyReadRepository;
-  readonly installations: InstallationReadRepository;
-  readonly namespaces: NamespaceReadRepository;
-  readonly configurations: ConfigurationReadRepository;
-  readonly connectionTemplates: ConnectionTemplateReadRepository;
-  readonly savedConnections: SavedConnectionReadRepository;
-  readonly presets: PresetReadRepository;
-  readonly authenticationStates: AuthenticationStateReadRepository;
-  readonly secrets: SecretReadRepository;
-  readonly credentialSources: CredentialSourceReadRepository;
-  readonly serviceAccounts: ServiceAccountReadRepository;
-  readonly agents: AgentReadRepository;
-  readonly workspaceSetups: WorkspaceSetupReadRepository;
-  readonly revisions: AgentRevisionReadRepository;
-  readonly iamPolicy: IAMPolicyReadRepository;
-  readonly repositorySessions: RepositorySessionReadRepository;
-  readonly provisioning: AgentProvisioningReadRepository;
-  readonly operations: PlatformOperationReadRepository;
-}
-
-export interface PlatformUnitOfWork extends PlatformReadView {
-  readonly preparedTokenProof: PreparedTokenCurrentProof;
-  readonly egressSendReceipts: EgressSendReceiptRepository;
-  readonly sandboxPolicies: SandboxPolicyRepository;
-  readonly installations: InstallationRepository;
-  readonly namespaces: NamespaceRepository;
-  readonly configurations: ConfigurationRepository;
-  readonly connectionTemplates: ConnectionTemplateRepository;
-  readonly savedConnections: SavedConnectionRepository;
-  readonly presets: PresetRepository;
-  readonly authenticationStates: AuthenticationStateRepository;
-  readonly secrets: SecretRepository;
-  readonly credentialSources: CredentialSourceRepository;
-  readonly serviceAccounts: ServiceAccountRepository;
-  readonly agents: AgentRepository;
-  readonly workspaceSetups: WorkspaceSetupRepository;
-  readonly revisions: AgentRevisionRepository;
-  readonly iamPolicy: IAMPolicyRepository;
-  readonly repositorySessions: RepositorySessionRepository;
-  readonly provisioning: AgentProvisioningRepository;
-  readonly audit: PlatformAuditRepository;
-  readonly operations: PlatformOperationRepository;
-}
-
-export interface PlatformStateStore {
-  read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T>;
-  transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
 }
 
 export interface TransactionalAuditWriter {
@@ -1344,6 +566,7 @@ interface IAMSubjectSource {
 interface PlatformSnapshot {
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
+  tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
@@ -1361,10 +584,10 @@ interface PlatformSnapshot {
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
+  readonly retiredEgressInstallations: Set<string>;
   readonly egressRejected: Set<string>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
-  readonly restartContinuations: Map<string, Readonly<RestartContinuation>>;
   readonly predecessorReplacements: Map<string, Readonly<PredecessorReplacement>>;
   readonly sandboxPolicies: Map<string, Readonly<SandboxPolicy>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
@@ -1510,6 +733,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
   return {
     installation:
       snapshot.installation === undefined ? undefined : storedCopy(snapshot.installation),
+    tokenServiceInstance: snapshot.tokenServiceInstance,
     namespaces: copyStoredMap(snapshot.namespaces),
     configurations: copyStoredMap(snapshot.configurations),
     connectionTemplates: new Map(snapshot.connectionTemplates),
@@ -1522,13 +746,13 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     secrets: copyStoredMap(snapshot.secrets),
     egressRejected: new Set(snapshot.egressRejected),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
+    retiredEgressInstallations: new Set(snapshot.retiredEgressInstallations),
     egressInstallations: copyStoredMap(snapshot.egressInstallations),
     credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
     credentialWithdrawals: copyStoredMap(snapshot.credentialWithdrawals),
     credentialSources: copyStoredMap(snapshot.credentialSources),
     serviceAccounts: copyStoredMap(snapshot.serviceAccounts),
     agents: copyStoredMap(snapshot.agents),
-    restartContinuations: copyStoredMap(snapshot.restartContinuations),
     predecessorReplacements: copyStoredMap(snapshot.predecessorReplacements),
     sandboxPolicies: copyStoredMap(snapshot.sandboxPolicies),
     workspaceSetups: copyStoredMap(snapshot.workspaceSetups),
@@ -1836,6 +1060,16 @@ function assertProtectedEgressSource(
   }
 }
 
+function validTokenServiceRegistration(value: unknown): boolean {
+  return (
+    isPlainRecord(value) &&
+    Object.keys(value).every((key) => key === "backendRef") &&
+    (value.backendRef === undefined ||
+      (isPlainRecord(value.backendRef) &&
+        Object.values(value.backendRef).every((item) => typeof item === "string")))
+  );
+}
+
 /** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
 function assertCredentialSource(source: CredentialSource): void {
   if (source.egress !== undefined) {
@@ -1845,9 +1079,23 @@ function assertCredentialSource(source: CredentialSource): void {
   const secretInputs: unknown = source.secrets;
   const validOwner =
     source.ownerCapability === "token_service"
-      ? source.type === "oauth2-refresh-token" &&
-        source.egress === undefined &&
-        source.driverId === undefined
+      ? source.egress === undefined &&
+        source.driverId === undefined &&
+        (source.tokenServiceInstanceId === undefined
+          ? source.type === "oauth2-refresh-token" &&
+            source.registration === undefined &&
+            source.registrationDispatchedAt === undefined
+          : source.type !== "oauth2-refresh-token" &&
+            (source.registration === undefined ||
+              validTokenServiceRegistration(source.registration)) &&
+            (source.registrationDispatchedAt === undefined ||
+              (Number.isFinite(Date.parse(source.registrationDispatchedAt)) &&
+                Date.parse(source.registrationDispatchedAt) >= Date.parse(source.createdAt))) &&
+            (source.state !== "registering" || source.registration === undefined) &&
+            (source.state !== "ready" ||
+              (source.registration !== undefined &&
+                source.registrationDispatchedAt !== undefined)) &&
+            Object.keys(source.secrets).length === 0)
       : (source.ownerCapability === "credential_gateway" ||
           (source.ownerCapability === "credential_proxy" && source.egress !== undefined)) &&
         typeof source.driverId === "string" &&
@@ -1855,9 +1103,6 @@ function assertCredentialSource(source: CredentialSource): void {
         source.driverId.length <= 200 &&
         source.driverId === source.driverId.trim();
   if (
-    (source.credentialGatewayOwnerId !== undefined &&
-      (source.ownerCapability !== "credential_gateway" ||
-        !/^[a-f0-9]{64}$/.test(source.credentialGatewayOwnerId))) ||
     !credentialSourceIdentifier.test(source.id) ||
     !namespaceIdentifier.test(source.namespaceId) ||
     typeof source.name !== "string" ||
@@ -1938,6 +1183,43 @@ function repositories(
       const saved = immutableCopy(installation);
       snapshot.installation = saved;
       return saved;
+    },
+    selectTokenServiceInstance: async (candidate) => {
+      assertInitialized(snapshot);
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          candidate.id,
+        ) ||
+        !isNonEmptyString(candidate.driverId) ||
+        candidate.driverId.length > 200 ||
+        candidate.driverId !== candidate.driverId.trim() ||
+        !isNonEmptyString(candidate.storeIdentity) ||
+        candidate.storeIdentity.length > 200 ||
+        candidate.storeIdentity !== candidate.storeIdentity.trim()
+      ) {
+        throw new ScopeViolationError("The TokenService instance identity is invalid.");
+      }
+      const current = snapshot.tokenServiceInstance;
+      if (
+        current?.driverId === candidate.driverId &&
+        current.storeIdentity === candidate.storeIdentity
+      ) {
+        return current;
+      }
+      if (
+        current &&
+        (current.id === candidate.id ||
+          Array.from(snapshot.credentialSources.values()).some(
+            (source) =>
+              source.ownerCapability === "token_service" &&
+              source.tokenServiceInstanceId === current.id,
+          ))
+      ) {
+        throw new ResourceStateConflictError("The TokenService instance still has registrations.");
+      }
+      const selected = immutableCopy(candidate);
+      snapshot.tokenServiceInstance = selected;
+      return selected;
     },
     // In-memory State has no human accounts, and its units are serialized.
     holdPrincipalAccount: async () => true,
@@ -2941,7 +2223,17 @@ function repositories(
       snapshot.egressRejected.add(materialKey(evidence));
     },
     findEgressInstallation: async (senderId, sandboxId) => {
-      const found = snapshot.egressInstallations.get(JSON.stringify([senderId, sandboxId]));
+      const found = [...snapshot.egressInstallations.values()].find(
+        (installation) =>
+          installation.sender.id === senderId &&
+          installation.sandboxId === sandboxId &&
+          !snapshot.retiredEgressInstallations.has(
+            agentKey(
+              installation.plan.execution.namespaceId,
+              installation.plan.execution.revisionId,
+            ),
+          ),
+      );
       return found === undefined ||
         !(
           snapshot.revisions.get(
@@ -2974,13 +2266,20 @@ function repositories(
       if (!revision || !isDeepStrictEqual(revision.egressPlan, installation.plan)) {
         throw new ScopeViolationError("Egress installation does not match an admitted revision.");
       }
-      const key = JSON.stringify([installation.sender.id, installation.sandboxId]);
+      const key = agentKey(execution.namespaceId, execution.revisionId);
       const prior = snapshot.egressInstallations.get(key);
       if (
         prior !== undefined &&
-        (!isDeepStrictEqual(prior.plan, installation.plan) ||
-          !isDeepStrictEqual(prior.sender, installation.sender) ||
-          !isDeepStrictEqual(prior.enforcement, installation.enforcement))
+        (prior.sender.id !== installation.sender.id || prior.sandboxId !== installation.sandboxId)
+      ) {
+        throw new ResourceStateConflictError(EGRESS_REVISION_INSTALLED_CONFLICT);
+      }
+      if (
+        snapshot.retiredEgressInstallations.has(key) ||
+        (prior !== undefined &&
+          (!isDeepStrictEqual(prior.plan, installation.plan) ||
+            !isDeepStrictEqual(prior.sender, installation.sender) ||
+            !isDeepStrictEqual(prior.enforcement, installation.enforcement)))
       ) {
         throw new ResourceStateConflictError("Egress execution identity is already bound.");
       }
@@ -2988,13 +2287,20 @@ function repositories(
         Array.from(snapshot.egressInstallations.entries()).some(
           ([otherKey, other]) =>
             otherKey !== key &&
-            other.plan.execution.namespaceId === execution.namespaceId &&
-            other.plan.execution.revisionId === execution.revisionId,
+            !snapshot.retiredEgressInstallations.has(otherKey) &&
+            other.sender.id === installation.sender.id &&
+            other.sandboxId === installation.sandboxId,
         )
       ) {
-        throw new ResourceStateConflictError(EGRESS_REVISION_INSTALLED_CONFLICT);
+        throw new ResourceStateConflictError(EGRESS_SANDBOX_INSTALLED_CONFLICT);
       }
       snapshot.egressInstallations.set(key, prior ?? immutableCopy(installation));
+    },
+    retireEgressInstallation: async (namespaceId, revisionId) => {
+      const key = agentKey(namespaceId, revisionId);
+      if (snapshot.egressInstallations.has(key)) {
+        snapshot.retiredEgressInstallations.add(key);
+      }
     },
     admitEgressSource: async (namespaceId, sourceId, expectedGeneration, egress) => {
       const current = await findCredentialSource(namespaceId, sourceId);
@@ -3140,6 +2446,15 @@ function repositories(
     createCredentialSource: async (source) => {
       assertInitialized(snapshot);
       assertCredentialSource(source);
+      if (
+        source.ownerCapability === "token_service" &&
+        source.tokenServiceInstanceId !== undefined &&
+        source.tokenServiceInstanceId !== snapshot.tokenServiceInstance?.id
+      ) {
+        throw new ScopeViolationError(
+          "The credential source belongs to an unavailable TokenService instance.",
+        );
+      }
       const namespace = await namespaces.lockNamespace(source.namespaceId);
       if (
         namespace === undefined ||
@@ -3194,12 +2509,62 @@ function repositories(
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
-    markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
+    setCredentialSourceRegistrationDispatch: async (
+      namespaceId,
+      credentialSourceId,
+      dispatchedAt,
+    ) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (
+        current?.ownerCapability !== "token_service" ||
+        current.tokenServiceInstanceId === undefined ||
+        current.registration !== undefined ||
+        current.state !== (dispatchedAt === undefined ? "deleting" : "registering") ||
+        (current.registrationDispatchedAt === undefined) === (dispatchedAt === undefined)
+      ) {
+        return false;
+      }
+      const { registrationDispatchedAt: _, ...rest } = current;
+      const saved = immutableCopy(
+        dispatchedAt === undefined ? rest : { ...rest, registrationDispatchedAt: dispatchedAt },
+      );
+      assertCredentialSource(saved);
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return true;
+    },
+    updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (
+        current?.ownerCapability !== "token_service" ||
+        current.tokenServiceInstanceId === undefined ||
+        current.state !== "ready"
+      ) {
+        return undefined;
+      }
+      const saved = immutableCopy({ ...current, config });
+      assertCredentialSource(saved);
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return saved;
+    },
+    markCredentialSourceReady: async (namespaceId, credentialSourceId, registration, config) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (current === undefined || current.state !== "registering") {
         return undefined;
       }
-      const saved = immutableCopy({ ...current, state: "ready" as const });
+      if (
+        config !== undefined &&
+        (current.ownerCapability !== "token_service" ||
+          current.tokenServiceInstanceId === undefined)
+      ) {
+        return undefined;
+      }
+      const saved = immutableCopy({
+        ...current,
+        state: "ready" as const,
+        ...(registration === undefined ? {} : { registration }),
+        ...(config === undefined ? {} : { config }),
+      });
+      assertCredentialSource(saved);
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
@@ -3559,30 +2924,6 @@ function repositories(
   };
 
   const agents: AgentRepository = {
-    findRestartContinuation: async (namespaceId, agentId) =>
-      (await agents.findAgent(namespaceId, agentId)) === undefined
-        ? undefined
-        : snapshot.restartContinuations.get(agentKey(namespaceId, agentId)),
-    setRestartContinuation: async (namespaceId, agentId, continuation) => {
-      const agent = await agents.findAgent(namespaceId, agentId);
-      if (!agent || agent.desiredRuntimeState !== "running" || agent.status !== "active") {
-        throw new ResourceStateConflictError(
-          "Restart continuation requires a running Agent lifecycle.",
-        );
-      }
-      const key = agentKey(namespaceId, agentId);
-      if (continuation === undefined) {
-        snapshot.restartContinuations.delete(key);
-      } else {
-        // Mirrors the persisted generation/domain constraint.
-        if (!validRestartContinuation(continuation)) {
-          throw new ScopeViolationError(
-            "Restart continuation requires a valid generation and domain.",
-          );
-        }
-        snapshot.restartContinuations.set(key, immutableCopy(continuation));
-      }
-    },
     findPredecessorReplacement: async (namespaceId, agentId) =>
       (await agents.findAgent(namespaceId, agentId)) === undefined
         ? undefined
@@ -3772,9 +3113,6 @@ function repositories(
             closed: true,
           });
         }
-      }
-      if (next === "stopped") {
-        snapshot.restartContinuations.delete(key);
       }
       const saved = immutableCopy({ ...agent, desiredRuntimeState: next });
       snapshot.agents.set(key, saved);
@@ -4779,7 +4117,6 @@ function finalizeAgentDeletion(
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
   snapshot.agents.delete(key);
-  snapshot.restartContinuations.delete(key);
   snapshot.predecessorReplacements.delete(key);
 
   snapshot.audit.push(
@@ -4816,6 +4153,7 @@ function finalizeAgentDeletion(
 export class InMemoryPlatformState implements PlatformStateStore {
   private snapshot: PlatformSnapshot = {
     installation: undefined,
+    tokenServiceInstance: undefined,
     namespaces: new Map(),
     configurations: new Map(),
     connectionTemplates: new Map(),
@@ -4830,11 +4168,11 @@ export class InMemoryPlatformState implements PlatformStateStore {
     credentialPolicyReductions: new Map(),
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),
+    retiredEgressInstallations: new Set(),
     egressRejected: new Set(),
     egressSendReceipts: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),
-    restartContinuations: new Map(),
     predecessorReplacements: new Map(),
     sandboxPolicies: new Map(),
     workspaceSetups: new Map(),

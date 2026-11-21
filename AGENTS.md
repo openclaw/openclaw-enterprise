@@ -62,6 +62,9 @@ New contributors wait for maintainer feedback.
 
 Follow these rules when developing or changing code.
 
+Do not maintain forks or patched builds of core dependencies in OCE. Report bugs
+and submit fixes upstream only after human approval (record locally).
+
 ### Build platform capabilities
 
 Every new capability must belong to a platform primitive. Identify its existing
@@ -327,12 +330,12 @@ boundaries or intentional architecture as temporary.
 ## Implementation specifications
 
 Follow the [specification process](docs/contributing/specifications.md) for
-document choice, numbering, status, and preservation. Write architectural RFCs
+document choice, naming, status, and preservation. Write architectural RFCs
 under `specs/rfcs/` and all implementation plans directly under `specs/plans/`.
 Link a relevant RFC through the plan's `rfc` frontmatter field, using a path
-relative to the plan file. Preserve RFC-linked and independent task numbering.
+relative to the plan file. Preserve existing RFC and plan names and independent task numbering.
 Use one Markdown file by default. When companions are needed, use
-`<number>-<topic>/index.md` for the main document and keep supporting
+`<stem>/index.md` for the main document and keep supporting
 files in that folder, without a separate top-level Markdown file.
 A larger feature with an RFC needs a separate implementation plan;
 an independent plan can build on the existing architecture without a new RFC.
@@ -351,8 +354,9 @@ retroactively update the earlier spec to match the later implementation;
 preserve its original design decisions and implementation details.
 
 Use stable feature names in `docs/reference/` and preserve grandfathered
-plan names when grouping companions under `index.md`. RFCs require unique numeric
-IDs of at least four digits; keep the old-to-new lookup current when renumbering.
+RFC and plan names when grouping companions under `index.md`. New RFCs use
+`yyyymmdd-title`, as defined in the specification process. Existing numeric RFCs
+retain their IDs and links; preserve the old-to-new lookup.
 This first organization phase preserves `specs/.archive/` content and placement;
 only the removed console-image links change to a preserved Git revision. Do not
 add new records to it. A behavior-changing implementation PR

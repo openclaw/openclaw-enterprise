@@ -65,6 +65,16 @@
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
+      "MANAGED_SOURCE_NOT_IMPLEMENTED": {
+        "summary": "NOT_IMPLEMENTED",
+        "value": {
+          "error": {
+            "code": "NOT_IMPLEMENTED",
+            "message": "Managed credential source enrollment is unavailable."
+          },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
       "MODEL_DISCOVERY_RATE_LIMITED": {
         "summary": "MODEL_DISCOVERY_RATE_LIMITED",
         "value": {
@@ -194,6 +204,156 @@
       }
     },
     "schemas": {
+      "PushAgentCredentialsBody": {
+        "additionalProperties": false,
+        "description": "Proposed manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
+        "properties": {
+          "sources": {
+            "anyOf": [
+              { "const": "all", "type": "string" },
+              {
+                "items": {
+                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            ],
+            "description": "Select all eligible sources or name each source to retry. Eligible sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on the source."
+          }
+        },
+        "required": ["sources"],
+        "title": "PushAgentCredentialsBody",
+        "type": "object"
+      },
+      "PushAgentCredentialsResponse": {
+        "additionalProperties": false,
+        "description": "Proposed response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again.",
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "results": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "outcome": {
+                      "anyOf": [
+                        {
+                          "const": "succeeded",
+                          "description": "The Credential Proxy completed the update notification according to its binding. A push confirms that every serving copy can use the resolved version. If no delivery resource exists, the proxy succeeds without resolving or creating one.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "resolution_failed",
+                          "description": "The proxy requested the credential, but its source-bound resolver failed.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "delivery_failed",
+                          "description": "The Credential Proxy could not complete the update notification, including when material required for a push had no resolved version.",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "sourceId": {
+                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": ["sourceId", "outcome"],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["results"],
+            "type": "object"
+          },
+          "meta": {
+            "additionalProperties": false,
+            "properties": {
+              "requestId": {
+                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "required": ["requestId"],
+            "type": "object"
+          }
+        },
+        "required": ["data", "meta"],
+        "title": "PushAgentCredentialsResponse",
+        "type": "object"
+      },
+      "RegisterTokenServiceSourceBody": {
+        "additionalProperties": false,
+        "description": "Staged managed static registration contract. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC allocates the identity and selects the TokenService owner.",
+        "properties": {
+          "config": {
+            "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+            "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
+            "maxProperties": 32,
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+            "type": "string"
+          },
+          "secret": {
+            "additionalProperties": {
+              "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+              "maxLength": 65536,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$",
+              "type": "string"
+            },
+            "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
+            "maxProperties": 1,
+            "minProperties": 1,
+            "type": "object",
+            "writeOnly": true
+          },
+          "type": { "const": "static", "type": "string" }
+        },
+        "required": ["name", "type", "secret"],
+        "title": "RegisterTokenServiceSourceBody",
+        "type": "object"
+      },
+      "UpdateTokenServiceSourceBody": {
+        "additionalProperties": false,
+        "description": "Supply at least one of config or secret. Omitted fields retain their values. Change or remove provider_preset separately from credential replacement; otherwise the update returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
+        "minProperties": 1,
+        "properties": {
+          "config": {
+            "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
+            "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
+            "maxProperties": 32,
+            "type": "object"
+          },
+          "secret": {
+            "additionalProperties": {
+              "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+              "maxLength": 65536,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$",
+              "type": "string"
+            },
+            "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
+            "maxProperties": 1,
+            "minProperties": 1,
+            "type": "object",
+            "writeOnly": true
+          }
+        },
+        "title": "UpdateTokenServiceSourceBody",
+        "type": "object"
+      },
       "def-0": {
         "anyOf": [
           { "type": "string" },
@@ -766,12 +926,12 @@
               },
               "status": {
                 "additionalProperties": false,
-                "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                 "properties": {
                   "reason": { "maxLength": 512, "type": "string" },
                   "refresh": {
                     "additionalProperties": false,
-                    "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                    "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
                     "properties": {
                       "expiresAt": { "format": "date-time", "type": "string" },
                       "failureCode": { "maxLength": 128, "type": "string" },
@@ -809,7 +969,7 @@
                 "type": "object"
               },
               "type": {
-                "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                 "maxLength": 64,
                 "minLength": 1,
                 "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -13061,7 +13221,7 @@
                                         "type": "array"
                                       },
                                       "type": {
-                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                                         "maxLength": 64,
                                         "minLength": 1,
                                         "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -13167,8 +13327,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -13485,7 +13647,7 @@
                                         "type": "array"
                                       },
                                       "type": {
-                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                                         "maxLength": 64,
                                         "minLength": 1,
                                         "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -13591,8 +13753,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -15741,7 +15905,7 @@
                                         "type": "array"
                                       },
                                       "type": {
-                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                                         "maxLength": 64,
                                         "minLength": 1,
                                         "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -15847,8 +16011,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -16111,7 +16277,7 @@
                                 "type": "string"
                               },
                               "credentialSources": {
-                                "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                                "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                                 "items": {
                                   "additionalProperties": false,
                                   "properties": {
@@ -16614,7 +16780,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -16919,7 +17085,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -20815,7 +20981,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -21252,7 +21418,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -21778,7 +21944,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -22103,7 +22269,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -23428,7 +23594,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -24503,7 +24669,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete."
+                          "description": "Status of recorded runtime retirement and session disposal for retiring or nonserving Agent revisions. Session disposal reports its current queue state. `null` means there is no applicable work record. `succeeded` means the applicable records show completion at the time of the read."
                         },
                         "deploymentId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -29021,7 +29187,12 @@
                         "driver": { "$ref": "#/components/schemas/def-1" },
                         "driverPolicySchema": { "additionalProperties": {}, "type": "object" },
                         "policyScopeByPlugin": {
-                          "additionalProperties": { "const": "enablement_only", "type": "string" },
+                          "additionalProperties": {
+                            "anyOf": [
+                              { "const": "enablement_only", "type": "string" },
+                              { "const": "tool_human_approval", "type": "string" }
+                            ]
+                          },
                           "type": "object"
                         },
                         "toolDefaults": {
@@ -30685,7 +30856,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -33379,7 +33550,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -34010,6 +34181,21 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "rev_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "query",
+            "name": "expectedActiveRevisionId",
+            "required": false,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
                 "value": "ns_123e4567-e89b-42d3-a456-426614174000"
               }
             },
@@ -34101,7 +34287,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -37281,12 +37467,12 @@
                           },
                           "status": {
                             "additionalProperties": false,
-                            "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                            "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                             "properties": {
                               "reason": { "maxLength": 512, "type": "string" },
                               "refresh": {
                                 "additionalProperties": false,
-                                "description": "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+                                "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
                                 "properties": {
                                   "expiresAt": { "format": "date-time", "type": "string" },
                                   "failureCode": { "maxLength": 128, "type": "string" },
@@ -37324,7 +37510,7 @@
                             "type": "object"
                           },
                           "type": {
-                            "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                            "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
                             "maxLength": 64,
                             "minLength": 1,
                             "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -37470,52 +37656,61 @@
                 }
               },
               "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "config": {
-                    "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-                    "description": "Non-secret source configuration keyed by catalog field name.",
-                    "maxProperties": 32,
-                    "type": "object"
-                  },
-                  "name": {
-                    "maxLength": 200,
-                    "minLength": 1,
-                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                    "type": "string"
-                  },
-                  "secrets": {
-                    "additionalProperties": {
-                      "additionalProperties": false,
-                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                      "properties": {
-                        "id": {
-                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "config": {
+                        "additionalProperties": {
+                          "maxLength": 2048,
+                          "minLength": 1,
                           "type": "string"
                         },
-                        "kind": { "const": "secret", "type": "string" },
-                        "namespaceId": {
-                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
+                        "description": "Non-secret source configuration keyed by catalog field name.",
+                        "maxProperties": 32,
+                        "type": "object"
                       },
-                      "required": ["kind", "namespaceId", "id"],
-                      "type": "object"
+                      "name": {
+                        "maxLength": 200,
+                        "minLength": 1,
+                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                        "type": "string"
+                      },
+                      "secrets": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+                        "maxProperties": 16,
+                        "type": "object"
+                      },
+                      "type": {
+                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                        "type": "string"
+                      }
                     },
-                    "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                    "maxProperties": 16,
+                    "required": ["name", "type"],
                     "type": "object"
                   },
-                  "type": {
-                    "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
-                    "maxLength": 64,
-                    "minLength": 1,
-                    "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                    "type": "string"
-                  }
-                },
-                "required": ["name", "type"],
-                "type": "object"
+                  { "$ref": "#/components/schemas/RegisterTokenServiceSourceBody" }
+                ]
               }
             }
           },
@@ -37633,6 +37828,17 @@
             },
             "description": "The platform request could not be completed."
           },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/MANAGED_SOURCE_NOT_IMPLEMENTED" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Managed credential source enrollment is unavailable."
+          },
           "503": {
             "content": {
               "application/json": {
@@ -37645,7 +37851,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Register a credential source with the selected Credential Gateway",
+        "summary": "Register a Credential Gateway source; managed static registration is staged",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
@@ -37768,7 +37974,7 @@
             }
           }
         },
-        "summary": "Remove an unreferenced credential source from the Credential Gateway",
+        "summary": "Remove an unreferenced credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "delete", "resourceKind": "credential_source", "scope": "requested" }
@@ -37904,14 +38110,14 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Get one credential source and its live Credential Gateway status",
+        "summary": "Get one readable credential source and its available status",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "credential_source", "scope": "requested" }
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested CredentialSource. Requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.",
+        "description": "Requires update permission on the requested CredentialSource. For a legacy Gateway update, requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.",
         "operationId": "updateCredentialSource",
         "parameters": [
           {
@@ -37964,47 +38170,51 @@
                 }
               },
               "schema": {
-                "additionalProperties": false,
-                "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
-                "properties": {
-                  "adoption": {
-                    "const": "live",
-                    "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
-                    "type": "string"
-                  },
-                  "authorityScope": {
-                    "const": "execution",
-                    "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
-                    "type": "string"
-                  },
-                  "secrets": {
-                    "additionalProperties": {
-                      "additionalProperties": false,
-                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                      "properties": {
-                        "id": {
-                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "kind": { "const": "secret", "type": "string" },
-                        "namespaceId": {
-                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+                    "properties": {
+                      "adoption": {
+                        "const": "live",
+                        "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
+                        "type": "string"
                       },
-                      "required": ["kind", "namespaceId", "id"],
-                      "type": "object"
+                      "authorityScope": {
+                        "const": "execution",
+                        "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
+                        "type": "string"
+                      },
+                      "secrets": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+                        "maxProperties": 16,
+                        "type": "object"
+                      }
                     },
-                    "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                    "maxProperties": 16,
                     "type": "object"
-                  }
-                },
-                "type": "object"
+                  },
+                  { "$ref": "#/components/schemas/UpdateTokenServiceSourceBody" }
+                ]
               }
             }
           },
-          "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
           "required": true
         },
         "responses": {
@@ -38119,6 +38329,17 @@
             },
             "description": "The platform request could not be completed."
           },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/MANAGED_SOURCE_NOT_IMPLEMENTED" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Managed credential source enrollment is unavailable."
+          },
           "503": {
             "content": {
               "application/json": {
@@ -38131,7 +38352,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Push current or replacement Secret values to the Credential Gateway copy",
+        "summary": "Update a Credential Gateway source; managed updates are staged",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "credential_source", "scope": "requested" },

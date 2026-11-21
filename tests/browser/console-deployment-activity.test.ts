@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test, { type TestContext } from "node:test";
-import type {
-  PlatformReadView,
-  PlatformStateStore,
-} from "../../packages/occ/src/state/platform-state.ts";
+import { repositoryRetirementWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
+import type { PlatformReadView } from "../../packages/occ/src/ports/platform-read-view.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { callbackGate } from "../helpers/wait-for.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
@@ -54,22 +52,28 @@ async function deploymentFixture(t: TestContext) {
             async hasRepositoryExecutionRedeployRequired(owner) {
               return owner.revisionId === revisionId && control.repositoryRedeployRequired;
             },
-            async findWork(key: string) {
-              if (key === cleanupKey && control.cleanup !== null) {
-                // The cleanup row the worker would enqueue for this revision, in its states.
-                const work = await view.operations.findWork(workKey);
-                return control.cleanup === "queued"
-                  ? { ...work!, idempotencyKey: cleanupKey }
-                  : control.cleanup === "claimed"
-                    ? {
-                        ...work!,
-                        idempotencyKey: cleanupKey,
-                        state: "claimed" as const,
-                        attemptCount: 1,
-                        leaseActive: true,
-                      }
-                    : { ...work!, idempotencyKey: cleanupKey, state: "succeeded" as const };
+            async findWorkByKeys(keys) {
+              const works = await view.operations.findWorkByKeys(keys);
+              const state = control.cleanup;
+              if (state === null || !keys.includes(cleanupKey)) {
+                return works;
               }
+              // Use the admitted deployment's ownership for the worker's retirement row.
+              const deployment = await view.operations.findWork(workKey);
+              assert.ok(deployment);
+              const retirement = {
+                ...deployment,
+                idempotencyKey: cleanupKey,
+                state,
+                ...(state === "claimed" ? { attemptCount: 1, leaseActive: true } : {}),
+              };
+              return {
+                get(key) {
+                  return key === retirement.idempotencyKey ? retirement : works.get(key);
+                },
+              };
+            },
+            async findWork(key: string) {
               const record = await view.operations.findWork(key);
               if (key !== workKey) {
                 return record;
@@ -124,7 +128,7 @@ async function deploymentFixture(t: TestContext) {
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   revisionId = revision.id;
   workKey = `agent_revision:${revisionId}:reconcile`;
-  cleanupKey = `agent_revision:${revisionId}:repository_cleanup:retire:${createHash("sha256").update(revisionId, "utf8").digest("hex")}`;
+  cleanupKey = repositoryRetirementWorkKey(revisionId);
   const url = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`;
   // An outage lasts for the whole read under test. A Refresh also lists the versions, and that
   // list reads the same work record concurrently, so a one-shot failure could reach the list

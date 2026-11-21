@@ -57,8 +57,6 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `harness_auth_credential_source_id`
 - `credential_sources` (every bound credential source)
 - `active_revision_id`
-- `restart_generation`, `restart_domain` (nullable pair defining current
-  [restart continuity](../agents/interrupted-turns.md); cleared on explicit stop)
 - `predecessor_replacement` (nullable JSONB with the predecessor and candidate
   revision IDs and the `pre-stop` or `stopping` phase). See the
   [common stop boundary](../agents/planned-replacement.md#common-stop-boundary).
@@ -81,8 +79,7 @@ See [per-Agent policies](../sandbox-policies.md).
 ### `agent_revisions`
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
-`admitted_spec` includes the optional immutable `restart_continuation` generation/domain
-snapshot and the explicit v2
+`admitted_spec` includes the explicit v2
 [execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
 
 - `id`
@@ -210,9 +207,15 @@ Tracks the Token Service secret reference, the published access token version an
 - `scheduled_version`
 - `next_refresh_at`
 
+### `token_service_instances`
+
+Binds an Installation to its selected TokenService Driver and private-store identity.
+
+- `installation_id`, `id`, `driver_id`, `store_identity`
+
 ### `credential_sources`
 
-Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. A packaged Credential Gateway source also identifies its configured Gateway owner. The Token Service owns saved account sources.
+Records each source owner. Gateway and Proxy sources identify their Driver. Internal static registrations identify their TokenService instance and its private receipt; saved accounts retain their existing Token Service owner.
 
 - `id`
 - `namespace_id`
@@ -220,21 +223,22 @@ Records the owner of each source. A Credential Gateway or Credential Proxy sourc
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway` for a legacy Gateway, `packaged_credential_gateway` for a packaged Gateway, `credential_proxy`, or `token_service` for a saved account)
-- `driver_id` (required for Gateway and Proxy sources; null for saved accounts)
-- `credential_gateway_owner_id` (immutable ID of 64 lowercase hexadecimal characters; required for `packaged_credential_gateway` and null otherwise)
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
+- `driver_id` (Gateway and Proxy sources)
+- `token_service_instance_id`, `registration`, `registration_dispatched_at` (internal static registrations)
 - `state`
 - `created_at`
 
 ### `egress_installations`
 
 Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement
-instance/configuration fingerprint to the exact admitted revision plan.
+instance/configuration fingerprint to the exact admitted revision plan. Retains retired
+receipts while allowing one current enrollment per sender and Sandbox.
 See [protected inference](../credential-sources/protected-inference.md).
 
 - `sender_id`, `sandbox_id`
 - `namespace_id`, `agent_id`, `revision_id`
-- `installation`
+- `installation`, `retired`
 
 ### `credential_deliveries`
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-12
-last_updated_session: 01a117f8-113d-7610-83db-37431b054e44
+updated: 2026-11-20
+last_updated_session: authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d
 ---
 
 # Installation Driver Package Loading Flow
@@ -59,10 +59,14 @@ graph TD
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
 `apps/controller/src/composition/driver-packages.ts:loadDriverPackage`
 
-The API, worker, and Helm Installation check load the bundled OpenShell
-implementation when validating its Credential Proxy or constructing its Sandbox.
-An Installation with Kubernetes Compute and neither OpenShell selection skips
-those imports.
+The API, worker, and Helm Installation check validate and construct the bundled
+OpenShell Drivers only when selected. Kubernetes Compute also imports managed
+OpenShell classes to select the Harness runtime. These imports do not load gRPC.
+`apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:startListener`
+and `apps/controller/src/drivers/egress-proxy/openshell-exchange-binding.ts:bindOpenShellMiddleware`
+load the authority transport when starting their selected listeners. An
+Installation without OpenShell can therefore pass startup and the Helm upgrade
+check when the OpenShell transport is unavailable.
 
 Each process reads the same trusted startup YAML. Configuration, IAM, Compute,
 and optional Sandbox selections may name an operator-installed package;
@@ -151,13 +155,6 @@ with only `NODE_ENV`, `OCC_CONFIG_PATH`, the API's optional `OCC_CONSOLE_THEME_D
 and the Installation, theme and repository mounts, so factories must defer other
 environment and file reads past construction.
 
-When Installation selects a packaged Credential Gateway, the Sandbox
-selection loads the package and owns its configuration. Gateway selection
-must name that Sandbox and have empty configuration. The same factory call
-supplies the exact Gateway and Sandbox views and, when selected, the
-Credential Proxy view. A missing or mismatched view, a bundled OpenShell
-Backend, or a bundled Credential Refresh selection stops startup.
-
 Kubernetes-specific image and projected-credential requirements apply only to
 bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
 each configured host. Startup enforces the
@@ -192,25 +189,12 @@ and attaches selected lifecycle owners once. Both processes pass the retained
 definitions into OCC; the worker also resolves the current policy contribution
 before live application.
 
-`apps/controller/src/composition/installation-config.ts:installPackagedGatewayRegistration`
-selects the package views as one owner in both processes. OCC accepts the
-Gateway without a Backend only when the selected Sandbox belongs to that
-same registration. Each process closes its owner once, including when the
-Proxy is omitted or startup fails. Worker shutdown waits for its pending work
-before closing the owner and database. The bundled OpenShell Backend keeps its
-own member selection and attachment path.
-
-OCC records each new packaged Credential Source's owner from the installed
-package version and accepted Sandbox configuration. The Worker checks that
-record before using or withdrawing a source. A matching ID cannot transfer
-ownership; changing only the Proxy selection preserves it.
-
 `apps/controller/src/composition/installation-config.ts:installationDriverConfigurations`
 forwards each selected identity and its retained redacted snapshot to the registry.
 The registry keeps no raw startup input. Later startup-file edits do not change
 these values; there are no Driver projection callbacks.
 
-`packages/occ/src/index.ts:OpenClawController.discoverConfigurations` checks
+`packages/occ/src/setup-discovery.ts:SetupDiscovery.discoverConfigurations` checks
 Installation `administer` before returning these projections as
 `startupConfiguration`. The Console renders them in expandable Driver sections.
 Agent discovery retains its resource-owned actions and does not return startup
@@ -248,8 +232,11 @@ their existing Harness-owned runtime topology.
 
 ## Changelog
 
+- 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
+
+- 2026-11-17 19:59: Defer authority transport imports until selected listeners start in the accompanying startup fix. (authoring-run/99088afe-0245-41c6-a780-56606a3d8e0c - ac11ec583a723a11044f1037c935b58a78704f32)
+
 - 2026-11-12 15:38: Document when startup loads the bundled OpenShell transport. (01a117f8-113d-7610-83db-37431b054e44 - d9233e2cde)
-- 2026-11-09 04:40: Trace explicit packaged Credential Gateway selection and process ownership. (authoring-run/c29622d1-92a5-42ec-958e-cbec5369c15a - 3ca42fd10642f75b3628bb9de918a39e52612f80)
 
 - 2026-10-29 17:21: Capture shared schema-redacted startup values before Driver construction. (01a1891d-5b6b-7071-b482-793a9dd01044 - 8585197fae261c7e45160b9420ffba7942d28e11)
 

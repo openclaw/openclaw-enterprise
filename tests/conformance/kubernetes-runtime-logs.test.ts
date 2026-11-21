@@ -186,11 +186,15 @@ test("Kubernetes runtime description retains newest Events across API pages", as
         metadata: { _continue: "latest" },
       };
     }
-    assert.equal(_continue, "latest");
+    if (_continue === "latest") {
+      return {
+        items: Array.from({ length: 100 }, (_, index) => event(index + 100)),
+        metadata: { _continue: "final" },
+      };
+    }
+    assert.equal(_continue, "final");
     return {
-      items: Array.from({ length: 101 }, (_, index) =>
-        event(index + 100, index === 100 ? "Warning" : "Normal"),
-      ),
+      items: [event(200, "Warning")],
       metadata: { _continue: "" },
     };
   };
@@ -210,7 +214,7 @@ test("Kubernetes runtime description retains newest Events across API pages", as
     fixture.calls
       .filter((entry) => entry.call === "listNamespacedEvent")
       .map(({ _continue }) => _continue),
-    [undefined, "filtered", "latest"],
+    [undefined, "filtered", "latest", "final"],
   );
 });
 

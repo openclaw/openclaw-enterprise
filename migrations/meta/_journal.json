@@ -580,7 +580,21 @@
       "idx": 83,
       "version": "7",
       "when": 1787000000083,
-      "tag": "0083_packaged_credential_gateway_owner",
+      "tag": "0083_native_restart_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1787000000084,
+      "tag": "0084_revision_egress_installations",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1787000000085,
+      "tag": "0085_static_token_service_sources",
       "breakpoints": true
     }
   ]

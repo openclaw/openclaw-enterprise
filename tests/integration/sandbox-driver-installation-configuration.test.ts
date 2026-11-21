@@ -8,7 +8,7 @@ import { validateOpenShellRepositoryTransport } from "../../apps/controller/src/
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { makeStructuralRefusal as structuralRefusal } from "./sandbox-driver-installation-fixture.ts";
 import {
   buildSandboxInstallation as sandboxInstallation,

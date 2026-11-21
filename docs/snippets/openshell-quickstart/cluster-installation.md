@@ -4,13 +4,13 @@ published: false
 
 ## 2. Install OpenShell and bootstrap OCC
 
-Keep the names required by the staged policies: release `oce`, OpenShell release `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system`.
+Staged policies require release `oce`, OpenShell release `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system`.
 
-Exclude other install, upgrade and Job writers. Use a local chart and matching CLI. Keep the new
-`$RUN_DIR/install-receipt` directory for [read-only handoff](production-handoff.md#resume-an-installation-in-progress).
-If installation stops, reconcile the receipt before writing again.
+Exclude concurrent install, upgrade, and Job writers. Use a local chart with its matching CLI.
+Retain `$RUN_DIR/install-receipt` for [read-only handoff](production-handoff.md#resume-an-installation-in-progress);
+after interruption, reconcile it before writing again.
 
-Read the Kubernetes DNS zone from CoreDNS below or ask your cluster administrator for `CLUSTER_DOMAIN`. Confirm the suffix before continuing.
+Set and confirm `CLUSTER_DOMAIN` from CoreDNS below or your administrator.
 
 ```bash
 CLUSTER_DOMAIN=$(kubectl -n kube-system get configmap coredns -o json |
@@ -26,6 +26,23 @@ jq -n --arg registry "${SANDBOX_REGISTRY:?}" \
   --arg clusterDomain "${CLUSTER_DOMAIN:?}" \
   --arg repository "${SANDBOX_REPOSITORY:?}" -f "$assets/openshell-values.jq" \
   > "$RUN_DIR/openshell.json"
+```
+
+On default-deny clusters, apply OpenShell NetworkPolicies in `$PLATFORM_NS`
+before Helm. Render the chart with `$RUN_DIR/openshell.json` to check Pod labels
+and ports. For stock
+OpenShell v0.1.8, both Pod templates have
+`app.kubernetes.io/instance=openshell-gateway`. The certificate Job has
+`app.kubernetes.io/name=openshell-certgen` and
+`app.kubernetes.io/component=certgen`. The Gateway has
+`app.kubernetes.io/name=openshell`.
+
+Allow the certificate Job and Gateway to reach the API destinations in
+`API_CIDRS` on their API ports (TCP 443 on EKS). Allow DNS to the cluster DNS
+Service IP and its Pods on TCP and UDP 53. Allow the OCC API and worker Pods
+to reach the Gateway on TCP 8080. The certificate Job is a Helm pre-install hook. Policies selecting only Gateway Pods block it.
+
+```bash
 helm upgrade --install openshell-gateway "${OPENSHELL_CHART:?}" \
   -n "$PLATFORM_NS" -f "$RUN_DIR/openshell.json" --wait
 os_ip=$(kubectl -n "$PLATFORM_NS" get svc openshell-gateway -o jsonpath='{.spec.clusterIP}')
@@ -42,9 +59,13 @@ jq -n --arg cluster "$CLUSTER_NAME" --arg controller "${CONTROLLER_IMAGE:?}" --a
   --argjson apiCidrs "${API_CIDRS:?}" -f "$assets/values.jq" > "$RUN_DIR/values.json"
 ```
 
+Templates disable channels. For Slack, [enable managed channel egress and verify
+its dependencies](channel-egress.md#enable-channels-in-the-kubernetes-and-eks-quickstarts)
+in the generated files **before** continuing.
+
 <a id="set-the-production-browser-origins-before-installing-occ"></a>
 
-Check browser values **before** the first Helm install. Keep port 18443 in the Console origin and laptop forward. Browser origins differ from the private Envoy hostname. For existing HTTPS ingress, follow the [native-admin ingress requirements](native-admin.md#production-requirements) for Console and wildcard Agent hosts.
+**Before** the first Helm install, check browser values. Keep port 18443 in the Console origin and laptop forward; use separate browser and private Envoy hostnames. Existing HTTPS ingress must meet [Console and wildcard Agent requirements](native-admin.md#production-requirements).
 
 ```bash
 jq -e --arg d "$CLUSTER_NAME.oce.localhost" '
@@ -84,9 +105,10 @@ values for `auth-secret` (OCC sessions) and `routing-key` (private routing).
 Store each value as 64 hexadecimal characters without a trailing newline.
 Keep files mode 0600 and retain the keys for redeployment.
 
-From the matching release checkout, use jq, yq v4, and Node.js matching
-`engines.node` in `package.json`. Check that the OpenShell PKI job’s
-`openshell-client-tls` Secret exists before creating the bootstrap claim and Secrets.
+Use the matching release checkout, jq, yq v4, and Node.js matching `engines.node`
+in `package.json`. Installation generates bootstrap credentials and their Secret.
+Before creating OCC inputs, check that the OpenShell PKI job’s
+`openshell-client-tls` Secret exists.
 
 ```bash
 : "${OCC_SECRET_DIR:?Set OCC_SECRET_DIR to the protected input directory}"
@@ -107,14 +129,6 @@ fi
 
 platform_kube=(kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n "$PLATFORM_NS")
 "${platform_kube[@]}" get secret openshell-client-tls -o name
-bootstrap_claim=$(jq -er '.bootstrap.password.claimName' "$RUN_DIR/values.json")
-bootstrap_image=$(jq -er '.images.controller' "$RUN_DIR/values.json")
-BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
-  .metadata.namespace = strenv(PLATFORM_NS) |
-  .metadata.name = strenv(BOOTSTRAP_CLAIM) |
-  .spec.storageClassName = strenv(STORAGE_CLASS)
-' deploy/examples/production/bootstrap-pvc.yaml > "$RUN_DIR/bootstrap-pvc.yaml"
-"${platform_kube[@]}" create -f "$RUN_DIR/bootstrap-pvc.yaml"
 "${platform_kube[@]}" create secret generic occ-database \
   --from-file="application-url=$OCC_SECRET_DIR/application-url" \
   --from-file="migration-url=$OCC_SECRET_DIR/migration-url"
@@ -126,18 +140,15 @@ BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
   --from-file="occ=$OCC_SECRET_DIR/routing-key"
 ```
 
-Prepare the fresh claim on the OCC initialization Job’s `oce-role=control` pool.
-If cluster policy forbids the preparation Pod or you cannot verify its network
-isolation, skip the helper. Have the storage administrator set the same fresh
-volume’s root to UID/GID 1000 and mode 0700.
-
-```bash
-scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG" --context "$CONTEXT" \
-  --namespace "$PLATFORM_NS" --claim "$bootstrap_claim" --image "$bootstrap_image" \
-  --node-selector oce-role=control
-```
-
-Continue after helper success or storage administrator confirmation that the root is ready.
+Before the pre-install hook, the installer creates the bootstrap Secret and
+prints the protected recovery directory. It never overwrites Secrets; use
+[existing-Secret mode](production-installation-preparation.md#optional-supply-bootstrap-credentials)
+for deliberately preprovisioned inputs. Only bootstrap receives its read-only
+projection, during installation only. Retain local inputs outside the checkout.
+The service key expires 30 days after registration; Secret changes do not rotate it.
+After failed or uncertain creation or installation, stop and
+[reconcile the attempt](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
+before continuing. Do not regenerate credentials or repeat confirmed creates.
 
 ```bash
 # Allow the initialization hook to reach the DNS Service VIP.

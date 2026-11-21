@@ -5,6 +5,8 @@
 import assert from "node:assert/strict";
 import { describe, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   EMBEDDED_GATEWAY_OWNER_STARTUP,
@@ -32,6 +34,11 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.ts";
 import {
+  checkNativeProfileFixture,
+  nativeProfileFixtureConfiguration,
+  nativeProfileUpgradeMessage,
+} from "../helpers/native-profile-state-fixture.mjs";
+import {
   parseObservation,
   readAgentDatabase,
   readMaintenance,
@@ -47,6 +54,64 @@ const fixtureMount =
   fixtureDir +
   ":ro";
 const maintenance = fixtureDir + "/maintenance.mts";
+
+test(
+  "runtime image retains a pre-delegation native profile and conversation after upgrade",
+  imageTestOptions,
+  async (t) => {
+    const archive = fileURLToPath(
+      new URL(
+        "../fixtures/runtime-state/native-profile-state-openclaw-513c127.tar.gz",
+        import.meta.url,
+      ),
+    );
+    const metadata = JSON.parse(
+      await readFile(
+        new URL(
+          "../fixtures/runtime-state/native-profile-state-openclaw-513c127.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    assert.equal(
+      createHash("sha256")
+        .update(await readFile(archive))
+        .digest("hex"),
+      metadata.archiveSha256,
+    );
+    // The old Gateway created these rows through native RPCs. Restore its
+    // keyless stores and original migration bookkeeping, then use the real
+    // current startup/Doctor path. Native startup regenerates removed keys.
+    const volume = await gatewayStateVolume(t, "/home/node", {
+      seed: "tar -xzf /native-profile-state.tar.gz -C /home/node",
+      seedVolumes: [`${archive}:/native-profile-state.tar.gz:ro`],
+    });
+    const configuration = await temporaryGatewayConfiguration(
+      t,
+      "openclaw",
+      nativeProfileFixtureConfiguration,
+    );
+    const gateway = await runGatewaySmoke(t, "openclaw", {
+      configurationPath: "/etc/openclaw/openclaw.json",
+      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      volumes: [`${volume}:/home/node`, `${configuration}:/etc/openclaw/openclaw.json:ro`],
+      tmpfs: [],
+      withAppServer: false,
+    });
+    // Preserve the old person's identity, name, session ownership and text. A
+    // new admin-injected message proves the retained conversation is writable;
+    // neither message is presented as model-generated content.
+    await checkNativeProfileFixture(runDocker, gateway.containerName, {
+      expected: metadata.expected,
+      appendMessage: nativeProfileUpgradeMessage,
+    });
+    await runDocker(["stop", "--time", "60", gateway.containerName]);
+    t.diagnostic(
+      `native profile upgrade: ${metadata.provenance.commit} -> selected image; profile and conversation retained`,
+    );
+  },
+);
 
 test(
   "Gateway replacement retains unfinished maintenance on its database mounts",

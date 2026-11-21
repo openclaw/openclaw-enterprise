@@ -4228,6 +4228,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   display: grid;
   gap: var(--space-1);
   flex: 1 1 12rem;
+  align-self: start;
 }
 .plugin-toggle {
   display: flex;

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
 
-import { array, record } from "./full-integration-json-fixture.ts";
+import { array, present, record, text } from "./full-integration-json-fixture.ts";
 
 const kubernetes: unknown = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -72,4 +73,20 @@ export async function readLaneAction() {
   const steps = array(record(action.runs).steps);
   assert.ok(steps.every(isRecord));
   return steps;
+}
+
+export function jobStateProgram(workflow: string) {
+  const step = present(workflow.split("- name: Write selected job state")[1]);
+  return present(step.match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)?.[1]);
+}
+
+export function workflowCondition(expression: unknown, context: Record<string, unknown>): unknown {
+  return runInNewContext(
+    text(expression)
+      .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+      .replace(/\b(needs|steps)\.([a-z][a-z0-9-]*)/g, '$1["$2"]')
+      .replace(/\.outputs\.([a-z][a-z0-9_-]*)/g, '.outputs["$1"]')
+      .replace(/\.([a-z][a-z0-9]*-[a-z0-9-]+)/g, '["$1"]'),
+    { cancelled: () => false, ...context },
+  );
 }

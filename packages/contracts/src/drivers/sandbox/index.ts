@@ -60,13 +60,22 @@ export interface SandboxWorkloadIdentity {
   };
 }
 
-export interface HarnessWorkloadRequirements {
+/** Durable data intent, before a Compute or Sandbox implementation selects storage. */
+export interface HarnessRetainedDirectory {
+  readonly purpose: "workspace" | "generated-images" | "sessions" | "node-state";
+  readonly name: string;
+  readonly path: string;
+  /** The workload reads this directory through this variable, when present. */
+  readonly environment?: string;
+}
+
+export interface HarnessLaunchDescription {
   readonly loginMode: HarnessAuthBinding["method"] | CredentialSourceLoginMode;
   readonly image: string;
   readonly command: readonly string[];
   /** Optional identity that a Sandbox must preserve in full or reject before provisioning. */
   readonly workloadIdentity?: SandboxWorkloadIdentity;
-  readonly workspaceMounts: readonly SandboxWorkspaceMount[];
+  readonly retainedDirectories: readonly HarnessRetainedDirectory[];
   /** Initialize the mounted workspace privately before starting the Harness; never copy file contents here. */
   readonly workspaceSetup?: {
     readonly id: string;
@@ -80,6 +89,11 @@ export interface HarnessWorkloadRequirements {
   readonly credentialAttachments: readonly CredentialSourceAttachment[];
   readonly proxyWiring?: ProxyWiring;
   readonly labels: Readonly<Record<string, string>>;
+}
+
+export interface HarnessWorkloadRequirements extends HarnessLaunchDescription {
+  /** Compute-owned storage only. Empty when the provider owns retained storage. */
+  readonly workspaceMounts: readonly SandboxWorkspaceMount[];
 }
 
 export interface SandboxResourceRef {
@@ -99,30 +113,12 @@ export interface SandboxHarnessEndpoint {
     /** Certificate bytes only, never a source path, private key or client credential. */
     readonly caBundle: string;
   };
+  /** Exact PEM leaf for the admitted execution. The Gateway must pin it on its WSS connection. */
+  readonly tlsPeerCertificate?: string;
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
-  /**
-   * An ordinary dedicated Codex workspace enforced by this exact provider generation.
-   * Compute must pin this generation with the endpoint's TLS trust before allowing the
-   * Gateway to select the externally enforced, network-restricted workspace policy.
-   */
-  readonly externalWorkspaceOwner?: { readonly generationSha256: string };
   /** Request this native Codex profile when the provider supplies the sandbox boundary. */
   readonly codexPermissionProfile?: ":danger-full-access";
-}
-
-/** Endpoint pinned to the one workspace process admitted for this protected revision. */
-export interface ProtectedWorkspaceEndpoint {
-  readonly url: string;
-  readonly tls: { readonly caBundle: string };
-  readonly workspaceRoot: string;
-  readonly original: {
-    readonly purpose: "normal-protected-codex-workspace";
-    readonly generationSha256: string;
-  } & (
-    | { readonly state: "reserved" }
-    | { readonly state: "release-acknowledged"; readonly startupSha256: string }
-  );
 }
 
 export interface SandboxNamespaceContext {
@@ -153,12 +149,6 @@ export type SandboxHarnessWithdrawalContext = Omit<SandboxHarnessContext, "requi
 
 export interface SandboxHarnessStatusContext extends SandboxHarnessContext {
   /** The Agent transport token the Agent Gateway presents to the Harness. */
-  readonly transportToken: string;
-}
-
-/** A bound serving read. The Driver restores its retained admitted requirements. */
-export interface SandboxProtectedWorkspaceStatusContext extends SandboxHarnessWithdrawalContext {
-  readonly protectedWorkspaceEndpoint: true;
   readonly transportToken: string;
 }
 
@@ -230,6 +220,9 @@ export interface SandboxDriver extends Driver {
     readonly openclaw: Readonly<Record<HarnessExecutionMode, HarnessExecutionModeSupport>>;
   };
   readonly repositoryAccess?: SandboxRepositoryAccess;
+  /** Provider owns durable Harness storage and reports lifecycle through observeHarness. */
+  readonly workspaceStorage?: "provider";
+
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {
     readonly wildcards: boolean;
@@ -282,9 +275,6 @@ export interface SandboxDriver extends Driver {
    * hook credential directory, under it. Defaults to the Compute-owned Harness Pod's HOME.
    */
   readonly harnessHome?: string;
-  /** Consume only the native app-server transport verifier, never the Gateway's raw bearer.
-   * Applies to dedicated Harnesses whose endpoint the provider owns. */
-  readonly harnessTransportCredential?: "verifier";
   /**
    * Side-effect-free validation for initial workspace files this provider-owned Harness can
    * initialize. Compute delegates only when this Driver also provisions the Harness; omission
@@ -361,6 +351,10 @@ export interface SandboxDriver extends Driver {
   workspaceNodePeerLabels?(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<Readonly<Record<string, string>> | undefined>;
+  /** Exact labels of this prepared revision's Harness, used for Gateway egress. */
+  harnessPeerLabels?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<Readonly<Record<string, string>> | undefined>;
   /** Required for revision stop, retirement, and Namespace cleanup, independent of Harness ownership. */
   cleanup(
     context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
@@ -382,17 +376,4 @@ export interface SandboxDriver extends Driver {
    * after it exited, as opposed to a first start.
    */
   observeHarness?(context: SandboxLogContext): Promise<SandboxHarnessObservation>;
-}
-
-/** Opt-in extension for a protected dedicated Codex workspace. The Driver must authenticate
- * the original independently of the endpoint caller and the status dispatch field. */
-export interface ProtectedWorkspaceSandboxDriver extends SandboxDriver {
-  provisionHarness: NonNullable<SandboxDriver["provisionHarness"]>;
-  enrollHarness: NonNullable<SandboxDriver["enrollHarness"]>;
-  protectedWorkspaceEndpoint(
-    context: SandboxHarnessWithdrawalContext,
-  ): Promise<ProtectedWorkspaceEndpoint | undefined>;
-  harnessStatus: (
-    context: SandboxHarnessStatusContext | SandboxProtectedWorkspaceStatusContext,
-  ) => Promise<SandboxHarnessStatus>;
 }

@@ -320,7 +320,12 @@ export function registerInstallationKeycloak() {
       } = await import("../helpers/dev-up-keycloak.mjs");
       const { chromium } = await import("playwright");
       const fixture = await keycloakLauncher(t);
+      // Bootstrap and both Keycloak setup sign-ins must use the same normalized password,
+      // including significant spaces, when an input has one Windows-style file terminator.
+      const password = ` ${randomUUID()} `;
+      fixture.environment.OPENCLAW_DEV_PASSWORD = `${password}\r\n`;
       const up = await fixture.dev("up");
+      assert.equal((await fixture.read("initial-admin-password")) === password, true);
       const instructions = keycloakInstructions(up.stdout);
       const origin = `https://${fixture.consoleHost}:${fixture.browserPort}`;
       assert.equal(instructions.consoleUrl, `${origin}/console/`);
@@ -449,10 +454,14 @@ export function registerInstallationKeycloak() {
               ({ name, value }) => name === "__Secure-openclaw_occ_shared.session_token" && value,
             );
             assert.ok(sessionCookie);
-            // OIDC preserves the shared session scope for the Console and Agent hosts.
+            // The default session spans this cluster's Console and Agent hosts;
+            // its scope must not extend to another development installation.
+            assert.equal(sessionCookie.name, "__Secure-openclaw_occ_shared.session_token");
             assert.equal(sessionCookie.domain, `.${fixture.cluster}.oce.localhost`);
             assert.equal(sessionCookie.secure, true);
             assert.equal(sessionCookie.httpOnly, true);
+            assert.equal(sessionCookie.path, "/");
+            assert.equal(sessionCookie.sameSite, "Lax");
 
             const endpoint = {
               hostname: fixture.consoleHost,

@@ -1,15 +1,15 @@
 ---
 created: 2026-08-28
-updated: 2026-11-14
-last_updated_session: fix-4929
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Controller Worker Flow
 
 ## Overview
 
-The worker claims PostgreSQL work, rechecks authorization, and calls Compute.
-It saves Namespace, Agent stop/deletion, and revision results under its claim.
+The worker claims PostgreSQL work, rechecks authorization, calls Compute, and
+saves Namespace, Agent stop/deletion, and revision results under its claim.
 See the [controller reference](../reference/controller.md) and
 [deployment guide](../guides/deploy.md).
 
@@ -83,12 +83,12 @@ follow finalization independently of logging.
 ### 2. Save the admission decision and queue the operation
 
 `apps/controller/src/http/agents.ts:createAgentHandlers`,
-`packages/occ/src/index.ts:OpenClawController`,
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
 `operations.append` checks ownership, then calls `PostgresWorkQueue.enqueue`.
-When audit is enabled, the resource change, work, and `controller_work.queued`
-record commit together. The record links the request ID to the work ID.
+With audit enabled, the resource change, work, and `controller_work.queued`
+commit together. The event links request and work IDs.
 
 Agent deployment keeps the validated `deploy` request and decision with the
 saved version; the API's audit event uses that decision's IAM Driver, principal,
@@ -103,7 +103,7 @@ Agent and `stopped` or `deleted` target without a version. Reusing an idempotenc
 key with a different actor, owner, or target is rejected. The API returns accepted
 state before the worker invokes Compute.
 
-For an already-deleting Agent, `OpenClawController.deleteAgent` leaves active
+For an already-deleting Agent, `packages/occ/src/agent-termination.ts:deleteAgent` leaves active
 work unchanged. After terminal failure, `operations.retryFailedAgentDeletion`
 checks delete permission and resets only the stopped, deleting Agent's terminal
 work, keeping prior audits ([who can retry](../reference/agents.md#deletion)); a
@@ -332,7 +332,7 @@ path, including unready Harnesses without plugins, and verifies runtime
 incarnation without repeating the model probe. Missing or invalid evidence
 leaves the cause unspecified.
 
-`packages/occ/src/state/controller-work.ts:validateFailureData` validates reads
+`packages/occ/src/controller-work-result.ts:validateFailureData` validates reads
 and writes and rejects data for other failure reasons; the PostgreSQL constraint
 enforces the persisted shape.
 `PostgresWorkQueue.complete` and `PostgresWorkQueue.fail` publish only under the
@@ -340,10 +340,9 @@ live claim; [deployment status](../reference/agents.md#deployment-status) derive
 `error` and `warnings` from that result. Completion needs no acknowledgment or
 post-commit cleanup; maintenance cannot rewrite deployment warnings.
 
-Indexed `workId` scopes progress to work; maintenance and unbound history cannot
-supply it. `getDeploymentStatus` reads
-`findWorkAttempt` with the work row in one State snapshot and projects fixed
-public explanations. Memory State has no attempt.
+`getDeploymentStatus` reads the revision, Agent and work in one authorized snapshot.
+Only exact-work attempts supply progress (none in memory). Cleanup checks the
+revision’s retirement and session keys, not Git expiry or finite removal.
 
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
@@ -425,6 +424,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-19 14:03: Trace stopped revision cleanup in the accompanying change. (authoring-run/49c681f2-4814-4313-b061-284d2b23891c - 4bfefb4bf60b43dfb2e6fcc010be60270474e726)
 - 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 - 2026-11-14 10:00: Hint tenant access on delete. (fix-4929)
 - 2026-11-12 14:03: Save development claim evidence. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)

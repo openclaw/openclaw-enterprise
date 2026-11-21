@@ -3,10 +3,12 @@ import type { codexRpc, list, parseJson, record, text } from "./wire.ts";
 export async function probePackagedCodex(
   {
     historicalCodex,
+    expectBundledRepositoryRestSkill,
     stagingCodexVersion,
     deadlineMs,
   }: {
     historicalCodex: boolean;
+    expectBundledRepositoryRestSkill: boolean;
     stagingCodexVersion: string;
     deadlineMs: number;
   },
@@ -38,26 +40,6 @@ export async function probePackagedCodex(
     "codex-cli " + stagingCodexVersion,
   );
   const provenance = read(parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8")));
-  if (!historicalCodex) {
-    // The manifest is from the tested checkout; the binary and its ABI are read
-    // inside the built image, independently of its recorded provenance.
-    const expectedNode = read(parse(asText(process.argv[3])));
-    assert.equal(process.versions.node, expectedNode.version);
-    assert.equal(process.versions.modules, expectedNode.modules);
-    assert.equal(process.versions.napi, expectedNode.napi);
-    assert.deepEqual(provenance.node, {
-      source: "https://github.com/nodejs/node",
-      ...expectedNode,
-      version: process.versions.node,
-      architecture: process.arch,
-      platform: process.platform,
-      modules: process.versions.modules,
-      napi: process.versions.napi,
-      icu: process.versions.icu,
-      executable: "/usr/local/bin/node",
-      sha256: createHash("sha256").update(readFileSync(process.execPath)).digest("hex"),
-    });
-  }
   assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
   const expectedSource = read(parse(asText(process.argv[2])));
   assert.equal(typeof expectedSource.commit, "string");
@@ -77,23 +59,29 @@ export async function probePackagedCodex(
   } else {
     assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
   }
-  assert.equal(
-    provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-    historicalCodex
-      ? "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804"
-      : "b6261ce5be40e7d3c8f2d263aba7320301cbdd66381540edbb4362e95794139a",
-  );
+  if (historicalCodex) {
+    assert.equal(
+      provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
+      "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804",
+    );
+  } else {
+    assert.equal(
+      Object.hasOwn(provenance, "openclawRequiredWorkerAuthorityRegressionPatchSha256"),
+      false,
+    );
+  }
   assert.deepEqual(provenance.patches, {
     "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
     "openclaw-codex-full-access-profile.patch": historicalCodex
       ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a"
       : "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
-    "openclaw-required-worker-authority-regression.patch":
-      provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-    "openclaw-google-worker-placeholder.patch":
-      "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+    "openclaw-google-worker-placeholder.patch": historicalCodex
+      ? "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31"
+      : "cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38",
     ...(historicalCodex
       ? {
+          "openclaw-required-worker-authority-regression.patch":
+            provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
           "openclaw-control-ui-browser-reconnect.patch":
             "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
           "openclaw-terminated-gateway-namespace.patch":
@@ -103,19 +91,13 @@ export async function probePackagedCodex(
         }
       : {
           "stock-codex-0.164.0-dependency-pin.patch":
-            "1ca10c576c65748498ede421a230740f2ab3d87bbfb4fa4ab92d89f809c1402f",
-          "openclaw-codex-box-owner.patch":
-            "cff60afa5c0d0441222b639e8763f730369ba6cb2fe8c5913ef74f57a9f6e238",
-          "openclaw-control-ui-browser-reconnect.patch":
-            "e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0",
+            "cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197",
           "openclaw-terminated-gateway-namespace.patch":
             "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
           "openclaw-planned-completion.patch":
             "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
           "openclaw-node-setup-renewal.patch":
-            "de6b57665698e7c0d60aebac49f5532623f507ac4a8e2eb21804ace95aab78c8",
-          "openclaw-restart-harness-readiness.patch":
-            "a7f1cf323cb34affbcbf8e059949660f292215680f91c2e45b3d80322808f35f",
+            "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);
@@ -236,7 +218,7 @@ export async function probePackagedCodex(
 
   // Install two real local bundles without credentials or model calls. Feature
   // enablement stays on, so only OCE's plugin policy can exclude their skills.
-  const { mkdirSync, mkdtempSync, writeFileSync } = process.getBuiltinModule("node:fs");
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = process.getBuiltinModule("node:fs");
   const { tmpdir } = process.getBuiltinModule("node:os");
   const { createInterface } = process.getBuiltinModule("node:readline");
   const { spawn } = process.getBuiltinModule("node:child_process");
@@ -274,7 +256,7 @@ export async function probePackagedCodex(
   );
   const native = spawn(platformBinary, ["app-server", "--listen", "stdio://"], {
     cwd: workspace,
-    env: { ...process.env, CODEX_HOME: codexHome },
+    env: { ...process.env, HOME: root, CODEX_HOME: codexHome },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const lines = createInterface({ input: native.stdout });
@@ -294,12 +276,30 @@ export async function probePackagedCodex(
     fail(new Error("Native plugin proof timed out: " + stderr));
     native.kill("SIGKILL");
   }, deadlineMs);
+  async function listSkills() {
+    const catalog = read(await rpc("skills/list", { cwds: [workspace], forceReload: true }));
+    return asList(catalog.data)
+      .flatMap((entry) => asList(read(entry).skills))
+      .map(read);
+  }
+
   try {
     await rpc("initialize", {
       clientInfo: { name: "oce-plugin-defaults-proof", version: "1.0.0" },
       capabilities: { experimentalApi: true },
     });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
+    if (expectBundledRepositoryRestSkill) {
+      const name = "github-repository-rest";
+      const path = resolve("/etc/codex/skills", name, "SKILL.md");
+      assert.ok(typeof process.getuid === "function" && process.getuid() !== 0);
+      const matches = (await listSkills()).filter((skill) => skill.name === name);
+      assert.equal(matches.length, 1, "Codex should discover the bundled skill in a fresh home.");
+      const [skill] = matches;
+      assert.ok(skill?.enabled === true);
+      assert.equal(skill.scope, "admin");
+      assert.equal(realpathSync(asText(skill.path)), realpathSync(path));
+    }
     // Production startup uses this experimental API. An empty query proves protocol
     // support without authentication, remote catalog access, or a model request.
     if (!historicalCodex) {
@@ -345,10 +345,7 @@ export async function probePackagedCodex(
           .sort((a, b) => a.name.localeCompare(b.name)),
         names.map((name) => ({ name, installed: true, enabled: enabledNames.includes(name) })),
       );
-      const skills = read(await rpc("skills/list", { cwds: [workspace], forceReload: true }));
-      const fixtureSkills = asList(skills.data)
-        .flatMap((entry) => asList(read(entry).skills))
-        .map(read)
+      const fixtureSkills = (await listSkills())
         .filter((skill) => names.some((name) => asText(skill.name).startsWith(name + ":")))
         .map(({ name, pluginId }) => ({ name: asText(name), pluginId }));
       assert.deepEqual(
@@ -358,9 +355,10 @@ export async function probePackagedCodex(
     }
     process.stdout.write("shared-reviewed-codex-ready\n");
   } finally {
-    clearTimeout(deadline);
     lines.close();
     native.kill("SIGTERM");
     await closed;
+    clearTimeout(deadline);
+    rmSync(root, { recursive: true, force: true });
   }
 }

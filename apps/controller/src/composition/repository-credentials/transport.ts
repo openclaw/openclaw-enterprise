@@ -5,7 +5,6 @@ import type {
 import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { RepositoryTransportEmit } from "./contracts.ts";
 import type { InstallationRuntimeDrivers } from "../installation-config.ts";
-import { createRepositoryGitRequests } from "../../drivers/repo/github/access/protected-requests.ts";
 
 /**
  * A delivery that keeps failing writes `worker.repository-delivery-pending` at most this often:
@@ -82,11 +81,7 @@ export async function bindRepositoryGitTransport(
     return repositoryTransport.bind(authority, pool, emit);
   }
   if (repositoryGitDriver && authority) {
-    // The selected package sends; OCE's own request decision comes bound to the same authority.
-    const binding = await repositoryGitDriver.requireRepositoryGitTransport()(
-      authority,
-      createRepositoryGitRequests(authority),
-    );
+    const binding = await repositoryGitDriver.requireRepositoryGitTransport()(authority);
     if (!binding.reconcile) {
       return binding;
     }

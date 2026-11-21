@@ -8,29 +8,27 @@ last_updated_session: 01a1e535-91ca-7273-913f-aaacfd69c1c2
 
 ## Overview
 
-`./bin/occ dev up` starts local OpenClaw Enterprise development from a checkout.
-The `scripts/dev-up` entry point selects the same profile. By default it starts the
-[local k3d-only profile](../guides/deploy/local-kubernetes-development.md):
-Kubernetes Compute with the Kubernetes control plane
-(`internal/occdev/profile.go:ResolveProfile`). Operators can select the Compose
+`./bin/occ dev up` and `scripts/dev-up` start checkout-local development.
+`internal/occdev/profile.go:ResolveProfile` defaults to
+[local k3d](../guides/deploy/local-kubernetes-development.md): Kubernetes Compute
+and control plane. Operators can select the Compose
 control plane, or Docker Compute with OCC and PostgreSQL in Compose. The
 Kubernetes profile can select the OpenShell Sandbox Driver for its fail-closed
 path; it prepares pinned OpenShell infrastructure and reconciles rendered
 workspace-chart resources before reporting readiness.
-Compose-backed profiles perform host preflight, select Docker Engine or Podman,
-prepare runtime images, start Compose, and wait for PostgreSQL migration,
-Installation bootstrap, API health, and worker readiness. The Kubernetes-only
-profile performs the equivalent readiness checks inside its owned cluster.
-All profiles prepare HTTPS Console and Agent DNS hosts and use the existing
-loopback TLS proxy, even when Agent native access is disabled. Session cookie
-scope derives from those hosts; cookie-domain settings are refused.
+Compose profiles select Docker or Podman, prepare images, and wait for migration,
+bootstrap, API and worker readiness. Kubernetes-only runs equivalent checks
+inside its owned cluster.
+All profiles prepare HTTPS Console/Agent hosts and the loopback TLS proxy,
+even without Agent native access. Cookie scope derives from those hosts;
+cookie-domain settings are refused.
 For Docker Compute, `scripts/dev-up` calls the hidden CLI adapter backed by
 `internal/occdev/docker_browser.go:DockerBrowserEnvironment`. It reuses the
 TLS generator and keeps private per-checkout certificates in the system
 temporary directory across stop/start. The launcher prints the Console
 URL and CA certificate path. `occ dev down` reloads the same proxy settings.
-Startup proves authenticated Installation access with a protected local
-bootstrap service key; it does not create an Agent or prove model execution.
+Startup proves Installation access with the retained key, not Agent deployment
+or model execution.
 
 For Docker Compute, the worker can reconcile Namespace infrastructure, but
 Agent deployment stops at harness authentication admission because Docker
@@ -100,8 +98,9 @@ graph TD
   KRemove -->|success| KDone["Remove private state"]
   KRemove -->|failure| KRetain["Keep state for recovery"]
   B --> C["Select quickstart runtime image or validate custom images"]
-  C --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
-  D --> E["Copy bootstrap service-key response to private local file"]
+  C --> Cred["Prepare private input files and local CLI key JSON"]
+  Cred --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
+  D --> E["Use retained key; no container extraction"]
   E --> F["./bin/occ installation get proves authenticated access"]
   F --> G["Operator creates Namespace through authenticated API"]
   G --> H["Worker claims durable Namespace operation"]
@@ -284,8 +283,12 @@ Pods can reach that listener through narrow NetworkPolicies. See the
 `selectedDevelopmentDatabase` validates an optional disposable database name
 before effects. `installKubernetesControlPlane` uses that name in creation, readiness,
 migrator and application URLs. Bootstrap, API and worker share the limited
-application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
-Helm waits for both. Unselected profiles retain the existing database and
+application-role URL. `internal/occdev/bootstrap.go:prepareBootstrapCredentials`
+creates private inputs and CLI JSON outside the checkout.
+`installKubernetesControlPlane` precreates the bootstrap Secret;
+`verifyBootstrapKey` discovers the Installation ID through the API. See
+[startup](docker-compose-development/startup.md#3-initialize-before-starting-the-api-or-worker)
+for projection and key-export boundaries. Unselected profiles retain the existing database and
 transport defaults. The [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
 describes accepted selectors.
 
@@ -294,7 +297,7 @@ describes accepted selectors.
 - `./scripts/dev-up` should show PostgreSQL readiness, migration completion,
   API listening on `127.0.0.1:${OPENCLAW_DEV_PORT:-3000}`,
   fresh-database initialization, `worker.started` with `computeDriverId` set to
-  `compute-docker-development`, a private copied service-key path, and a
+  `compute-docker-development`, a private locally prepared service-key path, and a
   successful authenticated `/installation` proof.
 - With `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes`, startup should instead
   report Kubernetes Compute, a private kubeconfig, and the disposable k3d
@@ -347,6 +350,8 @@ describes accepted selectors.
 ## Changelog
 
 - 2026-11-16 13:04: Remove RuntimeClass and PSA setup. (01a1e535-91ca-7273-913f-aaacfd69c1c2 - edbe5ec43)
+
+- 2026-11-16 09:42: Trace local credential preparation instead of bootstrap-volume extraction in the accompanying uncommitted implementation. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 
 - 2026-11-11 03:59: Limit Compose shutdown to its project. (authoring-run/f416a831-2d60-4973-af5c-9f0bf35a8899 - 5ee1a6b2650e988ddd2f03ded0142dba685ca504)
 

@@ -14,13 +14,11 @@ import {
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import {
   parseRuntimeDownloadClientSelection,
   readRuntimeDownloadClients,
 } from "../../scripts/lib/runtime-download-clients.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-import { GATEWAY_RESTART_RESUME_SCOPE } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 
 type RuntimeAsset =
   { path: string; link: string } | { path: string; size: number; mode: number; sha256: string };
@@ -329,21 +327,9 @@ packages:
   );
   assert.equal(provenance.codex.version, "0.158.0");
   assert.equal(Object.hasOwn(provenance, "downloadClients"), false);
-  const nodeProvenance = join(directory, "node-provenance.json");
-  await writeFile(
-    nodeProvenance,
-    JSON.stringify({
-      architecture: process.arch,
-      platform: process.platform,
-      version: process.versions.node,
-      sha256: createHash("sha256")
-        .update(await readFile(process.execPath))
-        .digest("hex"),
-    }),
-  );
   const unselected = spawnSync(
     process.execPath,
-    ["scripts/build-runtime-assets.ts", "inventory", sourceAlias, output, nodeProvenance],
+    ["scripts/build-runtime-assets.ts", "inventory", sourceAlias, output],
     { encoding: "utf8" },
   );
   assert.notEqual(unselected.status, 0);
@@ -374,49 +360,13 @@ packages:
   }
   assert.deepEqual(Object.entries(patches), applied);
   assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
-  // The remaining per-patch fields keep their names and values.
-  for (const [field, file] of [
-    ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
-    [
-      "openclawRequiredWorkerAuthorityRegressionPatchSha256",
-      "openclaw-required-worker-authority-regression.patch",
-    ],
-  ] as const) {
-    assert.equal(provenance[field], patches[file], field);
-  }
-});
-
-// OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway to bound native recovery to its
-// admitted lifecycle. The Kubernetes and Docker Drivers set the shared constant; the
-// standalone SSH helper spells it out. Record a pinned commit here only after checking that
-// OpenClaw scopes crash, parked and legacy recovery and child completion custody, and stamps
-// the scope at chat.send admission (#201186), not only graceful markers (#201060).
-const NATIVE_RESTART_RESUME_SCOPE_COMMITS: readonly string[] = [
-  "f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9",
-];
-
-test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", async () => {
-  const name = GATEWAY_RESTART_RESUME_SCOPE;
-  const sshHelper = await readFile(
-    "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
-    "utf8",
+  assert.equal(
+    Object.hasOwn(provenance, "openclawRequiredWorkerAuthorityRegressionPatchSha256"),
+    false,
   );
-  assert.ok(
-    sshHelper.includes(`\nEnvironment=${name}=\${revision.id}\n`),
-    `SSH Compute must set ${name}`,
-  );
-  const { commit } = await readOpenclawSource();
-  assert.ok(
-    NATIVE_RESTART_RESUME_SCOPE_COMMITS.includes(commit),
-    `check that OpenClaw ${commit} scopes crash recovery and custody by ${name}, then record the commit here`,
-  );
-  // The manual image check runs the native crash and custody scope tests, which #201060 lacks.
-  const dockerfile = (await readFile("deploy/runtime/Dockerfile", "utf8")).replace(
-    /\\\n\s*/gu,
-    " ",
-  );
-  assert.match(
-    dockerfile,
-    /session-restart-resume\.scope\.test\.ts\s.*session-restart-resume-custody\.test\.ts\s.*-t "only at startup scope\|in scope across a second restart\|/u,
+  // The remaining per-patch field keeps its name and value.
+  assert.equal(
+    provenance.openclawBridgePatchSha256,
+    patches["openclaw-codex-read-only-paths.patch"],
   );
 });

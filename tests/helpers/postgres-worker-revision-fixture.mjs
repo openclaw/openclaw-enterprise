@@ -679,12 +679,13 @@ export function createWorkerRevisionFixtures(
         ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
         createdAt: new Date(Date.now() + controllerSkewMs).toISOString(),
       };
+      let proxyAdmission;
       if (protectedRepositoryDriver) {
         const sandbox = protectedRepositoryDriver.require("sandbox");
+        const { agentCredentialAccess, egressAdmission } = controller.composition.credentials;
         await state.transact(async (unit) => {
-          const [auth] = await controller.admitHarnessAuth(unit, actorId, owner);
-          assert.deepEqual(auth, harnessAuth);
-          const sources = await controller.admitCredentialSources(
+          // Validate the stored binding and source before seeding the historical revision.
+          const sources = await agentCredentialAccess.admitCredentialSources(
             unit,
             actorId,
             owner,
@@ -696,7 +697,7 @@ export function createWorkerRevisionFixtures(
           assert.deepEqual(sources, credentialSources);
           const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
           const plan = (chosen) =>
-            controller.admitProxyPlan(
+            egressAdmission.admitProxyPlan(
               unit,
               owner,
               candidate.id,
@@ -707,11 +708,12 @@ export function createWorkerRevisionFixtures(
               candidate.harness.configuration,
             );
           await assert.rejects(
-            plan({ ...auth, sourceId: "unselected" }),
+            plan({ ...harnessAuth, sourceId: "unselected" }),
             /created or adopted under the Proxy/,
           );
-          const egressPlan = await plan(auth);
-          assert.deepEqual(egressPlan.harnessCredentialSource, auth);
+          proxyAdmission = await plan(harnessAuth);
+          const egressPlan = proxyAdmission.plan;
+          assert.deepEqual(egressPlan.harnessCredentialSource, harnessAuth);
           assert.deepEqual(
             egressPlan.routes,
             [],
@@ -754,6 +756,7 @@ export function createWorkerRevisionFixtures(
         if (runtimeInputs !== undefined) {
           candidate.compute = { ...candidate.compute, runtimeInputs };
         }
+        proxyAdmission?.assertProvidersCurrent();
         admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,

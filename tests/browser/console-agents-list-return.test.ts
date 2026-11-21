@@ -7,7 +7,7 @@ import {
   AgentRevisionListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 
-import type { DeploymentStatus } from "../../packages/occ/src/state/controller-work.ts";
+import type { DeploymentStatus } from "../../packages/occ/src/controller-work.ts";
 
 import {
   persistedDeploymentError,
@@ -25,7 +25,7 @@ import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-account
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { refocus, tagView, viewTag } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 type ReadyNamespace = Awaited<ReturnType<typeof createReadyConsoleNamespace>>;

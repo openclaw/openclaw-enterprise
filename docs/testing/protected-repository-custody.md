@@ -88,11 +88,6 @@ replaying it. The local proofs do not replace this installed qualification.
 
 ### Reuse the rehearsal with another runtime
 
-The [Strands Box GitHub test](strands-box.md) runs stock Git and `gh` through a
-stand-in for Box egress. It does not use this helper: a withdrawn request
-still reaches the origin there, which the helper's refusal check rejects. Its
-result does not qualify Box containment or an installed deployment.
-
 Use [the scenario helper](../../tests/helpers/agent-grant-rehearsal.ts) from a
 Node test. Run all four observations inside the `runAgentGrantRehearsal` callback.
 The test fails if the callback returns before `modelAfter` succeeds.

@@ -67,6 +67,7 @@ test("production upgrades check the stock chart before recording evidence or con
   await writeFile(join(checkout, "unrelated.md"), "Outside the chart\n");
   const env = {
     PATH: commandPath(bin, dirname(process.execPath)),
+    KUBERC: "off",
     ORIGINAL_TOOL_PATH: process.env.PATH,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",

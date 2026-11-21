@@ -35,10 +35,10 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
       );
     }
   }
-  async function sources(omitAnnotations: boolean) {
+  async function sources() {
     return (
-      await app.query<{ source: Record<string, unknown> }>(
-        `SELECT to_jsonb(s) ${omitAnnotations ? "- 'owner_capability' - 'egress' - 'credential_gateway_owner_id'" : ""} AS source
+      await app.query(
+        `SELECT to_jsonb(s) AS source
          FROM occ.credential_sources s WHERE id=ANY($1) ORDER BY id`,
         [ids],
       )
@@ -52,55 +52,22 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
       )
     ).rows;
   }
-  const before = await sources(false);
+  const before = await sources();
   const secretsBefore = await relationships();
   return async function assertOwnershipAfterUpgrade() {
-    assert.deepEqual(await sources(true), before, "main source fields survive unchanged");
+    const after = await sources();
+    assert.deepEqual(
+      after.map((source, index) =>
+        Object.fromEntries(Object.keys(before[index]).map((key) => [key, source[key]])),
+      ),
+      before,
+      "main source fields survive unchanged",
+    );
     assert.deepEqual(await relationships(), secretsBefore, "Secret ownership remains exact");
     assert.deepEqual(
-      (await sources(false)).map(({ owner_capability, egress, credential_gateway_owner_id }) => ({
-        owner_capability,
-        egress,
-        credential_gateway_owner_id,
-      })),
-      ids.map(() => ({
-        owner_capability: "credential_gateway",
-        egress: null,
-        credential_gateway_owner_id: null,
-      })),
-      "main sources retain legacy Gateway ownership without acquiring proxy or packaged authority",
-    );
-    const packagedId = `cs_${randomUUID()}`;
-    const packageOwnerId = "9".repeat(64);
-    const insertWithOwner = `INSERT INTO occ.credential_sources
-         (id,namespace_id,name,type,config,driver_id,state,created_at,owner_capability,credential_gateway_owner_id)
-       VALUES($1,$2,'Owner migration fixture','openai','{}','external-gateway','ready',now(),$3,$4)
-       RETURNING owner_capability,credential_gateway_owner_id`;
-    const invalidOwner = { code: "23514", constraint: "credential_sources_gateway_owner_valid" };
-    await assert.rejects(
-      app.query(insertWithOwner, [packagedId, namespaceId, "packaged_credential_gateway", null]),
-      invalidOwner,
-    );
-    await assert.rejects(
-      app.query(insertWithOwner, [packagedId, namespaceId, "credential_gateway", packageOwnerId]),
-      invalidOwner,
-    );
-    assert.deepEqual(
-      (
-        await app.query(insertWithOwner, [
-          packagedId,
-          namespaceId,
-          "packaged_credential_gateway",
-          packageOwnerId,
-        ])
-      ).rows,
-      [
-        {
-          owner_capability: "packaged_credential_gateway",
-          credential_gateway_owner_id: packageOwnerId,
-        },
-      ],
-      "only a packaged Gateway row carries the supplied owner ID",
+      after.map(({ owner_capability, egress }) => ({ owner_capability, egress })),
+      ids.map(() => ({ owner_capability: "credential_gateway", egress: null })),
+      "main sources retain Gateway ownership without acquiring proxy authority",
     );
     const relabel =
       "UPDATE occ.credential_sources SET owner_capability='credential_proxy' WHERE id=$1";
@@ -121,7 +88,7 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
 /** Effective privileges include role membership and default ACLs, not just explicit grants. */
 export async function assertCredentialSchemaPrivileges(app: pg.Client) {
   const tables = [
-    ["egress_installations", "installation"],
+    ["egress_installations", "installation,retired"],
     ["egress_rejected_material", ""],
     ["egress_send_receipts", "authorized_dispatch,outcome,observation,settled,feedback"],
     ["prepared_github_families", "admission,enabled,next_check_at,worker_claim"],
