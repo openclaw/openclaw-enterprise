@@ -756,6 +756,27 @@ async function fakeCommand({
     const node = args[0] === "exec" ? clusterNode(args[1]) : undefined;
     if (node) {
       const alias = state.aliases?.[node];
+      if (equals(args.slice(2), ["ip", "route", "get", "10.42.3.34"])) {
+        assert.equal(node, "server-0");
+        state.routeLookups = (state.routeLookups ?? 0) + 1;
+        if (scenario === "slack-helm-delayed-route" && state.routeLookups === 1) {
+          return finish("10.42.3.34 via 172.19.0.1 dev eth0 src 172.19.0.2\n");
+        }
+        if (scenario === "slack-helm-no-route") {
+          stderr("RTNETLINK answers: Network unreachable\n");
+          return exit(2);
+        }
+        if (scenario === "slack-helm-wrong-device") {
+          return finish("10.42.3.34 dev flannel.1 src 10.42.3.33\n");
+        }
+        if (scenario === "slack-helm-wrong-source") {
+          return finish("10.42.3.34 dev cni0 src 10.42.3.17\n");
+        }
+        if (scenario === "slack-helm-duplicate-source") {
+          return finish("10.42.3.34 dev cni0 src 10.42.3.33 src 10.42.3.35\n");
+        }
+        return finish("10.42.3.34 dev cni0 src 10.42.3.33 uid 0\n    cache\n");
+      }
       if (equals(args.slice(2), ["ip", "route", "get", "10.42.7.0"])) {
         assert.ok(node === "server-0");
         // Node readiness can precede Flannel's cross-node route. The first lookup
@@ -1030,6 +1051,15 @@ async function fakeCommand({
     }
   }
   if (command === "kubectl") {
+    if (
+      scenario?.startsWith("slack-helm-") &&
+      equals(args.slice(6, 8), ["create", "namespace"]) &&
+      args[8]?.startsWith("openclaw-ci-seccomp-")
+    ) {
+      stderr("synthetic seccomp preparation stop\n");
+      return exit(1);
+    }
+
     if (equals(args, ["version", "--client=true"])) {
       return finish("{}\n");
     }
@@ -1052,7 +1082,8 @@ async function fakeCommand({
         // refuse the first listing.
         state.nodeListings = (state.nodeListings ?? 0) + 1;
         const worker =
-          (state.agents ?? 0) > 0 && !(scenario === "late-worker" && state.nodeListings <= 2);
+          ((state.agents ?? 0) > 0 && !(scenario === "late-worker" && state.nodeListings <= 2)) ||
+          (scenario === "slack-helm-extra-node" && state.nodeListings > 1);
         commitState();
         if (scenario === "late-worker" && state.nodeListings === 1) {
           stderr("The connection to the server 127.0.0.1:6443 was refused\n");
@@ -1088,6 +1119,11 @@ async function fakeCommand({
             },
           }),
         );
+      }
+      if (
+        equals(args.slice(4), ["get", "node", "k3d-" + state.cluster + "-server-0", "-o", "json"])
+      ) {
+        return finish(JSON.stringify({ spec: { podCIDR: "10.42.3.32/28" } }));
       }
       if (
         equals(args.slice(4), ["get", "node", "k3d-" + state.cluster + "-agent-0", "-o", "json"])

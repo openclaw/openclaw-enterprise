@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readFile, rename, stat } from "node:fs/promises";
+import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { defaultK3sImage } from "../../scripts/ci/prepare.ts";
 import { prepareGatewayRouting } from "../../scripts/ci/routing.ts";
@@ -13,6 +13,8 @@ import {
   digest,
   fixtureImageCommands,
   fixturePreparationMetrics,
+  immutableImage,
+  nodeBaseImage,
   writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
@@ -428,7 +430,100 @@ export function registerFixtureBuildDeadlineCases() {
   }
 }
 
+const slackHelmFile = "tests/integration/channel-egress-helm-real.test.ts";
+const proxyCidrsKey = "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS";
+
+async function slackHelmPreparation(t: TestContext, scenario: string) {
+  const commands = await fixtureImageCommands(t, scenario, "slack", {
+    NODE_BASE_IMAGE: nodeBaseImage,
+    OPENAI_API_KEY: "synthetic-model-key",
+    OCC_TEST_OPENAI_MODEL: "synthetic-model",
+    OCC_TEST_SLACK_CHANNEL_ID: "synthetic-channel",
+    OCC_TEST_SLACK_SENDER_BOT_TOKEN: "synthetic-sender",
+    SLACK_APP_TOKEN: "synthetic-app",
+    SLACK_BOT_TOKEN: "synthetic-bot",
+    OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+    OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+    OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+    [proxyCidrsKey]: "10.0.0.0/8",
+  });
+  // Stop after the CLI creates its owned synthetic cluster and PostgreSQL
+  // server. Publish only the two prepared cluster inputs this file step needs.
+  const lane = await commands.prepare();
+  assert.equal(lane.status, 1);
+  assertStderrMatch(lane.stderr, /synthetic seccomp preparation stop/);
+  const state = await commands.readState();
+  const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
+  assert.ok(cluster && cluster.status === "ready");
+  assert.ok(
+    state.resources.some(({ kind, status }) => kind === "compose-postgres" && status === "ready"),
+  );
+  await writeFile(
+    commands.statePath,
+    JSON.stringify({
+      ...state,
+      env: {
+        OCC_TEST_KUBERNETES_KUBECONFIG: cluster.kubeconfig,
+        OCC_TEST_KUBERNETES_CONTEXT: cluster.context,
+      },
+    }),
+    { mode: 0o600 },
+  );
+  return commands;
+}
+
 export function registerClusterBootstrapCases() {
+  test("Slack Helm file preparation waits for the local Pod route and publishes one IPv4 host", async (t) => {
+    const commands = await slackHelmPreparation(t, "slack-helm-delayed-route");
+    const result = await commands.prepare(["--file", slackHelmFile]);
+    assert.equal(result.status, 0, result.stderr);
+    const published = (await readFile(commands.githubEnv, "utf8")).split("\n");
+    assert.deepEqual(
+      published.filter((line) => line.startsWith(`${proxyCidrsKey}=`)),
+      [`${proxyCidrsKey}=10.42.3.33/32`],
+    );
+    const routeReads = async () =>
+      (await commands.commands()).filter(
+        ({ args }) => args.slice(2).join(" ") === "ip route get 10.42.3.34",
+      ).length;
+    assert.equal(await routeReads(), 2);
+
+    for (const file of [
+      "tests/integration/harness-topology-k3d-slack-real.test.mjs",
+      "tests/integration/channel-egress-kubernetes-real.test.ts",
+    ]) {
+      const fileEnv = join(dirname(commands.statePath), "peer.env");
+      const peer = await commands.prepare(["--file", file, "--github-env", fileEnv]);
+      assert.equal(peer.status, 0, peer.stderr);
+      assert.doesNotMatch(await readFile(fileEnv, "utf8"), new RegExp(proxyCidrsKey));
+    }
+    assert.equal(await routeReads(), 2);
+    assert.equal((await commands.readState()).env?.[proxyCidrsKey], undefined);
+    await commands.cleanupSuccessfully();
+  });
+
+  for (const [scenario, error] of [
+    ["slack-helm-no-route", /Network unreachable/],
+    ["slack-helm-wrong-device", /route must use cni0/],
+    ["slack-helm-wrong-source", /source must be a host in the node Pod CIDR/],
+    [
+      "slack-helm-duplicate-source",
+      /Unable to determine the Slack Helm plugin status proxy source/,
+    ],
+    ["slack-helm-extra-node", /only the owned k3d server to be registered/],
+  ] as const) {
+    test(`Slack Helm file preparation rejects ${scenario} before database preparation`, async (t) => {
+      const commands = await slackHelmPreparation(t, scenario);
+      const state = await commands.readState();
+      const result = await commands.prepare(["--file", slackHelmFile]);
+      assert.equal(result.status, 1, result.stderr);
+      assertStderrMatch(result.stderr, error);
+      await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+      assert.deepEqual(await commands.readState(), state);
+      await commands.cleanupSuccessfully();
+    });
+  }
+
   test("fixture preparation rejects an unknown proxy source before publishing its environment", async (t) => {
     const commands = await fixtureImageCommands(t, "missing-proxy-source");
     const result = await commands.prepare();

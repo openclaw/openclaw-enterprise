@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, isIPv4 } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { deleteOwnedK3dCluster } from "./cleanup.ts";
@@ -66,6 +66,10 @@ export type K3dCluster = PreparationResource & {
   kubernetesVersion?: string;
   pluginStatusProxyCidrs?: string;
 };
+
+function ipv4Number(address: string) {
+  return address.split(".").reduce((number, octet) => number * 256 + Number(octet), 0);
+}
 
 const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server"]);
 
@@ -396,8 +400,9 @@ export function createK3dPreparation({
     kubectl: string,
     kubectlArgs: string[],
     node: string,
+    waitMs = k3dPodCidrWaitMs,
   ) {
-    const deadline = performance.now() + k3dPodCidrWaitMs;
+    const deadline = performance.now() + waitMs;
     for (let attempt = 1; ; attempt += 1) {
       let lastError: unknown;
       try {
@@ -419,8 +424,8 @@ export function createK3dPreparation({
       if (performance.now() >= deadline) {
         throw new Error(
           lastError
-            ? `Unable to read k3d node ${node} within ${k3dPodCidrWaitMs} ms: ${asRecord(lastError)?.message}`
-            : `k3d node ${node} got no Pod CIDR within ${k3dPodCidrWaitMs} ms.`,
+            ? `Unable to read k3d node ${node} within ${waitMs} ms: ${asRecord(lastError)?.message}`
+            : `k3d node ${node} got no Pod CIDR within ${waitMs} ms.`,
           { cause: lastError },
         );
       }
@@ -546,13 +551,122 @@ export function createK3dPreparation({
     }
   }
 
+  async function prepareSlackHelmPluginStatusProxy(
+    state: PreparationState,
+    env: Record<string, string>,
+  ) {
+    const cluster = findK3dCluster(state);
+    const node = cluster?.nodes[0];
+    if (
+      state.lane !== "slack" ||
+      !cluster ||
+      state.resources.filter(({ kind }) => kind === "k3d-cluster").length !== 1 ||
+      cluster.owner !== state.prefix ||
+      cluster.status !== "ready" ||
+      !/^openclaw-k8s-[a-z0-9-]+-[a-f0-9]{12}$/.test(cluster.name) ||
+      cluster.name.length > 32 ||
+      cluster.nodes.length !== 1 ||
+      node !== `k3d-${cluster.name}-server-0` ||
+      cluster.context !== `k3d-${cluster.name}` ||
+      !isAbsolute(cluster.directory) ||
+      !basename(cluster.directory).startsWith(`${cluster.name}-`) ||
+      cluster.kubeconfig !== join(cluster.directory, "kubeconfig") ||
+      cluster.kubeconfig !== env.OCC_TEST_KUBERNETES_KUBECONFIG ||
+      cluster.context !== env.OCC_TEST_KUBERNETES_CONTEXT
+    ) {
+      throw new Error(
+        "Slack Helm preparation requires a ready, owned single-server CI k3d cluster.",
+      );
+    }
+
+    return k3dStage(state, "k3d-slack-helm-status-proxy", async () => {
+      const kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl";
+      const kubectlArgs = ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context];
+      await validateLoopbackKubeconfig(cluster.kubeconfig, cluster.context, kubectl, 15_000);
+      const nodes = await execFile(kubectl, [...kubectlArgs, "get", "nodes", "-o", "name"], {
+        timeoutMs: 15_000,
+      });
+      if (nodes.stdout.trim() !== `node/${node}`) {
+        throw new Error(
+          "Slack Helm preparation requires only the owned k3d server to be registered.",
+        );
+      }
+
+      const podCidr = await waitForK3dNodePodCidr(
+        state.lane,
+        kubectl,
+        kubectlArgs,
+        node,
+        Math.min(k3dPodCidrWaitMs, 60_000),
+      );
+      const [network, prefix, extra] = podCidr.split("/");
+      if (
+        !network ||
+        !isIPv4(network) ||
+        !prefix ||
+        !/^(?:1[6-9]|2[0-8])$/.test(prefix) ||
+        extra !== undefined
+      ) {
+        throw new Error("The Slack Helm k3d server must have a canonical bounded IPv4 Pod CIDR.");
+      }
+      const start = ipv4Number(network);
+      const size = 2 ** (32 - Number(prefix));
+      if (start % size !== 0) {
+        throw new Error("The Slack Helm k3d server must have a canonical bounded IPv4 Pod CIDR.");
+      }
+
+      // Like occ dev up, probe a Pod address rather than the network or bridge
+      // address. The latter can report a local route instead of the Pod path.
+      const octets = network.split(".").map(Number);
+      octets[3] = octets[3]! + 2;
+      const destination = octets.join(".");
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        const route = await readPluginStatusProxyRoute(node, destination, deadline);
+        const devices = [...route.stdout.matchAll(/\bdev\s+(\S+)/g)];
+        const device = devices[0]?.[1];
+        // Until the first Pod sets up cni0, the lookup can take the default route.
+        if (devices.length === 1 && device === "eth0") {
+          await delay(500);
+          continue;
+        }
+        if (devices.length !== 1 || device !== "cni0") {
+          throw new Error("The Slack Helm plugin status proxy route must use cni0.");
+        }
+        const sources = [...route.stdout.matchAll(/\bsrc\s+(\S+)/g)];
+        const source = sources[0]?.[1];
+        if (sources.length !== 1 || !source || !isIPv4(source) || source.startsWith("127.")) {
+          throw new Error(
+            "Unable to determine the Slack Helm plugin status proxy source IPv4 address.",
+          );
+        }
+        const address = ipv4Number(source);
+        if (address <= start || address >= start + size - 1) {
+          throw new Error(
+            "The Slack Helm plugin status proxy source must be a host in the node Pod CIDR.",
+          );
+        }
+        return `${source}/32`;
+      }
+      throw new Error("Timed out waiting for the Slack Helm plugin status proxy route on cni0.");
+    });
+  }
+
+  function readPluginStatusProxyRoute(node: string, destination: string, deadline: number) {
+    return execFile(
+      process.env.OCC_DOCKER_BIN ?? "docker",
+      ["exec", node, "ip", "route", "get", destination],
+      { timeoutMs: Math.min(15_000, deadline - Date.now()) },
+    );
+  }
+
   async function waitForPluginStatusProxySource(cluster: string, destination: string) {
     const deadline = Date.now() + 120_000;
     while (Date.now() < deadline) {
-      const route = await execFile(
-        process.env.OCC_DOCKER_BIN ?? "docker",
-        ["exec", `k3d-${cluster}-server-0`, "ip", "route", "get", destination],
-        { timeoutMs: Math.min(15_000, deadline - Date.now()) },
+      const route = await readPluginStatusProxyRoute(
+        `k3d-${cluster}-server-0`,
+        destination,
+        deadline,
       );
       // These owned clusters use K3s's default Flannel VXLAN backend. Node Ready
       // can precede its cross-node route; an earlier lookup uses eth0's default
@@ -583,19 +697,24 @@ export function createK3dPreparation({
     kubeconfig: string,
     context: string,
     kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl",
+    timeoutMs?: number,
   ) {
-    const result = await execFile(kubectl, [
-      "--kubeconfig",
-      kubeconfig,
-      "--context",
-      context,
-      "config",
-      "view",
-      "--minify",
-      "--flatten",
-      "-o",
-      "json",
-    ]);
+    const result = await execFile(
+      kubectl,
+      [
+        "--kubeconfig",
+        kubeconfig,
+        "--context",
+        context,
+        "config",
+        "view",
+        "--minify",
+        "--flatten",
+        "-o",
+        "json",
+      ],
+      timeoutMs === undefined ? {} : { timeoutMs },
+    );
     const configuration: unknown = JSON.parse(result.stdout);
     const clusters = asRecord(configuration)?.clusters;
     const first: unknown = Array.isArray(clusters) ? clusters[0] : undefined;
@@ -615,5 +734,5 @@ export function createK3dPreparation({
     }
   }
 
-  return { ensureK3dCluster, k3dStage };
+  return { ensureK3dCluster, k3dStage, prepareSlackHelmPluginStatusProxy };
 }
