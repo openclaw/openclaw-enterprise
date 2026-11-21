@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-20"
-last_updated_session: "authoring-run/e16304ce-2b94-4022-a90d-9ab2e235d1d4"
+updated: 2026-11-20
+last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
 ---
 
 # Production image upgrade flow
@@ -19,7 +19,7 @@ for the explicit one-off entrypoint.
 - Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
 - Source: `scripts/upgrade-production-images`,
-  `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`,
+  `packages/occ/src/deployment-inventory.ts:readDeploymentInventory`,
   and `packages/occ/src/index.ts:OpenClawController.deployAgent`.
 
 ## Flow
@@ -112,11 +112,11 @@ Unknown assessments block rehearsal. Runtime upgrades record replacements and
 check draft images and sizes, baseline versions and Namespace readiness.
 Stopped or deleting Agents are excluded. Pending repository cleanup is allowed.
 
-`OpenClawController.deploymentInventorySnapshot` batches deployment-work reads
+`deploymentInventorySnapshot` batches deployment-work reads
 in one State snapshot and refuses missing or mismatched work. Credential
 withdrawal is distinct from deployment work. `findRevisionForBrowsing` yields
 `unknown` for unreadable snapshots and propagates database or identity errors.
-`getInstallationDeploymentInventory` gives Compute ten seconds outside State
+`readDeploymentInventory` gives Compute ten seconds outside State
 transactions, then rechecks fleet authorization and Driver selections. Drift
 refuses inventory. Owner failures yield `unknown`.
 
@@ -373,6 +373,8 @@ requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 
 - 2026-11-20 17:42: Refuse Helm credential overrides. (authoring-run/e16304ce-2b94-4022-a90d-9ab2e235d1d4 - aff441a5df9e3258752b034fb694e06333c0b231)
 

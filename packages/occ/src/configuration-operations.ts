@@ -310,6 +310,29 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     });
   }
 
+  // The Configuration an Agent save names, read from the Configuration Driver at most once and
+  // only when a check needs its values.
+  function savedConfigurationReader(
+    metadata: Pick<
+      Configuration,
+      "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
+    >,
+  ): () => Promise<Readonly<Configuration>> {
+    let read: Promise<Readonly<Configuration>> | undefined;
+    return () => {
+      read ??= (async () => {
+        const driver = deps.configurationDriver();
+        return exactConfiguration(
+          await deps.driverOperation(() =>
+            driver.read({ id: metadata.id, namespaceId: metadata.namespaceId }),
+          ),
+          metadata,
+        );
+      })();
+      return read;
+    };
+  }
+
   async function getConfigurationSecretBindingSources(
     principalId: string,
     namespaceId: string,
@@ -667,6 +690,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     authorizeConfigurationWrite,
     createConfiguration,
     getConfiguration,
+    savedConfigurationReader,
     getConfigurationSecretBindingSources,
     updateConfiguration,
     deleteConfiguration,
