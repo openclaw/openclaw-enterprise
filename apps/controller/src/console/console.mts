@@ -2038,8 +2038,10 @@ async function loadPage({
         namespaces[0]
       )?.id ??
       null;
-    replaceUrl(pageUrl(current.target));
     const selectedNamespace = namespaceId;
+    const unscopedAgent = current.namespace === null && Boolean(current.agentId);
+    // Record the history position while keeping the Agent's Namespace provisional.
+    replaceUrl(pageUrl(current.target, unscopedAgent ? null : selectedNamespace));
     const namespacePath =
       selectedNamespace === null ? null : `/namespaces/${encodeURIComponent(selectedNamespace)}`;
     const scopedNamespaceUnavailable =
@@ -2107,6 +2109,16 @@ async function loadPage({
       }
       if (!lifetime.isCurrent(active)) {
         return;
+      }
+      // Match the detail page's identity check before making the choice permanent.
+      if (
+        unscopedAgent &&
+        firstAgent &&
+        firstAgent.id === current.agentId &&
+        firstAgent.namespaceId === selectedNamespace &&
+        firstAgent.configurationId
+      ) {
+        replaceUrl(pageUrl(current.target, selectedNamespace));
       }
     }
     if (permissionsRead) {
