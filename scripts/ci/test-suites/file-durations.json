@@ -247,7 +247,7 @@
     "tests/integration/oidc-ca-trust.test.ts": 7800,
     "tests/integration/oidc-id-token.test.ts": 400,
     "tests/integration/oidc-login-transport.test.ts": 800,
-    "tests/integration/openshell-device-authorization-api.test.mjs": 1000,
+    "tests/integration/openshell-device-authorization-api.test.ts": 1000,
     "tests/integration/openshell-observed-request-hook.test.ts": 200,
     "tests/integration/password-sign-in-admission.test.ts": 2700,
     "tests/integration/password-sign-in-audit.test.ts": 3100,
