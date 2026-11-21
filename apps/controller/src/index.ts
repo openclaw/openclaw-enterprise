@@ -2853,6 +2853,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (resourceHandler) {
       await resourceHandler({
         controller,
+        resolveHarness: options.resolveHarness,
         context,
         request,
         reply,

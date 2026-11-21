@@ -1609,6 +1609,7 @@ export type {
 export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  ProtectedRepositoryNetworkPolicySaveContext,
   AgentChatCompletionsEndpoint,
   AgentChatCompletionsResolution,
   ComputeRevisionContext,

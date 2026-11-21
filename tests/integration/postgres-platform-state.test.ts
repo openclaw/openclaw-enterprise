@@ -61,11 +61,11 @@ test(
   persistPluginState,
 );
 test(
-  "memory State admits only unprotected revisions with repository network policy",
+  "memory State admits both execution modes with repository network policy",
   verifyMemoryRepositoryPolicyPersistence,
 );
 test(
-  "PostgreSQL saves repository network policy and fences scoped revision admission by execution mode",
+  "PostgreSQL saves repository network policy and binds reader markers for both execution modes",
   requiresPostgres,
   persistRepositoryNetworkPolicy,
 );

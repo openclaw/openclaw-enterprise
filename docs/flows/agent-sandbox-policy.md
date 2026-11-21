@@ -117,19 +117,17 @@ Both adapters reject removing pending applications, even at the current version.
 The worker records the expected provider resource version and settles the same
 application as `applied` or `failed`. Agent deletion cascades policy and exact IAM access removal.
 
-Migration 0086 stores versioned repository grants. GET returns the list,
-withdrawal availability and approved Namespace ceiling. PUT preserves an
-omitted list. An authorized editor with policy read access can
-[withdraw grants](../reference/sandbox-policies.md#repository-network-policy)
-after Driver loss. Live apply refuses every explicit list, including `[]`.
+The [repository policy editor](../reference/sandbox-policies.md#repository-network-policy)
+returns the saved grants and Namespace ceiling. Save the first list before
+deploying. The selected protected topology must admit a first list, including
+`[]`, or a nonempty replacement. Omission retains the list. Empty lists in both fields let an authorized
+editor with policy read access withdraw grants after Driver loss.
 
-Deployment requires an unprotected revision, approving Drivers and current
-Namespace permission. Start with a new Agent if its deployment history contains
-a revision without a repository policy. Each scoped
-revision freezes the saved policy version, grants and canonical identity.
-A reader marker prevents older Workers from decoding it. See
-`migrations/0086_repository_network_policy.sql` and
-`tests/integration/postgres-state-repository-network-policy-case.ts`.
+Deployment rechecks the selected Repo scope, proxy and Driver identities across
+asynchronous validation before accessing credentials and inserting a revision.
+Migration 0086 binds the snapshot to the exact saved policy version, grants
+and identity. Older Workers refuse its reader marker. The Worker rechecks
+the policy before dispatch. An explicit list blocks live application.
 
 ### 2. Freeze deployment or enqueue live application
 

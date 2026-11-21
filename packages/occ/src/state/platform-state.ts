@@ -3440,9 +3440,6 @@ function repositories(
       const policy = snapshot.sandboxPolicies.get(key);
       const grants = policy?.repositoryNetworkPolicy;
       const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
-      if (admittedPolicy !== undefined && revision.executionAdmission.mode !== "unprotected") {
-        throw new ScopeViolationError("Repository network policy requires unprotected execution.");
-      }
       if (
         !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
         (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)

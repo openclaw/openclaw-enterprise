@@ -1583,12 +1583,14 @@ export class OpenClawController {
     namespaceId: string,
     agentId: string,
     facet: SandboxFacet,
+    resolveHarness?: HarnessResolver,
   ) {
     return this.composition.sandboxPolicyOperations.getAgentSandboxPolicy(
       principalId,
       namespaceId,
       agentId,
       facet,
+      resolveHarness,
     );
   }
 
@@ -1617,6 +1619,7 @@ export class OpenClawController {
     expectedVersion: number,
     additions: readonly SandboxNetworkGrant[],
     repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
+    resolveHarness?: HarnessResolver,
   ): Promise<Readonly<SandboxPolicy>> {
     return this.composition.sandboxPolicyOperations.updateAgentSandboxPolicy(
       principalId,
@@ -1626,6 +1629,7 @@ export class OpenClawController {
       expectedVersion,
       additions,
       repositoryNetworkPolicy,
+      resolveHarness,
     );
   }
 
