@@ -1,3 +1,9 @@
+import type { RepositoryNetworkPolicyCeiling } from "@openclaw-enterprise/contracts";
+import {
+  delegatedRepositoryCeiling,
+  repositoryGrantAuthority,
+  type RepositoryGrantPolicy,
+} from "./repository-network-policy.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   isInstallationRepositoryProfile,
@@ -61,6 +67,7 @@ interface SelectedRepositoryPolicyOwner {
 }
 
 interface RepositoryPolicyDependencies {
+  readonly repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling;
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedRepository: () => RepositoryPolicyDriver;
   readonly selectedCompute: () => ComputeDriver;
@@ -83,13 +90,14 @@ interface RepositoryPolicyDependencies {
 
 export type InstallationRepositoryAdmission = Readonly<{
   policyMode?: "built-in";
-  policy: RepositoryPolicyDriver & {
-    listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
-    resolveBindings(input: {
-      readonly namespaceId: string;
-      readonly bindings: readonly RepositoryBindingRequest[];
-    }): RepositoryCredentialResolution;
-  };
+  policy: RepositoryPolicyDriver &
+    RepositoryGrantPolicy & {
+      listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
+      resolveBindings(input: {
+        readonly namespaceId: string;
+        readonly bindings: readonly RepositoryBindingRequest[];
+      }): RepositoryCredentialResolution;
+    };
   backendId: string;
 }>;
 
@@ -839,7 +847,19 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     };
   }
 
+  function namespaceRepositoryNetworkPolicyCeiling(
+    namespaceId: string,
+  ): RepositoryNetworkPolicyCeiling {
+    const admission = selectedStandingRepositoryAdmission();
+    const owner = admission && repositoryPermissionOwner(admission);
+    return delegatedRepositoryCeiling(
+      dependencies.repositoryNetworkPolicyCeiling,
+      repositoryGrantAuthority(namespaceId, admission?.policy, owner?.unchanged),
+    );
+  }
+
   return {
+    namespaceRepositoryNetworkPolicyCeiling,
     bindInstallation,
     hasBuiltInRepositoryPolicy,
     builtInBackendDriver,

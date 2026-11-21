@@ -730,6 +730,7 @@ export const responseExamples = {
     editingEnabled: true,
     protectedExecution: false,
     ceiling: [],
+    repositoryNetworkPolicyCeiling: [],
     repositoryNetworkPolicySaveSupported: false,
     defaults: null,
     capability: null,

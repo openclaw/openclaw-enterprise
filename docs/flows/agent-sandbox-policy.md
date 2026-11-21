@@ -122,6 +122,8 @@ and withdrawal availability to authorized readers. PUT preserves an
 omitted list. An authorized editor can [clear a saved list](../reference/sandbox-policies.md#repository-network-policy)
 after Driver support is lost. Deployment and live apply refuse explicit lists,
 including `[]`.
+The same GET shows the Installation repository grants approved by the
+selected repository policy owner for this Namespace.
 
 A revision carrying repository grants must match the saved policy version,
 grants, and canonical identity. PostgreSQL requires a reader version in its

@@ -164,6 +164,8 @@ on its OIDC gateway; these permissions are separate from OCE resource authority.
 
 ## Repository network policy
 
+Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository delegation. It accepts up to 32 unique repositories in lowercase `owner/name` form without `.git`, each with `read` or `write` access. Startup rejects invalid entries. An absent or empty ceiling delegates nothing. The policy GET returns the subset approved for this Namespace.
+
 `GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access and returns saved repository grants and withdrawal availability. An absent policy retains legacy behavior. An explicit `[]` records zero grants.
 
 PUT preserves omitted `repositoryNetworkPolicy`. To withdraw an existing policy's grants, submit `additions: []` and `repositoryNetworkPolicy: []` with `expectedVersion`, editing enabled and normal authorization. Withdrawal remains available after Driver capability loss. First saves and edits that grant access require further Driver support. Explicit policies, including `[]`, block deployment before credential provisioning and block live application. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
