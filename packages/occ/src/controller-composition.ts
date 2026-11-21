@@ -760,17 +760,7 @@ export function createControllerComposition(
   const deviceCipher = options.authenticationStateEncryptionSecret
     ? deviceAuthorizationCipher(options.authenticationStateEncryptionSecret)
     : undefined;
-  const {
-    agentCredentialAccess,
-    connectionAdministration,
-    createProxyAuthority,
-    credentialSourceDrivers,
-    credentialSourceOperations,
-    deviceAuthorization,
-    egressAdmission,
-    managedCredentialSources,
-    savedConnections,
-  } = createCredentialServices({
+  const credentials = createCredentialServices({
     installationId: admittedInstallation.id,
     stateAndAuthority,
     secretDriver: secretOperations.secretDriver,
@@ -781,6 +771,13 @@ export function createControllerComposition(
     authorizeDeviceAuthorizationScope,
     canUseNativeAuthorization: !authorization,
   });
+  const {
+    agentCredentialAccess,
+    credentialSourceDrivers,
+    credentialSourceOperations,
+    egressAdmission,
+    managedCredentialSources,
+  } = credentials;
   const readAgentAuditEvents = createAgentAuditReader({
     installationId: admittedInstallation.id,
     platformState,
@@ -1183,17 +1180,13 @@ export function createControllerComposition(
     authority,
     bindInstallationRepository,
     configurationOperations,
-    connectionAdministration,
-    createProxyAuthority,
     credentialProxyCapacity,
-    credentialSourceOperations,
+    credentials,
     deploymentRequests,
-    deviceAuthorization,
     drivers,
     getInstallationDeploymentInventory,
     iamPolicy,
     installationCapabilityQueries,
-    managedCredentialSources,
     namespaces,
     observeNamespaceLifecycle,
     pendingOperations,
@@ -1206,7 +1199,6 @@ export function createControllerComposition(
     runtimeCredentials,
     runtimeObservations,
     sandboxPolicyOperations,
-    savedConnections,
     secretOperations,
     serviceAccountOperations,
     setupDiscovery,

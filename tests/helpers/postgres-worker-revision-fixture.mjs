@@ -682,9 +682,10 @@ export function createWorkerRevisionFixtures(
       let proxyAdmission;
       if (protectedRepositoryDriver) {
         const sandbox = protectedRepositoryDriver.require("sandbox");
+        const { agentCredentialAccess, egressAdmission } = controller.composition.credentials;
         await state.transact(async (unit) => {
-          // This fixture seeds a historical snapshot from the stored binding and source.
-          const sources = await controller.agentCredentialAccess.admitCredentialSources(
+          // Validate the stored binding and source before seeding the historical revision.
+          const sources = await agentCredentialAccess.admitCredentialSources(
             unit,
             actorId,
             owner,
@@ -696,7 +697,7 @@ export function createWorkerRevisionFixtures(
           assert.deepEqual(sources, credentialSources);
           const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
           const plan = (chosen) =>
-            controller.egressAdmission.admitProxyPlan(
+            egressAdmission.admitProxyPlan(
               unit,
               owner,
               candidate.id,

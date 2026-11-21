@@ -1091,7 +1091,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
-    return this.composition.savedConnections.listUsableConnectionTemplates(
+    return this.composition.credentials.savedConnections.listUsableConnectionTemplates(
       principalId,
       namespaceId,
     );
@@ -1106,11 +1106,15 @@ export class OpenClawController {
     readonly authorizationUrl: string;
     readonly expiresAt: string;
   }> {
-    return this.composition.savedConnections.startNamespaceConnection(principalId, input, audit);
+    return this.composition.credentials.savedConnections.startNamespaceConnection(
+      principalId,
+      input,
+      audit,
+    );
   }
 
   async expireAuthenticationStates(limit: number): Promise<void> {
-    return this.composition.savedConnections.expireAuthenticationStates(limit);
+    return this.composition.credentials.savedConnections.expireAuthenticationStates(limit);
   }
 
   async completeNamespaceConnection(
@@ -1119,7 +1123,7 @@ export class OpenClawController {
     audit?: (connection: Readonly<SavedConnection>) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ): Promise<Readonly<SavedConnection>> {
-    return this.composition.savedConnections.completeNamespaceConnection(
+    return this.composition.credentials.savedConnections.completeNamespaceConnection(
       principalId,
       input,
       audit,
@@ -1131,7 +1135,10 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<SavedConnection>[]> {
-    return this.composition.savedConnections.listNamespaceConnections(principalId, namespaceId);
+    return this.composition.credentials.savedConnections.listNamespaceConnections(
+      principalId,
+      namespaceId,
+    );
   }
 
   async disconnectNamespaceConnection(
@@ -1140,7 +1147,7 @@ export class OpenClawController {
     sourceId: string,
     audit?: AuditEvent,
   ): Promise<void> {
-    return this.composition.savedConnections.disconnectNamespaceConnection(
+    return this.composition.credentials.savedConnections.disconnectNamespaceConnection(
       principalId,
       namespaceId,
       sourceId,
@@ -1149,7 +1156,10 @@ export class OpenClawController {
   }
 
   async finishConnectionRevocation(namespaceId: string, sourceId: string): Promise<void> {
-    return this.composition.savedConnections.finishConnectionRevocation(namespaceId, sourceId);
+    return this.composition.credentials.savedConnections.finishConnectionRevocation(
+      namespaceId,
+      sourceId,
+    );
   }
 
   /** Used by the installed Token Service to authenticate the original client on each renewal. */
@@ -1157,24 +1167,35 @@ export class OpenClawController {
     reference: OAuthAccountRef,
     approval?: OAuthRefreshTokenRegistration["approval"],
   ): Promise<OAuthConnectionClient> {
-    return this.composition.savedConnections.resolveConnectionClient(reference, approval);
+    return this.composition.credentials.savedConnections.resolveConnectionClient(
+      reference,
+      approval,
+    );
   }
 
   maintainConnectionToken(namespaceId: string, sourceId: string) {
-    return this.composition.savedConnections.maintainConnectionToken(namespaceId, sourceId);
+    return this.composition.credentials.savedConnections.maintainConnectionToken(
+      namespaceId,
+      sourceId,
+    );
   }
 
   async listConnectionTemplates(
     principalId: string,
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
-    return this.composition.connectionAdministration.listConnectionTemplates(principalId);
+    return this.composition.credentials.connectionAdministration.listConnectionTemplates(
+      principalId,
+    );
   }
 
   async getConnectionTemplate(
     principalId: string,
     templateId: string,
   ): Promise<Readonly<ConnectionTemplate>> {
-    return this.composition.connectionAdministration.getConnectionTemplate(principalId, templateId);
+    return this.composition.credentials.connectionAdministration.getConnectionTemplate(
+      principalId,
+      templateId,
+    );
   }
 
   async discoverConnectionTemplate(
@@ -1182,7 +1203,7 @@ export class OpenClawController {
     input: { serverUrl: string; issuer?: string },
     discover: DiscoverMcp,
   ) {
-    return this.composition.connectionAdministration.discoverConnectionTemplate(
+    return this.composition.credentials.connectionAdministration.discoverConnectionTemplate(
       principalId,
       input,
       discover,
@@ -1196,7 +1217,7 @@ export class OpenClawController {
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ): Promise<Readonly<ConnectionTemplate>> {
-    return this.composition.connectionAdministration.createConnectionTemplate(
+    return this.composition.credentials.connectionAdministration.createConnectionTemplate(
       principalId,
       input,
       discover,
@@ -1213,7 +1234,7 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.connectionAdministration.updateConnectionTemplate(
+    return this.composition.credentials.connectionAdministration.updateConnectionTemplate(
       principalId,
       id,
       input,
@@ -1229,7 +1250,7 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.connectionAdministration.deleteConnectionTemplate(
+    return this.composition.credentials.connectionAdministration.deleteConnectionTemplate(
       principalId,
       id,
       audit,
@@ -1238,7 +1259,7 @@ export class OpenClawController {
   }
 
   async listOAuthClients(principalId: string) {
-    return this.composition.connectionAdministration.listOAuthClients(principalId);
+    return this.composition.credentials.connectionAdministration.listOAuthClients(principalId);
   }
 
   async createOAuthClient(
@@ -1247,7 +1268,7 @@ export class OpenClawController {
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.connectionAdministration.createOAuthClient(
+    return this.composition.credentials.connectionAdministration.createOAuthClient(
       principalId,
       input,
       audit,
@@ -1262,7 +1283,7 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.connectionAdministration.rotateOAuthClientSecret(
+    return this.composition.credentials.connectionAdministration.rotateOAuthClientSecret(
       principalId,
       id,
       clientSecret,
@@ -1277,7 +1298,7 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.connectionAdministration.deleteOAuthClient(
+    return this.composition.credentials.connectionAdministration.deleteOAuthClient(
       principalId,
       id,
       audit,
@@ -1286,7 +1307,7 @@ export class OpenClawController {
   }
 
   async cleanupOAuthClients(): Promise<void> {
-    return this.composition.connectionAdministration.cleanupOAuthClients();
+    return this.composition.credentials.connectionAdministration.cleanupOAuthClients();
   }
 
   /** Trusted, server-side OAuth operations resolve the current value at each use. */
@@ -1294,7 +1315,7 @@ export class OpenClawController {
     client: Readonly<OAuthClient>,
     use: (secret: string | undefined) => Promise<T>,
   ): Promise<T> {
-    return this.composition.connectionAdministration.withOAuthClientSecret(client, use);
+    return this.composition.credentials.connectionAdministration.withOAuthClientSecret(client, use);
   }
 
   async listServiceAccounts(
@@ -1569,21 +1590,21 @@ export class OpenClawController {
   /** Trusted composition only: public workloads never supply an identity verifier. */
   createCredentialProxy(exchangeOwner: EgressExchangeOwner): CredentialProxy {
     return new CredentialProxy(
-      this.composition.createProxyAuthority(exchangeOwner),
+      this.composition.credentials.createProxyAuthority(exchangeOwner),
       this.composition.credentialProxyCapacity,
     );
   }
 
   /** Bind the configured adapter to the actual durable credential store before use. */
   async activateTokenServiceInstance(driverId: string, storeIdentity: string): Promise<string> {
-    return this.composition.managedCredentialSources.activateTokenServiceInstance(
+    return this.composition.credentials.managedCredentialSources.activateTokenServiceInstance(
       driverId,
       storeIdentity,
     );
   }
 
   currentTokenServiceInstanceId(): string {
-    return this.composition.managedCredentialSources.currentTokenServiceInstanceId();
+    return this.composition.credentials.managedCredentialSources.currentTokenServiceInstanceId();
   }
 
   async createManagedCredentialSource(
@@ -1595,7 +1616,7 @@ export class OpenClawController {
     },
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
-    return this.composition.managedCredentialSources.createManagedCredentialSource(
+    return this.composition.credentials.managedCredentialSources.createManagedCredentialSource(
       principalId,
       namespaceId,
       input,
@@ -1610,7 +1631,7 @@ export class OpenClawController {
     audit: (resource: CredentialSourceReference, phase?: "update_started") => AuditEvent,
     failureAudit: (reasonCode: string) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
-    return this.composition.managedCredentialSources.updateManagedCredentialSource(
+    return this.composition.credentials.managedCredentialSources.updateManagedCredentialSource(
       principalId,
       ref,
       input,
@@ -1624,7 +1645,7 @@ export class OpenClawController {
     namespaceId: string,
     credentialSourceId?: string,
   ): Promise<void> {
-    return this.composition.credentialSourceOperations.authorizeCredentialSourceWrite(
+    return this.composition.credentials.credentialSourceOperations.authorizeCredentialSourceWrite(
       principalId,
       namespaceId,
       credentialSourceId,
@@ -1637,7 +1658,7 @@ export class OpenClawController {
     audit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
     registrationAudit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
-    return this.composition.credentialSourceOperations.createCredentialSource(
+    return this.composition.credentials.credentialSourceOperations.createCredentialSource(
       principalId,
       input,
       audit,
@@ -1650,7 +1671,7 @@ export class OpenClawController {
     input: UpdateCredentialSourceInput,
     failureAudit?: (reasonCode: string) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
-    return this.composition.credentialSourceOperations.updateCredentialSource(
+    return this.composition.credentials.credentialSourceOperations.updateCredentialSource(
       principalId,
       input,
       failureAudit,
@@ -1663,7 +1684,7 @@ export class OpenClawController {
     failureAudit?: (reasonCode: string) => AuditEvent,
     audit?: AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
-    return this.composition.credentialSourceOperations.rotateCredentialSource(
+    return this.composition.credentials.credentialSourceOperations.rotateCredentialSource(
       principalId,
       input,
       failureAudit,
@@ -1676,7 +1697,7 @@ export class OpenClawController {
     namespaceId: string,
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
-    return this.composition.credentialSourceOperations.readCredentialSource(
+    return this.composition.credentials.credentialSourceOperations.readCredentialSource(
       principalId,
       namespaceId,
       credentialSourceId,
@@ -1687,7 +1708,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<CredentialSourceMetadata>[]> {
-    return this.composition.credentialSourceOperations.listCredentialSources(
+    return this.composition.credentials.credentialSourceOperations.listCredentialSources(
       principalId,
       namespaceId,
     );
@@ -1700,7 +1721,7 @@ export class OpenClawController {
     audit?: (removedAccessBindings: readonly RemovedAccessBinding[]) => AuditEvent,
     connection?: typeof PENDING_CONNECTION,
   ): Promise<void> {
-    return this.composition.managedCredentialSources.deleteCredentialSource(
+    return this.composition.credentials.managedCredentialSources.deleteCredentialSource(
       principalId,
       namespaceId,
       credentialSourceId,
@@ -1715,7 +1736,7 @@ export class OpenClawController {
     credentialSourceId: string,
     audit: (removed: readonly RemovedAccessBinding[], phase?: "retirement_started") => AuditEvent,
   ): Promise<void> {
-    return this.composition.managedCredentialSources.deleteManagedCredentialSource(
+    return this.composition.credentials.managedCredentialSources.deleteManagedCredentialSource(
       principalId,
       namespaceId,
       credentialSourceId,
@@ -1878,7 +1899,7 @@ export class OpenClawController {
     agentId?: string,
     audit?: DeviceAuthorizationAudit,
   ) {
-    return this.composition.deviceAuthorization.start(
+    return this.composition.credentials.deviceAuthorization.start(
       principalId,
       namespaceId,
       harnessId,
@@ -1893,7 +1914,12 @@ export class OpenClawController {
     sessionId: string,
     agentId?: string,
   ) {
-    return this.composition.deviceAuthorization.poll(principalId, namespaceId, sessionId, agentId);
+    return this.composition.credentials.deviceAuthorization.poll(
+      principalId,
+      namespaceId,
+      sessionId,
+      agentId,
+    );
   }
 
   async cancelAgentDeviceAuthorization(
@@ -1902,7 +1928,7 @@ export class OpenClawController {
     sessionId: string,
     agentId?: string,
   ): Promise<void> {
-    return this.composition.deviceAuthorization.cancel(
+    return this.composition.credentials.deviceAuthorization.cancel(
       principalId,
       namespaceId,
       sessionId,
