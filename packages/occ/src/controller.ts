@@ -78,7 +78,6 @@ import type {
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
   AccessBinding,
-  AuthorizationRequest,
   AgentChatCompletionsResolution,
   Configuration,
   SavedConnection,
@@ -96,7 +95,6 @@ import type {
   AuditEvent,
   Driver,
   DriverCapability,
-  IAMDriver,
   Installation,
   InstallationCapabilities,
   InstallationDeploymentInventory,
@@ -135,12 +133,6 @@ import {
 } from "./agent-drafts.ts";
 import { type DriverFor } from "./driver-registry.ts";
 import { type LookupChannelDirectoryInput } from "./setup-discovery.ts";
-import {
-  AgentDeletingError,
-  NamespaceNotReadyError,
-  NotImplementedError,
-  ScopeViolationError,
-} from "./errors.ts";
 import { type AgentCredentialSourceInput } from "./agent-credential-withdrawal.ts";
 import { type HarnessResolver } from "./agent-harness-topology.ts";
 import type { RuntimeLogPage, RuntimeLogQuery } from "./runtime-logs/index.ts";
@@ -149,10 +141,8 @@ import { type UpdateManagedCredentialSourceInput } from "./managed-credential-so
 import type { AgentAuditSelection } from "./ports/agent-audit.ts";
 import {
   type AuthorityFence,
-  type AuthorizationTarget,
   type AuthorizationSnapshot as DeployAgentAuthorization,
 } from "./controller-authority.ts";
-import { exactNamespace } from "./resource-scope.ts";
 
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { DeploymentStatusResult } from "./controller-work.ts";
@@ -189,13 +179,7 @@ export class OpenClawController {
   private readonly composition: ControllerComposition;
 
   constructor(installation: Installation, options: ControllerOptions = {}) {
-    this.composition = createControllerComposition(
-      installation,
-      options,
-      this,
-      (principalId, namespaceId, agentId) =>
-        this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId),
-    );
+    this.composition = createControllerComposition(installation, options, this);
     this.installation = this.composition.installation;
   }
 
@@ -984,12 +968,12 @@ export class OpenClawController {
    * sign-out or account disable cannot commit in between (#2311).
    */
   withAuthorityFence<T>(fence: AuthorityFence, work: () => Promise<T>): Promise<T> {
-    return this.composition.authority.withAuthorityFence(fence, work);
+    return this.composition.withAuthorityFence(fence, work);
   }
 
   /** Attach the server-generated HTTP request ID to any work this operation queues. */
   withRequestAuditId<T>(requestId: string, work: () => Promise<T>): Promise<T> {
-    return this.composition.workRecorder.withRequestAuditId(requestId, work);
+    return this.composition.withRequestAuditId(requestId, work);
   }
 
   /**
@@ -1410,41 +1394,6 @@ export class OpenClawController {
       namespaceId,
       configurationId,
     );
-  }
-
-  private async authorizeDeviceAuthorizationScope(
-    principalId: string,
-    namespaceId: string,
-    agentId?: string,
-  ): Promise<void> {
-    if (agentId === undefined) {
-      await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
-    } else {
-      const resource = { kind: "agent" as const, id: agentId, namespaceId };
-      await this.authorize(principalId, "read", resource);
-      await this.authorize(principalId, "update", resource);
-    }
-    await this.composition.transactions.read(async (state) => {
-      const namespace = await exactNamespace(state, namespaceId);
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      if (agentId !== undefined) {
-        const agent = await state.agents.findAgent(namespaceId, agentId);
-        if (agent === undefined) {
-          throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
-        }
-        if (agent.status !== "active") {
-          throw new AgentDeletingError();
-        }
-        if (agent.executionMode !== "dedicated") {
-          throw new NotImplementedError(
-            "agent_device_authorization",
-            "Device login requires a dedicated Agent.",
-          );
-        }
-      }
-    });
   }
 
   async startAgentDeviceAuthorization(
@@ -1928,15 +1877,5 @@ export class OpenClawController {
 
   pendingOperations(): readonly Readonly<ReconciliationOperation>[] {
     return this.composition.pendingOperations();
-  }
-
-  private authorize(
-    principalId: string,
-    action: AuthorizationRequest["action"],
-    target: AuthorizationTarget,
-    selected?: IAMDriver,
-    authorize?: IAMDriver["authorize"],
-  ): Promise<Readonly<DeployAgentAuthorization>> {
-    return this.composition.authority.authorize(principalId, action, target, selected, authorize);
   }
 }
