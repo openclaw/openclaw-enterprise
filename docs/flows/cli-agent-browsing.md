@@ -82,7 +82,7 @@ configuration only when they were recorded, without inventing defaults. Summarie
 have no `configurationReadError`. For revision detail, `revisionForBrowsingFromRow`
 returns that typed error with metadata when either Harness settings object is
 missing; it does not expose the incomplete saved payload.
-`packages/occ/src/index.ts:listRevisions` adds each version's
+`packages/occ/src/agent-queries.ts:listRevisions` adds each version's
 `deploymentStatus` and `deploymentErrorCode` from its deployment work record in
 the same read, so a version or Agent with unreadable saved settings keeps its
 status. A version without a deployment work record has `null` for both.

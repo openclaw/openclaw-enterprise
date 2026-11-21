@@ -569,7 +569,12 @@ async function buildRuntimeImages(
     if (cacheWarm) {
       await warmImageBuildCache(role, args, requireCacheExport, progress);
     } else {
-      const result = await laneImageCommand(role, args);
+      const result = await laneImageCommand(
+        role,
+        args,
+        imageBuildBudgetMs(),
+        sourceRoot === repositoryRoot ? "current-build" : "baseline-build",
+      );
       imageCacheObservation(state.lane, role, "load", result.stderr, progress);
     }
   };
@@ -894,7 +899,7 @@ const { ensurePostgresServer, createAndMigrateDatabase } = createPostgresPrepara
   repositoryRoot,
   preparationJournal,
 );
-const { ensureK3dCluster, k3dStage } = createK3dPreparation({
+const { ensureK3dCluster, k3dStage, prepareSlackHelmPluginStatusProxy } = createK3dPreparation({
   ...preparationJournal,
   progress,
   fixtureLanes,
@@ -2287,6 +2292,13 @@ async function prepareFileWithState({
   const effectiveState = state ?? baseState(name, resolvedStatePath);
   const env = baseEnv(resolvedStatePath, effectiveState);
   const resourceIds: string[] = [];
+
+  if (name === "slack" && relativeFile === "tests/integration/channel-egress-helm-real.test.ts") {
+    env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS = await prepareSlackHelmPluginStatusProxy(
+      effectiveState,
+      env,
+    );
+  }
 
   if (name === "production-tui" && state) {
     const inputs = effectiveLaneEnv(name);

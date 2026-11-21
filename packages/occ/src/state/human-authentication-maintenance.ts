@@ -4,7 +4,7 @@ import {
   PostgresHumanAuthentication,
   type HumanAuthenticationActivationHooks,
 } from "./human-authentication.ts";
-import type { PlatformUnitOfWork } from "./platform-state.ts";
+import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import type { PostgresPlatformState } from "./postgres-state.ts";
 
 /** Another client backend connected to the database during stopped maintenance. */

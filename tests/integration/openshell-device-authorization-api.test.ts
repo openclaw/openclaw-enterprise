@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import {
+  AgentDeviceAuthorizationResponse,
+  CredentialSourceListResponse,
+  CredentialSourceResponse,
+  ErrorResponse,
+} from "../../packages/contracts/src/index.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import type {
+  OpenShellGatewayClient,
+  OpenShellProviderResponse,
+  OpenShellRefreshStatus,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -9,40 +21,47 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { unconfiguredGateway } from "../helpers/openshell-gateway-client.ts";
 import { DEVICE_LOGIN_FAILED } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 
-function jwt(payload) {
+function jwt(payload: Record<string, unknown>) {
   return `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;
 }
 
 test("Console device login completes through the paired OpenShell Refresh Driver without exposing its grant", async (t) => {
   const clock = createControlledClock();
-  const logs = [];
+  const logs: unknown[] = [];
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
     destination: jsonLineDestination(logs),
   });
-  const providers = new Map();
-  const operations = [];
+  const providers = new Map<string, OpenShellProviderResponse>();
+  const operations: string[] = [];
   const expirationTime = new Date(Date.now() + 3_600_000).toISOString();
   const initialAccess = jwt({ exp: Math.floor(Date.parse(expirationTime) / 1000) });
   const initialRefresh = "synthetic-device-refresh-private";
   const managedAccess = "synthetic-managed-access-private";
-  let status;
+  let status: OpenShellRefreshStatus | undefined;
   // Only issuer HTTP and OpenShell transport are simulated. Fastify, IAM, OCC,
   // both production Drivers, response parsing, handoff, and session fencing are real.
   // This checks orchestration/custody; the real-gateway lane proves actual minting.
-  const client = {
-    async getProviderProfile() {},
+  const client: OpenShellGatewayClient = {
+    ...unconfiguredGateway,
+    async getProviderProfile() {
+      return undefined;
+    },
     async importProviderProfile() {},
     async createProvider(input) {
       operations.push("register");
       assert.deepEqual(input.credentials, {});
-      providers.set(input.name, { ...input, config: {}, resourceVersion: "1" });
+      const { name, workspace, type, labels } = input;
+      const provider = { name, workspace, type, labels, config: {}, resourceVersion: "1" };
+      providers.set(name, provider);
+      return provider;
     },
     async getProvider(_workspace, name) {
       return providers.get(name);
@@ -63,7 +82,9 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     },
     async updateProviderConfig(_workspace, name, config) {
       operations.push("metadata");
-      const provider = { ...providers.get(name), config, resourceVersion: "2" };
+      const existing = providers.get(name);
+      assert.ok(existing);
+      const provider = { ...existing, config, resourceVersion: "2" };
       providers.set(name, provider);
       return provider;
     },
@@ -91,12 +112,11 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     async deleteProviderProfile() {
       operations.push("removeProfile");
     },
-    close() {},
   };
   const backend = createOpenShellBackend(
     {
       id: "openshell",
-      implementation: "openshell",
+      type: "openshell",
       configuration: { endpoint: "https://fixture.invalid:443" },
       drivers: {
         sandbox: "openshell-sandbox",
@@ -119,7 +139,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     async resolveSandboxNamespace(namespace) {
       return { ...namespace, name: "oauth-api-fixture" };
     },
-  });
+  } satisfies Pick<typeof compute, "ensureNamespace" | "resolveSandboxNamespace">);
   const fixture = await createConsoleAppFixture(t, {
     computeDriver: compute,
     logger,
@@ -127,25 +147,28 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("OAuth API proof", { ready: true });
+  const controller: unknown = fixture.controller;
+  assert.ok(controller instanceof OpenClawController);
   for (const driver of [gateway, refresh]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
+    controller.registerDriver(driver);
+    controller.selectDriver(driver.capability, driver.id);
   }
   const originalFetch = globalThis.fetch;
   let exchanges = 0;
   let polls = 0;
   let loseExchangeResponse = false;
-  let startFailure;
-  const pollFailures = [
+  let startFailure: Response | Error | undefined;
+  const pollFailures: (Response | Error)[] = [
     new Response(null, { status: 429 }),
     new Response(null, { status: 503 }),
     new TypeError("synthetic polling connection failure"),
   ];
-  t.mock.method(globalThis, "fetch", async (url, init) => {
+  const mockFetch: typeof fetch = async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
     if (new URL(url).hostname === "127.0.0.1") {
-      return originalFetch(url, init);
+      return originalFetch(input, init);
     }
-    assert.equal(init.method, "POST");
+    assert.equal(init?.method, "POST");
     if (url === "https://auth.openai.com/api/accounts/deviceauth/usercode") {
       if (startFailure instanceof Error) {
         throw startFailure;
@@ -174,7 +197,9 @@ test("Console device login completes through the paired OpenShell Refresh Driver
       });
     }
     assert.equal(url, "https://auth.openai.com/oauth/token");
-    assert.equal(new URLSearchParams(init.body).get("grant_type"), "authorization_code");
+    const body = init?.body;
+    assert.ok(typeof body === "string" || body instanceof URLSearchParams);
+    assert.equal(new URLSearchParams(body).get("grant_type"), "authorization_code");
     exchanges += 1;
     if (loseExchangeResponse) {
       // The issuer may already have consumed its code; this result must not be replayed.
@@ -190,60 +215,75 @@ test("Console device login completes through the paired OpenShell Refresh Driver
         },
       }),
     });
-  });
+  };
+  t.mock.method(globalThis, "fetch", mockFetch);
   const path = `/namespaces/${namespace.id}/agents/device-authorizations`;
-  const started = await fixture.request("POST", path, { body: { harnessId: "codex" } });
-  assert.equal(started.status, 200, JSON.stringify(started.body));
-  assert.equal(started.data.status, "pending");
+  const startLogin = () => fixture.request("POST", path, { body: { harnessId: "codex" } });
+  const pollLogin = (id: string) => fixture.request("POST", `${path}/${id}/poll`, { body: {} });
+  const loginData = (response: Awaited<ReturnType<typeof startLogin>>) =>
+    fixture.fixtureResponse(response, 200, AgentDeviceAuthorizationResponse, "device login").data;
+  const sourcesPath = `/namespaces/${namespace.id}/credential-sources`;
+
+  const started = await startLogin();
+  const login = loginData(started);
+  assert.equal(login.status, "pending");
   assert.deepEqual(
     operations,
     ["register"],
     "a device source has no refresh grant at registration",
   );
   assert.equal(exchanges, 0);
-  const pendingSources = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/credential-sources`,
-  );
-  const pendingSource = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/credential-sources/${pendingSources.data[0].id}`,
-  );
-  assert.equal(pendingSource.status, 200, JSON.stringify(pendingSource.body));
-  assert.equal(pendingSource.data.status.refresh.state, "pending");
-  assert.equal(pendingSource.data.status.refresh.recoveryAction, undefined);
+  const listSources = () => fixture.request("GET", sourcesPath);
+  const sourceList = (response: Awaited<ReturnType<typeof listSources>>) =>
+    fixture.fixtureResponse(response, 200, CredentialSourceListResponse, "list credential sources")
+      .data;
+  const [registeredSource] = sourceList(await listSources());
+  assert.ok(registeredSource);
+  const pendingSource = fixture.fixtureResponse(
+    await fixture.request("GET", `${sourcesPath}/${registeredSource.id}`),
+    200,
+    CredentialSourceResponse,
+    "read pending credential source",
+  ).data;
+  const pendingRefresh = pendingSource.status?.refresh;
+  assert.ok(pendingRefresh);
+  assert.equal(pendingRefresh.state, "pending");
+  assert.equal(pendingRefresh.recoveryAction, undefined);
   assert.deepEqual(operations, ["register"], "reading a pending source must not configure or mint");
-  const pollPath = `${path}/${started.data.session.id}/poll`;
+  const loginId = login.session.id;
   // These failures precede authorization-code acquisition. Preserve the same login and
   // source, with OCC's existing interval fence, until the issuer can answer.
   const failedPolls = pollFailures.length;
   for (let attempt = 0; attempt < failedPolls; attempt += 1) {
     await clock.advance(5000);
-    const pending = await fixture.request("POST", pollPath, { body: {} });
-    assert.equal(pending.status, 200, JSON.stringify(pending.body));
-    assert.equal(pending.data.status, "pending");
-    assert.equal(pending.data.session.id, started.data.session.id);
+    const pending = loginData(await pollLogin(loginId));
+    assert.equal(pending.status, "pending");
+    assert.equal(pending.session.id, loginId);
     assert.equal(polls, attempt + 1);
     assert.equal(exchanges, 0, "retryable polling must not redeem an authorization code");
     assert.deepEqual(operations, ["register"], "polling must not configure or mint");
     const observedPolls = polls;
-    assert.equal((await fixture.request("POST", pollPath, { body: {} })).data.status, "pending");
+    assert.equal(loginData(await pollLogin(loginId)).status, "pending");
     assert.equal(polls, observedPolls, "OCC still throttles repeated polls");
   }
   await clock.advance(5000);
-  const completed = await fixture.request("POST", pollPath, { body: {} });
-  assert.equal(completed.status, 200, JSON.stringify(completed.body));
-  assert.equal(completed.data.status, "ready");
+  const completed = await pollLogin(loginId);
+  const ready = loginData(completed);
+  assert.equal(ready.status, "ready");
   assert.equal(exchanges, 1);
   assert.equal(operations.filter((operation) => operation === "configure").length, 1);
   assert.equal(operations.filter((operation) => operation === "rotate").length, 1);
   const settled = [...operations];
-  assert.equal((await fixture.request("POST", pollPath, { body: {} })).data.status, "ready");
+  assert.equal(loginData(await pollLogin(loginId)).status, "ready");
   assert.deepEqual(operations, settled, "re-polling a completed session must not reseed or mint");
-  const source = completed.data.source;
-  const sources = await fixture.request("GET", `/namespaces/${namespace.id}/credential-sources`);
-  assert.equal(sources.data.length, 1);
-  assert.equal(sources.data[0].id, source.id);
+  const { source } = ready;
+  assert.ok(source);
+  const sources = await listSources();
+  const listedSources = sourceList(sources);
+  assert.deepEqual(
+    listedSources.map(({ id }) => id),
+    [source.id],
+  );
   const agent = await fixture.createAgent(
     namespace.id,
     "OAuth Agent",
@@ -254,6 +294,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
       credentialSources: [{ sourceId: source.id }],
     },
   );
+  assert.equal(agent.harnessAuth?.method, "credential_source");
   assert.equal(agent.harnessAuth.sourceId, source.id);
   const updated = await fixture.request(
     "PATCH",
@@ -262,32 +303,38 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   );
   assert.equal(updated.status, 409, JSON.stringify(updated.body));
   assert.deepEqual(operations, settled);
-  const sessionRecord = await fixture.controller.transact((unit) =>
-    unit.authenticationStates.findDevice(namespace.id, started.data.session.id),
+  const session = await controller.transact((unit) =>
+    unit.authenticationStates.findDevice(namespace.id, loginId),
   );
-  assert.ok(sessionRecord);
-  const session = sessionRecord;
+  assert.ok(session);
   assert.equal(session.credentialGatewayId, gateway.id);
   assert.equal(session.credentialRefreshId, refresh.id);
   assert.equal(session.privateState, undefined);
   // A transport failure after the token POST is a different boundary: cancel the
   // new login, erase its private state, and never redeem its code a second time.
   loseExchangeResponse = true;
-  const interrupted = await fixture.request("POST", path, { body: { harnessId: "codex" } });
-  assert.equal(interrupted.status, 200);
+  const interruptedId = loginData(await startLogin()).session.id;
   await clock.advance(5000);
-  const interruptedPath = `${path}/${interrupted.data.session.id}/poll`;
-  const failed = await fixture.request("POST", interruptedPath, { body: {} });
-  assert.equal(failed.status, 503, JSON.stringify(failed.body));
+  const failed = await pollLogin(interruptedId);
+  const failedBody = fixture.fixtureResponse(
+    failed,
+    503,
+    ErrorResponse,
+    "redeem authorization code",
+  );
   // The 503 says the login was cancelled and to start a new one (finding 2536).
-  assert.equal(failed.body.error.message, DEVICE_LOGIN_FAILED);
+  assert.equal(failedBody.error.message, DEVICE_LOGIN_FAILED);
   // The text sends the caller to an operator. The API's 503 record for this request names the
   // Refresh Driver's failure by class (and code, when it has one), never by its message.
-  const record = logs.find(
-    (line) =>
-      line.event === "http.dependency_unavailable" && line.requestId === failed.body.meta.requestId,
-  );
-  assert.equal(record?.errorClass, "RetryLaterError", JSON.stringify(record));
+  const record = logs
+    .map(requireLogRecord)
+    .find(
+      (line) =>
+        line.event === "http.dependency_unavailable" &&
+        line.requestId === failedBody.meta.requestId,
+    );
+  assert.ok(record);
+  assert.equal(record.errorClass, "RetryLaterError", JSON.stringify(record));
   assert.deepEqual(record.causes, [{ errorClass: "TypeError" }]);
   assert.equal(JSON.stringify(logs).includes("synthetic lost token-exchange response"), false);
   assert.equal(exchanges, 2);
@@ -297,20 +344,18 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     ["read", "namespace"],
   ]);
   const readerSession = await fixture.signIn(reader.credentials);
-  const sessionId = interrupted.data.session.id;
   await assertSameAnswer(
     (id) => fixture.request("POST", `${path}/${id}/poll`, { session: readerSession, body: {} }),
-    [sessionId, `${sessionId.slice(0, sessionId.indexOf("_"))}_${randomUUID()}`],
+    [interruptedId, `${interruptedId.slice(0, interruptedId.indexOf("_"))}_${randomUUID()}`],
   );
   assert.equal(exchanges, 2);
-  const failedRecord = await fixture.controller.transact((unit) =>
-    unit.authenticationStates.findDevice(namespace.id, interrupted.data.session.id),
+  const failedSession = await controller.transact((unit) =>
+    unit.authenticationStates.findDevice(namespace.id, interruptedId),
   );
-  assert.ok(failedRecord);
-  const failedSession = failedRecord;
+  assert.ok(failedSession);
   assert.equal(failedSession.phase, "cancelled");
   assert.equal(failedSession.privateState, undefined);
-  assert.equal((await fixture.request("POST", interruptedPath, { body: {} })).status, 409);
+  assert.equal((await pollLogin(interruptedId)).status, 409);
   assert.equal(exchanges, 2, "an uncertain token exchange is never replayed");
   const publicAndStored = JSON.stringify([
     started.body,
@@ -341,67 +386,66 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   const connectionCause = Object.assign(new Error(`connect refused ${privateText}`), {
     code: "ECONNREFUSED",
   });
-  const failures = [
+  const failures: [Response | Error, "unreachable" | "unavailable", string][] = [
     [new TypeError("fetch failed", { cause: connectionCause }), "unreachable", "ECONNREFUSED"],
     [new DOMException(privateText, "TimeoutError"), "unreachable", "TimeoutError"],
     [new DOMException(privateText, "AbortError"), "unavailable", "AbortError"],
     [Response.json({ error: privateText }, { status: 503 }), "unavailable", "HTTP_503"],
     [new Response(privateText), "unavailable", "invalid_response"],
   ];
+  const startWarnings = () =>
+    logs.map(requireLogRecord).filter((line) => line.event === "device_authorization.start_failed");
   for (const [failure, reason, failureClass] of failures) {
     startFailure = failure;
-    const warningsBefore = logs.filter(
-      (line) => line.event === "device_authorization.start_failed",
-    ).length;
-    const rejected = await fixture.request("POST", path, { body: { harnessId: "codex" } });
-    assert.equal(rejected.status, 503, JSON.stringify(rejected.body));
-    assert.equal(rejected.body.error.code, "DEPENDENCY_UNAVAILABLE");
+    const warningsBefore = startWarnings().length;
+    const rejected = fixture.fixtureResponse(await startLogin(), 503, ErrorResponse, "start login");
+    assert.equal(rejected.error.code, "DEPENDENCY_UNAVAILABLE");
     if (reason === "unreachable") {
       assert.match(
-        rejected.body.error.message,
+        rejected.error.message,
         /auth\.openai\.com.*HTTPS egress.*API Pods.*api\.modelDiscoveryCidrs/,
       );
     } else {
-      assert.equal(rejected.body.error.message, "Device login could not start. Try again.");
+      assert.equal(rejected.error.message, "Device login could not start. Try again.");
     }
-    const warnings = logs.filter((line) => line.event === "device_authorization.start_failed");
+    const warnings = startWarnings();
     assert.equal(warnings.length, warningsBefore + 1);
-    assert.deepEqual(
-      {
-        severity: warnings.at(-1).severity,
-        boundary: warnings.at(-1).boundary,
-        reason: warnings.at(-1).reason,
-        failure: warnings.at(-1).failure,
-      },
-      { severity: "WARN", boundary: "credential_refresh", reason, failure: failureClass },
-    );
-    assert.equal(JSON.stringify([rejected.body, logs]).includes(privateText), false);
+    const warning = warnings.at(-1);
+    assert.ok(warning);
+    assert.partialDeepStrictEqual(warning, {
+      severity: "WARN",
+      boundary: "credential_refresh",
+      reason,
+      failure: failureClass,
+    });
+    assert.equal(JSON.stringify([rejected, logs]).includes(privateText), false);
   }
   assert.equal(exchanges, 2, "failed starts must never acquire or redeem an authorization code");
 
   const createCleanupSource = async () => {
-    const created = await fixture.request(
-      "POST",
-      `/namespaces/${namespace.id}/credential-sources`,
-      {
-        body: { name: "Abandoned device login", type: "codex-oauth" },
-      },
-    );
-    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const created = await fixture.request("POST", sourcesPath, {
+      body: { name: "Abandoned device login", type: "codex-oauth" },
+    });
+    const { id } = fixture.fixtureResponse(
+      created,
+      201,
+      CredentialSourceResponse,
+      "register abandoned credential source",
+    ).data;
     const provider = [...providers.values()].find(
-      (candidate) => candidate.labels["openclaw.dev/credential-source-id"] === created.data.id,
+      (candidate) => candidate.labels["openclaw.dev/credential-source-id"] === id,
     );
     assert.ok(provider);
     // The registration fence must not obscure the provider ownership check or successful cleanup.
     await clock.advance(71_000);
     return {
       provider,
-      path: `/namespaces/${namespace.id}/credential-sources/${created.data.id}`,
+      path: `${sourcesPath}/${id}`,
     };
   };
   // Simulate out-of-band replacement in OpenShell. Ordinary OCE sources cannot select these
   // names. Both real Drivers must refuse shared-authority mutations before sending an RPC.
-  for (const replacement of [
+  const replacements: ((provider: OpenShellProviderResponse) => OpenShellProviderResponse)[] = [
     (provider) => ({
       ...provider,
       labels: { ...provider.labels, "app.kubernetes.io/managed-by": "other" },
@@ -411,7 +455,8 @@ test("Console device login completes through the paired OpenShell Refresh Driver
       labels: { ...provider.labels, "openclaw.dev/credential-source-id": "other-source" },
     }),
     (provider) => ({ ...provider, type: "other-profile" }),
-  ]) {
+  ];
+  for (const replacement of replacements) {
     const source = await createCleanupSource();
     const foreign = replacement(source.provider);
     providers.set(source.provider.name, foreign);

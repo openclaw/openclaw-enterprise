@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { IncomingMessage } from "node:http";
 import { createServer, get as httpsGet } from "node:https";
 import { checkServerIdentity } from "node:tls";
@@ -44,6 +44,24 @@ export async function startSkipperPrivateGitOrigin({
   }
   if (!approvalRef.startsWith("refs/heads/") || approvalRef === "refs/heads/main") {
     throw new Error("approvalRef must be a nondefault branch");
+  }
+  // Signal 0 probes the group selector without delivering a signal. PID 1
+  // would produce the broadcast selector, so leave that case to normal startup.
+  if (process.platform !== "win32" && process.pid > 1) {
+    try {
+      process.kill(-process.pid, 0);
+    } catch (error) {
+      if (error.code === "EPERM") {
+        throw new Error(
+          "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.",
+          { cause: error },
+        );
+      }
+      // The runner need not be a process-group leader.
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
   }
   await run("git", ["check-ref-format", approvalRef]);
   const issuedNetwork = networkAcl === "issued";
@@ -95,6 +113,8 @@ export async function startSkipperPrivateGitOrigin({
     }
   };
   const issuedGit = witnessIssuedGit === true ? new Map() : undefined;
+  /** @type {(readonly [number, string])[]} */
+  const issuedFingerprints = [];
   let server;
   let closing;
   let heldDiscovery;
@@ -205,10 +225,15 @@ export async function startSkipperPrivateGitOrigin({
       };
     }
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    let shortenNextToken = false;
     const authority = createTokenAuthority({
       clock: { wallNow: Date.now },
       publicKey,
-      lifetimeMs: 3600000,
+      lifetimeMs() {
+        const lifetime = shortenNextToken ? 750_000 : 3_600_000;
+        shortenNextToken = false;
+        return lifetime;
+      },
       repositoryId,
       ...(issuedNetwork && {
         expectedRepositoryIds: repositoryScopes.map((scope) => scope.repositoryId),
@@ -423,6 +448,15 @@ export async function startSkipperPrivateGitOrigin({
           }
           if (issuedGit && !closing) {
             issuedGit.set(authority.tokenIndex(`Bearer ${issued.token}`), issued.token);
+          }
+          if (issuedNetwork) {
+            const basicPayload = Buffer.from(`x-access-token:${issued.token}`).toString("base64");
+            for (const value of [issued.token, basicPayload]) {
+              issuedFingerprints.push([
+                Buffer.byteLength(value),
+                createHash("sha256").update(value).digest("hex"),
+              ]);
+            }
           }
           reply(201, {
             token: issued.token,
@@ -702,6 +736,16 @@ export async function startSkipperPrivateGitOrigin({
       ...(networkAcl && {
         network: {
           token: broadToken,
+          shortenNextTokenForRenewal() {
+            assert.ok(issuedNetwork && !shortenNextToken);
+            shortenNextToken = true;
+          },
+          issuedCredentialFingerprints() {
+            assert.ok(issuedNetwork);
+            return issuedFingerprints.map(
+              ([length, digest]) => /** @type {const} */ ([length, digest]),
+            );
+          },
           requests: () => networkRequests.map((entry) => ({ ...entry })),
           /** @param {string} name */
           pullRequest: (name) => structuredClone(scopedPulls.get(name)),

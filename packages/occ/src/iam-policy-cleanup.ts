@@ -5,7 +5,8 @@ import type {
   ResourceKind,
   Restriction,
 } from "@openclaw-enterprise/contracts";
-import type { PlatformReadView, PlatformUnitOfWork } from "./state/platform-state.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
+import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 
 /** An AccessBinding removed as a side effect, as recorded in the audit of the removal. */
 export interface RemovedAccessBinding {

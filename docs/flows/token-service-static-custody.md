@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-21
-last_updated_session: authoring-run/6d2fe358-5f9b-4753-9132-92f28c31fe5c
+last_updated_session: authoring-run/16cfa409-7c14-4f52-9167-3e897f919125
 ---
 
 # Managed static credential source custody flow
@@ -21,8 +21,8 @@ ends at Source retirement; Agent revision delivery remains unavailable.
   write-only `secret`; `GET` or `PATCH` the exact Source, list the Namespace's
   Sources, or `DELETE` the exact Source.
 - Source: `apps/controller/src/http/credential-sources.ts:credentialSourceHandlers`
-- Source: `packages/occ/src/index.ts:createManagedCredentialSource`
-- Source: `packages/occ/src/index.ts:deleteCredentialSource`
+- Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
+- Source: `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 - Permissions: `credential_source:create` on the Namespace Source collection;
   exact `credential_source:read`, `update`, or `delete` for the corresponding
   operation. Listing requires Namespace `read` and filters by exact Source `read`.
@@ -65,7 +65,8 @@ Driver does not transfer custody.
 ### 2. Register the Source
 
 `apps/controller/src/http/credential-sources.ts:createCredentialSource`,
-`packages/occ/src/index.ts:createManagedCredentialSource`
+`packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`,
+`apps/controller/src/drivers/token-service/occ.ts:registerSource`
 
 The route distinguishes the validated managed request by singular `secret`.
 OCC authorizes `credential_source:create`, locks the Namespace, and commits a
@@ -83,9 +84,9 @@ references, responses, logs, or audit details.
 
 ### 3. Observe or update the Source
 
-`packages/occ/src/index.ts:credentialSourceUpdateIdentity`,
-`packages/occ/src/index.ts:readCredentialSource`,
-`packages/occ/src/index.ts:updateManagedCredentialSource`
+`packages/occ/src/credential-source-operations.ts:credentialSourceUpdateIdentity`,
+`packages/occ/src/credential-source-operations.ts:readCredentialSource`,
+`packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`
 
 A managed exact GET returns sanitized metadata and record state; it does not
 resolve a credential or claim live credential readiness. The list returns only
@@ -109,8 +110,9 @@ fixed platform messages before they can reach responses, logs, or audit.
 
 ### 4. Retire the Source
 
-`packages/occ/src/index.ts:deleteCredentialSource`,
-`packages/occ/src/index.ts:retireCredentialSourceMaterial`
+`packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`,
+`packages/occ/src/managed-credential-sources.ts:retireCredentialSourceMaterial`,
+`apps/controller/src/drivers/token-service/occ.ts:removeSource`
 
 OCC authorizes exact `credential_source:delete` and locks the Namespace and Source.
 A missing Source returns `404` before OCC selects an owner. OCC rejects blocking
@@ -128,7 +130,7 @@ mutations receive attributable authorization-denial audit without material.
 
 ### 5. Stop at the Agent delivery boundary
 
-`packages/occ/src/index.ts:authorizeAgentCredentialSources`
+`packages/occ/src/agent-credential-access.ts:authorizeAgentCredentialSources`
 
 An authorized Agent draft can bind a ready managed Source for Harness
 authentication. Deployment refuses the Source before it saves an Agent revision
@@ -157,6 +159,8 @@ Kubernetes Secret storage, runtime delivery, or model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 11:45: Point the public static Source lifecycle to its extracted Manager and Driver modules. (authoring-run/16cfa409-7c14-4f52-9167-3e897f919125 - 7533013d1061c433e27883818cf69f955239c43f)
 
 - 2026-11-21 08:07: Focus the flow on the static custody lifecycle. (authoring-run/e7385b8d-4142-4c92-a621-97ae799ade24 - bd0cc5d3436f0882fbea9d1e0d647ac49ecf4a56)
 

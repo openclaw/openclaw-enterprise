@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-10
-last_updated_session: authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Agent Presets flow
@@ -22,7 +22,7 @@ and Agent through existing APIs. This flow stops at the draft; deployment follow
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`.
 - [Preset routes](../../packages/contracts/src/api/routes.ts): authenticated
   collection and exact-resource operations in a Namespace.
-- [OCC Preset methods](../../packages/occ/src/index.ts): `createPreset`,
+- [OCC Preset methods](../../packages/occ/src/preset-operations.ts): `createPreset`,
   `updatePreset`, `listPresets`, `getPreset`, and `deletePreset` own lifecycle.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
@@ -279,7 +279,7 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 ### 5. Hand off to deployment
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 The saved Agent has a new identity and no Preset reference. Variable inputs are
 not stored as a separate map. Rendered values are ordinary Agent/Configuration
@@ -318,6 +318,7 @@ or an immutable saved version.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-10 23:35: Explain real-token Preset launch validation and deferred Gateway password references. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
 
 - 2026-11-05 21:30: Explain the non-text primary refusal and retained chooser recovery. (authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7 - 516f7563fffa2e2d3f626cbe21a81367281ba1a1)
