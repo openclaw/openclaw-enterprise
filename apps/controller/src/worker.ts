@@ -642,6 +642,12 @@ class ScopedDeploymentRefusal extends RepositoryCredentialAuthorityError {
   }
 }
 
+function repositoryFailure(error: RepositoryCredentialAuthorityError): RevisionDispatchResult {
+  return error instanceof ScopedDeploymentRefusal
+    ? error.result
+    : { outcome: "permanent", code: error.code };
+}
+
 type RuntimeSuccessor =
   | { readonly kind: "none" }
   | { readonly kind: "blocked" }
@@ -1545,7 +1551,11 @@ export class ControllerWorker {
             this.compute.verifyRepositoryExecution?.(revision, signal) ??
             Promise.resolve(undefined),
         ),
-      authorize: (claim, revision) => this.assertRepositoryAuthority(claim, revision),
+      authorize: async (claim, revision) => {
+        await this.assertRepositoryAuthority(claim, revision);
+        // From here the lifecycle may inspect a live execution or open a session.
+        this.untouchedCandidate = undefined;
+      },
       effect: (claim, operation) => this.withClaimHeartbeat(claim, operation),
     });
   }
@@ -2024,6 +2034,22 @@ export class ControllerWorker {
     return decision;
   }
 
+  private requireDeploymentAuthorization(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    denied: RevisionDispatchResult | undefined,
+  ): void {
+    if (denied === undefined) {
+      return;
+    }
+    if (isScopedDeployment(claim, revision)) {
+      throw new ScopedDeploymentRefusal(
+        this.untouchedCandidate === claim ? { ...denied, candidateNotStarted: true } : denied,
+      );
+    }
+    throw new RepositoryCredentialAuthorityError(denied.code);
+  }
+
   private async fenceScopedDeployment(
     unit: PlatformUnitOfWork,
     claim: ClaimedWork,
@@ -2040,12 +2066,11 @@ export class ControllerWorker {
     ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_REVISION_STOPPED");
     }
-    const denied = await this.authorizeDeploymentActor(claim, agent, revision, "reconcile");
-    if (denied !== undefined) {
-      throw new ScopedDeploymentRefusal(
-        this.untouchedCandidate === claim ? { ...denied, candidateNotStarted: true } : denied,
-      );
-    }
+    this.requireDeploymentAuthorization(
+      claim,
+      revision,
+      await this.authorizeDeploymentActor(claim, agent, revision, "reconcile"),
+    );
     return agent;
   }
 
@@ -2253,10 +2278,11 @@ export class ControllerWorker {
     ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_REVISION_SUPERSEDED");
     }
-    const denied = await this.authorizeRevision(claim, agent, revision, "reconcile");
-    if (denied !== undefined) {
-      throw new RepositoryCredentialAuthorityError(denied.code);
-    }
+    this.requireDeploymentAuthorization(
+      claim,
+      revision,
+      await this.authorizeRevision(claim, agent, revision, "reconcile"),
+    );
     const backend = await this.resolveRevisionBackend(revision);
     if (backend !== undefined) {
       throw new RepositoryCredentialAuthorityError(backend.code);
@@ -2469,7 +2495,6 @@ export class ControllerWorker {
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
     let prepared = context;
     if (revision.repositoryCredentials !== undefined) {
-      this.untouchedCandidate = undefined;
       const repositoryCredentials = await this.repositoryCredentials.prepare(claim, revision);
       prepared = {
         ...context,
@@ -5279,8 +5304,8 @@ export class ControllerWorker {
         ({ result, logFields: failureLogFields } = error.pending());
       } else {
         const dependencyFailure = revisionDependencyFailure(error);
-        if (error instanceof ScopedDeploymentRefusal) {
-          result = error.result;
+        if (error instanceof RepositoryCredentialAuthorityError) {
+          result = repositoryFailure(error);
         } else if (error instanceof ComputePreparationFailedError) {
           result = {
             outcome: "permanent",
@@ -5293,7 +5318,6 @@ export class ControllerWorker {
           // could not authenticate retries within the attempt budget first (finding 1694).
           result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
-          error instanceof RepositoryCredentialAuthorityError ||
           // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
           // can never enroll, so it fails now instead of at the convergence deadline.
           error instanceof RepositoryGitSenderUnqualifiedError ||
@@ -6601,7 +6625,7 @@ export class ControllerWorker {
           throw error;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
-          resolved = { outcome: "permanent", code: error.code };
+          resolved = repositoryFailure(error);
         } else {
           resolved = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
           // Say why the check failed, as a failure in dispatch does (finding 2272).
@@ -6862,9 +6886,7 @@ export class ControllerWorker {
         if (error instanceof RepositoryCredentialAuthorityError) {
           await this.finalizeRevision(
             claim,
-            error instanceof ScopedDeploymentRefusal
-              ? error.result
-              : { outcome: "permanent", code: error.code },
+            repositoryFailure(error),
             computeCleanupLogFields(error),
           );
           return;
@@ -7455,7 +7477,7 @@ export class ControllerWorker {
           throw error;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
-          await this.finalizeRevision(claim, { outcome: "permanent", code: error.code });
+          await this.finalizeRevision(claim, repositoryFailure(error));
           return;
         }
         throw error;

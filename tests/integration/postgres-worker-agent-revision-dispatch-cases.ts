@@ -1034,6 +1034,8 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
   for (const boundary of [
     "binding",
     "preparation",
+    "repository credential preparation",
+    "repository credential preparation after binding",
     "activation before commit",
     "activation after commit",
   ] as const) {
@@ -1041,9 +1043,17 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
       `a current claim refuses revoked policy authority before ${boundary}`,
       requiresPostgres,
       async (context) => {
-        const fixture = await setup(context, { leaseDurationMs: 60_000 });
+        const repository = boundary.startsWith("repository credential")
+          ? repositoryBoundary()
+          : undefined;
+        const withoutBinding = boundary === "repository credential preparation";
+        const untouched = boundary === "binding" || withoutBinding;
+        const fixture = await setup(context, {
+          leaseDurationMs: 60_000,
+          ...(repository ? { repoDriver: repository.driver } : {}),
+        });
         const owner = await fixture.agent("policy-revocation-during-validation", {
-          executionMode: "dedicated",
+          executionMode: repository ? "embedded" : "dedicated",
         });
         const { id: policyId, options } = await saveRepositoryPolicy(fixture, owner, []);
         const previous = await fixture.revision(owner, 1, options);
@@ -1053,26 +1063,42 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         });
         await fixture.work(previous, "succeeded");
         await fixture.stop();
-        const candidate = await fixture.revision(owner, 2, options);
+        const candidate = await fixture.revision(owner, 2, {
+          ...options,
+          ...(repository ? { repositoryCredentials: repository.snapshot } : {}),
+        });
         const resume = Promise.withResolvers<void>();
         let blocked = false;
         const calls: string[] = [];
         const afterCommit = boundary === "activation after commit";
-        const expected =
-          boundary === "binding" ? [] : boundary === "preparation" ? ["bind"] : ["bind", "prepare"];
+        const expected = untouched
+          ? []
+          : repository || boundary === "preparation"
+            ? ["bind"]
+            : ["bind", "prepare"];
         await fixture.start({
-          ...fixture.compute,
+          ...(repository
+            ? repositoryCompute(fixture.compute, options.sandboxDriverId)
+            : fixture.compute),
           maintenanceIntervalMs: 3_600_000,
           activationOrder: afterCommit ? "afterCommit" : "beforeCommit",
           validateProtectedRepositoryNetworkPolicy() {
-            if (!blocked && calls.length === expected.length) {
+            if (
+              !blocked &&
+              calls.length === expected.length &&
+              (!repository || currentComputeAbortSignal() !== undefined)
+            ) {
               blocked = true;
               return resume.promise;
             }
           },
-          async bindAgent() {
-            calls.push("bind");
-          },
+          ...(withoutBinding
+            ? {}
+            : {
+                async bindAgent() {
+                  calls.push("bind");
+                },
+              }),
           async prepareRevision(revision, ctx) {
             calls.push("prepare");
             return fixture.compute.prepareRevision(revision, ctx);
@@ -1103,6 +1129,9 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           (await fixture.currentAgent(owner))?.activeRevisionId,
           afterCommit ? candidate.id : previous.id,
         );
+        if (repository) {
+          assert.deepEqual(repository.calls, []);
+        }
         const queue = new PostgresWorkQueue(fixture.observerPool);
         const attempt = await queue.findWorkAttempt(candidate.idempotencyKey);
         const denied = await fixture.observerPool.query<{ authorization: unknown }>(
@@ -1113,7 +1142,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         assert.deepEqual(
           { untouched: attempt?.candidateNotStarted, authorizations: denied.rows },
           {
-            untouched: boundary === "binding" ? true : undefined,
+            untouched: untouched ? true : undefined,
             authorizations: [
               {
                 authorization: {
@@ -1135,9 +1164,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           const repair = await settledRevision(fixture, { id: previous.id, idempotencyKey: key });
           assert.equal(
             repair.reasonCode,
-            boundary === "binding"
-              ? "REVISION_ALREADY_ACTIVE"
-              : "SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE",
+            untouched ? "REVISION_ALREADY_ACTIVE" : "SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE",
           );
         }
       },
