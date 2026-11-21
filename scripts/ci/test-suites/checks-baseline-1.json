@@ -31,9 +31,11 @@
     "tests/conformance/occ-runtime-logs-security.test.ts",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
+    "tests/integration/installation-preflight-render.test.ts",
     "tests/conformance/kubernetes-secret-driver.test.ts",
     "tests/docs/docs-site.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/external-sandbox-registration.test.ts",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
@@ -59,7 +61,7 @@
     "tests/integration/device-authorization-denial-audit.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.ts",
-    "tests/integration/git-hooks.test.mjs",
+    "tests/integration/git-hooks.test.ts",
     "tests/integration/profile-renderer.test.ts",
     "tests/integration/production-keycloak-profile.test.ts",
     "tests/integration/database-snapshot-ordering.test.ts",
@@ -273,6 +275,13 @@
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
+    },
+    {
+      "path": "tests/conformance/external-sandbox-registration.test.ts",
+      "expectedTests": [
+        "production startup selects an installed external Sandbox package",
+        "production startup refuses malformed installed Sandbox declarations"
+      ]
     },
     {
       "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"
@@ -495,6 +504,10 @@
       "path": "tests/integration/installation-change-preflight.test.mjs"
     },
     {
+      "path": "tests/integration/installation-preflight-render.test.ts",
+      "expectedTests": ["a separate database deployment requires current history only on upgrade"]
+    },
+    {
       "path": "tests/integration/console-api.test.ts"
     },
     {
@@ -510,7 +523,7 @@
       "path": "tests/integration/driver-plugin-installation.test.ts"
     },
     {
-      "path": "tests/integration/git-hooks.test.mjs"
+      "path": "tests/integration/git-hooks.test.ts"
     },
     {
       "path": "tests/integration/occ-api.test.mjs"

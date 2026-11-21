@@ -68,10 +68,11 @@ export function registerManagedStartupNativeReplacementCases(): void {
       return line;
     };
     const launchBootstrap = () => {
+      // Insert the checkout's bootstrap path last: the checkout can live under /sandbox.
       const program = bootstrapLine()
-        .replaceAll("/opt/oce/runtime/openshell-bootstrap.cjs", bootstrap)
         .replaceAll("/sandbox", root)
-        .replaceAll("/opt/oce/managed/private", runtimeRoot);
+        .replaceAll("/opt/oce/managed/private", runtimeRoot)
+        .replaceAll("/opt/oce/runtime/openshell-bootstrap.cjs", bootstrap);
       const cache = currentRequest().spec.environment.NODE_COMPILE_CACHE;
       assert.ok(cache);
       const environment: NodeJS.ProcessEnv = {

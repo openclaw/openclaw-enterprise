@@ -9,7 +9,7 @@ import { Check } from "typebox/value";
 import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { run as runCommand } from "../fixtures/repository-credentials/process.ts";
-import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
+import { prepareObservabilityNativeRepository } from "./observability-native-repository.ts";
 import { createObservabilityCollector } from "./production-observability-collector.ts";
 import { installProductionHelmControlPlane } from "./production-helm-real.ts";
 import {
@@ -64,6 +64,8 @@ const nativeRepositoryValues = Type.Object({
   publicCaSecretName: Type.String(),
   upstreamCidrs: Type.Array(Type.String()),
 });
+
+export type NativeRepositoryValues = Static<typeof nativeRepositoryValues>;
 
 type HarnessConfiguration = OpenClawConfigurationDocument & {
   agents: { defaults: OpenClawConfigurationDocument };
@@ -283,9 +285,9 @@ export async function installObservabilityControlPlane(
       modelProvider: { protocol: "openai-responses", baseUrl: "https://model.stub.invalid/v1" },
     });
   }
-  let repositoryCredentials: Static<typeof nativeRepositoryValues> | undefined;
+  let repositoryCredentials: NativeRepositoryValues | undefined;
   if (nativeRepository) {
-    const prepared: unknown = await prepareObservabilityNativeRepository({
+    const prepared = await prepareObservabilityNativeRepository({
       configuration,
       system,
       release,

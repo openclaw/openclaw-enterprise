@@ -56,6 +56,8 @@ export function openShellRequiredEnv(
         "tests/integration/openshell-refresh-real.test.ts",
         "tests/integration/openshell-withdrawal-real.test.ts",
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+        "tests/integration/openshell-git-retention-real.test.ts",
+        "tests/integration/openshell-git-finite-removal-real.test.ts",
         "tests/integration/local-first-agent-openshell-real.test.mjs",
         "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
         "tests/integration/dev-up-openshell-k3d-real.test.mjs",

@@ -811,15 +811,7 @@ func (app *application) agentCommand() *cobra.Command {
 				if err := revisionIDArg.check(retainedHarnessRevision, namespace); err != nil {
 					return err
 				}
-				previous, err := client.GetAgentRevision(namespace, args[0], retainedHarnessRevision)
-				if err != nil {
-					return err
-				}
-				record, ok := previous.(map[string]any)
-				if !ok {
-					return fmt.Errorf("the selected revision is unavailable")
-				}
-				overrides, err = retainedHarnessOverrides(client, namespace, args[0], record, command.ErrOrStderr())
+				overrides, err = readRetainedHarnessOverrides(client, namespace, args[0], retainedHarnessRevision, command.ErrOrStderr())
 				if err != nil {
 					return err
 				}
@@ -919,14 +911,29 @@ func (app *application) agentCommand() *cobra.Command {
 		}
 		return cmd
 	}
+	var checkRetainedHarnessOverrides bool
 	revision := &cobra.Command{
 		Use:   "revision AGENT_ID REVISION_ID",
 		Short: "Read one exact Agent revision and its saved settings",
 		Args:  idArgs(agentIDArg, revisionIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if checkRetainedHarnessOverrides && app.output != "json" {
+				return fmt.Errorf("--check-retain-harness-overrides requires --output json")
+			}
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
+			}
+			if checkRetainedHarnessOverrides {
+				if _, err := readRetainedHarnessOverrides(client, namespace, args[0], args[1], io.Discard); err != nil {
+					return err
+				}
+				return app.printStructured(map[string]any{
+					"id":                        args[1],
+					"namespaceId":               namespace,
+					"agentId":                   args[0],
+					"canRetainHarnessOverrides": true,
+				})
 			}
 			value, err := client.GetAgentRevision(namespace, args[0], args[1])
 			if err != nil {
@@ -940,6 +947,8 @@ func (app *application) agentCommand() *cobra.Command {
 			})
 		},
 	}
+	revision.Flags().BoolVar(&checkRetainedHarnessOverrides, "check-retain-harness-overrides", false, "Check whether the exact revision's requested Harness overrides can be retained")
+	_ = revision.Flags().MarkHidden("check-retain-harness-overrides")
 	var revisionLimit int
 	var revisionCursor string
 	revisions := &cobra.Command{
@@ -1109,7 +1118,7 @@ func (app *application) agentCommand() *cobra.Command {
 	return command
 }
 
-// retainedHarnessOverrides returns the Harness overrides that an exact revision
+// readRetainedHarnessOverrides reads the Harness overrides that an exact revision
 // requested. OCC returns a revision whose saved settings it cannot decode with a
 // read error instead of its settings. That happens for a revision saved before
 // OCC recorded Harness settings, but also for other invalid or legacy saved
@@ -1117,7 +1126,18 @@ func (app *application) agentCommand() *cobra.Command {
 // revision summary is not decoded as strictly and carries the overrides only
 // when OCC recorded them: retain those, and retain none only when none were
 // recorded.
-func retainedHarnessOverrides(client *occclient.Client, namespace, agentID string, record map[string]any, notices io.Writer) (map[string]any, error) {
+func readRetainedHarnessOverrides(client *occclient.Client, namespace, agentID, revisionID string, notices io.Writer) (map[string]any, error) {
+	previous, err := client.GetAgentRevision(namespace, agentID, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	record, ok := previous.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("the selected revision is unavailable")
+	}
+	if !matchesRevisionIdentity(record, namespace, agentID, revisionID) {
+		return nil, fmt.Errorf("OCC returned a revision that does not match the requested revision, Namespace, and Agent")
+	}
 	harness, ok := record["harness"].(map[string]any)
 	if ok {
 		overrides, ok := harness["overrides"].(map[string]any)
@@ -1132,7 +1152,6 @@ func retainedHarnessOverrides(client *occclient.Client, namespace, agentID strin
 	}
 	code, _ := readError["code"].(string)
 	field, _ := readError["field"].(string)
-	revisionID, _ := record["id"].(string)
 	number, _ := record["revision"].(float64)
 	summary, err := revisionSummary(client, namespace, agentID, revisionID, number)
 	if err != nil {
@@ -1155,6 +1174,10 @@ func retainedHarnessOverrides(client *occclient.Client, namespace, agentID strin
 	return overrides, nil
 }
 
+func matchesRevisionIdentity(record map[string]any, namespace, agentID, revisionID string) bool {
+	return record["id"] == revisionID && record["namespaceId"] == namespace && record["agentId"] == agentID
+}
+
 // revisionSummary finds one revision in the Agent's revision list, newest first.
 // It stops below the revision's number, or returns nil when the list does not
 // include it.
@@ -1168,6 +1191,9 @@ func revisionSummary(client *occclient.Client, namespace, agentID, revisionID st
 		for _, item := range page.Revisions {
 			summary, _ := item.(map[string]any)
 			if summary["id"] == revisionID {
+				if !matchesRevisionIdentity(summary, namespace, agentID, revisionID) {
+					return nil, fmt.Errorf("OCC returned a revision summary that does not match the requested Namespace and Agent")
+				}
 				return summary, nil
 			}
 			if listed, ok := summary["revision"].(float64); ok && number > 0 && listed < number {

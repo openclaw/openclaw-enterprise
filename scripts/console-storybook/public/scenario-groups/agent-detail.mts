@@ -552,7 +552,8 @@ export function createAgentDetailScenarios({
           "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
         steps: [
           "Enter prn_person-demo as the existing Principal ID.",
-          "Review the native-access disclosure, acknowledge it, and share.",
+          "Review the native-access disclosure and acknowledge it.",
+          "Tab to Share Agent, press Enter once, and confirm focus remains on Share Agent when Agent access is shared.",
           "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
         ],
       },
@@ -2264,7 +2265,7 @@ export function createAgentDetailScenarios({
         gap: "The failure is simulated; this story does not verify a live deployment.",
       },
       // Finding 2537: these codes read "Deployment reconciliation failed." and got the generic logs
-      // advice. Messages copy deploymentErrorMessage in packages/occ/src/state/controller-work.ts.
+      // advice. Messages copy deploymentErrorMessage in packages/occ/src/deployment-work-status.ts.
       deploymentFailedAdmissionUnavailable: {
         group: "Pages/Agent detail",
         name: "New version failed, protected admission changed",
@@ -3142,9 +3143,9 @@ export function createAgentDetailScenarios({
         ],
         description: "The Console retries one temporary Configuration read failure on tab return.",
         steps: [
-          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit and scroll until the page header is out of view.",
-          "Switch to another browser tab and return. After one second, Still checking… appears at the bottom of the viewport while the draft is hidden. The delayed retry restores the draft, selection, focus, and scroll without selecting Retry, and the status disappears.",
-          "Repeat at 390 px wide. The status fits the viewport and does not block navigation. Reset the story to repeat the delayed retry.",
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit, select text in the editor, and scroll until the page header is out of view.",
+          "Switch to another browser tab and return. When Still checking… appears at the bottom of the viewport and the draft is hidden, switch away again. Let the delayed retry finish while the preview tab is hidden.",
+          "Return to the preview. After the next access check succeeds, confirm the status disappears and the editor regains focus with the unsaved draft, selection, and scroll position intact. Type without clicking the editor to verify that only the selected text changes. Reset the story and repeat at 390 px wide. Confirm the status fits the viewport and navigation remains available.",
         ],
       },
       configurationReadUnavailableOnRefocus: {
