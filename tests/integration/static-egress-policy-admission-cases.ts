@@ -4,19 +4,19 @@ import type { ProxyRevisionContext } from "../../packages/contracts/src/index.ts
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { staticEgressFixture as staticEgressFixtureJs } from "../helpers/static-egress.mjs";
+import * as fixtures from "../helpers/static-egress.mjs";
 
 type ConsoleAppFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 export type ConsoleOptions = NonNullable<Parameters<typeof createConsoleAppFixture>[1]>;
-type ConsoleResponse = Omit<Awaited<ReturnType<ConsoleAppFixture["request"]>>, "body" | "data"> & {
-  body: unknown;
-  data: unknown;
+export type ConsoleFixture = Pick<ConsoleAppFixture, "createNamespace" | "createConfiguration"> & {
+  principal: Pick<ConsoleAppFixture["principal"], "id">;
+  readonly controller: OpenClawController | undefined;
+  bootstrap: () => Promise<unknown>;
+  request: (
+    ...args: Parameters<ConsoleAppFixture["request"]>
+  ) => Promise<{ status: number; body: unknown; data: unknown }>;
 };
-export type ConsoleFixture = Omit<ConsoleAppFixture, "controller" | "request"> & {
-  controller: OpenClawController;
-  request: (...args: Parameters<ConsoleAppFixture["request"]>) => Promise<ConsoleResponse>;
-};
-type JsFixture = Awaited<ReturnType<typeof staticEgressFixtureJs>>;
+type JsFixture = Awaited<ReturnType<typeof fixtures.staticEgressFixture>>;
 type JsDeployedFixture = Extract<JsFixture, { fixtureKind: "deployed" }>;
 type JsUndeployedFixture = Extract<JsFixture, { fixtureKind: "undeployed" }>;
 type DeployedFixture = Pick<
@@ -27,7 +27,6 @@ type DeployedFixture = Pick<
   | "attachment"
   | "egress"
   | "installation"
-  | "observed"
   | "providerRequests"
   | "secretReads"
   | "sandboxDriver"
@@ -37,6 +36,7 @@ type DeployedFixture = Pick<
   | "permitRequest"
 > & {
   controller: OpenClawController;
+  observed: unknown;
   revision: unknown;
   context: unknown;
   providers: ReadonlyMap<string, unknown>;
@@ -55,17 +55,17 @@ type AppFactory = (
   options?: ConsoleOptions,
   transportDatabaseUrl?: string,
 ) => Promise<ConsoleFixture>;
-interface StaticEgressFactory {
-  (
+interface EgressFixtures {
+  staticEgressFixture(
     context: TestContext,
-    options: { admitRevision: false; appFactory: AppFactory },
+    options: { admitRevision: false; appFactory?: AppFactory | undefined },
   ): Promise<UndeployedFixture>;
-  (
+  staticEgressFixture(
     context: TestContext,
     options?: { admitRevision?: true; recordInstallation?: boolean; inertProviderRule?: boolean },
   ): Promise<DeployedFixture>;
 }
-export const staticEgressFixture: StaticEgressFactory = staticEgressFixtureJs;
+export const { staticEgressFixture }: EgressFixtures = fixtures;
 
 export async function deployedContext(f: DeployedFixture): Promise<ProxyRevisionContext> {
   const fixture = asRecord(f);
