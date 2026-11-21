@@ -202,7 +202,9 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
     await t.test(name, () => {
       const { servers, diagnostics, appServerStarts } = runCodexEntrypoint({
         env: providerEnv,
-        ...options,
+        login: options.login,
+        probe: options.probe,
+        http: undefined,
       });
       assertHarnessDiagnostics(diagnostics);
       assertCodexHeldFailure(
@@ -275,7 +277,9 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
       env: providerEnv,
       probe: failedProbe("stream error: model unavailable"),
     });
-    const { handler } = servers.find((server) => server.listening !== undefined);
+    const listening = servers.find((server) => server.listening !== undefined);
+    assert.ok(listening);
+    const { handler } = listening;
     for (const url of ["//", "//:99999"]) {
       const refused = call(handler, { url });
       assert.equal(refused.status, 401, url);
@@ -305,7 +309,9 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
       },
       probe: failedProbe("stream error: model unavailable"),
     });
-    const { handler } = servers.find((server) => server.listening !== undefined);
+    const listening = servers.find((server) => server.listening !== undefined);
+    assert.ok(listening);
+    const { handler } = listening;
     const answer = call(handler, { url: "//" });
     assert.equal(answer.status, 400);
     assert.deepEqual(answer.body, badRequest);
@@ -392,10 +398,12 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     assert.ok(held?.real);
     const real = held.real;
     t.after(() => close(real));
-    await new Promise((resolve) =>
-      held.real.listening ? resolve() : held.real.once("listening", resolve),
-    );
-    const heldPort = held.real.address().port;
+    if (!real.listening) {
+      await new Promise((resolve) => real.once("listening", resolve));
+    }
+    const address = real.address();
+    assert.ok(address !== null && typeof address !== "string");
+    const heldPort = address.port;
     // The request line carries "//" verbatim; HTTP clients would normalize it.
     const raw = await new Promise((resolve, reject) => {
       const socket = connect(heldPort, "127.0.0.1");
