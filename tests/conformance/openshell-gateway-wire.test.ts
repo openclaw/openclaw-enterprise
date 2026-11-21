@@ -11,6 +11,7 @@ import { registerCancellationCases } from "./openshell-gateway-wire-cancellation
 import { registerLogsCases } from "./openshell-gateway-wire-logs-cases.ts";
 import { registerCredentialsCases } from "./openshell-gateway-wire-credentials-cases.ts";
 import { registerWorkloadCases } from "./openshell-gateway-wire-workload-cases.ts";
+import { registerOidcCases } from "./openshell-gateway-wire-oidc-cases.ts";
 
 registerPolicyCases();
 registerExecCases();
@@ -24,5 +25,6 @@ registerCancellationCases();
 registerLogsCases();
 registerCredentialsCases();
 registerWorkloadCases();
+registerOidcCases();
 
 registerManagedWorkloadCases();

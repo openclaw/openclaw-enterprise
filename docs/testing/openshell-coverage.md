@@ -6,7 +6,7 @@ last_verified: "2026-11-04"
 
 # What the OpenShell Sandbox suite proves
 
-Use [OpenShell tests](openshell.md#openshell-sandbox) to run the files in
+Use [OpenShell tests](openshell.md#openshell) to run the files in
 [advisory coverage](ci/qa-advisory.md#openshell-file-coverage). They share
 [workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs).
 Unless stated otherwise, checks use the default Codex scenario.

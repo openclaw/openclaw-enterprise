@@ -90,7 +90,7 @@ A registration write can finish after deletion starts. To prevent that late writ
 
 ## Debugging and Verification
 
-Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_GATEWAY_MISMATCH`, `HARNESS_AUTH_SOURCE_UNAVAILABLE`, and `CREDENTIAL_WITHDRAWN` identify a changed selection, unavailable source, or withdrawal. [API](../../tests/integration/credential-source-api.test.mjs), [worker](../../tests/integration/postgres-worker-agent-revision.test.mjs), and [controlled staged wire](../../tests/conformance/openshell-staged-credential-proxy.test.ts) coverage have different dependency boundaries. The staged fixture does not prove Worker integration, admission, Sandbox composition, or a live model request. Use the [OpenShell testing guide](../testing/openshell.md#openshell-sandbox) for runtime proof.
+Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_GATEWAY_MISMATCH`, `HARNESS_AUTH_SOURCE_UNAVAILABLE`, and `CREDENTIAL_WITHDRAWN` identify a changed selection, unavailable source, or withdrawal. [API](../../tests/integration/credential-source-api.test.mjs), [worker](../../tests/integration/postgres-worker-agent-revision.test.mjs), and [controlled staged wire](../../tests/conformance/openshell-staged-credential-proxy.test.ts) coverage have different dependency boundaries. The staged fixture does not prove Worker integration, admission, Sandbox composition, or a live model request. Use the [OpenShell testing guide](../testing/openshell.md#openshell) for runtime proof.
 
 ## Related docs
 

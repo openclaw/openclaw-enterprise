@@ -100,7 +100,7 @@ export function createManagedWorkloadExec(
     assert.equal(selected.name, sandboxName);
     assert.equal(selected.workspace, workspace);
 
-    const metadata = await openShellGatewayGrpcMetadata(grpc, backend.auth);
+    const metadata = await openShellGatewayGrpcMetadata(grpc, backend.auth, undefined);
     // This is the supplier's durable *launch* admission ID, not its later egress
     // request ID. Commit uncertainty before sending, never retry or reattach.
     const requestId = randomUUID();

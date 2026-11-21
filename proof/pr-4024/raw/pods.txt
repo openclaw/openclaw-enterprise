@@ -1,0 +1,21 @@
+NAMESPACE              NAME                                                              READY   STATUS      RESTARTS   AGE    IP           NODE                          NOMINATED NODE   READINESS GATES
+agent-sandbox-system   agent-sandbox-controller-7c86956786-p8knc                         1/1     Running     0          25m    10.42.0.19   k3d-occ-dev-oc4024-server-0   <none>           <none>
+cert-manager           cert-manager-657ff9587-4x52s                                      1/1     Running     0          29m    10.42.0.5    k3d-occ-dev-oc4024-server-0   <none>           <none>
+cert-manager           cert-manager-cainjector-584c8dd69-jsjkn                           1/1     Running     0          29m    10.42.0.4    k3d-occ-dev-oc4024-server-0   <none>           <none>
+cert-manager           cert-manager-webhook-667f786bd8-bbcbl                             1/1     Running     0          29m    10.42.0.6    k3d-occ-dev-oc4024-server-0   <none>           <none>
+envoy-gateway-system   envoy-gateway-66dd5d5b99-pr2zk                                    1/1     Running     0          28m    10.42.0.13   k3d-occ-dev-oc4024-server-0   <none>           <none>
+envoy-gateway-system   envoy-oc4024-system-openclaw-enterprise-agent-gateways-7d8pwgvj   2/2     Running     0          24m    10.42.0.27   k3d-occ-dev-oc4024-server-0   <none>           <none>
+kube-system            coredns-54996dc9b4-5td6s                                          1/1     Running     0          29m    10.42.0.8    k3d-occ-dev-oc4024-server-0   <none>           <none>
+kube-system            helm-install-traefik-crd-qw6hq                                    0/1     Completed   0          29m    10.42.0.2    k3d-occ-dev-oc4024-server-0   <none>           <none>
+kube-system            helm-install-traefik-slv78                                        0/1     Completed   0          29m    10.42.0.3    k3d-occ-dev-oc4024-server-0   <none>           <none>
+kube-system            local-path-provisioner-77b9867795-hjnth                           1/1     Running     0          29m    10.42.0.7    k3d-occ-dev-oc4024-server-0   <none>           <none>
+kube-system            metrics-server-6dc596dfb8-dhvt7                                   1/1     Running     0          29m    10.42.0.9    k3d-occ-dev-oc4024-server-0   <none>           <none>
+kube-system            svclb-traefik-dd60d44e-r5w4s                                      2/2     Running     0          29m    10.42.0.11   k3d-occ-dev-oc4024-server-0   <none>           <none>
+kube-system            traefik-59b7647586-z2qn7                                          1/1     Running     0          29m    10.42.0.10   k3d-occ-dev-oc4024-server-0   <none>           <none>
+oc4024-system          bootstrap-password-prepare                                        0/1     Completed   0          25m    10.42.0.22   k3d-occ-dev-oc4024-server-0   <none>           <none>
+oc4024-system          occ-development-api-proxy-546988b7b8-t5klt                        1/1     Running     0          24m    10.42.0.29   k3d-occ-dev-oc4024-server-0   <none>           <none>
+oc4024-system          openclaw-enterprise-api-6cb55c6c87-px7mz                          1/1     Running     0          24m    10.42.0.28   k3d-occ-dev-oc4024-server-0   <none>           <none>
+oc4024-system          openclaw-enterprise-initialization-89w52                          0/1     Completed   0          24m    10.42.0.25   k3d-occ-dev-oc4024-server-0   <none>           <none>
+oc4024-system          openclaw-enterprise-worker-5f9db8df76-bgqll                       1/1     Running     0          24m    10.42.0.26   k3d-occ-dev-oc4024-server-0   <none>           <none>
+oc4024-system          postgres-0                                                        1/1     Running     0          25m    10.42.0.23   k3d-occ-dev-oc4024-server-0   <none>           <none>
+oce-395e5274d09f28d    gateway-0927530402d8-5888cb87d7-gdzzq                             1/1     Running     0          4m9s   10.42.0.37   k3d-occ-dev-oc4024-server-0   <none>           <none>

@@ -216,4 +216,4 @@ policy, follow the [OpenShell Driver configuration](../../reference/drivers/open
 Verify each required tool through the deployed Agent with the exact image
 digest and policy. Exercise a real allowed download and a connection the
 policy must deny. Follow the
-[OpenShell verification procedures](../../testing/openshell.md#openshell-sandbox).
+[OpenShell verification procedures](../../testing/openshell.md#openshell).

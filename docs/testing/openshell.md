@@ -177,7 +177,9 @@ JSON for seven days, including successes, without cookies, OAuth exchanges,
 model text, or media. [Console visual review](../contributing/console-storybook.md#appearance-review)
 separately requires screenshots and video.
 
-## OpenShell Sandbox
+## OpenShell
+
+See [external OpenShell gateways](../guides/deploy/external-openshell-gateway.md).
 
 The real Sandbox suite checks Codex Gateway access, model/tool turns, credentials,
 filesystem/network restrictions, replacement and cleanup. Local fixtures alone

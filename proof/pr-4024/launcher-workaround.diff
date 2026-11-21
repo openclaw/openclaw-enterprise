@@ -1,0 +1,115 @@
+diff --git a/internal/occdev/openshell.go b/internal/occdev/openshell.go
+index 6d0fa0640..bb58d6c34 100644
+--- a/internal/occdev/openshell.go
++++ b/internal/occdev/openshell.go
+@@ -6,6 +6,7 @@ import (
+ 	"crypto/rand"
+ 	"crypto/x509"
+ 	"encoding/hex"
++	"encoding/json"
+ 	"encoding/pem"
+ 	"errors"
+ 	"fmt"
+@@ -271,6 +272,35 @@ func (r *runner) renderOpenShellWorkspaceResources(ctx context.Context, chart, g
+ 	return resources, nil
+ }
+ 
++// platformChildReference resolves a multi-platform reference to the child image
++// digest of one platform — the reference Docker can save directly when it refuses
++// the platform-filtered save of the whole index.
++func (r *runner) platformChildReference(ctx context.Context, source, platform string) (string, error) {
++	output, err := r.output(ctx, r.engine, "manifest", "inspect", "--verbose", source)
++	if err != nil {
++		return "", err
++	}
++	var descriptors []struct {
++		Descriptor struct {
++			Digest   string `json:"digest"`
++			Platform struct {
++				OS           string `json:"os"`
++				Architecture string `json:"architecture"`
++			} `json:"platform"`
++		} `json:"Descriptor"`
++	}
++	if err := json.Unmarshal(output, &descriptors); err != nil {
++		return "", err
++	}
++	for _, descriptor := range descriptors {
++		if descriptor.Descriptor.Platform.OS+"/"+descriptor.Descriptor.Platform.Architecture == platform {
++			name, _, _ := strings.Cut(source, "@")
++			return name + "@" + descriptor.Descriptor.Digest, nil
++		}
++	}
++	return "", fmt.Errorf("no %s child image in %s", platform, source)
++}
++
+ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentState, root, component, source string, localOnly bool) (result string, resultErr error) {
+ 	if _, err := r.output(ctx, r.engine, "image", "inspect", source); err != nil {
+ 		if localOnly {
+@@ -319,7 +349,21 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
+ 	}
+ 	saveArgs = append(saveArgs, "--output", archive, recorded)
+ 	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
+-		return "", err
++		// Docker can refuse a platform-filtered save of a locally pulled
++		// multi-platform index ("no suitable export target"), and the unfiltered
++		// archive references content the daemon never downloaded. Resolve the
++		// selected platform's child image from the source's manifest list and
++		// save that reference directly.
++		if r.engine != "docker" {
++			return "", err
++		}
++		child, childErr := r.platformChildReference(ctx, source, platform)
++		if childErr != nil {
++			return "", err
++		}
++		if retryErr := r.run(ctx, r.engine, "image", "save", "--platform", platform, "--output", archive, child); retryErr != nil {
++			return "", err
++		}
+ 	}
+ 	if err := r.importArchiveDirect(ctx, archive, state.Cluster); err != nil {
+ 		return "", err
+diff --git a/internal/occdev/openshell_k3d_profile_test.go b/internal/occdev/openshell_k3d_profile_test.go
+index 1c462f5e2..239057af0 100644
+--- a/internal/occdev/openshell_k3d_profile_test.go
++++ b/internal/occdev/openshell_k3d_profile_test.go
+@@ -444,6 +444,39 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t
+ 	}
+ }
+ 
++// Docker can refuse a platform-filtered save for a locally pulled multi-platform
++// index; the import must fall back to the complete archive instead of failing.
++func TestOpenShellImageImportFallsBackWhenDockerRefusesPlatformSave(t *testing.T) {
++	state := kubernetesOnlyOpenShellState(t)
++	root := t.TempDir()
++	source := "ghcr.io/nvidia/openshell/supervisor@" + profileTestDigest
++	staging := "openclaw-development/openshell-supervisor:" + state.Cluster
++	commands := fakeProfileCommands(t, map[string]string{
++		"docker": `"image inspect ` + source + `") ;;
++"image inspect ` + staging + `") exit 1 ;;
++"tag ` + source + ` ` + staging + `") ;;
++"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
++"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
++"image save --platform linux/amd64 --output "*" ` + staging + `") exit 1 ;;
++"manifest inspect --verbose ` + source + `") echo '[{"Descriptor":{"digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","platform":{"os":"linux","architecture":"amd64"}}}]' ;;
++"image save --platform linux/amd64 --output "*" ghcr.io/nvidia/openshell/supervisor@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") printf archive > "$6" ;;
++"exec k3d-occ-dev-owned-server-0 ctr -n k8s.io images list") echo "docker.io/` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
++"exec k3d-occ-dev-owned-server-0 ctr -n k8s.io images tag docker.io/` + staging + ` docker.io/openclaw-development/openshell-supervisor@` + profileTestDigest + `") ;;
++"image rm ` + staging + `") ;;`,
++		"k3d": `"image import --mode direct "*" -c occ-dev-owned") ;;`,
++	})
++	var stdout bytes.Buffer
++	r := newRunner(Options{Repository: state.Repository, Out: &stdout})
++	r.engine = "docker"
++	reference, err := r.importOpenShellImage(context.Background(), state, root, "supervisor", source, true)
++	if err != nil {
++		t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
++	}
++	if reference != "docker.io/openclaw-development/openshell-supervisor@"+profileTestDigest {
++		t.Fatalf("unexpected runtime reference: %q", reference)
++	}
++}
++
+ func TestOpenShellImageImportRegistersThePodmanRecordedName(t *testing.T) {
+ 	state := kubernetesOnlyOpenShellState(t)
+ 	root := t.TempDir()
