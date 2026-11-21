@@ -74,15 +74,20 @@ function api(
 test("private origin reports a denied process-group probe before starting Git", async (t) => {
   const kill = process.kill;
   t.mock.method(process, "kill", (pid, signal) => {
-    if (pid < -1 && signal === 0) {
+    if (pid < 0 && signal === 0) {
       throw Object.assign(new Error("restricted runner detail"), { code: "EPERM" });
     }
     return kill(pid, signal);
   });
-  // Invalid Git syntax makes the first command fail if startup reaches it.
+  // The invalid ref bounds startup even where the group probe must not run.
+  const message =
+    process.platform === "win32"
+      ? "fixture requires POSIX process groups"
+      : process.pid === 1
+        ? "command failed (exit 1)"
+        : "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.";
   await assert.rejects(startSkipperPrivateGitOrigin({ approvalRef: "refs/heads/invalid.." }), {
-    message:
-      "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.",
+    message,
   });
 });
 
