@@ -14,34 +14,35 @@ author: kevinlin-openai
 
 ## Summary
 
-Add five OpenClaw Control Plane (OCC) HTTP operations to schedule, inspect, edit, pause, resume, and delete timed automations for a deployed Agent. OCC authorizes the caller and calls the selected Agent Gateway. OpenClaw owns job definitions, scheduling, execution, and durable state.
+Add six OpenClaw Control Plane (OCC) HTTP operations to schedule, inspect, edit, pause, resume, and delete timed automations for a deployed Agent, and inspect their execution history. OCC authorizes the caller and calls the selected Agent Gateway. OpenClaw owns job definitions, scheduling, execution, and durable state.
 
 ## Motivation
 
-An administrator can already manage automations in the native Agent UI. OCE clients need a typed OCC interface with exact-Agent authorization and attributable audit records. OpenClaw already provides the required `cron.*` Gateway methods. [Native access](../../docs/reference/agent-native-admin.md), [OpenClaw contract](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/packages/gateway-protocol/src/schema/cron.ts)
+OCE clients need an OCC scheduling and history API with exact-Agent authorization and audit. The native UI already serves administrators. [Native access](../../docs/reference/agent-native-admin.md), [OpenClaw contract](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/packages/gateway-protocol/src/schema/cron.ts)
 
 ## Goals
 
 - Schedule an Agent turn once, at a fixed interval, or with a cron expression.
-- Inspect, edit, pause, resume, and delete a schedule.
+- Inspect, edit, pause, resume, and delete a schedule, and retrieve its execution history.
+- Run scheduled turns with the Agent's approved tools under the creating human's admitted authority.
 - Preserve jobs across supported Gateway replacement.
 - Enforce exact-Agent authority and record each OCC mutation and denial.
 
 ## Non-goals
 
-Immediate execution, run-history APIs, selection of result-delivery recipients, event triggers, commands, scripts, templates, service principals, and Console or CLI commands are later decisions. OpenClaw represents heartbeat monitors as ordinary jobs. [Heartbeat migration](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/docs/gateway/heartbeat.md)
+Immediate execution, selection of result-delivery recipients, event triggers, commands, scripts, templates, service principals, and Console or CLI commands are later decisions. OpenClaw represents heartbeat monitors as ordinary jobs. [Heartbeat migration](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/docs/gateway/heartbeat.md)
 
 ## Proposal
 
-The API changes live Gateway state. A job edit does not deploy an Agent revision. The caller needs an active human session and `administer` on the exact Agent in the requested Namespace. OCC resolves the selected, running Agent revision and its private Gateway endpoint. This first version honors Installation native-admin enablement and Agent native-access opt-in. OCC checks the selected revision's Compute Driver ID and implementation and requires delegated-profile support. It refuses access when disabled, unsupported, stopped, unavailable, or undergoing a replacement that prevents safe access. Delegation failure cannot fall back to machine-admin authority.
+A human with an active session and exact-Agent `operate` can create an automation. The same permission lets its creator list, inspect, edit, pause, resume, delete, and read history for their own automations. Exact-Agent `administer` permits management of all jobs owned by that Agent. An `operate` caller receives no information about another creator's jobs; filter before pagination and totals.
 
-OCC delegates the same server-derived human subject and `operator.admin` authority used by native administration. It refuses caller-supplied subjects, scopes, Gateway addresses, native Agent IDs, and ownership fields. The pinned Gateway requires administrator authority for direct `cron.add`. Operator-created jobs can retain operator execution authority after creation. Native job attribution and execution authority must remain bound to the admitted human. [OCE delegation](../../docs/reference/agent-native-admin.md#native-authority-and-drift), [native authorization](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/method-authorization.ts#L132-L152), [scheduled authority](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/docs/automation/cron-jobs/managing-jobs.md#L103-L126)
+OCC resolves the selected running Agent revision and validates its Compute Driver ID and implementation. The Installation and Agent must enable native access. OCC uses a private delegated automation connection with the server-derived human subject and a narrow native automation scope. The ordinary chat connection keeps its existing scope. Refuse disabled, stopped, unsupported, or unavailable Agents and replacement states that prevent safe access. Reject caller-selected Gateway addresses, scopes, ownership, native Agent IDs, or tool grants. Do not substitute a shared machine-admin identity.
 
-The diagram shows the proposed API path. The Gateway, Harness, and SQLite store already exist.
+The pinned OpenClaw requires `operator.admin` for direct `cron.add`, and its direct human owner scope does not cover all required reads. This RFC requires a qualified upstream native contract that admits scoped profile-based creation, binds the exact effective Agent and creator at commit, filters reads and history by owner, and admits the scheduled execution authority. OCC must fail closed until that contract is available. [Current native authorization](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/method-authorization.ts#L132-L152)
 
 ```mermaid
 flowchart LR
-  A["Human administrator"] -.->|"Automation HTTP API"| O["OCC authorization, validation, audit"]
+  A["Human Agent operator"] -.->|"Automation HTTP API"| O["OCC authorization, validation, audit"]
   O -.->|"Delegated cron RPC"| G["Selected Agent Gateway"]
   G -->|"Jobs and run state"| S["Gateway SQLite"]
   G -->|"Scheduled turn"| H["Agent Harness"]
@@ -64,21 +65,25 @@ POST requires all four fields.
 }
 ```
 
-A schedule is one of these objects.
+Supported schedules are
 
 - `{kind:"at", at:"<RFC3339 timestamp>"}`
 - `{kind:"every", everyMs:<positive integer>}`
 - `{kind:"cron", expr:"<cron expression>", tz:"<IANA time zone>"}`
 
-OCC applies bounded input sizes and native schedule validation. It maps the prompt to `payload:{kind:"agentTurn",message:prompt,toolsAllow:[]}`, fixes `sessionTarget:"isolated"`, `wakeMode:"now"`, and `delivery:{mode:"none"}`, and derives the native execution Agent from the selected Gateway. A job can run a model turn but has no job tools or automatic result delivery. Native failure alerts and terminal auto-disable notices can still use configured routes. Broader execution permissions and recipient selection need a separate decision.
+OCC validates the request envelope and forwards the schedule to the OpenClaw cron service. OpenClaw validates and normalizes scheduling semantics, including interval anchors and cron staggering. OCC returns the normalized native schedule and effective next execution time. Generated fields such as `anchorMs` and `staggerMs` do not make a job unsupported.
 
-A job response contains `id`, `configRevision`, `name`, `enabled`, `schedule`, `prompt`, `nextRunAtMs`, and `lastRunStatus`. Missing runtime values are null. List accepts bounded `offset` and `limit` and returns `{jobs:[...],total,offset,limit}` with summaries that omit prompts and include disabled jobs. OCC obtains the full native projection without delivery previews so it can inspect the job revision and execution fields. Existing native jobs outside this contract appear as summaries with `supported:false` and their observed revision. Eligibility requires an exact native Agent match, the fixed session, payload, and delivery fields, an explicit empty tool selection with `toolsAllowIsDefault` absent or false, and no trigger, plugin-command payload source, failure override, or unknown execution field. GET and PATCH refuse jobs that fail these checks. Thus an edit or resume cannot activate a pre-existing command, broader tool grant, different session, or automatic result delivery. DELETE remains available to an administrator with the observed revision.
+OCC maps `prompt` to an `agentTurn` with `sessionTarget:"isolated"`, `wakeMode:"now"`, and `delivery:{mode:"none"}`. The scheduled turn can use the deployed Agent's approved tools, subject to creator authority and mandatory runtime, sandbox, and tool restrictions. OpenClaw derives and retains that bounded authority from the authenticated creation context and rechecks current restrictions at execution and recovery. Native Harness tools, Gateway dynamic tools, and configured apps or MCP tools must enforce the same effective restriction. Native failure alerts can still use configured routes.
+
+A job response contains `id`, `configRevision`, `name`, `enabled`, normalized `schedule`, `prompt`, `nextRunAtMs`, and `lastRunStatus`. List accepts bounded `offset` and `limit` and returns authorized summaries without prompts, plus `total`, `nextOffset`, and `snapshotRevision`. Restart an inventory scan if its snapshot changes. First enforce exact effective Agent and creator authority for every operation, including DELETE and history. Then check feature eligibility. Same-Agent unsupported jobs can be deleted by an authorized administrator with the observed revision; expose only ID, name, enabled state, schedule kind, and revision in their summaries. GET and PATCH reject unsupported jobs. Native eligibility must cover execution authority that public `cron.get` omits; a matching configuration revision alone cannot establish that authority.
+
+Execution history returns paged run summaries with `runId`, start and finish times, execution `status`, whole-run `completionStatus`, `deliveryStatus`, summary, and error when present. Preserve native one-shot deletion after successful completion. History remains addressable by job ID after the job disappears, subject to native retention. The Gateway must retain enough authenticated creator and effective Agent evidence with each history record to authorize disclosure after deletion; records without that evidence fail closed. This is an upstream requirement because the pinned scoped history path requires a live visible job. [Current history admission](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/cron-runs.ts#L68-L116)
 
 ### State and failure
 
 OpenClaw stores jobs and execution state in its shared SQLite database. Kubernetes retains the Agent-owned Gateway state volume across replacement. Agent deletion follows existing Gateway and volume cleanup. Native restart recovery and missed-slot policy remain effective. Interrupted tool effects have no general exactly-once guarantee. [Gateway storage](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage), [native recovery](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/docs/automation/cron-jobs/how-it-works.md)
 
-Each request binds its connection to the selected Agent revision. Stop admission when replacement prevents access. A lost reply or revision change after dispatch can leave a mutation outcome unknown. Return an indeterminate error and do not replay it. The administrator refreshes inventory before deciding what to do. A native declaration key can update an existing job and is not a general replay receipt.
+Each request binds its connection to the selected Agent revision. Stop admission when replacement prevents access. A lost reply, revision change after dispatch, or failed audit append after Gateway acknowledgement can leave a mutation outcome unknown. Return `503 UNKNOWN_OUTCOME` without automatic retry. Return an indeterminate error and do not replay it. The caller refreshes inventory before deciding what to do.
 
 ## Interface changes
 
@@ -86,19 +91,20 @@ Each request binds its connection to the selected Agent revision. Stop admission
 
 All paths start with `/namespaces/{namespaceId}/agents/{agentId}/automations`.
 
-| Method and path | Gateway method | Result                |
-| --------------- | -------------- | --------------------- |
-| POST collection | `cron.add`     | 201 and created job   |
-| GET collection  | `cron.list`    | 200 and summaries     |
-| GET `/{id}`     | `cron.get`     | 200 and supported job |
-| PATCH `/{id}`   | `cron.update`  | 200 and updated job   |
-| DELETE `/{id}`  | `cron.remove`  | 204                   |
+| Method and path  | Gateway method | Result                                                              |
+| ---------------- | -------------- | ------------------------------------------------------------------- |
+| POST collection  | `cron.add`     | 201 and created job                                                 |
+| GET collection   | `cron.list`    | 200 and summaries                                                   |
+| GET `/{id}`      | `cron.get`     | 200 and supported job                                               |
+| PATCH `/{id}`    | `cron.update`  | 200 and updated job                                                 |
+| DELETE `/{id}`   | `cron.remove`  | 204                                                                 |
+| GET `/{id}/runs` | `cron.runs`    | 200 and paged authorized history, including after one-shot deletion |
 
-PATCH accepts one or more of `name`, `enabled`, `schedule`, and `prompt`, plus required `expectedConfigRevision`. DELETE requires the revision as a query parameter. For PATCH, OCC reads and validates the current full job, requires that the revision from that same read equals the caller's expected revision, then forwards that revision to the native atomic update. OCC forwards the native revision check atomically and returns 409 on conflict. Job revision and Agent revision are distinct. Use the existing OCC response and error envelopes. Return 400 for invalid input, 403 for denied authority, 404 for an absent exact Agent or job, 409 for an unsupported job, and 503 for an unavailable Gateway or indeterminate mutation, with distinct machine-readable error codes.
+POST, PATCH, and DELETE require OCC's existing session CSRF and Origin checks before native dispatch. PATCH accepts one or more of `name`, `enabled`, `schedule`, and `prompt`, plus required `expectedConfigRevision`. DELETE requires the revision as a query parameter. For PATCH, OCC reads and validates the current full job, requires that the revision from that same read equals the caller's expected revision, then forwards that revision to the native atomic update. Return 409 on conflict. Use the existing OCC response and error envelopes. Return 400 for invalid input, 403 for denied authority, 404 for an absent exact Agent or job, 409 for an unsupported job, and 503 for an unavailable Gateway or indeterminate mutation, with distinct machine-readable error codes.
 
 ### IAM
 
-Reuse exact-Agent `administer` for all five operations. No new permission or IAM resource. Audit successful mutations, denials, and indeterminate outcomes with Principal, Namespace, Agent, selected Agent revision, operation, job ID when known, and outcome. Exclude prompts, transcripts, credentials, and native payloads. This per-operation OCC evidence covers the new HTTP routes.
+Reuse exact-Agent `operate` for creation and creator-owned operations, and `administer` for Agent-wide management. No new IAM action or resource. Audit successful mutations, denials, and indeterminate outcomes with Principal, Namespace, Agent, selected Agent revision, operation, job ID when known, and outcome. Exclude prompts, transcripts, credentials, and native payloads. This per-operation OCC evidence covers the new HTTP routes.
 
 ### Database entities
 
@@ -106,25 +112,25 @@ No changes. OpenClaw owns job persistence.
 
 ### Driver contracts
 
-No changes. Reuse Compute Gateway endpoint resolution and the existing private transport. Refuse unsupported Drivers or runtimes.
+Extend the delegated Gateway request contract with an automation mode and its narrow scope. Compute resolves the private endpoint and server-owned subject and headers for the exact selected Agent revision. Unsupported Drivers and runtimes refuse the request. Submit this RFC before changing the Driver contract.
 
 ## Simplifications
 
-The existing native Automations UI meets the browser task for administrators. The five routes add the requested OCC HTTP contract and audit evidence while reusing native scheduling and storage. PATCH handles pause and resume. A generic RPC tunnel would expose native authority and unrestricted payload types as part of the OCC API.
+The six typed routes reuse native scheduling and storage. PATCH handles pause and resume. The existing native UI remains available to administrators.
 
 ## Acceptance Criteria
 
-- **AC1. Scheduling.** Create and inspect all three schedule types on a deployed Agent. Observe one scheduled turn execute in its Harness and inspect the native result.
-- **AC2. Lifecycle.** Pause, resume, edit, and delete a job. A stale edit or delete returns 409 without changing it, including a concurrent native-admin edit. PATCH cannot edit or resume an unsupported job.
-- **AC3. Authority.** A denied caller, service key, forged owner, wrong Namespace, or peer Agent cannot read or mutate the job. Disabled access, a mismatched Driver, or failed delegation refuses the operation. Verify human attribution and the scheduled tool and result-delivery restrictions. On dedicated Codex, attempt harmless shell, file, dynamic-tool, and configured MCP/app operations with the empty tool selection; refuse runtimes that cannot enforce it. With a configured failure destination, fail a job and verify the native alert behavior.
-- **AC4. Recovery.** Replace the Gateway Pod and deploy a new Agent revision. Confirm job identity, schedule, paused state, and history retention. Exercise a lost create reply and replacement during mutation without duplicate dispatch.
-- **AC5. Audit.** Verify attributable mutation, denial, and indeterminate records with sensitive job content absent.
+- **AC1. Scheduling.** An exact-Agent operator creates each schedule type. Create, list, get, and edit round-trip the native normalized schedule. Observe a scheduled turn use an approved tool in the selected Harness.
+- **AC2. Lifecycle and history.** Pause, resume, edit, and delete a job. A stale edit or delete returns 409. A successful one-shot disappears from inventory and its authorized history remains readable until native expiry.
+- **AC3. Authority.** Deny unauthorized, foreign-creator, wrong-Agent, wrong-Namespace, forged-owner, service-key, and cross-origin requests before dispatch or disclosure. Test DELETE against a wrong-Agent job with a valid revision. Verify creator attribution, admitted execution authority, approved and denied tool calls, policy reduction before execution, and dedicated Harness, dynamic-tool, and MCP/app enforcement.
+- **AC4. Recovery.** Replace the Gateway Pod and deploy a new Agent revision. Confirm job identity, paused state, and history retention. Exercise lost create replies, concurrent native edits, replacement, and audit failure after commit without duplicate dispatch.
+- **AC5. Audit.** Verify attributable mutation, denial, and indeterminate records. Include only metadata resolved before a denial and exclude prompts, transcripts, credentials, and job payloads.
 
 ## Delivery and verification
 
-Implement the routes and native client adapter as one connected feature, then qualify the acceptance criteria on the packaged runtime. This RFC is based on source review. The proposed routes and integrated acceptance checks have not been implemented or run.
+Qualify upstream authority and history support, implement the OCC routes and Driver mode, and verify the acceptance criteria on the packaged runtime. This RFC is based on source review. The proposed routes and integrated acceptance checks have not been implemented or run.
 
 ## Unresolved questions
 
-- Product and security owners must decide whether a narrower permission or service-principal access is required. Direct non-admin creation needs a native authority design.
-- Product and security owners must decide which tools and delivery destinations jobs may use, and whether loss of an OCE grant cancels an existing job. The initial API uses the fixed execution policy above.
+- Product and security owners must decide whether loss of the creator's OCE `operate` grant cancels or disables an existing automation. Native execution must continue to enforce the current Agent and runtime restrictions.
+- Product owners must decide whether later versions add immediate execution, result delivery, or service-principal access.
