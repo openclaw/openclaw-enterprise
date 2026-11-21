@@ -3,6 +3,13 @@ import {
   type NamespaceLifecycleBinding,
   type NamespaceLifecycleEvidence,
 } from "./namespace-lifecycle.ts";
+import {
+  createNamespaceOperations,
+  type CreateNamespaceInput,
+  type NamespaceOperations,
+} from "./namespace-operations.ts";
+
+export type { CreateNamespaceInput } from "./namespace-operations.ts";
 
 export type {
   NamespaceLifecycleBinding,
@@ -176,12 +183,7 @@ import {
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import {
-  accessBindingsTargeting,
-  removeNamespacePolicy,
-  removedPolicyDetails,
-  type RemovedAccessBinding,
-} from "./iam-policy-cleanup.ts";
+import { accessBindingsTargeting, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 import { deploymentDiagnostics, withHarnessDiagnostic } from "./deployment-diagnostics.ts";
 import {
   createPluginDiscovery,
@@ -383,7 +385,6 @@ import {
   HarnessAuthSecretDriverError,
   keyedSettingPath,
   ModelProviderSettingError,
-  NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
   NotImplementedError,
@@ -904,11 +905,6 @@ export interface ControllerOptions {
   readonly credentialProxyCapacity?: CredentialProxyCapacity;
 }
 
-export interface CreateNamespaceInput {
-  readonly name: string;
-  readonly existingNamespace?: string;
-}
-
 export interface CreateAgentInput {
   readonly initialWorkspaceFiles?: InitialWorkspaceFiles;
   readonly workspaceDefaultsId?: string;
@@ -1227,11 +1223,6 @@ const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
  * A document further ahead fails closed, as any other mismatch does.
  */
 const MAX_CONFIGURATION_LEFTOVER_LEAD = 100;
-/**
- * The IDs of one kind that a NAMESPACE_NOT_EMPTY conflict examines and may name. Each costs
- * one read decision while deletion holds the Namespace lock, so the bound limits that work.
- */
-const NAMESPACE_NOT_EMPTY_ID_LIMIT = 20;
 
 function connectionConsentScopes(
   version: Readonly<OAuthConnectionTemplateVersion>,
@@ -2014,6 +2005,7 @@ export class OpenClawController {
   private readonly pluginDiscovery: ReturnType<typeof createPluginDiscovery>;
   private tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
   private readonly preparedTokens: TokenService | undefined;
+  private readonly namespaces: NamespaceOperations;
   private readonly backends: readonly BackendDefinition[];
   private readonly presets: ReturnType<
     typeof createPresetOperations<PlatformReadView, PlatformUnitOfWork>
@@ -2165,6 +2157,22 @@ export class OpenClawController {
       hasPluginDrivers: () => this.drivers.hasPluginDrivers(),
       enabledPluginDrivers: () => this.enabledPluginDrivers(),
       normalizeAgentPluginApprovers,
+    });
+    this.namespaces = createNamespaceOperations({
+      installationId: this.installation.id,
+      transactions: this.transactions,
+      authority: this.authority,
+      iamPolicy: this.iamPolicy,
+      presets: this.presets,
+      record: (state, operation) => this.record(state, operation),
+      observeLifecycle: (namespace, target, signal, record) =>
+        this.observeNamespaceLifecycle(namespace, target, signal, record),
+      selectedCompute: () => this.selectedDriver("compute"),
+      selectedIAMId: () => this.selectedDriver("iam").id,
+      allocateNamespaceId: () => this.nextIdentifier("namespace"),
+      requireAdoptionSupport: () => this.requireNamespaceAdoptionSupport(),
+      timestamp: () => this.timestamp(),
+      requestAuditId: () => this.requestAuditId.getStore(),
     });
     this.loggingLevel = normalizeLoggingLevel(options.loggingLevel);
     if (
@@ -2519,32 +2527,11 @@ export class OpenClawController {
   }
 
   async listNamespaces(principalId: string): Promise<readonly Readonly<Namespace>[]> {
-    this.authorizationAuthority(principalId);
-    return this.read(async (state) => {
-      const readable: Readonly<Namespace>[] = [];
-      for (const namespace of await state.namespaces.listNamespaces()) {
-        if (
-          await this.canRead(principalId, {
-            kind: "namespace",
-            id: namespace.id,
-            namespaceId: namespace.id,
-          })
-        ) {
-          readable.push(namespace);
-        }
-      }
-      return Object.freeze(readable);
-    });
+    return this.namespaces.listNamespaces(principalId);
   }
 
   async getNamespace(principalId: string, namespaceId: string): Promise<Readonly<Namespace>> {
-    this.namespaceIdentity(namespaceId);
-    await this.authorize(principalId, "read", {
-      kind: "namespace",
-      id: namespaceId,
-      namespaceId,
-    });
-    return this.read(async (state) => this.exactNamespace(state, namespaceId));
+    return this.namespaces.getNamespace(principalId, namespaceId);
   }
 
   async listIAMRoles(principalId: string, namespaceId: string): Promise<readonly Readonly<Role>[]> {
@@ -5016,67 +5003,27 @@ export class OpenClawController {
     );
   }
 
+  private requireNamespaceAdoptionSupport(): void {
+    let compute: ComputeDriver;
+    try {
+      compute = this.selectedDriver("compute");
+    } catch {
+      throw new ResourceStateConflictError(
+        "Existing namespace adoption requires the bundled Kubernetes Compute Driver.",
+      );
+    }
+    if (!BUNDLED_KUBERNETES_COMPUTE.has(compute.implementation)) {
+      throw new ResourceStateConflictError(
+        "Existing namespace adoption requires the bundled Kubernetes Compute Driver.",
+      );
+    }
+  }
+
   async createNamespace(
     principalId: string,
     input: CreateNamespaceInput,
   ): Promise<Readonly<Namespace>> {
-    if (!isName(input.name)) {
-      throw new ScopeViolationError("The Namespace name is invalid.");
-    }
-    return this.mutate(async (state) => {
-      await this.holdAuthority(state);
-      const target: ResourceRef = {
-        kind: "namespace",
-        id: this.installation.id,
-      };
-      await this.authorize(principalId, "create", target);
-      if (input.existingNamespace !== undefined) {
-        await this.authorize(principalId, "administer", {
-          kind: "installation",
-          id: this.installation.id,
-        });
-        let compute: ComputeDriver;
-        try {
-          compute = this.selectedDriver("compute");
-        } catch {
-          throw new ResourceStateConflictError(
-            "Existing namespace adoption requires the bundled Kubernetes Compute Driver.",
-          );
-        }
-        if (!BUNDLED_KUBERNETES_COMPUTE.has(compute.implementation)) {
-          throw new ResourceStateConflictError(
-            "Existing namespace adoption requires the bundled Kubernetes Compute Driver.",
-          );
-        }
-      }
-      const namespace = await state.namespaces.createNamespace({
-        id: this.nextIdentifier("namespace"),
-        name: input.name,
-        ...(input.existingNamespace === undefined
-          ? {}
-          : { existingNamespace: input.existingNamespace }),
-        status: "provisioning",
-        createdAt: this.timestamp(),
-      });
-      // The creator's Namespace-wide Owner grant lets the same unit create the default Presets.
-      await this.bindCreator(state, principalId, {
-        kind: "namespace",
-        id: namespace.id,
-        namespaceId: namespace.id,
-      });
-      // Configured Group bindings that name this Namespace, such as Agent creation in default.
-      await this.applyConfiguredPolicy(state, principalId, namespace);
-      await this.presets.ensureNamespaceDefaultPresets(state, principalId, namespace);
-      await this.record(state, {
-        kind: "namespace",
-        action: "reconcile",
-        target: "ready",
-        namespaceId: namespace.id,
-        resourceId: namespace.id,
-        actorId: principalId,
-      });
-      return namespace;
-    });
+    return this.namespaces.createNamespace(principalId, input);
   }
 
   private occBindingDriver(
@@ -11254,195 +11201,7 @@ export class OpenClawController {
    * Driver effects remain deferred to handleNamespaceLifecycle().
    */
   async deleteNamespace(principalId: string, namespaceId: string): Promise<Readonly<Namespace>> {
-    this.namespaceIdentity(namespaceId);
-    return this.mutate(async (state) => {
-      const namespace = await this.lockNamespaceForPolicyDelete(state, principalId, {
-        kind: "namespace",
-        id: namespaceId,
-        namespaceId,
-      });
-      // Keep in-flight teardown idempotent. The original caller can explicitly
-      // retry terminal work after repairing the dependency or permission failure.
-      // Another authorized caller can take over only once the initiating actor
-      // no longer holds delete permission on this Namespace (for example, it
-      // was offboarded), so terminal teardown is never stranded.
-      if (namespace.status === "deleting") {
-        const workId = `namespace:${namespace.id}:reconcile:deleted`;
-        const work = await state.operations.findWork(workId);
-        if (work?.state === "failed_permanent") {
-          const takeover = work.actorId !== principalId;
-          if (
-            takeover &&
-            (
-              await this.authorizationDecision(work.actorId, "delete", {
-                kind: "namespace",
-                id: namespace.id,
-                namespaceId: namespace.id,
-              })
-            ).decision.allowed
-          ) {
-            throw new DeletionRetryOwnedError(work.actorId, {
-              kind: "namespace",
-              id: namespace.id,
-              namespaceId: namespace.id,
-            });
-          }
-          if (
-            !(await state.operations.retryFailedNamespaceDeletion(
-              namespace.id,
-              work.actorId,
-              principalId,
-            ))
-          ) {
-            throw new ResourceStateConflictError(
-              "The Namespace deletion work changed during retry.",
-            );
-          }
-          const requestId = this.requestAuditId.getStore();
-          await state.audit.append({
-            id: `aud_${crypto.randomUUID()}`,
-            installationId: this.installation.id,
-            namespaceId: namespace.id,
-            occurredAt: this.timestamp(),
-            kind: "mutation",
-            actorId: principalId,
-            source: "occ",
-            action: "openclaw.namespaces.delete.retry",
-            resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
-            outcome: "success",
-            ...(requestId === undefined ? {} : { requestId }),
-            details: {
-              workId,
-              previousAttemptCount: work.attemptCount,
-              previousReasonCode: work.reasonCode,
-              ...(takeover ? { takeover: true, previousActorId: work.actorId } : {}),
-            },
-          });
-        }
-        return namespace;
-      }
-      // The 409 names remaining resources' IDs: Configurations have no list view, so the
-      // error is the only place an operator can find what to delete. Namespace delete does
-      // not grant child reads, so of the first IDs of each kind (as many as the response
-      // carries) it names only those the caller may read, and counts the rest (finding 2724).
-      const contents: string[] = [];
-      const ids: Record<string, readonly string[]> = {};
-      const counts: Record<string, number> = {};
-      const remaining = async (
-        kind: string,
-        resourceKind: ResourceKind,
-        resources: readonly { readonly id: string }[],
-      ) => {
-        contents.push(kind);
-        counts[kind] = resources.length;
-        const readable: string[] = [];
-        for (const { id } of resources.slice(0, NAMESPACE_NOT_EMPTY_ID_LIMIT)) {
-          // An authorization outage hides the ID rather than the conflict.
-          const resource = { kind: resourceKind, id, namespaceId: namespace.id };
-          if (await this.canRead(principalId, resource).catch(() => false)) {
-            readable.push(id);
-          }
-        }
-        ids[kind] = readable;
-      };
-      if (await state.namespaces.hasAgents(namespace.id)) {
-        await remaining("Agents", "agent", await state.agents.listAgents(namespace.id));
-      }
-      const configurationIds = await state.namespaces.listConfigurationIds(namespace.id);
-      if (configurationIds.length > 0) {
-        await remaining(
-          "Configurations",
-          "configuration",
-          configurationIds.map((id) => ({ id })),
-        );
-      }
-      const presets = await state.presets.listPresets(namespace.id);
-      const blockingPresets = presets.filter(
-        (preset) => !this.presets.isUnmodifiedDefaultPreset(preset),
-      );
-      if (blockingPresets.length > 0) {
-        await remaining("Presets", "preset", blockingPresets);
-      }
-      if (await state.namespaces.hasSecrets(namespace.id)) {
-        await remaining("Secrets", "secret", await state.secrets.listSecrets(namespace.id));
-      }
-      if (await state.namespaces.hasCredentialSources(namespace.id)) {
-        await remaining(
-          "credential sources",
-          "credential_source",
-          await state.credentialSources.listCredentialSources(namespace.id),
-        );
-      }
-      if (await state.namespaces.hasServiceAccounts(namespace.id)) {
-        await remaining(
-          "service accounts",
-          "service_account",
-          await state.serviceAccounts.listServiceAccounts(namespace.id),
-        );
-      }
-      const templates = await state.connectionTemplates.countNamespaceConnectionTemplates(
-        namespace.id,
-      );
-      const clients = await state.connectionTemplates.countNamespaceOAuthClients(namespace.id);
-      if (clients > 0) {
-        contents.push("OAuth clients");
-        counts["OAuth clients"] = clients;
-      }
-      if (templates > 0) {
-        contents.push("connection templates");
-        counts["connection templates"] = templates;
-      }
-      if (await state.provisioning.hasPendingNamespaceProvisioning(namespace.id)) {
-        contents.push("pending Agent provisioning");
-      }
-      if (contents.length > 0) {
-        throw new NamespaceNotEmptyError(contents, ids, counts);
-      }
-      // Installation defaults were seeded by Namespace creation, so deletion removes
-      // them only while they still match the defaults; edited copies block above.
-      for (const preset of presets) {
-        const removed = await this.presets.deletePresetInState(
-          state,
-          principalId,
-          namespace.id,
-          preset.id,
-        );
-        await state.audit.append({
-          id: `aud_${crypto.randomUUID()}`,
-          installationId: this.installation.id,
-          namespaceId: namespace.id,
-          occurredAt: this.timestamp(),
-          kind: "mutation",
-          actorId: principalId,
-          source: "occ",
-          action: "openclaw.presets.delete",
-          resource: { kind: "preset", id: preset.id, namespaceId: namespace.id },
-          outcome: "success",
-          // Like a direct Preset delete, name the AccessBindings removed with it.
-          details: {
-            source: "namespace-deletion",
-            ...(removed.length === 0 ? {} : { removedAccessBindings: removed }),
-          },
-        });
-      }
-      const deleting = await state.namespaces.transitionNamespaceStatus(
-        namespace.id,
-        ["provisioning", "ready", "failed"],
-        "deleting",
-      );
-      if (!deleting) {
-        throw new ResourceStateConflictError("The Namespace lifecycle changed during deletion.");
-      }
-      await this.record(state, {
-        kind: "namespace",
-        action: "reconcile",
-        target: "deleted",
-        namespaceId: deleting.id,
-        resourceId: deleting.id,
-        actorId: principalId,
-      });
-      return deleting;
-    });
+    return this.namespaces.deleteNamespace(principalId, namespaceId);
   }
 
   /**
@@ -11592,155 +11351,7 @@ export class OpenClawController {
     namespaceId: string,
     target: "ready" | "deleted",
   ): Promise<Readonly<Namespace> | undefined> {
-    if (!isNonEmptyString(actorId)) {
-      throw new ScopeViolationError("The lifecycle actor is missing.");
-    }
-    this.namespaceIdentity(namespaceId);
-    if (target !== "ready" && target !== "deleted") {
-      throw new ScopeViolationError("The Namespace lifecycle target is invalid.");
-    }
-    const namespace = await this.mutate((state) =>
-      state.namespaces.lockNamespace(namespaceId, {
-        includeDeleted: true,
-      }),
-    );
-    if (!namespace || namespace.deletedAt !== undefined) {
-      return undefined;
-    }
-    if (target === "ready" && namespace.status !== "provisioning") {
-      return namespace;
-    }
-    if (target === "deleted" && namespace.status !== "deleting") {
-      return namespace;
-    }
-
-    let compute: ComputeDriver;
-    try {
-      compute = this.selectedDriver("compute");
-    } catch {
-      await this.recordLifecycleResult(actorId, namespace, undefined, "failure", {
-        failure: "compute_driver_unavailable",
-      });
-      throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
-    }
-
-    if (target === "deleted") {
-      let result;
-      try {
-        result = await this.observeNamespaceLifecycle(
-          namespace,
-          "deleted",
-          new AbortController().signal,
-          (evidence) =>
-            this.recordLifecycleResult(
-              actorId,
-              namespace,
-              compute,
-              evidence.outcome === "complete" ? "success" : "failure",
-              { ...evidence },
-            ),
-        );
-      } catch {
-        await this.recordLifecycleResult(actorId, namespace, compute, "failure", {
-          failure: "unavailable",
-        });
-        throw new DependencyUnavailableError("The compute Driver could not delete the Namespace.");
-      }
-      try {
-        this.validateDeleteResult(result, namespace);
-      } catch (error) {
-        await this.recordLifecycleResult(actorId, namespace, compute, "failure", {
-          failure: "invalid_driver_result",
-        });
-        throw error;
-      }
-      const deleted = result.namespaceDeleted && result.failure === undefined;
-      return this.mutate(async (state) => {
-        const current = await state.namespaces.lockNamespace(namespace.id, {
-          includeDeleted: true,
-        });
-        if (!current || current.deletedAt !== undefined) {
-          return undefined;
-        }
-        if (current.status !== "deleting") {
-          return current;
-        }
-        const updated = deleted
-          ? await state.namespaces.markNamespaceDeleted(current.id, this.timestamp())
-          : current;
-        const removedPolicy = deleted ? await removeNamespacePolicy(state, current.id) : undefined;
-        await this.appendLifecycleAudit(
-          state,
-          actorId,
-          current,
-          compute,
-          deleted ? "success" : "failure",
-          {
-            namespaceDeleted: result.namespaceDeleted,
-            ...(result.failure === undefined ? {} : { failure: result.failure }),
-            ...removedPolicyDetails(removedPolicy),
-          },
-        );
-        return updated;
-      });
-    }
-
-    let result;
-    try {
-      result = await this.observeNamespaceLifecycle(
-        namespace,
-        "ready",
-        new AbortController().signal,
-        (evidence) =>
-          this.recordLifecycleResult(
-            actorId,
-            namespace,
-            compute,
-            evidence.outcome === "complete" ? "success" : "failure",
-            { ...evidence },
-          ),
-      );
-    } catch {
-      await this.recordLifecycleResult(actorId, namespace, compute, "failure", {
-        failure: "unavailable",
-      });
-      throw new DependencyUnavailableError("The compute Driver could not ensure the Namespace.");
-    }
-    try {
-      this.validateEnsureResult(result, namespace);
-    } catch (error) {
-      await this.recordLifecycleResult(actorId, namespace, compute, "failure", {
-        failure: "invalid_driver_result",
-      });
-      throw error;
-    }
-    const ready = result.namespaceReady && result.failure === undefined;
-    return this.mutate(async (state) => {
-      const current = await state.namespaces.lockNamespace(namespace.id);
-      if (!current) {
-        return undefined;
-      }
-      if (current.status !== "provisioning") {
-        return current;
-      }
-      const next = ready ? "ready" : result.failure === "permanent" ? "failed" : "provisioning";
-      const updated =
-        next === current.status
-          ? current
-          : await state.namespaces.transitionNamespaceStatus(current.id, current.status, next);
-      await this.appendLifecycleAudit(
-        state,
-        actorId,
-        current,
-        compute,
-        ready ? "success" : "failure",
-        {
-          namespaceReady: result.namespaceReady,
-          ...(result.failure === undefined ? {} : { failure: result.failure }),
-        },
-      );
-      return updated ?? current;
-    });
+    return this.namespaces.handleNamespaceLifecycle(actorId, namespaceId, target);
   }
 
   /** Stage resources, reconciliation intents, and audit evidence as one unit. */
@@ -15117,105 +14728,6 @@ export class OpenClawController {
 
   private mutate<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
     return this.transactions.transact(work);
-  }
-
-  private validateLifecycleScope(result: unknown, namespace: Readonly<Namespace>): void {
-    const candidate = result as {
-      readonly namespaceId?: unknown;
-    };
-    if (!candidate || candidate.namespaceId !== namespace.id) {
-      throw new DependencyUnavailableError(
-        "The compute Driver returned lifecycle evidence for another Namespace.",
-      );
-    }
-  }
-
-  private validateEnsureResult(
-    result: unknown,
-    namespace: Readonly<Namespace>,
-  ): asserts result is NamespaceEnsureResult {
-    this.validateLifecycleScope(result, namespace);
-    const candidate = result as Partial<NamespaceEnsureResult>;
-    if (
-      typeof candidate.namespaceReady !== "boolean" ||
-      (candidate.failure !== undefined &&
-        candidate.failure !== "retryable" &&
-        candidate.failure !== "permanent")
-    ) {
-      throw new DependencyUnavailableError(
-        "The compute Driver returned invalid Namespace readiness evidence.",
-      );
-    }
-  }
-
-  private validateDeleteResult(
-    result: unknown,
-    namespace: Readonly<Namespace>,
-  ): asserts result is NamespaceDeleteResult {
-    this.validateLifecycleScope(result, namespace);
-    const candidate = result as Partial<NamespaceDeleteResult>;
-    if (
-      typeof candidate.namespaceDeleted !== "boolean" ||
-      (candidate.failure !== undefined &&
-        candidate.failure !== "retryable" &&
-        candidate.failure !== "permanent")
-    ) {
-      throw new DependencyUnavailableError(
-        "The compute Driver returned invalid Namespace deletion evidence.",
-      );
-    }
-  }
-
-  private async recordLifecycleResult(
-    actorId: string,
-    namespace: Readonly<Namespace>,
-    compute: ComputeDriver | undefined,
-    outcome: "success" | "failure",
-    details: Readonly<Record<string, unknown>>,
-  ): Promise<void> {
-    await this.mutate((state) =>
-      this.appendLifecycleAudit(state, actorId, namespace, compute, outcome, details),
-    );
-  }
-
-  private async appendLifecycleAudit(
-    state: PlatformUnitOfWork,
-    actorId: string,
-    namespace: Readonly<Namespace>,
-    compute: ComputeDriver | undefined,
-    outcome: "success" | "failure",
-    details: Readonly<Record<string, unknown>>,
-  ): Promise<void> {
-    let iamDriverId: string | undefined;
-    try {
-      iamDriverId = this.selectedDriver("iam").id;
-    } catch {
-      iamDriverId = undefined;
-    }
-    await state.audit.append({
-      id: `aud_${crypto.randomUUID()}`,
-      installationId: this.installation.id,
-      namespaceId: namespace.id,
-      occurredAt: this.timestamp(),
-      kind: "mutation",
-      actorId,
-      source: "occ",
-      action:
-        namespace.status === "deleting"
-          ? "openclaw.namespaces.lifecycle.delete"
-          : "openclaw.namespaces.lifecycle.ensure",
-      resource: {
-        kind: "namespace",
-        id: namespace.id,
-        namespaceId: namespace.id,
-      },
-      ...(iamDriverId === undefined ? {} : { iamDriverId }),
-      outcome,
-      details: Object.freeze({
-        ...(compute === undefined ? {} : { computeDriverId: compute.id }),
-        ...details,
-      }),
-    });
   }
 
   private async record(
