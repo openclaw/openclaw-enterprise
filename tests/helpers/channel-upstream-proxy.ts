@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { connect, createServer, isIP, type Socket } from "node:net";
+import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
 import { promisify } from "node:util";
 
 const command = promisify(execFile);
@@ -16,7 +17,12 @@ export async function createControlledChannelProxy(
   {
     forward = true,
     cluster: selectedCluster,
-  }: { readonly forward?: boolean; readonly cluster?: string } = {},
+    tls,
+  }: {
+    readonly forward?: boolean;
+    readonly cluster?: string;
+    readonly tls?: (address: string) => Promise<{ key: string; cert: string }>;
+  } = {},
 ) {
   const selectedContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
   const cluster =
@@ -35,7 +41,7 @@ export async function createControlledChannelProxy(
   const observations: ProxyObservation[] = [];
   const sockets = new Set<Socket>();
   let acceptCredentials = true;
-  const server = createServer((socket) => {
+  const handle = (socket: Socket) => {
     sockets.add(socket);
     socket.on("error", () => socket.destroy());
     socket.once("close", () => sockets.delete(socket));
@@ -103,6 +109,12 @@ export async function createControlledChannelProxy(
       });
     };
     socket.on("data", receive);
+  };
+  const material = await tls?.(address);
+  const server = material ? createTlsServer(material, handle) : createServer(handle);
+  let tlsFailures = 0;
+  server.on("tlsClientError", () => {
+    tlsFailures += 1;
   });
   let stopped = false;
   const stop = async () => {
@@ -132,7 +144,7 @@ export async function createControlledChannelProxy(
     throw new Error("The controlled proxy did not bind an IPv4 port.");
   }
   return {
-    url: `http://${address}:${listening.port}`,
+    url: `${material ? "https" : "http"}://${address}:${listening.port}`,
     address,
     port: listening.port,
     authorization,
@@ -140,6 +152,13 @@ export async function createControlledChannelProxy(
     rejectAuthentication,
     allowAuthentication: () => {
       acceptCredentials = true;
+    },
+    tlsFailures: () => tlsFailures,
+    replaceCertificate: (next: { key: string; cert: string }) => {
+      if (!material) {
+        throw new Error("Certificate replacement requires an HTTPS proxy.");
+      }
+      (server as TlsServer).setSecureContext(next);
     },
     stop,
   };

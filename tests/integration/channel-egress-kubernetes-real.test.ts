@@ -1,8 +1,10 @@
 import { lookup } from "node:dns/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { boundedTeardown } from "../helpers/bounded-teardown.ts";
@@ -10,6 +12,7 @@ import { slackApi } from "../helpers/slack-web-api.ts";
 import { probeChannelConnect } from "../helpers/channel-egress-probe.ts";
 import { createControlledChannelProxy } from "../helpers/channel-upstream-proxy.ts";
 import { verifySlackChannelAccess } from "../helpers/slack-delivery.ts";
+import { certificateAuthority, selfSigned, signedLeaf } from "../helpers/certificates.ts";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
@@ -889,8 +892,56 @@ test(
       gatewayIdentity,
       senderIdentity,
     });
+    // The HTTPS proxy presents a private-CA leaf. Only the public CA bundle is installed
+    // in Envoy's namespace; proxy private keys remain in this runner-owned directory.
+    const tlsDirectory = await mkdtemp(join(tmpdir(), "oce-channel-proxy-tls-"));
+    context.after(() => rm(tlsDirectory, { recursive: true, force: true }));
+    const ca = await certificateAuthority(tlsDirectory, {
+      caName: `OCE proxy test ${randomUUID()}`,
+    });
+    const envoyNamespace = "envoy-gateway-system";
+    const caName = `channel-proxy-ca-${randomUUID()}`;
+    const caManifest = join(tlsDirectory, "ca-secret.json");
+    await writeFile(
+      caManifest,
+      JSON.stringify({
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: caName, namespace: envoyNamespace },
+        type: "Opaque",
+        stringData: { "ca.pem": await readFile(ca.caPath, "utf8") },
+      }),
+      { mode: 0o600 },
+    );
+    let caUid: unknown;
+    context.after(async () => {
+      if (!caUid) {
+        return;
+      }
+      const current = await resource("secret", caName, envoyNamespace).catch(() => undefined);
+      if (current && record(record(current).metadata).uid === caUid) {
+        await kubectl("delete", "secret", caName, "-n", envoyNamespace, "--wait=false");
+      }
+    });
+    await kubectl("apply", "-f", caManifest);
+    caUid = record(record(await resource("secret", caName, envoyNamespace)).metadata).uid;
     const proxy = await createControlledChannelProxy(context);
-    const peerProxy = await createControlledChannelProxy(context);
+    const peerProxy = await createControlledChannelProxy(context, {
+      tls: (address) =>
+        signedLeaf(tlsDirectory, ca, {
+          name: "peer",
+          commonName: address,
+          subjectAltName: `IP:${address}`,
+        }),
+    });
+    const badProxy = await createControlledChannelProxy(context, {
+      tls: () =>
+        signedLeaf(tlsDirectory, ca, {
+          name: "wrong-host",
+          commonName: "wrong.invalid",
+          subjectAltName: "DNS:wrong.invalid",
+        }),
+    });
     const slack = {
       allowedUserId: senderIdentity.user_id,
       channelId,
@@ -903,7 +954,9 @@ test(
         upstreamProxies: [
           { url: proxy.url, addresses: [`${proxy.address}/32`] },
           { url: peerProxy.url, addresses: [`${peerProxy.address}/32`] },
+          { url: badProxy.url, addresses: [`${badProxy.address}/32`] },
         ],
+        proxyTrust: { caSecretName: caName, caKey: "ca.pem" },
       },
       namespaceQuota: { pods: "12", "limits.cpu": "20", "limits.memory": "32Gi" },
     });
@@ -913,6 +966,7 @@ test(
     const path = `/namespaces/${namespaceId}/agents/${agentId}`;
     const directRevisionId = text(record(topology.revision).id);
     const fleet = topology.channelEgress!;
+    assert.equal(fleet.envoyNamespace, envoyNamespace);
     const harnessPolicies = async (revisionId: string) => {
       const list = await listed("networkpolicy", topology.placement);
       const selected = list.filter((policy) => {
@@ -1401,6 +1455,83 @@ test(
         );
       });
     });
+    // A configured HTTPS endpoint with the wrong hostname or an untrusted CA must fail
+    // before Envoy can send its credential-bearing CONNECT, with no direct fallback.
+    const badSecret = await topology.adminRequest("POST", `/namespaces/${namespaceId}/secrets`, {
+      name: "Bad-certificate proxy credential",
+      value: badProxy.authorization,
+    });
+    assert.equal(badSecret.status, 201);
+    assert.equal(
+      (
+        await topology.adminRequest("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
+          subjectKind: "identity",
+          subjectId: topology.secretApi.assignmentPrincipalId,
+          roleId: role.data.id,
+          resourceKind: "secret",
+          resourceId: badSecret.data.id,
+        })
+      ).status,
+      201,
+    );
+    const badSelection = { url: badProxy.url, credentialSecretId: badSecret.data.id };
+    assert.equal(
+      (await topology.request("PATCH", path, { networkProxy: badSelection })).status,
+      200,
+    );
+    const badDeploy = await topology.request("POST", `${path}/deploy`);
+    assert.equal(badDeploy.status, 202);
+    await waitFor(
+      "bad-certificate Agent revision activation",
+      async () =>
+        (await topology.request("GET", path)).data?.activeRevisionId === badDeploy.data.id,
+    );
+    const badPod = await waitFor("bad-certificate Gateway readiness", async () => {
+      const pods = await listed(
+        "pods",
+        topology.gatewayPlacement,
+        `openclaw.dev/agent=${agentId},openclaw.dev/revision=${badDeploy.data.id},openclaw.dev/workload-role=gateway`,
+      );
+      return pods.find((item) =>
+        rows(record(item.status).conditions ?? []).some(
+          (condition) => condition.type === "Ready" && condition.status === "True",
+        ),
+      );
+    });
+    const badGateway = podName(badPod);
+    const badEnvoy = await gatewayProxy();
+    assert.equal(
+      (await probeChannelConnect(topology.gatewayPlacement, badGateway, badEnvoy, "slack.com"))
+        .status,
+      503,
+    );
+    assert.equal(
+      badProxy.observations.length,
+      0,
+      "Wrong-host TLS must stop CONNECT before credential delivery.",
+    );
+    assert.ok(badProxy.tlsFailures() > 0);
+    const untrusted = await selfSigned(tlsDirectory, {
+      name: "untrusted",
+      commonName: badProxy.address,
+      subjectAltName: `IP:${badProxy.address}`,
+    });
+    badProxy.replaceCertificate(untrusted);
+    assert.equal(
+      (await probeChannelConnect(topology.gatewayPlacement, badGateway, badEnvoy, "slack.com"))
+        .status,
+      503,
+    );
+    assert.equal(
+      badProxy.observations.length,
+      0,
+      "Untrusted TLS must stop CONNECT before credential delivery.",
+    );
+    await assertDeniedConnection(topology.gatewayPlacement, badGateway, slackAddress, 443);
+    assert.deepEqual(
+      (await topology.request("GET", `${path}/revisions/${badDeploy.data.id}`)).data.networkProxy,
+      badSelection,
+    );
     const cleared = await topology.request("PATCH", path, { networkProxy: null });
     assert.equal(cleared.status, 200);
     const retained = await topology.request("GET", `${path}/revisions/${deployed.data.id}`);
