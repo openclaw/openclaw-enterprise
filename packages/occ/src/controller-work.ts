@@ -1,6 +1,11 @@
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import type { DeploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 
+export interface WorkClaim {
+  readonly idempotencyKey: string;
+  readonly claimToken: string;
+}
+
 export type ControllerWorkState = "queued" | "claimed" | "succeeded" | "failed_permanent";
 
 export type ControllerWorkKind = "lifecycle" | "provisioning";

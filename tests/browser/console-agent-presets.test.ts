@@ -37,7 +37,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import { PresetResponse, PresetListResponse } from "../../packages/contracts/src/api/resources.ts";
 
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 import {
   CodexPluginDriver,
