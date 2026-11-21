@@ -226,9 +226,9 @@ before deploying. A deployment alone starts the new version with the old copy.
 See [Update a source](../credential-sources.md#update-a-source).
 
 With OpenShell, that source update briefly disconnects the workspace node of
-every running Agent that uses the source, even when nothing changed. A turn
-starting meanwhile can fail with HTTP 500, and a running native OpenClaw turn is
-lost. Update the source while those Agents are idle.
+every running Agent that uses the source, even when nothing changed. A turn that
+starts meanwhile can fail with HTTP 500, and so can a native OpenClaw turn
+already in progress. Update the source while those Agents are idle.
 
 Recreating a Harness Pod or running `kubectl rollout restart` only reads its
 existing revision projection; neither is a credential-delivery operation.
