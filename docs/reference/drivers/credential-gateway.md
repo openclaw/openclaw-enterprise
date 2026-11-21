@@ -275,5 +275,5 @@ adopt or delete the same stored copy.
 - [Credential sources](../credential-sources.md) and [Agent Harness authentication](../agents.md#harness-authentication)
 - [Credential source lifecycle flow](../../flows/credential-source-lifecycle.md)
 - [OpenShell Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md)
-- [OCC credential source operations](../../../packages/occ/src/index.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
+- [OCC credential source operations](../../../packages/occ/src/credential-source-operations.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 - [OpenShell verification](../../testing/openshell.md)

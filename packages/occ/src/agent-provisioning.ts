@@ -292,3 +292,44 @@ export function canonicalProvisioningJson(input: unknown): string {
     .map(([key, value]) => `${JSON.stringify(key)}:${canonicalProvisioningJson(value)}`)
     .join(",")}}`;
 }
+
+export function validExecutionMode(value: unknown): value is HarnessExecutionMode {
+  return value === "embedded" || value === "dedicated";
+}
+
+export function normalizeGatewayManagedMode(value: unknown, defaultValue?: boolean): boolean {
+  const mode = value === undefined ? defaultValue : value;
+  if (typeof mode !== "boolean") {
+    throw new ScopeViolationError("The Agent Gateway managed mode must be a boolean.");
+  }
+  return mode;
+}
+
+export function parseProvisioningPlan(record: Readonly<AgentProvisioningRecord>): {
+  readonly configuration: AgentProvisioningConfigurationInput;
+  readonly harnessAuth: HarnessAuthBinding | null;
+  readonly executionMode: HarnessExecutionMode;
+  readonly gatewayManagedMode: boolean;
+} {
+  const plan = asRecord(record.plan);
+  let configuration: AgentProvisioningConfigurationInput;
+  try {
+    configuration = normalizeProvisioningConfiguration(plan?.configuration);
+  } catch (error) {
+    // A stored plan that no longer validates is not the caller's invalid request.
+    if (error instanceof SecretBindingValidationError) {
+      throw new ScopeViolationError("The accepted provisioning plan is no longer valid.");
+    }
+    throw error;
+  }
+  const executionMode = plan?.executionMode;
+  if (!validExecutionMode(executionMode)) {
+    throw new ScopeViolationError("The provisioning execution mode is invalid.");
+  }
+  return {
+    configuration,
+    harnessAuth: normalizeProvisioningHarnessAuth(plan?.harnessAuth ?? null),
+    executionMode,
+    gatewayManagedMode: normalizeGatewayManagedMode(plan?.gatewayManagedMode, true),
+  };
+}

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-20"
-last_updated_session: "authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Harness Authentication Binding Flow
@@ -20,8 +20,8 @@ see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-stor
 
 - Trigger: Agent create/PATCH with `harnessAuth`, followed by the bodyless
   exact-Agent deployment action.
-- Sources: `packages/occ/src/index.ts:OpenClawController.createAgent`,
-  `OpenClawController.updateAgent`, and `OpenClawController.deployAgent`.
+- Sources: `packages/occ/src/agent-drafts.ts:createAgent`, `updateAgent`,
+  and `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`.
 - Assumptions: ready Namespace at deployment, same-Namespace source, existing
   Secret value or issued account credential, exact actor permissions, a compatible
   configured Harness/model, and selected Compute support.
@@ -84,7 +84,7 @@ without storing credentials. OpenAI API-key discovery excludes models with a
 valid `shutdown_date` today or earlier in UTC; other dates and the Anthropic and
 service-account catalogs remain unfiltered. Discovery does not prove a model call.
 
-`packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`,
+`packages/occ/src/agent-drafts.ts:createAgent`, `updateAgent`,
 `packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`
 
 Create and PATCH follow the [`harnessAuth` field semantics](../reference/agents.md#harness-authentication).
@@ -114,7 +114,7 @@ credentials and their private Backend binding.
 
 ### 2. Freeze the admitted source and compatibility
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`, `packages/occ/src/harness-auth.ts:admitHarnessAuth` and
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`, `packages/occ/src/harness-auth.ts:admitHarnessAuth` and
 `credentialSourceHarnessAuthSnapshot`
 
 Deployment requires a nonnull binding, exact Agent `deploy`, and Configuration
@@ -329,6 +329,9 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 
 - 2026-11-20 16:33: Point Harness binding and snapshot checks to their source module. (authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1 - 56b116735a3a38a48eff35bf36152d3032b1d7d3)
 

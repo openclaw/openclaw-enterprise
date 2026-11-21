@@ -45,6 +45,24 @@ export async function startSkipperPrivateGitOrigin({
   if (!approvalRef.startsWith("refs/heads/") || approvalRef === "refs/heads/main") {
     throw new Error("approvalRef must be a nondefault branch");
   }
+  // Signal 0 probes the group selector without delivering a signal. PID 1
+  // would produce the broadcast selector, so leave that case to normal startup.
+  if (process.platform !== "win32" && process.pid > 1) {
+    try {
+      process.kill(-process.pid, 0);
+    } catch (error) {
+      if (error.code === "EPERM") {
+        throw new Error(
+          "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.",
+          { cause: error },
+        );
+      }
+      // The runner need not be a process-group leader.
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
   await run("git", ["check-ref-format", approvalRef]);
   const issuedNetwork = networkAcl === "issued";
   assert.ok(!scopedRest || issuedNetwork, "Scoped REST requires the controlled App issuer");

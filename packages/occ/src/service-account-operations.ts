@@ -8,6 +8,7 @@ import {
   type ServiceAccountDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import { driverOperation } from "./driver-operation.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -57,13 +58,10 @@ interface ServiceAccountOperationsDependencies {
     principalId: string,
     target: ResourceRef & { readonly namespaceId: string },
   ) => Promise<Readonly<Namespace>>;
-  readonly serviceAccountDriver: () => ServiceAccountDriver | undefined;
+  readonly hasSelection: () => boolean;
+  readonly selectDriver: () => ServiceAccountDriver;
   readonly computeDriver: () => ComputeDriver;
-  readonly hasConfiguredDriver: () => boolean;
-  readonly driverOperation: <T>(
-    operation: () => Promise<T>,
-    capability: "ServiceAccount" | "Compute",
-  ) => Promise<T>;
+  readonly configuredDriverId: string | undefined;
   readonly nextIdentifier: (kind: "service_account") => string;
 }
 
@@ -94,6 +92,35 @@ async function lockServiceAccount(
 export function createServiceAccountOperations(deps: ServiceAccountOperationsDependencies) {
   const { read, transact } = deps.transactions;
   const { authorize, holdAuthority, readableListRows } = deps.authority;
+
+  function serviceAccountDriver(): ServiceAccountDriver | undefined {
+    if (!deps.hasSelection()) {
+      return undefined;
+    }
+    try {
+      return deps.selectDriver();
+    } catch {
+      throw new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
+    }
+  }
+
+  function hasServiceAccountDriver(): boolean {
+    return deps.hasSelection() || deps.configuredDriverId !== undefined;
+  }
+
+  function serviceAccountDriverId(): string | undefined {
+    const driver = serviceAccountDriver();
+    if (
+      driver !== undefined &&
+      deps.configuredDriverId !== undefined &&
+      driver.id !== deps.configuredDriverId
+    ) {
+      throw new DependencyUnavailableError(
+        "The selected ServiceAccount Driver does not match Installation configuration.",
+      );
+    }
+    return driver?.id ?? deps.configuredDriverId;
+  }
 
   async function getServiceAccount(
     principalId: string,
@@ -161,9 +188,9 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         id: account.id,
         namespaceId: namespace.id,
       });
-      const driver = deps.serviceAccountDriver();
+      const driver = serviceAccountDriver();
       if (driver !== undefined) {
-        await deps.driverOperation(() => driver.create(account), "ServiceAccount");
+        await driverOperation(() => driver.create(account), "ServiceAccount");
       }
       return account;
     });
@@ -186,11 +213,11 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
       if (account.credential !== undefined) {
         throw new ResourceStateConflictError("The ServiceAccount already has a credential.");
       }
-      const driver = deps.serviceAccountDriver();
+      const driver = serviceAccountDriver();
       if (driver === undefined) {
         throw new ServiceAccountDriverNotConfiguredError("issue");
       }
-      const credential = await deps.driverOperation(
+      const credential = await driverOperation(
         () => driver.createCredential(account),
         "ServiceAccount",
       );
@@ -268,13 +295,13 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
       }
       // Decided once, on the locked account row: Driver selection is fixed when the API
       // starts, and issuance takes the same row lock, so no token can appear after this read.
-      const driver = deps.serviceAccountDriver();
+      const driver = serviceAccountDriver();
       let unrevokedCredential: ServiceAccountDeletion["unrevokedCredential"];
       if (account.credential?.kind === "access_token" && driver === undefined) {
         // Only the Backend's Driver can revoke the issued token, so deletion waits for it
         // unless the caller forces it. Only the worker sets a configured Driver id, so the API
         // always answers the 409 (or forces).
-        if (deps.hasConfiguredDriver()) {
+        if (deps.configuredDriverId !== undefined) {
           throw new DependencyUnavailableError(
             "The selected ServiceAccount Driver is unavailable.",
           );
@@ -290,7 +317,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         unrevokedCredential = binding === undefined ? {} : { ...binding };
       }
       if (driver !== undefined) {
-        await deps.driverOperation(() => driver.delete(account), "ServiceAccount");
+        await driverOperation(() => driver.delete(account), "ServiceAccount");
       }
       const removed = await accessBindingsTargeting(
         state,
@@ -318,7 +345,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
     if (deleteSecret === undefined) {
       return;
     }
-    await deps.driverOperation(
+    await driverOperation(
       () =>
         deleteSecret({
           namespaceId: account.namespaceId,
@@ -337,6 +364,8 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
   }
 
   return {
+    hasServiceAccountDriver,
+    serviceAccountDriverId,
     getServiceAccount,
     listServiceAccounts,
     createServiceAccount,
@@ -345,3 +374,5 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
     deleteServiceAccount,
   };
 }
+
+export type ServiceAccountOperations = ReturnType<typeof createServiceAccountOperations>;

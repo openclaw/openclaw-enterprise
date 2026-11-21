@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: "2026-11-20"
-last_updated_session: "authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Credential source refresh Flow
@@ -9,7 +9,7 @@ last_updated_session: "authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15"
 ## Overview
 
 OCC registers an empty OAuth2 provider. The Refresh Driver requests a token;
-the gateway renews it before expiry. See [source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
+the gateway renews it before expiry. See [binding and withdrawal](credential-source-lifecycle.md).
 
 In [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
 the refresh grant; the Harness gets a placeholder and account metadata.
@@ -24,8 +24,8 @@ use committed tokens and cannot trigger issuance.
 - Trigger: `POST /namespaces/:namespaceId/credential-sources` with a `refresh`
   type, `PATCH`, `GET`, or `DELETE …/credential-sources/:credentialSourceId`,
   and `POST …/credential-sources/:credentialSourceId/rotate`.
-- Source: `packages/occ/src/index.ts:createCredentialSource`
-- Source: `packages/occ/src/index.ts:rotateCredentialSource`
+- Source: `packages/occ/src/credential-source-operations.ts:createCredentialSource`
+- Source: `packages/occ/src/credential-source-operations.ts:rotateCredentialSource`
 - Source: `apps/controller/src/drivers/credential-refresh/openshell.ts:OpenShellCredentialRefreshDriver`
 - Assumptions: the OpenShell Backend declares `credential_gateway` and
   `credential_refresh`; the Installation selects both Drivers. Gateway
@@ -54,7 +54,7 @@ graph TD
 
 ### 1. Registration
 
-`packages/occ/src/index.ts:createCredentialSource`
+`packages/occ/src/credential-source-operations.ts:createCredentialSource`
 
 OCC authorizes creation and validates config and Secret reference fields against
 the selected type. If the type declares `rotation: refresh` and its provider has
@@ -104,10 +104,10 @@ OpenShell resolves the credential at runtime.
 
 ### 2. First mint
 
-`packages/occ/src/index.ts:mintFirstRefreshToken`
+`packages/occ/src/credential-source-operations.ts:mintFirstRefreshToken`
 
-OCC calls `configureRefresh` with the source config and resolved Secret values,
-then `rotate`. Request UUIDs derived from source ID and step prevent duplicate effects. The OpenShell Driver sends `ConfigureProviderRefresh`
+OCC passes config and resolved Secret values to `configureRefresh`,
+then calls `rotate`. Source ID and step determine request UUIDs to prevent duplicates. The OpenShell Driver sends `ConfigureProviderRefresh`
 (`client_id`, `scope`, and Secret material) and `RotateProviderCredential`;
 OpenShell calls the issuer and stores the token on the provider. A thrown call leaves the outcome unknown;
 after cleanup, OCC retains the `deleting` record. A definite non-`ready` result
@@ -179,7 +179,7 @@ longer offers: that source keeps its gateway status without `refresh`.
 
 ### 4. Update and rotation
 
-`packages/occ/src/index.ts:updateCredentialSource`
+`packages/occ/src/credential-source-operations.ts:updateCredentialSource`
 
 `PATCH` locks the source, not the Namespace, so other Namespace writes do not
 wait on the issuer. A field the catalog marks `issuerRotated` (`refresh_token`)
@@ -194,7 +194,7 @@ reconfiguration, even one whose mint fails, starts a new OpenShell authorization
 epoch that revokes running Sandboxes' stable placeholders, so Agents need a
 redeploy.
 
-`packages/occ/src/index.ts:rotateCredentialSource`
+`packages/occ/src/credential-source-operations.ts:rotateCredentialSource`
 
 `POST …/rotate` requires `credential_source:update`, a `ready` source, and a
 `refresh` type; a static type returns `409`. It calls `rotate` under the source
@@ -204,7 +204,7 @@ whose outcome is unknown records neither event.
 
 ### 5. Deletion
 
-`packages/occ/src/index.ts:deleteCredentialSource`
+`packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
 After the usual reference check and `deleting` mark, OCC calls `removeRefresh`,
 then the gateway's `removeSource`. Before `DeleteProviderRefresh`,
@@ -312,6 +312,7 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:18: Link device login source. (authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15 - c77f4a6376b5412d0544e7dc69194877d755e2f7)
 
 - 2026-11-20 16:13: Follow Plugin discovery through its dedicated module. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)

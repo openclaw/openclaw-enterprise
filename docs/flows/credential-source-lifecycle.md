@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-20"
-last_updated_session: "authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Credential source lifecycle flow
@@ -14,7 +14,7 @@ OpenClaw Control Plane (OCC) authorizes CredentialSource operations and records 
 
 - Trigger: CredentialSource create, update, or delete; Agent binding and deployment; or Agent source withdrawal.
 - Source: `apps/controller/src/http/credential-sources.ts:createCredentialSource`
-- Source: `packages/occ/src/index.ts:createCredentialSource`
+- Source: `packages/occ/src/credential-source-operations.ts:createCredentialSource`
 - Source: `packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`
 - Context: a ready Namespace, selected owner Driver, and grants for the exact source operation.
 
@@ -40,17 +40,17 @@ The dashed edge marks missing workflow integration, not a tested deployment.
 
 ### 1. Register a source
 
-`packages/occ/src/index.ts:createCredentialSource`
+`packages/occ/src/credential-source-operations.ts:createCredentialSource`
 
 OCC authorizes `credential_source:create`, locks the ready Namespace, and checks that the selected owner offers the requested source type before it reads a Secret or writes to a Driver. Invalid fields return `400`; an unoffered type returns `409`. Each Secret must belong to the Namespace, and the caller needs `secret:operate`. For a legacy Gateway source, OCC reads the Secret to copy its value to `CredentialGatewayDriver`. For a protected static source, OCC first checks that its selected provider is compatible and registered once, then verifies the credential format and its authoritative version without retaining the value. See the [source reference](../reference/credential-sources.md) for inputs and the [protected flow](credential-source-egress.md#1-admit-source-and-install-the-revision-plan) for admission details.
 
-`packages/occ/src/index.ts:abandonCredentialRegistration`, `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
+`packages/occ/src/credential-source-operations.ts:abandonCredentialRegistration`, `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
 Registration and deletion reject inherited controller transactions before effects, so their intermediate states can commit independently. For legacy Gateway sources, OCC commits `registering` before calling the Driver. The bundled OpenShell Driver checks Provider ownership and creates the source-owned Provider and profile; Refresh alone receives refresh material. Success commits `ready` and audit together. A failed or uncertain external write triggers cleanup through the original owner. If cleanup cannot confirm removal, the record stays `deleting`; if DELETE wins the race, POST compensates without taking over DELETE's issuer withdrawal. Protected Proxy sources instead complete [protected admission](credential-source-egress.md) without a Gateway registration write; migration requires an unbound source.
 
 ### 2. Update a source
 
-`packages/occ/src/index.ts:updateCredentialSource`
+`packages/occ/src/credential-source-operations.ts:updateCredentialSource`
 
 OCC authorizes `credential_source:update`, locks a ready source, and validates replacement Secret references. Device-authorized sources refuse PATCH before Secret reads. For legacy Gateway sources, the external write precedes the commit of references and audit; a failed commit can leave OpenShell newer until the request is repeated. OpenShell updates reach subsequently started processes. A protected static source must be unbound before it can be updated; OCC then repeats Proxy admission and commits replacement references without a Gateway update. Refresh rotation follows the [refresh flow](credential-source-refresh.md#4-update-and-rotation).
 
@@ -60,7 +60,7 @@ OCC authorizes `credential_source:update`, locks a ready source, and validates r
 
 OCC checks `credential_source:operate` for existing bindings without requiring a lookup, so a caller can remove an obsolete binding. New bindings require a ready same-Namespace source and its recorded owner. Harness authentication requires the legacy Credential Gateway. PostgreSQL records Agent/source references and prevents deletion while referenced.
 
-`packages/occ/src/index.ts:deployAgent`, `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`, `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable`
 
 OCC rechecks the caller's and Agent's source grants, requires a Sandbox and an offered owner type, then freezes source ID, type, owner Driver, and Harness login mode in the Agent revision. A selected Proxy cannot replace a withdrawn Gateway type or change an existing source's owner. State rejects stale or forged snapshots; PostgreSQL holds ordered Namespace, Agent, and source locks through commit. Compute accepts only supported Harness/Driver pairings and sends no model Secret to the workload.
 
@@ -80,7 +80,7 @@ When OCC TokenService is selected, composition pairs `credential_proxy_delivery`
 
 ### 5. Withdraw or delete a source
 
-`packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `packages/occ/src/index.ts:deleteCredentialSource`
+`packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
 Withdrawal requires `agent:operate` and queues version-scoped work without deploying a revision. The worker rechecks each requester's grant. For legacy Gateway delivery, Compute detaches the OpenShell Provider and confirms its receipt; protected Proxy sources instead reduce the approved policy. Denied requesters require replay. Unconfirmed revocation retries, and replay or maintenance recovers pending work. Deploy and repair never restore withdrawn access, including after a late Sandbox create.
 
@@ -105,6 +105,7 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:33: Point Harness binding and snapshot checks to their source module. (authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1 - 56b116735a3a38a48eff35bf36152d3032b1d7d3)
 
 - 2026-11-20 10:13: Name the serving protected source owner as the legacy egress Driver. (01a1f7ec-0d9e-7803-96c3-eb88548e3788 - b02e93892)

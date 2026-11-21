@@ -370,4 +370,4 @@ for topology, deletion support, and private gateway access.
 - [Driver selection](selection.md) and [Harness execution](../harness-execution.md)
 - [Agent lifecycle](../agents.md) and [controller reconciliation](../controller/reconciliation.md)
 - [Deployment diagnostics flow](../../flows/agent-deployment-diagnostics.md)
-- [Worker source](../../../apps/controller/src/worker.ts) and [OCC source](../../../packages/occ/src/index.ts)
+- [Worker source](../../../apps/controller/src/worker.ts) and [OCC source](../../../packages/occ/src/agent-deployment-admission.ts)

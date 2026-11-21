@@ -5,7 +5,7 @@ import type {
   ComputeDriver,
   Namespace,
 } from "@openclaw-enterprise/contracts";
-import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -55,6 +55,20 @@ export async function runtimeCredentialOperation<T>(operation: () => Promise<T>)
       "The Agent runtime credential operation failed or its outcome is unknown.",
     );
   }
+}
+
+export function runtimeCredentialsInput(
+  input: AgentRuntimeCredentialsInput,
+): AgentRuntimeCredentialsInput {
+  const candidate = asRecord(input);
+  if (candidate === undefined) {
+    throw new ScopeViolationError("Agent runtime credentials must be a JSON object.");
+  }
+  const keys = Object.keys(candidate);
+  if (keys.length !== 0) {
+    throw new ScopeViolationError("Agent runtime credentials contain unsupported fields.");
+  }
+  return Object.freeze({});
 }
 
 export class AgentRuntimeCredentials {
