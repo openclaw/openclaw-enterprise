@@ -62,8 +62,7 @@ graph TD
 
 ### 1. Acquire or select one credential source
 
-`packages/occ/src/index.ts:OpenClawController.startAgentDeviceAuthorization`,
-`pollAgentDeviceAuthorization`, `cancelAgentDeviceAuthorization`
+`packages/occ/src/device-authorization-flow.ts` handles start, poll, and cancel.
 
 Device login creates a credential source and asks its Credential Refresh Driver
 to start and poll authorization. OCC binds the login to the actor, Namespace,

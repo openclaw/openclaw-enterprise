@@ -145,12 +145,11 @@ import {
   type RemovedAccessBinding,
 } from "./iam-policy-cleanup.ts";
 import { deploymentDiagnostics, withHarnessDiagnostic } from "./deployment-diagnostics.ts";
+import { deviceAuthorizationCipher } from "./device-authorization.ts";
 import {
-  cancelledDeviceAuthorization,
-  deviceAuthorizationCipher,
-  deviceAuthorizationScope,
-  type DeviceAuthorizationSession,
-} from "./device-authorization.ts";
+  createDeviceAuthorizationFlow,
+  type DeviceAuthorizationAudit,
+} from "./device-authorization-flow.ts";
 import type {
   Agent,
   AgentCredentialSourceBinding,
@@ -206,8 +205,6 @@ import type {
   Driver,
   DriverCapability,
   HarnessDescriptor,
-  CredentialSourceDeviceAuthorization,
-  CredentialSourceDeviceAuthorizationResult,
   HarnessExecutionMode,
   IAMConfiguredPolicy,
   IAMConfiguredPolicyChanges,
@@ -328,8 +325,6 @@ import {
   AuditAppendUnavailableError,
   DependencyUnavailableError,
   RuntimeDiagnosticsTransportError,
-  DeviceAuthorizationScopeMismatchError,
-  DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
   PluginDiscoveryError,
@@ -2350,7 +2345,7 @@ export class OpenClawController {
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
-  private readonly deviceLoginCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
+  private readonly deviceAuthorization: ReturnType<typeof createDeviceAuthorizationFlow>;
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
   private readonly state: PlatformStateStore;
@@ -2416,11 +2411,31 @@ export class OpenClawController {
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
-    if (options.authenticationStateEncryptionSecret) {
-      this.deviceLoginCipher = deviceAuthorizationCipher(
-        options.authenticationStateEncryptionSecret,
-      );
-    }
+    this.deviceAuthorization = createDeviceAuthorizationFlow<PlatformReadView, PlatformUnitOfWork>({
+      installationId: this.installation.id,
+      cipher: options.authenticationStateEncryptionSecret
+        ? deviceAuthorizationCipher(options.authenticationStateEncryptionSecret)
+        : undefined,
+      gatewayTimeoutMs: CREDENTIAL_GATEWAY_TIMEOUT_MS,
+      nextSessionId: () => this.nextIdentifier("secret"),
+      timestamp: () => this.timestamp(),
+      read: (work) => this.read(work),
+      mutate: (work) => this.mutate(work),
+      holdAuthority: (state) => this.holdAuthority(state),
+      authorize: (principalId, action, target) => this.authorize(principalId, action, target),
+      exactNamespace: (state, namespaceId) => this.exactNamespace(state, namespaceId),
+      lockNamespace: (state, namespaceId) => this.lockNamespace(state, namespaceId),
+      hasDriver: (capability) => this.selections.has(capability),
+      credentialGatewayDriver: () => this.credentialGatewayDriver(),
+      credentialRefreshDriver: () => this.credentialRefreshDriver(),
+      credentialGatewayOperation: (operation) => this.credentialGatewayOperation(operation),
+      credentialSourceContext: (namespaceId, id) => this.credentialSourceContext(namespaceId, id),
+      authorizedCredentialSource: (principalId, namespaceId, id) =>
+        this.authorizedCredentialSource(principalId, namespaceId, id),
+      createSource: (principalId, input, audit, registrationAudit) =>
+        this.createCredentialSource(principalId, input, audit, registrationAudit),
+      credentialSourceMetadata: (source) => this.credentialSourceMetadata(source),
+    });
     this.agentAuditState = options.agentAuditState;
     this.shouldRecordOperations = options.recordOperations ?? true;
     this.backends = validateBackendDefinitions(options.backends ?? []);
@@ -10570,41 +10585,6 @@ export class OpenClawController {
     });
   }
 
-  private async authorizeDeviceAuthorizationScope(
-    principalId: string,
-    namespaceId: string,
-    agentId?: string,
-  ): Promise<void> {
-    if (agentId === undefined) {
-      await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
-    } else {
-      const resource = { kind: "agent" as const, id: agentId, namespaceId };
-      await this.authorize(principalId, "read", resource);
-      await this.authorize(principalId, "update", resource);
-    }
-    await this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      if (agentId !== undefined) {
-        const agent = await state.agents.findAgent(namespaceId, agentId);
-        if (agent === undefined) {
-          throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
-        }
-        if (agent.status !== "active") {
-          throw new AgentDeletingError();
-        }
-        if (agent.executionMode !== "dedicated") {
-          throw new NotImplementedError(
-            "agent_device_authorization",
-            "Device login requires a dedicated Agent.",
-          );
-        }
-      }
-    });
-  }
-
   private async authorizedCredentialSource(
     principalId: string,
     namespaceId: string,
@@ -10639,338 +10619,32 @@ export class OpenClawController {
     };
   }
 
-  async startAgentDeviceAuthorization(
+  startAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
     harnessId: string,
     agentId?: string,
-    audit?: (
-      source: Readonly<CredentialSourceMetadata>,
-      phase: "source_registering" | "source_ready" | "session_pending",
-    ) => AuditEvent,
+    audit?: DeviceAuthorizationAudit,
   ) {
-    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    // The source registration below checks credential source create again. Checking it here too
-    // means a caller who can never start gets the 403 naming that grant, not the Driver-selection
-    // 501, and no Gateway call (finding 2995).
-    await this.authorize(principalId, "create", {
-      kind: "credential_source",
-      id: namespaceId,
-      namespaceId,
-    });
-    if (!this.selections.has("credential_gateway") || !this.selections.has("credential_refresh")) {
-      throw new NotImplementedError(
-        "agent_device_authorization",
-        "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
-      );
-    }
-    const gateway = this.credentialGatewayDriver();
-    const refresh = this.credentialRefreshDriver();
-    const cipher = this.deviceLoginCipher;
-    if (!refresh.startDeviceAuthorization || !refresh.pollDeviceAuthorization || !cipher) {
-      throw new NotImplementedError(
-        "agent_device_authorization",
-        "Device authorization is unavailable for the selected Drivers.",
-      );
-    }
-    const types = await this.credentialGatewayOperation(() =>
-      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
-    );
-    const supported = types.filter(
-      (type) => type.rotation === "refresh" && type.deviceAuthorization?.harnessId === harnessId,
-    );
-    if (supported.length !== 1) {
-      throw new NotImplementedError(
-        "agent_device_authorization",
-        "The Credential Gateway must provide one device-login source for this Harness.",
-      );
-    }
-    // Persist the source before external login. Failed or abandoned attempts remain visible
-    // in credential-source management; closing a login must never revoke an Agent's source.
-    const source = await this.createCredentialSource(
-      principalId,
-      {
-        namespaceId,
-        name: `Device login ${crypto.randomUUID()}`,
-        type: supported[0]!.type,
-      },
-      audit === undefined ? undefined : (source) => audit(source, "source_ready"),
-      audit === undefined ? undefined : (source) => audit(source, "source_registering"),
-    );
-    const { context } = await this.credentialSourceContext(namespaceId, source.id);
-    // Registration can outlive an IAM change; check the start authority again before provider I/O.
-    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "create", {
-      kind: "credential_source",
-      id: namespaceId,
-      namespaceId,
-    });
-    let started: CredentialSourceDeviceAuthorization;
-    try {
-      started = await refresh.startDeviceAuthorization(context);
-    } catch (error) {
-      throw error instanceof DeviceAuthorizationStartError
-        ? error
-        : new DeviceAuthorizationStartError("unavailable");
-    }
-    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    const { privateState, intervalSeconds, userCode, verificationUrl } = started;
-    const expiresAt = new Date(started.expiresAt).toISOString();
-    const sessionId = this.nextIdentifier("secret");
-    const handle = { id: sessionId, namespaceId };
-    const session: DeviceAuthorizationSession = {
-      actorId: principalId,
-      namespaceId,
-      ...(agentId === undefined ? {} : { agentId }),
-      harnessId,
-      credentialGatewayId: gateway.id,
-      credentialRefreshId: refresh.id,
-      sourceId: source.id,
-      phase: "pending",
-      expiresAt,
-      nextPollAt: new Date(Date.parse(this.timestamp()) + intervalSeconds * 1000).toISOString(),
-      intervalSeconds,
-    };
-    const encrypted = cipher.seal(
-      privateState,
-      deviceAuthorizationScope(this.installation.id, sessionId, session, "provider_handle"),
-    );
-    const encryptedChallenge = cipher.seal(
-      JSON.stringify({ verificationUrl, userCode }),
-      deviceAuthorizationScope(this.installation.id, sessionId, session, "challenge"),
-    );
-    await this.mutate(async (state) => {
-      await this.holdAuthority(state);
-      const namespace = await this.lockNamespace(state, namespaceId);
-      await this.authorize(principalId, "create", {
-        kind: "credential_source",
-        id: namespaceId,
-        namespaceId,
-      });
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      await state.authenticationStates.create({
-        ...session,
-        kind: "device_authorization",
-        id: sessionId,
-        version: 1,
-        encryptedChallenge,
-        privateState: encrypted,
-      });
-      if (audit !== undefined) {
-        await state.audit.append(audit(source, "session_pending"));
-      }
-    });
-    return {
-      session: handle,
-      status: "pending" as const,
-      expiresAt,
-      intervalSeconds,
-      userCode,
-      verificationUrl,
-    };
+    return this.deviceAuthorization.start(principalId, namespaceId, harnessId, agentId, audit);
   }
 
-  private replaceDeviceAuthorization(
-    id: string,
-    version: number,
-    session: DeviceAuthorizationSession,
-  ) {
-    return this.mutate((state) =>
-      state.authenticationStates.replaceDevice(session.namespaceId, id, version, session),
-    );
-  }
-
-  private async readAgentDeviceAuthorization(
+  pollAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
     sessionId: string,
     agentId?: string,
   ) {
-    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    const stored = await this.read((state) =>
-      state.authenticationStates.findDevice(namespaceId, sessionId),
-    );
-    if (stored === undefined) {
-      throw new ScopeViolationError("The login does not belong to the exact Namespace.");
-    }
-    if (stored.actorId !== principalId || stored.agentId !== agentId) {
-      throw new DeviceAuthorizationScopeMismatchError();
-    }
-    return stored;
+    return this.deviceAuthorization.poll(principalId, namespaceId, sessionId, agentId);
   }
 
-  async pollAgentDeviceAuthorization(
-    principalId: string,
-    namespaceId: string,
-    sessionId: string,
-    agentId?: string,
-  ) {
-    const session = await this.readAgentDeviceAuthorization(
-      principalId,
-      namespaceId,
-      sessionId,
-      agentId,
-    );
-    const { version } = session;
-    await this.authorize(principalId, "operate", {
-      kind: "credential_source",
-      namespaceId,
-      id: session.sourceId,
-    });
-    if (
-      session.phase === "cancelled" ||
-      Date.parse(session.expiresAt) <= Date.parse(this.timestamp())
-    ) {
-      if (session.phase !== "cancelled") {
-        // Expiry closes the login handle; the separately managed credential source survives.
-        await this.replaceDeviceAuthorization(
-          sessionId,
-          version,
-          cancelledDeviceAuthorization(session),
-        );
-      }
-      throw new ResourceStateConflictError("Device login expired or was cancelled. Connect again.");
-    }
-    const { gateway, context } = await this.credentialSourceContext(namespaceId, session.sourceId);
-    const refresh = this.selections.has("credential_refresh")
-      ? this.credentialRefreshDriver()
-      : undefined;
-    if (
-      gateway.id !== session.credentialGatewayId ||
-      refresh?.id !== session.credentialRefreshId ||
-      !refresh.pollDeviceAuthorization
-    ) {
-      throw new ResourceStateConflictError("The login Driver changed. Connect again.");
-    }
-    const cipher = this.deviceLoginCipher;
-    if (!cipher) {
-      throw new NotImplementedError(
-        "agent_device_authorization",
-        "Device login session encryption is unavailable.",
-      );
-    }
-    if (!session.encryptedChallenge) {
-      throw new ResourceStateConflictError(
-        "This login is no longer available in OCE. Connect again.",
-      );
-    }
-    const challenge = JSON.parse(
-      cipher.open(
-        session.encryptedChallenge,
-        deviceAuthorizationScope(this.installation.id, sessionId, session, "challenge"),
-      ),
-    ) as Pick<CredentialSourceDeviceAuthorization, "verificationUrl" | "userCode">;
-    const response = (status: "pending" | "ready", expiresAt = session.expiresAt) => ({
-      session: { id: sessionId, namespaceId },
-      ...(status === "ready" ? { source: this.credentialSourceMetadata(context.source).ref } : {}),
-      status,
-      expiresAt,
-      intervalSeconds: session.intervalSeconds,
-      ...challenge,
-    });
-    if (session.phase === "ready") {
-      return response("ready");
-    }
-    if (
-      session.phase === "polling" ||
-      Date.parse(session.nextPollAt) > Date.parse(this.timestamp())
-    ) {
-      return response("pending");
-    }
-    const { privateState, ...metadata } = session;
-    if (!privateState) {
-      throw new ResourceStateConflictError(
-        "This login is no longer available in OCE. Connect again.",
-      );
-    }
-    const handle = cipher.open(
-      privateState,
-      deviceAuthorizationScope(this.installation.id, sessionId, session, "provider_handle"),
-    );
-    if (
-      !(await this.replaceDeviceAuthorization(sessionId, version, { ...session, phase: "polling" }))
-    ) {
-      return response("pending");
-    }
-    const claimedVersion = version + 1;
-    let result: CredentialSourceDeviceAuthorizationResult;
-    try {
-      result = await refresh.pollDeviceAuthorization(context, handle);
-    } catch (error) {
-      // An uncertain external exchange is not replayed. The source remains visible for recovery.
-      await this.replaceDeviceAuthorization(
-        sessionId,
-        claimedVersion,
-        cancelledDeviceAuthorization(session),
-      );
-      throw new RetryLaterError("deviceLoginFailed", error);
-    }
-    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    const current = await this.authorizedCredentialSource(
-      principalId,
-      namespaceId,
-      session.sourceId,
-    );
-    if (
-      current.gateway.id !== session.credentialGatewayId ||
-      !this.selections.has("credential_refresh") ||
-      this.credentialRefreshDriver().id !== session.credentialRefreshId
-    ) {
-      throw new ResourceStateConflictError("The login Driver changed. Connect again.");
-    }
-    if (Date.parse(session.expiresAt) <= Date.parse(this.timestamp())) {
-      await this.replaceDeviceAuthorization(
-        sessionId,
-        claimedVersion,
-        cancelledDeviceAuthorization(session),
-      );
-      throw new ResourceStateConflictError("Device login expired or was cancelled. Connect again.");
-    }
-    const next: DeviceAuthorizationSession =
-      result.status === "pending"
-        ? {
-            ...session,
-            phase: "pending",
-            nextPollAt: new Date(
-              Date.parse(this.timestamp()) + session.intervalSeconds * 1000,
-            ).toISOString(),
-          }
-        : {
-            ...metadata,
-            phase: "ready",
-            expiresAt: new Date(Date.parse(this.timestamp()) + 24 * 60 * 60 * 1000).toISOString(),
-          };
-    if (!(await this.replaceDeviceAuthorization(sessionId, claimedVersion, next))) {
-      throw new ResourceStateConflictError("The login changed while completing. Connect again.");
-    }
-    return response(result.status, next.expiresAt);
-  }
-
-  async cancelAgentDeviceAuthorization(
+  cancelAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
     sessionId: string,
     agentId?: string,
   ): Promise<void> {
-    const session = await this.readAgentDeviceAuthorization(
-      principalId,
-      namespaceId,
-      sessionId,
-      agentId,
-    );
-    const { version } = session;
-    // Local discard must never revoke a shared upstream login session.
-    if (
-      !(await this.replaceDeviceAuthorization(
-        sessionId,
-        version,
-        cancelledDeviceAuthorization(session),
-      ))
-    ) {
-      throw new ResourceStateConflictError("The login session changed. Refresh and retry.");
-    }
+    return this.deviceAuthorization.cancel(principalId, namespaceId, sessionId, agentId);
   }
 
   async discoverAgentModels(

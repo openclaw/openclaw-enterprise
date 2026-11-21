@@ -19,6 +19,12 @@ export interface DeviceAuthorizationSession {
   readonly privateState?: string;
 }
 
+export type DeviceAuthenticationState = DeviceAuthorizationSession & {
+  readonly kind: "device_authorization";
+  readonly id: string;
+  readonly version: number;
+};
+
 export function cancelledDeviceAuthorization(
   session: DeviceAuthorizationSession,
 ): DeviceAuthorizationSession {

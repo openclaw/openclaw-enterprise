@@ -116,8 +116,8 @@ failure code. Otherwise OCC commits `ready` with audit.
 
 ### Device authorization and configuration
 
-`packages/occ/src/index.ts:startAgentDeviceAuthorization`,
-`pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
+`packages/occ/src/device-authorization-flow.ts` handles device login.
+`packages/occ/src/index.ts:withPluginDiscoveryCredential` uses the source for plugin discovery.
 
 OCC checks Agent authority and Namespace `credential_source:create`, registers the
 source, then rechecks authority before starting login. It audits `source_registering`,
@@ -131,7 +131,7 @@ replies unless another tab owns the draft. A `501` or unavailable type disables
 sign-in. A poll `403` pauses checks and shows the request ID. Retry polls the same handle.
 See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
-`readAgentDeviceAuthorization` checks Agent authority, actor, Namespace and saved Agent.
+`readSession` checks Agent authority, actor, Namespace and saved Agent.
 Poll also checks source `operate` before changes and after I/O.
 Scope mismatches audit `DEVICE_AUTHORIZATION_SCOPE_MISMATCH` and return `404`,
 or `503` if audit fails. Version-checked updates serialize polls and fence

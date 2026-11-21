@@ -1,5 +1,6 @@
 import {
   cancelledDeviceAuthorization,
+  type DeviceAuthenticationState,
   type DeviceAuthorizationSession,
 } from "../device-authorization.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
@@ -536,12 +537,6 @@ export interface SecretReferencePage {
 export type OAuthAuthenticationState = Omit<ConnectionSession, "stateHash"> & {
   readonly kind: "oauth_connection";
   readonly id: string;
-};
-
-export type DeviceAuthenticationState = DeviceAuthorizationSession & {
-  readonly kind: "device_authorization";
-  readonly id: string;
-  readonly version: number;
 };
 
 export type AuthenticationState = OAuthAuthenticationState | DeviceAuthenticationState;
