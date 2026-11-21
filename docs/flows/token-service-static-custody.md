@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-21
-last_updated_session: authoring-run/8bfb022d-2367-4ffc-b161-e5ea19cb7a80
+last_updated_session: authoring-run/d087964b-7e67-4a03-9579-11901c232afe
 ---
 
 # Managed static credential source custody flow
@@ -17,7 +17,7 @@ A caller enrolls a credential through the authenticated Namespace Source API. Th
 - Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 - Source: `apps/controller/src/drivers/token-service/occ.ts:createSource`
 - Permissions: collection `credential_source:create`; exact Source `read`, `update`, or `delete`. Listing requires Namespace `read` and filters by exact Source `read`.
-- Context: a ready Namespace and a selected TokenService instance.
+- Context: a ready Namespace for enrollment and a selected TokenService instance for credential operations. Metadata reads do not require TokenService availability.
 
 ## Flow
 
@@ -28,7 +28,8 @@ graph TD
   C -->|ready Source| D["<b>OCC</b><br/>Grant creator and audit success"]
   C -->|uncertain custody write| E["<b>Failure</b><br/>Orphaned material possible"]
   D --> F["<b>Source API</b><br/>Sanitized metadata"]
-  F -->|GET, list, PATCH| G["<b>TokenService</b><br/>Read or update Source"]
+  F -->|GET, list| J["<b>OCC</b><br/>Read authorized Source metadata"]
+  F -->|PATCH| G["<b>TokenService</b><br/>Update Source or credential"]
   F -->|DELETE, unreferenced| H["<b>TokenService</b><br/>Retire Source and material"]
   H -->|uncertain removal| I["<b>Source deleting</b><br/>Authorized retry"]
 ```
@@ -53,7 +54,7 @@ The database and private Secret store do not share a transaction. An uncertain p
 
 `packages/occ/src/credential-source-operations.ts:readCredentialSource`, `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`
 
-After exact IAM authorization, OCC delegates managed reads and updates to TokenService. Namespace listing filters TokenService's Sources by exact read authority. Metadata reads do not resolve credentials or prove live credential readiness. OCC separately validates `config.provider_preset`; a Source without an approved preset supplies no destination authority. An effective preset change requires an unbound Source and a separate request from credential replacement. TokenService applies the admitted configuration or credential update, and OCC records completion audit. Driver failures are sanitized before responses, logs, or audit.
+After exact IAM authorization, OCC reads Source metadata directly from the shared PostgreSQL catalog. Namespace listing filters catalog records by exact Source read authority. These reads work when TokenService is unavailable; they do not resolve credentials or prove live credential readiness. Any request for a usable credential goes through TokenService. OCC separately validates `config.provider_preset`; a Source without an approved preset supplies no destination authority. An effective preset change requires an unbound Source and a separate request from credential replacement. TokenService applies the admitted configuration or credential update, and OCC records completion audit. Driver failures are sanitized before responses, logs, or audit.
 
 ### 4. Retire the Source
 
@@ -83,6 +84,8 @@ Run `node --test tests/integration/postgres-staged-agent-credential-binding.test
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 20:56: Read authorized Source metadata from the shared catalog and keep credential operations with TokenService. (authoring-run/d087964b-7e67-4a03-9579-11901c232afe - 5beb75a4bb840120f4676cfb26b41a51a0f84d7a)
 
 - 2026-11-21 20:34: Describe TokenService-owned Source creation, observation, update, and retirement without an OCC reservation. (authoring-run/8bfb022d-2367-4ffc-b161-e5ea19cb7a80 - 55c444f3735a372e9f76a8f7e85a8ec4396ef7c7)
 

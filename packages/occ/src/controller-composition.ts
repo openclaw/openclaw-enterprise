@@ -528,10 +528,6 @@ function createCredentialServices({
     sourceDrivers: credentialSourceDrivers,
     egressAdmission,
     hasProxy: () => drivers.hasSelection("credential_proxy"),
-    managedSourceOwner: (instanceId) =>
-      managedCredentialSources.ownedTokenServiceDriver(instanceId),
-    tokenServiceOperation: (operation) => driverOperation(operation, "TokenService"),
-    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
     assertCredentialSourceOwnerSelected:
       credentialSourceDrivers.assertCredentialSourceOwnerSelected,
     secretDriver,

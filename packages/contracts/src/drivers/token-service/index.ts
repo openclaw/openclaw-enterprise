@@ -80,11 +80,6 @@ export interface SourceRefreshOperation extends TokenServiceSourceInstance<Crede
 export interface TokenServiceDriver extends Omit<Driver, "capability"> {
   readonly capability: "token_service";
   createSource(input: SourceRegistrationInput, signal: AbortSignal): Promise<CredentialSource>;
-  readSource(
-    source: TokenServiceSourceInstance<CredentialSourceReference>,
-    signal: AbortSignal,
-  ): Promise<CredentialSource | undefined>;
-  listSources(namespaceId: string, signal: AbortSignal): Promise<readonly CredentialSource[]>;
   updateSource(
     source: TokenServiceSourceInstance,
     update: SourceUpdate,

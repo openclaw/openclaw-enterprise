@@ -216,8 +216,8 @@ test(
       ids: [sourceId],
     });
 
-    // After restart without the recorded owner selected, the persisted source must fail for
-    // its own unavailable TokenService rather than instructing the operator to configure a Gateway.
+    // After restart without the recorded owner selected, metadata remains available from
+    // PostgreSQL while operations requiring the credential owner still fail closed.
     const restarted = new OpenClawController(controller.installation, {
       state,
       recordOperations: false,
@@ -229,14 +229,30 @@ test(
     }
     const restartedApp = createApp(restarted);
     const restartedSession = await signInToControllerApp(restartedApp, adminAccount);
+    const restartedHeaders = {
+      host: new URL(restartedSession.origin).host,
+      ...authenticatedHeaders(restartedSession),
+    };
+    const sourceReadWithoutOwner = remember(
+      await restartedApp.inject({ method: "GET", url: sourcePath, headers: restartedHeaders }),
+    );
+    assert.equal(sourceReadWithoutOwner.statusCode, 200, sourceReadWithoutOwner.body);
+    assertPublicSource(sourceReadWithoutOwner.json().data);
+    const sourceListWithoutOwner = remember(
+      await restartedApp.inject({
+        method: "GET",
+        url: `${base}/credential-sources`,
+        headers: restartedHeaders,
+      }),
+    );
+    assert.equal(sourceListWithoutOwner.statusCode, 200, sourceListWithoutOwner.body);
+    assert.equal(sourceListWithoutOwner.json().data.length, 1);
+    assertPublicSource(sourceListWithoutOwner.json().data[0]);
     for (const harnessAuth of [null, { method: "credential_source", sourceId }]) {
       const unavailable = await restartedApp.inject({
         method: "POST",
         url: `${base}/agents`,
-        headers: {
-          host: new URL(restartedSession.origin).host,
-          ...authenticatedHeaders(restartedSession),
-        },
+        headers: restartedHeaders,
         payload: {
           name: `Owner unavailable ${randomUUID()}`,
           configurationId,
@@ -286,8 +302,8 @@ test(
         },
         ...(payload === undefined ? {} : { payload }),
       });
-    // Listing must filter by exact Source read before asking an unavailable owner for details.
-    // This member can read the Namespace but has no grant on the managed Source.
+    // Direct metadata listing still requires exact Source read authority. This member can
+    // read the Namespace but has no grant on the managed Source.
     const restartedMemberSession = await signInToControllerApp(restartedApp, { email, password });
     const hiddenWithoutOwner = await restartedApp.inject({
       method: "GET",

@@ -33,7 +33,6 @@ const maxSecretValueBytes: number = Reflect.get(SecretValue, "maxLength");
 type SourceCatalog = Pick<
   PlatformUnitOfWork["credentialSources"],
   | "findCredentialSource"
-  | "listCredentialSources"
   | "lockCredentialSource"
   | "createCredentialSource"
   | "updateCredentialSourceConfig"
@@ -203,31 +202,6 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     });
   }
 
-  async readSource(
-    source: TokenServiceSourceInstance<CredentialSourceReference>,
-    signal: AbortSignal,
-  ): Promise<CredentialSource | undefined> {
-    signal.throwIfAborted();
-    return this.transactSources((sources) => this.ownedSource(sources, source, false));
-  }
-
-  async listSources(
-    namespaceId: string,
-    signal: AbortSignal,
-  ): Promise<readonly CredentialSource[]> {
-    signal.throwIfAborted();
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The credential source Namespace is invalid.");
-    }
-    return this.transactSources(async (sources) =>
-      (await sources.listCredentialSources(namespaceId)).filter(
-        (source) =>
-          source.ownerCapability === "token_service" &&
-          source.tokenServiceInstanceId === this.tokenServiceInstanceId,
-      ),
-    );
-  }
-
   async updateSource(
     source: TokenServiceSourceInstance,
     update: SourceUpdate,
@@ -289,7 +263,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     signal: AbortSignal,
   ): Promise<SourceRefreshOperation> {
     signal.throwIfAborted();
-    const found = await this.readSource(source, signal);
+    const found = await this.transactSources((sources) => this.ownedSource(sources, source, false));
     if (found?.state !== "ready") {
       throw new ResourceStateConflictError("The credential source is unavailable.");
     }
@@ -303,7 +277,9 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     signal: AbortSignal,
   ): Promise<CredentialRefreshStatus> {
     signal.throwIfAborted();
-    const found = await this.readSource(operation, signal);
+    const found = await this.transactSources((sources) =>
+      this.ownedSource(sources, operation, false),
+    );
     if (found?.state !== "ready") {
       throw new ResourceStateConflictError("The credential source is unavailable.");
     }

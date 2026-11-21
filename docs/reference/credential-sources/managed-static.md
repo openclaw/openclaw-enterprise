@@ -33,7 +33,9 @@ Exact GET requires `credential_source:read`. List requires Namespace `read` and
 returns only Sources with exact Source `read`. Responses contain sanitized Source
 metadata, `ownerCapability: "token_service"`, and `secrets: {}`. They do not
 resolve or return credential material, the selected instance, or Driver ID.
-Record state does not prove live credential readiness.
+OCC reads this metadata from the shared catalog, so GET and list remain available
+when TokenService is unavailable. Record state does not prove live credential
+readiness.
 
 DELETE requires exact `credential_source:delete` and refuses a referenced
 Source with `409`. TokenService retires the Source and its credential. DELETE
