@@ -20,9 +20,9 @@ import {
   stopYieldRecheckMs,
 } from "../../apps/controller/src/worker/stop-yields.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
-import type { AgentProvisioningRecord } from "../../packages/occ/src/state/agent-provisioning.ts";
+import type { AgentProvisioningRecord } from "../../packages/occ/src/ports/agent-provisioning.ts";
+import type { ControllerWork } from "../../packages/occ/src/controller-work.ts";
 import {
-  type ControllerWork,
   deploymentErrorForWork,
   deploymentProgressForWork,
   revisionAdmittedBeforeWork,
