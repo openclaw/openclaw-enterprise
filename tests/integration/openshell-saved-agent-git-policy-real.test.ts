@@ -30,11 +30,17 @@ const emptyDeployRefusal = {
 };
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
-const restWrites = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST_WRITE;
+const restProfile = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST_WRITE;
 assert.ok(
-  restWrites === undefined || restWrites === "v1" || restWrites === "v2",
+  restProfile === undefined ||
+    restProfile === "v1" ||
+    restProfile === "v2" ||
+    restProfile === "v2-issues-read",
   "Unsupported saved Agent REST write profile",
 );
+const readOnlyIssues = restProfile === "v2-issues-read";
+const restWrites = restProfile === "v2-issues-read" ? "v2" : restProfile;
+const canCreateIssues = restWrites === "v2" && !readOnlyIssues;
 const issueReads =
   process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST === "reads" || restWrites !== undefined;
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
@@ -248,7 +254,10 @@ async function exerciseSavedIssueReads(
   assert.ok(token && !token.revoked);
   assert.deepEqual(
     token.permissions,
-    restWrites ? scopedRestWriteFixturePermissions : scopedRestFixturePermissions,
+    restWrites && !readOnlyIssues
+      ? scopedRestWriteFixturePermissions
+      : scopedRestFixturePermissions,
+    "Issued GitHub permissions must match the independent fixture authority",
   );
   assert.ok(Array.isArray(token.repositoryIds));
   assert.deepEqual(
@@ -405,11 +414,11 @@ async function exerciseSavedRestWrites(
     await deny(`repos/fixture/${repository}/pulls`, pull);
     await deny(`repos/fixture/${repository}/issues`, issue);
   }
-  if (restWrites === "v1") {
+  if (!canCreateIssues) {
     await deny(bIssues, issue);
   }
   assert.equal(network.createdIssue("fixture/b"), undefined);
-  assert.equal(await callbacks.read(), count);
+  assert.equal(await callbacks.read(), count, "Forbidden REST writes must precede validation");
 
   // Direct JSON clients can send shapes the bundled CLI never generates.
   if (restWrites === "v1") {
@@ -440,7 +449,7 @@ async function exerciseSavedRestWrites(
   assert.equal(created.base.repo.full_name, "fixture/b");
   assert.deepEqual(response, created);
 
-  if (restWrites === "v2") {
+  if (canCreateIssues) {
     await deny(bIssues, { ...issue, assignee: "foreign" });
     assert.equal(await callbacks.read(), ++count);
     assert.equal(network.createdIssue("fixture/b"), undefined);
@@ -457,7 +466,7 @@ async function exerciseSavedRestWrites(
   }
   await deny(bPulls, pull);
   assert.equal(await callbacks.read(), ++count);
-  if (restWrites === "v2") {
+  if (canCreateIssues) {
     await deny(bIssues, issue);
     assert.equal(await callbacks.read(), ++count);
   }
@@ -734,7 +743,9 @@ git -C "$local_dir" rev-parse 'refs/heads/${branch}^{commit}'`,
   if (restWrites) {
     let validated: number | undefined;
     await t.test(
-      `Saved Agent validates ${restWrites} REST writes and preserves reads during validator outage`,
+      readOnlyIssues
+        ? "Saved Agent refuses issue creation with read-only GitHub Issues authority"
+        : `Saved Agent validates ${restWrites} REST writes and preserves reads during validator outage`,
       async () => {
         validated = await exerciseSavedRestWrites(
           fixture,
@@ -757,7 +768,7 @@ git -C "$local_dir" rev-parse 'refs/heads/${branch}^{commit}'`,
     await refuseGh(fixture, execute, successor, bIssues, { ...issue, title: "After downgrade" });
     assert.deepEqual(
       network.createdIssue("fixture/b"),
-      restWrites === "v2" ? expectedIssue : undefined,
+      canCreateIssues ? expectedIssue : undefined,
     );
     assert.equal(network.pullRequest("fixture/b")?.head.sha, pushed);
     await verifyCallbackCount();
@@ -869,7 +880,7 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
       const fixture = await createOpenShellGitInstallation(t, {
         nativeGit: true,
         issueReads,
-        ...(restWrites && { restWrites }),
+        ...(restWrites && { restWrites, readOnlyIssues }),
       });
       const { callbacks, gatewayClient, workspace, request } = fixture;
       assert.ok(callbacks);
@@ -1102,7 +1113,7 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
                   ...(restWrites && access === "write"
                     ? [{ allow: { method: "POST", path: `/repos/${repository}/pulls` } }]
                     : []),
-                  ...(restWrites === "v2" && access === "write"
+                  ...(canCreateIssues && access === "write"
                     ? [{ allow: { method: "POST", path } }]
                     : []),
                   { allow: { method: "GET", path } },
