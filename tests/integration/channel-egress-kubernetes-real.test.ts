@@ -33,6 +33,18 @@ function rows(value: unknown): Record<string, unknown>[] {
   assert.ok(Array.isArray(value));
   return value.map(record);
 }
+async function listed(kind: string, namespace: string, selector?: string) {
+  const result = await kubectl(
+    "get",
+    kind,
+    "-n",
+    namespace,
+    ...(selector ? ["-l", selector] : []),
+    "-o",
+    "json",
+  );
+  return rows(record(JSON.parse(result)).items);
+}
 function podName(pod: unknown): string {
   return text(record(record(pod).metadata).name);
 }
@@ -901,6 +913,36 @@ test(
     const path = `/namespaces/${namespaceId}/agents/${agentId}`;
     const directRevisionId = text(record(topology.revision).id);
     const fleet = topology.channelEgress!;
+    const harnessPolicies = async (revisionId: string) => {
+      const list = await listed("networkpolicy", topology.placement);
+      const selected = list.filter((policy) => {
+        const labels = record(record(record(policy.spec).podSelector).matchLabels ?? {});
+        return (
+          labels["openclaw.dev/agent"] === agentId &&
+          labels["openclaw.dev/workload-role"] === "agent" &&
+          (labels["openclaw.dev/revision"] === undefined ||
+            labels["openclaw.dev/revision"] === revisionId)
+        );
+      });
+      assert.ok(
+        selected.length > 0,
+        "The dedicated Harness must have real network grants to compare.",
+      );
+      return selected
+        .map((policy) => JSON.stringify(policy.spec).replaceAll(revisionId, "<revision>"))
+        .sort();
+    };
+    const proxyEnvironment = (deployment: unknown) =>
+      environment(deployment).filter((entry) =>
+        /^(?:HTTP|HTTPS|ALL|NO)_PROXY$/iu.test(text(entry.name)),
+      );
+    const directHarness = await resource(
+      "deployment",
+      `agent-${hash(agentId)}-rev-${hash(directRevisionId)}`,
+      topology.placement,
+    );
+    const directHarnessProxy = proxyEnvironment(directHarness);
+    const directHarnessGrants = await harnessPolicies(directRevisionId);
     const deploymentName = `gateway-${hash(agentId)}`;
     const gatewayProxy = async () => {
       const deployment = await resource("deployment", deploymentName, topology.gatewayPlacement);
@@ -952,8 +994,61 @@ test(
       "A draft edit cannot change the running revision.",
     );
 
+    // Keep the worker stopped until the API's synchronous Slack credential validation has
+    // completed. The old direct Gateway cannot contact the selected upstream proxy.
+    let workerStopped = false;
+    const restoreWorker = async () => {
+      if (!workerStopped) {
+        return;
+      }
+      await kubectl(
+        "scale",
+        "deployment",
+        "openclaw-enterprise-worker",
+        "-n",
+        topology.platformNamespace,
+        "--replicas=1",
+      );
+      await kubectl(
+        "rollout",
+        "status",
+        "deployment/openclaw-enterprise-worker",
+        "-n",
+        topology.platformNamespace,
+        "--timeout=120s",
+      );
+      workerStopped = false;
+    };
+    context.after(restoreWorker);
+    workerStopped = true;
+    await kubectl(
+      "scale",
+      "deployment",
+      "openclaw-enterprise-worker",
+      "-n",
+      topology.platformNamespace,
+      "--replicas=0",
+    );
+    await waitFor("the worker to stop before OCC channel validation", async () => {
+      return (
+        (
+          await listed(
+            "pods",
+            topology.platformNamespace,
+            "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/component=worker",
+          )
+        ).length === 0
+      );
+    });
+    const beforeValidation = proxy.observations.length;
     const deployed = await topology.request("POST", `${path}/deploy`);
     assert.equal(deployed.status, 202);
+    assert.equal(
+      proxy.observations.length,
+      beforeValidation,
+      "OCC Slack validation must not use the Agent's selected proxy.",
+    );
+    await restoreWorker();
     await waitFor("proxied Slack Agent activation", async () => {
       const current = await topology.request("GET", path);
       return current.data?.activeRevisionId === deployed.data.id;
@@ -961,6 +1056,11 @@ test(
     const revision = await topology.request("GET", `${path}/revisions/${deployed.data.id}`);
     assert.deepEqual(revision.data.networkProxy, selection);
     assert.equal(JSON.stringify(revision).includes(proxy.authorization), false);
+    assert.deepEqual(
+      revision.data.harness,
+      direct.data.harness,
+      "Proxy selection must not change Harness configuration.",
+    );
     const assignedEnvoy = await gatewayProxy();
     assert.match(
       assignedEnvoy,
@@ -1023,6 +1123,21 @@ test(
     );
     assert.equal(harnesses.length, 1);
     topology.harnessPod = harnesses[0];
+    const proxiedHarness = await resource(
+      "deployment",
+      `agent-${hash(agentId)}-rev-${hash(text(deployed.data.id))}`,
+      topology.placement,
+    );
+    assert.deepEqual(
+      proxyEnvironment(proxiedHarness),
+      directHarnessProxy,
+      "Harness proxy variables must remain unchanged.",
+    );
+    assert.deepEqual(
+      await harnessPolicies(text(deployed.data.id)),
+      directHarnessGrants,
+      "Harness network grants must remain unchanged.",
+    );
     await assertActualModelTurn(topology);
 
     // A second real Agent selects a different endpoint and credential on the same Envoy fleet.
@@ -1119,6 +1234,42 @@ test(
       Number(new URL(assignedEnvoy).port),
     );
 
+    // Denied final authorities must be stopped by Envoy, not masked by the controlled
+    // proxy's own Slack-only allowlist. Count observations for each exact authority.
+    const octets = proxy.address.split(".");
+    octets[3] = String(Number(octets[3]) === 255 ? 254 : Number(octets[3]) + 1);
+    const neighbor = octets.join(".");
+    for (const [target, targetPort] of [
+      ["1.1.1.1", 443],
+      ["169.254.169.254", 80],
+      ["0xa9fea9fe", 80],
+      [serviceIP, 443],
+      [neighbor, 443],
+    ] as const) {
+      const authority = `${target}:${targetPort}`;
+      const before = proxy.observations.filter((item) => item.authority === authority).length;
+      assert.equal(
+        (
+          await probeChannelConnect(topology.gatewayPlacement, gatewayPod, assignedEnvoy, target, {
+            port: targetPort,
+          })
+        ).status,
+        403,
+        authority,
+      );
+      assert.equal(
+        proxy.observations.filter((item) => item.authority === authority).length,
+        before,
+        `${authority} must not reach the proxy`,
+      );
+    }
+    await assertDeniedConnection(
+      topology.placement,
+      podName(topology.harnessPod),
+      serviceIP,
+      Number(new URL(assignedEnvoy).port),
+    );
+
     // OCC directory traffic keeps its separate listener and must not appear at the Agent's proxy.
     const beforeDirectory = proxy.observations.length;
     assert.ok("slackBot" in topology.secretApi);
@@ -1134,6 +1285,56 @@ test(
     );
     assert.equal(directory.status, 200);
     assert.equal(proxy.observations.length, beforeDirectory);
+
+    // Inspect integrated public, audit, workload, and allowed Envoy inspection surfaces in
+    // memory. Assertions report only a boolean, never a protected value or raw transcript.
+    const protectedValues = [proxy.authorization, appToken, botToken];
+    const audit = await topology.adminRequest("GET", `${path}/audit-events`);
+    assert.equal(audit.status, 200);
+    const workerPods = await listed(
+      "pods",
+      topology.platformNamespace,
+      "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/component=worker",
+    );
+    const envoyPods = await listed(
+      "pods",
+      fleet.envoyNamespace,
+      `gateway.envoyproxy.io/owning-gateway-name=${fleet.gatewayName}`,
+    );
+    assert.equal(workerPods.length, 1);
+    assert.ok(envoyPods.length > 0);
+    const envoyAddress = text(record(envoyPods[0]!.status).podIP);
+    const inspection = await kubectl(
+      "exec",
+      podName(workerPods[0]),
+      "-n",
+      topology.platformNamespace,
+      "--",
+      "node",
+      "-e",
+      "const r=await fetch(process.argv[1]);if(!r.ok)throw Error('inspection unavailable');process.stdout.write(await r.text())",
+      `http://${envoyAddress}:${fleet.inspectionPort}/config_dump?resource=dynamic_active_secrets&mask=name`,
+    );
+    const surfaces = [
+      JSON.stringify(await topology.request("GET", path)),
+      JSON.stringify(revision),
+      JSON.stringify(audit),
+      JSON.stringify(pod),
+      JSON.stringify(topology.harnessPod),
+      inspection,
+      await kubectl("logs", gatewayPod, "-n", topology.gatewayPlacement, "--tail=200"),
+      await kubectl("logs", podName(envoyPods[0]), "-n", fleet.envoyNamespace, "--tail=200"),
+    ];
+    for (const value of protectedValues) {
+      assert.equal(
+        surfaces.some(
+          (surface) =>
+            surface.includes(value) || surface.includes(Buffer.from(value).toString("base64")),
+        ),
+        false,
+        "A protected credential appeared in an integrated inspection surface.",
+      );
+    }
 
     // A real proxy authentication refusal closes existing tunnels and must never permit direct fallback.
     const connectedBeforeRefusal = proxy.observations.filter((item) => item.connected).length;
