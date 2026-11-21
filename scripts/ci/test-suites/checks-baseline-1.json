@@ -35,6 +35,7 @@
     "tests/conformance/kubernetes-secret-driver.test.ts",
     "tests/docs/docs-site.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/external-sandbox-registration.test.ts",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
@@ -274,6 +275,13 @@
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
+    },
+    {
+      "path": "tests/conformance/external-sandbox-registration.test.ts",
+      "expectedTests": [
+        "production startup selects an installed external Sandbox package",
+        "production startup refuses malformed installed Sandbox declarations"
+      ]
     },
     {
       "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"
