@@ -1,4 +1,6 @@
 import { lookup } from "node:dns/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -22,6 +24,8 @@ import {
   resource,
   waitFor,
 } from "../helpers/harness-topology-k3d-real.mjs";
+
+const command = promisify(execFile);
 
 function record(value: unknown): Record<string, unknown> {
   const result = asRecord(value);
@@ -1157,6 +1161,288 @@ test(
       true,
     );
     assert.ok(proxy.observations.some((item) => item.authority === "slack.com:443"));
+
+    // Probe the actual Envoy Pod network namespace. The image is the same immutable
+    // controller image already imported for this disposable Installation; no policy
+    // selector, grant, or production workload configuration is changed.
+    const forbiddenProxy = await createControlledChannelProxy(context, { forward: false });
+    assert.equal(forbiddenProxy.address, proxy.address);
+    assert.notEqual(forbiddenProxy.port, proxy.port);
+    const image = process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+    assert.match(image ?? "", /^\S+@sha256:[a-f0-9]{64}$/iu);
+    const cluster = process.env.OCC_TEST_KUBERNETES_CONTEXT?.replace(/^k3d-/u, "");
+    assert.match(cluster ?? "", /^[a-z0-9-]+$/u);
+    const engine = process.env.OCC_DOCKER_BIN ?? "docker";
+    const hostImageId = process.env.OCC_DOCKER_RUNTIME_IMAGE;
+    assert.match(
+      hostImageId ?? "",
+      /^sha256:[a-f0-9]{64}$/iu,
+      "Use the prepared runtime hostImageId for Docker.",
+    );
+    const nodeAddresses = rows(
+      record(JSON.parse(await kubectl("get", "nodes", "-o", "json"))).items,
+    )
+      .flatMap((node) => rows(record(node.status).addresses))
+      .filter((address) => address.type === "InternalIP")
+      .map((address) => text(address.address));
+    const privateServer = `oce-channel-private-${randomUUID()}`;
+    const serverScript = `const net=require("node:net");const server=net.createServer(s=>{console.log("CONTACT");s.end()});server.listen(Number(process.argv[1]),"0.0.0.0",()=>console.log("READY"));`;
+    const serverId = (
+      await command(engine, [
+        "run",
+        "--pull=never",
+        "--rm",
+        "-d",
+        "--name",
+        privateServer,
+        "--network",
+        `k3d-${cluster}`,
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--user",
+        "1000:1000",
+        "--entrypoint",
+        "node",
+        hostImageId!,
+        "-e",
+        serverScript,
+        String(proxy.port),
+      ])
+    ).stdout.trim();
+    assert.match(serverId, /^[a-f0-9]{64}$/u);
+    context.after(async () => {
+      const current = await command(engine, [
+        "inspect",
+        "--format",
+        "{{.Id}}",
+        privateServer,
+      ]).catch(() => undefined);
+      if (current?.stdout.trim() === serverId) {
+        await command(engine, ["rm", "-f", privateServer]);
+      }
+    });
+    const inspectedServer = record(
+      JSON.parse((await command(engine, ["inspect", privateServer])).stdout)[0],
+    );
+    assert.equal(text(inspectedServer.Id), serverId);
+    const attached = record(
+      record(record(inspectedServer.NetworkSettings).Networks)[`k3d-${cluster}`],
+    );
+    const privateAddress = text(attached.IPAddress);
+    assert.notEqual(privateAddress, proxy.address);
+    assert.ok(
+      !nodeAddresses.includes(privateAddress),
+      "The controlled server must not use a cluster node address.",
+    );
+    const serverLogs = async () => (await command(engine, ["logs", privateServer])).stdout;
+    await waitFor("the controlled separate private-IP server to listen", async () =>
+      (await serverLogs()).includes("READY"),
+    );
+    const controlName = `channel-endpoint-control-${randomUUID()}`;
+    const controlPath = join(topology.directory, `${controlName}.json`);
+    await writeFile(
+      controlPath,
+      JSON.stringify({
+        apiVersion: "v1",
+        kind: "Pod",
+        metadata: { name: controlName, namespace: fleet.envoyNamespace },
+        spec: {
+          restartPolicy: "Never",
+          containers: [
+            {
+              name: "control",
+              image,
+              imagePullPolicy: "IfNotPresent",
+              command: ["node", "-e", "setInterval(() => {}, 3600000)"],
+              securityContext: {
+                allowPrivilegeEscalation: false,
+                capabilities: { drop: ["ALL"] },
+                runAsNonRoot: true,
+                runAsUser: 1000,
+                seccompProfile: { type: "RuntimeDefault" },
+              },
+            },
+          ],
+        },
+      }),
+      { mode: 0o600 },
+    );
+    await kubectl("apply", "-f", controlPath);
+    const controlUid = record(
+      record(await resource("pod", controlName, fleet.envoyNamespace)).metadata,
+    ).uid;
+    context.after(async () => {
+      const current = await resource("pod", controlName, fleet.envoyNamespace).catch(
+        () => undefined,
+      );
+      if (current && record(record(current).metadata).uid === controlUid) {
+        await kubectl("delete", "pod", controlName, "-n", fleet.envoyNamespace, "--wait=false");
+      }
+    });
+    await kubectl(
+      "wait",
+      "pod",
+      controlName,
+      "-n",
+      fleet.envoyNamespace,
+      "--for=condition=Ready",
+      "--timeout=120s",
+    );
+    const probeScript = String.raw`
+      const net = require("node:net");
+      const [host, port, request] = process.argv.slice(1);
+      const socket = net.connect({host, port: Number(port)});
+      let done = false;
+      let connected = false;
+      const finish = (connected) => {
+        if (done) return;
+        done = true;
+        socket.destroy();
+        console.log(JSON.stringify({connected}));
+      };
+      socket.setTimeout(3000, () => finish(connected));
+      socket.once("error", () => finish(connected));
+      socket.once("connect", () => {
+        connected = true;
+        if (request === "connect") {
+          socket.once("data", () => finish(true));
+          socket.once("end", () => finish(true));
+          socket.write("CONNECT forbidden.invalid:443 HTTP/1.1\r\nHost: forbidden.invalid:443\r\n\r\n");
+        } else finish(true);
+      });
+    `;
+    const probeFromControl = async (host: string, port: number, request: string) =>
+      record(
+        JSON.parse(
+          await kubectl(
+            "exec",
+            controlName,
+            "-n",
+            fleet.envoyNamespace,
+            "--",
+            "node",
+            "-e",
+            probeScript,
+            host,
+            String(port),
+            request,
+          ),
+        ),
+      );
+    assert.equal(
+      (await probeFromControl(forbiddenProxy.address, forbiddenProxy.port, "connect")).connected,
+      true,
+    );
+    await waitFor(
+      "the alternate-port positive control to reach its observer",
+      async () => forbiddenProxy.observations.length === 1,
+    );
+    assert.equal(
+      (await probeFromControl(privateAddress, proxy.port, "tcp")).connected,
+      true,
+      "The separate private-IP server must be reachable from the unselected control Pod.",
+    );
+    await waitFor(
+      "the separate private-IP positive control to reach its observer",
+      async () =>
+        (await serverLogs()).split("\n").filter((line) => line === "CONTACT").length === 1,
+    );
+    const envoyPods = await listed(
+      "pods",
+      fleet.envoyNamespace,
+      `gateway.envoyproxy.io/owning-gateway-name=${fleet.gatewayName}`,
+    );
+    assert.equal(envoyPods.length, 1);
+    const envoyPod = envoyPods[0]!;
+    const envoyName = podName(envoyPod);
+    const envoyUid = record(envoyPod.metadata).uid;
+    context.after(async () => {
+      const current = await resource("pod", envoyName, fleet.envoyNamespace).catch(() => undefined);
+      if (current && record(record(current).metadata).uid === envoyUid) {
+        await kubectl("delete", "pod", envoyName, "-n", fleet.envoyNamespace, "--wait=false");
+      }
+    });
+    const debugProfile = join(topology.directory, "channel-endpoint-debug-profile.json");
+    await writeFile(debugProfile, JSON.stringify({ securityContext: { runAsUser: 1000 } }), {
+      mode: 0o600,
+    });
+    const debugName = `endpoint-${randomUUID().slice(0, 8)}`;
+    await kubectl(
+      "debug",
+      envoyName,
+      "-n",
+      fleet.envoyNamespace,
+      `--container=${debugName}`,
+      `--image=${image}`,
+      "--profile=restricted",
+      `--custom=${debugProfile}`,
+      "--attach=false",
+      "--",
+      "node",
+      "-e",
+      "setInterval(() => {}, 3600000)",
+    );
+    await waitFor("the exact Envoy Pod endpoint debug container to run", async () => {
+      const current = record(await resource("pod", envoyName, fleet.envoyNamespace));
+      return rows(record(current.status).ephemeralContainerStatuses ?? []).some(
+        (entry) => entry.name === debugName && Boolean(record(entry.state).running),
+      );
+    });
+    const probeFromEnvoy = async (host: string, port: number, request: string) =>
+      record(
+        JSON.parse(
+          await kubectl(
+            "exec",
+            envoyName,
+            "-n",
+            fleet.envoyNamespace,
+            "-c",
+            debugName,
+            "--",
+            "node",
+            "-e",
+            probeScript,
+            host,
+            String(port),
+            request,
+          ),
+        ),
+      );
+    const beforePositive = proxy.observations.length;
+    assert.equal(
+      (await probeFromEnvoy(proxy.address, proxy.port, "tcp")).connected,
+      true,
+      "The same Envoy debug container must reach the admitted endpoint.",
+    );
+    assert.ok(
+      proxy.observations.slice(beforePositive).every((item) => item.authenticated),
+      "The bare TCP positive probe must not create a proxy protocol observation; concurrent Slack observations must remain authenticated.",
+    );
+    const observedBeforeDenial = forbiddenProxy.observations.length;
+    assert.equal(
+      (await probeFromEnvoy(forbiddenProxy.address, forbiddenProxy.port, "connect")).connected,
+      false,
+      "Envoy must not reach the same private IP on an ungranted port.",
+    );
+    assert.equal(
+      forbiddenProxy.observations.length,
+      observedBeforeDenial,
+      "The forbidden proxy must observe no Envoy request.",
+    );
+    const privateContacts = (await serverLogs())
+      .split("\n")
+      .filter((line) => line === "CONTACT").length;
+    assert.equal(
+      (await probeFromEnvoy(privateAddress, proxy.port, "tcp")).connected,
+      false,
+      "Envoy must not reach a separate private IP on the admitted port.",
+    );
+    assert.equal(
+      (await serverLogs()).split("\n").filter((line) => line === "CONTACT").length,
+      privateContacts,
+      "The separate private-IP server must observe no Envoy connection.",
+    );
     topology.gatewayPod = pod;
     topology.revision = revision.data;
     const harnesses = rows(
