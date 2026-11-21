@@ -12,7 +12,7 @@ import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
   STAGED_HARNESS_ACTIVATE,
   STAGED_HARNESS_PREPARE,
-  STAGED_HARNESS_SUPERVISOR,
+  stagedHarnessSupervisor,
 } from "./openshell-staged-harness.ts";
 import {
   openShellRepositoryAccess,
@@ -3859,7 +3859,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             loginMode: "api_key",
             command: [
               ...RUNTIME_WRAPPER_COMMAND,
-              ...nodeProgramArguments(STAGED_HARNESS_SUPERVISOR),
+              ...nodeProgramArguments(stagedHarnessSupervisor(launchSpec.command)),
             ],
           },
         },
@@ -3877,9 +3877,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           context.revision,
           context.revision.sandboxPolicy!,
         ).idle as typeof supervisorSpec.policy,
-        environment: Object.assign({}, supervisorSpec.environment, {
-          OPENCLAW_STAGED_HARNESS_COMMAND: JSON.stringify(launchSpec.command),
-        }),
         restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
       };
     }

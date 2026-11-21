@@ -1,5 +1,6 @@
 /** The canonical Sandbox process stays idle until Compute activates its prepared launch. */
-export const STAGED_HARNESS_SUPERVISOR = String.raw`
+export function stagedHarnessSupervisor(command: readonly string[]): string {
+  return String.raw`
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
@@ -7,8 +8,7 @@ const { spawn } = require("node:child_process");
 process.umask(0o077);
 const socketPath = path.join(process.env.HOME, ".oce-staged-harness.sock");
 const planPath = path.join(process.env.HOME, ".oce-staged-harness.json");
-const command = JSON.parse(process.env.OPENCLAW_STAGED_HARNESS_COMMAND);
-delete process.env.OPENCLAW_STAGED_HARNESS_COMMAND;
+const command = ${JSON.stringify(command)};
 fs.mkdirSync(process.env.HOME, { recursive: true, mode: 0o700 });
 fs.writeFileSync(planPath, JSON.stringify({ state: "idle", command }), { mode: 0o600 });
 let child;
@@ -61,6 +61,7 @@ for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => {
   else process.exit(0);
 });
 `;
+}
 
 /** Preparation carries launch inputs privately on ExecSandbox stdin. */
 export const STAGED_HARNESS_PREPARE = String.raw`
