@@ -5054,14 +5054,12 @@ export class ControllerWorker {
               await this.assertRepositoryAuthority(claim, revision);
               this.repositoryCredentials.validate(revision);
             }
-            if (revision.credentialDeployment !== undefined) {
-              await this.withClaimHeartbeat(claim, (signal) =>
-                this.authorizedCredentialDeployment(claim, revision, signal),
-              );
-            }
-            await this.withClaimHeartbeat(claim, () =>
-              this.stagedRevision("activateRevision", revision, context),
-            );
+            await this.withClaimHeartbeat(claim, async (signal) => {
+              if (revision.credentialDeployment !== undefined) {
+                await this.authorizedCredentialDeployment(claim, revision, signal);
+              }
+              await this.stagedRevision("activateRevision", revision, context);
+            });
           }
           await this.assertRepositoryGitMaterial(claim, revision);
           await this.retireEarlierRevisions(claim, revision);
@@ -6997,15 +6995,23 @@ export class ControllerWorker {
             await this.assertRepositoryAuthority(claim, activated);
             this.repositoryCredentials.validate(activated);
           }
-          await this.withClaimHeartbeat(claim, () =>
-            this.stagedRevision("activateRevision", activated!, resolved.context),
-          );
+          const activatedRevision = activated;
+          await this.withClaimHeartbeat(claim, async (signal) => {
+            if (activatedRevision.credentialDeployment !== undefined) {
+              await this.authorizedCredentialDeployment(claim, activatedRevision, signal);
+            }
+            await this.stagedRevision("activateRevision", activatedRevision, resolved.context);
+          });
         }
         await this.assertRepositoryGitMaterial(claim, activated);
         await this.retireEarlierRevisions(claim, activated);
       } catch (error) {
         if (error instanceof WorkClaimLostError) {
           throw error;
+        }
+        if (error instanceof CredentialDeploymentAuthorizationError) {
+          await this.finalizeRevision(claim, error.denial);
+          return;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
           await this.finalizeRevision(
