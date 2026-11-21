@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -16,8 +16,8 @@ import {
   text,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import type { NativeIAMState } from "../../packages/iam/src/index.ts";
-import type { signInToControllerApp } from "../helpers/auth-session.mjs";
-import type { injectJson as injectJsonRequest } from "../helpers/inject-json.mjs";
+import type { signInToControllerApp } from "../helpers/auth-session.ts";
+import type { injectJson as injectJsonRequest } from "../helpers/inject-json.ts";
 import type { InjectedResponse } from "../helpers/postgres-sign-in-test-boundaries.ts";
 
 type App = Awaited<ReturnType<typeof composePostgresDevelopment>>;
@@ -28,7 +28,7 @@ type AccountFixture = {
   assertApiError: (result: InjectedResponse, status: number, code: string, label?: string) => void;
   injectJson: (
     app: App,
-    method: string,
+    method: Parameters<typeof injectJsonRequest>[1],
     url: string,
     options?: Parameters<typeof injectJsonRequest>[3],
   ) => Promise<InjectedResponse>;
@@ -78,7 +78,7 @@ export async function accountProvisioning(
     authBaseURL,
     nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
-  };
+  } satisfies Parameters<typeof composePostgresDevelopment>[0];
   await ensureDevelopmentBootstrap(context, {
     databaseUrl,
     email: adminEmail,

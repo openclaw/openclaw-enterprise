@@ -345,7 +345,7 @@ details compatibility checks.
 - [Agent Configuration, versions, and deployment](agents.md)
 - [Kubernetes Compute Driver](drivers/kubernetes-compute.md)
 - [Identity and access management](authorization.md)
-- [Configuration lifecycle implementation](../../packages/occ/src/index.ts)
+- [Configuration lifecycle implementation](../../packages/occ/src/configuration-operations.ts)
 - [Local testing](../testing/local.md)
 - [Kubernetes testing](../testing/kubernetes.md)
 

@@ -90,8 +90,8 @@ OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 Checks named-Job access, replacement, interrupted Helm dispatch, CRDs/controllers,
 quota headroom, address drift and denials. EKS connectivity and Envoy acceptance
 remain unproved. The [production observability lane](local.md#kubernetes-observability-acceptance)
-runs `installation-receipt-k3d-real.test.ts` with PostgreSQL to check bootstrap
-after interruption before and after UID capture.
+checks PostgreSQL bootstrap after interrupted Job capture and lost Secret-create
+acknowledgements through `installation-receipt-k3d-real.test.ts`.
 
 ### Production workload network access
 
@@ -101,7 +101,7 @@ Use an exclusive fixture cluster with `oce-system` and `envoy-gateway-system` av
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
 OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
-  node --test tests/integration/production-network-access.test.mjs
+  node --test tests/integration/production-network-access.test.ts
 ```
 
 Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
@@ -112,10 +112,11 @@ are required.
 
 ## Kubernetes model turns and Secrets
 
-The real-runtime suite needs an authorized model credential, real gateway and
-Codex images, a disposable cluster with enforcing NetworkPolicies, and a
-migrated `openclaw_k8s_*` database. A fixture pass is not a model turn. Follow
-[Codex sandbox setup](../guides/deploy/codex-sandbox.md) for seccomp prerequisites.
+Use authorized model credentials, real Gateway/Codex images, enforcing
+NetworkPolicies, and a migrated `openclaw_k8s_*` database in a disposable cluster.
+A fixture pass is not a model turn. See
+[Codex seccomp setup](../guides/deploy/codex-sandbox.md) and
+[restart qualification](harness-restart-recovery.md).
 
 ### Develop with local containers and k3d
 
@@ -138,13 +139,13 @@ the variable. For a custom Codex Responses endpoint, use:
   --base-url https://openrouter.ai/api/v1 --model-id z-ai/glm-5.3-flash
 ```
 
-`./scripts/k3d info` shows connections; `reset` retains images.
-Fresh preparation pins images against kubelet collection. Recreate older
-environments with `./scripts/k3d down --harness codex`, then reprepare (`openclaw`
-for that harness). This deletes that environment; use before image changes or
-after preparation failures. Default kubeconfig/context and unrelated resources
-stay unchanged. `OCC_K3D_CONTAINER_ENGINE` selects `docker`/`podman`;
-`OCC_K3D_STATE_DIR` sets its directory.
+`./scripts/k3d info` shows connections. Reset retains images. After namespace
+removal, duplicate journal IDs stop database cleanup and preserve the journal.
+Preparation pins images against kubelet collection. To replace older environments, change images,
+or recover from failed preparation, delete the environment with
+`./scripts/k3d down --harness codex` (or `openclaw`), then prepare again.
+Default kubeconfig, context and unrelated resources stay intact.
+`OCC_K3D_CONTAINER_ENGINE` selects `docker`/`podman`; `OCC_K3D_STATE_DIR` selects its directory.
 See [local k3d image upgrades](../guides/deploy/local-k3d-image-upgrade.md).
 
 ### Run the real-runtime suite directly
@@ -226,7 +227,7 @@ and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
 
 ```sh
 state="$PWD/.ci-state/keycloak-oidc.json"
-node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
+node scripts/ci/prepare.ts --lane keycloak-oidc --state "$state" &&
   node scripts/ci/run-tests.ts run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
 node scripts/ci/cleanup.ts --state "$state"
 ```
@@ -278,7 +279,7 @@ For CI-shaped setup, supply `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and
 `NODE_BASE_IMAGE` in the environment. In a GitHub Actions runner, execute:
 
 ```sh
-node scripts/ci/prepare.mjs \
+node scripts/ci/prepare.ts \
   --lane gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --github-env "$GITHUB_ENV" &&
@@ -351,7 +352,7 @@ chart. Install Docker, k3d, kubectl, Helm, yq, and Go.
 
 ```sh
 run_dir="$(mktemp -d)"
-node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --state "$run_dir/state.json" && \
+node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.ts --lane production-tui --state "$run_dir/state.json" && \
   TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
     --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
@@ -481,10 +482,10 @@ from controller and runtime Pods before creating Agents.
 ### Install and exercise the platform
 
 Follow [production installation](../guides/deploy/production-installation.md)
-for PostgreSQL, restricted roles, bootstrap and the CP Helm release. Prepare
-bootstrap PVC ownership before initialization. If initialization fails, check
+for PostgreSQL, restricted roles, bootstrap and the CP Helm release. Precreate
+the bootstrap Secret before initialization. If initialization fails, check
 commit state and follow bootstrap recovery; do not reset the database or delete
-protected output automatically.
+protected inputs automatically.
 
 Grant the DP tenant worker and API bindings and the three CP bindings in
 [Agent preparation](../guides/deploy/production-agents.md#grant-tenant-rolebindings).

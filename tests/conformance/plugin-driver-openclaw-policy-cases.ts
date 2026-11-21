@@ -34,6 +34,59 @@ import {
 const OCC_DIFFS_DIGEST =
   "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
 
+test("managed MCP policy asks once before dispatch and refuses unselected tools", async () => {
+  const { default: plugin } = await import(
+    new URL("../../deploy/runtime/managed-mcp-policy/index.mjs", import.meta.url).href
+  );
+  let policy:
+    | {
+        allowLocalMcpTool: (ctx: Record<string, unknown>) => boolean;
+        handle: (ctx: Record<string, unknown>) => Promise<{ ok: boolean; code?: string }>;
+      }
+    | undefined;
+  plugin.register({
+    registerNodeInvokePolicy(value: typeof policy) {
+      policy = value;
+    },
+  });
+  assert.ok(policy);
+  const pluginConfig = {
+    nodeId: "node-one",
+    servers: { oce_mcp_slack: { slack_search_public: "allow", slack_send_message: "ask" } },
+  };
+  const local = (tool: string) =>
+    policy!.allowLocalMcpTool({ nodeId: "node-one", server: "oce_mcp_slack", tool, pluginConfig });
+  assert.equal(local("slack_search_public"), true);
+  assert.equal(local("slack_send_message"), false);
+  assert.equal(local("disabled"), false);
+  let upstreamCalls = 0;
+  const prompts: Record<string, unknown>[] = [];
+  const run = (tool: string, decision: string) =>
+    policy!.handle({
+      nodeId: "node-one",
+      params: { server: "oce_mcp_slack", tool, arguments: { text: "example" } },
+      pluginConfig,
+      approvals: {
+        async request(request: Record<string, unknown>) {
+          prompts.push(request);
+          return { decision };
+        },
+      },
+      async invokeNode() {
+        upstreamCalls += 1;
+        return { ok: true };
+      },
+    });
+  assert.equal((await run("slack_send_message", "deny")).code, "APPROVAL_DENIED");
+  assert.equal(upstreamCalls, 0);
+  assert.equal((await run("disabled", "allow-once")).code, "MCP_TOOL_DISABLED");
+  assert.equal(upstreamCalls, 0);
+  assert.equal((await run("slack_send_message", "allow-once")).ok, true);
+  assert.equal(upstreamCalls, 1);
+  assert.match(String(prompts.at(-1)?.description), /oce_mcp_slack\/slack_send_message/);
+  assert.deepEqual(prompts.at(-1)?.allowedDecisions, ["allow-once", "deny"]);
+});
+
 test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => {
   const driver = new OCCPluginDriver(
     {},
@@ -59,7 +112,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
   assert.ok(slack);
   assert.equal(google.id, "occ-plugin:google@1.0.0");
   assert.equal(slack.id, "occ-plugin:slack@1.0.0");
-  assert.equal(driver.policyCapabilities.policyScopeByPlugin?.[slack.id], "enablement_only");
+  assert.equal(driver.policyCapabilities.policyScopeByPlugin?.[slack.id], "tool_human_approval");
   assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
   driver.validatePolicies({ [slack.id]: { enabled: false } });
   const slackInstall = managedMcpInstalls.find(({ id }) => id === slack.id);
@@ -84,8 +137,20 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     [slack.id]: {
       enabled: true,
       driverPolicy: { ...slackPolicy, toolNames: ["slack_search_public", "slack_send_message"] },
+      tools: { slack_send_message: { approval: "all_actions" } },
     },
   });
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        [slack.id]: {
+          enabled: true,
+          driverPolicy: { ...slackPolicy, toolNames: ["slack_search_public"] },
+          tools: { slack_send_message: { approval: "all_actions" } },
+        },
+      }),
+    /Select an enabled Slack tool/,
+  );
   // Selections are literal upstream names. Globs and colliding aliases would broaden access.
   for (const toolNames of [["slack_*"], ["Search", "search"], ["x".repeat(64)], null]) {
     assert.throws(
@@ -126,9 +191,9 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
   assert.equal(slackSlot.id, "account");
   assert.equal(slackSlot.label, "Slack user account");
   assert.deepEqual(slackSlot.sources, [{ id: source.id, name: source.name }]);
-  driver.credentials.validate(selections, [source]);
-  assert.throws(
-    () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
+  await driver.credentials.validate(selections, [source]);
+  await assert.rejects(
+    async () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
     /Select a ready Slack account/,
   );
   const mixedPlacement = { ...selections, ...occSelection() };
@@ -158,7 +223,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
           [slack.id]: { enabled: true, credentialSourceId: "src_personal" },
         }),
       ),
-    /Slack package supports enablement and an optional credential slot/,
+    /Slack package supports enablement, a credential slot, and per-tool human approval/,
   );
 });
 

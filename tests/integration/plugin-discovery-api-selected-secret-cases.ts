@@ -10,16 +10,17 @@ import {
   AgentPluginDetailsResponse,
   SecretResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   accessToken,
   catalogEntry,
   createDiscoveryLogger,
   createFixture,
+  createSavedAgent,
   pluginDetails,
   remoteId,
   secretValueReadCount,
@@ -181,6 +182,7 @@ export async function usesCurrentHostedCredential(t: TestContext) {
   const originalFetch = globalThis.fetch;
   const credentials: string[] = [];
   const catalogRequests: { path: string; q: string | null }[] = [];
+  let catalogCursor: string | null = null;
   let echoCredential = false;
   const plugin = {
     id: "remote-fixture",
@@ -199,6 +201,10 @@ export async function usesCurrentHostedCredential(t: TestContext) {
       mcp_servers: [],
     },
   };
+  const distinct = { ...plugin, id: "remote-other-fixture", name: "other-fixture" };
+  const cursor = "next+/= page";
+  let catalogPlugins = [plugin, distinct];
+  let nextCursor: string | null = cursor;
   // Replace only provider HTTP; the actual routes, IAM, Secret and Plugin Drivers execute.
   const fetchProvider: typeof fetch = async (url, init) => {
     const address = fetchUrl(url).href;
@@ -228,14 +234,13 @@ export async function usesCurrentHostedCredential(t: TestContext) {
     if (address.includes("plugins/list") || address.includes("plugins/search")) {
       const request = new URL(address);
       catalogRequests.push({ path: request.pathname, q: request.searchParams.get("q") });
+      catalogCursor = request.searchParams.get("pageToken");
       return Response.json({
-        plugins: [
-          {
-            ...plugin,
-            release: { ...plugin.release, display_name: echoCredential ? token : "Fixture" },
-          },
-        ],
-        pagination: { next_page_token: null },
+        plugins: catalogPlugins.map((entry) => ({
+          ...entry,
+          release: { ...entry.release, display_name: echoCredential ? token : "Fixture" },
+        })),
+        pagination: { next_page_token: nextCursor },
       });
     }
     if (address.includes("plugins/remote-fixture")) {
@@ -271,6 +276,66 @@ export async function usesCurrentHostedCredential(t: TestContext) {
   assert.equal(listed.remoteId, "remote-fixture");
   assert.equal(listed.available, true);
   assert.deepEqual(catalogRequests, [{ path: "/backend-api/ps/plugins/search", q: "fixture" }]);
+  assert.deepEqual(
+    page.plugins.map(({ id, name }) => [id, name]),
+    [
+      ["codex-plugin:fixture@openai-curated-remote", "Fixture"],
+      ["codex-plugin:other-fixture@openai-curated-remote", "Fixture"],
+    ],
+  );
+  assert.equal(page.nextCursor, cursor);
+
+  const saved = await createSavedAgent(fixture);
+  const selected = { harnessId: "codex", secretRef: secret.ref };
+  const reader = await fixture.createAccountWithPolicy("hosted-catalog-reader", () => {});
+  const session = await fixture.signIn(reader.credentials);
+  const readsBefore = secretValueReadCount(fixture.secretDriver);
+  const credentialsBefore = credentials.length;
+  for (const [path, body] of [
+    [fixture.path, selected],
+    [saved.path, {}],
+  ] as const) {
+    assertApiError(await fixture.request("POST", path, { session, body }), 403, "FORBIDDEN");
+  }
+  assert.equal(secretValueReadCount(fixture.secretDriver), readsBefore);
+  assert.equal(credentials.length, credentialsBefore);
+
+  const duplicate = { ...distinct, name: plugin.name, private_metadata: "provider-row-private" };
+  const adminHeaders = authenticatedHeaders(await fixture.signIn());
+  nextCursor = null;
+  for (const [path, body, second, endpoint, q, pageCursor] of [
+    [fixture.path, selected, duplicate, "list", null, null],
+    [saved.path, { q: "fixture", cursor }, duplicate, "search", "fixture", cursor],
+    [fixture.path, { ...selected, q: "fixture" }, plugin, "search", "fixture", null],
+  ] as const) {
+    catalogPlugins = [plugin, second];
+    const { response, text } = await fixture.rawRequest("POST", path, {
+      headers: adminHeaders,
+      body,
+    });
+    assert.equal(response.status, 503, text);
+    assert.match(response.headers.get("content-type") ?? "", /application\/json/i);
+    const refused = { status: response.status, body: JSON.parse(text) as unknown };
+    const failure = fixture.fixtureResponse(
+      refused,
+      503,
+      ErrorResponse,
+      "ambiguous hosted catalog",
+    );
+    assert.equal(response.headers.get("x-request-id"), failure.meta.requestId);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(failure.error.code, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
+    assert.equal("data" in failure, false);
+    const failureJson = JSON.stringify(failure);
+    assert.doesNotMatch(failureJson, /remote-(other-)?fixture|provider-row-private/);
+    assert.equal(failureJson.includes(accessToken), false);
+    assert.deepEqual(catalogRequests.at(-1), { path: `/backend-api/ps/plugins/${endpoint}`, q });
+    assert.equal(catalogCursor, pageCursor);
+  }
+  assert.doesNotMatch(JSON.stringify([fixture.auditSink.events, logs]), /provider-row-private/);
+  catalogPlugins = [plugin];
+
   const details = await fixture.request("POST", `${fixture.path}/details`, {
     body: { harnessId: "codex", secretRef: secret.ref, pluginId: "remote-fixture" },
   });

@@ -23,9 +23,9 @@ import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mj
 import { reservePort, reservedPortArgs } from "./available-port.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
-import { jsonRequestInit } from "./inject-json.mjs";
+import { jsonRequestInit } from "./inject-json.ts";
 import { jsonLines as parseJsonLines } from "./json-lines.mjs";
-import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import {
   cleanupKubernetesNamespaces,
   createKubernetesStartupEnvironment,
@@ -33,7 +33,7 @@ import {
 } from "./postgres-platform-kubernetes.ts";
 import { stopProcess } from "./stop-process.mjs";
 import { temporaryDirectory } from "./temporary-directory.ts";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 type Configuration = ConfigurationResponse["data"];
 type Agent = AgentResponse["data"];
@@ -105,7 +105,7 @@ async function prepareCaseDatabase(
   if (!statePath) {
     return databaseUrl;
   }
-  const { prepareFile } = await import("../../scripts/ci/prepare.mjs");
+  const { prepareFile } = await import("../../scripts/ci/prepare.ts");
   const prepared = await prepareFile({
     lane,
     file: fileURLToPath(testFile),

@@ -11,7 +11,7 @@ import type {
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
-import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
+import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import {
   deployFiniteAgent,
   deployStandingAgent,
@@ -19,18 +19,144 @@ import {
 } from "../helpers/finite-git-agent.ts";
 import { createFiniteGitProviderObservation } from "../helpers/finite-git-providers.ts";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
+import { waitForStockSupervisor } from "../helpers/openshell-stock-supervisor-image.ts";
 import {
   createFiniteGitConversation,
   finiteGitConversationFailureStage,
 } from "../helpers/finite-git-conversation.ts";
 import {
   createOpenShellGitDenial,
+  gitRemovalDenialCategory,
+  gitRemovalDenialCommand,
   openShellGitDenialFailureStage,
-} from "../helpers/openshell-git-denial.mjs";
+} from "../helpers/openshell-git-denial.ts";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
+
+// The installed lane keeps its declared cases. Ordinary integration runs exercise polling off-cluster.
+if (!selected) {
+  test("stock Supervisor readiness pins the Pod and its container", async (t) => {
+    const digest = "sha256:" + "a".repeat(64);
+    const configDigest = "sha256:" + "b".repeat(64);
+    const otherDigest = "sha256:" + "c".repeat(64);
+    const expected = {
+      sandboxId: "sandbox",
+      sandboxUid: "sandbox-uid",
+      image: `registry.example/supervisor@${digest}`,
+      digests: [digest, configDigest],
+    };
+    const pod = {
+      metadata: {
+        uid: "pod-uid",
+        name: "supervisor",
+        labels: {
+          "openshell.ai/boundary-role": "supervisor",
+          "openshell.ai/boundary-pair": "pair",
+        },
+        annotations: { "openshell.ai/sandbox-id": expected.sandboxId },
+        ownerReferences: [{ kind: "Sandbox", uid: expected.sandboxUid }],
+      },
+      spec: { containers: [{ name: "supervisor", image: expected.image }] },
+    };
+    const running = {
+      name: "supervisor",
+      ready: true,
+      imageID: `containerd://${configDigest}`,
+      containerID: "containerd://owned",
+      state: { running: {} },
+    };
+    const ready = { ...pod, status: { phase: "Running", containerStatuses: [running] } };
+    const pending = {
+      ...pod,
+      status: {
+        phase: "Pending",
+        containerStatuses: [
+          { name: "supervisor", ready: false, state: { waiting: { reason: "ContainerCreating" } } },
+        ],
+      },
+    };
+    const noRead = async () =>
+      assert.fail("must check the initial identity and image before reading");
+    await t.test(
+      "waits for the selected container's ready status and runtime digest",
+      async (t) => {
+        let reads = 0;
+        const readPod = async (signal: AbortSignal) => {
+          assert.equal(signal.aborted, false);
+          reads++;
+          return ready;
+        };
+        assert.deepEqual(
+          await waitForStockSupervisor(pending, readPod, expected, t.signal),
+          running,
+        );
+        assert.equal(reads, 1);
+        assert.deepEqual(await waitForStockSupervisor(ready, noRead, expected, t.signal), running);
+      },
+    );
+    await t.test("rejects a wrong requested or resolved image before readiness", async (t) => {
+      await assert.rejects(
+        waitForStockSupervisor(
+          { ...pending, spec: { containers: [{ name: "supervisor", image: "other" }] } },
+          noRead,
+          expected,
+          t.signal,
+        ),
+        /must select the verified stock image/,
+      );
+      const wrongImage = {
+        ...ready,
+        status: {
+          ...ready.status,
+          containerStatuses: [{ ...running, ready: false, imageID: otherDigest }],
+        },
+      };
+      await assert.rejects(
+        waitForStockSupervisor(wrongImage, noRead, expected, t.signal),
+        /running supervisor image must match/,
+      );
+    });
+    await t.test("refuses a replaced Pod or restarted container during the wait", async (t) => {
+      await assert.rejects(
+        waitForStockSupervisor(
+          pending,
+          async () => ({ ...ready, metadata: { ...pod.metadata, uid: "replacement" } }),
+          expected,
+          t.signal,
+        ),
+        /supervisor Pod UID changed/,
+      );
+      const starting = {
+        ...ready,
+        status: { ...ready.status, containerStatuses: [{ ...running, ready: false }] },
+      };
+      const replacement = {
+        ...ready,
+        status: {
+          ...ready.status,
+          containerStatuses: [{ ...running, containerID: "containerd://replacement" }],
+        },
+      };
+      await assert.rejects(
+        waitForStockSupervisor(starting, async () => replacement, expected, t.signal),
+        /supervisor container identity changed/,
+      );
+    });
+    await t.test("reports the last waiting reason when startup does not finish", async (t) => {
+      await assert.rejects(
+        waitForStockSupervisor(pending, noRead, expected, t.signal, 25),
+        /did not become ready within 25 ms \(phase=Pending, reason=ContainerCreating/,
+      );
+      const cancellation = new Error("cancelled fixture");
+      await assert.rejects(
+        waitForStockSupervisor(pending, noRead, expected, AbortSignal.abort(cancellation)),
+        (error) => error === cancellation,
+      );
+    });
+  });
+}
 
 interface OriginToken {
   uses: number;
@@ -700,15 +826,9 @@ test(
           const startedAt = Date.now();
           // Keep the raw Git error inside the workload. A transport category only
           // qualifies with the exact, ordered supervisor evidence below.
-          const result = await execute(a.target, [
-            "sh",
-            "-ceu",
-            "set +e; error=$(" +
-              git +
-              ' 2>&1); status=$?; set -e; test "$status" -ne 0; test "$status" -ne 126; test "$status" -ne 127; case "$error" in *"returned error: 403"*|*"response 403"*) printf signed ;; *) printf transport ;; esac',
-          ]);
+          const result = await execute(a.target, gitRemovalDenialCommand(git));
           const endedAt = Date.now();
-          const category = result.stdout.toString("utf8");
+          const category = gitRemovalDenialCategory(result);
           if (category === "signed") {
             assert.equal(mode, "live", "completed detach must refuse before HTTP");
             phase = step.signed;
@@ -740,7 +860,6 @@ test(
               workerUid: previous.workerUid,
             });
           } else {
-            assert.equal(category, "transport");
             phase = step.marker;
             const markerHost = `git-retention-${randomUUID()}.invalid`;
             await execute(a.target, [

@@ -9,9 +9,9 @@ import { promisify } from "node:util";
 
 import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const execute = promisify(execFile);
 const script = fileURLToPath(new URL("../../scripts/upgrade-node-platform.py", import.meta.url));

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import test from "node:test";
-import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
+import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.ts";
 import {
   addWireService,
   bindWireServer,
@@ -168,25 +168,9 @@ export function registerLogsCases(): void {
       gatewayClient.close();
       server.forceShutdown();
     });
-    type CustodyOptions = {
-      gatewayClient: GrpcOpenShellGatewayClient;
-      workspace: string;
-      sandbox: string;
-      sandboxId: string;
-      supervisor: typeof supervisor;
-      readSupervisor: () => Promise<typeof supervisor>;
-    };
-    // The shared observer owns the snapshot and requires the same object on recheck.
-    const custodyObserver: (
-      input: CustodyOptions,
-      options: { deliveryTimeoutMs: number; pollIntervalMs: number },
-    ) => {
-      snapshot(): Promise<unknown>;
-      expectAfter(before: unknown, expected: readonly string[]): Promise<unknown>;
-    } = createCustodyTransitions;
     const start = async (deliveryTimeoutMs = 3000) => {
       reply = () => [[initial]];
-      const custody = custodyObserver(
+      const custody = createCustodyTransitions(
         {
           gatewayClient,
           workspace,

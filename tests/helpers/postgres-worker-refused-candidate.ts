@@ -16,7 +16,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import type { createWorkerRevisionFixtures } from "./postgres-worker-revision-fixture.mjs";
 import { waitForWorkStateDue } from "./postgres-worker-revision-support.mjs";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 export type RevisionFixture = Awaited<
   ReturnType<ReturnType<typeof createWorkerRevisionFixtures>["setup"]>

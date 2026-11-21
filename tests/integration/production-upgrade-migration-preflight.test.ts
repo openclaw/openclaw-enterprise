@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
@@ -5,30 +6,44 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import Type, { type Static } from "typebox";
+import { Check } from "typebox/value";
+import { findResource, namedChartResource } from "../helpers/production-chart-resource.ts";
 import {
   chartTooling,
   parseProductionChart,
   productionValues,
   renderProductionChart,
-} from "../helpers/production-chart.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+} from "../helpers/production-chart.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
-type Labels = Record<string, string | number | null>;
-type Resource = { kind: string; metadata: { name: string } };
-type Container = { name: string; envFrom?: unknown };
-type Job = Resource & {
-  metadata: { labels: Labels };
-  spec: {
-    template: {
-      metadata: { labels: Labels };
-      spec: {
-        initContainers?: Container[];
-        containers: Container[];
-      };
-    };
-  };
-};
-type Policy = Resource & { spec: { podSelector: { matchLabels: Labels } } };
+const labels = Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Null()]));
+const container = Type.Object({
+  name: Type.String(),
+  envFrom: Type.Optional(Type.Unknown()),
+  args: Type.Optional(Type.Array(Type.String())),
+  command: Type.Optional(Type.Array(Type.String())),
+});
+const jobShape = Type.Intersect([
+  namedChartResource,
+  Type.Object({
+    metadata: Type.Object({ labels }),
+    spec: Type.Object({
+      template: Type.Object({
+        metadata: Type.Object({ labels }),
+        spec: Type.Object({
+          initContainers: Type.Optional(Type.Array(container)),
+          containers: Type.Array(container),
+        }),
+      }),
+    }),
+  }),
+]);
+const denyPolicyShape = Type.Object({
+  spec: Type.Object({ podSelector: Type.Object({ matchLabels: labels }) }),
+});
+type Job = Static<typeof jobShape>;
+type Resource = Static<typeof namedChartResource>;
 
 const execute = promisify(execFile);
 const helper = fileURLToPath(
@@ -41,16 +56,12 @@ test(
   async (t) => {
     const release = "preflight-test";
     const { stdout } = await renderProductionChart({}, { isUpgrade: true, release });
-    const resources: Resource[] = await parseProductionChart(stdout);
-    const initializer = resources.find(
-      ({ kind, metadata }) => kind === "Job" && metadata.name === `${release}-initialization`,
-    ) as Job | undefined;
-    const deny = resources.find(
-      ({ kind, metadata }) =>
-        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-default-deny",
-    ) as Policy | undefined;
-    assert.ok(initializer);
-    assert.ok(deny);
+    const resources = await parseProductionChart(stdout);
+    assert.ok(Check(Type.Array(namedChartResource), resources), "Expected named Helm resources");
+    const initializer = findResource(resources, "Job", `${release}-initialization`);
+    const deny = findResource(resources, "NetworkPolicy", "openclaw-enterprise-default-deny");
+    assert.ok(Check(jobShape, initializer), "Expected the Helm initialization Job");
+    assert.ok(Check(denyPolicyShape, deny), "Expected the default-deny Pod selector");
     const directory = await temporaryDirectory(t, "migration-preflight-");
     const input = join(directory, "chart.jsonl");
     const customLabel = "example.invalid/upgrade";
@@ -96,9 +107,10 @@ test(
         pod.metadata.labels[nullableLabel] = null;
         bootstrap.envFrom = null;
         migration.envFrom = null;
-        const generated: Job = JSON.parse(
+        const generated: unknown = JSON.parse(
           (await generate(action, withInitializer(selected))).stdout,
         );
+        assert.ok(Check(jobShape, generated), "Expected the generated migration Job");
         assert.deepEqual(generated.metadata.labels, selected.metadata.labels);
         assert.deepEqual(generated.spec.template.metadata.labels, pod.metadata.labels);
         for (const [key, value] of Object.entries(deny.spec.podSelector.matchLabels)) {
@@ -109,6 +121,28 @@ test(
           [{ name: "migration", envFrom: null }],
         );
         assert.equal(generated.spec.template.spec.initContainers, undefined);
+        const [probe] = generated.spec.template.spec.containers;
+        assert.ok(probe);
+        assert.deepEqual(probe.command, ["node"]);
+        assert.deepEqual(probe.args, [...selectedImageMigrationEntry, "--check"]);
+
+        // A historical chart can name its executable directly. Its preflight
+        // still checks the selected image's mode support before import.
+        migration.args = ["scripts/migrate-production.mjs", "--require-current"];
+        const historical: unknown = JSON.parse(
+          (await generate(action, withInitializer(selected))).stdout,
+        );
+        assert.deepEqual(historical, generated);
+        migration.args = ["-e", "process.exit(0)", "--"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["--run", "db:migrate", "--"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["scripts/migrate-production.ts", "--expect-empty", "unexpected"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["scripts/migrate-production.ts"];
+        migration.command = ["sh"];
+        await refuses(action, withInitializer(selected), /invalid migration command/);
+        delete migration.command;
 
         // Count both release and component matches before validating their other labels.
         const duplicate = structuredClone(initializer);

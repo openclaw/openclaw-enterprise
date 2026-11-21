@@ -19,6 +19,7 @@ import {
 } from "../../scripts/module-boundaries/exceptions.ts";
 import { validatePolicy, type Policy } from "../../scripts/module-boundaries/evaluate-policy.ts";
 import { parseJSON } from "../../scripts/module-boundaries/workspace.ts";
+import { settled as settle } from "../helpers/child-processes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -43,11 +44,6 @@ type Output = { stdout: string; stderr: string };
 type ExitFailure = Error & Output & { code: number };
 type DiagnosticRow = Report["violations"][number];
 type Edge = Pick<Report["edges"][number], "from" | "to">;
-
-// Drain every operation before fixture cleanup. allSettled keeps the original input order.
-async function settle<T>(promises: Iterable<Promise<T>>): Promise<T[]> {
-  return (await Promise.allSettled(promises)).map(settledValue);
-}
 
 function settledValue<T>(result: PromiseSettledResult<T>): T {
   if (result.status === "rejected") {
@@ -129,12 +125,6 @@ async function node(args: readonly string[], options?: NodeOptions): Promise<Out
   }
 }
 
-// Runs the CLI in this process. Like a child run, it resolves to { stdout, stderr } on exit
-// 0 and otherwise rejects with an error carrying the exit `code`, `stdout` and `stderr`.
-// Real child runs stay where the process matters: exit statuses and stream output in
-// "requires explicit valid policy...", an unreadable policy file, an unknown option,
-// NODE_PATH, and tests that resolve with Node in this process before running the CLI (its
-// resolution caches).
 function captureStreams() {
   const output: Output = { stdout: "", stderr: "" };
   const streams = {
@@ -144,15 +134,9 @@ function captureStreams() {
   return { output, streams };
 }
 
-async function cliInProcess(args: readonly string[]): Promise<Output> {
+async function cliInProcess(args: readonly string[], expectedStatus = 0): Promise<Output> {
   const { output, streams } = captureStreams();
-  const code = await runModuleBoundaryCli(args, streams);
-  if (code !== 0) {
-    throw Object.assign(new Error(`module boundary CLI exited with ${code}`), {
-      code,
-      ...output,
-    });
-  }
+  assert.equal(await runModuleBoundaryCli(args, streams), expectedStatus, output.stderr);
   return output;
 }
 
@@ -252,7 +236,8 @@ async function workspace(t: TestContext, overrides: Partial<Policy> = {}) {
       assert.equal((await check({ exceptions })).ok, true, "line shifts retain the identity");
       return { item, exceptions };
     },
-    cli: (extra: readonly string[] = []) => cliInProcess([...args, ...extra]),
+    cli: (extra: readonly string[] = [], expectedStatus = 0) =>
+      cliInProcess([...args, ...extra], expectedStatus),
     // A real child, for exit statuses, streams, env and Node's per-process caches.
     cliProcess: (extra: readonly string[] = [], options?: NodeOptions) =>
       node([cli, ...args, ...extra], options),
@@ -420,8 +405,8 @@ describe("module boundaries", { concurrency: true }, () => {
     await link();
     await write("apps/app/src/blocked.cjs", 'require("@fixture/library/blocked");');
     const [json, text, missing] = await settle([
-      failure(verify(["--json"]), 1),
-      failure(verify(), 1),
+      verify(["--json"], 1),
+      verify([], 1),
       failure(node([cli, "--root", root, "--policy", "missing.json"]), 2),
     ]);
     assert.ok(json && text && missing);
@@ -456,10 +441,10 @@ describe("module boundaries", { concurrency: true }, () => {
       cases.map(async ([path, options]) => {
         const space = await workspace(t);
         await space.write(path, marker);
-        for (const error of await settle(
-          [[], ["--json"]].map((json) => failure(cliInProcess([...options(space), ...json]), 2)),
+        for (const result of await settle(
+          [[], ["--json"]].map((json) => cliInProcess([...options(space), ...json], 2)),
         )) {
-          const output = error.stdout + error.stderr;
+          const output = result.stdout + result.stderr;
           assert.match(output, /Invalid JSON/);
           assert.equal(output.includes(marker), false);
           assert.equal(output.includes(space.root), false);
@@ -987,8 +972,8 @@ describe("module boundaries", { concurrency: true }, () => {
       violations.every((item) => stringValue(item.specifier).startsWith("unknown:sha256:")),
     );
     assert.equal(JSON.stringify(report).includes("PRIVATE_"), false);
-    for (const error of await settle([[], ["--json"]].map((json) => failure(verify(json), 1)))) {
-      assert.equal((error.stdout + error.stderr).includes("PRIVATE_"), false);
+    for (const result of await settle([[], ["--json"]].map((json) => verify(json, 1)))) {
+      assert.equal((result.stdout + result.stderr).includes("PRIVATE_"), false);
     }
     const exceptions = exceptionsFor(violations.find((item) => item.from === esm));
     assert.equal((await check({ exceptions })).baseline.length, 1);
@@ -1017,11 +1002,11 @@ describe("module boundaries", { concurrency: true }, () => {
           /Source roots cannot traverse symbolic links/,
         );
         await write(`policy-${index}.json`, JSON.stringify(invalid));
-        const error = await failure(
-          cliInProcess(["--root", root, "--policy", join(root, `policy-${index}.json`), "--json"]),
+        const result = await cliInProcess(
+          ["--root", root, "--policy", join(root, `policy-${index}.json`), "--json"],
           2,
         );
-        assert.match(error.stderr, /Source roots cannot traverse symbolic links/);
+        assert.match(result.stderr, /Source roots cannot traverse symbolic links/);
       }),
     );
     assert.equal((await check()).ok, true);
@@ -1311,7 +1296,7 @@ describe("module boundaries", { concurrency: true }, () => {
       join(root, "packages/library/src/conditional.mjs"),
     );
 
-    const result = await failure(cli(["--json"]), 1);
+    const result = await cli(["--json"], 1);
     const report = cliReport(result.stdout);
     assert.equal(report.ok, false);
     assert.deepEqual(rules(report), Array(3).fill("unsupported-package-export"));
@@ -1349,7 +1334,7 @@ describe("module boundaries", { concurrency: true }, () => {
     const rejected = await failure(node([join(root, "apps/app/src/query-slash.mjs")]), 1);
     assert.match(rejected.stderr, /ERR_INVALID_PACKAGE_TARGET/);
 
-    const result = await failure(cli(["--json"]), 1);
+    const result = await cli(["--json"], 1);
     const report = cliReport(result.stdout);
     assert.deepEqual(rules(report), ["unsupported-package-export"]);
     for (const name of ["query", "fragment"]) {
@@ -1674,9 +1659,11 @@ describe("module boundaries", { concurrency: true }, () => {
     for (const source of Object.keys(sources)) {
       assert.ok(violates(report, source, "workspace-package-mismatch"));
     }
-    const error = await failure(verify(["--json"]), 1);
+    const result = await verify(["--json"], 1);
     assert.ok(
-      cliReport(error.stdout).violations.some((item) => item.rule === "workspace-package-mismatch"),
+      cliReport(result.stdout).violations.some(
+        (item) => item.rule === "workspace-package-mismatch",
+      ),
     );
   });
 
@@ -1858,11 +1845,7 @@ describe("module boundaries", { concurrency: true }, () => {
         );
         const [probeRun, cliRun] = await Promise.allSettled([
           native(probe),
-          verify(["--json"]).catch((error: unknown) => {
-            assert.ok(exitFailure(error));
-            assert.equal(error.code, 1);
-            return error;
-          }),
+          verify(["--json"], commonjs ? 1 : 0),
         ]);
         const output = settledValue(probeRun);
         const result = settledValue(cliRun);
@@ -1874,7 +1857,6 @@ describe("module boundaries", { concurrency: true }, () => {
           commonjs ? target : null,
         );
         const report = cliReport(result.stdout);
-        assert.equal(exitFailure(result) ? result.code : 0, commonjs ? 1 : 0);
         assert.deepEqual(
           from(report, consumer).map((edge) => edge.to),
           commonjs ? [target] : [],
@@ -2036,8 +2018,8 @@ describe("module boundaries", { concurrency: true }, () => {
         ),
       );
     }
-    const rejected = await failure(cli(["--json"]), 1);
-    assert.equal(cliReport(rejected.stdout).ok, false);
+    const result = await cli(["--json"], 1);
+    assert.equal(cliReport(result.stdout).ok, false);
   });
 
   test("resolves ESM literal paths with URL semantics and preserves literal CommonJS filenames", async (t) => {
@@ -2420,9 +2402,9 @@ describe("module boundaries", { concurrency: true }, () => {
         const { root, check, cli: verify } = await workspace(t, { sourceRoots, packages: [] });
         await mkdir(join(root, "empty"));
         await assert.rejects(check(), /No source files selected/);
-        const error = await failure(verify(["--json"]), 2);
-        assert.match(error.stderr, /No source files selected/);
-        assert.equal(error.stdout, "");
+        const result = await verify(["--json"], 2);
+        assert.match(result.stderr, /No source files selected/);
+        assert.equal(result.stdout, "");
       }),
     );
   });
@@ -2439,8 +2421,8 @@ describe("module boundaries", { concurrency: true }, () => {
     delete typo.cycles;
     await assert.rejects(check({ policy: typo }), /Unknown policy field/);
     await write("policy.json", JSON.stringify(typo));
-    for (const error of await settle([[], ["--json"]].map((json) => failure(verify(json), 2)))) {
-      assert.match(error.stderr, /Unknown policy field/);
+    for (const result of await settle([[], ["--json"]].map((json) => verify(json, 2)))) {
+      assert.match(result.stderr, /Unknown policy field/);
     }
     await assert.rejects(
       check({
@@ -2481,12 +2463,12 @@ describe("module boundaries", { concurrency: true }, () => {
     await write("invalid.json", JSON.stringify({ ...policy, diagnosticLimit: 0 }));
     const [text, json, ...configuration] = await settle([
       failure(cliProcess(), 1),
-      failure(verify(["--json"]), 1),
+      verify(["--json"], 1),
       ...[
         ["--root", root],
         ["--root", root, "--policy", join(root, "malformed.json")],
         ["--root", root, "--policy", join(root, "invalid.json")],
-      ].map((options) => failure(cliInProcess(options), 2)),
+      ].map((options) => cliInProcess(options, 2)),
       // A configuration failure without an error code, through a real child.
       failure(node([cli, ...args, "--unknown"]), 2),
     ]);
@@ -2571,8 +2553,8 @@ describe("module boundaries", { concurrency: true }, () => {
     const unknown = await check();
     assert.match(stringValue(violation(unknown, source)?.specifier), /^unknown:sha256:/);
     assert.equal(JSON.stringify(unknown).includes("PRIVATE_EXPRESSION_MARKER"), false);
-    for (const error of await settle([[], ["--json"]].map((json) => failure(verify(json), 1)))) {
-      assert.equal((error.stdout + error.stderr).includes("PRIVATE_EXPRESSION_MARKER"), false);
+    for (const result of await settle([[], ["--json"]].map((json) => verify(json, 1)))) {
+      assert.equal((result.stdout + result.stderr).includes("PRIVATE_EXPRESSION_MARKER"), false);
     }
   });
 

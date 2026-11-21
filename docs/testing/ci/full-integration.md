@@ -49,11 +49,17 @@ Some lanes are also selected by [CI](required-checks.md) or
 | [Private Git access and credential withdrawal](../repository-credentials.md#verify-prepared-native-git) | An installed Agent can use private Git; withdrawing its credentials interrupts an authenticated fetch while chat remains available. Uses synthetic model and Git credentials.          | [Installed Skipper private Git and live withdrawal](../../../scripts/ci/test-suites/skipper-prepared-git-installed.json)                       |
 | [Log forwarding and recovery](../local.md#metrics-and-observability-tests)                              | The collector forwards logs and recovers after exporter failures.                                                                                                                      | [Logging Collector](../../../scripts/ci/test-suites/logging-collector.json)                                                                    |
 | [Logs from live model calls](../local.md#kubernetes-observability-acceptance)                           | Embedded and dedicated runtimes emit OpenTelemetry logs during real model calls.                                                                                                       | [k3d OTEL](../../../scripts/ci/test-suites/k3d-otel.json)                                                                                      |
-| [Worker startup deadline](../../../tests/integration/dev-up-timeout.test.mjs)                           | Local Setup waits the full 300-second deadline before failing a worker that is running but not ready.                                                                                  | [Helper Timeout](../../../scripts/ci/test-suites/helper-timeout.json)                                                                          |
+| [Worker startup deadline](../../../tests/integration/dev-up-timeout.test.ts)                            | Local Setup waits the full 300-second deadline before failing a worker that is running but not ready.                                                                                  | [Helper Timeout](../../../scripts/ci/test-suites/helper-timeout.json)                                                                          |
 | [Agent workflows across installations](qa-advisory.md#scenarios)                                        | Selected installation, preset, and scenario combinations.                                                                                                                              | [Shipped Installation QA Matrix](../../../scripts/ci/test-suites/qa-matrix.json)                                                               |
 
 Job links name the execution jobs and open their manifests. GitHub groups these
 under `Execute`, including `Execute / Full Integration Aggregate`.
+
+The [isolated upgrade qualification](../kubernetes.md#run-an-isolated-upgrade-qualification-lane)
+selects two distinct runtime images. It checks continuation through the production
+upgrade and verifies that the stopped Agent first runs the new image when
+explicitly deployed after the upgrade. Its cancelled turn must stay cancelled.
+The scheduled Production TUI job exercises the regular revision cutover.
 
 `all` selects the workflow's supported lanes, not every lane registered in the
 repository. [Manually prepared lanes](../manual-tests.md)

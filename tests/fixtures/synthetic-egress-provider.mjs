@@ -2,17 +2,60 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:https";
 
+/**
+ * @typedef {"reflect-split-id" | "reflect-encoded-arguments" | "reflect-message-citation"} CredentialMode
+ * @typedef {"answer" | "reflect-body" | "reflect-header" | "oversize" | "incomplete"} PlainMode
+ * @typedef {PlainMode | CredentialMode} ProviderMode
+ * @typedef {{type: "output_text", text: string, annotations: readonly []}} OutputText
+ * @typedef {{type: "message", id: string, status: string, role: string, content: OutputText[]}} Message
+ * @typedef {{type: "function_call", id: string, call_id: string, name: string,
+ *   arguments: string, status: string}} FunctionCall
+ * @typedef {{id: string, object: string, model: string, created_at: number,
+ *   status: string, output: (Message | FunctionCall)[],
+ *   usage?: {input_tokens: number, input_tokens_details: {cached_tokens: number},
+ *     output_tokens: number, output_tokens_details: {reasoning_tokens: number}, total_tokens: number}
+ * }} SyntheticResponse
+ * @typedef {{type: "response.created" | "response.completed", response: SyntheticResponse} |
+ *   {type: "response.output_item.added" | "response.output_item.done", output_index: number,
+ *     item: Message | FunctionCall} |
+ *   {type: "response.content_part.added" | "response.content_part.done", item_id: string,
+ *     output_index: number, content_index: number, part: OutputText} |
+ *   {type: "response.output_text.delta", item_id: string, output_index: number, content_index: number,
+ *     delta: string} |
+ *   {type: "response.output_text.done", item_id: string, output_index: number, content_index: number,
+ *     text: string} |
+ *   {type: "response.function_call_arguments.delta", item_id: string, output_index: number, delta: string} |
+ *   {type: "response.function_call_arguments.done", item_id: string, output_index: number, arguments: string}
+ * } SyntheticEvent
+ */
+
 // This origin implements only the external provider wire, never OCE authorization,
 // credential selection, installation evidence, or the supervisor's response policy.
+/**
+ * @param {string} model
+ * @param {string} text
+ * @param {{mode: CredentialMode, credential: string} | {mode?: PlainMode, credential?: string}} [options]
+ * @returns {SyntheticEvent[]}
+ */
 export function syntheticResponsesEvents(model, text, { mode, credential } = {}) {
+  /** @type {[OutputText]} */
+  const content = [{ type: "output_text", text, annotations: [] }];
+  /** @type {Message} */
   const message = {
     type: "message",
     id: "msg_synthetic",
     status: "completed",
     role: "assistant",
-    content: [{ type: "output_text", text, annotations: [] }],
+    content,
   };
   const base = { id: "resp_synthetic", object: "response", model, created_at: 1 };
+  /** @type {[
+   *   Extract<SyntheticEvent, {response: SyntheticResponse}>,
+   *   SyntheticEvent, SyntheticEvent,
+   *   Extract<SyntheticEvent, {type: "response.output_text.delta"}>,
+   *   SyntheticEvent, SyntheticEvent, SyntheticEvent,
+   *   Extract<SyntheticEvent, {response: SyntheticResponse}>,
+   * ]} */
   const events = [
     { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
     {
@@ -46,7 +89,7 @@ export function syntheticResponsesEvents(model, text, { mode, credential } = {})
       item_id: message.id,
       output_index: 0,
       content_index: 0,
-      part: message.content[0],
+      part: content[0],
     },
     { type: "response.output_item.done", output_index: 0, item: message },
     {
@@ -66,7 +109,9 @@ export function syntheticResponsesEvents(model, text, { mode, credential } = {})
     },
   ];
   if (
-    ["reflect-split-id", "reflect-encoded-arguments", "reflect-message-citation"].includes(mode)
+    mode === "reflect-split-id" ||
+    mode === "reflect-encoded-arguments" ||
+    mode === "reflect-message-citation"
   ) {
     assert.match(credential, /^SYNTHETIC-OCE-EGRESS-[a-f0-9-]+-v[12]$/);
   }
@@ -88,6 +133,7 @@ export function syntheticResponsesEvents(model, text, { mode, credential } = {})
       credential,
       (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
     ).join("")}"}`;
+    /** @type {FunctionCall} */
     const call = {
       type: "function_call",
       id: "fc_synthetic",
@@ -118,20 +164,26 @@ export function syntheticResponsesEvents(model, text, { mode, credential } = {})
         arguments: argumentsValue,
       },
       { type: "response.output_item.done", output_index: 0, item: call },
-      { ...events.at(-1), response: { ...events.at(-1).response, output: [call] } },
+      { ...events[7], response: { ...events[7].response, output: [call] } },
     ];
   }
   if (mode === "reflect-message-citation") {
     // Earlier stream events stay benign: only the completed response contains this projection.
-    events.at(-1).response.output = outputWithIndependentCitation(message, credential);
+    events[7].response.output = outputWithIndependentCitation(message, credential);
   }
   return events;
 }
 
 // The first message leaves a citation open. Stripping citations from the joined messages
 // hides the start of text that a reader of the second message sees in full.
+/**
+ * @template {{id: string}} Message
+ * @param {Message} message
+ * @param {string} text
+ */
 export function outputWithIndependentCitation(message, text) {
   const split = Math.floor(text.length / 2);
+  /** @param {...string} parts @returns {OutputText[]} */
   const content = (...parts) =>
     parts.map((text) => ({ type: "output_text", text, annotations: [] }));
   return [
@@ -147,21 +199,62 @@ export function outputWithIndependentCitation(message, text) {
   ];
 }
 
+/** @param {readonly {type: string}[]} events */
 export function encodeSyntheticEvents(events) {
   return Buffer.from(
     events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
   );
 }
 
+/** @param {unknown} value @returns {value is Record<string, unknown>} */
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** @param {string} wire */
+function parseProviderBody(wire) {
+  /** @type {unknown} */
+  const body = JSON.parse(wire);
+  // Non-object JSON has no request fields. Keep its redacted observation before
+  // the request-shape checks reject it, just as for a missing model.
+  assert.ok(body !== null);
+  const fields = isRecord(body) ? body : {};
+  /** @type {unknown} */
+  const tools = fields.tools ?? [];
+  assert.ok(Array.isArray(tools));
+  return {
+    model: fields.model,
+    stream: fields.stream,
+    store: fields.store,
+    tools: tools.map((/** @type {unknown} */ tool) => {
+      assert.ok(tool !== null);
+      const type = isRecord(tool) ? tool.type : undefined;
+      return { type: typeof type === "string" ? type : "unrecognized" };
+    }),
+  };
+}
+
 /** Counts every request independently, including requests with rejected credentials.
- * Only the two explicitly synthetic values may be reflected; raw requests are never logged. */
+ * Only the two explicitly synthetic values may be reflected; raw requests are never logged.
+ * @param {Pick<import("node:test").TestContext, "after">} t
+ * @param {{bindHost: string, bindPort: number, certificatePath: string, privateKeyPath: string,
+ *   model?: string}} configuration
+ * @param {{initial: string, rotated: string}} credentials
+ */
 export async function startSyntheticEgressProvider(t, configuration, credentials) {
   assert.deepEqual(Object.keys(credentials).sort(), ["initial", "rotated"]);
   for (const value of Object.values(credentials)) {
     assert.match(value, /^SYNTHETIC-OCE-EGRESS-[a-f0-9-]+-v[12]$/);
   }
+  /** @type {ProviderMode} */
   let mode = "answer";
+  /** @typedef {{number: number, mode: ProviderMode, at: string, method: string, path: string,
+   *   credentialVersion: keyof typeof credentials | "unrecognized", status?: number, responseBytes?: number,
+   *   requestBytes?: number, model?: string | undefined, stream?: boolean, store?: false | "unrecognized",
+   *   nonce?: string | undefined, toolTypes?: string[]}} ProviderObservation */
+  /** @type {ProviderObservation[]} */
   const observations = [];
+  /** @type {{request: number, code: "SYNTHETIC_PROVIDER_REQUEST_FAILED"}[]} */
   const errors = [];
   const server = createServer(
     {
@@ -170,6 +263,7 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
     },
     async (request, response) => {
       // Reserve the count before reading the body: denial cannot hide an incomplete send.
+      /** @type {ProviderObservation} */
       const observation = {
         number: observations.length + 1,
         mode,
@@ -181,9 +275,11 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
       observations.push(observation);
       try {
         const responseMode = observation.mode;
-        const version = Object.entries(credentials).find(
-          ([, value]) => request.headers.authorization === `Bearer ${value}`,
-        )?.[0];
+        /** @type {(keyof typeof credentials)[]} */
+        const versions = ["initial", "rotated"];
+        const version = versions.find(
+          (label) => request.headers.authorization === `Bearer ${credentials[label]}`,
+        );
         if (version === undefined) {
           observation.status = 403;
           response.writeHead(403).end();
@@ -197,7 +293,10 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
         }
         const chunks = [];
         let bytes = 0;
-        for await (const chunk of request) {
+        /** @type {AsyncIterable<unknown, unknown, unknown>} */
+        const source = request;
+        for await (const chunk of source) {
+          assert.ok(Buffer.isBuffer(chunk));
           bytes += chunk.length;
           if (bytes > 1024 * 1024) {
             observation.status = 413;
@@ -207,7 +306,7 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
           chunks.push(chunk);
         }
         const wire = Buffer.concat(chunks).toString("utf8");
-        const body = JSON.parse(wire);
+        const body = parseProviderBody(wire);
         const nonce = wire.match(/OCE-EGRESS-[a-f0-9-]{36}/g)?.at(-1);
         Object.assign(observation, {
           requestBytes: bytes,
@@ -217,7 +316,7 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
           nonce,
           toolTypes: [
             ...new Set(
-              (body.tools ?? []).map(({ type }) =>
+              body.tools.map(({ type }) =>
                 ["function", "namespace", "custom", "web_search", "web_search_preview"].includes(
                   type,
                 )
@@ -227,13 +326,12 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
             ),
           ],
         });
+        assert.ok(typeof body.model === "string");
         assert.equal(body.model, configuration.model);
         assert.equal(body.stream, true, "the genuine Codex caller must use HTTP/SSE");
         assert.equal(body.store, false);
         assert.equal(
-          (body.tools ?? []).some(
-            ({ type }) => !["function", "namespace", "custom"].includes(type),
-          ),
+          body.tools.some(({ type }) => !["function", "namespace", "custom"].includes(type)),
           false,
         );
         const text = responseMode === "reflect-body" ? credentials[version] : (nonce ?? "READY");
@@ -248,6 +346,7 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
             syntheticResponsesEvents(body.model, "x".repeat(4 * 1024 * 1024 + 1)),
           );
         }
+        /** @type {Record<string, string>} */
         const headers = { "content-type": "text/event-stream", "cache-control": "no-cache" };
         if (responseMode === "reflect-header") {
           headers["x-synthetic-reflection"] = credentials[version];
@@ -261,15 +360,17 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
         // Multiple HTTP chunks, splitting JSON/event boundaries, exercise finite stream staging.
         for (let offset = 0; offset < responseBody.length; offset += 1021) {
           if (!response.write(responseBody.subarray(offset, offset + 1021))) {
-            await new Promise((resolve) => {
-              const finish = () => {
-                response.removeListener("drain", finish);
-                response.removeListener("close", finish);
-                resolve();
-              };
-              response.once("drain", finish);
-              response.once("close", finish);
-            });
+            await /** @type {Promise<void>} */ (
+              new Promise((resolve) => {
+                const finish = () => {
+                  response.removeListener("drain", finish);
+                  response.removeListener("close", finish);
+                  resolve();
+                };
+                response.once("drain", finish);
+                response.once("close", finish);
+              })
+            );
           }
           if (response.destroyed) {
             break;
@@ -302,14 +403,16 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
     if (!server.listening) {
       return;
     }
-    return new Promise((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
+    return /** @type {Promise<void>} */ (
+      new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
     );
   });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(configuration.bindPort, configuration.bindHost, resolve);
-  });
+  await /** @type {Promise<void>} */ (
+    new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(configuration.bindPort, configuration.bindHost, resolve);
+    })
+  );
   const address = server.address();
   assert.ok(address && typeof address === "object");
   return {
@@ -322,6 +425,7 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
     get tcpConnections() {
       return tcpConnections;
     },
+    /** @param {ProviderMode} value */
     setMode(value) {
       assert.ok(
         [

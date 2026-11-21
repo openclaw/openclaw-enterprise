@@ -5,7 +5,7 @@ import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 
 // Real HTTP, IAM, OCC and Compute admission. The Console fixture simulates Namespace and
 // runtime-credential provisioning; these cases make no cluster or model-execution claim.
@@ -54,7 +54,10 @@ for (const harness of ["codex", "openclaw"] as const) {
           unit.revisions.findRevision(namespace.id, agent.id, deployed.id),
       );
       assert.ok(revision);
-      assert.match(revision.compute.admission ?? "", /^model-provider:v1:[a-f0-9]{64}:/);
+      assert.match(
+        revision.compute.admission ?? "",
+        /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:/,
+      );
       assert.deepEqual(revision.harness.overrides, {});
       assert.deepEqual(revision.harness.configuration, {
         modelProvider: {

@@ -50,11 +50,13 @@ export const SlackMcpTools = {
   ...story("slackMcpTools"),
   name: "Choose tools for a connected Slack account",
 };
+export const SlackMcpSavedToolsUnavailable = story("slackMcpSavedToolsUnavailable");
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const DraftReader = story("draftReader");
 export const DraftSourcesOperateDenied = story("draftSourcesOperateDenied");
 export const PluginsToolRefusal = story("pluginsToolRefusal");
+export const PluginsDetailIdentityRefused = story("pluginsDetailIdentityRefused");
 export const PluginApproversInherited = story("pluginApproversInherited");
 export const PluginApproversOverrides = story("pluginApproversOverrides");
 export const PluginApproversLookup = story("pluginApproversLookup");

@@ -240,14 +240,15 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.clientSecretKey" "value" $oidc.clientSecretKey) -}}
 {{- if eq $oidc.clientIdKey $oidc.clientSecretKey -}}{{- fail "auth.oidc client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.oidc requires an HTTPS auth.baseUrl" -}}{{- end -}}
-{{- /* The API's startup checks, mirrored: https on 443, a DNS host, no userinfo, query or fragment, and one host for all four. */ -}}
-{{- $endpoint := "^(?i)https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?)(:443)?(/[^?#]*)?$" -}}
+{{- /* The API's startup checks, mirrored for each configured URL: https on 443, a DNS host, no userinfo, query or fragment. */ -}}
+{{- $endpoint := "^[Hh][Tt][Tt][Pp][Ss]://(([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(:443)?(/[^?#]*)?$" -}}
 {{- $issuer := regexReplaceAll $jsTrim (toString (default "" $oidc.issuer)) "" -}}
-{{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^(?i)https://[^/]*:" $issuer) (gt (len (regexReplaceAll $endpoint $issuer "${1}")) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
-{{- $host := lower (regexReplaceAll $endpoint $issuer "${1}") -}}
+{{- $issuerHost := regexReplaceAll $endpoint $issuer "${1}" -}}
+{{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^[Hh][Tt][Tt][Pp][Ss]://[^/]*:" $issuer) (gt (len $issuerHost) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
 {{- range $key := list "authorizationUrl" "tokenUrl" "jwksUrl" -}}
 {{- $url := regexReplaceAll $jsTrim (toString (default "" (index $oidc $key))) "" -}}
-{{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
+{{- $host := regexReplaceAll $endpoint $url "${1}" -}}
+{{- if or (not (regexMatch $endpoint $url)) (gt (len $host) 253) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 with a DNS host name and no query or fragment" $key) -}}{{- end -}}
 {{- end -}}
 {{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}
 {{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
@@ -323,30 +324,21 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (ne $installationName (trim $installationName)) (hasPrefix "\uFEFF" $installationName) (hasSuffix "\uFEFF" $installationName) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $installationName)) -}}
 {{- fail "installation.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators" -}}
 {{- end -}}
-{{- if or (not .Values.bootstrap.password.claimName) (not .Values.bootstrap.password.mountPath) (not .Values.bootstrap.password.fileName) -}}
-{{- fail "bootstrap.password must reference an existing protected PVC output path" -}}
+{{- if .Release.IsInstall -}}
+{{- $secret := required "bootstrap.credentials.secretName must reference a precreated Secret" .Values.bootstrap.credentials.secretName -}}
+{{- include "openclaw.requireString" (dict "label" "bootstrap.credentials.secretName" "value" $secret) -}}
+{{- if or (gt (len $secret) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $secret)) -}}
+{{- fail "bootstrap.credentials.secretName must be a DNS subdomain of at most 253 characters" -}}
 {{- end -}}
-{{- /* Kubernetes DNS-subdomain object names, as in prepare-bootstrap-volume: at most 253 characters total. */ -}}
-{{- include "openclaw.requireString" (dict "label" "bootstrap.password.claimName" "value" .Values.bootstrap.password.claimName) -}}
-{{- $claimName := .Values.bootstrap.password.claimName -}}
-{{- if or (gt (len $claimName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $claimName)) -}}
-{{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
-{{- end -}}
-{{- if or (not .Values.bootstrap.serviceKey) (not .Values.bootstrap.serviceKey.fileName) -}}
-{{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
-{{- end -}}
-{{- range $label, $fileName := dict "bootstrap.password.fileName" .Values.bootstrap.password.fileName "bootstrap.serviceKey.fileName" .Values.bootstrap.serviceKey.fileName -}}
-{{- include "openclaw.requireString" (dict "label" $label "value" $fileName) -}}
-{{- if or (eq $fileName ".") (eq $fileName "..") (gt (len (toString $fileName)) 255) (not (regexMatch "^[A-Za-z0-9._-]+$" $fileName)) -}}
-{{- fail (printf "%s must be a simple basename of at most 255 characters" $label) -}}
+{{- range $key := list .Values.bootstrap.credentials.passwordKey .Values.bootstrap.credentials.serviceKeyKey -}}
+{{- include "openclaw.requireString" (dict "label" "bootstrap credential key" "value" $key) -}}
+{{- if or (not $key) (gt (len $key) 253) (not (regexMatch "^[A-Za-z0-9._-]+$" $key)) -}}
+{{- fail "bootstrap credential keys must be Secret key names of at most 253 characters" -}}
 {{- end -}}
 {{- end -}}
-{{- if eq .Values.bootstrap.password.fileName .Values.bootstrap.serviceKey.fileName -}}
-{{- fail "bootstrap service key and password output file names must be distinct" -}}
+{{- if eq .Values.bootstrap.credentials.passwordKey .Values.bootstrap.credentials.serviceKeyKey -}}
+{{- fail "bootstrap credential keys must be distinct" -}}
 {{- end -}}
-{{- /* The bootstrap Job's bootstrapOutputPath requires an absolute file. A relative mount path joins into a relative OCC_BOOTSTRAP_PASSWORD_FILE. */ -}}
-{{- if not (hasPrefix "/" (toString .Values.bootstrap.password.mountPath)) -}}
-{{- fail "bootstrap.password.mountPath must be an absolute path" -}}
 {{- end -}}
 {{- /* Database routing uses numeric TCP ports in bootstrap and controller NetworkPolicies. */ -}}
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.database.port))) (gt (int .Values.database.port) 65535) -}}
@@ -392,7 +384,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) -}}
 {{- if not (kindIs "map" .Values.controlPlane.nodeSelector) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
-{{- /* prepare-bootstrap-volume is_label_key and is_label_value. A qualified key is a DNS subdomain prefix plus a label name; a value is empty or a label name. */ -}}
+{{- /* A qualified label key is a DNS subdomain prefix plus a label name; a value is empty or a label name. */ -}}
 {{- $labelName := "^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$" -}}
 {{- range $key, $value := .Values.controlPlane.nodeSelector }}
 {{- if or (not (kindIs "string" $value)) (gt (len $value) 63) (and (ne $value "") (not (regexMatch $labelName $value))) -}}
@@ -434,7 +426,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "database.caKey" "value" .Values.database.caKey) -}}
 {{- /* The CA is mounted in API, worker, migration and bootstrap. Kubernetes requires each container's mount paths to be unique. */ -}}
-{{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" (toString .Values.bootstrap.password.mountPath) -}}
+{{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" "/run/openclaw-bootstrap" -}}
 {{- if .Values.executionCluster.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/execution" -}}
 {{- end -}}
@@ -530,17 +522,34 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.requireString" (dict "label" "api.consoleTheme.checksum" "value" .Values.api.consoleTheme.checksum) -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.slackProxy.enabled -}}
-{{- $proxy := .Values.slackProxy -}}
-{{- if .Values.api.channelDirectoryProxyUrl -}}{{- fail "api.channelDirectoryProxyUrl must be empty when slackProxy.enabled uses the chart-managed Service" -}}{{- end -}}
-{{- if not (kindIs "bool" $proxy.enabled) -}}{{- fail "slackProxy.enabled must be a boolean" -}}{{- end -}}
-{{- if or (gt (len $proxy.serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $proxy.serviceName)) -}}
-{{- fail "slackProxy.serviceName must be a DNS-1035 Service name" -}}
+{{- if or (hasKey .Values "slackProxy") (hasKey .Values.api "channelDirectoryProxyUrl") -}}
+{{- fail "Legacy Slack proxy settings are unsupported; configure channelEgress" -}}
 {{- end -}}
-{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1024) (gt (int $proxy.port) 65535) -}}
-{{- fail "slackProxy.port must be an integer TCP port from 1024 to 65535: the proxy runs as a non-root user without capabilities" -}}
+{{- if .Values.channelEgress.enabled -}}
+{{- $egress := .Values.channelEgress -}}
+{{- if and .Values.gatewayRouting.enabled (eq $egress.gatewayName (include "openclaw.gatewayRouting.gatewayName" .)) -}}{{- fail "channelEgress must use a Gateway separate from private workspace ingress" -}}{{- end -}}
+{{- range $name := list "listenerPortStart" "listenerPortEnd" "occListenerPort" "inspectionPort" -}}
+{{- $port := get $egress $name -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $port))) (lt (int $port) 1024) (gt (int $port) 65535) -}}{{- fail (printf "channelEgress.%s must be an integer TCP port from 1024 to 65535" $name) -}}{{- end -}}
 {{- end -}}
-{{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
+{{- range $name := list "gatewayName" "gatewayClassName" "envoyNamespace" "serviceName" -}}
+{{- include "openclaw.validateResourceName" (dict "label" (printf "channelEgress.%s" $name) "value" (get $egress $name)) -}}
+{{- end -}}
+{{- include "openclaw.resourceRequirements" (dict "name" "channelEgress.resources" "requirements" $egress.resources) -}}
+{{- range $index, $cidr := $egress.excludedCidrs -}}
+{{- include "openclaw.networkPolicy.cidr" (dict "name" (printf "channelEgress.excludedCidrs[%d]" $index) "value" $cidr) -}}
+{{- end -}}
+{{- if or (lt (int $egress.listenerPortStart) 1024) (gt (int $egress.listenerPortEnd) 65535) (lt (int $egress.listenerPortEnd) (int $egress.listenerPortStart)) (gt (sub (int $egress.listenerPortEnd) (int $egress.listenerPortStart)) 61) -}}
+{{- fail "channelEgress requires a range of at most 62 Agent listener ports" -}}
+{{- end -}}
+{{- if not $egress.excludedCidrs -}}{{- fail "channelEgress.excludedCidrs must contain the installation Pod, Service and node ranges" -}}{{- end -}}
+{{- range $port := list $egress.occListenerPort $egress.inspectionPort 19000 19001 19003 -}}
+{{- if and (ge (int $port) (int $egress.listenerPortStart)) (le (int $port) (int $egress.listenerPortEnd)) -}}{{- fail "channelEgress reserved ports must be outside the Agent range" -}}{{- end -}}
+{{- end -}}
+{{- if eq (int $egress.occListenerPort) (int $egress.inspectionPort) -}}{{- fail "channelEgress OCC and inspection listeners must be distinct" -}}{{- end -}}
+{{- range $port := list $egress.occListenerPort $egress.inspectionPort -}}
+{{- if has (int $port) (list 19000 19001 19003) -}}{{- fail "channelEgress OCC and inspection ports must not use Envoy administrative ports" -}}{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if $repositoryGit -}}
 {{- if .Values.openshellGit.enabled -}}
@@ -681,6 +690,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if kindIs "slice" $routing.remoteNodeCidrs -}}
 {{- range $cidr := $routing.remoteNodeCidrs -}}
 {{- include "openclaw.networkPolicy.cidr" (dict "name" "gatewayRouting.remoteNodeCidrs" "value" $cidr) -}}
+{{- if hasSuffix "/0" (toString $cidr) -}}{{- fail "gatewayRouting.remoteNodeCidrs must not allow every address; list the remote node sources" -}}{{- end -}}
 {{- end -}}
 {{- else if not (kindIs "invalid" $routing.remoteNodeCidrs) -}}
 {{- fail "gatewayRouting.remoteNodeCidrs must be a list of IPv4 or IPv6 CIDR strings" -}}
@@ -718,6 +728,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if and $routing.enabled (not $routing.issuerRef.name) -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "installation.secretName" .Values.installation.secretName) (list "database.secretName" .Values.database.secretName) (list "auth.secretName" .Values.auth.secretName)) -}}
+{{- if .Release.IsInstall -}}{{- $roles = append $roles (list "bootstrap.credentials.secretName" .Values.bootstrap.credentials.secretName) -}}{{- end -}}
 {{- if $routing.enabled -}}{{- $roles = append $roles (list "gatewayRouting.tlsSecretName" (include "openclaw.gatewayRouting.tlsSecretName" .)) -}}{{- end -}}
 {{- if .Values.backend.chatgpt.enabled -}}{{- $roles = append $roles (list "backend.chatgpt.secretName" .Values.backend.chatgpt.secretName) -}}{{- end -}}
 {{- $roles = append $roles (list "database.caSecretName" .Values.database.caSecretName "ca") -}}
@@ -831,14 +842,6 @@ capabilities:
     secretKeyRef:
       name: {{ .secretName | quote }}
       key: {{ .key | quote }}
-{{- end -}}
-
-{{- define "openclaw.slackProxy.serviceName" -}}
-{{- .Values.slackProxy.serviceName -}}
-{{- end -}}
-
-{{- define "openclaw.slackProxy.url" -}}
-{{- printf "http://%s.%s.svc:%v" (include "openclaw.slackProxy.serviceName" .) .Release.Namespace (int .Values.slackProxy.port) -}}
 {{- end -}}
 
 {{- define "openclaw.gatewayRouting.gatewayName" -}}

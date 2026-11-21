@@ -6,7 +6,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 ## Start the profile
 
 [Install Linux tools](local-kubernetes-tools.md): Node.js satisfying `engines.node` in `package.json`, repository-pinned pnpm, the Go version from `go.mod`, k3d,
-kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
+kubectl, Helm, yq v4, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
 K3s requires the `cpuset` cgroup controller, which systemd does not delegate to
@@ -206,11 +206,10 @@ accounting for node source NAT.
 
 Back up both generated files in the private state directory, then update them:
 
-- `installation.yaml`: set `drivers.compute.configuration.runtime.channels.proxyUrl`
-  for gateway Slack messaging.
-- `helm-values.json`: set `api.channelDirectoryProxyUrl` for Console user and
-  channel lookup. Kubernetes-only mode runs the production API, where lookup
-  stays disabled without this setting.
+- `installation.yaml`: configure `drivers.compute.configuration.runtime.channelEgress`.
+- `helm-values.json`: enable `channelEgress` with matching fleet and listener
+  settings, and the actual Pod, Service and node address exclusions.
+  Follow [managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md).
 
 Apply the edits to the existing release as shown below. Use the chart
 source matching the installed controller, retain its image references and other

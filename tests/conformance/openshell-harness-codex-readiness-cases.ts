@@ -20,7 +20,7 @@ import {
 } from "../../packages/occ/src/errors.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 import {
@@ -187,9 +187,9 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
     });
     const driver = new OpenShellSandboxDriver(
       {
-        gateway: { workspaceMode: "operator" },
+        integrationMode: "legacy",
+        gateway: {},
         kubernetes: {
-          runtimeClassName: "openshell-sandbox",
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {
             subPath: "workspace",
@@ -250,6 +250,7 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
         loginMode: harnessAuth.loginMode,
         image: "fixture-codex:0.164.0",
         command: ["codex", "app-server"],
+        retainedDirectories: [],
         workspaceMounts: [],
         environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
         files: [],

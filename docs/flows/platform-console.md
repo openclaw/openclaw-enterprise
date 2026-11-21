@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-11-10
-last_updated_session: authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1
+updated: 2026-11-21
+last_updated_session: authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d
 ---
 
 # Platform console request flow
@@ -128,67 +128,69 @@ stops builds; the SHA excludes uncommitted edits.
 clears retained views, and rebuilds the shell; failures show an error.
 `navigation.mts` removes the old query flag.
 
-`runtime-images.mts:renderRuntimeImages` limits reads to three concurrent requests
-for readable Agents in the selected Namespace. `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages`
-authorizes Agent read, resolves its selected version, and calls its Compute Driver.
+`runtime-images.mts:renderRuntimeImages` allows three concurrent reads in the
+selected Namespace. `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.getAgentRuntimeImages`
+checks Agent read and calls the active revision's Compute Driver.
 Disabling Debug mode stops new reads. See the
-[Compute contract](../reference/drivers/compute.md) for provenance.
+[Compute contract](../reference/drivers/compute.md).
 
 ### 2. Resolve the session before private reads
 
 `agents/collection.mts:renderAgentList` focuses the Agent link on plain row clicks.
-Interactive targets, modified clicks, and selected text retain their behavior.
+Interactive targets, modified clicks, and selected text retain behavior.
 
-`loadPage` starts with `GET /api/auth/session`. Opening an Agent shows **Loading
-agent details…** and **Back to Agents**. Back cancels once. Refocus waits. Loading
-delays are 400 ms for other Agent routes and 250 ms for other visits or Refresh.
-A visible loading page stays for 300 ms or longer.
+`loadPage` reads `GET /api/auth/session`. Opening an Agent shows **Loading agent
+details…** and **Back to Agents**. Back cancels once. Refocus waits. Other Agent
+routes delay loading 400 ms. Other visits or Refresh delay it 250 ms. Visible
+loading lasts at least 300 ms.
 
-Return and refocus hold the view inert. **Still checking…** appears after one
+Return and refocus hold views inert. **Still checking…** appears after one
 second. Up to 16 views retain drafts and disclosures by route, Namespace, and
-session. Changed reads, newly readable Namespaces, and Refresh rebuild. A cancelled
-return preserves the view. A cancelled Refresh discards it. Discovery, passwords,
-mutations, and pending or failed reads prevent reuse. Read-only POSTs permit reuse.
+session. Changed reads, newly readable Namespaces, and Refresh rebuild. Cancelled
+returns preserve views. Cancelled Refresh discards them.
+Discovery, passwords, mutations, and pending or failed reads prevent reuse.
+Read-only POSTs permit reuse.
 
 `console.mts:revalidateMountedAgent` checks session, Namespace, Agent, and detail
 reads. Focus and visibility share the check. Navigation cancels it. Detail errors
-hide protected content. A 5xx permits one retry unless a refusal, 429, or delay
-takes precedence. Narrowed access rebuilds. Both reused and replacement views
+hide protected content. A 5xx permits one retry unless refusal, 429, or delay
+takes precedence. Narrowed access rebuilds. Reused and replacement views
 require confirmed Agent permissions for grant-dependent controls.
 
-Persistent detail errors show a warning with the confirmed Agent name. **Retry**
-starts foreground admission after the latest deadline. Expiry opens sign-in.
+Persistent errors warn with the confirmed Agent name. **Retry** starts
+foreground admission after the latest deadline. Expiry opens sign-in.
 Refusals remove private content.
 
 `api-client.mts:createApiClient` preserves abort and socket failures through
 response bodies without replay.
 
-**Back to Agents** waits for admission and the collection. The newest readable
-versions supply the rows. `agents/collection.mts:currentRevision` reads off-page
-current versions. `deniedReadsFor` retains 403s. Reused deployment cells show
-**Reading deployment…** after 250 ms for at least 150 ms. Focus returns to the
-cell. Pending or failed reads resume. Search cancels reads for rows it hides
-(`collection.mts:retireHidden`). A row shown again reads once.
+**Back to Agents** awaits admission and rows for newest readable versions.
+`agents/collection.mts:currentRevision` reads versions off-page. `deniedReadsFor`
+retains 403s. Reused deployment cells show **Reading deployment…** after 250 ms
+for at least 150 ms and regain focus. Pending or failed reads resume. Search
+cancels hidden reads (`collection.mts:retireHidden`). Redisplayed rows read once.
 
-A changed user or session key clears private state. A missing session opens login.
-See [sign-in and return](platform-console/sign-in-return.md) for recovery.
+Changed users or session keys clear private state. Missing sessions
+[open sign-in](platform-console/sign-in-return.md).
 
-After authentication, `GET /namespaces` keeps the URL selection or picks the
-first ready and readable Namespace. Unreadable IDs stay unavailable.
+`GET /namespaces` selects the URL Namespace or first ready, readable Namespace.
+Unreadable IDs stay unavailable. Unscoped Agent URLs require matching requested
+Agent and selected or probed Namespace IDs plus a nonempty Configuration ID.
+Malformed replies cannot establish absence. Back restarts interrupted lookups.
 `shell.mts:namespaceSelector` hides choices during admission. Widening past 760 px
 closes the drawer without focusing its toggle. An open drawer blocks scrolling.
-`createShell` preserves navigation presses across renders. A Namespace switch
-returns Agent detail and creation to Agents.
+`createShell` preserves navigation presses across renders. Namespace switches
+return Agent detail and creation to Agents.
 
 ### 3. Authorize the selected page resource
 
 `apps/controller/src/index.ts:perform`, `requireInstallationAdmin`
 
-`packages/occ/src/index.ts:OpenClawController.listNamespaces`, `listAgents`
+`packages/occ/src/namespace-operations.ts:listNamespaces`, `packages/occ/src/agent-queries.ts:listAgents`
 
-Agents and Secrets use the selected Namespace's route. OCC authorizes Namespace reads and
-filters Agents by exact read permission; Namespace listing filters its
-Installation-wide collection. No readable selection means no Agent request.
+Agent and Secret requests use the selected Namespace. OCC filters Installation
+Namespaces and exact Agents by read permission. The Console requests Agents
+only for a readable Namespace.
 `GET /backends` ignores selection and requires Installation `administer` before
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
@@ -295,14 +297,16 @@ opened from the list focuses its heading when the title renders. Tabs (one Tab
 stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events.
 `revalidateMountedAgent` rechecks session, Namespace, Agent, version, and
-[permission answer](platform-console/agent-stop-and-deletion.md#stop-agent);
-unchanged access preserves controls, input, and saves.
-Refocus sends a fresh GET. A repeated 403 on a never-readable draft Configuration
-keeps the partial Agent; a version proved unreadable is not read again.
-Lost access scrubs; Agent, session, and scope failures clear their protected views.
-Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
-Returning to the tab restores focus after the unchanged view is admitted, if the control
-remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
+[permissions](platform-console/agent-stop-and-deletion.md#stop-agent) with fresh reads.
+Unchanged access keeps controls, input, and saves. Repeated draft 403s preserve
+partial Agents with never-readable drafts. Checks skip versions already proved
+unreadable. Access loss clears protected views. Other pages, including 403s and
+404s, revalidate before reuse. Forms defer checks.
+Unchanged views can restore focus to retained controls. If the reader leaves
+again during **Still checking…** and the check succeeds in the hidden tab, the
+Console remembers the Configuration editor with selected text. The next
+successful foreground check can refocus that editor in the same view. Newer
+focus or selections take precedence. Draft save baselines stay Namespace-scoped.
 
 Other admission failures clear affected content;
 a current protected `401` clears all private state. `pagehide` clears
@@ -364,6 +368,11 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 19:15: Bind lookup. (authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d - e263cecbf94cb066d7c1b7879c57f47906ad495b)
+- 2026-11-21 17:32: Preserve Agent URLs during lookup. (authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083 - d91fdd7efd430c326419e17dacb9ce05d3aa5d2c)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 
 - 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)
 

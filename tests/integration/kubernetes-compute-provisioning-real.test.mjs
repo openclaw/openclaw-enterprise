@@ -1,10 +1,16 @@
+import { slackChannelDrivers } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { kubernetesConfigurationName } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import {
+  assertReadyGateway,
+  assertHarnessWorkspaceClaim,
+  assertHarnessWorkspaceMounts,
+  assertRetainedHarnessWorkspaceClaim,
+} from "../helpers/kubernetes-compute-observations.ts";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import {
   requiresKubernetes,
@@ -15,8 +21,6 @@ import {
   resources,
   missing,
   waitFor,
-  provisioningRequestBody,
-  createProvisioningApiFixture,
   assertKubernetesFixtureAvailable,
   namespace,
   provisionFixtureAuth,
@@ -25,13 +29,12 @@ import {
   gatewayName,
   harnessWorkspaceClaimName,
   revisionName,
-  assertReadyGateway,
-  assertHarnessWorkspaceClaim,
   createDriver,
   createScopedController,
   deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { createProvisioningContext } from "../helpers/kubernetes-provisioning-api.ts";
+import { runProvisioningApiCase } from "./kubernetes-compute-provisioning-api-case.ts";
 
 test(
   "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
@@ -371,23 +374,11 @@ test(
       ...gatewayAuth,
       trustedProxy: { ...gatewayAuth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
     });
-    const workload = await resource("deployment", revisionName(candidate), existingName);
+    const workloadName = revisionName(candidate);
+    const workload = await resource("deployment", workloadName, existingName);
     const harnessClaim = await assertHarnessWorkspaceClaim(existingName, owner.id, agentId);
-    assert.equal(
-      gateway.spec.template.spec.volumes.some(
-        ({ persistentVolumeClaim }) =>
-          persistentVolumeClaim?.claimName === harnessClaim.metadata.name,
-      ),
-      false,
-      "Gateway must not mount the Harness workspace claim",
-    );
-    assert.deepEqual(
-      workload.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
-      {
-        name: "openclaw-workspace",
-        persistentVolumeClaim: { claimName: harnessClaim.metadata.name },
-      },
-    );
+    const expectedClaimName = harnessWorkspaceClaimName(agentId);
+    assertHarnessWorkspaceMounts(gateway, workload, workloadName, expectedClaimName);
     await driver.stopRevision(candidate);
     assert.equal(await missing("deployment", revisionName(candidate), existingName), true);
     assert.equal(await missing("deployment", gatewayName(agentId), existingName), true);
@@ -400,9 +391,9 @@ test(
       [],
       "stop must not return while an exact revision Pod can still execute",
     );
-    assert.equal(
-      (await resource("persistentvolumeclaim", harnessClaim.metadata.name, existingName)).metadata
-        .uid,
+    await assertRetainedHarnessWorkspaceClaim(
+      existingName,
+      expectedClaimName,
       harnessClaim.metadata.uid,
       "stop must preserve the Agent-owned Harness workspace claim",
     );
@@ -485,7 +476,8 @@ test(
 test(
   "provisioning API retains the first deployment outcome with real Kubernetes fixture storage",
   { ...requiresKubernetesAndPostgres, timeout: 360_000 },
-  async (context) => {
+  async (t) => {
+    const context = createProvisioningContext(t);
     await assertKubernetesFixtureAvailable();
     const installationId = `ins_${randomUUID()}`;
     const platformNamespace = `oce-provisioning-${hash(installationId)}`;
@@ -540,759 +532,19 @@ test(
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
           gatewayStorageSizeGiB: 1024,
-          // The provisioned Agent enables Slack, which needs the Installation's channel runtime.
-          channels: { proxyUrl: "http://10.42.0.15:3128" },
           gatewayNodeSelector: {
             "kubernetes.io/hostname": JSON.parse(await kubectl("get", "nodes", "-o", "json"))
               .items[0].metadata.name,
           },
         },
       },
-      { nodeEnrollment },
+      { nodeEnrollment, channelDrivers: slackChannelDrivers },
     );
-    let handoffWorkerStop;
-    const fixture = await createProvisioningApiFixture(context, driver, controller.authentication, {
-      emit: (event) => {
-        if (event.code === "PROVISIONING_DEPLOYMENT_PENDING" && handoffWorkerStop === undefined) {
-          handoffWorkerStop = fixture.stopWorker();
-        }
-      },
-    });
-    context.after(async () => {
-      await Promise.all(
-        fixture.bootstrapNamespaceIds.map((namespaceId) =>
-          deleteNamespaces(kubernetesNamespaceName(namespaceId)),
-        ),
-      );
-    });
-    const namespaceResponse = await fixture.request("POST", "/namespaces", {
-      name: `k8s-provision-${randomUUID().slice(0, 8)}`,
-    });
-    assert.equal(namespaceResponse.status, 201, JSON.stringify(namespaceResponse.body));
-    const namespaceOwner = namespaceResponse.data;
-    const placement = kubernetesNamespaceName(namespaceOwner.id);
-    const gatewayPlacement = placement;
-    context.after(() => deleteNamespaces(placement));
-
-    await fixture.startWorker();
-    for (const target of [placement]) {
-      await waitFor(`worker to create provisioning namespace ${target}`, async () =>
-        (await missing("namespace", target)) ? undefined : true,
-      );
-      await kubectl(
-        "create",
-        "rolebinding",
-        "openclaw-controller",
-        "--namespace",
-        target,
-        `--clusterrole=${controller.tenantRole}`,
-        `--serviceaccount=${platformNamespace}:${controller.account}`,
-      );
-    }
-    await waitFor("provisioning tenant Namespace to become ready", async () => {
-      const observed = await fixture.request("GET", `/namespaces/${namespaceOwner.id}`);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      return observed.data.status === "ready" ? observed.data : undefined;
-    });
-    await fixture.stopWorker();
-
-    const discoveryPat = `at-kubernetes-fixture-${randomUUID()}`;
-    const rotatedPat = `at-kubernetes-rotated-${randomUUID()}`;
-    const modelSecret = await fixture.request("POST", `/namespaces/${namespaceOwner.id}/secrets`, {
-      name: `Provisioning model key ${randomUUID().slice(0, 8)}`,
-      value: discoveryPat,
-    });
-    assert.equal(modelSecret.status, 201, JSON.stringify(modelSecret.body));
-    const slackBotSecret = await fixture.request(
-      "POST",
-      `/namespaces/${namespaceOwner.id}/secrets`,
-      {
-        name: `Provisioning Slack bot token ${randomUUID().slice(0, 8)}`,
-        value: `xoxb-${randomUUID()}`,
-      },
-    );
-    assert.equal(slackBotSecret.status, 201, JSON.stringify(slackBotSecret.body));
-
-    // Before creating the Agent, use the actual Kubernetes-backed PAT through the
-    // real discovery Driver; only the external provider responses are controlled.
-    const originalFetch = globalThis.fetch;
-    const observedTokens = [];
-    const provider = context.mock.method(globalThis, "fetch", async (url, init) => {
-      const address = String(url);
-      if (
-        !address.startsWith("https://auth.openai.com/") &&
-        !address.startsWith("https://chatgpt.com/backend-api/ps/")
-      ) {
-        return originalFetch(url, init);
-      }
-      observedTokens.push(init.headers.Authorization.slice("Bearer ".length));
-      if (address.includes("/whoami")) {
-        return Response.json({
-          chatgpt_account_id: "fixture-account",
-          chatgpt_account_is_fedramp: false,
-        });
-      }
-      assert.equal(init.headers["ChatGPT-Account-ID"], "fixture-account");
-      const plugin = {
-        id: "fixture-plugin",
-        name: "fixture",
-        scope: "GLOBAL",
-        status: "ENABLED",
-        installation_policy: "AVAILABLE",
-        release: {
-          display_name: "Fixture",
-          interface: {},
-          requires_local_executor: false,
-          app_ids: ["fixture-app"],
-          app_manifest: null,
-          skills: [],
-          mcp_servers: [],
-        },
-      };
-      if (address.includes("plugins/list")) {
-        return Response.json({ plugins: [plugin], pagination: { next_page_token: null } });
-      }
-      if (address.includes("plugins/fixture-plugin")) {
-        return Response.json(plugin);
-      }
-      assert.ok(address.endsWith("apps/batch"));
-      return Response.json({
-        apps: [{ id: "fixture-app", status: "ENABLED", tools: [{ name: "search" }] }],
-      });
-    });
-    const discoveryPath = `/namespaces/${namespaceOwner.id}/agents/plugins`;
-    const catalog = await fixture.request("POST", discoveryPath, {
-      harnessId: "codex",
-      secretRef: modelSecret.data.ref,
-    });
-    assert.equal(catalog.status, 200);
-    assert.equal(catalog.data.plugins[0].remoteId, "fixture-plugin");
-    const detail = await fixture.request("POST", `${discoveryPath}/details`, {
-      harnessId: "codex",
-      secretRef: modelSecret.data.ref,
-      pluginId: "fixture-plugin",
-    });
-    assert.equal(detail.status, 200);
-    assert.equal(detail.data.tools[0].id, "fixture-app/search");
-    assert.ok(observedTokens.length > 0 && observedTokens.every((token) => token === discoveryPat));
-    assert.equal(
-      (
-        await fixture.request(
-          "PATCH",
-          `/namespaces/${namespaceOwner.id}/secrets/${modelSecret.data.id}`,
-          { value: rotatedPat },
-        )
-      ).status,
-      200,
-    );
-    observedTokens.length = 0;
-    assert.equal(
-      (
-        await fixture.request("POST", discoveryPath, {
-          harnessId: "codex",
-          secretRef: modelSecret.data.ref,
-        })
-      ).status,
-      200,
-    );
-    assert.ok(observedTokens.length > 0 && observedTokens.every((token) => token === rotatedPat));
-    assert.doesNotMatch(
-      JSON.stringify([catalog.body, detail.body]),
-      /at-kubernetes-(fixture|rotated)-/,
-    );
-    provider.mock.restore();
-
-    const body = provisioningRequestBody({
-      modelSecretRef: modelSecret.data.ref,
-      slackBotSecretRef: slackBotSecret.data.ref,
-      authMethod: "codex_pat",
-    });
-    // The regular provisioning API must admit separately identified proxy users
-    // without changing the platform's workspace identity. This fixture proves
-    // persisted handoff and the Compute-rendered Gateway document, not OIDC login
-    // or native Gateway authorization.
-    const gatewayAuth = {
-      mode: "trusted-proxy",
-      trustedProxy: {
-        userHeader: "x-occ-identity",
-        allowUsers: ["occ-workspace-files", "oidc:member-01", "oidc:maintainer-02"],
-      },
-      identityScopes: {
-        "occ-workspace-files": ["operator.admin"],
-        "oidc:member-01": ["operator.read", "operator.write"],
-        "oidc:maintainer-02": ["operator.admin"],
-      },
-    };
-    body.configuration.values.gateway.auth = gatewayAuth;
-    assert.equal(
-      JSON.stringify(body).includes(rotatedPat),
-      false,
-      "provisioning must carry only saved Secret references, not Secret values",
-    );
-    assert.equal(
-      JSON.stringify(body).includes("xoxb-"),
-      false,
-      "provisioning must carry only saved Secret references, not Slack token values",
-    );
-    // Reject unsafe legacy enrollment and malformed human grants at the real
-    // provisioning boundary, before committing an Agent or queuing deployment.
-    for (const [auth, setting] of [
-      [
-        {
-          ...gatewayAuth,
-          trustedProxy: {
-            ...gatewayAuth.trustedProxy,
-            deviceAutoApprove: { enabled: true, scopes: [" operator.admin "] },
-          },
-        },
-        "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
-      ],
-      [
-        {
-          ...gatewayAuth,
-          identityScopes: { ...gatewayAuth.identityScopes, "oidc:member-01": "operator.read" },
-        },
-        "gateway.auth.identityScopes",
-      ],
-      ...["operator.reed", " operator.read", "operator.read "].map((scope) => [
-        {
-          ...gatewayAuth,
-          identityScopes: {
-            ...gatewayAuth.identityScopes,
-            "oidc:member-01": [scope],
-          },
-        },
-        "gateway.auth.identityScopes",
-      ]),
-      ...["", " oidc:member-01", "oidc:member-01 ", "oidc:removed-03"].map((identity) => [
-        {
-          ...gatewayAuth,
-          identityScopes: {
-            ...gatewayAuth.identityScopes,
-            [identity]: ["operator.admin"],
-          },
-        },
-        "gateway.auth.identityScopes",
-      ]),
-    ]) {
-      const invalid = structuredClone(body);
-      invalid.configuration.values.gateway.auth = auth;
-      const denied = await fixture.request(
-        "POST",
-        `/namespaces/${namespaceOwner.id}/agents/provision`,
-        invalid,
-      );
-      assert.equal(denied.status, 409, JSON.stringify(denied.body));
-      assert.equal(denied.body.error.code, "RESOURCE_CONFLICT");
-      assert.ok(denied.body.error.message.includes(setting));
-      assert.equal(denied.data, undefined);
-    }
-    const admitted = await fixture.request(
-      "POST",
-      `/namespaces/${namespaceOwner.id}/agents/provision`,
-      body,
-    );
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-    assert.equal(admitted.data.agent, undefined);
-    assert.equal(typeof admitted.data.provisioning.workId, "string");
-    assert.match(admitted.data.provisioning.url, /^\/namespaces\//);
-    await fixture.startWorker();
-    const provisioned = await waitFor(
-      "Kubernetes provisioning to queue its first deployment wait",
-      async () => {
-        const observed = await fixture.request("GET", admitted.data.provisioning.url);
-        assert.equal(observed.status, 200, JSON.stringify(observed.body));
-        assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
-        // The handoff commits revisionId while the worker still holds the provisioning lease
-        // ("running"); its deployment wait is deferred ("queued") in a later transaction.
-        // Inspect the handoff only after that deferral has committed (finding 1253).
-        return observed.data.revisionId !== undefined && observed.data.status === "queued"
-          ? observed.data
-          : undefined;
-      },
-    );
-    // A poll can see "queued" just before the pending event stops the worker; this stop covers it.
-    await handoffWorkerStop;
-    await fixture.stopWorker();
-    assert.equal(provisioned.status, "queued");
-    assert.equal(typeof provisioned.agentId, "string");
-    assert.equal(typeof provisioned.configurationId, "string");
-    assert.equal(typeof provisioned.revisionId, "string");
-
-    const revisions = await fixture.request(
-      "GET",
-      `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/revisions`,
-    );
-    assert.equal(revisions.status, 200, JSON.stringify(revisions.body));
-    assert.equal(revisions.data.length, 1);
-    assert.equal(revisions.data[0].id, provisioned.revisionId);
-    // The list returns a summary; the admitted Compute placement is on the exact revision.
-    const exactRevision = await fixture.request(
-      "GET",
-      `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/revisions/${provisioned.revisionId}`,
-    );
-    assert.equal(exactRevision.status, 200, JSON.stringify(exactRevision.body));
-    assert.equal(exactRevision.data.compute.id, driver.id);
-    assert.equal(exactRevision.data.compute.implementation, driver.implementation);
-    assert.deepEqual(exactRevision.data.configuration.gateway.auth, gatewayAuth);
-
-    const configuration = await resource(
-      "configmap",
-      kubernetesConfigurationName(revisions.data[0].configurationId),
-      gatewayPlacement,
-    );
-    assert.equal(
-      configuration.metadata.annotations["openclaw.dev/configuration-id"],
-      revisions.data[0].configurationId,
-    );
-    assert.equal(configuration.metadata.annotations["openclaw.dev/configuration-generation"], "1");
-
-    const provisionedSecrets = (await resources("secrets", gatewayPlacement)).filter(
-      ({ metadata }) =>
-        metadata.labels?.["app.kubernetes.io/managed-by"] === "openclaw-enterprise" &&
-        metadata.labels?.["openclaw.dev/namespace"] === namespaceOwner.id &&
-        metadata.labels?.["openclaw.dev/secret"] !== undefined,
-    );
-    assert.equal(
-      provisionedSecrets.length,
-      2,
-      "Console-saved Secrets must be stored through the real Kubernetes Secret Driver",
-    );
-    const transportName = `transport-${hash(provisioned.agentId)}`;
-    const passwordName = `gateway-password-${hash(provisioned.agentId)}`;
-    const transport = await resource("secret", transportName, gatewayPlacement);
-    const password = await resource("secret", passwordName, gatewayPlacement);
-    assert.deepEqual(
-      Object.keys(transport.data),
-      ["app-server-token"],
-      "the canonical app-server credential must be generated before provisioning handoff",
-    );
-    assert.deepEqual(
-      Object.keys(password.data),
-      ["gateway-password"],
-      "the Gateway password must be a separate canonical credential",
-    );
-    const canonicalNames = [
-      transportName,
-      passwordName,
-      ...provisionedSecrets.map(({ metadata }) => metadata.name),
-    ];
-    for (const name of canonicalNames) {
-      await resource("secret", name, placement);
-    }
-
-    // Seed an owned pre-upgrade RWX workspace without altering any supported Agent.
-    // No RWX provisioner is needed: rejection must happen before mounting the claim.
-    const legacyConfiguration = await fixture.request(
-      "POST",
-      `/namespaces/${namespaceOwner.id}/configurations`,
-      {
-        kind: "agent",
-        values: {
-          gateway: body.configuration.values.gateway,
-          agents: body.configuration.values.agents,
-        },
-      },
-    );
-    assert.equal(legacyConfiguration.status, 201, JSON.stringify(legacyConfiguration.body));
-    const legacy = await fixture.request("POST", `/namespaces/${namespaceOwner.id}/agents`, {
-      name: `legacy-rwx-${randomUUID()}`,
-      configurationId: legacyConfiguration.data.id,
-      executionMode: "dedicated",
-      harnessAuth: body.harnessAuth,
-    });
-    assert.equal(legacy.status, 201, JSON.stringify(legacy.body));
-    const legacyPath = `/namespaces/${namespaceOwner.id}/agents/${legacy.data.id}`;
-    const role = await fixture.request("POST", `/namespaces/${namespaceOwner.id}/iam/roles`, {
-      name: `legacy-rwx-secrets-${randomUUID()}`,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    assert.equal(role.status, 201, JSON.stringify(role.body));
-    for (const secret of [modelSecret]) {
-      const grant = await fixture.request(
-        "POST",
-        `/namespaces/${namespaceOwner.id}/iam/access-bindings`,
-        {
-          subjectKind: "identity",
-          subjectId: legacy.data.servicePrincipalId,
-          roleId: role.data.id,
-          resourceKind: "secret",
-          resourceId: secret.data.id,
-        },
-      );
-      assert.equal(grant.status, 201, JSON.stringify(grant.body));
-    }
-    const credentials = await fixture.request("POST", `${legacyPath}/runtime-credentials`, {});
-    assert.equal(credentials.status, 200, JSON.stringify(credentials.body));
-    const workspaceName = harnessWorkspaceClaimName(legacy.data.id);
-    const gatewayStateName = `gateway-state-${hash(legacy.data.id)}`;
-    const claimDirectory = await temporaryDirectory(context, "openclaw-legacy-rwx-");
-    for (const [name, namespace, accessMode, storage] of [
-      [workspaceName, placement, "ReadWriteMany", "40Gi"],
-      [gatewayStateName, gatewayPlacement, "ReadWriteOnce", "1024Gi"],
-    ]) {
-      const claimPath = join(claimDirectory, `${name}.json`);
-      await writeFile(
-        claimPath,
-        JSON.stringify({
-          apiVersion: "v1",
-          kind: "PersistentVolumeClaim",
-          metadata: {
-            name,
-            namespace,
-            labels: {
-              "app.kubernetes.io/managed-by": "openclaw-enterprise",
-              "openclaw.dev/namespace": namespaceOwner.id,
-              "openclaw.dev/agent": legacy.data.id,
-            },
-            annotations: {
-              "openclaw.dev/namespace-id": namespaceOwner.id,
-              "openclaw.dev/agent-id": legacy.data.id,
-            },
-          },
-          spec: {
-            accessModes: [accessMode],
-            volumeMode: "Filesystem",
-            storageClassName: "local-path",
-            resources: { requests: { storage } },
-          },
-        }),
-        { mode: 0o600 },
-      );
-      await kubectl("apply", "--filename", claimPath);
-    }
-    const originalWorkspace = await resource("persistentvolumeclaim", workspaceName, placement);
-    const originalGatewayState = await resource(
-      "persistentvolumeclaim",
-      gatewayStateName,
-      gatewayPlacement,
-    );
-    // Observe the real Driver failure without replacing its Kubernetes client or behavior.
-    // A generic worker failure alone could otherwise pass for an unrelated configuration error.
-    const prepareRevision = driver.prepareRevision.bind(driver);
-    const preparationFailures = [];
-    const preparation = context.mock.method(driver, "prepareRevision", async (...args) => {
-      try {
-        return await prepareRevision(...args);
-      } catch (error) {
-        if (args[0].agentId === legacy.data.id) {
-          preparationFailures.push(error.message);
-        }
-        throw error;
-      }
-    });
-    const deployment = await fixture.request("POST", `${legacyPath}/deploy`);
-    assert.equal(deployment.status, 202, JSON.stringify(deployment.body));
-    await fixture.startWorker();
-    const failedDeployment = await waitFor("legacy RWX deployment to fail", async () => {
-      const work = await fixture.readWork(`agent_revision:${deployment.data.id}:reconcile`);
-      return work?.state === "failed_permanent" ? work : undefined;
-    });
-    preparation.mock.restore();
-    assert.deepEqual(
-      new Set(preparationFailures),
-      new Set([`Refusing invalid PersistentVolumeClaim ${workspaceName}.`]),
-    );
-    assert.equal(failedDeployment.reason_code, "DEPENDENCY_UNAVAILABLE");
-    // Fixture images do not implement the model runtime. Its real deployment failure
-    // must close the original provisioning request without creating another Agent.
-    const initialFailure = await waitFor(
-      "first deployment failure on provisioning status",
-      async () => {
-        const observed = await fixture.request("GET", admitted.data.provisioning.url);
-        assert.equal(observed.status, 200, JSON.stringify(observed.body));
-        return observed.data.status === "failed" ? observed.data : undefined;
-      },
-    );
-    assert.equal(initialFailure.agentId, provisioned.agentId);
-    assert.equal(initialFailure.revisionId, provisioned.revisionId);
-    // Inspect the actual immutable document rendered by Compute through the API/worker
-    // path. OCC's saved input alone cannot catch a renderer that drops human grants.
-    // Fixture runtime qualification fails later; it does not undo this rendered snapshot.
-    const renderedGatewayConfiguration = await resource(
-      "configmap",
-      `${gatewayName(provisioned.agentId)}-rev-${hash(provisioned.revisionId)}`,
-      gatewayPlacement,
-    );
-    assert.equal(renderedGatewayConfiguration.immutable, true);
-    assert.deepEqual(
-      JSON.parse(renderedGatewayConfiguration.data["openclaw.json"]).gateway.auth,
-      {
-        ...gatewayAuth,
-        trustedProxy: { ...gatewayAuth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
-      },
-      "the provisioning worker must preserve human identities and grants in the rendered Gateway ConfigMap",
-    );
-    const provisionedPath = `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}`;
-    const provisionedClaimName = `gateway-state-${hash(provisioned.agentId)}`;
-    const originalClaim = await resource(
-      "persistentvolumeclaim",
-      provisionedClaimName,
-      gatewayPlacement,
-    );
-    // Verify the API server round-trip, not just the requested representation.
-    // The fixture exercises claim metadata without writing 1Ti of data.
-    assert.equal(originalClaim.spec.resources.requests.storage, "1Ti");
-    // A second API-admitted revision must reuse state even though these fixture images
-    // cannot complete native model enrollment. This is storage proof, not model proof.
-    await waitFor("original fixture deployment work to finish", async () => {
-      const work = await fixture.readWork(`agent_revision:${provisioned.revisionId}:reconcile`);
-      return work?.state === "failed_permanent" ? work : undefined;
-    });
-    // No other work for this unique Agent is queued during this observation.
-    const reconcile = driver.reconcile.bind(driver);
-    let replacementClaimReconciled = false;
-    const claimReconciliation = context.mock.method(driver, "reconcile", async (...args) => {
-      const result = await reconcile(...args);
-      if (
-        args[0].kind === "PersistentVolumeClaim" &&
-        args[0].metadata.name === provisionedClaimName &&
-        args[0].metadata.namespace === gatewayPlacement
-      ) {
-        replacementClaimReconciled = true;
-      }
-      return result;
-    });
-    const replacement = await fixture.request("POST", `${provisionedPath}/deploy`);
-    assert.equal(replacement.status, 202, JSON.stringify(replacement.body));
-    assert.notEqual(replacement.data.id, provisioned.revisionId);
-    await waitFor("replacement fixture deployment to finish", async () => {
-      const work = await fixture.readWork(`agent_revision:${replacement.data.id}:reconcile`);
-      return work?.state === "failed_permanent" ? work : undefined;
-    });
-    claimReconciliation.mock.restore();
-    // ConfigMap creation precedes PVC verification. Only a successful real
-    // reconciliation proves this replacement accepted the retained claim.
-    assert.equal(replacementClaimReconciled, true);
-    const retainedClaim = await resource(
-      "persistentvolumeclaim",
-      provisionedClaimName,
-      gatewayPlacement,
-    );
-    assert.equal(retainedClaim.metadata.uid, originalClaim.metadata.uid);
-    assert.deepEqual(retainedClaim.spec, originalClaim.spec);
-
-    const initialDeployment = await fixture.request(
-      "GET",
-      `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`,
-    );
-    assert.equal(initialDeployment.data.status, "failed");
-    assert.equal(initialFailure.error.code, initialDeployment.data.error.code);
-    const undeployed = await fixture.request("GET", legacyPath);
-    assert.equal(undeployed.status, 200, JSON.stringify(undeployed.body));
-    assert.equal(undeployed.data.activeRevisionId, undefined);
-    assert.equal(await missing("deployment", revisionName(deployment.data), placement), true);
-    assert.equal(await missing("deployment", gatewayName(legacy.data.id), gatewayPlacement), true);
-    assert.equal(
-      (await resource("persistentvolumeclaim", gatewayStateName, gatewayPlacement)).metadata.uid,
-      originalGatewayState.metadata.uid,
-    );
-    const beforeDelete = await resource("persistentvolumeclaim", workspaceName, placement);
-    assert.equal(beforeDelete.metadata.uid, originalWorkspace.metadata.uid);
-    assert.deepEqual(beforeDelete.spec, originalWorkspace.spec);
-
-    const deleting = await fixture.request("DELETE", legacyPath);
-    assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
-    const failedDeletion = await waitFor(
-      "legacy RWX deletion to exhaust its retry budget",
-      async () => {
-        const work = await fixture.readWork(`agent:${legacy.data.id}:reconcile:deleted`);
-        return work?.state === "failed_permanent" ? work : undefined;
-      },
-    );
-    assert.equal(failedDeletion.reason_code, "DEPENDENCY_UNAVAILABLE");
-    await fixture.stopWorker();
-    const retained = await fixture.request("GET", legacyPath);
-    assert.equal(retained.status, 200, JSON.stringify(retained.body));
-    assert.equal(retained.data.status, "deleting");
-    assert.equal(retained.data.desiredRuntimeState, "stopped");
-    const rejectedWorkspace = await resource("persistentvolumeclaim", workspaceName, placement);
-    assert.equal(rejectedWorkspace.metadata.uid, originalWorkspace.metadata.uid);
-    assert.deepEqual(rejectedWorkspace.spec, originalWorkspace.spec);
-    assert.equal(rejectedWorkspace.metadata.deletionTimestamp, undefined);
-    // Final deletion removes Gateway state before Harness workspace validation.
-    // This is why the legacy Agent must be discarded with a compatible release.
-    assert.equal(
-      await missing("persistentvolumeclaim", gatewayStateName, gatewayPlacement),
-      true,
-      "Gateway state is removed before final deletion rejects the RWX claim",
-    );
-    assert.equal(
-      await missing("secret", `transport-${hash(legacy.data.id)}`, gatewayPlacement),
-      true,
-    );
-    assert.equal(
-      await missing("secret", `gateway-password-${hash(legacy.data.id)}`, gatewayPlacement),
-      true,
-    );
-    // The unrelated Agent and its canonical credentials are not deleted.
-    assert.equal(
-      (
-        await fixture.request(
-          "GET",
-          `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}`,
-        )
-      ).status,
-      200,
-    );
-    assert.equal(
-      (await resource("secret", transportName, gatewayPlacement)).metadata.uid,
-      transport.metadata.uid,
-    );
-    // An owned claim with another request size must fail preparation and final
-    // deletion without resizing or replacing data. Unlike the RWX case above,
-    // the workspace is valid, so refusal comes from Gateway storage itself.
-    await fixture.stopWorker();
-    const mismatched = await fixture.request("POST", `/namespaces/${namespaceOwner.id}/agents`, {
-      name: `mismatched-storage-${randomUUID()}`,
-      configurationId: legacyConfiguration.data.id,
-      executionMode: "dedicated",
-      harnessAuth: body.harnessAuth,
-    });
-    assert.equal(mismatched.status, 201, JSON.stringify(mismatched.body));
-    const mismatchedPath = `/namespaces/${namespaceOwner.id}/agents/${mismatched.data.id}`;
-    const grant = await fixture.request(
-      "POST",
-      `/namespaces/${namespaceOwner.id}/iam/access-bindings`,
-      {
-        subjectKind: "identity",
-        subjectId: mismatched.data.servicePrincipalId,
-        roleId: role.data.id,
-        resourceKind: "secret",
-        resourceId: modelSecret.data.id,
-      },
-    );
-    assert.equal(grant.status, 201, JSON.stringify(grant.body));
-    const sizeCredentials = await fixture.request(
-      "POST",
-      `${mismatchedPath}/runtime-credentials`,
-      {},
-    );
-    assert.equal(sizeCredentials.status, 200, JSON.stringify(sizeCredentials.body));
-    const mismatchedClaimName = `gateway-state-${hash(mismatched.data.id)}`;
-    const mismatchedClaimPath = join(claimDirectory, "mismatched-gateway.json");
-    await writeFile(
-      mismatchedClaimPath,
-      JSON.stringify({
-        apiVersion: "v1",
-        kind: "PersistentVolumeClaim",
-        metadata: {
-          name: mismatchedClaimName,
-          namespace: gatewayPlacement,
-          labels: {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise",
-            "openclaw.dev/namespace": namespaceOwner.id,
-            "openclaw.dev/agent": mismatched.data.id,
-          },
-          annotations: {
-            "openclaw.dev/namespace-id": namespaceOwner.id,
-            "openclaw.dev/agent-id": mismatched.data.id,
-          },
-        },
-        spec: {
-          accessModes: ["ReadWriteOnce"],
-          volumeMode: "Filesystem",
-          storageClassName: "local-path",
-          resources: { requests: { storage: "10Gi" } },
-        },
-      }),
-      { mode: 0o600 },
-    );
-    await kubectl("apply", "--filename", mismatchedClaimPath);
-    const wrongSizeClaim = await resource(
-      "persistentvolumeclaim",
-      mismatchedClaimName,
-      gatewayPlacement,
-    );
-    const sizeFailures = [];
-    const sizePreparation = context.mock.method(driver, "prepareRevision", async (...args) => {
-      try {
-        return await prepareRevision(...args);
-      } catch (error) {
-        if (args[0].agentId === mismatched.data.id) {
-          sizeFailures.push(error.message);
-        }
-        throw error;
-      }
-    });
-    const sizeDeployment = await fixture.request("POST", `${mismatchedPath}/deploy`);
-    assert.equal(sizeDeployment.status, 202, JSON.stringify(sizeDeployment.body));
-    await fixture.startWorker();
-    await waitFor("mismatched Gateway request to fail deployment", async () => {
-      const work = await fixture.readWork(`agent_revision:${sizeDeployment.data.id}:reconcile`);
-      return work?.state === "failed_permanent" ? work : undefined;
-    });
-    sizePreparation.mock.restore();
-    assert.deepEqual(
-      new Set(sizeFailures),
-      new Set([`Refusing invalid PersistentVolumeClaim ${mismatchedClaimName}.`]),
-    );
-    const rejectedSizeClaim = await resource(
-      "persistentvolumeclaim",
-      mismatchedClaimName,
-      gatewayPlacement,
-    );
-    assert.equal(rejectedSizeClaim.metadata.uid, wrongSizeClaim.metadata.uid);
-    assert.deepEqual(rejectedSizeClaim.spec, wrongSizeClaim.spec);
-    assert.equal(rejectedSizeClaim.metadata.deletionTimestamp, undefined);
-    assert.equal(
-      await missing("deployment", gatewayName(mismatched.data.id), gatewayPlacement),
-      true,
-    );
-    // The public credential cleanup boundary sanitizes ownership errors. Observe
-    // the real claim deletion underneath it without changing its result or client.
-    const deleteGatewayClaim = driver.deleteGatewayPrivateStateClaim.bind(driver);
-    const deletionFailures = [];
-    const claimDeletion = context.mock.method(
+    await runProvisioningApiCase(context, {
       driver,
-      "deleteGatewayPrivateStateClaim",
-      async (...args) => {
-        try {
-          return await deleteGatewayClaim(...args);
-        } catch (error) {
-          if (args[0].agentId === mismatched.data.id) {
-            deletionFailures.push(error.message);
-          }
-          throw error;
-        }
-      },
-    );
-    const sizeDeletion = await fixture.request("DELETE", mismatchedPath);
-    assert.equal(sizeDeletion.status, 202, JSON.stringify(sizeDeletion.body));
-    await waitFor("mismatched Gateway request to block final deletion", async () => {
-      const work = await fixture.readWork(`agent:${mismatched.data.id}:reconcile:deleted`);
-      return work?.state === "failed_permanent" ? work : undefined;
+      kubernetesNamespaceName,
+      controller,
+      platformNamespace,
     });
-    claimDeletion.mock.restore();
-    assert.deepEqual(
-      new Set(deletionFailures),
-      new Set([`Refusing invalid PersistentVolumeClaim ${mismatchedClaimName}.`]),
-    );
-    const untouchedClaim = await resource(
-      "persistentvolumeclaim",
-      mismatchedClaimName,
-      gatewayPlacement,
-    );
-    assert.equal(untouchedClaim.metadata.uid, wrongSizeClaim.metadata.uid);
-    assert.deepEqual(untouchedClaim.spec, wrongSizeClaim.spec);
-    assert.equal(untouchedClaim.metadata.deletionTimestamp, undefined);
-
-    // Compatible configured state still follows ordinary Agent deletion. The
-    // deliberately incompatible claim is left to this fixture's namespace cleanup.
-    const compatibleDeletion = await fixture.request("DELETE", provisionedPath);
-    assert.equal(compatibleDeletion.status, 202, JSON.stringify(compatibleDeletion.body));
-    await waitFor("configured Agent deletion to complete", async () => {
-      const work = await fixture.readWork(`agent:${provisioned.agentId}:reconcile:deleted`);
-      assert.notEqual(work?.state, "failed_permanent", JSON.stringify(work));
-      // Successful deletion removes the Agent and its Work rows atomically.
-      const agent = await fixture.request("GET", provisionedPath);
-      assert.ok([200, 404].includes(agent.status), JSON.stringify(agent.body));
-      return agent.status === 404 ? true : undefined;
-    });
-    await waitFor("configured Gateway state claim cleanup", async () =>
-      (await missing("persistentvolumeclaim", provisionedClaimName, gatewayPlacement))
-        ? true
-        : undefined,
-    );
   },
 );

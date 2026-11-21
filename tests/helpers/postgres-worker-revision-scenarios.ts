@@ -4,9 +4,13 @@ import type {
   ComputeDriver,
   RuntimeFailureEvidence,
 } from "../../packages/contracts/src/index.ts";
-import type { ControllerWork, DeploymentStatusError } from "../../packages/occ/src/index.ts";
+import type {
+  ControllerWork,
+  DeploymentStatusError,
+  DeploymentStatusResult,
+} from "../../packages/occ/src/index.ts";
 import type { RevisionFixture, WorkIdentity } from "./postgres-worker-refused-candidate.ts";
-import type { waitFor } from "./wait-for.mjs";
+import type { waitFor } from "./wait-for.ts";
 
 type PollingOptions = Parameters<typeof waitFor>[2];
 
@@ -18,6 +22,15 @@ export interface WorkResultRow {
   reason_code: string | null;
   result_data: NonNullable<ControllerWork["resultData"]> | null;
 }
+
+type FailureFixture = Pick<RevisionFixture, "work" | "workResult"> & {
+  deploymentStatus(
+    owner: Pick<Agent, "id">,
+    revision: Pick<WorkIdentity, "id">,
+  ): Promise<DeploymentStatusResult>;
+};
+type PreparationFixture = FailureFixture &
+  Pick<RevisionFixture, "admitInitialRevision" | "compute" | "start">;
 
 interface FailureExpectation {
   error: DeploymentStatusError;
@@ -41,7 +54,7 @@ interface PreparationFailureCase {
 // These runners exercise specific worker workflows. New ordering, cancellation or
 // claim-loss scenarios belong in explicit tests, not another option on a runner.
 export async function assertFailedDeployment(
-  fixture: RevisionFixture,
+  fixture: FailureFixture,
   { owner, candidate }: AdmittedRevision,
   { error, resultData = null }: FailureExpectation,
   timeoutMs?: PollingOptions,
@@ -56,7 +69,11 @@ export async function assertFailedDeployment(
   assert.deepEqual(result.rows, [{ reason_code: error.code, result_data: resultData }]);
   const status = await fixture.deploymentStatus(owner, candidate);
   assert.equal(status.status, "failed");
-  assert.deepEqual(status.error, error);
+  // Each case admits its own Agent, so an expected message names it as AGENT_ID.
+  assert.deepEqual(status.error, {
+    ...error,
+    message: error.message.replace("AGENT_ID", owner.id),
+  });
 }
 
 // A boundary Compute Driver reports the supplied evidence; the real worker decides
@@ -107,7 +124,7 @@ export async function runRuntimeFailureCases(
 // Preparation throws a Driver failure on every pass. The worker owns retries,
 // deadline accounting and terminalization; the case specifies the expected error.
 export async function runPreparationFailureCase(
-  fixture: RevisionFixture,
+  fixture: PreparationFixture,
   { label, failure, convergenceTimeoutMs, expected }: PreparationFailureCase,
   timeoutMs?: PollingOptions,
 ) {

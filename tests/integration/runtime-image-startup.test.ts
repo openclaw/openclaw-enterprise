@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import {
-  GATEWAY_RUNTIME_ENTRYPOINT,
-  GATEWAY_STOP_TIMEOUT_MS,
-  PLUGIN_RUNTIME_HELPERS,
-} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import {
   image,
   runtimeImageModel,
   imageTestOptions,
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
   reviewedCodexSeccompSecurityOptions,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
 import { verifyRuntimeSeccompRecord } from "./runtime-image-seccomp-case.ts";
 import { verifyRuntimeCodexAuthMount } from "./runtime-image-codex-auth-mount-case.ts";
@@ -34,8 +29,7 @@ import { verifyNativeThread } from "./runtime-image-native-thread-case.ts";
 import { selectStartupProfile } from "./runtime-image-startup-support.ts";
 
 const profile = await selectStartupProfile(process.env);
-const { stagingCodexVersion, historicalCodex, historicalController } = profile;
-const kubernetesGatewayEntrypoint = historicalController?.kubernetes ?? GATEWAY_RUNTIME_ENTRYPOINT;
+const { stagingCodexVersion, historicalCodex, controller } = profile;
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
 function requiredImage() {
@@ -52,7 +46,7 @@ async function verifyGatewaySmoke(t: TestContext, collectPlugins: boolean) {
     enableSlack: true,
   });
   const { logs, pluginList } = await runGatewaySmoke(t, "openclaw", {
-    entrypoint: historicalController?.docker,
+    entrypoint: controller.dockerGateway,
     configuration,
     collectPlugins,
     ...(!collectPlugins ? { extraEnvironment: ["OPENCLAW_LOG_LEVEL=error"] } : {}),
@@ -73,7 +67,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", (t)
 test(
   "runtime image applies Dedicated repository policy to native Codex command execution",
   imageTestOptions,
-  () => verifyDedicatedCommand(requiredImage(), historicalCodex),
+  () => verifyDedicatedCommand(requiredImage(), controller.harness, historicalCodex),
 );
 
 test(
@@ -91,7 +85,7 @@ test(
 test(
   "runtime image discovers the bundled Codex plugin from a fresh gateway home",
   imageTestOptions,
-  (t) => verifyBundledCodexStartup(t, { entrypoint: historicalController?.docker }),
+  (t) => verifyBundledCodexStartup(t, { entrypoint: controller.dockerGateway }),
 );
 
 test(
@@ -105,8 +99,8 @@ test(
   imageTestOptions,
   (t) =>
     verifyDedicatedGatewayAssets(t, {
-      entrypoint: kubernetesGatewayEntrypoint,
-      stopTimeoutMs: GATEWAY_STOP_TIMEOUT_MS,
+      entrypoint: controller.kubernetesGateway,
+      stopTimeoutMs: controller.gatewayStopTimeoutMs,
       assertGatewayReadyLog,
       assertGatewayModelLog,
       assertNoPackagingFailure,
@@ -116,7 +110,7 @@ test(
 test(
   "runtime image validates the configuration dedicated native OpenClaw renders",
   imageTestOptions,
-  (t) => verifyDedicatedSchema(t, requiredImage(), kubernetesGatewayEntrypoint),
+  (t) => verifyDedicatedSchema(t, requiredImage(), controller),
 );
 
 test("runtime image Gateway preserves OpenShell Codex isolation policy", imageTestOptions, () =>
@@ -126,13 +120,13 @@ test("runtime image Gateway preserves OpenShell Codex isolation policy", imageTe
 test(
   "runtime image Gateway probes time out and recover without CLI descendants",
   imageTestOptions,
-  (t) => verifyRuntimeGatewayProbeCleanup(t, PLUGIN_RUNTIME_HELPERS),
+  (t) => verifyRuntimeGatewayProbeCleanup(t, controller.pluginRuntimeHelpers),
 );
 
 test(
   "runtime image routes sandboxed Git through stock Codex and a development token sender",
   imageTestOptions,
-  (t) => verifyStockBroker(t, requiredImage(), seccompOptions),
+  (t) => verifyStockBroker(t, requiredImage(), controller, seccompOptions),
 );
 
 test(
@@ -144,5 +138,6 @@ test(
 test(
   "runtime image applies the repository profile to a native thread shell turn",
   imageTestOptions,
-  () => verifyNativeThread(requiredImage(), seccompOptions, syntheticCodexApiKey),
+  () =>
+    verifyNativeThread(requiredImage(), controller.harness, seccompOptions, syntheticCodexApiKey),
 );

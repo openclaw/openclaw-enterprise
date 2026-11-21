@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
@@ -11,23 +11,20 @@ import {
   PREPARED_REPOSITORY_DIRECTORY,
   REPOSITORY_CONTROL_SOCKET,
 } from "../../scripts/lib/prepared-repository-installation.ts";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import {
   applyQaRepositoryInstallation,
   grantQaRepositoryBranch,
   qaRepositoryServiceConfig,
-  prepareQaRepository,
-} from "../helpers/qa-repository.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+} from "../helpers/qa-repository-preparation.ts";
+import { prepareQaRepository } from "../helpers/qa-repository.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-// The QA matrix's repository leg (manual Full Integration only) writes these files
-// for Compose and hands the registry to `occ dev up` for k3d. Nothing else loads
-// them before a live run, so feed them through the same loaders the controller,
-// the worker's prepared owner and the repository service run at startup. The k3d
-// registry is also checked by `occ dev up` in Go (internal/occdev/repository_k3d.go),
-// which this file does not run.
+// Exercise the same startup loaders as the controller, prepared worker owner and
+// repository service. The installed matrix also passes the registry to the Go
+// launcher for k3d.
 
 const suffix = "1a2b3c4d";
 const host = "git.oce-system.svc.cluster.local";
@@ -108,11 +105,18 @@ async function startWorkerOwner(loaded: LoadedInstallation) {
 
 test("QA repository rejects malformed egress input before worker or DNS preparation", async (t) => {
   const input = await temporaryDirectory(t, "qa-repository-egress-");
-  await writeFile(
-    join(input, "registry.json"),
-    JSON.stringify(grantQaRepositoryBranch(operatorRegistry(), suffix)),
-    { mode: 0o600 },
+  const registryFile = join(input, "registry.json");
+  const registry = grantQaRepositoryBranch(operatorRegistry(), suffix);
+  await writeFile(registryFile, JSON.stringify(registry), { mode: 0o600 });
+
+  // Registry permissions are checked before the stage reads any egress input.
+  await chmod(registryFile, 0o644);
+  await assert.rejects(
+    prepareQaRepository({ repositoryInput: input, suffix }),
+    /repository registry must be a private regular file/,
   );
+  await chmod(registryFile, 0o600);
+
   for (const [name, ranges] of [
     ["missing published ranges", {}],
     ["empty published ranges", { githubApiAndGit: [] }],
@@ -130,10 +134,13 @@ test("QA repository rejects malformed egress input before worker or DNS preparat
       await writeFile(join(input, "upstream-cidrs.json"), JSON.stringify(ranges), { mode: 0o600 });
       // No worker/cluster or network fixture is supplied. Invalid local policy
       // must fail explicitly before preparation can reach those dependencies.
+      const fixture = { repositoryInput: input, suffix };
       await assert.rejects(
-        prepareQaRepository({ repositoryInput: input, suffix }),
+        prepareQaRepository(fixture),
         /repository egress|explicit repository endpoints/,
       );
+      assert.ok("repositoryEntry" in fixture);
+      assert.deepEqual(fixture.repositoryEntry, registry.repositories[0]);
     });
   }
 });
@@ -143,7 +150,9 @@ test("QA repository inputs start the controller, worker owner and repository ser
     operatorRegistry({ pushRefAllowlist: ["refs/heads/*"] }),
     suffix,
   );
-  assert.deepEqual(registry.repositories[0].namespaces, [
+  const [entry] = registry.repositories;
+  assert.ok(entry);
+  assert.deepEqual(entry.namespaces, [
     {
       namespaceId: "ns_qa",
       profiles: ["git-write"],
@@ -173,6 +182,7 @@ test("QA repository inputs start the controller, worker owner and repository ser
   assert.equal(Object.hasOwn(loaded.installation.drivers, "repo"), false);
   assert.equal(loaded.repositoryAdmission.policyMode, "built-in");
   assert.equal(loaded.repositoryAdmission.backendId, registry.backendId);
+  assert.ok(installation.repository);
   assert.equal(loaded.repositoryAdmission.policy.id, installation.repository.id);
   assert.equal(loaded.repositoryGitDriver, undefined);
   assert.equal("authorityIdentity" in loaded ? loaded.authorityIdentity : undefined, undefined);
@@ -216,11 +226,25 @@ test("QA repository grant only narrows an operator's write grant", () => {
       ),
     /must already grant git-write or git-full/,
   );
-  assert.equal(
-    grantQaRepositoryBranch(operatorRegistry({ profiles: ["git-write"] }), suffix).repositories[0]
-      .namespaces[0].pushRefAllowlist[0],
-    `refs/heads/oce-qa-${suffix}`,
-  );
+  const existing = operatorRegistry({
+    profiles: ["git-write"],
+    allowStandingApproval: true,
+    pullRequestBase: "main",
+    draftPullLimit: "none",
+  });
+  const entry = existing.repositories[0];
+  const policy = entry?.namespaces[0];
+  assert.ok(entry && policy);
+  assert.equal(grantQaRepositoryBranch(existing, suffix), existing);
+  assert.equal(existing.repositories[0], entry);
+  assert.equal(entry.namespaces[0], policy);
+  assert.deepEqual(policy, {
+    namespaceId: "ns_qa",
+    profiles: ["git-write"],
+    allowStandingApproval: true,
+    transport: "git-only",
+    pushRefAllowlist: [`refs/heads/oce-qa-${suffix}`],
+  });
   assert.throws(
     () =>
       grantQaRepositoryBranch(

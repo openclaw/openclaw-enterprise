@@ -28,9 +28,9 @@ import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 
@@ -828,15 +828,14 @@ async function prepare(): Promise<void> {
       inProcess: true,
     },
   );
-  const bootstrapKey = safeObject(
-    safeObject(
-      JSON.parse(
-        await readFile(boot.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
-      ) as unknown,
-    ).data,
-  );
-  live.key = textField(bootstrapKey, "key");
-  live.keyId = textField(bootstrapKey, "id");
+  const bootstrapResult = boot.result.stdout
+    .trim()
+    .split("\n")
+    .map((line: string) => safeObject(JSON.parse(line) as unknown))
+    .find((event: Record<string, unknown>) => event.event === "installation.bootstrapped");
+  assert.ok(bootstrapResult);
+  live.key = await readFile(boot.environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE, "utf8");
+  live.keyId = textField(bootstrapResult, "serviceKeyId");
   live.runtime = await loadInstallationConfiguration({
     mode: "development",
     environment: { OCC_CONFIG_PATH: configPath },

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -10,7 +10,7 @@ import {
   renderInstallationProfile,
 } from "../../scripts/render-installation-profile.ts";
 import { syntheticCredentialUrl as credentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { helmTemplate as templateChart } from "../helpers/production-chart.mjs";
+import { helmTemplate as templateChart } from "../helpers/production-chart.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.ts";
 
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -160,6 +160,30 @@ export function processOutput(error: Error): string {
   return `${details.stdout ?? ""}${details.stderr ?? ""}`;
 }
 
+// Pass the original paths to the CLI so it can check aliases before touching any files.
+export function renderCliFromFile(
+  profile: string,
+  inputPath: string,
+  directory: string,
+  options: ExecFileSyncOptions = { cwd: repository, stdio: "pipe" },
+  dnsPreload?: string,
+) {
+  return execFileSync(
+    process.execPath,
+    [
+      ...(dnsPreload === undefined ? [] : ["--import", dnsPreload]),
+      "scripts/render-installation-profile.ts",
+      "--profile",
+      profile,
+      "--input",
+      inputPath,
+      "--out-dir",
+      directory,
+    ],
+    options,
+  );
+}
+
 // Runs the renderer CLI as its own process. Cases about argv, the exit status,
 // stdout, a copied checkout or process-wide DNS settings use this entry point.
 export function renderCli(
@@ -171,8 +195,8 @@ export function renderCli(
 ) {
   const inputPath = join(directory, "input.json");
   writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
-  const dnsPreload = join(directory, "dns-preload.mjs");
-  if (dnsServer !== undefined) {
+  const dnsPreload = dnsServer === undefined ? undefined : join(directory, "dns-preload.mjs");
+  if (dnsPreload !== undefined) {
     writeFileSync(
       dnsPreload,
       `import dns from "node:dns/promises"; dns.setServers([${JSON.stringify(dnsServer)}]);\n`,
@@ -180,20 +204,13 @@ export function renderCli(
   }
   let summary: string;
   try {
-    summary = execFileSync(
-      process.execPath,
-      [
-        ...(dnsServer === undefined ? [] : ["--import", dnsPreload]),
-        "scripts/render-installation-profile.ts",
-        "--profile",
-        profile,
-        "--input",
-        inputPath,
-        "--out-dir",
-        directory,
-      ],
+    summary = renderCliFromFile(
+      profile,
+      inputPath,
+      directory,
       { cwd: root, encoding: "utf8" },
-    );
+      dnsPreload,
+    ).toString();
   } catch (error) {
     if (!(error instanceof Error)) {
       throw error;

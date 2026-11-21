@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -15,6 +15,7 @@ import {
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
+import { selectPolicyProbeCommand } from "../helpers/openshell-policy-probe.ts";
 import {
   firstRunnerRecord,
   parseRunnerRecord,
@@ -161,7 +162,6 @@ export function registerReporterCases() {
   test("run names DOMException and empty-message failures", async (t) => {
     const root = await fixture(t);
     const file = "tests/integration/errors.test.mjs";
-    const resultsPath = join(root, "results/errors.json");
     await writeSingleFileRunnerLane(
       root,
       "errors",
@@ -175,31 +175,42 @@ export function registerReporterCases() {
       ].join("\n"),
     );
 
-    const result = runRunnerSync(laneArgs(root, "errors", "state/errors.jsonl", resultsPath));
-    assert.equal(result.status, 1);
-    const tests = readReportedTests(await readFile(resultsPath, "utf8"));
-    // The stack header names the exception, and the frame skips Node's DOMException constructor.
-    for (const [name, message, line] of [
-      ["timeout", "TimeoutError: The operation was aborted due to timeout", 2],
-      ["abort", "AbortError: This operation was aborted", 3],
-      ["empty", "Error", 4],
+    // Node reports physical source paths even when the CLI receives a checkout alias.
+    const alias = join(root, "checkout-alias");
+    await symlink(root, alias, "dir");
+    for (const [label, checkoutRoot] of [
+      ["direct", root],
+      ["alias", alias],
     ] as const) {
-      const error = runnerRecord(requireTestResult(tests, name).error, "test error");
-      assert.equal(error.message, message);
+      const { statePath, resultsPath } = runnerArtifactPaths(root, label);
+      const result = runRunnerSync(laneArgs(checkoutRoot, "errors", statePath, resultsPath));
+      assert.equal(result.status, 1, result.stderr);
+      const summary = parseRunnerRecord(await readFile(resultsPath, "utf8"), "lane result");
+      const fileResult = firstRunnerRecord(summary.files, "file result");
+      assert.equal(fileResult.cleanup, null);
+      const tests = runnerNamedRows(fileResult.tests, "test results");
+      // The stack header names the exception, and the frame skips Node's DOMException constructor.
+      for (const [name, message, line, throwColumn] of [
+        ["timeout", "TimeoutError: The operation was aborted due to timeout", 2, 31],
+        ["abort", "AbortError: This operation was aborted", 3, 76],
+        ["empty", "Error", 4, 29],
+      ] as const) {
+        const reported = requireTestResult(tests, name);
+        assert.equal(reported.file, file);
+        assert.equal(reported.line, line);
+        assert.equal(reported.column, 1);
+        const error = runnerRecord(reported.error, "test error");
+        assert.equal(error.message, message);
+        assert.equal(error.frame, `at TestContext.<anonymous> (${file}:${line}:${throwColumn})`);
+      }
       assert.match(
-        runnerText(error.frame, "error frame"),
-        new RegExp(`\\(${file.replaceAll(".", "\\.")}:${line}:\\d+\\)$`),
+        result.stderr,
+        /run-tests: failed tests\/integration\/errors\.test\.mjs:2 "timeout": TimeoutError: The operation was aborted due to timeout \(at /,
       );
     }
-    // The job log names the failure too.
-    assert.match(
-      result.stderr,
-      /run-tests: failed tests\/integration\/errors\.test\.mjs:2 "timeout": TimeoutError: The operation was aborted due to timeout \(at /,
-    );
   });
 
   test("policy probe diagnostics preserve first-match failure and omit model content", async (t) => {
-    const { selectPolicyProbeCommand } = await import("../helpers/openshell-policy-probe.mjs");
     const uri = "http://private-fixture.invalid:8083/policy-probe";
     const event = (command: string) => ({
       method: "item/completed",
@@ -221,11 +232,30 @@ export function registerReporterCases() {
       { code: "ERR_ASSERTION" },
     );
     assert.equal(calls, 1);
-    const selected: unknown = selectPolicyProbeCommand([correct], { uri, port: 8083 }, () => {
-      calls += 1;
-    });
+    // Only completed execution records can establish the probe result.
+    const selected = selectPolicyProbeCommand(
+      [
+        { method: "item/started", params: first.params },
+        { method: "item/completed", params: { item: null } },
+        correct,
+      ],
+      { uri, port: 8083 },
+      () => {
+        calls += 1;
+      },
+    );
     assert.equal(selected, correct.params.item);
     assert.equal(calls, 1, "successful probes emit no failure receipt");
+
+    // A malformed first completion cannot yield policy evidence or select a later candidate.
+    const malformed = {
+      method: "item/completed",
+      params: { item: { ...correct.params.item, exitCode: "0" } },
+    };
+    assert.throws(
+      () => selectPolicyProbeCommand([malformed, correct], { uri, port: 8083 }, () => {}),
+      { code: "ERR_ASSERTION", message: "expected a Codex command result" },
+    );
 
     const root = await fixture(t);
     const resultsPath = join(root, "results/policy.json");
@@ -234,7 +264,7 @@ export function registerReporterCases() {
       join(root, "tests/integration/policy.test.mjs"),
       [
         'import test from "node:test";',
-        `import { selectPolicyProbeCommand } from ${JSON.stringify(new URL("../helpers/openshell-policy-probe.mjs", import.meta.url).href)};`,
+        `import { selectPolicyProbeCommand } from ${JSON.stringify(new URL("../helpers/openshell-policy-probe.ts", import.meta.url).href)};`,
         `const first = ${JSON.stringify(first)};`,
         `const later = ${JSON.stringify(event(first.params.item.command + " # later-command"))};`,
         `const prefix = ${JSON.stringify(event("echo private-model-content"))};`,
@@ -339,7 +369,7 @@ export function registerReporterCases() {
         'import test from "node:test";',
         'import { execFileSync } from "node:child_process";',
         `import { withSkillPolicyRestore } from ${JSON.stringify(new URL("../helpers/skill-policy-restore.mjs", import.meta.url).href)};`,
-        `import { registerQaSecret } from ${JSON.stringify(new URL("../helpers/qa-secrets.mjs", import.meta.url).href)};`,
+        `import { registerQaSecret } from ${JSON.stringify(new URL("../helpers/qa-secrets.ts", import.meta.url).href)};`,
         'registerQaSecret("fixture-private-restore-value");',
         'for (const kind of ["short", "long", "multiline", "key-tail"]) {',
         "  test(`${kind} nested failures`, async () => {",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer, request as requestHTTPS } from "node:https";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,12 +10,14 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
+  explicitK3dSelection,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.ts";
-import { prepareProductionHelmControlPlane } from "../helpers/production-helm-real.mjs";
+import { prepareProductionHelmControlPlane } from "../helpers/production-helm-real.ts";
 import type { FixtureRun } from "../helpers/production-rehearsal-custody.ts";
 import { runFixtureCommand } from "../helpers/production-rehearsal-custody.ts";
-import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.mjs";
+import { findChartJob } from "../helpers/production-chart-resource.ts";
+import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.ts";
 
 function heldResponse() {
   let resolve!: () => void;
@@ -26,11 +28,6 @@ function heldResponse() {
 }
 
 const selected = process.env.OCC_TEST_PRODUCTION_OBSERVABILITY === "1";
-const selection = {
-  kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-  kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-};
-
 test(
   "production installation receipts survive interruption before and after Job capture",
   {
@@ -40,25 +37,32 @@ test(
     timeout: 900_000,
   },
   async (t) => {
-    await validateExplicitK3dLoopbackContext(selection);
-    const images = {
-      controller: process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
-      postgres: process.env.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
-      runtime: process.env.OCC_TEST_KUBERNETES_IMAGE,
-    };
-    for (const [name, image] of Object.entries(images)) {
+    const selectionInput = explicitK3dSelection();
+    await validateExplicitK3dLoopbackContext(selectionInput);
+    const { kubeconfigPath, kubernetesContext } = selectionInput;
+    assert.ok(kubeconfigPath && kubernetesContext);
+    const selection = { kubeconfigPath, kubernetesContext };
+    function importedImage(name: string) {
+      const image = process.env[name];
       assert.match(image ?? "", /^\S+@sha256:[a-f0-9]{64}$/, `${name} requires an immutable image`);
+      assert.ok(image);
+      return image;
     }
+    const images = {
+      controller: importedImage("OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"),
+      postgres: importedImage("OCC_TEST_PRODUCTION_POSTGRES_IMAGE"),
+      runtime: importedImage("OCC_TEST_KUBERNETES_IMAGE"),
+    };
     const kubernetes = createKubernetesClient({ selection });
     const { kubectl, resource, waitFor } = kubernetes;
     const directory = await mkdtemp(join(tmpdir(), "occ-receipt-production-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const occ = join(directory, "occ");
-    execFileSync("go", ["build", "-o", occ, "./cmd/occ"]);
+    execFileSync("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
 
     // This proxy forwards real Kubernetes requests with the selected fixture
-    // credentials. Holding only the observer's successful GET response models a
-    // lost connection after persistence, without inventing Job or database state.
+    // credentials. Holding a Secret create or the observer's successful GET
+    // models a lost connection after persistence, without inventing cluster state.
     const source = JSON.parse(
       String(await kubectl("config", "view", "--minify", "--flatten", "--raw", "-o", "json")),
     );
@@ -91,6 +95,7 @@ test(
     const proxyCA = await readFile(proxyCert);
     const installerToken = randomBytes(32).toString("hex");
     let heldPath = "";
+    let heldStatus = 200;
     let writes = 0;
     let held = heldResponse();
     const proxy = createServer(
@@ -126,7 +131,7 @@ test(
             const path = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
             if (
               heldPath === path &&
-              result.statusCode === 200 &&
+              result.statusCode === heldStatus &&
               request.headers["user-agent"]?.startsWith("kubectl/")
             ) {
               result.resume();
@@ -178,7 +183,7 @@ test(
     const installerConfig = join(directory, "installer.json");
     await config(installerConfig, installerToken);
 
-    for (const capture of ["before", "after"] as const) {
+    for (const capture of ["secret", "before", "after"] as const) {
       const suffix = randomBytes(5).toString("hex");
       const namespace = `receipt-${capture}-${suffix}`;
       const release = "oce";
@@ -225,6 +230,7 @@ test(
         authBaseURL: "https://occ.example.invalid",
         agentNativeAdminDomain: "agents.example.invalid",
         installationName: `Receipt ${capture}`,
+        bootstrapCredentials: capture === "secret" ? "generate" : "existing",
         apiClients: [{ namespace, podLabels: { app: "operator" } }],
         run,
         kubernetes,
@@ -243,13 +249,20 @@ test(
         release,
       ];
       held = heldResponse();
-      heldPath =
-        capture === "before" ? `/apis/batch/v1/namespaces/${namespace}/jobs/${jobName}` : "";
+      const boundary = {
+        secret: { status: 201, path: `/api/v1/namespaces/${namespace}/secrets` },
+        before: { status: 200, path: `/apis/batch/v1/namespaces/${namespace}/jobs/${jobName}` },
+        after: { status: 200, path: "" },
+      }[capture];
+      heldStatus = boundary.status;
+      heldPath = boundary.path;
       const child = spawn(
         occ,
         [
           "installation",
           "install",
+          "--bootstrap-credentials",
+          capture === "secret" ? "generate" : "existing",
           ...target,
           "--chart",
           "deploy/helm/openclaw-enterprise",
@@ -261,7 +274,7 @@ test(
         {
           detached: true,
           stdio: "ignore",
-          env: { ...process.env, TMPDIR: working },
+          env: { ...process.env, TMPDIR: working, XDG_STATE_HOME: join(working, "state") },
         },
       );
       assert.ok(child.pid);
@@ -287,12 +300,12 @@ test(
           resolve(code);
         }),
       );
-      if (capture === "before") {
+      if (capture === "secret" || capture === "before") {
         await Promise.race([
           held.promise,
           new Promise((_, reject) => {
             const timeout = setTimeout(
-              () => reject(new Error("observer did not read the persisted Job")),
+              () => reject(new Error("installer did not reach the selected response boundary")),
               60_000,
             );
             timeout.unref();
@@ -311,6 +324,58 @@ test(
       terminate();
       await exited;
       heldPath = "";
+      if (capture === "secret") {
+        // The API committed the Secret before the installer lost its response.
+        // Preserve the same local inputs; neither handoff nor a retry may replace it.
+        const bootstrap = asRecord(
+          JSON.parse(await readFile(join(receipt, "bootstrap-secret.json"), "utf8")),
+        );
+        const inputs = bootstrap?.inputDirectory;
+        assert.ok(typeof inputs === "string" && inputs.startsWith(join(working, "state") + "/"));
+        assert.equal((await stat(inputs)).mode & 0o777, 0o700);
+        const created = asRecord(await resource("secret", "occ-bootstrap-credentials", namespace));
+        const data = asRecord(created?.data);
+        for (const [file, key] of [
+          ["initial-admin-password", "admin-password"],
+          ["initial-admin-service-key", "admin-service-key"],
+        ] as const) {
+          const path = join(inputs, file);
+          const value = await readFile(path, "utf8");
+          secrets.push(value);
+          assert.equal((await stat(path)).mode & 0o777, 0o600);
+          assert.equal(
+            data?.[key] === Buffer.from(value).toString("base64"),
+            true,
+            "Secret differs from retained input",
+          );
+        }
+        await assert.rejects(readFile(join(receipt, "bootstrap-secret-result.json")), {
+          code: "ENOENT",
+        });
+        await assert.rejects(readFile(join(receipt, "dispatch.json")), { code: "ENOENT" });
+        assert.equal(
+          String(
+            await kubectl(
+              "-n",
+              namespace,
+              "get",
+              "job",
+              jobName,
+              "--ignore-not-found",
+              "-o",
+              "name",
+            ),
+          ).trim(),
+          "",
+        );
+        const mutationCount = writes;
+        await assert.rejects(
+          run(occ, ["installation", "doctor", ...target, "--receipt", receipt]),
+          { message: /Bootstrap Secret: preparation or creation unconfirmed/ },
+        );
+        assert.equal(writes, mutationCount, "handoff must not mutate the cluster");
+        continue;
+      }
       const original = asRecord(asRecord(await resource("job", jobName, namespace))?.metadata);
       assert.ok(typeof original?.uid === "string" && original.uid, "expected the Job UID");
       if (capture === "before") {
@@ -417,13 +482,12 @@ test(
         {},
         { namespace, release, isUpgrade: false, valuesFiles: [prepared.valuesPath] },
       );
-      const replacement = (await parseProductionChart(render.stdout)).find(
-        (item: { kind?: string }) => item.kind === "Job",
-      );
-      assert.ok(replacement);
-      replacement.metadata.annotations["openclaw.dev/installation-attempt"] = asRecord(
-        original.annotations,
-      )?.["openclaw.dev/installation-attempt"];
+      const replacement = findChartJob(await parseProductionChart(render.stdout));
+      const annotations = asRecord(replacement.metadata.annotations);
+      assert.ok(annotations, "Expected initialization Job annotations");
+      annotations["openclaw.dev/installation-attempt"] = asRecord(original.annotations)?.[
+        "openclaw.dev/installation-attempt"
+      ];
       replacement.metadata.namespace = namespace;
       replacement.spec.suspend = true;
       await kubectl("-n", namespace, "delete", "job", jobName);

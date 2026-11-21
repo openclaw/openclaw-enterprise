@@ -18,18 +18,20 @@ import {
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
-  parseAuthorizationUrl,
   providerAttemptId,
   providerInstanceId,
-  readProviderRequestBody,
-  redirectProviderFetch,
   responseFields,
-  startProviderServer,
   testOversizedProviderBodies,
   until,
   type LoginFixtureOptions,
-  type ProviderHandler,
 } from "../helpers/human-login-transport.ts";
+import {
+  parseAuthorizationUrl,
+  readProviderRequestBody,
+  redirectProviderFetch,
+  startProviderServer,
+  type ProviderHandler,
+} from "../helpers/provider-http-transport.ts";
 
 const clientId = "fixture-client.apps.googleusercontent.com";
 const clientSecret = "fixture-google-client-secret";
@@ -65,10 +67,7 @@ function idToken(state = callbackState, overrides: Record<string, unknown> = {})
 function loginFixture(
   state: LoginFixtureOptions["state"] = {},
   providers: LoginFixtureOptions["providers"] = {},
-  options: Pick<
-    LoginFixtureOptions,
-    "providerDeadlineMs" | "recoveryEmail" | "trustedClientAddress"
-  > = {},
+  options: Pick<LoginFixtureOptions, "providerDeadlineMs" | "trustedClientAddress"> = {},
 ) {
   return createLoginFixture({
     provider: "google",

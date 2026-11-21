@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 import type { PluginProofScenario } from "../helpers/plugin-driver-proof-inputs.ts";
-import { createPluginDriverRealFixture } from "../helpers/plugin-driver-real.mjs";
+import { createPluginDriverRealFixture } from "../helpers/plugin-driver-real.ts";
 import { syntheticCredentialUrl } from "./synthetic-credential-url.mjs";
 
 const scenarios = ["openclaw", "codex_linear", "codex_failure"] as const;
@@ -30,7 +30,7 @@ function resetDatabases() {
   }
 }
 
-function create(scenario: PluginProofScenario): Promise<unknown> {
+function create(scenario: PluginProofScenario) {
   return createPluginDriverRealFixture(
     { after },
     {

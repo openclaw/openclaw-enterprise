@@ -38,12 +38,12 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.ts";
 import {
   createConsoleFixtureTransport,
   fetchLoopback,
 } from "../helpers/console-fixture-transport.ts";
-import { jsonRequestInit } from "../helpers/inject-json.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.ts";
 import {
   alternateWorkspaceId,
   createAccessTokenServiceAccount,
@@ -60,14 +60,14 @@ import {
 } from "../helpers/postgres-backend-state.mjs";
 import { reservePort } from "../helpers/available-port.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
-import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
-import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.ts";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.ts";
+import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 import {
-  EMBEDDED_API_KEY_REQUIRED,
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-admission.ts";
 
 type BackendFixture = Awaited<ReturnType<typeof createBackendFixture>>;
 type AuthSession = Awaited<ReturnType<typeof signInWithEmailPassword>>;
@@ -853,10 +853,35 @@ test(
     const { type } = movedBackend;
     assert.ok(type === "chatgpt");
     const moved = stubbedController([{ ...movedBackend, type }]);
+    // A different Namespace has an earlier due job. The claim must leave it queued
+    // while taking the exact admitted provisioning job.
+    const competingNamespace: Namespace = {
+      id: `ns_${randomUUID()}`,
+      name: `backend-owner-competing-${randomUUID()}`,
+      status: "provisioning",
+      createdAt: new Date().toISOString(),
+    };
+    const competingWorkId = `namespace:${competingNamespace.id}:reconcile:ready`;
+    fixture.track(competingNamespace);
+    await fixture.state.transactWithQueue(async (unit, queue) => {
+      await unit.namespaces.createNamespace(competingNamespace);
+      await queue.enqueue({
+        idempotencyKey: competingWorkId,
+        namespaceId: competingNamespace.id,
+        namespaceTarget: "ready",
+        actorId: fixture.actor.id,
+        availableAt: new Date(0),
+      });
+    });
     const { workId } = accepted.provisioning;
     const claim = await claimIsolatedWork(fixture.pool, { workId });
     assert.ok(claim, "the admitted provisioning job must be claimed from the queue");
     assert.equal(claim.idempotencyKey, workId);
+    const competingWork = await fixture.pool.query<{ state: ControllerWorkState }>(
+      "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+      [competingWorkId],
+    );
+    assert.deepEqual(competingWork.rows, [{ state: "queued" }]);
     const outcome = await moved.processAgentProvisioning(claim, resolveApprovedHarness);
     assert.equal(outcome.outcome, "permanent", JSON.stringify(outcome));
     const job = await fixture.pool.query<{ error: unknown }>(
@@ -866,7 +891,7 @@ test(
     assert.deepEqual(job.rows, [
       { error: { code: "PROVISIONING_REJECTED", message: SERVICE_ACCOUNT_BACKEND_MISMATCH } },
     ]);
-    await fixture.cleanup(exactNamespace);
+    await fixture.cleanup(exactNamespace, competingNamespace);
 
     const scenarios: readonly {
       label: string;

@@ -3,7 +3,7 @@
 // proves why Compute admission refuses native listener TLS and binds that
 // cannot serve Pod-IP traffic.
 import type { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
+import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.ts";
 import assert from "node:assert/strict";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { randomBytes } from "node:crypto";
@@ -23,30 +23,30 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { isStringArray, type ProxyRequest } from "../fixtures/runtime-native-trusted-proxy.mts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { runDocker, commandOutput, failureTail } from "../helpers/runtime-image-docker.ts";
+import { waitForContainerReady } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   image,
   imageTestOptions,
-  runDocker,
-  commandOutput,
-  failureTail,
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
-  waitForContainerReady,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
+import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 
 type BindSettings = {
   bind?: "loopback" | "custom" | "tailnet" | "lan" | "auto";
   customBindHost?: string;
 };
 type ScopeExpectation =
-  | { status: number; body?: RegExp; nativeSessions?: boolean; scopes?: never }
-  | { status: "hello"; scopes: string[]; body?: never; nativeSessions?: never }
+  | { status: number; body?: RegExp; nativeSessions?: boolean; scopes?: never; absentMain?: never }
+  | { status: "hello"; scopes: string[]; body?: never; nativeSessions?: never; absentMain?: never }
   | {
       status: "connect-error" | "operation-ok" | "operation-denied";
       body?: RegExp;
       scopes?: never;
       nativeSessions?: never;
+      absentMain?: boolean;
     };
 type ScopeCase = [
   label: string,
@@ -574,6 +574,31 @@ test(
             },
             { status: "operation-ok" },
           ],
+          // Finding 3190 (openclaw#197151): the chat route's paired browser opens the Agent's
+          // unused main conversation with empty history, so its first turn can create it.
+          // Any other absent key stays as hidden as another creator's draft.
+          [
+            {
+              kind: "ws",
+              paired: true,
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              method: "sessions.messages.subscribe",
+              params: { key: "agent:main:main", initialHistory: {} },
+            },
+            { status: "operation-ok", absentMain: true },
+          ],
+          [
+            {
+              kind: "ws",
+              paired: true,
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              method: "sessions.messages.subscribe",
+              params: { key: "agent:main:other" },
+            },
+            { status: "operation-denied", body: /not found/ },
+          ],
           [
             {
               kind: "ws",
@@ -672,11 +697,17 @@ test(
       const outcomes = observations(remote.stdout, requests.length).map(asRecord);
       for (const [position, [request, expected]] of requests.entries()) {
         const outcome = outcomes[position];
-        const description = `${label}: ${request.operation ?? request.kind ?? "http"} ${request.identity} with ${
+        const operation =
+          request.kind === "ws" ? (request.method ?? "connect") : (request.operation ?? "http");
+        const description = `${label}: ${operation} ${request.identity} with ${
           request.scopes === undefined ? "no scope header" : `x-openclaw-scopes=${request.scopes}`
         }`;
         assert.ok(outcome, description);
-        assert.equal(outcome.status, expected.status, description);
+        assert.equal(
+          outcome.status,
+          expected.status,
+          `${description}: ${redactLogLine(JSON.stringify(outcome), [], 2048)}`,
+        );
         if (expected.body !== undefined) {
           assert.ok(
             typeof outcome.body === "string" && expected.body.test(outcome.body),
@@ -690,6 +721,17 @@ test(
           assert.equal(body?.ok, true, description);
           assert.ok(Array.isArray(details?.sessions), description);
           assert.equal(details.count, details.sessions.length, description);
+        }
+        if (expected.absentMain) {
+          assert.ok(typeof outcome.body === "string", description);
+          const subscribed = asRecord(JSON.parse(outcome.body));
+          const initialHistory = asRecord(subscribed?.initialHistory);
+          const payload = asRecord(initialHistory?.payload);
+          assert.equal(subscribed?.subscribed, true, description);
+          assert.equal(subscribed?.key, "agent:main:main", description);
+          assert.equal(initialHistory?.ok, true, description);
+          assert.deepEqual(payload?.messages, [], description);
+          assert.equal(payload?.sessionId ?? null, null, description);
         }
         if (expected.scopes !== undefined) {
           assert.ok(isStringArray(outcome.scopes), description);

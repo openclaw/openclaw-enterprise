@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:https";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { delimiter, join } from "node:path";
@@ -897,6 +897,7 @@ test(
       });
       response.setHeader("x-request-id", requestId);
       response.setHeader("x-private-fixture", privateBytes);
+      response.setHeader("x-oce-rehearsal-upstream-reused", "1");
       switch (observedRequests.length) {
         case 1:
           response.end(
@@ -960,9 +961,21 @@ test(
     });
     let actionStarted = false;
     const actionStartedAtRequest: boolean[] = [];
-    const request = (...args: Parameters<typeof rawRequest>) => {
+    // The action ends with the deadline request (case 8). That request returns to the
+    // helper only once the server has seen it close too, and the action settles right
+    // then, so the helper stops observing before it could start another request.
+    const deadlineEnded = Promise.withResolvers<void>();
+    const request = async (...args: Parameters<typeof rawRequest>) => {
       actionStartedAtRequest.push(actionStarted);
-      return rawRequest(...args);
+      if (actionStartedAtRequest.length !== 8) {
+        return await rawRequest(...args);
+      }
+      try {
+        return await rawRequest(...args);
+      } finally {
+        await timedOut.promise;
+        deadlineEnded.resolve();
+      }
     };
     let evidence:
       | {
@@ -971,6 +984,7 @@ test(
             startedAt: string;
             finishedAt: string;
             requestId?: string;
+            upstreamSocketReused?: boolean;
             elapsedMs: number;
             gapMs: number | null;
             startGapMs: number | null;
@@ -1004,7 +1018,7 @@ test(
       directory,
       async () => {
         actionStarted = true;
-        await timedOut.promise;
+        await deadlineEnded.promise;
         return "upgrade completed";
       },
       async (details) => {
@@ -1044,6 +1058,8 @@ test(
     );
     assert.equal(evidence.samples[0]?.requestId, requestId);
     assert.ok(evidence.samples.slice(1).every((sample) => !("requestId" in sample)));
+    assert.equal(evidence.samples[0]?.upstreamSocketReused, true);
+    assert.ok(evidence.samples.slice(1).every((sample) => !("upstreamSocketReused" in sample)));
     assert.equal(evidence.samples[0]?.gapMs, null);
     for (const sample of evidence.samples) {
       assert.ok(Number.isFinite(Date.parse(sample.startedAt)));
@@ -1329,11 +1345,13 @@ test("upgrade availability preserves action and evidence-write failures", async 
   const key = `fixture-service-key-${randomUUID()}`;
   // Even matching IDs must have the controller-generated UUIDv4 shape.
   const malformedId = "req_00000000-0000-1000-8000-000000000000";
+  const validId = `req_${randomUUID()}`;
+  let requestId = malformedId;
+  let reuseHeader = "1";
   const server = createServer(tls, (_incoming, response) => {
-    response.setHeader("x-request-id", malformedId);
-    response.end(
-      JSON.stringify({ data: { id: "original-installation" }, meta: { requestId: malformedId } }),
-    );
+    response.setHeader("x-request-id", requestId);
+    response.setHeader("x-oce-rehearsal-upstream-reused", reuseHeader);
+    response.end(JSON.stringify({ data: { id: "original-installation" }, meta: { requestId } }));
   });
   const port = await listen(t, server);
   const request = createProductionTuiRequest({
@@ -1377,10 +1395,10 @@ test("upgrade availability preserves action and evidence-write failures", async 
     },
   );
   assert.equal(recorded, true);
-  const failedSnapshot = JSON.parse(
-    await readFile(join(directory, "forward-api-availability.json"), "utf8"),
-  );
+  const snapshotPath = join(directory, "forward-api-availability.json");
+  const failedSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
   assert.ok(!JSON.stringify(failedSnapshot).includes(malformedId));
+  assert.ok(failedSnapshot.samples.every((sample: object) => !("upstreamSocketReused" in sample)));
   assert.equal(failedSnapshot.upgradeSucceeded, false);
   assert.equal(failedSnapshot.complete, true);
   assert.equal(failedSnapshot.cadence.complete, true);
@@ -1427,6 +1445,8 @@ test("upgrade availability preserves action and evidence-write failures", async 
       },
     );
   }
+  requestId = validId;
+  reuseHeader = "0";
   await assert.rejects(
     measureUpgradeAvailability(
       request,
@@ -1439,6 +1459,11 @@ test("upgrade availability preserves action and evidence-write failures", async 
     ),
     (error: unknown) => error === upgradeFailure,
   );
+  const freshSocketSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.equal(freshSocketSnapshot.samples[0]?.requestId, validId);
+  assert.equal(freshSocketSnapshot.samples[0]?.upstreamSocketReused, false);
+
+  reuseHeader = "true";
   await assert.rejects(
     measureUpgradeAvailability(
       request,
@@ -1451,6 +1476,9 @@ test("upgrade availability preserves action and evidence-write failures", async 
     ),
     (error: unknown) => error === recordFailure,
   );
+  const malformedHeaderSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.equal(malformedHeaderSnapshot.samples[0]?.requestId, validId);
+  assert.ok(!("upstreamSocketReused" in malformedHeaderSnapshot.samples[0]));
 });
 
 test(

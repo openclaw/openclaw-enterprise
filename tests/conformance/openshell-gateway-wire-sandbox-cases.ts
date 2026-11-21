@@ -382,9 +382,7 @@ export function registerSandboxCases(): void {
 
   test("OpenShell client reads an existing Sandbox and its service endpoint", async () => {
     const requests: (
-      | ["GetSandbox", WireRequest<"GetSandbox">]
-      | ["GetService", WireRequest<"GetService">]
-      | ["DeleteService", WireRequest<"DeleteService">]
+      ["GetSandbox", WireRequest<"GetSandbox">] | ["DeleteService", WireRequest<"DeleteService">]
     )[] = [];
     const notFound = (callback: (error: { code: number }) => void) =>
       callback(Object.assign(new Error("not found"), { code: grpc.status.NOT_FOUND }));
@@ -406,17 +404,6 @@ export function registerSandboxCases(): void {
               annotations: { "openclaw.dev/revision-id": "rev_wire" },
             },
           },
-        });
-      },
-      GetService(call, callback) {
-        requests.push(["GetService", call.request]);
-        if (call.request.sandbox !== "sandbox-wire") {
-          notFound(callback);
-          return;
-        }
-        callback(null, {
-          endpoint: { sandbox: call.request.sandbox, name: call.request.name, target_port: 18_790 },
-          url: "http://tenant-workspace--sandbox-wire.openshell.localhost:8080/",
         });
       },
       // Per Sandbox name: how DeleteService answers (finding 1657).
@@ -489,32 +476,10 @@ export function registerSandboxCases(): void {
         await client.getSandbox({ name: "missing", workspace: "tenant-workspace" }, signal),
         undefined,
       );
-      assert.equal(
-        await client.getServiceUrl(
-          { sandbox: "sandbox-wire", workspace: "tenant-workspace", service: "" },
-          signal,
-        ),
-        `http://tenant-workspace--sandbox-wire.openshell.localhost:${port}/`,
-      );
-      assert.equal(
-        await client.getServiceUrl(
-          { sandbox: "missing", workspace: "tenant-workspace", service: "" },
-          signal,
-        ),
-        undefined,
-      );
       assert.deepEqual(requests[0], [
         "GetSandbox",
         {
           name: "sandbox-wire",
-          workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
-        },
-      ]);
-      assert.deepEqual(requests[2], [
-        "GetService",
-        {
-          sandbox: "sandbox-wire",
-          name: "",
           workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
         },
       ]);

@@ -15,7 +15,7 @@ import type { RequestListener } from "node:http";
 import { join } from "node:path";
 import { type PeerCertificate, TLSSocket } from "node:tls";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { boundPort, grpc } from "./openshell-gateway-wire-fixture.ts";
 import {

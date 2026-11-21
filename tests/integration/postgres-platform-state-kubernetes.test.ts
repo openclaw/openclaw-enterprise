@@ -20,7 +20,7 @@ import type {
   NamespaceResponse,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWork } from "../../packages/occ/src/index.ts";
-import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import {
   adminEmail,
   admitted,
@@ -43,7 +43,7 @@ import {
 } from "../helpers/postgres-platform-state.ts";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 
 type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
 type NamespaceCompletion = WorkerEvent & {
@@ -149,11 +149,11 @@ stateCase(
     assert.equal(Object.hasOwn(namespace.data, "installationId"), false);
     cleanupKubernetesNamespaces(context, [namespace.data.id]);
 
-    const worker = await startKubernetesWorker(context);
+    const initialWorker = await startKubernetesWorker(context);
     // The worker has created the Kubernetes namespace but cannot reconcile tenant resources
     // until its tenant-local RoleBinding exists. Inspect only this Namespace's own pass.
-    const completion = (matches: (event: WorkerEvent) => boolean) => {
-      const events: WorkerEvent[] = jsonLines(worker.output(), { lenient: true });
+    const completion = (output: string, matches: (event: WorkerEvent) => boolean) => {
+      const events: WorkerEvent[] = jsonLines(output, { lenient: true });
       return events.find(
         (line): line is NamespaceCompletion =>
           line.event === "worker.completed" &&
@@ -164,20 +164,31 @@ stateCase(
     };
     const denied = await pollUntil(
       "the worker to report the denied tenant request",
-      () => completion((line) => line.hintCode === "KUBERNETES_TENANT_ACCESS_DENIED"),
-      { worker, timeoutMs: 60_000 },
+      () =>
+        completion(
+          initialWorker.output(),
+          (line) => line.hintCode === "KUBERNETES_TENANT_ACCESS_DENIED",
+        ),
+      { worker: initialWorker, timeoutMs: 60_000 },
     );
     assert.equal(denied.code, "NAMESPACE_INCOMPLETE");
     assert.equal(denied.result, "pending");
+    assert.ok(typeof denied.workId === "string" && denied.workId.length > 0);
+
+    // Stop after the deferral commits so the replacement must pick up the original work.
+    await stopProcess(initialWorker.child, { graceMs: 15_000 });
+    assert.equal(initialWorker.child.exitCode, 0, "initial Worker must exit cleanly");
     await grantTenantAccess(context, namespace.data.id);
+    const worker = await startKubernetesWorker(context);
     const readyNamespace = await waitForNamespaceReady(first, namespace.data.id, worker);
     const ready = await pollUntil(
       "the worker to finish the authorized pass",
-      () => completion((line) => line.result === "success"),
+      () => completion(worker.output(), (line) => line.result === "success"),
       { worker },
     );
     assert.equal(ready.code, "NAMESPACE_RECONCILED");
     assert.equal(ready.hintCode, undefined);
+    assert.equal(ready.workId, denied.workId);
 
     const { agent } = await createKubernetesConfiguredAgent(
       pool,
@@ -193,6 +204,7 @@ stateCase(
     const persisted = await pool.query<{
       audit_events: number;
       queued_operations: number;
+      successful_settlements: number;
       configurations: number;
       agent_service_principals: number;
     }>(
@@ -201,17 +213,22 @@ stateCase(
          WHERE resource_id = $1 OR resource_id = $2 OR resource_id = $3) AS audit_events,
        (SELECT count(*)::integer FROM occ.controller_work
          WHERE namespace_id = $1) AS queued_operations,
+       (SELECT count(*)::integer FROM occ.audit_events
+         WHERE namespace_id = $1 AND resource_id = $1 AND action = 'reconcile'
+           AND outcome = 'success' AND details->>'reasonCode' = 'RECONCILE_SUCCEEDED'
+           AND details->>'workId' = $4) AS successful_settlements,
        (SELECT count(*)::integer FROM occ.configurations
          WHERE namespace_id = $1 AND id = $3) AS configurations,
        (SELECT count(*)::integer FROM occ.iam_identities
          WHERE namespace_id = $1 AND agent_id = $2
            AND kind = 'service_principal') AS agent_service_principals`,
-      [namespace.data.id, agent.id, agent.configurationId],
+      [namespace.data.id, agent.id, agent.configurationId, denied.workId],
     );
     const [persistedCounts] = persisted.rows;
     assert.ok(persistedCounts);
     assert.ok(persistedCounts.audit_events >= 3);
     assert.equal(persistedCounts.queued_operations, 1);
+    assert.equal(persistedCounts.successful_settlements, 1);
     assert.equal(persistedCounts.configurations, 1);
     assert.equal(persistedCounts.agent_service_principals, 1);
 

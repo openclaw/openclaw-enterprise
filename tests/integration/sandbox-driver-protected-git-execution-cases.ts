@@ -1,3 +1,7 @@
+import {
+  assertGitExecutionContinuity,
+  verifyManagedGitReplacement,
+} from "./sandbox-driver-managed-git-cases.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -13,7 +17,6 @@ import { bindRepositoryGitTransport } from "../../apps/controller/src/compositio
 import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import type { OpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import type {
   AgentRevision,
   HarnessWorkloadRequirements,
@@ -23,10 +26,12 @@ import type {
   RepositoryRevisionState,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import { routeStore } from "../fixtures/openshell-git-route-store.ts";
+import type { GitWorkspaceInput } from "../fixtures/openshell-git-workspace.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
-import { image, imageTestOptions, runDocker } from "../helpers/runtime-image-startup.mjs";
+import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.ts";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";
 import type { ProtectedOpenShellGitFixture } from "./sandbox-driver-protected-git-configuration-cases.ts";
 import { verifyProtectedGitNetworkPolicy } from "./sandbox-driver-protected-git-network-admission.ts";
 import { verifyPreparedGitCleanupRefusals } from "./sandbox-driver-revision-observation-cases.ts";
@@ -44,13 +49,7 @@ async function bindGitWithFixtureRoutes(
   // The image lane has no PostgreSQL. Substitute the existing route-store fixture at
   // the public runtime start boundary while binding the real worker, authority, and Sandbox.
   const outOfScope = async () => assert.fail("Unexpected persistent route operation");
-  const routes = {
-    ...routeStore(),
-    standing: outOfScope,
-    expire: outOfScope,
-    beginDetach: outOfScope,
-    confirmDetached: outOfScope,
-  } satisfies OpenShellGitRouteStore;
+  const routes = routeStore();
   const authority = {
     ...noMaterial,
     online: { ...noMaterial, githubRepository: noMaterial },
@@ -92,6 +91,10 @@ function enrolledRequirements(
   return {
     ...requirements,
     proxyWiring,
+    labels: {
+      "openclaw.dev/revision": proxyWiring.plan.execution.revisionId,
+      "openclaw.dev/agent": proxyWiring.plan.execution.agentId,
+    },
     files: [
       {
         ...manifest,
@@ -143,6 +146,7 @@ export async function verifyProtectedOpenShellGitExecution(
     inferenceProvider,
     gateway,
     getCreated,
+    restoreCreated,
     registry,
     sandboxConfiguration,
     workspaceMountPath,
@@ -197,7 +201,7 @@ export async function verifyProtectedOpenShellGitExecution(
   assert.ok(admitted);
   assert.match(
     admitted,
-    /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
+    /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
   );
   protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
   // Preparation accepts the configured facilities independently of the release label.
@@ -274,6 +278,12 @@ export async function verifyProtectedOpenShellGitExecution(
     }),
     undefined,
   );
+  await assertGitExecutionContinuity(
+    sandbox,
+    ctx,
+    gateway.sandboxes.get(result.resourceName),
+    false,
+  );
   const created = getCreated();
   assert.ok(created);
   // Check the final launch environment, after all provider and Sandbox composition.
@@ -309,19 +319,41 @@ export async function verifyProtectedOpenShellGitExecution(
         "--security-opt=no-new-privileges",
         "--tmpfs=/sandbox:rw,exec,nosuid,nodev,mode=755",
         "--tmpfs=/tmp:rw,nosuid,nodev,mode=1777",
-        "--mount",
-        `type=bind,src=${fileURLToPath(new URL("../fixtures/openshell-git-workspace.cjs", import.meta.url))},dst=/proof.cjs,readonly`,
         "--entrypoint=node",
         image,
-        "/proof.cjs",
+        "-e",
+        process
+          .getBuiltinModule("node:module")
+          .stripTypeScriptTypes(
+            process
+              .getBuiltinModule("node:fs")
+              .readFileSync(
+                fileURLToPath(new URL("../fixtures/openshell-git-workspace.ts", import.meta.url)),
+                "utf8",
+              ),
+          ),
+        "fixture",
         JSON.stringify({
           workspace: workspaceMountPath,
           environment: gitEnvironment,
-        }),
+        } satisfies GitWorkspaceInput),
       ]);
     },
   );
   assert.deepEqual(result.proxyWiring?.plan, plan);
+  await verifyManagedGitReplacement(subtest, {
+    sandbox,
+    gateway,
+    registry,
+    rev,
+    ctx,
+    required,
+    plan,
+    inferenceProvider,
+    created,
+    restoreCreated,
+    proxy,
+  });
   await verifyProtectedGitNetworkPolicy({
     sandboxConfiguration,
     backend,

@@ -12,7 +12,7 @@ import type {
   AgentRevision,
   ComputeAgentBinding,
   ComputeRevisionContext,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   HarnessExecutionMode,
   OpenClawConfigurationValue,
   RepositoryCredentialRuntimeBinding,
@@ -96,7 +96,7 @@ interface ComputeFixturePorts {
     network: Mutable<KubernetesComputeDriverOptions["network"]>;
   };
   apiClients: Promise<KubernetesMaterialClients>;
-  readonly proxyDriver: CredentialProxyDriver | undefined;
+  readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   waitBeforeRetry: () => Promise<void>;
   sandboxDriver:
     | {
@@ -350,13 +350,18 @@ export async function fixture(
     gatewayManagedMode: true,
     configuration: {
       gateway: {
-        // Kubernetes renders lan for an omitted bind; this admitted document already is.
+        // Include current HTTP defaults so these cases isolate repository projection.
         bind: "lan",
+        http: { endpoints: { chatCompletions: { enabled: true } } },
         trustedProxies: ["127.0.0.1/32"],
         allowRealIpFallback: true,
         auth: {
           mode: "trusted-proxy",
-          trustedProxy: { userHeader: "x-occ-identity", allowUsers: ["occ-workspace-files"] },
+          trustedProxy: {
+            userHeader: "x-occ-identity",
+            allowUsers: ["occ-workspace-files"],
+            requiredHeaders: ["x-openclaw-scopes"],
+          },
           identityScopes: { "occ-workspace-files": ["operator.admin"] },
         },
       },
@@ -405,12 +410,14 @@ export async function fixture(
   if (nodeEnrollment !== undefined) {
     revision.configuration.gateway = {
       bind: "lan",
+      http: { endpoints: { chatCompletions: { enabled: true } } },
       trustedProxies: ["10.42.0.0/16"],
       allowRealIpFallback: true,
       auth: {
         mode: "trusted-proxy",
         trustedProxy: {
           userHeader: "x-occ-identity",
+          requiredHeaders: ["x-openclaw-scopes"],
           allowUsers: ["occ-workspace-files"],
         },
         identityScopes: { "occ-workspace-files": ["operator.admin"] },

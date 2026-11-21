@@ -3,14 +3,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import {
-  REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
-  REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
-} from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
-import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
-import { run as runFixtureCommand } from "../fixtures/repository-credentials/process.mjs";
+import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service-fixture.ts";
+import { run as runFixtureCommand } from "../fixtures/repository-credentials/process.ts";
 import { execute, runDocker, waitForDockerLog } from "../helpers/runtime-image-docker.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
@@ -30,6 +25,7 @@ import {
   brokerCodexConfiguration,
   renderProbe,
   type SeccompOptions,
+  type StartupProfile,
 } from "./runtime-image-startup-support.ts";
 
 const runtimeImageStockBrokerDiagnosticStages = new Set([
@@ -152,10 +148,11 @@ async function runRepositoryMaterialInitProbe(
   image: string,
   volumeName: string,
   descriptor: RepositoryMaterialDescriptor,
+  materialInit: string,
 ) {
   const probe = `
 const cp = require("node:child_process");
-const material = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(REPOSITORY_MATERIAL_INIT_ENTRYPOINT)}, ${JSON.stringify(JSON.stringify(descriptor))}], {
+const material = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(materialInit)}, ${JSON.stringify(JSON.stringify(descriptor))}], {
   stdio: "inherit",
 });
 process.exit(material.status ?? 1);
@@ -246,8 +243,14 @@ type RepositoryMaterialDescriptor = {
 export async function verifyStockBroker(
   t: TestContext,
   image: string,
+  controller: Pick<
+    StartupProfile["controller"],
+    "harness" | "repositoryMaterialInit" | "repositoryNativeGitInit" | "repositoryGitHelperPath"
+  >,
   seccompOptions: SeccompOptions,
 ) {
+  const { harness, repositoryMaterialInit, repositoryNativeGitInit, repositoryGitHelperPath } =
+    controller;
   const suffix = randomBytes(6).toString("hex");
   const networkName = `oce-runtime-broker-${suffix}`;
   const proxyName = `oce-runtime-broker-proxy-${suffix}`;
@@ -336,7 +339,12 @@ try {
   // redacted failure; Docker's own failures exit 125. The command line embeds the same
   // text, so match the child's stderr rather than the error message.
   await assert.rejects(
-    runRepositoryMaterialInitProbe(image, deniedMaterialVolumeName, descriptor),
+    runRepositoryMaterialInitProbe(
+      image,
+      deniedMaterialVolumeName,
+      descriptor,
+      repositoryMaterialInit,
+    ),
     (error) =>
       error instanceof Error &&
       "code" in error &&
@@ -345,7 +353,12 @@ try {
       typeof error.stderr === "string" &&
       /^Repository credential material initialization failed\.$/m.test(error.stderr),
   );
-  await runRepositoryMaterialInitProbe(image, materialVolumeName, descriptor);
+  await runRepositoryMaterialInitProbe(
+    image,
+    materialVolumeName,
+    descriptor,
+    repositoryMaterialInit,
+  );
 
   await runDocker(["network", "create", "--driver", "bridge", networkName]);
   // The container runs the shared relay's own source, so a clean single-use upstream close
@@ -475,9 +488,10 @@ NODE`;
   const probe = renderProbe(probeStockBroker, [
     {
       descriptor,
-      entrypoint: AGENT_RUNTIME_ENTRYPOINT,
-      materialInit: REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
-      nativeGitInit: REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+      entrypoint: harness,
+      materialInit: repositoryMaterialInit,
+      nativeGitInit: repositoryNativeGitInit,
+      repositoryGitHelperPath,
       pluginRuntime: {
         manifest: { kind: "codex", selections: {} },
         brokerCodexConfiguration: brokerCodexConfiguration({ host: "git.oce.svc", domains: {} }),

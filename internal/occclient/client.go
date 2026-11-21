@@ -613,13 +613,32 @@ func (client *Client) GetAgentRuntimeLogs(
 	return &page, nil
 }
 
-// StopAgent stops an Agent while retaining its revision history and persistent state.
-func (client *Client) StopAgent(namespaceID, agentID string) (any, error) {
-	return client.send(
-		http.MethodPost,
-		[]string{"namespaces", namespaceID, "agents", agentID, "stop"},
-		nil,
-	)
+// StopAgent requests an asynchronous stop while retaining revision history and
+// persistent state. A supplied expected revision constrains admission.
+func (client *Client) StopAgent(namespaceID, agentID string, expectedActiveRevisionID string) (any, error) {
+	segments := []string{"namespaces", namespaceID, "agents", agentID, "stop"}
+	if expectedActiveRevisionID == "" {
+		return client.send(http.MethodPost, segments, nil)
+	}
+	if !IsTypedID(expectedActiveRevisionID, "rev_") {
+		return nil, fmt.Errorf("expected active revision must be an exact revision ID")
+	}
+	query := url.Values{"expectedActiveRevisionId": {expectedActiveRevisionID}}
+	status, header, body, err := client.executeQuery(http.MethodPost, segments, query, nil)
+	if err == nil && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
+		return nil, client.apiError(status, header, body)
+	}
+	if err == nil && status != http.StatusAccepted {
+		err = fmt.Errorf("expected HTTP 202, received HTTP %d", status)
+	}
+	var data any
+	if err == nil {
+		data, err = decodeResponseData(status, body)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w; the stop outcome is unknown. Check the Agent's state before retrying", err)
+	}
+	return data, nil
 }
 
 // DeleteAgent begins asynchronous Agent deletion.

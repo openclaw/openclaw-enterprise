@@ -42,7 +42,7 @@ type installationJobReceipt struct {
 }
 
 func (app *application) installationInstallCommand() *cobra.Command {
-	var config, kctx, namespace, release, chart, values, receipt string
+	var config, kctx, namespace, release, chart, values, receipt, bootstrapMode string
 	var wait time.Duration
 	cmd := &cobra.Command{
 		Use: "install", Short: "Install once with a durable initialization receipt",
@@ -50,6 +50,9 @@ func (app *application) installationInstallCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if strings.TrimSpace(config) == "" || strings.TrimSpace(kctx) == "" || !dns1123Label(namespace) || !helmReleaseName(release) || chart == "" || values == "" || receipt == "" || wait <= 0 || wait > 24*time.Hour {
 				return errors.New("provide explicit target, local chart, values, new receipt directory and a wait timeout between 0 and 24h")
+			}
+			if bootstrapMode != "generate" && bootstrapMode != "existing" {
+				return errors.New("--bootstrap-credentials must be generate or existing")
 			}
 			// Helm environment overrides can redirect both the release lookup and
 			// install, or substitute another identity or storage for the release.
@@ -82,10 +85,20 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			if err = os.WriteFile(frozenValues, data, 0600); err != nil {
 				return err
 			}
-			// Reading all release states catches failed and pending installs too. Helm
-			// itself still arbitrates a concurrent install after this point-in-time read.
+			var bootstrapSecret installationBootstrapSecret
+			if bootstrapMode == "generate" {
+				bootstrapSecret, err = resolveInstallationBootstrap(preflight, frozenChart, frozenValues, namespace, release)
+				if err != nil {
+					return err
+				}
+			}
+			// Select every release state on both Helm 3 and 4. Helm 4 removed --all,
+			// but the Helm 3 default would omit pending and retained releases.
+			// Helm still arbitrates a concurrent install after this read.
 			var releases doctorBuffer
-			list := exec.CommandContext(preflight, "helm", "list", "--all", "--filter", "^"+regexp.QuoteMeta(release)+"$", "--output=json", "--namespace", namespace, "--kubeconfig", frozenConfig, "--kube-context", kctx)
+			list := exec.CommandContext(preflight, "helm", "list",
+				"--deployed", "--failed", "--pending", "--superseded", "--uninstalled", "--uninstalling",
+				"--filter", "^"+regexp.QuoteMeta(release)+"$", "--output=json", "--namespace", namespace, "--kubeconfig", frozenConfig, "--kube-context", kctx)
 			list.Stdout = &releases
 			list.WaitDelay = time.Second
 			if err = list.Run(); err != nil {
@@ -94,6 +107,11 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			var existing []json.RawMessage
 			if json.Unmarshal(releases.buf.Bytes(), &existing) != nil || existing == nil || len(existing) != 0 {
 				return errors.New("Helm release is not confirmed unused; preserve and reconcile the original attempt")
+			}
+			if bootstrapMode == "generate" {
+				if err = requireAbsentBootstrapSecret(preflight, frozenConfig, kctx, namespace, bootstrapSecret.Name); err != nil {
+					return err
+				}
 			}
 			var attempt [32]byte
 			if _, err := rand.Read(attempt[:]); err != nil {
@@ -117,6 +135,11 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			}
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Installation intent persisted in %s. An interrupted dispatch remains unknown; do not repeat install.\n", receipt); err != nil {
 				return fmt.Errorf("cannot write installation receipt path to stdout (intent preserved in %q, no installation dispatched): %w", receipt, err)
+			}
+			if bootstrapMode == "generate" {
+				if err = prepareInstallationBootstrap(preflight, cmd.OutOrStdout(), frozenConfig, kctx, namespace, receipt, intent.Attempt, bootstrapSecret); err != nil {
+					return err
+				}
 			}
 			// Persist before Start: even a crash between these operations stays unknown.
 			if err = writeInstallationRecord(receipt, "dispatch.json", map[string]string{"outcome": "unknown"}); err != nil {
@@ -189,6 +212,7 @@ func (app *application) installationInstallCommand() *cobra.Command {
 	f.StringVar(&chart, "chart", "", "Local chart directory or archive (snapshotted before install)")
 	f.StringVar(&values, "values", "", "Reviewed Helm values file (snapshotted before install)")
 	f.StringVar(&receipt, "receipt", "", "New private directory for durable attempt records")
+	f.StringVar(&bootstrapMode, "bootstrap-credentials", "generate", "Generate private inputs and create the bootstrap Secret, or use existing operator-provisioned inputs")
 	f.DurationVar(&wait, "wait-timeout", 5*time.Minute, "Helm wait timeout (maximum 24h)")
 	for _, name := range []string{"kubeconfig", "context", "kube-namespace", "release", "chart", "values", "receipt"} {
 		_ = cmd.MarkFlagRequired(name)

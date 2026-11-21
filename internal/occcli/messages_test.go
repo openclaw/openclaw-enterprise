@@ -8,6 +8,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +18,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 )
 
 // Messages occ writes itself name a plain cause and a next step instead of
@@ -42,7 +47,7 @@ func TestRejectedServiceKeyNamesTheKeyFileNotHeaderAdvice(t *testing.T) {
 }
 
 func TestServiceKeyFileErrorsNameTheReason(t *testing.T) {
-	const advice = ` Use the complete JSON file from "occ service-key create".`
+	const advice = ` Use a JSON file containing data.key, such as a prepared bootstrap key file or the response from "occ service-key create".`
 	for _, test := range []struct {
 		contents string
 		reason   string
@@ -78,7 +83,10 @@ func TestUntrustedEndpointCertificateNamesTheCABundleSetting(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
 	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
-	_, _, err := runHelp(t, "--url", server.URL, "--service-key-file", keyFile, "--ca-bundle=", "installation", "get")
+	_, notices, err := runHelp(t, "--url", server.URL, "--service-key-file", keyFile, "--ca-bundle=", "--namespace", testNamespaceID, "agent", "deploy", testAgentID)
+	if strings.Contains(notices, "agent revisions") {
+		t.Errorf("TLS rejected the connection before deployment, got recovery advice %q", notices)
+	}
 	if want := "the OCC endpoint's certificate is not trusted. Set OCC_CA_BUNDLE (or --ca-bundle) to your Installation's CA bundle."; err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
@@ -107,7 +115,10 @@ func TestUntrustedEndpointCertificateNamesTheCABundleSetting(t *testing.T) {
 		t.Fatal(err)
 	}
 	localhost := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
-	_, _, err = runHelp(t, "--url", localhost, "--service-key-file", keyFile, "--ca-bundle", trusted, "installation", "get")
+	_, notices, err = runHelp(t, "--url", localhost, "--service-key-file", keyFile, "--ca-bundle", trusted, "--namespace", testNamespaceID, "agent", "deploy", testAgentID)
+	if strings.Contains(notices, "agent revisions") {
+		t.Errorf("TLS rejected the connection before deployment, got recovery advice %q", notices)
+	}
 	if err == nil || !strings.HasPrefix(err.Error(), "OCC operation failed: the OCC endpoint's certificate is not valid for localhost; check OCC_URL: ") {
 		t.Fatalf("hostname mismatch error = %v", err)
 	}
@@ -211,6 +222,54 @@ func TestDeployNamesANewRevisionTheDeployerCannotRead(t *testing.T) {
 		if want := []string{"POST " + agentPath + "/deploy", "GET " + agentPath + "/deployments/" + testRevision1ID}; !slices.Equal(requested, want) {
 			t.Errorf("%s: requests = %v, want %v", test.name, requested, want)
 		}
+	}
+}
+
+func TestOrdinaryDeployLostResponseAdvisesCheckingRevisions(t *testing.T) {
+	path := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/deploy"
+	var calls atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.URL.RequestURI() != path {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.RequestURI())
+			http.NotFound(w, r)
+			return
+		}
+		// Consume the deploy request, then drop the connection before sending a reply.
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Error(err)
+			return
+		}
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = connection.Close()
+	})
+	out, notices, err := runOCCAgainst(t, handler, "--ca-bundle=", "--namespace", testNamespaceID, "--output", "json", "agent", "deploy", testAgentID)
+	if !errors.Is(err, io.EOF) || calls.Load() != 1 || out != "" {
+		t.Fatalf("error = %v, requests = %d, stdout = %q; want the transport error, one POST, and no output", err, calls.Load(), out)
+	}
+	if !strings.Contains(notices, "agent revisions "+testAgentID) || !strings.Contains(notices, "agent deployment-status "+testAgentID+" REVISION_ID") || strings.Contains(notices, "recover-first-deployment") {
+		t.Errorf("stderr = %q, want guidance to check the Agent's revisions", notices)
+	}
+	if strings.Contains(notices+err.Error(), "test-key") {
+		t.Error("the deploy failure exposed the service key")
+	}
+}
+
+func TestOrdinaryDeployRefusalKeepsAPIError(t *testing.T) {
+	post := "POST /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/deploy"
+	out, notices, requests, err := runOCCWithNotices(t, map[string]string{
+		post: `raw:403 {"error":{"code":"FORBIDDEN","message":"The operation is not permitted."}}`,
+	}, "--ca-bundle=", "--namespace", testNamespaceID, "agent", "deploy", testAgentID)
+	var apiErr *occclient.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden || !slices.Equal(requests, []string{post}) {
+		t.Fatalf("error = %v, requests = %v; want HTTP 403 from one deploy POST", err, requests)
+	}
+	if out != "" || notices != "" {
+		t.Errorf("stdout = %q, stderr = %q; a refusal should carry only the API error", out, notices)
 	}
 }
 
@@ -319,6 +378,7 @@ func TestUnreachableEndpointNamesTheURLAndTheCause(t *testing.T) {
 	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	for _, args := range [][]string{
 		{"installation", "get"},
+		{"--namespace", testNamespaceID, "agent", "deploy", testAgentID},
 		{"--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", "1"},
 	} {
 		_, notices, err := runHelp(t, append([]string{"--url", closed, "--service-key-file", keyFile}, args...)...)
@@ -326,7 +386,7 @@ func TestUnreachableEndpointNamesTheURLAndTheCause(t *testing.T) {
 			t.Fatalf("error = %v, want %q", err, want)
 		}
 		// The refused TCP connection cannot have delivered this attempt to OCC.
-		if strings.Contains(notices, "unconfirmed") || strings.Contains(notices, "recover-first-deployment") {
+		if strings.Contains(notices, "unconfirmed") || strings.Contains(notices, "recover-first-deployment") || strings.Contains(notices, "agent revisions "+testAgentID) {
 			t.Fatalf("unsent request reported as uncertain: %s", notices)
 		}
 	}

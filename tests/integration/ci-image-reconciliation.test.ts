@@ -6,11 +6,11 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import { readJsonLines } from "../helpers/json-lines.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { readJsonLines } from "../helpers/json-lines.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
-const prepare = join(root, "scripts/ci/prepare.mjs");
+const prepare = join(root, "scripts/ci/prepare.ts");
 const cleanup = join(root, "scripts/ci/cleanup.ts");
 const exporter = join(root, "scripts/ci/export-image-reconciliation.ts");
 

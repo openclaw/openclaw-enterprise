@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { PoolClient } from "pg";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import type { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 
 type Setup = ReturnType<typeof createWorkerRevisionFixtures>["setup"];

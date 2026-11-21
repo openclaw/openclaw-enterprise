@@ -1,15 +1,15 @@
 ---
 created: 2026-08-28
-updated: "2026-11-14"
-last_updated_session: "authoring-run/1be06605-515e-4261-8b21-d0d796809916"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Controller Worker Flow
 
 ## Overview
 
-The worker claims PostgreSQL work, rechecks authorization, and calls Compute.
-It saves Namespace, Agent stop/deletion, and revision results under its claim.
+The worker claims PostgreSQL work, rechecks authorization, calls Compute, and
+saves Namespace, Agent stop/deletion, and revision results under its claim.
 See the [controller reference](../reference/controller.md) and
 [deployment guide](../guides/deploy.md).
 
@@ -83,12 +83,12 @@ follow finalization independently of logging.
 ### 2. Save the admission decision and queue the operation
 
 `apps/controller/src/http/agents.ts:createAgentHandlers`,
-`packages/occ/src/index.ts:OpenClawController`,
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
 `operations.append` checks ownership, then calls `PostgresWorkQueue.enqueue`.
-When audit is enabled, the resource change, work, and `controller_work.queued`
-record commit together. The record links the request ID to the work ID.
+With audit enabled, the resource change, work, and `controller_work.queued`
+commit together. The event links request and work IDs.
 
 Agent deployment keeps the validated `deploy` request and decision with the
 saved version; the API's audit event uses that decision's IAM Driver, principal,
@@ -103,7 +103,7 @@ Agent and `stopped` or `deleted` target without a version. Reusing an idempotenc
 key with a different actor, owner, or target is rejected. The API returns accepted
 state before the worker invokes Compute.
 
-For an already-deleting Agent, `OpenClawController.deleteAgent` leaves active
+For an already-deleting Agent, `packages/occ/src/agent-termination.ts:deleteAgent` leaves active
 work unchanged. After terminal failure, `operations.retryFailedAgentDeletion`
 checks delete permission and resets only the stopped, deleting Agent's terminal
 work, keeping prior audits ([who can retry](../reference/agents.md#deletion)); a
@@ -138,12 +138,10 @@ even when the count repeats. The lease token stays in the queue.
 `apps/controller/src/worker.ts:ControllerWorker.processRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.authorizeRevision`
 
-Namespace work reloads its exact resource and expected `provisioning` or
-`deleting` status. Work whose target has already changed completes as
-`SUPERSEDED_TARGET`. Otherwise `authorize()` reloads IAM state and checks the
-original actor. Provisioning also checks restrictions on the exact Namespace;
-placement into an existing Kubernetes namespace requires Installation
-administration permission again.
+Namespace work verifies the target is still `provisioning` or `deleting`.
+A changed target completes as `SUPERSEDED_TARGET`. Otherwise `authorize()`
+rechecks the original actor. Provisioning enforces Namespace restrictions.
+Placement into an existing Kubernetes namespace requires Installation administration.
 
 Version work reloads its Namespace, Agent, saved version, and selected version.
 `processRevision()` rejects mismatched owners, an unready Namespace, an invalid
@@ -156,11 +154,12 @@ owns these checks.
 
 Revocation and denial fail permanently before Compute. Selected versions enter
 finalization or maintenance. Older versions end superseded, also once the newest,
-without Git, has a held runtime failure. Under
+without Git, has a held runtime failure. During
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
-a newer admission supersedes older active maintenance before Compute effects,
-even after candidate failure; a superseded inactive version stops itself, its
-drain yielding as `SUPERSEDED_STOP_YIELDED`. Recovery uses a new version.
+the [stop boundary](../reference/agents/planned-replacement.md) governs native access
+and maintenance. Neither redeploy after explicit Stop nor a new replacement mode
+reopens a stopped predecessor. Retargeting refunds the old claim. Superseded inactive
+versions stop with `SUPERSEDED_STOP_YIELDED`; deploy again to recover.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
@@ -186,11 +185,10 @@ a pending observation defers convergence.
 When Compute's `requiresStoppedPredecessors` capability is set,
 `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
-it loads earlier snapshots, including failed candidates, closes their credential
-sessions, and stops them first; a release failure prevents preparation. Their
-drains yield like a stopped Agent's (`PREDECESSOR_STOP_YIELDED`); failing,
-superseded or stopped work first finishes that stop. The dispatch guard keeps
-maintenance from recreating a predecessor.
+under the live claim, it commits the stop boundary, closes credentials and stops
+earlier revisions, including failed candidates. Stop failure blocks preparation.
+Drains yield `PREDECESSOR_STOP_YIELDED`; failing, superseded and stopped Work must
+finish that stop. Maintenance cannot recreate a stopped predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable version; the
@@ -334,7 +332,7 @@ path, including unready Harnesses without plugins, and verifies runtime
 incarnation without repeating the model probe. Missing or invalid evidence
 leaves the cause unspecified.
 
-`packages/occ/src/state/controller-work.ts:validateFailureData` validates reads
+`packages/occ/src/controller-work-result.ts:validateFailureData` validates reads
 and writes and rejects data for other failure reasons; the PostgreSQL constraint
 enforces the persisted shape.
 `PostgresWorkQueue.complete` and `PostgresWorkQueue.fail` publish only under the
@@ -342,23 +340,23 @@ live claim; [deployment status](../reference/agents.md#deployment-status) derive
 `error` and `warnings` from that result. Completion needs no acknowledgment or
 post-commit cleanup; maintenance cannot rewrite deployment warnings.
 
-Indexed `workId` scopes progress to work; maintenance and unbound history cannot
-supply it. `getDeploymentStatus` reads
-`findWorkAttempt` with the work row in one State snapshot and projects fixed
-public explanations. Memory State has no attempt.
+`getDeploymentStatus` reads the revision, Agent and work in one authorized snapshot.
+Only exact-work attempts supply progress (none in memory). Cleanup checks the
+revision’s retirement and session keys, not Git expiry or finite removal.
 
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
 
-If Compute declares maintenance, activation schedules observations for this version.
-Incomplete observations, Compute bindings, and dependency retries or expired claims
-exhausting attempts close the item and schedule another while the version stays
-selected and running within its credential deadline; outages never retire it. Each
-claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
+Activation schedules maintenance at the shortest applicable Compute,
+repository, or matching Sandbox interval. PostgreSQL calculates regular due
+times from its clock. Successor keys increase despite clock or interval changes.
+Each claim reauthorizes its actor. Exhausted observation, binding, dependency,
+or claim retries can schedule another item while the version stays selected,
+running, and within its credential deadline. Outages never retire it.
 
-`worker.completed` reports the target, outcome, and code. On `namespace.ensure`,
-it can also report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
-from the current pass. The hint stays out of the Driver observation.
+`worker.completed` reports the target, outcome, and code. On `namespace.ensure`
+and `namespace.delete`, it can report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
+from the current pass, outside the Driver observation.
 A result links to the claim by its attempt ID. A repeat of the same pending
 state can skip `reconcile` and use `controller_work.deferred` for that attempt.
 Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
@@ -388,6 +386,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 - `worker.compute-prepare-failed` names the failed Driver stage without the raw
   exception; match its `workId` or `revisionId` to the next `worker.completed`.
 - [Version](../../tests/integration/postgres-worker-agent-revision.test.mjs),
+  [revision lifecycle](../../tests/integration/postgres-worker-agent-revision-lifecycle.test.ts),
+  [convergence](../../tests/integration/postgres-worker-agent-revision-convergence.test.ts),
   [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
   [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.ts),
@@ -424,9 +424,11 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-19 14:03: Trace stopped revision cleanup in the accompanying change. (authoring-run/49c681f2-4814-4313-b061-284d2b23891c - 4bfefb4bf60b43dfb2e6fcc010be60270474e726)
 - 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
-
+- 2026-11-14 10:00: Hint tenant access on delete. (fix-4929)
 - 2026-11-12 14:03: Save development claim evidence. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
-- 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
+- 2026-11-11 01:50: Share the predecessor stop boundary. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

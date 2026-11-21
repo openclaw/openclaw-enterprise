@@ -4,6 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 
+import { openShellGatewayErrorForm } from "../../scripts/ci/reporter-measurements.ts";
 import {
   createRunnerFixture,
   currentSha,
@@ -48,6 +49,21 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
   const measurement = (value: unknown) => `openclaw-ci-measurement ${JSON.stringify(value)}`;
   const measurements = (kind: string, samples: readonly Record<string, unknown>[]) =>
     samples.map((sample) => measurement({ kind, ...sample }));
+  const gateway = {
+    kind: "openshell-gateway-turn-failure",
+    checkpoint: "http-status",
+    turn: 1,
+    status: 500,
+  };
+  const plain = { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" };
+  const json = { "content-type": "application/json; charset=utf-8" };
+  const internal = '{"error":{"message":"internal error","type":"api_error"}}';
+  const incomplete =
+    '{"error":{"message":"secretauthvalue-reply","type":"api_error","code":"incomplete_turn"}}';
+  function gatewayReply(headers: Record<string, string>, body: string) {
+    const response = new Response(body, { status: 500, headers });
+    return measurement({ ...gateway, replyForm: openShellGatewayErrorForm(response, body) });
+  }
   const openshellPhase = {
     kind: "openshell-sandbox-phase",
     stage: "exposure-auth",
@@ -193,7 +209,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     const projected = projectOpenShellGitExpiryObservation({
       ...expiryObservation,
       outcome: "retire-runtime",
-      check: "original-launch-and-pods",
+      check: "original-launch-and-execution",
       failure,
     });
     assert.ok(projected && "failure" in projected, "Expected a failure projection");
@@ -722,7 +738,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     "tests/integration/measurements.test.mjs",
     [
       'import test from "node:test";',
-      `import { runOpenShellStage } from ${JSON.stringify(new URL("../helpers/openshell-stage.mjs", import.meta.url).href)};`,
+      `import { runOpenShellStage } from ${JSON.stringify(new URL("../helpers/openshell-stage.ts", import.meta.url).href)};`,
       'test("measures", async (t) => {',
       '  await runOpenShellStage(t, "scratch-sibling-isolation", async () => {});',
       '  await runOpenShellStage(t, "scratch-queued-actor-revocation", async () => {});',
@@ -876,6 +892,14 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
           },
           { case: "codex-ready", stopped: false, elapsedMs: 1.5, budgetMs: 15_000 },
         ]),
+        gatewayReply(plain, "Internal Server Error"),
+        gatewayReply(json, internal),
+        gatewayReply(json, incomplete),
+        gatewayReply({ "content-type": "text/plain" }, "Internal Server Error"),
+        gatewayReply(json, "secretauthvalue-malformed"),
+        gatewayReply(json, incomplete.replace("incomplete_turn", "unknown")),
+        measurement({ ...gateway, replyForm: "secretauthvalue-invalid" }),
+        measurement({ ...gateway, status: 503, replyForm: "incomplete-turn" }),
         measurement({ ...openshellPhase, detail: "secretauthvalue-phase-detail" }),
         measurement({ ...openshellPhase, stage: "secretauthvalue-phase-stage" }),
         measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
@@ -1028,6 +1052,14 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
         elapsedMs: 4_321,
         budgetMs: 15_000,
       },
+      { ...gateway, replyForm: "plain-internal-error" },
+      { ...gateway, replyForm: "json-internal-error" },
+      { ...gateway, replyForm: "incomplete-turn" },
+      gateway,
+      gateway,
+      gateway,
+      gateway,
+      { ...gateway, status: 503 },
       openshellPhase,
       unavailableTurnover,
       unexercisedTurnover,

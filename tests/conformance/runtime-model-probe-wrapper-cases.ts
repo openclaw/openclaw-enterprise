@@ -3,7 +3,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
+import { isRecord } from "../../scripts/ci/records.ts";
 
 const fixtureEnvironment = {
   OPENCLAW_HARNESS_MODEL: "fixture/model",

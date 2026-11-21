@@ -34,7 +34,7 @@ Kubernetes, this check refuses unsupported channels, model credentials outside t
 authentication binding, and model selections or provider `apiKey`s off the
 primary model's provider. Configuration create and update, Agent provisioning and
 Preset save run this one set (`validateConfigurationContent` in
-[OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
+[OCC](../../../packages/occ/src/configuration-operations.ts)); a Preset value that waits on a
 variable is checked as far as its written text goes, and in full once filled.
 Preset save skips the catalog and runtime checks; its launch's Configuration runs them.
 Create, update and provisioning first ask the Driver's optional
@@ -117,10 +117,10 @@ prerequisites.
 
 ### 5. Resolve the Agent reference and save the deployment configuration
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 `createAgent` and `updateAgent` in
-[OCC](../../../packages/occ/src/index.ts) separately authorize and verify the
+[OCC](../../../packages/occ/src/agent-drafts.ts) separately authorize and verify the
 Agent's exact same-Namespace `configurationId` and ensure its Configuration kind
 is `"agent"`. They also run deployment's checks of the Agent against that
 Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-save)):
@@ -151,7 +151,7 @@ checks the Harness authentication binding (Kubernetes Compute also runs the shar
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
 [the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)
 preparation and the Gateway entrypoint apply after a dedicated deployment stops its
-predecessors: enabled channels need a dedicated workload and `runtime.channels`, a
+predecessors: enabled channels need a dedicated workload and `runtime.channelEgress`, a
 Gateway hosting a workspace node needs the file-transfer plugin, and a Dedicated Codex
 Gateway needs its codex plugin left on) and, through optional
 `validateGatewaySettings`, the native gateway settings: Kubernetes and Docker Compute
@@ -181,6 +181,15 @@ principal, and any selected Secret Driver identity and normalized bindings.
 Backend locators and value bytes are not stored in the Agent revision. Subsequent nested
 Configuration edits increment its generation but affect only later explicit
 deployments; historical Agent revisions and their admitted snapshots remain unchanged.
+
+OCC saves the selected Driver's optional `snapshotRuntimeInputs` result in
+`compute.runtimeInputs`. For locally managed dedicated Codex without protected
+egress, Kubernetes uses the admitted Gateway and Agent images during preparation
+and activation, including Gateway-based workspace setup. Missing snapshots use
+current settings. Malformed or unknown snapshots fail validation. When immutable
+images are required, saved tags fail before reconciliation. Deploy a new revision
+with digest-pinned images. See [immutable runtime inputs](../../reference/drivers/compute-admission.md#immutable-runtime-inputs).
+
 PostgreSQL enforces the supported kind, positive generation, exact admitted
 snapshot shape, ownership, and Agent revision immutability. OCC records an
 attributable sanitized admission event and hands the Agent revision to
@@ -224,11 +233,11 @@ graph TD
   F -->|yes| G["Commit revision 1,<br/>receipt digest, and work"]
 ```
 
-`packages/occ/src/index.ts:OpenClawController.deployAgentFirst` and
-`OpenClawController.recoverAgentFirstDeployment` capture the Namespace, Agent, key, Configuration ID, and
+`packages/occ/src/agent-deployment-requests.ts:deployAgentFirst` and
+`recoverAgentFirstDeployment` capture the Namespace, Agent, key, Configuration ID, and
 generation on entry. They use those values for the digest and each permission check.
 The first admission read checks exact receipt authority through
-`authorizeFirstDeploymentReceipt`, then reads
+`deployment-authorization.ts:authorizeFirstDeploymentReceipt`, then reads
 the receipt, matching draft metadata, and history in one snapshot. PostgreSQL uses
 REPEATABLE READ. On a receipt miss, an Agent without `active` lifecycle status
 returns `409 AGENT_DELETING` before channel preparation. A changed Agent binding
@@ -257,7 +266,7 @@ cannot match. A match remains recoverable after Agent deletion starts.
 On a locked miss, admission checks `active` lifecycle status before propagating a
 saved preparation error; deletion returns `409 AGENT_DELETING`. It then checks stopped desired state, empty history, binding,
 generation, and equality with the validated Configuration. It rechecks Secret and
-other ordinary admission permissions. `assertPreparedDeploymentDrivers` checks the
+other ordinary admission permissions. `deployment-channels.ts:assertPreparedDeploymentDrivers` checks the
 actual selected Configuration and Channel instances after locking and immediately
 before revision insertion: database locks do not freeze process-local selections.
 Any drift refuses admission and queues no work.
