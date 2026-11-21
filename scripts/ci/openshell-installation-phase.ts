@@ -1,6 +1,20 @@
 export const maxInstallationInvocations = 8;
-const stages = ["workspace-helm", "gateway-helm", "gateway-pod-ready"] as const;
+const stages = [
+  "workspace-helm",
+  "gateway-helm",
+  "gateway-pod-ready",
+  "namespace-ready",
+  "gateway-ready",
+  "first-revision-activation",
+] as const;
 type InstallationStage = (typeof stages)[number];
+
+export function activationRefusal(code: unknown) {
+  return code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" ||
+    code === "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE"
+    ? code
+    : undefined;
+}
 
 export interface InstallationPhase {
   kind: "openshell-installation";
@@ -8,14 +22,21 @@ export interface InstallationPhase {
   invocation: number;
   outcome: "entered" | "passed" | "failed";
   offsetMs: number;
+  refusal?: NonNullable<ReturnType<typeof activationRefusal>>;
 }
 
 export function installationPhase(value: unknown): InstallationPhase | undefined {
-  if (!value || typeof value !== "object" || Object.keys(value).length !== 5) {
+  if (!value || typeof value !== "object") {
     return undefined;
   }
   const row = value as Partial<InstallationPhase>;
+  const hasRefusal = Object.hasOwn(row, "refusal");
   if (
+    Object.keys(row).length !== (hasRefusal ? 6 : 5) ||
+    (hasRefusal &&
+      (row.stage !== "first-revision-activation" ||
+        row.outcome !== "failed" ||
+        !activationRefusal(row.refusal))) ||
     row.kind !== "openshell-installation" ||
     !row.stage ||
     !stages.includes(row.stage) ||
@@ -24,7 +45,8 @@ export function installationPhase(value: unknown): InstallationPhase | undefined
     row.invocation < 1 ||
     row.invocation > maxInstallationInvocations + 1 ||
     (row.invocation === maxInstallationInvocations + 1 &&
-      (row.stage !== "workspace-helm" || row.outcome !== "entered")) ||
+      ((row.stage !== "workspace-helm" && row.stage !== "namespace-ready") ||
+        row.outcome !== "entered")) ||
     (row.outcome !== "entered" && row.outcome !== "passed" && row.outcome !== "failed") ||
     typeof row.offsetMs !== "number" ||
     !Number.isSafeInteger(row.offsetMs) ||
@@ -38,6 +60,7 @@ export function installationPhase(value: unknown): InstallationPhase | undefined
     outcome: row.outcome,
     invocation: row.invocation,
     offsetMs: row.offsetMs,
+    ...(hasRefusal ? { refusal: row.refusal } : {}),
   };
 }
 
@@ -47,11 +70,13 @@ interface PhaseResult {
   enteredMs: number;
   outcome: "unknown" | "passed" | "failed";
   elapsedMs?: number;
+  refusal?: InstallationPhase["refusal"];
 }
 
 export function collectInstallationPhases() {
   const phases: PhaseResult[] = [];
   let truncated = false;
+  const ambiguous = new Set<string>();
   return {
     accept(row: InstallationPhase) {
       if (row.invocation === maxInstallationInvocations + 1) {
@@ -61,6 +86,15 @@ export function collectInstallationPhases() {
       const phase = phases.find(
         (phase) => phase.invocation === row.invocation && phase.stage === row.stage,
       );
+      const key = `${row.stage}:${row.invocation}`;
+      const readinessStage =
+        row.stage === "first-revision-activation" ||
+        row.stage === "namespace-ready" ||
+        row.stage === "gateway-ready";
+      if (!phase && row.outcome !== "entered" && readinessStage) {
+        ambiguous.add(key);
+        return;
+      }
       if (!phase && row.outcome === "entered") {
         phases.push({
           invocation: row.invocation,
@@ -69,11 +103,25 @@ export function collectInstallationPhases() {
           outcome: "unknown",
         });
       } else if (
-        phase?.outcome === "unknown" &&
+        phase &&
+        readinessStage &&
+        (row.outcome === "entered" || phase.outcome !== "unknown" || row.offsetMs < phase.enteredMs)
+      ) {
+        ambiguous.add(key);
+        phase.outcome = "unknown";
+        delete phase.elapsedMs;
+        delete phase.refusal;
+      } else if (
+        phase &&
+        !ambiguous.has(key) &&
+        phase.outcome === "unknown" &&
         row.outcome !== "entered" &&
         row.offsetMs >= phase.enteredMs
       ) {
         phase.outcome = row.outcome;
+        if (row.refusal) {
+          phase.refusal = row.refusal;
+        }
         phase.elapsedMs = row.offsetMs - phase.enteredMs;
       }
     },
