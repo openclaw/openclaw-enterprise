@@ -78,8 +78,16 @@ controller. For native Git, initialize the variables above, run the runtime buil
 first, and derive its immutable reference from `runtime.json`:
 
 ```bash
-RUNTIME_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/runtime.json")"
-export RUNTIME_IMAGE="$OCC_IMAGE_REPOSITORY/runtime@$RUNTIME_DIGEST"
+if unset RUNTIME_IMAGE RUNTIME_DIGEST CONTROLLER_IMAGE &&
+  [[ -f "${OCC_IMAGE_METADATA:-}/runtime.json" ]] &&
+  RUNTIME_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/runtime.json")" &&
+  [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]]; then
+  export RUNTIME_IMAGE="$OCC_IMAGE_REPOSITORY/runtime@$RUNTIME_DIGEST"
+else
+  unset RUNTIME_IMAGE RUNTIME_DIGEST CONTROLLER_IMAGE
+  printf '%s\n' 'Runtime metadata or digest is missing or invalid.' >&2
+  false
+fi
 ```
 
 Qualify that trusted, same-source `RUNTIME_IMAGE` for Gateway and Agent roles with the
@@ -88,7 +96,8 @@ Then assemble the production controller:
 
 ```bash
 CONTROLLER_PUSH_DIGEST_PATTERN=': digest: (sha256:[a-f0-9]{64}) size: [0-9]+'
-if unset CONTROLLER_IMAGE &&
+if unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT &&
+  [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
   node scripts/build-controller.ts docker --target runtime \
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
     --build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST="$RUNTIME_DIGEST" \
@@ -98,8 +107,8 @@ if unset CONTROLLER_IMAGE &&
   [[ "$CONTROLLER_PUSH_OUTPUT" =~ $CONTROLLER_PUSH_DIGEST_PATTERN ]]; then
   export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@${BASH_REMATCH[1]}"
 else
-  unset CONTROLLER_IMAGE
-  printf '%s\n' 'Controller build, push, or digest extraction failed.' >&2
+  unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT
+  printf '%s\n' 'Runtime digest, controller build, push, or digest extraction failed.' >&2
   false
 fi
 ```
