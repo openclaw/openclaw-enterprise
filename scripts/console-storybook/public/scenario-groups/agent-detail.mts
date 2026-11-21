@@ -140,7 +140,7 @@ export function createAgentDetailScenarios({
   const rosterAgentId = "agt_00000000-0000-4000-8000-000000000001";
   const rosterRoles = [
     { name: "Research support", actions: ["read"] },
-    { name: "Research chat", actions: ["operate"] },
+    { name: "Research chat", actions: ["read", "operate"] },
     { name: "Agent native administration", actions: ["read", "administer"] },
   ] as const;
   const rosterRole = (index: number) => `role_7e000000-0000-4000-8000-00000000000${index}`;
@@ -153,7 +153,6 @@ export function createAgentDetailScenarios({
   const chatPrincipal = "prn_49a93c18-631e-40ad-99c4-e8443e9c3b6e";
   const adminPrincipal = "prn_7b422ce0-028e-46b2-aec2-f59a1340ae0c";
   const subjects = [
-    [chatPrincipal, 1],
     [chatPrincipal, 2],
     [adminPrincipal, 3],
     ["prn_05d55728-7dc3-45c0-856c-8f2dc196db1f", 1],
@@ -607,10 +606,9 @@ export function createAgentDetailScenarios({
           "Inspect direct grants by account display name when available. This is not a directory or an effective-access report.",
         steps: [
           "Compare Morgan Chen's chat grant to Avery Patel's administration grant.",
-          "Open Morgan Chen's row to read the complete Principal ID, Role permissions, and each binding.",
-          "Research support says View Agent in OCC. Expand Technical details to inspect the exact permission and identifiers.",
-          "The read-only Principal has no account name and falls back to the full ID. The Service Principal is listed separately.",
-          "Remove only the Research support binding from the Principal with two bindings. The Chat access · operate label and the Research chat binding remain.",
+          "Open Morgan Chen's row to read the full Principal ID and the single Research chat binding, which grants both agent:read and agent:operate.",
+          "Expand the separate read-only Principal. Its Research support binding says View Agent in OCC. Open Technical details to inspect the raw permission and identifiers.",
+          "The read-only Principal uses the full ID because no account name is available. The Service Principal is listed separately.",
         ],
         gap: "Simulated policy state and writes; no deployed Agent, account directory, or effective access check.",
       },
