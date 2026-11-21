@@ -422,7 +422,18 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
     candidate.bindingIds,
     candidate.roleIds,
     candidate.restrictionIds,
-  ].every((entries) => Array.isArray(entries) && entries.every(isNonEmptyString));
+  ].every((entries) => {
+    if (!Array.isArray(entries)) {
+      return false;
+    }
+    const length = entries.length;
+    for (let index = 0; index < length; index += 1) {
+      if (!Object.hasOwn(entries, index) || !isNonEmptyString(entries[index])) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 /**
@@ -1703,6 +1714,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return { selected, target, decision };
   }
 
+  function validateAuthorizationDecision(
+    decision: Awaited<ReturnType<IAMDriver["authorize"]>>,
+    selected: IAMDriver,
+  ): void {
+    if (
+      !decision ||
+      typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
+      decision.driverId !== selected.id ||
+      !validAuthorizationEvidence(decision.evidence)
+    ) {
+      throw dependencyUnavailable();
+    }
+  }
+
   async function installationAdminDecision(
     selected: IAMDriver,
     actorId: string,
@@ -1718,15 +1744,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } catch {
       throw dependencyUnavailable();
     }
-    if (
-      !decision ||
-      typeof decision.allowed !== "boolean" ||
-      typeof decision.reason !== "string" ||
-      decision.driverId !== selected.id ||
-      !validAuthorizationEvidence(decision.evidence)
-    ) {
-      throw dependencyUnavailable();
-    }
+    validateAuthorizationDecision(decision, selected);
     return decision;
   }
 
@@ -1739,15 +1757,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } catch {
       throw dependencyUnavailable();
     }
-    if (
-      !decision ||
-      typeof decision.allowed !== "boolean" ||
-      typeof decision.reason !== "string" ||
-      decision.driverId !== selected.id ||
-      !validAuthorizationEvidence(decision.evidence)
-    ) {
-      throw dependencyUnavailable();
-    }
+    validateAuthorizationDecision(decision, selected);
     return { allowed: decision.allowed, restricted: decision.evidence.restrictionIds.length > 0 };
   }
 
