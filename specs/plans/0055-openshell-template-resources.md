@@ -1,7 +1,7 @@
 # Implementation plan: Send OpenShell sizing through template resources
 
-- **ID:** TASK-0054
-- **Delivery status:** In progress — implementation complete; live verification pending
+- **ID:** TASK-0055
+- **Delivery status:** Implemented and verified for review
 - **Authority:** [OpenShell Sandbox Driver](../../docs/reference/drivers/openshell-sandbox.md) and [managed OpenShell runtime](../../docs/reference/drivers/kubernetes-openshell-compute.md)
 - **Source baseline:** OCE `a6089d7f0`; OpenShell `96fabf3e3b0f`
 
@@ -37,55 +37,38 @@ Live proof requires a disposable cluster with enforcing NetworkPolicies, compati
 
 ## Delivery record
 
-Implemented resource serialization, canonical readback, focused lifecycle and wire
-coverage, and current reference and flow updates. The QA lane now selects
-`openshell-template-resources`; [test setup](../../docs/testing/openshell-managed.md#template-resource-delivery)
-defines its prepared operator and managed installations. It checks actual Pod
-resources, managed caller-config refusal, operator mounts, workspace access and a
-model turn. Hosted advisory jobs do not prepare these installations.
+On 2026-11-20 the two `openshell-template-resources` stages passed on separate
+disposable k3d installations with OpenShell 0.1.8 and a real Codex model. The
+API and worker used `2479895a9e`. The matrix used the mode labels committed in
+`a8370785f4`. Each stage ran separately because the host could run one cluster
+at a time. See the [test procedure](../../docs/testing/openshell-managed.md#template-resource-delivery)
+and [PR evidence](https://github.com/openclaw/openclaw-enterprise/pull/6754).
 
-Focused startup, workspace-admission and protobuf wire tests pass: 230 passed,
-three existing runtime-image-dependent cases skipped. Reverting only the runtime
-repair makes the extended adoption and managed-rendering cases fail because
-resources remain in `driver_config`; restoring it passes. Typecheck, lint,
-workspace isolation and CI lane audit pass. Existing QA fixture/input and CI
-runner tests also pass: 199 passed, no skips. Formatting, documentation/link/spec
-checks, documentation length checks and both flow validators pass.
+Both Agent containers requested 100m CPU, 768Mi memory and 256Mi ephemeral
+storage. Their limits were 2 CPUs, 6Gi memory and 1Gi ephemeral storage.
+The operator Pod mounted the `workspace` subpath at `/sandbox/enterprise`.
+The managed gateway accepted the OCE deployment with caller config disabled
+and rejected a separate create request that included caller config. Each Agent
+wrote and read a file and completed a model turn.
 
-Documentation review: the two updated flows, Sandbox reference and QA advisory
-page exceed 1,500 words but remain below 2,500. Each covers one coherent Driver
-reference, lifecycle or test workflow. Keep those workflows together; detailed setup remains in the linked
-testing page. This change adds no image versions, public configuration variables,
-API operations or navigation entries.
+A separate live upgrade started with the worker at `6967d8e4de`. In each mode
+the test verified the old Sandbox format, wrote a marker through the workspace
+API, exported it and completed a model turn. After upgrading the API, worker
+and runtime, a fresh legacy revision read the marker from the retained volume.
+Managed redeployment failed on the first attempt with `SANDBOX_RECREATION_REQUIRED`.
+The original Sandbox kept its ID and stayed stopped. The test restored the
+export to a new Agent and verified its contents before deleting the original.
+Both upgraded Agents completed model turns. See the
+[service upgrade procedure](../../docs/reference/drivers/kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 
-Live verification remains blocked: this session has no explicitly selected
-cluster, prepared installation input files or authorized model credentials. An
-explicit QA selection fails at the required
-`OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE` check, without skips or infrastructure
-changes. Actual Pod sizing, managed caller-config-disabled creation, mounts,
-workspace/model execution and cluster refusal of changed managed sizing are not
-verified. Controlled lifecycle tests prove OCE refuses changed sizing and missing
-or changed readback, but do not replace that cluster proof. Keep delivery open
-until the required live outcomes pass.
-
-### Rebase verification, 2026-11-20
-
-Rebased only TASK-0054 onto `origin/main` at
-`6967d8e4dea2b4c5bb769c8697e7d4cfd046c55a`. The managed implementation is already
-in main through PR #6641; its older prerequisite commits are not replayed.
-Rendering coverage now extends
-`tests/integration/sandbox-driver-managed-startup-rendering-cases.ts`, preserving
-main's Provider update, obsolete-key deletion and security checks. The QA input
-labels map to current `legacy` and `service` integration modes.
-
-On this base, focused startup, workspace-admission and wire tests pass: 239 passed,
-three existing runtime-image-dependent cases skipped. QA fixture/input and CI
-runner tests pass: 111 passed, no skips. Typecheck, lint, formatting, documentation,
-flow validators, workspace isolation and CI registration audit pass. Live QA still
-fails at the missing `OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE` prerequisite;
-no live runtime or cluster proof is claimed.
+The focused startup, admission, wire, QA input and CI runner suites passed 351
+cases with three image-dependent skips. The wire tests cover protobuf encoding
+and the specific admission diagnostic. Controlled Driver tests cover missing
+or changed resource readback and refusal of a resize while stopped.
 
 ## Changelog
+
+- 2026-11-20: Verified both modes and workspace recovery. Assigned TASK-0055 after the channel egress plan took TASK-0054 on main. Session `01a1c729-7450-7201-9ce8-1bea3588d140`.
 
 - 2026-11-20: Rebased TASK-0054 onto main `6967d8e4dea2b4c5bb769c8697e7d4cfd046c55a` and ported coverage to current TypeScript tests. Session `01a1f50f-138b-756e-be12-ada2880622e2`.
 
