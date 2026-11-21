@@ -65,6 +65,16 @@
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
+      "MANAGED_SOURCE_NOT_IMPLEMENTED": {
+        "summary": "NOT_IMPLEMENTED",
+        "value": {
+          "error": {
+            "code": "NOT_IMPLEMENTED",
+            "message": "Managed credential source enrollment is unavailable."
+          },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
       "MODEL_DISCOVERY_RATE_LIMITED": {
         "summary": "MODEL_DISCOVERY_RATE_LIMITED",
         "value": {
@@ -281,17 +291,13 @@
       },
       "RegisterTokenServiceSourceBody": {
         "additionalProperties": false,
-        "description": "Proposed registration body for a Namespace credential source. OCC allocates the identity and selects the TokenService Driver. An attached Connection Template supplies its current settings. Supply the secret fields required by the source type.",
+        "description": "Staged managed static registration contract. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC allocates the identity and selects the TokenService owner.",
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-            "description": "Non-secret source configuration keyed by catalog field name.",
+            "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
             "maxProperties": 32,
             "type": "object"
-          },
-          "connectionTemplateId": {
-            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-            "type": "string"
           },
           "name": {
             "maxLength": 200,
@@ -307,196 +313,46 @@
               "pattern": "^[^\\u0000]*$",
               "type": "string"
             },
-            "description": "Credential values keyed by the secret fields declared by the source type.",
-            "maxProperties": 16,
+            "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
+            "maxProperties": 1,
             "minProperties": 1,
             "type": "object",
             "writeOnly": true
           },
-          "type": {
-            "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-            "maxLength": 64,
-            "minLength": 1,
-            "pattern": "^[a-z][a-z0-9-]{0,63}$",
-            "type": "string"
-          }
+          "type": { "const": "static", "type": "string" }
         },
-        "required": ["name", "type"],
+        "required": ["name", "type", "secret"],
         "title": "RegisterTokenServiceSourceBody",
         "type": "object"
       },
-      "TokenServiceSourceMetadata": {
+      "UpdateTokenServiceSourceBody": {
         "additionalProperties": false,
-        "description": "Proposed public metadata for a Namespace source. OCC keeps the TokenService instance and private registration reference internally. Metadata reads do not resolve a usable credential.",
+        "description": "Supply at least one of config or secret. Omitted fields retain their values. Change or remove provider_preset separately from credential replacement; otherwise the update returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
+        "minProperties": 1,
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-            "description": "Non-secret source configuration keyed by catalog field name.",
+            "description": "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
             "maxProperties": 32,
             "type": "object"
           },
-          "connectionTemplateId": {
-            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-            "type": "string"
-          },
-          "id": {
-            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 200,
-            "minLength": 1,
-            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-            "type": "string"
-          },
-          "namespaceId": {
-            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-            "type": "string"
-          },
-          "ref": {
-            "additionalProperties": false,
-            "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-            "properties": {
-              "id": {
-                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                "type": "string"
-              },
-              "kind": { "const": "credential_source", "type": "string" },
-              "namespaceId": {
-                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                "type": "string"
-              }
+          "secret": {
+            "additionalProperties": {
+              "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+              "maxLength": 65536,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$",
+              "type": "string"
             },
-            "required": ["kind", "namespaceId", "id"],
-            "type": "object"
-          },
-          "state": {
-            "anyOf": [
-              { "const": "registering", "type": "string" },
-              { "const": "ready", "type": "string" },
-              { "const": "deleting", "type": "string" }
-            ]
-          },
-          "status": {
-            "additionalProperties": false,
-            "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-            "properties": {
-              "reason": { "maxLength": 512, "type": "string" },
-              "refresh": {
-                "additionalProperties": false,
-                "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
-                "properties": {
-                  "expiresAt": { "format": "date-time", "type": "string" },
-                  "failureCode": { "maxLength": 128, "type": "string" },
-                  "lastRefreshAt": { "format": "date-time", "type": "string" },
-                  "nextRefreshAt": { "format": "date-time", "type": "string" },
-                  "recoveryAction": {
-                    "anyOf": [
-                      { "const": "retry", "type": "string" },
-                      { "const": "reauthorize", "type": "string" },
-                      { "const": "fix_configuration", "type": "string" },
-                      { "const": "investigate", "type": "string" }
-                    ]
-                  },
-                  "state": {
-                    "anyOf": [
-                      { "const": "pending", "type": "string" },
-                      { "const": "ready", "type": "string" },
-                      { "const": "failed", "type": "string" }
-                    ]
-                  }
-                },
-                "required": ["state"],
-                "type": "object"
-              },
-              "state": {
-                "anyOf": [
-                  { "const": "ready", "type": "string" },
-                  { "const": "pending", "type": "string" },
-                  { "const": "failed", "type": "string" },
-                  { "const": "absent", "type": "string" }
-                ]
-              }
-            },
-            "required": ["state"],
-            "type": "object"
-          },
-          "type": {
-            "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-            "maxLength": 64,
-            "minLength": 1,
-            "pattern": "^[a-z][a-z0-9-]{0,63}$",
-            "type": "string"
-          },
-          "version": {
-            "description": "Opaque usable credential version when recorded by the owner.",
-            "minLength": 1,
-            "type": "string"
+            "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
+            "maxProperties": 1,
+            "minProperties": 1,
+            "type": "object",
+            "writeOnly": true
           }
         },
-        "required": ["id", "namespaceId", "ref", "name", "type", "config", "state"],
-        "title": "TokenServiceSourceMetadata",
+        "title": "UpdateTokenServiceSourceBody",
         "type": "object"
-      },
-      "UpdateTokenServiceSourceBody": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "config": {
-                "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-                "description": "Non-secret source configuration keyed by catalog field name.",
-                "maxProperties": 32,
-                "type": "object"
-              },
-              "secret": {
-                "additionalProperties": {
-                  "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
-                  "maxLength": 65536,
-                  "minLength": 1,
-                  "pattern": "^[^\\u0000]*$",
-                  "type": "string"
-                },
-                "description": "Credential values keyed by the secret fields declared by the source type.",
-                "maxProperties": 16,
-                "minProperties": 1,
-                "type": "object",
-                "writeOnly": true
-              }
-            },
-            "required": ["config"],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "config": {
-                "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-                "description": "Non-secret source configuration keyed by catalog field name.",
-                "maxProperties": 32,
-                "type": "object"
-              },
-              "secret": {
-                "additionalProperties": {
-                  "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
-                  "maxLength": 65536,
-                  "minLength": 1,
-                  "pattern": "^[^\\u0000]*$",
-                  "type": "string"
-                },
-                "description": "Credential values keyed by the secret fields declared by the source type.",
-                "maxProperties": 16,
-                "minProperties": 1,
-                "type": "object",
-                "writeOnly": true
-              }
-            },
-            "required": ["secret"],
-            "type": "object"
-          }
-        ],
-        "description": "Proposed update to credential material, mutable lifecycle settings, or both. Omitted fields retain their values.",
-        "title": "UpdateTokenServiceSourceBody"
       },
       "def-0": {
         "anyOf": [
@@ -37902,52 +37758,61 @@
                 }
               },
               "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "config": {
-                    "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-                    "description": "Non-secret source configuration keyed by catalog field name.",
-                    "maxProperties": 32,
-                    "type": "object"
-                  },
-                  "name": {
-                    "maxLength": 200,
-                    "minLength": 1,
-                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                    "type": "string"
-                  },
-                  "secrets": {
-                    "additionalProperties": {
-                      "additionalProperties": false,
-                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                      "properties": {
-                        "id": {
-                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "config": {
+                        "additionalProperties": {
+                          "maxLength": 2048,
+                          "minLength": 1,
                           "type": "string"
                         },
-                        "kind": { "const": "secret", "type": "string" },
-                        "namespaceId": {
-                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
+                        "description": "Non-secret source configuration keyed by catalog field name.",
+                        "maxProperties": 32,
+                        "type": "object"
                       },
-                      "required": ["kind", "namespaceId", "id"],
-                      "type": "object"
+                      "name": {
+                        "maxLength": 200,
+                        "minLength": 1,
+                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                        "type": "string"
+                      },
+                      "secrets": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+                        "maxProperties": 16,
+                        "type": "object"
+                      },
+                      "type": {
+                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                        "type": "string"
+                      }
                     },
-                    "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                    "maxProperties": 16,
+                    "required": ["name", "type"],
                     "type": "object"
                   },
-                  "type": {
-                    "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                    "maxLength": 64,
-                    "minLength": 1,
-                    "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                    "type": "string"
-                  }
-                },
-                "required": ["name", "type"],
-                "type": "object"
+                  { "$ref": "#/components/schemas/RegisterTokenServiceSourceBody" }
+                ]
               }
             }
           },
@@ -38065,6 +37930,17 @@
             },
             "description": "The platform request could not be completed."
           },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/MANAGED_SOURCE_NOT_IMPLEMENTED" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Managed credential source enrollment is unavailable."
+          },
           "503": {
             "content": {
               "application/json": {
@@ -38077,7 +37953,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Register a credential source with the selected Credential Gateway",
+        "summary": "Register a Credential Gateway source; managed static registration is staged",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
@@ -38200,7 +38076,7 @@
             }
           }
         },
-        "summary": "Remove an unreferenced credential source from the Credential Gateway",
+        "summary": "Remove an unreferenced credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "delete", "resourceKind": "credential_source", "scope": "requested" }
@@ -38336,14 +38212,14 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Get one credential source and its live Credential Gateway status",
+        "summary": "Get one readable credential source and its available status",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "credential_source", "scope": "requested" }
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested CredentialSource. Requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.",
+        "description": "Requires update permission on the requested CredentialSource. For a legacy Gateway update, requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.",
         "operationId": "updateCredentialSource",
         "parameters": [
           {
@@ -38396,47 +38272,51 @@
                 }
               },
               "schema": {
-                "additionalProperties": false,
-                "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
-                "properties": {
-                  "adoption": {
-                    "const": "live",
-                    "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
-                    "type": "string"
-                  },
-                  "authorityScope": {
-                    "const": "execution",
-                    "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
-                    "type": "string"
-                  },
-                  "secrets": {
-                    "additionalProperties": {
-                      "additionalProperties": false,
-                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                      "properties": {
-                        "id": {
-                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "kind": { "const": "secret", "type": "string" },
-                        "namespaceId": {
-                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+                    "properties": {
+                      "adoption": {
+                        "const": "live",
+                        "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
+                        "type": "string"
                       },
-                      "required": ["kind", "namespaceId", "id"],
-                      "type": "object"
+                      "authorityScope": {
+                        "const": "execution",
+                        "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
+                        "type": "string"
+                      },
+                      "secrets": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+                        "maxProperties": 16,
+                        "type": "object"
+                      }
                     },
-                    "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                    "maxProperties": 16,
                     "type": "object"
-                  }
-                },
-                "type": "object"
+                  },
+                  { "$ref": "#/components/schemas/UpdateTokenServiceSourceBody" }
+                ]
               }
             }
           },
-          "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
           "required": true
         },
         "responses": {
@@ -38551,6 +38431,17 @@
             },
             "description": "The platform request could not be completed."
           },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/MANAGED_SOURCE_NOT_IMPLEMENTED" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Managed credential source enrollment is unavailable."
+          },
           "503": {
             "content": {
               "application/json": {
@@ -38563,7 +38454,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Push current or replacement Secret values to the Credential Gateway copy",
+        "summary": "Update a Credential Gateway source; managed updates are staged",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "credential_source", "scope": "requested" },

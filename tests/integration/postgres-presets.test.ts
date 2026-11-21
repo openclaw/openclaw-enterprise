@@ -3,10 +3,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import type { Namespace, Preset, PresetResponse } from "../../packages/contracts/src/index.ts";
-import {
-  InMemoryPlatformState,
-  type PlatformStateStore,
-} from "../../packages/occ/src/state/platform-state.ts";
+import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { PRESET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import { startController, request } from "../helpers/postgres-platform-state.ts";

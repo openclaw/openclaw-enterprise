@@ -32,50 +32,15 @@
     },
     {
       "rule": "domain-to-implementation",
-      "from": "packages/occ/src/iam-policy-cleanup.ts",
-      "to": "packages/occ/src/state/platform-state.ts",
-      "specifier": "./state/platform-state.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:PlatformReadView", "type:PlatformUnitOfWork"],
-      "owner": "Repository ports and mutation composition",
-      "reason": "IAM policy cleanup retains the OCC service's type-only dependency on aggregate repository contracts currently owned by the persistence module.",
-      "removeWhen": "Move the aggregate repository contracts into neutral ports and update this type-only import."
-    },
-    {
-      "rule": "domain-to-implementation",
       "from": "packages/occ/src/index.ts",
       "to": "packages/occ/src/state/platform-state.ts",
       "specifier": "./state/platform-state.ts",
       "kind": "import",
       "typeOnly": false,
-      "bindings": [
-        "type:PlatformOperation",
-        "type:PlatformReadView",
-        "type:PlatformStateStore",
-        "type:PlatformUnitOfWork",
-        "value:InMemoryPlatformState"
-      ],
+      "bindings": ["value:InMemoryPlatformState"],
       "owner": "Repository ports and mutation composition",
-      "reason": "The OCC service imports repository contracts and its default in-memory store from the same persistence module.",
-      "removeWhen": "Move repository and transaction contracts into neutral ports, narrow this entry to any remaining store import, and remove it when default store selection moves to composition."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/platform-state.ts",
-      "specifier": "./state/platform-state.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": [
-        "type:PlatformOperation",
-        "type:PlatformReadView",
-        "type:PlatformStateStore",
-        "type:PlatformUnitOfWork"
-      ],
-      "owner": "Repository ports and mutation composition",
-      "reason": "The OCC service imports repository contracts and its default in-memory store from the same persistence module. This separately tracked edge imports types only.",
-      "removeWhen": "Move repository and transaction contracts into neutral ports, narrow this entry to any remaining store import, and remove it when default store selection moves to composition."
+      "reason": "The OCC service selects this in-memory store when no store is supplied.",
+      "removeWhen": "Remove when default store selection moves to composition."
     },
     {
       "rule": "domain-to-implementation",
@@ -88,30 +53,6 @@
       "owner": "Transaction outcomes",
       "reason": "The OCC resource service imports the shared commit-outcome-unknown error from the PostgreSQL adapter.",
       "removeWhen": "Move the single commit-outcome-unknown constructor to neutral transaction errors and update all consumers."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/ports/platform-read-view.ts",
-      "to": "packages/occ/src/state/platform-state.ts",
-      "specifier": "../state/platform-state.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:PlatformReadView"],
-      "owner": "Repository ports and mutation composition",
-      "reason": "The explicit repository lifetime projection imports its aggregate contract from the persistence module that currently owns that type.",
-      "removeWhen": "Move the aggregate repository contract into neutral ports and update this type-only import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/ports/platform-unit-of-work.ts",
-      "to": "packages/occ/src/state/platform-state.ts",
-      "specifier": "../state/platform-state.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:PlatformUnitOfWork"],
-      "owner": "Repository ports and mutation composition",
-      "reason": "The explicit repository lifetime projection imports its aggregate contract from the persistence module that currently owns that type.",
-      "removeWhen": "Move the aggregate repository contract into neutral ports and update this type-only import."
     },
     {
       "rule": "cross-package-source",
@@ -302,30 +243,6 @@
     {
       "rule": "domain-to-implementation",
       "from": "packages/occ/src/agent-provisioning.ts",
-      "to": "packages/occ/src/state/agent-provisioning.ts",
-      "specifier": "./state/agent-provisioning.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:AgentProvisioningRecord"],
-      "owner": "Agent provisioning persistence",
-      "reason": "The provisioning service uses the persisted provisioning record contract owned by the current State module; this edge imports types only.",
-      "removeWhen": "Move the shared provisioning record contracts into neutral ports and update this type-only import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/agent-provisioning.ts",
-      "to": "packages/occ/src/state/controller-work.ts",
-      "specifier": "./state/controller-work.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:ControllerWork"],
-      "owner": "Work status projection",
-      "reason": "OCC projects the existing Work record into deployment and provisioning status using contracts and pure helpers currently located under State.",
-      "removeWhen": "Move shared Work contracts and status projections into neutral ports and update this import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/agent-provisioning.ts",
       "to": "packages/occ/src/state/controller-work.ts",
       "specifier": "./state/controller-work.ts",
       "kind": "import",
@@ -382,30 +299,6 @@
       "owner": "Repository revision admission",
       "reason": "OCC admission reuses the canonical material-free repository snapshot and access-intent validators currently located in the State module.",
       "removeWhen": "Move shared repository snapshot validation into neutral contracts and update admission and State consumers."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/agent-provisioning.ts",
-      "specifier": "./state/agent-provisioning.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:AgentProvisioningCheckpoint", "type:AgentProvisioningRecord"],
-      "owner": "Agent provisioning persistence",
-      "reason": "The provisioning service uses the persisted provisioning record contract owned by the current State module; this edge imports types only.",
-      "removeWhen": "Move the shared provisioning record contracts into neutral ports and update this type-only import."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/provisioning-effects.ts",
-      "to": "packages/occ/src/state/agent-provisioning.ts",
-      "specifier": "./state/agent-provisioning.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:AgentProvisioningRecord"],
-      "owner": "Agent provisioning persistence",
-      "reason": "The provisioning service uses the persisted provisioning record contract owned by the current State module; this edge imports types only.",
-      "removeWhen": "Move the shared provisioning record contracts into neutral ports and update this type-only import."
     }
   ]
 }

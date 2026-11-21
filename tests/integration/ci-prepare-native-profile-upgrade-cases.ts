@@ -12,7 +12,7 @@ import {
   nativeProfileSourceReceipt,
   nativeProfileUpgradeFile,
   selectsNativeProfileUpgrade,
-} from "../../scripts/ci/native-profile-upgrade.mjs";
+} from "../../scripts/ci/native-profile-upgrade.ts";
 import { initializeNativeUpgradeInstallation } from "../helpers/native-profile-upgrade-installation.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { composePostgres, fixture, immutableImage } from "../helpers/ci-prepare-fixture.ts";

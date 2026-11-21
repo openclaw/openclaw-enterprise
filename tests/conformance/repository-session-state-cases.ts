@@ -15,7 +15,7 @@ import type {
   RepositorySessionRepository,
 } from "../../packages/occ/src/ports/repository-sessions.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
-import type { PlatformStateStore } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import {
   repositoryBinding,
   repositoryCredentials,

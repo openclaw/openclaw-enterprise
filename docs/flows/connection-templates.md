@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-18"
-last_updated_session: "authoring-run/0e501248-a309-4913-b4df-122e4c3783c2"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/92b9e71c-fcf2-4b55-a170-1245c26d4e28"
 ---
 
 # How OCC saves an OAuth connection template
@@ -13,7 +13,7 @@ An Installation administrator defines where an account can connect and which OAu
 ## Entry Points
 
 - An Installation administrator opens **Credentials → Connection templates** to edit a template, or **OAuth clients** to register a client against a template version. `apps/controller/src/http/connection-templates.ts:connectionTemplateHandlers`
-- A signed-in person with permission to create a credential in the destination Namespace starts consent with a template available there. The OAuth provider returns the browser to OCC's shared callback. `packages/occ/src/index.ts:startNamespaceConnection` and `packages/occ/src/index.ts:completeNamespaceConnection`
+- A signed-in person with permission to create a credential in the destination Namespace starts consent with a template available there. The OAuth provider returns the browser to OCC's shared callback. `packages/occ/src/saved-oauth-connections.ts:startNamespaceConnection` and `packages/occ/src/saved-oauth-connections.ts:completeNamespaceConnection`
 
 ## Flow
 
@@ -45,13 +45,13 @@ graph TD
 
 ### 1. Save the template version
 
-`packages/occ/src/index.ts:createConnectionTemplate` and `apps/controller/src/connections/mcp-discovery.ts:discoverMcpAuthorization`
+`packages/occ/src/connection-administration.ts:createConnectionTemplate` and `apps/controller/src/connections/mcp-discovery.ts:discoverMcpAuthorization`
 
 OCC checks Installation administration before it accepts manual settings or starts MCP discovery. For MCP, it reads the protected resource metadata over HTTPS, pins each request to public addresses and contacts the selected advertised authorization server. The version records what OCC discovered, the OAuth resource and the MCP transport destination. An administrator can also edit the installed Google OAuth template and its prefilled Google Workspace destinations. OCC keeps the template ID and commits each new version with its audit record.
 
 ### 2. Register and maintain the OAuth client
 
-`packages/occ/src/index.ts:createOAuthClient` and `packages/occ/src/index.ts:cleanupOAuthClients`
+`packages/occ/src/connection-administration.ts:createOAuthClient` and `packages/occ/src/connection-administration.ts:cleanupOAuthClients`
 
 `createOAuthClient` and `rotateOAuthClientSecret` reject calls inside `OpenClawController.transact`, including an inherited transaction context, before private operations. Their independent commits preserve the cleanup reservation or, when the caller supplies an audit event, the requested-rotation audit if a later operation fails. The HTTP handlers call these methods directly and supply audit events. `deleteOAuthClient` only stages database work for worker cleanup and remains composable.
 
@@ -63,13 +63,13 @@ Rotation replaces the confidential client's secret at the same private reference
 
 ### 3. Authorize the account in the browser
 
-`packages/occ/src/index.ts:startNamespaceConnection` and `packages/occ/src/browser-authorization.ts:startBrowserAuthorization`
+`packages/occ/src/saved-oauth-connections.ts:startNamespaceConnection` and `packages/occ/src/browser-authorization.ts:startBrowserAuthorization`
 
 OCC verifies the person's Namespace permission and pins the selected template version. It reserves a pending credential source and writes an `oauth_connection` row to `occ.authentication_states`. The row contains the state hash, browser session, principal, requested scopes and Proof Key for Code Exchange (PKCE) verifier. The provider receives the state and the challenge derived from that verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults. The worker removes expired attempts and their unfinished credential sources. Device login uses the same OCC store with a different kind and lifecycle; human sign-in attempts remain separate.
 
 ### 4. Exchange the code and save the account
 
-`packages/occ/src/index.ts:completeNamespaceConnection` and `apps/controller/src/backends/token-service/oauth-connection.ts:register`
+`packages/occ/src/saved-oauth-connections.ts:completeNamespaceConnection` and `apps/controller/src/backends/token-service/oauth-connection.ts:register`
 
 On callback, OCC consumes the matching attempt once and rechecks the person's session and authority. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. OCC sends the code and verifier to the pinned token endpoint, includes the MCP resource when applicable, and reads the current client secret if the registration requires one. If the exchange times out, the person starts a new attempt.
 
@@ -77,7 +77,7 @@ At startup, the API and worker each install an `oauth_refresh_token` issuer in t
 
 ### 5. Resolve current destinations and renew the grant
 
-`packages/occ/src/index.ts:effectiveConnectionDestinations` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
+`packages/occ/src/saved-oauth-connections.ts:effectiveConnectionDestinations` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
 
 When listing a manual account, OCC returns the current destinations from the same template if its issuer and mode still match. For MCP it returns the original destinations only while the issuer, mode, server URL and protected resource match. A missing or incompatible template yields an empty list. The original consent receipt identifies the registration and token endpoint for renewal.
 
@@ -102,6 +102,9 @@ OCC registers the returned grant under the Namespace and credential source ID. T
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:39: Update saved OAuth connection source pointers. (authoring-run/92b9e71c-fcf2-4b55-a170-1245c26d4e28 - 23055316abb1c680cb1f72ca8a09109db373519e)
+- 2026-11-20 16:11: Update source pointers for template and OAuth client administration. (authoring-run/135d41a4-0e5d-46a5-afef-5acb8bab4332 - 492a10a2cd415407677f9abca62da3d415f41fae)
 
 - 2026-11-18 16:20: Trace browser consent and expiry through shared OCC authentication state in the accompanying change. (authoring-run/0e501248-a309-4913-b4df-122e4c3783c2 - 5dfbd6c1db67024917c79790ee7b6155e6f753e1)
 

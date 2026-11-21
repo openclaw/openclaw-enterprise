@@ -1844,7 +1844,7 @@ test(
         },
       );
     }
-    for (const [prefix, history] of [
+    const histories = [
       [24, "prePresetsMain"],
       [25, "main"],
       [28, "repositoryRetention"],
@@ -1903,7 +1903,14 @@ test(
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
       [85, "preRepositoryNetworkPolicy"],
-    ]) {
+    ];
+    // Every new migration needs a named history for the count before it, or databases
+    // migrated to that count are refused.
+    const { entries } = JSON.parse(
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+    );
+    assert.equal(histories.at(-1)[0], entries.length - 1);
+    for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         const namespaceId = await seedCanonicalData(db, {
@@ -3025,57 +3032,11 @@ test(
       "INSERT INTO occ.namespaces (id, name, status, created_at) VALUES ($1, 'Upgrade', 'ready', now())",
       [namespaceId],
     );
-    const role = (overrides = {}) => ({
-      id: `role_admin_${randomUUID()}`,
-      namespace_id: null,
-      name: "Installation administrator",
-      permissions: legacyPermissions,
-      ...overrides,
-    });
-    const stock = role();
-    const reordered = role({ permissions: [...legacyPermissions].reverse() });
-    const reduced = role({ permissions: legacyPermissions.slice(1) });
-    const roles = [
-      stock,
-      reordered,
-      reduced,
-      role({
-        permissions: [...legacyPermissions, { action: "update", resourceKind: "namespace" }],
-      }),
-      role({ name: "Custom administrator" }),
-      role({ id: `role_${randomUUID()}` }),
-      role({ namespace_id: namespaceId }),
-      role({ permissions: [...legacyPermissions, presetPermissions[1]] }),
-    ];
-    for (const entry of roles) {
-      await pool.query("INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)", [
-        entry.id,
-        entry.namespace_id,
-        entry.name,
-        JSON.stringify(entry.permissions),
-      ]);
-    }
-    const principals = [];
-    for (const entry of [stock, reduced]) {
-      const principalId = `prn_${randomUUID()}`;
-      principals.push(principalId);
-      await pool.query(
-        "INSERT INTO occ.iam_identities (id, kind, issuer, subject) VALUES ($1, 'principal', 'upgrade', $1)",
-        [principalId],
-      );
-      await pool.query(
-        "INSERT INTO occ.iam_access_bindings (id, identity_subject_id, role_id) VALUES ($1, $2, $3)",
-        [`binding_admin_${randomUUID()}`, principalId, entry.id],
-      );
-    }
     await assertPresetPolicyUpgrade(pool, migrationsDirectory, {
       installationId,
       namespaceId,
-      roles,
-      stock,
-      reordered,
+      legacyPermissions,
       presetPermissions,
-      principals,
     });
   },
 );
@@ -3158,58 +3119,11 @@ test(
       "INSERT INTO occ.namespaces (id, name, status, created_at) VALUES ($1, 'Upgrade', 'ready', now())",
       [namespaceId],
     );
-    const role = (overrides = {}) => ({
-      id: `role_admin_${randomUUID()}`,
-      namespace_id: null,
-      name: "Installation administrator",
-      permissions: releaseSeed,
-      ...overrides,
-    });
-    const release = role();
-    const reordered = role({ permissions: [...releaseSeed].reverse() });
-    const preCredentialSources = role({ permissions: presetSeed });
-    const reduced = role({ permissions: releaseSeed.slice(1) });
-    const current = role({ permissions: [...releaseSeed, currentGrants[2]] });
-    const roles = [
-      release,
-      reordered,
-      preCredentialSources,
-      reduced,
-      current,
-      role({ permissions: [...releaseSeed, { action: "update", resourceKind: "namespace" }] }),
-      role({ name: "Custom administrator" }),
-      role({ id: `role_${randomUUID()}` }),
-      role({ namespace_id: namespaceId }),
-    ];
-    for (const entry of roles) {
-      await pool.query("INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)", [
-        entry.id,
-        entry.namespace_id,
-        entry.name,
-        JSON.stringify(entry.permissions),
-      ]);
-    }
-    const principals = [];
-    for (const entry of [release, preCredentialSources, reduced]) {
-      const principalId = `prn_${randomUUID()}`;
-      principals.push(principalId);
-      await pool.query(
-        "INSERT INTO occ.iam_identities (id, kind, issuer, subject) VALUES ($1, 'principal', 'upgrade', $1)",
-        [principalId],
-      );
-      await pool.query(
-        "INSERT INTO occ.iam_access_bindings (id, identity_subject_id, role_id) VALUES ($1, $2, $3)",
-        [`binding_admin_${randomUUID()}`, principalId, entry.id],
-      );
-    }
     await assertAdministratorGrantUpgrade(pool, migrationsDirectory, migration, {
       namespaceId,
-      roles,
-      release,
-      reordered,
-      preCredentialSources,
+      presetSeed,
+      releaseSeed,
       currentGrants,
-      principals,
     });
   },
 );

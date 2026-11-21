@@ -16,7 +16,7 @@ logs and provider recommendations.
 
 - Trigger: the console Policy denials tab or `occ agent policy` commands.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
-  `packages/occ/src/index.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
+  `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
 - Assumptions: a ready Namespace, active Agent, exact grants, enabled editing for
   mutations, and an Installation ceiling shared by API and worker.
 
@@ -45,10 +45,10 @@ Solid arrows trace source paths, not provider verification.
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` supports JSON and YAML.
-`internal/occcli/cli.go:validateOptions` defaults to JSON when `--output` is omitted
-and rejects unsupported formats before requests. `internal/occcli/output.go:printStructured`
-prints acknowledged results without a later format error.
+The CLI supports JSON and YAML for policy commands
+(`internal/occcli/agent_policy.go:agentPolicyCommand`). It defaults to JSON
+and rejects an unsupported format before the request. It prints the
+acknowledged result as structured output.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
@@ -71,7 +71,7 @@ receives a source-bound resolver. The proxy qualifies bindings and requests. Sta
 method, host, port and path (`null` permits any method). The Sandbox qualifies HTTP rules and exact
 MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
 
-`packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
+`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
 and registry-resolved Driver admission. The saved additions come from the
@@ -272,6 +272,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Changelog
 
 - 2026-11-20 23:58: Document repository grant persistence and revision compatibility. (authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca - 0f4a2d3d3)
+
+- 2026-11-20 16:26: Point policy admission and live application to their Sandbox policy module. (authoring-run/f1915f3d-1425-495a-b3d9-3ed171e6cf74 - c153a2bbf59310a74974a455c11152460d486af4)
 
 - 2026-11-19 07:54: Separate credential acquisition. (authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8 - 1eb271262)
 
