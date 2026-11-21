@@ -615,6 +615,23 @@ async function historyDatabase(context, fixture, label, { schemas = true, prefix
   return db;
 }
 
+// Each new migration needs a named history for the count before it, and every
+// hand-kept prefix table below must reach that count: a missing row means no case
+// upgrades a database at that count. From `contiguousFrom`, no count may be skipped.
+async function coveringNewestPrefix(table, contiguousFrom, rows) {
+  const { entries } = JSON.parse(
+    await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+  );
+  const listed = new Set(rows.map(([prefix]) => prefix));
+  for (let count = contiguousFrom; count < entries.length; count += 1) {
+    assert.ok(
+      listed.has(count),
+      `${table} table has no row for history prefix ${count} (${entries.length} migrations)`,
+    );
+  }
+  return rows;
+}
+
 async function installCanonicalPrefix(db, length, { entries: selectedEntries } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "openclaw-canonical-prefix-"));
   try {
@@ -1443,7 +1460,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    for (const [prefix, history] of [
+    for (const [prefix, history] of await coveringNewestPrefix("pending SandboxPolicy", 76, [
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
       [78, "prePredecessorReplacement"],
@@ -1452,7 +1469,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
-    ]) {
+      [84, "preStaticTokenServiceSources"],
+    ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
         const namespace = `ns_${randomUUID()}`;
@@ -1669,7 +1687,8 @@ test(
         },
       );
     }
-    for (const [prefix, history] of [
+    // Gaps: 26, 60 and 61 have no named history; 27 is covered by the rollback case.
+    const histories = await coveringNewestPrefix("populated canonical", 62, [
       [24, "prePresetsMain"],
       [25, "main"],
       [28, "repositoryRetention"],
@@ -1726,7 +1745,9 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
-    ]) {
+      [84, "preStaticTokenServiceSources"],
+    ]);
+    for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         const namespaceId = await seedCanonicalData(db, {
@@ -1992,7 +2013,8 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    for (const [prefix, history] of [
+    // Prefixes 63 to 74 are not listed, so the guard starts at 75.
+    for (const [prefix, history] of await coveringNewestPrefix("Provider continuation", 75, [
       [32, "backendTerminology"],
       [33, "prePluginApprovers"],
       [34, "preBrokerReceipts"],
@@ -2031,7 +2053,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
-    ]) {
+      [84, "preStaticTokenServiceSources"],
+    ])) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
         await installProviderCompletedHistory(db);
@@ -2172,7 +2195,8 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    for (const [prefix, history] of [
+    // Prefixes 63 to 74 are not listed, so the guard starts at 75.
+    for (const [prefix, history] of await coveringNewestPrefix("rollback", 75, [
       [0, "empty"],
       [24, "prePresetsMain"],
       [25, "main"],
@@ -2219,7 +2243,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
-    ]) {
+      [84, "preStaticTokenServiceSources"],
+    ])) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
         if (prefix) {
@@ -2779,57 +2804,11 @@ test(
       "INSERT INTO occ.namespaces (id, name, status, created_at) VALUES ($1, 'Upgrade', 'ready', now())",
       [namespaceId],
     );
-    const role = (overrides = {}) => ({
-      id: `role_admin_${randomUUID()}`,
-      namespace_id: null,
-      name: "Installation administrator",
-      permissions: legacyPermissions,
-      ...overrides,
-    });
-    const stock = role();
-    const reordered = role({ permissions: [...legacyPermissions].reverse() });
-    const reduced = role({ permissions: legacyPermissions.slice(1) });
-    const roles = [
-      stock,
-      reordered,
-      reduced,
-      role({
-        permissions: [...legacyPermissions, { action: "update", resourceKind: "namespace" }],
-      }),
-      role({ name: "Custom administrator" }),
-      role({ id: `role_${randomUUID()}` }),
-      role({ namespace_id: namespaceId }),
-      role({ permissions: [...legacyPermissions, presetPermissions[1]] }),
-    ];
-    for (const entry of roles) {
-      await pool.query("INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)", [
-        entry.id,
-        entry.namespace_id,
-        entry.name,
-        JSON.stringify(entry.permissions),
-      ]);
-    }
-    const principals = [];
-    for (const entry of [stock, reduced]) {
-      const principalId = `prn_${randomUUID()}`;
-      principals.push(principalId);
-      await pool.query(
-        "INSERT INTO occ.iam_identities (id, kind, issuer, subject) VALUES ($1, 'principal', 'upgrade', $1)",
-        [principalId],
-      );
-      await pool.query(
-        "INSERT INTO occ.iam_access_bindings (id, identity_subject_id, role_id) VALUES ($1, $2, $3)",
-        [`binding_admin_${randomUUID()}`, principalId, entry.id],
-      );
-    }
     await assertPresetPolicyUpgrade(pool, migrationsDirectory, {
       installationId,
       namespaceId,
-      roles,
-      stock,
-      reordered,
+      legacyPermissions,
       presetPermissions,
-      principals,
     });
   },
 );
@@ -2912,58 +2891,11 @@ test(
       "INSERT INTO occ.namespaces (id, name, status, created_at) VALUES ($1, 'Upgrade', 'ready', now())",
       [namespaceId],
     );
-    const role = (overrides = {}) => ({
-      id: `role_admin_${randomUUID()}`,
-      namespace_id: null,
-      name: "Installation administrator",
-      permissions: releaseSeed,
-      ...overrides,
-    });
-    const release = role();
-    const reordered = role({ permissions: [...releaseSeed].reverse() });
-    const preCredentialSources = role({ permissions: presetSeed });
-    const reduced = role({ permissions: releaseSeed.slice(1) });
-    const current = role({ permissions: [...releaseSeed, currentGrants[2]] });
-    const roles = [
-      release,
-      reordered,
-      preCredentialSources,
-      reduced,
-      current,
-      role({ permissions: [...releaseSeed, { action: "update", resourceKind: "namespace" }] }),
-      role({ name: "Custom administrator" }),
-      role({ id: `role_${randomUUID()}` }),
-      role({ namespace_id: namespaceId }),
-    ];
-    for (const entry of roles) {
-      await pool.query("INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)", [
-        entry.id,
-        entry.namespace_id,
-        entry.name,
-        JSON.stringify(entry.permissions),
-      ]);
-    }
-    const principals = [];
-    for (const entry of [release, preCredentialSources, reduced]) {
-      const principalId = `prn_${randomUUID()}`;
-      principals.push(principalId);
-      await pool.query(
-        "INSERT INTO occ.iam_identities (id, kind, issuer, subject) VALUES ($1, 'principal', 'upgrade', $1)",
-        [principalId],
-      );
-      await pool.query(
-        "INSERT INTO occ.iam_access_bindings (id, identity_subject_id, role_id) VALUES ($1, $2, $3)",
-        [`binding_admin_${randomUUID()}`, principalId, entry.id],
-      );
-    }
     await assertAdministratorGrantUpgrade(pool, migrationsDirectory, migration, {
       namespaceId,
-      roles,
-      release,
-      reordered,
-      preCredentialSources,
+      presetSeed,
+      releaseSeed,
       currentGrants,
-      principals,
     });
   },
 );

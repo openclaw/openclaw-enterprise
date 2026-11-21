@@ -33,10 +33,11 @@ are ineligible. Narrow labels select their union. `full-qa` runs `console-secret
 The Compose job checks
 native redeployment and required-worker execution on Kubernetes workloads.
 
-PR runs test the merge commit. New commits replace opted-in runs; unrelated
-labels cannot restart or cancel them. Remove labels before pushing unreviewed
-code; removal stops future selection but does not cancel active runs. Eligible
-main pushes finish independently. Authors triage regressions.
+PR runs test the merge commit. New commits replace opted-in runs. Unrelated
+labels leave runs unchanged. Remove labels before pushing unreviewed code to
+stop future selection. Active runs continue. Eligible main pushes finish
+independently. Authors triage regressions.
+[Verify PR source before labeling](configuration.md#verify-pr-source-before-labeling).
 
 Keycloak needs no model credential and allows 180 minutes; OpenClaw allows 120.
 Together they allow 300 runtime runner-minutes per attempt, plus selection—not

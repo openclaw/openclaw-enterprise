@@ -9,7 +9,7 @@ import { AgentDeploymentStatusSchema } from "../../packages/contracts/src/api/re
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
-} from "../../packages/occ/src/state/controller-work.ts";
+} from "../../packages/occ/src/deployment-work-status.ts";
 
 import type {
   AgentRevisionWire,

@@ -569,7 +569,12 @@ async function buildRuntimeImages(
     if (cacheWarm) {
       await warmImageBuildCache(role, args, requireCacheExport, progress);
     } else {
-      const result = await laneImageCommand(role, args);
+      const result = await laneImageCommand(
+        role,
+        args,
+        imageBuildBudgetMs(),
+        sourceRoot === repositoryRoot ? "current-build" : "baseline-build",
+      );
       imageCacheObservation(state.lane, role, "load", result.stderr, progress);
     }
   };

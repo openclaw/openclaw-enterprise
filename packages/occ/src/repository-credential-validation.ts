@@ -6,7 +6,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
 import { hasControlCharacter, immutableCopy } from "@openclaw-enterprise/utils";
-import { ScopeViolationError } from "../errors.ts";
+import { ScopeViolationError } from "./errors.ts";
 
 const token = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const backendIdentifier = /^(?!\s)(?!.*\s$).{1,200}$/;
