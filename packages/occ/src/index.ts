@@ -24,6 +24,20 @@ export type {
 } from "./connection-administration.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
+import {
+  createIAMPolicyOperations,
+  iamPolicyOperation,
+  type CreateIAMAccessBindingInput,
+  type CreateIAMRoleInput,
+  type IAMPolicyOperations,
+  type InstallationIAMConfiguration,
+} from "./iam-policy-operations.ts";
+
+export type {
+  CreateIAMAccessBindingInput,
+  CreateIAMRoleInput,
+  InstallationIAMConfiguration,
+} from "./iam-policy-operations.ts";
 
 export { refreshPinnedOAuthGrant } from "./oauth-token-endpoint.ts";
 export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
@@ -48,7 +62,6 @@ export {
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
-  CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
   isOAuthScopeToken,
   isSourceProviderPresetId,
@@ -228,8 +241,6 @@ import type {
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
   HarnessExecutionMode,
-  IAMConfiguredPolicy,
-  IAMConfiguredPolicyChanges,
   IAMDriver,
   Installation,
   InstallationCapabilities,
@@ -240,7 +251,6 @@ import type {
   NamespaceEnsureResult,
   LoggingLevel,
   OpenClawConfigurationDocument,
-  ManagedIAMResourceKind,
   Permission,
   Preset,
   PresetSummary,
@@ -290,9 +300,6 @@ import {
   NAME_RULE,
   normalizeInitialWorkspaceFiles,
   normalizeWorkspaceDefaultsId,
-  PERMISSION_ACTIONS,
-  isSupportedPermission,
-  RESOURCE_KINDS,
   admitLoggingConfiguration,
   normalizeLoggingLevel,
   normalizePluginDesiredState,
@@ -365,8 +372,6 @@ import {
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalNotFoundError,
   HarnessAuthSecretDriverError,
-  IAMAccessBindingRoleError,
-  IAMPolicyValidationError,
   keyedSettingPath,
   ModelProviderSettingError,
   NamespaceNotEmptyError,
@@ -846,26 +851,6 @@ export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableE
   }
 }
 
-/**
- * The Installation `iam` configuration (RFC-0026), with the configuration's own names. OCC writes
- * each Role, Group, and binding as an ordinary IAM row with a configured ID prefix.
- */
-export interface InstallationIAMConfiguration {
-  readonly roles: readonly {
-    readonly id: string;
-    readonly permissions: readonly Permission[];
-  }[];
-  /** Groups that each account created through `POST /api/auth/accounts` joins. */
-  readonly defaultUserGroups: readonly string[];
-  /** The configured Role that OCC binds to each creator on what it creates. */
-  readonly ownerRole?: string;
-  readonly roleBindings: readonly {
-    readonly group: string;
-    readonly role: string;
-    readonly scope: "installation" | { readonly namespace: string };
-  }[];
-}
-
 export interface ControllerOptions {
   /** Key material for sealed authentication-state payloads (device-login challenge and handle). */
   readonly authenticationStateEncryptionSecret?: string;
@@ -1075,21 +1060,6 @@ export interface CreateConfigurationInput {
   readonly kind: Configuration["kind"];
   readonly values: Readonly<OpenClawConfigurationDocument>;
   readonly secretBindings?: SecretBindings;
-}
-
-export interface CreateIAMRoleInput {
-  readonly namespaceId: string;
-  readonly name?: string;
-  readonly permissions: readonly Permission[];
-}
-
-export interface CreateIAMAccessBindingInput {
-  readonly namespaceId: string;
-  readonly subjectKind: "identity";
-  readonly subjectId: string;
-  readonly roleId: string;
-  readonly resourceKind: ResourceKind;
-  readonly resourceId: string;
 }
 
 export interface UpdateConfigurationInput {
@@ -1442,35 +1412,6 @@ function credentialSourceFieldsMatch(
       );
     }
   }
-}
-
-/**
- * Names as many unsupported Permissions as fit the 256-character error message contract; a
- * Role of 64 Permissions can hold far more than fit.
- */
-function unsupportedPermissionsMessage(unsupported: readonly string[]): string {
-  return fittedList(
-    "No operation checks these Permissions, so they would grant nothing: ",
-    unsupported,
-    ". See the per-kind actions in the permissions reference.",
-  );
-}
-
-/**
- * Renders `prefix`, as many `items` as fit and `suffix` within the 256-character
- * ErrorResponse.message cap, so the guidance after a long list is never cut off.
- * At least one item is always shown.
- */
-function fittedList(prefix: string, items: readonly string[], suffix: string): string {
-  const render = (shown: number): string => {
-    const more = items.length - shown;
-    return `${prefix}${items.slice(0, shown).join(", ")}${more === 0 ? "" : ` and ${more} more`}${suffix}`;
-  };
-  let shown = items.length;
-  while (shown > 1 && render(shown).length > 256) {
-    shown -= 1;
-  }
-  return render(shown);
 }
 
 /**
@@ -1895,64 +1836,6 @@ function validChannelDirectoryResult(value: unknown): value is ChannelDirectoryR
   return true;
 }
 
-/** Resource kinds that Namespace IAM Roles and AccessBindings may name. */
-const NAMESPACE_POLICY_RESOURCE_KINDS: ReadonlySet<ResourceKind> = new Set<ResourceKind>([
-  "namespace",
-  "agent",
-  "agent_revision",
-  "configuration",
-  "credential_source",
-  "sandbox_policy",
-  "preset",
-  "secret",
-  "service_account",
-]);
-
-/**
- * Why an Agent has no per-Agent network policy (D774): the policy view, validate, save, apply
- * and the editing switch all give the same sentence. Without a Sandbox Driver there is no
- * Sandbox at all, so the cause is the Installation's selection, not a Driver capability.
- */
-/**
- * Why the Namespace policy API refuses `create` Permissions. `create` is authorized against
- * the Namespace collection, never an existing resource, and this API binds only exact
- * resources, so such a Permission could never take effect through it. Role creation and
- * binding creation share the reason so their refusals stay consistent.
- */
-const NAMESPACE_POLICY_CREATE_REASON =
-  "Create is checked on the Namespace, and this API binds only exact resources";
-
-/**
- * Refuses an AccessBinding whose Role cannot take effect on the binding's target, so a
- * policy write never reports success for a grant that IAM evaluation drops. Role creation
- * already refuses `create` Permissions; this check still covers stored Roles that predate
- * that refusal. A Role with no Permission for the target's kind grants nothing there.
- * Roles that also name other kinds stay valid: one Role may be bound to several targets.
- */
-function assertAccessBindingRoleApplies(role: Readonly<Role>, resourceKind: ResourceKind): void {
-  const label = (permission: Readonly<Permission>) =>
-    `${permission.resourceKind}:${permission.action}`;
-  const creates = role.permissions.filter((permission) => permission.action === "create");
-  if (creates.length > 0) {
-    throw new IAMAccessBindingRoleError(
-      fittedList(
-        `Role ${role.id} has Permissions this API cannot bind: `,
-        creates.map(label),
-        `. ${NAMESPACE_POLICY_CREATE_REASON}; bind a Role without them.`,
-      ),
-    );
-  }
-  if (!role.permissions.some((permission) => permission.resourceKind === resourceKind)) {
-    throw new IAMAccessBindingRoleError(
-      fittedList(
-        `Role ${role.id} grants nothing on the ${resourceKind} target: its Permissions (`,
-        role.permissions.map(label),
-        `) apply only to other kinds; bind it to one of those or add ${resourceKind} Permissions.`,
-      ),
-    );
-  }
-}
-
 // A rule about the request alone, checked before any ServiceAccount grant or lookup, so the text
 // is the same whether the named account exists (finding 2536).
 const SERVICE_ACCOUNT_CROSS_NAMESPACE =
@@ -2047,7 +1930,7 @@ export class OpenClawController {
   private readonly connectionAdministration: ReturnType<typeof createConnectionAdministration>;
 
   private readonly sandboxPolicyOperations: ReturnType<typeof createSandboxPolicyOperations>;
-  private readonly iamConfiguration?: InstallationIAMConfiguration;
+  private readonly iamPolicy: IAMPolicyOperations;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly deviceLoginCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   private readonly clock: () => Date;
@@ -2122,9 +2005,6 @@ export class OpenClawController {
       selectedCompute: () => this.selectedDriver("compute"),
       timestamp: () => this.timestamp(),
     });
-    if (options.iamConfiguration !== undefined) {
-      this.iamConfiguration = options.iamConfiguration;
-    }
     for (const registration of options.driverConfigurations ?? []) {
       this.configurations.register(registration);
     }
@@ -2182,6 +2062,18 @@ export class OpenClawController {
         options.authenticationStateEncryptionSecret,
       );
     }
+    this.iamPolicy = createIAMPolicyOperations({
+      installationId: this.installation.id,
+      configuration: options.iamConfiguration,
+      authority: this.authority,
+      transactions: this.transactions,
+      selectedIAM: () => this.selectedDriver("iam"),
+      hasAuthorizationOverride: this.authorization !== undefined,
+      ownsPolicy: (driver) =>
+        !(driver instanceof NativeIAMDriver) ||
+        NativeIAMDriver.usesStateForAuthorization(driver, driver.authorize, this.state),
+      timestamp: () => this.timestamp(),
+    });
     this.agentAuditState = options.agentAuditState;
     this.shouldRecordOperations = options.recordOperations ?? true;
     this.backends = validateBackendDefinitions(options.backends ?? []);
@@ -2590,36 +2482,11 @@ export class OpenClawController {
   }
 
   async listIAMRoles(principalId: string, namespaceId: string): Promise<readonly Readonly<Role>[]> {
-    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const driver = this.iamPolicyDriver("listNamespaceRoles");
-    return this.read((state) =>
-      this.iamPolicyOperation(() =>
-        driver.listNamespaceRoles!({ policy: state.iamPolicy }, namespace.id),
-      ),
-    );
+    return this.iamPolicy.listIAMRoles(principalId, namespaceId);
   }
 
   async createIAMRole(principalId: string, input: CreateIAMRoleInput): Promise<Readonly<Role>> {
-    const permissions = this.iamRolePermissions(input.permissions);
-    if (input.name !== undefined && !isName(input.name)) {
-      throw new IAMPolicyValidationError("/name", "The IAM Role name is invalid.");
-    }
-    const namespace = await this.admitIAMPolicyOperation(principalId, input.namespaceId);
-    const driver = this.iamPolicyDriver("createNamespaceRole");
-    return this.mutate(async (state) => {
-      await this.holdIAMPolicyAuthority(state, principalId, namespace.id);
-      return this.iamPolicyOperation(() =>
-        driver.createNamespaceRole!(
-          { policy: state.iamPolicy },
-          {
-            id: `role_${crypto.randomUUID()}`,
-            namespaceId: namespace.id,
-            ...(input.name === undefined ? {} : { name: input.name }),
-            permissions,
-          },
-        ),
-      );
-    });
+    return this.iamPolicy.createIAMRole(principalId, input);
   }
 
   async getIAMRole(
@@ -2627,20 +2494,7 @@ export class OpenClawController {
     namespaceId: string,
     roleId: string,
   ): Promise<Readonly<Role>> {
-    if (!isNonEmptyString(roleId)) {
-      throw new ScopeViolationError("The exact IAM Role identity is missing.");
-    }
-    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const driver = this.iamPolicyDriver("getNamespaceRole");
-    const role = await this.read((state) =>
-      this.iamPolicyOperation(() =>
-        driver.getNamespaceRole!({ policy: state.iamPolicy }, namespace.id, roleId),
-      ),
-    );
-    if (role === undefined) {
-      throw new ScopeViolationError("The IAM Role does not belong to the exact Namespace.");
-    }
-    return role;
+    return this.iamPolicy.getIAMRole(principalId, namespaceId, roleId);
   }
 
   // Returns the removed Role so the caller can audit what was deleted.
@@ -2649,46 +2503,14 @@ export class OpenClawController {
     namespaceId: string,
     roleId: string,
   ): Promise<Readonly<Role>> {
-    if (!isNonEmptyString(roleId)) {
-      throw new ScopeViolationError("The exact IAM Role identity is missing.");
-    }
-    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const reader = this.iamPolicyDriver("getNamespaceRole");
-    const driver = this.iamPolicyDriver("deleteNamespaceRole");
-    const deleted = await this.mutate(async (state) => {
-      await this.holdIAMPolicyAuthority(state, principalId, namespace.id);
-      return this.iamPolicyOperation(async () => {
-        const role = await reader.getNamespaceRole!(
-          { policy: state.iamPolicy },
-          namespace.id,
-          roleId,
-        );
-        if (
-          role === undefined ||
-          !(await driver.deleteNamespaceRole!({ policy: state.iamPolicy }, namespace.id, roleId))
-        ) {
-          return undefined;
-        }
-        return role;
-      });
-    });
-    if (deleted === undefined) {
-      throw new ScopeViolationError("The IAM Role does not belong to the exact Namespace.");
-    }
-    return deleted;
+    return this.iamPolicy.deleteIAMRole(principalId, namespaceId, roleId);
   }
 
   async listIAMAccessBindings(
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<AccessBinding>[]> {
-    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const driver = this.iamPolicyDriver("listNamespaceAccessBindings");
-    return this.read((state) =>
-      this.iamPolicyOperation(() =>
-        driver.listNamespaceAccessBindings!({ policy: state.iamPolicy }, namespace.id),
-      ),
-    );
+    return this.iamPolicy.listIAMAccessBindings(principalId, namespaceId);
   }
 
   /**
@@ -2696,66 +2518,14 @@ export class OpenClawController {
    * selected IAM Driver does not hold configured policy in this State.
    */
   get defaultUserGroupIds(): readonly string[] {
-    const groups = this.iamConfiguration?.defaultUserGroups ?? [];
-    if (groups.length === 0 || this.occBindingDriver("applyConfiguredPolicy") === undefined) {
-      return Object.freeze([]);
-    }
-    return Object.freeze(groups.map(configuredGroupId));
+    return this.iamPolicy.defaultUserGroupIds();
   }
 
   async createIAMAccessBinding(
     principalId: string,
     input: CreateIAMAccessBindingInput,
   ): Promise<Readonly<AccessBinding>> {
-    if (input.subjectKind !== "identity" || !isNonEmptyString(input.subjectId)) {
-      throw new IAMPolicyValidationError("/subjectId", "The IAM AccessBinding subject is invalid.");
-    }
-    if (!isNonEmptyString(input.roleId)) {
-      throw new IAMPolicyValidationError("/roleId", "The IAM AccessBinding Role is invalid.");
-    }
-    this.assertNamespacePolicyResourceKind(input.resourceKind);
-    if (!isNonEmptyString(input.resourceId)) {
-      throw new IAMPolicyValidationError(
-        "/resourceId",
-        "The IAM AccessBinding resource is invalid.",
-      );
-    }
-    const namespace = await this.admitIAMPolicyOperation(principalId, input.namespaceId);
-    await this.authorize(principalId, "read", {
-      kind: input.resourceKind,
-      id: input.resourceId,
-      namespaceId: namespace.id,
-    });
-    await this.verifyNamespacePolicyResource(namespace.id, input.resourceKind, input.resourceId);
-    const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
-    const roles = this.iamPolicyDriver("getNamespaceRole");
-    return this.mutate(async (state) => {
-      await this.holdIAMPolicyAuthority(state, principalId, namespace.id, {
-        kind: input.resourceKind,
-        id: input.resourceId,
-        namespaceId: namespace.id,
-      });
-      const role = await this.iamPolicyOperation(() =>
-        roles.getNamespaceRole!({ policy: state.iamPolicy }, namespace.id, input.roleId),
-      );
-      if (role !== undefined) {
-        assertAccessBindingRoleApplies(role, input.resourceKind);
-      }
-      return this.iamPolicyOperation(() =>
-        driver.createNamespaceAccessBinding!(
-          { policy: state.iamPolicy },
-          {
-            id: `binding_${crypto.randomUUID()}`,
-            namespaceId: namespace.id,
-            subjectKind: "identity",
-            subjectId: input.subjectId,
-            roleId: input.roleId,
-            resourceKind: input.resourceKind as ManagedIAMResourceKind,
-            resourceId: input.resourceId,
-          },
-        ),
-      );
-    });
+    return this.iamPolicy.createIAMAccessBinding(principalId, input);
   }
 
   async getIAMAccessBinding(
@@ -2763,22 +2533,7 @@ export class OpenClawController {
     namespaceId: string,
     bindingId: string,
   ): Promise<Readonly<AccessBinding>> {
-    if (!isNonEmptyString(bindingId)) {
-      throw new ScopeViolationError("The exact IAM AccessBinding identity is missing.");
-    }
-    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const driver = this.iamPolicyDriver("getNamespaceAccessBinding");
-    const binding = await this.read((state) =>
-      this.iamPolicyOperation(() =>
-        driver.getNamespaceAccessBinding!({ policy: state.iamPolicy }, namespace.id, bindingId),
-      ),
-    );
-    if (binding === undefined) {
-      throw new ScopeViolationError(
-        "The IAM AccessBinding does not belong to the exact Namespace.",
-      );
-    }
-    return binding;
+    return this.iamPolicy.getIAMAccessBinding(principalId, namespaceId, bindingId);
   }
 
   // Returns the removed AccessBinding so the caller can audit who lost access.
@@ -2787,52 +2542,14 @@ export class OpenClawController {
     namespaceId: string,
     bindingId: string,
   ): Promise<Readonly<AccessBinding>> {
-    if (!isNonEmptyString(bindingId)) {
-      throw new ScopeViolationError("The exact IAM AccessBinding identity is missing.");
-    }
-    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const reader = this.iamPolicyDriver("getNamespaceAccessBinding");
-    const driver = this.iamPolicyDriver("deleteNamespaceAccessBinding");
-    const deleted = await this.mutate(async (state) => {
-      await this.holdIAMPolicyAuthority(state, principalId, namespace.id);
-      return this.iamPolicyOperation(async () => {
-        const binding = await reader.getNamespaceAccessBinding!(
-          { policy: state.iamPolicy },
-          namespace.id,
-          bindingId,
-        );
-        if (
-          binding === undefined ||
-          !(await driver.deleteNamespaceAccessBinding!(
-            { policy: state.iamPolicy },
-            namespace.id,
-            bindingId,
-          ))
-        ) {
-          return undefined;
-        }
-        return binding;
-      });
-    });
-    if (deleted === undefined) {
-      throw new ScopeViolationError(
-        "The IAM AccessBinding does not belong to the exact Namespace.",
-      );
-    }
-    return deleted;
+    return this.iamPolicy.deleteIAMAccessBinding(principalId, namespaceId, bindingId);
   }
 
   async listIAMServicePrincipals(
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<ServicePrincipal>[]> {
-    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const driver = this.iamPolicyDriver("listNamespaceServicePrincipals");
-    return this.read((state) =>
-      this.iamPolicyOperation(() =>
-        driver.listNamespaceServicePrincipals!({ policy: state.iamPolicy }, namespace.id),
-      ),
-    );
+    return this.iamPolicy.listIAMServicePrincipals(principalId, namespaceId);
   }
 
   async getIAMServicePrincipal(
@@ -2840,24 +2557,7 @@ export class OpenClawController {
     namespaceId: string,
     servicePrincipalId: string,
   ): Promise<Readonly<ServicePrincipal>> {
-    if (!isNonEmptyString(servicePrincipalId)) {
-      throw new ScopeViolationError("The exact ServicePrincipal identity is missing.");
-    }
-    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const driver = this.iamPolicyDriver("getNamespaceServicePrincipal");
-    const found = await this.read((state) =>
-      this.iamPolicyOperation(() =>
-        driver.getNamespaceServicePrincipal!(
-          { policy: state.iamPolicy },
-          namespace.id,
-          servicePrincipalId,
-        ),
-      ),
-    );
-    if (found === undefined) {
-      throw new ScopeViolationError("The ServicePrincipal does not belong to the exact Namespace.");
-    }
-    return found;
+    return this.iamPolicy.getIAMServicePrincipal(principalId, namespaceId, servicePrincipalId);
   }
 
   /**
@@ -2868,17 +2568,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<Readonly<ServicePrincipal>> {
-    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const driver = this.iamPolicyDriver("createNamespaceServicePrincipal");
-    return this.mutate(async (state) => {
-      await this.holdIAMPolicyAuthority(state, principalId, namespace.id);
-      return this.iamPolicyOperation(() =>
-        driver.createNamespaceServicePrincipal!(
-          { policy: state.iamPolicy },
-          { id: `spn_${crypto.randomUUID()}`, namespaceId: namespace.id },
-        ),
-      );
-    });
+    return this.iamPolicy.createIAMServicePrincipal(principalId, namespaceId);
   }
 
   private readonly agentQueries = createAgentQueries<PlatformReadView>({
@@ -5323,33 +5013,10 @@ export class OpenClawController {
     });
   }
 
-  /**
-   * The IAM Driver that writes configured policy, Owner bindings, and deploy-time grants, or
-   * undefined when it has no such member or
-   * this controller's State is not where its policy lives: decisions from the `authorize`
-   * option, or a Native IAM Driver that reads another store. Only the Driver's own policy
-   * source can hold bindings it will read.
-   */
   private occBindingDriver(
     method: "createOwnerBinding" | "applyConfiguredPolicy" | "createNamespaceAccessBinding",
   ): IAMDriver | undefined {
-    if (this.authorization !== undefined) {
-      return undefined;
-    }
-    const driver = this.selectedDriver("iam");
-    if (
-      driver[method] === undefined ||
-      (driver instanceof NativeIAMDriver &&
-        !NativeIAMDriver.usesStateForAuthorization(driver, driver.authorize, this.state))
-    ) {
-      return undefined;
-    }
-    if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
-      throw new DependencyUnavailableError(
-        "Configured IAM policy requires transactional IAM Driver support.",
-      );
-    }
-    return driver;
+    return this.iamPolicy.occBindingDriver(method);
   }
 
   /**
@@ -5370,194 +5037,20 @@ export class OpenClawController {
     return this.authority.holdAuthority(state);
   }
 
-  /**
-   * The creator of a resource gets the configured Owner Role on it, in the creating unit
-   * (RFC-0026): Namespace-wide for a Namespace, exact for anything else. Without `ownerRole`,
-   * OCC writes no Owner binding.
-   */
-  private async bindCreator(
+  private bindCreator(
     state: PlatformUnitOfWork,
     principalId: string,
     resource: ResourceRef & { readonly namespaceId: string },
   ): Promise<void> {
-    const ownerRole = this.iamConfiguration?.ownerRole;
-    if (ownerRole === undefined) {
-      return;
-    }
-    const driver = this.occBindingDriver("createOwnerBinding");
-    if (driver === undefined) {
-      return;
-    }
-    const binding = await this.iamPolicyOperation(() =>
-      driver.createOwnerBinding!(
-        { policy: state.iamPolicy },
-        {
-          id: `binding_owner_${resource.id}`,
-          namespaceId: resource.namespaceId,
-          principalId,
-          roleId: configuredRoleId(ownerRole),
-          ...(resource.kind === "namespace"
-            ? {}
-            : { resourceKind: resource.kind, resourceId: resource.id }),
-        },
-      ),
-    );
-    await this.auditBinding(state, principalId, binding, resource, { reason: "creator" });
+    return this.iamPolicy.bindCreator(state, principalId, resource);
   }
 
-  /**
-   * The configured policy that OCC writes: each Role and Group with its configured ID, and each
-   * Group binding in its scope. A binding that names a Namespace is written for each of
-   * `namespaces` with that name.
-   */
-  private configuredPolicy(namespaces: readonly Readonly<Namespace>[]): IAMConfiguredPolicy {
-    const configuration = this.iamConfiguration;
-    if (configuration === undefined) {
-      return Object.freeze({ roles: [], groups: [], bindings: [] });
-    }
-    const groupNames = new Set([
-      ...configuration.defaultUserGroups,
-      ...configuration.roleBindings.map((binding) => binding.group),
-    ]);
-    const bindings: AccessBinding[] = [];
-    for (const { group, role, scope } of configuration.roleBindings) {
-      const namespaceIds =
-        scope === "installation"
-          ? [undefined]
-          : namespaces
-              .filter((namespace) => namespace.name === scope.namespace)
-              .map((namespace) => namespace.id);
-      for (const namespaceId of namespaceIds) {
-        bindings.push({
-          id: configuredBindingId(group, role, namespaceId),
-          ...(namespaceId === undefined ? {} : { namespaceId }),
-          subjectKind: "group",
-          subjectId: configuredGroupId(group),
-          roleId: configuredRoleId(role),
-        });
-      }
-    }
-    return Object.freeze({
-      roles: configuration.roles.map((role) => ({
-        id: configuredRoleId(role.id),
-        name: role.id,
-        permissions: role.permissions,
-      })),
-      groups: [...groupNames].map((name) => ({ id: configuredGroupId(name), name })),
-      bindings,
-    });
-  }
-
-  /**
-   * Writes the configured Group bindings that name a Namespace OCC just created, in the unit that
-   * creates it. The creator's authority fence holds the IAM configuration lock shared.
-   */
-  private async applyConfiguredPolicy(
+  private applyConfiguredPolicy(
     state: PlatformUnitOfWork,
     actorId: string,
     namespace: Readonly<Namespace>,
   ): Promise<void> {
-    const driver = this.occBindingDriver("applyConfiguredPolicy");
-    if (driver === undefined || this.iamConfiguration === undefined) {
-      return;
-    }
-    const changes = await this.iamPolicyOperation(() =>
-      driver.applyConfiguredPolicy!(
-        { policy: state.iamPolicy },
-        { policy: this.configuredPolicy([namespace]), namespaceId: namespace.id },
-      ),
-    );
-    await this.auditConfiguredPolicy(state, actorId, changes, "namespace_create");
-  }
-
-  /** Audits each change that applying the configured policy made. */
-  private async auditConfiguredPolicy(
-    state: PlatformUnitOfWork,
-    actorId: string,
-    changes: IAMConfiguredPolicyChanges,
-    reason: "installation_configuration" | "namespace_create",
-  ): Promise<void> {
-    const installation: ResourceRef = { kind: "installation", id: this.installation.id };
-    const bindingResource = (binding: Readonly<AccessBinding>): ResourceRef =>
-      binding.namespaceId === undefined
-        ? installation
-        : { kind: "namespace", id: binding.namespaceId, namespaceId: binding.namespaceId };
-    for (const binding of changes.bindings.deleted) {
-      await this.auditBinding(state, actorId, binding, bindingResource(binding), {
-        reason,
-        deleted: true,
-      });
-    }
-    for (const binding of changes.bindings.created) {
-      await this.auditBinding(state, actorId, binding, bindingResource(binding), { reason });
-    }
-    const policyChanges: [string, Record<string, unknown>][] = [
-      ...changes.roles.created.map((role): [string, Record<string, unknown>] => [
-        "openclaw.iam.roles.create",
-        { roleId: role.id, permissions: role.permissions },
-      ]),
-      ...changes.roles.updated.map((role): [string, Record<string, unknown>] => [
-        "openclaw.iam.roles.update",
-        { roleId: role.id, permissions: role.permissions },
-      ]),
-      ...changes.roles.deleted.map((roleId): [string, Record<string, unknown>] => [
-        "openclaw.iam.roles.delete",
-        { roleId },
-      ]),
-      ...changes.groups.created.map((groupId): [string, Record<string, unknown>] => [
-        "openclaw.iam.groups.create",
-        { groupId },
-      ]),
-      ...changes.groups.deleted.map((groupId): [string, Record<string, unknown>] => [
-        "openclaw.iam.groups.delete",
-        { groupId },
-      ]),
-    ];
-    for (const [action, details] of policyChanges) {
-      await state.audit.append({
-        id: `aud_${crypto.randomUUID()}`,
-        installationId: this.installation.id,
-        occurredAt: this.timestamp(),
-        kind: "mutation",
-        actorId,
-        source: "occ",
-        action,
-        resource: installation,
-        outcome: "success",
-        details: { ...details, reason },
-      });
-    }
-  }
-
-  private async auditBinding(
-    state: PlatformUnitOfWork,
-    actorId: string,
-    binding: Readonly<AccessBinding>,
-    resource: ResourceRef,
-    details: { readonly reason: string; readonly deleted?: boolean },
-  ): Promise<void> {
-    await state.audit.append({
-      id: `aud_${crypto.randomUUID()}`,
-      installationId: this.installation.id,
-      ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
-      occurredAt: this.timestamp(),
-      kind: "mutation",
-      actorId,
-      source: "occ",
-      action:
-        details.deleted === true
-          ? "openclaw.iam.access_bindings.delete"
-          : "openclaw.iam.access_bindings.create",
-      resource,
-      outcome: "success",
-      details: {
-        bindingId: binding.id,
-        subjectKind: binding.subjectKind,
-        subjectId: binding.subjectId,
-        roleId: binding.roleId,
-        reason: details.reason,
-      },
-    });
+    return this.iamPolicy.applyConfiguredPolicy(state, actorId, namespace);
   }
 
   /**
@@ -5568,42 +5061,7 @@ export class OpenClawController {
    * Group memberships stay when the configuration changes.
    */
   async applyIAMConfiguration(): Promise<void> {
-    const driver = this.occBindingDriver("applyConfiguredPolicy");
-    if (driver === undefined) {
-      return;
-    }
-    await this.mutate(async (state) => {
-      await state.installations.holdIAMConfiguration("exclusive");
-      const namespaces = await state.namespaces.listNamespaces();
-      const available = namespaces.filter(
-        (namespace) => namespace.status === "provisioning" || namespace.status === "ready",
-      );
-      const desired = this.configuredPolicy(available);
-      // A Namespace that cannot take new policy now, such as a failed one, keeps the configured
-      // bindings it has that the configuration still lists; Namespace deletion removes them with
-      // the rest of its policy.
-      const listed = new Set(this.configuredPolicy(namespaces).bindings.map(({ id }) => id));
-      const availableIds = new Set(available.map((namespace) => namespace.id));
-      const kept = (await state.iamPolicy.listConfiguredPolicy()).bindings.filter(
-        (binding) =>
-          binding.namespaceId !== undefined &&
-          !availableIds.has(binding.namespaceId) &&
-          listed.has(binding.id),
-      );
-      const policy: IAMConfiguredPolicy = {
-        ...desired,
-        bindings: [...desired.bindings, ...kept],
-      };
-      const changes = await this.iamPolicyOperation(() =>
-        driver.applyConfiguredPolicy!({ policy: state.iamPolicy }, { policy }),
-      );
-      await this.auditConfiguredPolicy(
-        state,
-        this.installation.id,
-        changes,
-        "installation_configuration",
-      );
-    });
+    return this.iamPolicy.applyIAMConfiguration();
   }
 
   /** Apply trusted Installation defaults to ready and provisioning Namespaces. */
@@ -11447,21 +10905,12 @@ export class OpenClawController {
     return lockNamespace(state, namespaceId);
   }
 
-  /**
-   * Authorizes a delete that also removes IAM policy, then locks its Namespace. The first
-   * check runs before any lookup, so a caller without the grant gets the same audited denial
-   * whether or not the target exists. The second runs under the Namespace lock, which orders
-   * it after a concurrent revocation, as holdIAMPolicyAuthority does for policy writes.
-   */
-  private async lockNamespaceForPolicyDelete(
+  private lockNamespaceForPolicyDelete(
     state: PlatformUnitOfWork,
     principalId: string,
     target: ResourceRef & { readonly namespaceId: string },
   ): Promise<Readonly<Namespace>> {
-    await this.authorize(principalId, "delete", target);
-    const namespace = await this.lockNamespace(state, target.namespaceId);
-    await this.authorize(principalId, "delete", target);
-    return namespace;
+    return this.iamPolicy.lockNamespaceForPolicyDelete(state, principalId, target);
   }
 
   private bindings(input: unknown): SecretBindings {
@@ -13636,273 +13085,15 @@ export class OpenClawController {
   }
 
   private iamPolicyDriver<Method extends keyof IAMDriver>(method: Method): IAMDriver {
-    let driver: IAMDriver;
-    try {
-      driver = this.selectedDriver("iam");
-    } catch {
-      throw new DependencyUnavailableError("The selected IAM Driver is unavailable.");
-    }
-    if (typeof driver[method] !== "function") {
-      throw new DependencyUnavailableError(
-        "The selected IAM Driver does not support Namespace policy management.",
-      );
-    }
-    return driver;
+    return this.iamPolicy.iamPolicyDriver(method);
   }
 
-  private async iamPolicyOperation<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      if (error instanceof ResourceConflictError || error instanceof ScopeViolationError) {
-        throw error;
-      }
-      throw new DependencyUnavailableError(
-        "The IAM policy operation failed or its outcome is unknown.",
-      );
-    }
+  private iamPolicyOperation<T>(operation: () => Promise<T>): Promise<T> {
+    return iamPolicyOperation(operation);
   }
 
-  private async admitIAMPolicyOperation(
-    principalId: string,
-    namespaceId: string,
-  ): Promise<Readonly<Namespace>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
-    await this.authorize(principalId, "administer", {
-      kind: "installation",
-      id: this.installation.id,
-    });
-    await this.authorize(principalId, "read", {
-      kind: "namespace",
-      id: namespaceId,
-      namespaceId,
-    });
-    return this.read((state) => this.exactNamespace(state, namespaceId));
-  }
-
-  /**
-   * Re-checks the admitted actor inside the policy write's transaction and holds that
-   * authority until COMMIT. The shared IAM configuration fence comes before the Namespace
-   * lock, so a configured read grant cannot change between authorization and COMMIT. The
-   * Namespace lock orders this write with other policy writes and deletion there; the
-   * account hold does the same for a disable. The actor's Installation
-   * grants have no runtime writer that removes them.
-   */
-  private async holdIAMPolicyAuthority(
-    state: PlatformUnitOfWork,
-    principalId: string,
-    namespaceId: string,
-    target?: ResourceRef,
-  ): Promise<void> {
-    await this.holdAuthority(state);
-    await this.lockNamespace(state, namespaceId);
-    await this.holdNamespacePolicyActor(state, principalId);
-    await this.authorize(principalId, "administer", {
-      kind: "installation",
-      id: this.installation.id,
-    });
-    await this.authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
-    if (target !== undefined) {
-      await this.authorize(principalId, "read", target);
-    }
-  }
-
-  /** Called with the policy writer's Namespace lock; hold the acting account through commit. */
-  private async holdNamespacePolicyActor(
-    state: PlatformUnitOfWork,
-    principalId: string,
-  ): Promise<void> {
-    if (this.selectedDriver("iam").namespacePolicyTransaction !== "platform-unit-of-work") {
-      throw new DependencyUnavailableError(
-        "Namespace policy mutations require transactional IAM Driver support.",
-      );
-    }
-    if (!(await state.installations.holdPrincipalAccount(principalId))) {
-      throw new CallerStateDeniedError("The acting account is disabled.");
-    }
-  }
-
-  private assertNamespacePolicyResourceKind(kind: ResourceKind): void {
-    if (!NAMESPACE_POLICY_RESOURCE_KINDS.has(kind)) {
-      throw new IAMPolicyValidationError(
-        "/resourceKind",
-        "IAM policy APIs require an exact Namespace resource target.",
-      );
-    }
-  }
-
-  private iamRolePermissions(permissions: readonly Permission[]): readonly Permission[] {
-    if (!Array.isArray(permissions) || permissions.length === 0 || permissions.length > 64) {
-      throw new IAMPolicyValidationError(
-        "/permissions",
-        "IAM Roles require 1 to 64 supported Permissions.",
-      );
-    }
-    const seen = new Set<string>();
-    const unsupported: string[] = [];
-    const checked = permissions.map((permission, index) => {
-      if (
-        typeof permission !== "object" ||
-        permission === null ||
-        Array.isArray(permission) ||
-        !PERMISSION_ACTIONS.includes(permission.action) ||
-        !RESOURCE_KINDS.includes(permission.resourceKind)
-      ) {
-        throw new IAMPolicyValidationError(
-          `/permissions/${index}`,
-          "IAM Role Permissions are invalid.",
-        );
-      }
-      if (!NAMESPACE_POLICY_RESOURCE_KINDS.has(permission.resourceKind)) {
-        throw new IAMPolicyValidationError(
-          `/permissions/${index}/resourceKind`,
-          `Namespace IAM Roles cannot grant ${permission.resourceKind} Permissions.`,
-        );
-      }
-      if (permission.resourceKind === "namespace" && permission.action !== "read") {
-        throw new IAMPolicyValidationError(
-          `/permissions/${index}/action`,
-          "Namespace IAM Roles support only namespace:read on the Namespace itself.",
-        );
-      }
-      const key = `${permission.action}\u0000${permission.resourceKind}`;
-      if (seen.has(key)) {
-        throw new IAMPolicyValidationError(
-          `/permissions/${index}`,
-          `IAM Role Permissions contain ${permission.resourceKind}:${permission.action} more than once.`,
-        );
-      }
-      seen.add(key);
-      if (!isSupportedPermission(permission)) {
-        unsupported.push(`${permission.resourceKind}:${permission.action}`);
-      }
-      return Object.freeze({
-        action: permission.action,
-        resourceKind: permission.resourceKind,
-      });
-    });
-    if (unsupported.length > 0) {
-      throw new IAMPolicyValidationError(
-        "/permissions",
-        unsupportedPermissionsMessage(unsupported),
-      );
-    }
-    // A create Permission would be stored and then refused by every binding request
-    // (assertAccessBindingRoleApplies), so the Role is refused here instead.
-    const firstCreate = checked.findIndex((permission) => permission.action === "create");
-    if (firstCreate !== -1) {
-      throw new IAMPolicyValidationError(
-        `/permissions/${firstCreate}/action`,
-        fittedList(
-          "Namespace IAM Roles cannot grant create Permissions: ",
-          checked
-            .filter((permission) => permission.action === "create")
-            .map((permission) => `${permission.resourceKind}:create`),
-          `. ${NAMESPACE_POLICY_CREATE_REASON}; omit them from the Role.`,
-        ),
-      );
-    }
-    return Object.freeze(checked);
-  }
-
-  private async verifyNamespacePolicyResource(
-    namespaceId: string,
-    resourceKind: ResourceKind,
-    resourceId: string,
-  ): Promise<void> {
-    await this.read(async (state) => {
-      if (resourceKind === "namespace") {
-        if (resourceId !== namespaceId) {
-          throw new IAMPolicyValidationError(
-            "/resourceId",
-            "A namespace target must be the Namespace in the request path.",
-          );
-        }
-        await this.exactNamespace(state, namespaceId);
-        return;
-      }
-      if (resourceKind === "agent") {
-        if ((await state.agents.findAgent(namespaceId, resourceId)) === undefined) {
-          throw new IAMPolicyValidationError(
-            "/resourceId",
-            "The IAM target Agent does not belong to the Namespace.",
-          );
-        }
-        return;
-      }
-      if (resourceKind === "sandbox_policy") {
-        const agentId = `agt_${resourceId.slice(4)}`;
-        const policy = await state.sandboxPolicies.find(namespaceId, agentId);
-        if (policy?.id !== resourceId) {
-          throw new IAMPolicyValidationError(
-            "/resourceId",
-            "The SandboxPolicy does not belong to the Namespace.",
-          );
-        }
-        return;
-      }
-      if (resourceKind === "agent_revision") {
-        const agents = await state.agents.listAgents(namespaceId);
-        for (const agent of agents) {
-          if (
-            (await state.revisions.findRevision(namespaceId, agent.id, resourceId)) !== undefined
-          ) {
-            return;
-          }
-        }
-        throw new IAMPolicyValidationError(
-          "/resourceId",
-          "The IAM target AgentRevision does not belong to the Namespace.",
-        );
-      }
-      if (resourceKind === "preset") {
-        if ((await state.presets.findPreset(namespaceId, resourceId)) === undefined) {
-          throw new IAMPolicyValidationError(
-            "/resourceId",
-            "The IAM target Preset does not belong to the Namespace.",
-          );
-        }
-        return;
-      }
-      if (resourceKind === "configuration") {
-        if ((await state.configurations.findConfiguration(namespaceId, resourceId)) === undefined) {
-          throw new IAMPolicyValidationError(
-            "/resourceId",
-            "The IAM target Configuration does not belong to the Namespace.",
-          );
-        }
-        return;
-      }
-      if (resourceKind === "secret") {
-        if ((await state.secrets.findSecret(namespaceId, resourceId)) === undefined) {
-          throw new IAMPolicyValidationError(
-            "/resourceId",
-            "The IAM target Secret does not belong to the Namespace.",
-          );
-        }
-        return;
-      }
-      if (resourceKind === "credential_source") {
-        if (
-          (await state.credentialSources.findCredentialSource(namespaceId, resourceId)) ===
-          undefined
-        ) {
-          throw new IAMPolicyValidationError(
-            "/resourceId",
-            "The IAM target credential source does not belong to the Namespace.",
-          );
-        }
-        return;
-      }
-      if ((await state.serviceAccounts.findServiceAccount(namespaceId, resourceId)) === undefined) {
-        throw new IAMPolicyValidationError(
-          "/resourceId",
-          "The IAM target ServiceAccount does not belong to the Namespace.",
-        );
-      }
-    });
+  private holdNamespacePolicyActor(state: PlatformUnitOfWork, principalId: string): Promise<void> {
+    return this.iamPolicy.holdNamespacePolicyActor(state, principalId);
   }
 
   /** Secret SDK error bodies can contain request bytes; never propagate their message or cause. */
@@ -14923,23 +14114,6 @@ export class OpenClawController {
 }
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
-
-function configuredRoleId(id: string): string {
-  return `${CONFIGURED_IAM_ID_PREFIXES.role}${id}`;
-}
-
-function configuredGroupId(name: string): string {
-  return `${CONFIGURED_IAM_ID_PREFIXES.group}${name}`;
-}
-
-/** A configured Group binding's ID: a digest, because configured names may contain `_`. */
-function configuredBindingId(group: string, role: string, namespaceId: string | undefined): string {
-  const digest = createHash("sha256")
-    .update(JSON.stringify([group, role, namespaceId ?? null]))
-    .digest("hex")
-    .slice(0, 32);
-  return `${CONFIGURED_IAM_ID_PREFIXES.binding}${digest}`;
-}
 
 /** Keep internal reduction custody out of caller-visible withdrawal status. */
 function credentialWithdrawalStatus(
