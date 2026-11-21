@@ -466,7 +466,9 @@ export class KubernetesChannelEgress {
       throw new Error("Channel proxy trust must contain public CA certificates only.");
     }
     for (const certificate of certificates) {
-      new X509Certificate(certificate);
+      if (!new X509Certificate(certificate).ca) {
+        throw new Error("Channel proxy trust must contain CA certificates only.");
+      }
     }
     for (const pod of pods) {
       const volumes = Array.isArray(pod.spec?.volumes) ? pod.spec.volumes.map(asRecord) : [];

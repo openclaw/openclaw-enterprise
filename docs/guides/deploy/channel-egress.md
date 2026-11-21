@@ -86,6 +86,41 @@ For an existing installation, prepare the matching settings through the
 [installation change procedure](production-installation-changes.md). Saving an
 Agent's Slack settings cannot enable installation-level egress.
 
+## Configure upstream proxy endpoints
+
+An Installation administrator must configure each reachable proxy before an
+Agent can select it. Use the existing Installation change procedure. For a
+managed profile, set `channels.upstreamProxies` to the endpoint URL and its
+actual IPv4 `/32` addresses. For a private CA, set `channels.proxyTrust` to a
+public CA Secret and key in the Envoy namespace. The bundle must include every
+public and private root that Envoy must trust. The renderer writes matching
+Helm and Compute inputs. For manual inputs, use the
+[upstream proxy configuration reference](../../reference/drivers/kubernetes-compute/channel-egress.md#upstream-proxy-configuration).
+
+Keep Pod, Service, node, metadata, and other private exclusions in place.
+Grant only the configured endpoint addresses and port. If DNS returns an
+address outside that scope, admission fails. Repair the Installation input;
+do not widen global egress to make deployment pass.
+
+## Select an Agent proxy
+
+1. Open the Agent's **Configuration** draft. You need exact Agent update
+   permission and `operate` on any proxy credential Secret.
+2. Under **Gateway channel proxy**, enter **Network proxy URL** without URL
+   credentials. If the proxy requires Basic authentication, select an existing
+   same-Namespace Secret containing `Basic <base64(username:password)>`.
+3. Select **Save Network proxy for next deployment**, then **Deploy new version**.
+   Inspect the new revision summary. The serving revision keeps its prior
+   selection until the deployment replaces it.
+4. To remove the route, select **Clear proxy for next deployment** and deploy
+   again. After rotating the credential Secret, deploy a new revision. A retry
+   cannot change an existing binding's credential version.
+
+Proxy outage, certificate failure, or authentication refusal has no direct
+fallback. OCC Slack credential validation and directory lookup use their
+existing separate route; a failure there does not prove the Agent proxy failed.
+An Agent without enabled channels creates no proxy binding or egress grant.
+
 ## Local development
 
 The local Kubernetes launcher uses the pinned controller setup and enables patch

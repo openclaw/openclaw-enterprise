@@ -9843,6 +9843,9 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `data[].harness.version` | `string` | Yes | min length: 1 |
 | `data[].id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].networkProxy` | `object` | No | — |
+| `data[].networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `data[].revision` | `integer` | Yes | minimum: 1 |
 | `meta` | `object` | Yes | — |
 | `meta.nextCursor` | `string or null` | Yes | Pass this value as `cursor` to read older Agent revisions. OCC returns a cursor only when it finds an older Agent revision that you can read during this request. A later page can be empty if access changes. `null` means OCC found no older Agent revision that you can read. |

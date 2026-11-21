@@ -91,6 +91,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/device-login.mts",
       "agents/credential-access.mts",
       "agents/secret-picker.mts",
+      "agents/network-proxy.mts",
       "agents/credentials.mts",
       "channels/slack.mts",
       "channels/shared-ui.mts",

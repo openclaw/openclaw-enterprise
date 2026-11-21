@@ -30725,6 +30725,23 @@
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
+                          "networkProxy": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "credentialSecretId": {
+                                "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "url": {
+                                "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                                "maxLength": 2048,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": ["url"],
+                            "type": "object"
+                          },
                           "revision": { "minimum": 1, "type": "integer" }
                         },
                         "required": [

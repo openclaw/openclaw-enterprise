@@ -46,7 +46,8 @@
     {
       "path": "tests/integration/channel-egress-kubernetes-real.test.ts",
       "expectedTests": [
-        "channel egress isolates current Driver generations and retires real Agent bindings"
+        "channel egress isolates current Driver generations and retires real Agent bindings",
+        "a real Slack Gateway uses its admitted upstream proxy and never falls back directly"
       ]
     },
     {
