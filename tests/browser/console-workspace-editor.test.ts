@@ -35,6 +35,7 @@ import {
 } from "./console-agents-browser-helpers.ts";
 
 import {
+  settledFetches,
   trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
@@ -921,6 +922,112 @@ test("an Agent read answered after deletion was requested leaves the Workspace f
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
 });
 
+// An unreachable gateway is one cause for every file. The section says it once, with one Retry
+// that repeats the unanswered reads, and no file is marked Needs attention for it. A refusal
+// about one file stays with that file.
+test("an unreachable Workspace gateway shows one notice whose Retry rereads the files", async (t) => {
+  let unavailable = true;
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    workspaceFilesAccess: {
+      async read({ filename }: Parameters<ControllerWorkspaceFilesAccess["read"]>[0]) {
+        return unavailable
+          ? { status: "unavailable" }
+          : { status: "ok", file: { name: filename, content: `# ${filename}\n` } };
+      },
+      async write() {
+        throw new Error("no Workspace file may be written");
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unreachable workspace", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unreachable gateway Agent",
+    nativeValues("unreachable"),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const filePath = (name: string) =>
+    `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/${name}`;
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  // The API limits the first USER.md read. That refusal is about one file, not the gateway.
+  await page.route(
+    fixture.origin + filePath("USER.md"),
+    (route) => route.fulfill({ ...proxyErrorResponse(429), headers: { "retry-after": "30" } }),
+    { times: 1 },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
+  );
+  // Every read so far has been applied, so a count below is not an early one.
+  const settled = async (reads: Record<string, number>) => {
+    for (const [name, count] of Object.entries(reads)) {
+      await waitForSettledFetches(page, filePath(name), count);
+      assert.equal(await settledFetches(page, filePath(name)), count, `${name} reads`);
+    }
+  };
+  const section = page.locator(".workspace-files");
+  const reasons = section.getByText(WORKSPACE_UNREACHABLE, { exact: false });
+  const attention = section.getByText("Needs attention", { exact: true });
+  const retry = section.getByRole("alert").getByRole("button", { name: "Retry", exact: true });
+  const user = page.getByRole("tab", { name: /USER\.md/ });
+  const limited = section.locator("form").getByText(tooManyRequestsIn(30), { exact: false });
+  const hasFocus = (locator: Locator) =>
+    locator.evaluate((node) => node === node.ownerDocument.activeElement);
+  const oneNotice = async () => {
+    await retry.waitFor();
+    // The three unanswered reads share one reason; only the rate-limited file is marked.
+    assert.equal(await reasons.count(), 1);
+    assert.equal(await attention.count(), 1);
+    assert.equal(await user.getByText("Needs attention", { exact: true }).count(), 1);
+    assert.equal(await limited.count(), 1);
+  };
+  await settled({ "AGENTS.md": 1, "SOUL.md": 1, "IDENTITY.md": 1, "USER.md": 1 });
+  await oneNotice();
+
+  // The gateway still does not answer. Retry repeats the three unanswered reads only, the
+  // notice returns, and keyboard focus is back on Retry instead of lost with the removed button.
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await settled({ "AGENTS.md": 2, "SOUL.md": 2, "IDENTITY.md": 2, "USER.md": 1 });
+  await oneNotice();
+  assert.equal(await hasFocus(retry), true);
+
+  // The gateway answers: the notice goes, the three files load, and focus moves to the selected
+  // file's tab. USER.md keeps its own refusal until its own Reload.
+  unavailable = false;
+  await page.keyboard.press("Enter");
+  await settled({ "AGENTS.md": 3, "SOUL.md": 3, "IDENTITY.md": 3, "USER.md": 1 });
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md", "IDENTITY.md"]);
+  assert.equal(await reasons.count(), 0);
+  assert.equal(await retry.count(), 0);
+  assert.equal(await hasFocus(page.getByRole("tab", { name: /AGENTS\.md/ })), true);
+  assert.equal(await attention.count(), 1);
+  assert.equal(await limited.count(), 1);
+
+  // A later Reload that nothing answers brings the notice back for that file alone. At phone
+  // width the tabs are not shown, so focus moves to the Workspace file picker instead.
+  unavailable = true;
+  await page.getByRole("button", { name: "Reload AGENTS.md", exact: true }).click();
+  await settled({ "AGENTS.md": 4 });
+  await oneNotice();
+  await page.setViewportSize({ width: 390, height: 844 });
+  unavailable = false;
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await settled({ "AGENTS.md": 5, "SOUL.md": 3, "IDENTITY.md": 3, "USER.md": 1 });
+  await waitForWorkspaceEditors(page, ["AGENTS.md"]);
+  assert.equal(await reasons.count(), 0);
+  assert.equal(
+    await hasFocus(page.getByRole("combobox", { name: "Workspace file", exact: true })),
+    true,
+  );
+});
+
 test("explicit missing-file readback settles an uncertain workspace create without replaying it", async (t) => {
   const root = await temporaryDirectory(t, "console-workspace-missing-");
   let unavailable = false;
@@ -1003,6 +1110,8 @@ test("explicit missing-file readback settles an uncertain workspace create witho
     includeHidden: true,
   });
   const form = page.locator("form").filter({ has: editor });
+  // A read nothing answered is reported once for the section, not in the file's own form.
+  const unreached = page.locator(".workspace-files > [role=alert]");
   // An unavailable Agent does not tell us its file is absent, even on the first read.
   await chooseWorkspaceFile(page, "USER.md");
   await form.getByText("File unavailable or missing.", { exact: false }).waitFor();
@@ -1042,7 +1151,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   administrator.permissions = permissions;
   unavailable = true;
   await reload.click();
-  await form.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
+  await unreached.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
   assert.equal(await editor.isDisabled(), true);
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
@@ -1058,6 +1167,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   );
   await reload.click();
   await form.getByText(tooManyRequestsIn(30), { exact: false }).waitFor();
+  assert.equal(await unreached.textContent(), "", "the next read clears the section notice");
   // A request that never reached the API says so, not that the gateway is down.
   await page.route(
     fixture.origin + path,
@@ -1065,7 +1175,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
     { times: 1 },
   );
   await reload.click();
-  await form.getByText(WORKSPACE_API_UNREACHABLE, { exact: true }).waitFor();
+  await unreached.getByText(WORKSPACE_API_UNREACHABLE, { exact: true }).waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
   const reply = page.waitForResponse(
@@ -1111,7 +1221,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   assert.equal(await save.isDisabled(), true);
   assert.equal(await readFile(join(root, "USER.md"), "utf8"), "# Deliberate replacement create\n");
   await reload.click();
-  await form.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
+  await unreached.getByText(WORKSPACE_UNREACHABLE, { exact: false }).waitFor();
   assert.equal(await save.isDisabled(), true);
   await reload.click();
   await form.getByText("USER.md loaded.", { exact: true }).waitFor({ state: "attached" });
