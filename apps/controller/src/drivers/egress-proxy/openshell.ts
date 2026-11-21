@@ -1,7 +1,12 @@
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
-import { openShellGitMiddleware, type OpenShellGitRuntime } from "./openshell-git-runtime.ts";
+import {
+  openShellGitMiddleware,
+  nativeRestMode,
+  type NativeRestMode,
+} from "./openshell-git-middleware.ts";
+import type { OpenShellGitRuntime } from "./openshell-git-runtime.ts";
 import { repositoryGitDeliveryProfile, requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   CredentialProviderDefinition,
@@ -209,7 +214,7 @@ export function openShellEgressConfiguration(
   plan: ProxyPlan,
   options: OpenShellProxyOptions,
   revision?: Readonly<AgentRevision>,
-  nativeIssueReads = false,
+  nativeRest?: NativeRestMode,
 ): Readonly<Record<string, unknown>> {
   const artifacts = openShellProtectedCodexArtifacts(revision);
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
@@ -239,7 +244,7 @@ export function openShellEgressConfiguration(
         options.repositoryMiddlewareName,
         plan.execution.executionId,
         plan.repositoryGitAuthorization === "network-policy",
-        nativeIssueReads,
+        nativeRest,
       ),
     });
   }
@@ -531,7 +536,7 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
       context.plan,
       this.options,
       context.revision,
-      bound?.endpoints.some(({ host }) => host === "api.github.com"),
+      nativeRestMode(bound),
     );
     const canonicalPolicies = {
       ...asRecord(protectedConfiguration.network_policies),

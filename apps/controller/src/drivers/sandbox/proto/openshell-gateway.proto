@@ -577,6 +577,7 @@ message SupervisorMiddlewareService {
   bool allow_insecure_transport = 7;
   int32 binding_policy = 8;
   repeated int32 bindings = 9;
+  repeated string http_request_methods = 10;
 }
 message ListSandboxesRequest {
   int32 page_size = 1;

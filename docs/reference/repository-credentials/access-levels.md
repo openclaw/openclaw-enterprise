@@ -77,6 +77,45 @@ outside the Agent and permits only these issue GET paths. Unlisted repositories,
 adjacent paths such as comments, REST writes and GraphQL remain denied. Omitting
 `scopedRest` keeps native delivery Git-only.
 
+#### Pull request creation
+
+Creating a pull request requires a Gateway and Supervisor that support
+pre-credential middleware selection by HTTP method. The pinned 0.1.8 Gateway
+rejects the `http_request_methods` setting. Keep `nativeRestWrites` unset on
+that release to use native Git and issue reads.
+
+On a release qualified for method filtering, copy the existing
+[request-phase service registration](protected-openshell-git.md#register-the-request-phase-service).
+Append `-rest-writes` to the copy's name and set `http_request_methods = ["POST"]`
+in the copy. Use the same Worker endpoint, CA, audience, timeout and required
+binding. Keep the original registration for existing profiles. OCE checks the
+second registration before preparing the Git Provider and verifies the POST
+filter on the loaded Sandbox before installing the credential.
+
+On a qualified installation, set `nativeRestWrites: true` alongside
+`nativeGit: "v1"` and `scopedRest: "v1"` on the repository's Namespace
+registration. The GitHub App and registry must already grant
+`pull_requests: "write"`. Rebind the credential, save Write for that repository
+and deploy the Agent. Save the request in `pull.json` with two unqualified
+branch names in the approved repository.
+
+```json
+{ "title": "Fix", "head": "topic/fix", "base": "main" }
+```
+
+```sh
+gh api --method POST repos/OWNER/REPO/pulls --input pull.json
+```
+
+The validator rejects fork selectors, issue conversion and unknown fields before
+credential use. Optional fields are `body`, `draft` and `maintainer_can_modify`.
+Version v1 denies issue creation. OpenShell rechecks redirected destinations.
+If the validator is unavailable after startup,
+OpenShell refuses creation and continues to serve permitted Git and issue reads.
+If the result is uncertain, inspect the repository before submitting again.
+To withdraw creation, save Read for the repository and redeploy. Verify that
+the old Sandbox retires.
+
 ## Console access levels
 
 | Console choice          | Configuration value | Meaning                                                                       |

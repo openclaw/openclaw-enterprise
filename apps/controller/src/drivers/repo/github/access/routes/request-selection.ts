@@ -5,9 +5,11 @@ import type {
   PreparedGitHubUseRequest,
 } from "@openclaw-enterprise/contracts";
 import type { RequestHead } from "../../../access/backend-contracts.ts";
+import type { ScopedRepositoryRestWrites } from "../../../access/delivery.ts";
 import { parseUnambiguousJson } from "../../../../json-members.ts";
 import { parseCanonicalGitHubOrigin } from "../origin.ts";
 import { planDraftPull } from "../prepared-draft-pull.ts";
+import { isWellFormedBranchRef } from "../../../access/client-contracts.ts";
 import { classifyRoute } from "./classification.ts";
 import { allowsGraphqlInput } from "../graphql-input.ts";
 import { allowsReceivePackInput } from "./receive-pack.ts";
@@ -41,6 +43,7 @@ type GitHubScope =
   | { readonly scope: "github-installation" }
   | {
       readonly scope: "github-repository";
+      readonly scopedRestWrites?: ScopedRepositoryRestWrites;
       readonly repositories: readonly Readonly<{ repository: string }>[];
     };
 
@@ -208,6 +211,27 @@ function draftScope(
     : undefined;
 }
 
+function isUnqualifiedBranch(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    isWellFormedBranchRef("refs/heads/" + value) &&
+    // Reject encoded colons and escapes that could introduce another encoding layer.
+    !/%(?:3a|25)/i.test(value)
+  );
+}
+
+function permitsSameRepositoryPull(body: object): boolean {
+  // head_repo selects a fork and issue converts an existing issue. Only accept creation fields.
+  const fields = ["title", "head", "base", "body", "draft", "maintainer_can_modify"];
+  return (
+    "head" in body &&
+    isUnqualifiedBranch(body.head) &&
+    "base" in body &&
+    isUnqualifiedBranch(body.base) &&
+    Object.keys(body).every((key) => fields.includes(key))
+  );
+}
+
 /**
  * For an explicit installation grant, GitHub interprets the API operation and permissions.
  * Accept canonical repository and common discovery routes, not the App, token or owner API.
@@ -217,13 +241,15 @@ function draftScope(
 function installationApiOperation(
   request: GitHubRequest,
   head: RequestHead,
-  scope: "github-repository" | "github-installation",
+  binding: Exclude<GitHubScope, RepositoryScope>,
 ) {
   const { path, query, method } = request.target;
   const { headers } = head;
   const graph = path === "/graphql";
-  const maximumBody = scope === "github-repository" && !graph ? 1024 * 1024 : 64 * 1024;
+  const maximumBody = binding.scope === "github-repository" && !graph ? 1024 * 1024 : 64 * 1024;
   const read = method === "GET" || method === "HEAD";
+  const scopedWrite =
+    !read && binding.scope === "github-repository" ? binding.scopedRestWrites : undefined;
   const apiRoot = path === "/" && read && query === "";
   if (
     head.contentEncoding !== "identity" ||
@@ -249,7 +275,7 @@ function installationApiOperation(
     return;
   }
   if (!request.body.byteLength) {
-    return graph ? undefined : "github-rest";
+    return graph || scopedWrite ? undefined : "github-rest";
   }
   if (
     read ||
@@ -265,6 +291,17 @@ function installationApiOperation(
     );
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return;
+    }
+    if (scopedWrite) {
+      if (method !== "POST") {
+        return;
+      }
+      if (
+        !scopedWrite.pullRequestRepositories.some((repo) => path === `/repos/${repo}/pulls`) ||
+        !permitsSameRepositoryPull(body)
+      ) {
+        return;
+      }
     }
     if (!graph) {
       return "github-rest";
@@ -318,7 +355,7 @@ function operation(
           return { denied: "route_unsupported" };
         }
       }
-      const api = installationApiOperation(request, head, binding.scope);
+      const api = installationApiOperation(request, head, binding);
       return api ? { selected: { operation: api } } : { denied: "route_unsupported" };
     }
     if (!matchesOrigin("https://github.com", request)) {

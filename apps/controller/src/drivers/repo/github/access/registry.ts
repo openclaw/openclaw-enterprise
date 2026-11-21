@@ -41,7 +41,8 @@ export interface GitHubRepositoryRegistration {
     permissions?: Readonly<Record<string, string>>;
     /** Select deployment-scoped native Git for this repository registration. */
     nativeGit?: "v1";
-    /** Enable the versioned REST subset when this binding also has a repository network ACL. */
+    /** Opt into REST creation when a POST-only validator is available. */
+    nativeRestWrites?: true;
     scopedRest?: "v1";
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
@@ -205,6 +206,7 @@ export function validateGitHubRepositoryRegistry(
         "profiles",
         "permissions",
         "nativeGit",
+        "nativeRestWrites",
         "scopedRest",
         "allowStandingApproval",
         "pushRefAllowlist",
@@ -226,7 +228,14 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
-      if (Object.hasOwn(policy, "scopedRest") && (!selected || policy.scopedRest !== "v1")) {
+      const scopedRest = policy.scopedRest;
+      if (
+        Object.hasOwn(policy, "nativeRestWrites") &&
+        (policy.nativeRestWrites !== true || policy.nativeGit !== "v1" || !scopedRest)
+      ) {
+        return invalid();
+      }
+      if (Object.hasOwn(policy, "scopedRest") && (scopedRest !== "v1" || !selected)) {
         return invalid();
       }
       if (
@@ -293,7 +302,8 @@ export function validateGitHubRepositoryRegistry(
         profiles: Object.freeze(profiles),
         ...(permissions && { permissions }),
         ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
-        ...(policy.scopedRest === "v1" && { scopedRest: "v1" as const }),
+        ...(policy.nativeRestWrites === true && { nativeRestWrites: true as const }),
+        ...(scopedRest === "v1" && { scopedRest: "v1" as const }),
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
         ...(transport === undefined ? {} : { transport }),
@@ -393,12 +403,16 @@ const installationGrantPolicy = Object.freeze({
 } as const);
 
 function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
-  if (policy.scopedRest !== "v1") {
+  const version = policy.scopedRest;
+  if (version !== "v1") {
     return undefined;
   }
+  const issues = policy.permissions?.issues;
   return {
-    version: policy.scopedRest,
-    readIssues: policy.permissions?.issues === "read" || policy.permissions?.issues === "write",
+    version,
+    ...(policy.nativeRestWrites &&
+      policy.permissions?.pull_requests === "write" && { createPullRequests: true as const }),
+    readIssues: issues === "read" || issues === "write",
   };
 }
 

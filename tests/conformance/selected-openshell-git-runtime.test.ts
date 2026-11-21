@@ -93,7 +93,12 @@ function resolverPort(runtime: Runtime): {
 const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
 const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
 
-type ScopedRest = { permissions: Record<string, string>; optedRepository?: string };
+type ScopedRest = {
+  validator?: "missing" | "foreign";
+  writes?: true;
+  permissions: Record<string, string>;
+  optedRepository?: string;
+};
 
 async function selectedV5(
   t: TestContext,
@@ -137,6 +142,7 @@ async function selectedV5(
               ...(rest &&
                 (rest.optedRepository === undefined ||
                   rest.optedRepository === repo.repository) && {
+                  ...(rest.writes && { nativeRestWrites: true }),
                   scopedRest: "v1",
                 }),
             },
@@ -156,6 +162,26 @@ async function selectedV5(
   const f = bootstrappingOpenShellGitRuntimeFixture(options);
   if (native) {
     const client = fixtureClient(f);
+    if (rest?.writes && rest.validator !== "missing") {
+      const getInfo = client.getGatewayInfo!.bind(client);
+      client.getGatewayInfo = async (signal) => {
+        const info = await getInfo(signal);
+        assert.ok(Array.isArray(info.extensions));
+        return {
+          ...info,
+          extensions: [
+            ...info.extensions,
+            {
+              configured_name: "oce-prepared-git-rest-writes",
+              kind: 4,
+              protocol_major: 1,
+              implementation_name:
+                rest.validator === "foreign" ? "other" : "oce/online-request-authorization",
+            },
+          ],
+        };
+      };
+    }
     const getProfile = client.getProviderProfile.bind(client);
     client.getProviderProfile = async (workspace, id, signal) => {
       const profile = await getProfile(workspace, id, signal);
@@ -323,7 +349,17 @@ async function selectedV5(
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, rest?: ScopedRest) {
+async function heldGit(
+  t: TestContext,
+  native = false,
+  deadlineWallMs?: number,
+  rest?: ScopedRest,
+  beforeObserve?: (
+    service: Record<string, unknown>,
+    selector: Record<string, unknown>,
+    assertRefused: () => Promise<void>,
+  ) => Promise<void>,
+) {
   const selected = await selectedV5(t, native, deadlineWallMs, rest);
   const { f, store, revision, executionId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
@@ -349,7 +385,22 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, 
   const sourceRules: Record<string, typeof gitRule> = boundGitRule
     ? { [boundGitRule.name]: boundGitRule }
     : {};
-  const sourcePolicy = { network_policies: sourceRules };
+  const filtered =
+    prepared.middlewares["oce-prepared-git"].middleware === "oce-prepared-git-rest-writes";
+  const service: Record<string, unknown> = {
+    name: filtered ? "oce-prepared-git-rest-writes" : "oce-prepared-git",
+    grpc_endpoint: "https://middleware.example.test",
+    audience: "preview",
+    request_timeout: { seconds: "5" },
+    binding_policy: 2,
+    bindings: filtered ? [4] : [1],
+    ...(filtered && { http_request_methods: ["POST"] }),
+  };
+  const loadedMiddlewares = structuredClone(prepared.middlewares);
+  const sourcePolicy = {
+    network_policies: sourceRules,
+    ...(filtered && { network_middlewares: prepared.middlewares }),
+  };
   const modelRule = {
     name: "_provider_openai",
     endpoints: [native ? modelEndpoint : { host: "api.openai.com", port: 443 }],
@@ -443,6 +494,7 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, 
     const g = generation();
     return {
       policy: {
+        ...(filtered && { network_middlewares: loadedMiddlewares }),
         network_policies: {
           ...effectivePolicy.network_policies,
           [modelRule.name]: {
@@ -465,16 +517,7 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, 
       policy_hash: g.policyHash,
       config_revision: g.configRevision,
       provider_env_revision: g.providerEnvRevision,
-      supervisor_middleware_services: [
-        {
-          name: "oce-prepared-git",
-          grpc_endpoint: "https://middleware.example.test",
-          audience: "preview",
-          request_timeout: { seconds: "5" },
-          binding_policy: 2,
-          bindings: [1],
-        },
-      ],
+      supervisor_middleware_services: [service],
     };
   };
   const receiptReads: { provider: string; operation: string | undefined }[] = [];
@@ -594,6 +637,18 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, 
     entry.nextObserveAt = 0;
     await f.runtime["reconcile"](entry);
   };
+  if (beforeObserve) {
+    await beforeObserve(service, loadedMiddlewares["oce-prepared-git"], async () => {
+      await reconcile();
+      assert.equal(
+        preview.recipient,
+        undefined,
+        "An unsupported binding must fail its first observation",
+      );
+      assert.equal(f.calls.material, 0);
+      assert.equal(activity.updates, 0);
+    });
+  }
   await reconcile();
   assert.match(preview.recipient!, /^[a-f0-9]{64}$/);
   assert.equal(entry.supervisor?.credentialState, "bootstrap");
@@ -640,6 +695,7 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, 
   assert.equal(activity.probes, native ? 0 : 1);
   return {
     ...selected,
+    service,
     activity,
     prepared,
     lookup,
@@ -3620,11 +3676,15 @@ test("native issue reads intersect the selected permissions, registry opt-in and
     ),
   );
   assert.deepEqual(await apiRules(), []);
+  assert.deepEqual(await apiRules({ permissions: { pull_requests: "read" } }), []);
   assert.deepEqual(await apiRules({ permissions: { pull_requests: "write" } }), []);
   assert.deepEqual(
     await apiRules({ permissions: { issues: "write", pull_requests: "write" } }, true),
     issues,
   );
+  assert.deepEqual(await apiRules({ writes: true, permissions: { pull_requests: "write" } }), [
+    { method: "POST", path: "/repos/example/delivery/pulls" },
+  ]);
   assert.deepEqual(
     await apiRules(
       { permissions: { issues: "read" }, optedRepository: "example/application" },
@@ -3787,13 +3847,115 @@ test("a persisted v8 Git-only binding cannot inherit issue network access", asyn
   });
 });
 
+test("stored native issue readers require fresh bindings to opt into writes", async (t) => {
+  const permissions = { issues: "write", pull_requests: "write" };
+  const old = await selectedV5(t, true, undefined, { permissions });
+  // Captured on the issue-read release with the same selected repositories and permissions.
+  assert.deepEqual(
+    old.revision.repositoryCredentials!.bindings.map((b) => b.grant.grantId),
+    [
+      "sha256:1373e0773c7511721ef345b008db21b53559f92b71b291a1c4b9bd5a54d39925",
+      "sha256:292d3fddbc9c9dfb93300157fd1f90a4f146ccfe40de1a595caeb377b7f818ee",
+      "sha256:daeb7d280763db55e3a36d7dc4693c7a1f8cfb8ddcfc7c23436e66a8a200fd8c",
+    ],
+  );
+  const next = await selectedV5(t, true, undefined, { permissions, writes: true });
+  await assert.rejects(
+    next.prepare(next.f.runtime, [], old.revision),
+    /selected-repository-grant-changed/,
+  );
+  assert.equal(next.store.rows.size, 0);
+  next.noCredentials();
+});
+
+test("native pull creation refuses a missing or foreign validator before opening the Git route", async (t) => {
+  for (const validator of ["missing", "foreign"] as const) {
+    const { f, prepare, store } = await selectedV5(t, true, undefined, {
+      validator,
+      writes: true,
+      permissions: { pull_requests: "write" },
+    });
+    const before = f.calls.providerWrites;
+    await assert.rejects(prepare(), /OpenShell native REST writes require/);
+    assert.equal(store.rows.size, 0);
+    assert.equal(f.calls.providerWrites, before);
+    assert.equal(f.calls.material, 0);
+  }
+  // A read grant for the opted-in repository still uses stock when the alias is absent.
+  const read = await heldGit(t, true, undefined, {
+    validator: "missing",
+    writes: true,
+    optedRepository: "example/application",
+    permissions: { issues: "read", pull_requests: "write" },
+  });
+  await read.reconcile();
+  assert.equal(read.activity.updates, 1);
+});
+
+test("native writes require the matching POST-only service and attached selector before installing material", async (t) => {
+  const held = await heldGit(
+    t,
+    true,
+    undefined,
+    {
+      writes: true,
+      permissions: { issues: "write", pull_requests: "write" },
+    },
+    async (service, selector, refuses) => {
+      const original = structuredClone(service);
+      assert.equal(service.name, "oce-prepared-git-rest-writes");
+      for (const invalid of [
+        { name: "oce-prepared-git" },
+        { bindings: [1], http_request_methods: undefined },
+        { bindings: [1] },
+        { bindings: [1, 4] },
+        { binding_policy: 1 },
+        { http_request_methods: undefined },
+        { http_request_methods: ["GET", "POST"] },
+        { http_request_methods: ["GET"] },
+      ]) {
+        Object.assign(service, original, invalid);
+        await refuses();
+      }
+      Object.assign(service, original);
+      Object.assign(selector, { on_error: "fail_open" });
+      await refuses();
+      Object.assign(selector, { on_error: "fail_closed" });
+    },
+  );
+  const { service, f, revision, startupId, activity } = held;
+  await held.reconcile();
+  assert.equal(activity.updates, 1);
+  await f.runtime.releasePreview(
+    revision.id,
+    startupId,
+    releaseAttempt(async () => true),
+  );
+  const binding = await held.lookup();
+  assert.ok(binding?.scope === "github-repository" && binding.nativeGit);
+  assert.deepEqual(binding.scopedRestWrites, {
+    pullRequestRepositories: ["example/delivery"],
+  });
+  service.http_request_methods = ["GET"];
+  assert.equal(await held.lookup(), undefined);
+});
+
 test("native issue policy survives Sandbox creation and independent Credential Proxy readback", async (t) => {
+  await verifyRestSelector(t, false);
+});
+
+test("mixed REST selects the POST validator through Sandbox creation and Credential Proxy readback", async (t) => {
+  await verifyRestSelector(t, true);
+});
+
+async function verifyRestSelector(t: TestContext, writes: boolean) {
   const {
     f,
     revision: admitted,
     executionId,
   } = await selectedV5(t, true, undefined, {
-    permissions: { issues: "read" },
+    ...(writes && { writes }),
+    permissions: { issues: "read", pull_requests: "write" },
   });
   const client = fixtureClient(f);
   let created: Awaited<ReturnType<RuntimeClient["createSandbox"]>> | undefined;
@@ -3967,10 +4129,12 @@ test("native issue policy survives Sandbox creation and independent Credential P
   const bound = f.runtime.boundGitRule(revision);
   assert.ok(bound);
   assert.deepEqual(created.spec?.policy, prepared.proxyWiring.configuration);
-  assert.deepEqual(prepared.proxyWiring.configuration.network_policies, { [bound.name]: bound });
+  assert.deepEqual(prepared.proxyWiring.configuration.network_policies, {
+    [bound.name]: bound,
+  });
   assert.equal(
     JSON.stringify(prepared.proxyWiring.configuration.network_middlewares).includes(
-      "deny-egress.invalid",
+      writes ? "oce-prepared-git-rest-writes" : "deny-egress.invalid",
     ),
     true,
     "the approved issue routes must bypass the host-wide callback",
@@ -4001,7 +4165,7 @@ test("native issue policy survives Sandbox creation and independent Credential P
     0,
     "readback must not select usable material for an unobserved launcher",
   );
-});
+}
 
 test("native issue reads refuse a loaded API write before material selection", async (t) => {
   const held = await heldGit(t, true, undefined, {
