@@ -60,7 +60,7 @@ export type UpdateManagedCredentialSourceInput =
  * CREDENTIAL_GATEWAY_TIMEOUT_MS after the abort. Until this long after `createdAt`, an absent
  * gateway copy does not prove that no late create is still in flight, so the record is kept.
  */
-const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
+const CREDENTIAL_GATEWAY_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
 
 function assertManagedSourceLifecycleSettings(settings: Readonly<Record<string, string>>): void {
   if (Object.hasOwn(settings, SOURCE_PROVIDER_PRESET_CONFIG_KEY)) {
@@ -127,6 +127,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
   dependencies: ManagedCredentialSourceDependencies,
   pendingConnection: ConsentToken,
 ) {
+  const tokenServiceRegistrationFenceMs = 2 * dependencies.tokenServiceTimeoutMs + 10_000;
   let tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
 
   async function activateTokenServiceInstance(
@@ -313,7 +314,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         // since the claim committed; such a claim must not start a new owner write.
         const dispatchWindowEndsAt =
           Date.parse(pending.registrationDispatchedAt ?? "") +
-          CREDENTIAL_REGISTRATION_FENCE_MS -
+          tokenServiceRegistrationFenceMs -
           2 * dependencies.tokenServiceTimeoutMs;
         if (
           !Number.isFinite(dispatchWindowEndsAt) ||
@@ -679,13 +680,15 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       },
     );
     await retireCredentialSourceMaterial(namespace, source, gateway);
-    const fenceMs =
-      Date.parse(source.createdAt) +
-      CREDENTIAL_REGISTRATION_FENCE_MS -
-      dependencies.clock().getTime();
-    if (source.ownerCapability !== "token_service" && fenceMs > 0) {
-      // After the delete grant and lookup; the text names only the wait.
-      throw new RetryLaterError("registrationFence", fenceMs / 1000);
+    if (source.ownerCapability !== "token_service") {
+      const fenceMs =
+        Date.parse(source.createdAt) +
+        CREDENTIAL_GATEWAY_REGISTRATION_FENCE_MS -
+        dependencies.clock().getTime();
+      if (fenceMs > 0) {
+        // After the delete grant and lookup; the text names only the wait.
+        throw new RetryLaterError("registrationFence", fenceMs / 1000);
+      }
     }
     // The success event commits with the final removal, so a completed deletion is always audited.
     await dependencies.transactions.transact(async (state) => {
@@ -720,7 +723,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       if (!source.registration && source.registrationDispatchedAt) {
         const remaining =
           Date.parse(source.registrationDispatchedAt) +
-          CREDENTIAL_REGISTRATION_FENCE_MS -
+          tokenServiceRegistrationFenceMs -
           dependencies.clock().getTime();
         if (!Number.isFinite(remaining)) {
           throw new ResourceStateConflictError("The registration dispatch time is invalid.");

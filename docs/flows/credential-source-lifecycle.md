@@ -1,20 +1,20 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-21
-last_updated_session: authoring-run/16cfa409-7c14-4f52-9167-3e897f919125
+last_updated_session: authoring-run/22722819-a3e4-4a6e-ae08-9e23bde479dd
 ---
 
 # Credential source lifecycle flow
 
 ## Overview
 
-OpenClaw Control Plane (OCC) authorizes CredentialSource operations and records the Source owner. The legacy serving path records `CredentialGatewayDriver` as owner; its OpenShell implementation stores the value. The serving protected path records `LegacyEgressProxyDriver` as owner. The selected TokenServiceDriver owns [managed static Sources](token-service-static-custody.md), which support public enrollment and retirement; native Agent delivery remains unavailable. An OpenShell Provider in native delivery is a delivery copy, not the Source owner. OCC freezes source identity in the Agent revision and the worker rechecks authorization before delivery.
+OpenClaw Control Plane (OCC) authorizes Source operations and stores Source metadata. For [managed static Sources](token-service-static-custody.md), the selected TokenService owns credential custody. A caller supplies the credential through write-only Source registration; the caller does not create a separate Namespace Secret. Enrollment, update, and retirement are available, but managed Agent deployment and native delivery are not yet integrated.
 
 ## Entry Points
 
 - Trigger: CredentialSource create, update, or delete; Agent binding and deployment; or Agent source withdrawal.
 - Source: `apps/controller/src/http/credential-sources.ts:createCredentialSource`
-- Source: `packages/occ/src/credential-source-operations.ts:createCredentialSource`
+- Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 - Source: `packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`
 - Context: a ready Namespace, selected owner Driver, and grants for the exact source operation.
 
@@ -22,37 +22,37 @@ OpenClaw Control Plane (OCC) authorizes CredentialSource operations and records 
 
 ```mermaid
 graph TD
-  API["<b>Source API</b><br/>Create, update, delete"] -->|authorize| OCC["<b>OCC</b><br/>Source state and audit"]
-  OCC -->|registration or admission| Owner["<b>Serving Source owner</b><br/>Legacy Gateway or protected Proxy"]
-  Owner -->|confirm| OCC
-  OCC -->|bind and admit| Revision["<b>Agent revision</b><br/>Frozen source identity"]
-  Revision -->|dispatch| Worker["<b>Worker and Compute</b><br/>Recheck authorization"]
-  Worker -->|legacy Gateway attachment| Sandbox["<b>Sandbox</b><br/>Approved delivery"]
-  Worker -->|protected Proxy configuration| Sandbox
-  Worker -. pending integration .-> Staged["<b>Native Proxy</b><br/>Delivery copy and status"]
+  API["<b>Source API</b><br/>Write-only credential"] -->|authorize create| OCC["<b>OCC</b><br/>Source, IAM, and audit"]
+  OCC -->|reserve Source and dispatch| Owner["<b>TokenService</b><br/>Credential custody"]
+  Owner -->|confirm registration| OCC
+  OCC -->|mark ready| Source["<b>Source metadata</b><br/>No credential material"]
+  Source -->|authorized binding| Draft["<b>Agent draft</b><br/>Source identity"]
+  Draft -. pending integration .-> Delivery["<b>Agent runtime delivery</b><br/>Proxy delivery copy"]
   classDef pending fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-dasharray:4 4
-  class Staged pending
+  class Delivery pending
 ```
 
-The dashed edge marks missing workflow integration, not a tested deployment.
+Solid arrows show implemented enrollment and draft binding. The dashed edge marks the missing managed Agent delivery integration.
 
 ## Execution Trace
 
 ### 1. Register a source
 
-`packages/occ/src/credential-source-operations.ts:createCredentialSource`
+`apps/controller/src/http/credential-sources.ts:createCredentialSource`, `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-For Gateway and protected Sources, OCC authorizes `credential_source:create`, locks the ready Namespace, and checks that the selected owner offers the requested source type before it reads a Secret or writes to a Driver. Invalid fields return `400`; an unoffered type returns `409`. Each Secret must belong to the Namespace, and the caller needs `secret:operate`. For a legacy Gateway source, OCC reads the Secret to copy its value to `CredentialGatewayDriver`. For a protected static source, OCC first checks that its selected provider is compatible and registered once, then verifies the credential format and its authoritative version without retaining the value. See the [source reference](../reference/credential-sources.md) for inputs and the [protected flow](credential-source-egress.md#1-admit-source-and-install-the-revision-plan) for admission details.
+The caller sends the credential in the write-only `secret` field of Source POST. OCC authorizes `credential_source:create` on the ready Namespace, reserves the Source with the selected TokenService instance, grants the creator access, and commits the registration-start audit before dispatch. The Source owns no Namespace Secret reference; OCC records metadata and the private registration receipt, while TokenService owns the credential material.
 
-`packages/occ/src/credential-source-operations.ts:abandonCredentialRegistration`, `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
+OCC commits a dispatch claim before it calls `TokenServiceDriver.registerSource`. A confirmed registration lets OCC mark the Source `ready` and commit its success audit. A refusal before any write can remove the reservation; an uncertain write keeps the Source available for retirement through its recorded owner. Responses contain sanitized Source metadata and never return the supplied credential or private receipt. See the [managed static reference](../reference/credential-sources/managed-static.md) for inputs and the [custody flow](token-service-static-custody.md) for the dispatch and recovery sequence.
 
-Registration and deletion reject inherited controller transactions before effects, so their intermediate states can commit independently. For legacy Gateway sources, OCC commits `registering` before calling the Driver. The bundled OpenShell Driver checks Provider ownership and creates the source-owned Provider and profile; Refresh alone receives refresh material. Success commits `ready` and audit together. A failed or uncertain external write triggers cleanup through the original owner. If cleanup cannot confirm removal, the record stays `deleting`; if DELETE wins the race, POST compensates without taking over DELETE's issuer withdrawal. Protected Proxy sources instead complete [protected admission](credential-source-egress.md) without a Gateway registration write; migration requires an unbound source.
+The deprecated `CredentialGatewayDriver` (distinct from the OpenClaw Gateway runtime) and protected Proxy registration forms remain enabled during the serving cutover; see the [legacy Driver contract](../reference/drivers/credential-gateway.md#lifecycle) and [protected admission flow](credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
 
 ### 2. Update a source
 
-`packages/occ/src/credential-source-operations.ts:updateCredentialSource`
+`packages/occ/src/credential-source-operations.ts:credentialSourceUpdateIdentity`, `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`
 
-OCC authorizes `credential_source:update`, locks a ready source, and validates replacement Secret references. Device-authorized sources refuse PATCH before Secret reads. For legacy Gateway sources, the external write precedes the commit of references and audit; a failed commit can leave OpenShell newer until the request is repeated. OpenShell updates reach subsequently started processes. A protected static source must be unbound before it can be updated; OCC then repeats Proxy admission and commits replacement references without a Gateway update. Refresh rotation follows the [refresh flow](credential-source-refresh.md#4-update-and-rotation).
+OCC authorizes exact `credential_source:update` and dispatches PATCH by the locked Source owner. For a managed static Source, TokenService replaces material from the write-only `secret` field; omitted fields retain their values. A provider-preset change or removal requires an unbound Source and a separate request from credential replacement. For material changes, OCC commits updated metadata and audit after the owner confirms the operation; a preset-only change updates metadata and audit directly. See the [managed static reference](../reference/credential-sources/managed-static.md) for PATCH rules.
+
+Transitional Gateway and protected Proxy updates keep their existing owner-specific behavior. Device-authorized sources refuse PATCH before Secret reads, and refresh rotation follows the [refresh flow](credential-source-refresh.md#4-update-and-rotation).
 
 ### 3. Bind and admit an Agent revision
 
@@ -90,12 +90,12 @@ A registration write can finish after deletion starts. To prevent that late writ
 
 ## Debugging and Verification
 
-Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_GATEWAY_MISMATCH`, `HARNESS_AUTH_SOURCE_UNAVAILABLE`, and `CREDENTIAL_WITHDRAWN` identify a changed selection, unavailable source, or withdrawal. [API](../../tests/integration/credential-source-api.test.mjs), [worker](../../tests/integration/postgres-worker-agent-revision.test.mjs), and [controlled staged wire](../../tests/conformance/openshell-staged-credential-proxy.test.ts) coverage have different dependency boundaries. The staged fixture does not prove Worker integration, admission, Sandbox composition, or a live model request. Use the [OpenShell testing guide](../testing/openshell.md#openshell-sandbox) for runtime proof.
+Inspect Source state and lifecycle audit for managed enrollment; record state does not attest credential usability. For existing Agent delivery, inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_GATEWAY_MISMATCH`, `HARNESS_AUTH_SOURCE_UNAVAILABLE`, and `CREDENTIAL_WITHDRAWN` identify a changed selection, unavailable source, or withdrawal. [API](../../tests/integration/credential-source-api.test.mjs), [worker](../../tests/integration/postgres-worker-agent-revision.test.mjs), and [controlled staged wire](../../tests/conformance/openshell-staged-credential-proxy.test.ts) coverage have different dependency boundaries. The staged fixture does not prove Worker integration, admission, Sandbox composition, or a live model request. Use the [OpenShell testing guide](../testing/openshell.md#openshell-sandbox) for runtime proof.
 
 ## Related docs
 
 - [Credential sources](../reference/credential-sources.md)
-- [Legacy CredentialGatewayDriver contract](../reference/drivers/credential-gateway.md)
+- [Managed static Sources](../reference/credential-sources/managed-static.md)
 - [Secret storage and delivery](secret-storage-and-delivery.md)
 - [Managed static TokenService custody](token-service-static-custody.md)
 
@@ -104,6 +104,8 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 11:54: Lead the lifecycle with managed TokenService enrollment and mark old custody paths as transitional. (authoring-run/22722819-a3e4-4a6e-ae08-9e23bde479dd - 15794c3860bcf982b500774d8c700fbcd19aaf71)
 
 - 2026-11-21 11:45: Reconcile enrollment status with the extracted source flow. (authoring-run/16cfa409-7c14-4f52-9167-3e897f919125 - 7533013d1061c433e27883818cf69f955239c43f)
 

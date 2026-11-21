@@ -13,9 +13,7 @@ import type {
 import {
   AuditAppendUnavailableError,
   AuthorizationDeniedError,
-  DependencyUnavailableError,
   ResourceStateConflictError,
-  RetryLaterError,
   ScopeViolationError,
   TokenServiceRegistrationRefusedError,
   type UpdateManagedCredentialSourceInput,
@@ -273,7 +271,13 @@ test(
     // The dependency applies the credential write but loses the acknowledgment; retain fencing and attributable intent.
     const unknownKey = randomUUID();
     core.createAppliedFailureCodes.push(503);
-    await assert.rejects(createSource("Unknown receipt", unknownKey), DependencyUnavailableError);
+    const unknown = await inject("POST", base, {
+      name: "Unknown receipt",
+      type: "static",
+      secret: { opaque: unknownKey },
+    });
+    assert.equal(unknown.statusCode, 503, unknown.body);
+    assert.equal(unknown.json().error.code, "DEPENDENCY_UNAVAILABLE");
     const uncertain = (
       await pool.query(
         "SELECT id,state,registration,registration_dispatched_at FROM occ.credential_sources WHERE namespace_id=$1",
@@ -294,10 +298,18 @@ test(
       ).rows,
       [{ actor_id: principal.id, resource_id: uncertain.id, phase: "registration_started" }],
     );
-    await assert.rejects(retire(uncertain.id), RetryLaterError);
+    // An uncertain owner write stays fenced through the TokenService settlement deadline.
+    const pending = await inject("DELETE", `${base}/${uncertain.id}`);
+    assert.equal(pending.statusCode, 503, pending.body);
+    assert.equal(pending.headers["retry-after"], "70");
     assert.equal(core.secrets.size, 1);
-    now = new Date(now.getTime() + 70_001);
-    await retire(uncertain.id);
+    now = new Date(now.getTime() + 69_999);
+    const lastWait = await inject("DELETE", `${base}/${uncertain.id}`);
+    assert.equal(lastWait.statusCode, 503, lastWait.body);
+    assert.equal(lastWait.headers["retry-after"], "1");
+    now = new Date(now.getTime() + 1);
+    const removed = await inject("DELETE", `${base}/${uncertain.id}`);
+    assert.equal(removed.statusCode, 204, removed.body);
     assert.equal(core.secrets.size, 0);
     assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
 

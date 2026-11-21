@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-21
-last_updated_session: authoring-run/16cfa409-7c14-4f52-9167-3e897f919125
+last_updated_session: authoring-run/22722819-a3e4-4a6e-ae08-9e23bde479dd
 ---
 
 # Managed static credential source custody flow
@@ -37,18 +37,18 @@ graph TD
   C -->|receipt| D["<b>OCC commits ready</b><br/>Metadata and audit"]
   C -->|uncertain write| E["<b>OCC keeps deleting</b><br/>Retry retirement"]
   A -->|GET or list| F["<b>OCC returns metadata</b><br/>No credential resolution"]
-  A -->|PATCH| G{"<b>Locked Source owner</b>"}
-  G -->|managed| H{"<b>Preset changes?</b>"}
+  A -->|PATCH| H{"<b>Preset changes?</b>"}
   H -->|preset only, unbound| I["<b>OCC updates config</b><br/>Commit with audit"]
-  H -->|material or lifecycle only| J["<b>TokenServiceDriver</b><br/>Update credential"]
+  H -->|no effective preset change| J["<b>TokenServiceDriver</b><br/>Update credential"]
   H -->|effective preset change mixed with material or bound| X["<b>Refuse change</b><br/>No owner write"]
-  G -->|Gateway| K["<b>Existing Gateway path</b>"]
   A -->|DELETE, unreferenced| L["<b>OCC marks deleting</b><br/>Audit retirement start"]
   E --> L
   L --> M["<b>Recorded TokenService</b><br/>Confirm removal"]
   M --> N["<b>OCC removes Source</b><br/>Bindings and audit"]
   D -->|Agent draft binding| O["<b>Agent save</b><br/>Exact source authorization"]
-  O --> P["<b>Deploy refused</b><br/>No revision or work"]
+  O -. pending integration .-> P["<b>Agent runtime delivery</b><br/>Native delivery copy"]
+  classDef pending fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-dasharray:4 4
+  class P pending
 ```
 
 ## Execution Trace
@@ -72,8 +72,9 @@ The route distinguishes the validated managed request by singular `secret`.
 OCC authorizes `credential_source:create`, locks the Namespace, and commits a
 `registering` Source, creator binding, and `registration_started` audit before
 material can leave the controller. It commits a dispatch claim, rechecks IAM and
-the Source, and calls `TokenServiceDriver.registerSource`. The selected static
-adapter accepts one nonempty UTF-8 credential and no lifecycle settings. OCC
+the Source, and calls `TokenServiceDriver.registerSource`. OCC uses the
+TokenService timeout for both dispatch and the retirement fence. The selected
+static adapter accepts one nonempty UTF-8 credential and no lifecycle settings. OCC
 commits the private receipt, metadata, `ready` state, and completion audit.
 
 `config.provider_preset` accepts the exact approved ID `openai`. OCC removes it
@@ -96,8 +97,7 @@ For PATCH, OCC authorizes exact `credential_source:update`, checks the Namespace
 locks the Source, and rechecks authorization before returning its immutable owner
 classification and lifecycle type. The handler rejects a request shape that does
 not match that owner. The managed mutation then locks the Namespace and Source and
-rechecks IAM and instance ownership. Gateway updates retain their existing
-transaction and audit.
+rechecks IAM and instance ownership.
 
 Omitting `config` preserves the preset. `config: {}` removes it. A preset-only
 change commits config and audit together without calling TokenService. An
@@ -123,8 +123,9 @@ the Source and its IAM bindings with completion audit. The Namespace remains
 nonempty until that removal commits.
 
 An undispatched or definitively refused registration needs no owner cleanup. A
-possibly dispatched write without a receipt stays `deleting` until its dispatch
-fence passes and the recorded owner confirms removal. Missing ownership or an
+possibly dispatched write without a receipt stays `deleting` until the fence,
+measured from the committed dispatch claim as twice the TokenService timeout plus
+10 seconds, passes and the recorded owner confirms removal. Missing ownership or an
 uncertain removal retains the record for an authorized DELETE retry. Denied
 mutations receive attributable authorization-denial audit without material.
 
@@ -150,7 +151,7 @@ Kubernetes Secret storage, runtime delivery, or model execution.
 ## Related docs
 
 - [Managed static Source reference](../reference/credential-sources/managed-static.md)
-- [Gateway and protected source lifecycle](credential-source-lifecycle.md)
+- [Credential source lifecycle](credential-source-lifecycle.md)
 - [Agent draft admission](native-service-account-credential-delivery.md)
 - [Driver selection](../reference/drivers/selection.md#supported-selections)
 
@@ -159,6 +160,8 @@ Kubernetes Secret storage, runtime delivery, or model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 11:54: Derive the managed dispatch and retirement fence from the TokenService timeout and focus the diagram on managed custody. (authoring-run/22722819-a3e4-4a6e-ae08-9e23bde479dd - 15794c3860bcf982b500774d8c700fbcd19aaf71)
 
 - 2026-11-21 11:45: Point the public static Source lifecycle to its extracted Manager and Driver modules. (authoring-run/16cfa409-7c14-4f52-9167-3e897f919125 - 7533013d1061c433e27883818cf69f955239c43f)
 
