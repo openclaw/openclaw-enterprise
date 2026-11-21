@@ -2,7 +2,7 @@ import type {
   ConfigurationValidationOptions,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
   configIncludeProblem,
@@ -14,6 +14,7 @@ import {
   configurationSettingMessage,
   ConfigurationHarnessError,
   GatewayPasswordValueError,
+  ScopeViolationError,
 } from "./errors.ts";
 import {
   refuseProviderKeyVariants,
@@ -374,4 +375,11 @@ export function waitsOnVariable(
       (typeof key === "string" && unresolved([...path, key], true) !== undefined) ||
       waitsOnVariable(child, [...path, key], options),
   );
+}
+
+export function freezeConfigurationValues(value: unknown): Readonly<OpenClawConfigurationDocument> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ScopeViolationError("Configuration values must be a JSON object.");
+  }
+  return immutableCopy(value as OpenClawConfigurationDocument);
 }

@@ -13,7 +13,6 @@ import {
   type ConfigurationDriver,
   type CredentialSourceReference,
   type HarnessAuthBinding,
-  type HarnessDescriptor,
   type HarnessExecutionMode,
   type Namespace,
   type ResourceRef,
@@ -22,6 +21,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+import type { HarnessResolver } from "./agent-harness-topology.ts";
 import {
   normalizeProvisioningWorkspace,
   PROVISIONING_DEPLOYMENT_PENDING,
@@ -72,11 +72,6 @@ import {
   withUnrecordedProvisioningConfiguration,
   withoutUnrecordedProvisioningConfiguration,
 } from "./provisioning-effects.ts";
-
-export type HarnessResolver = (
-  harnessId: string,
-  executionMode: HarnessExecutionMode,
-) => HarnessDescriptor | undefined;
 
 export type AgentProvisioningWorkerOutcome =
   | { readonly outcome: "succeeded"; readonly revisionId: string }

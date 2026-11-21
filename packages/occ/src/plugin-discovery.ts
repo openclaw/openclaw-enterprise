@@ -7,7 +7,6 @@ import {
   type CredentialSource,
   type CredentialSourceContext,
   type CredentialSourceReference,
-  type HarnessAuthBinding,
   type HarnessExecutionMode,
   type Namespace,
   type PluginCatalogEntry,
@@ -35,6 +34,7 @@ import {
   ScopeViolationError,
   SecretBindingValidationError,
 } from "./errors.ts";
+import { harnessAuthBinding } from "./harness-auth.ts";
 import type { ConfigurationOwnership } from "./ports/configurations.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import { exactAgent, exactNamespace } from "./resource-scope.ts";
@@ -89,7 +89,6 @@ interface PluginDiscoveryDependencies {
     plugins: PluginDesiredState,
     harness: Readonly<PluginHarness>,
   ) => void;
-  readonly harnessAuthBinding: (value: unknown) => HarnessAuthBinding | null;
 }
 
 const PLUGIN_ID_SHAPE = /^[A-Za-z0-9._~:@-]{1,253}$/u;
@@ -764,7 +763,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             credential: credentialSource ? { credentialSource } : {},
           };
         }
-        const binding = dependencies.harnessAuthBinding(agent.harnessAuth);
+        const binding = harnessAuthBinding(agent.harnessAuth);
         if (binding?.method === "credential_source") {
           const reference = {
             kind: "credential_source" as const,
