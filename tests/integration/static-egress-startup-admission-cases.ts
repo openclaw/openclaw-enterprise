@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { Check } from "typebox/value";
 import {
   CredentialSourceResponse,
@@ -10,21 +10,38 @@ import {
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { staticEgressAdmissionFixture } from "../helpers/static-egress.mjs";
+import { staticEgressAdmissionFixture as staticEgressAdmissionFixtureJs } from "../helpers/static-egress.mjs";
 
 type HttpResponse = { status: number; body: unknown };
-type FixtureView = {
+type ConsoleAppFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type JsAdmissionFixture = Awaited<ReturnType<typeof staticEgressAdmissionFixtureJs>>;
+type AdmissionFixture = Pick<
+  JsAdmissionFixture,
+  | "fixtureKind"
+  | "namespace"
+  | "modelProvider"
+  | "path"
+  | "providerRequests"
+  | "gatewayEffects"
+  | "materialReads"
+  | "countSecretReads"
+> & {
+  controller: OpenClawController;
+  secret: unknown;
+  legacySource: unknown;
   gatewayRequests: readonly unknown[];
-  profiles: ReadonlyMap<unknown, unknown>;
-  providers: Map<unknown, unknown>;
-  request: (
-    ...args: Parameters<Awaited<ReturnType<typeof createConsoleAppFixture>>["request"]>
-  ) => Promise<HttpResponse>;
+  profiles: ReadonlyMap<string, unknown>;
+  providers: Map<string, unknown>;
+  request: (...args: Parameters<ConsoleAppFixture["request"]>) => Promise<HttpResponse>;
+  createConfiguration: ConsoleAppFixture["createConfiguration"];
+  fixtureResponse?: ConsoleAppFixture["fixtureResponse"];
 };
-type WithFixtureView<T> = T extends unknown ? Omit<T, keyof FixtureView> & FixtureView : never;
-type AdmissionFixture = WithFixtureView<Awaited<ReturnType<typeof staticEgressAdmissionFixture>>>;
+const staticEgressAdmissionFixture: (
+  context: TestContext,
+  options?: { gatewayOnly?: boolean; includeLegacy?: boolean; now?: () => Date },
+) => Promise<AdmissionFixture> = staticEgressAdmissionFixtureJs;
 
-function entries(map: ReadonlyMap<unknown, unknown>): [string, unknown][] {
+function entries(map: ReadonlyMap<string, unknown>): [string, unknown][] {
   return [...map].map(([key, value]) => {
     assert.ok(typeof key === "string", "Gateway map key");
     return [key, value];
@@ -92,7 +109,7 @@ async function assertAdmissionUnchanged(
 export function registerStartupAdmissionCases(): void {
   test("bundled OpenShell startup refuses mixed static CREATE before material or registration; Gateway-only CREATE and PATCH remain ordinary", async (t) => {
     for (const gatewayOnly of [false, true]) {
-      const f: AdmissionFixture = await staticEgressAdmissionFixture(t, { gatewayOnly });
+      const f = await staticEgressAdmissionFixture(t, { gatewayOnly });
       const controller = asRecord(f)?.controller;
       assert.ok(controller instanceof OpenClawController);
       assert.ok("fixtureResponse" in f, "console fixture response decoder");
@@ -261,7 +278,7 @@ export function registerStartupAdmissionCases(): void {
 
   test("bundled OpenShell startup refuses unbound legacy adoption; original Gateway DELETE remains available", async (t) => {
     let clock = Date.now();
-    const f: AdmissionFixture = await staticEgressAdmissionFixture(t, {
+    const f = await staticEgressAdmissionFixture(t, {
       includeLegacy: true,
       now: () => new Date(clock),
     });
@@ -319,8 +336,8 @@ export function registerStartupAdmissionCases(): void {
     const [name, provider] = entry;
     const metadata = asRecord(provider.metadata);
     assert.ok(metadata, "Gateway provider metadata");
-    const providers: Map<unknown, unknown> = f.providers;
-    const profiles: ReadonlyMap<unknown, unknown> = f.profiles;
+    const providers = f.providers;
+    const profiles = f.profiles;
     assert.equal(providers.size, 1);
     assert.equal(asRecord(metadata.labels)?.["openclaw.dev/credential-source-id"], legacy.id);
     assert.ok(profiles.has(name));

@@ -1,14 +1,71 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import type { ProxyRevisionContext } from "../../packages/contracts/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { staticEgressFixture as staticEgressFixtureJs } from "../helpers/static-egress.mjs";
 
-type DeployedFixture = Extract<
-  Awaited<ReturnType<typeof staticEgressFixture>>,
-  { fixtureKind: "deployed" }
->;
+type ConsoleAppFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+export type ConsoleOptions = NonNullable<Parameters<typeof createConsoleAppFixture>[1]>;
+type ConsoleResponse = Omit<Awaited<ReturnType<ConsoleAppFixture["request"]>>, "body" | "data"> & {
+  body: unknown;
+  data: unknown;
+};
+export type ConsoleFixture = Omit<ConsoleAppFixture, "controller" | "request"> & {
+  controller: OpenClawController;
+  request: (...args: Parameters<ConsoleAppFixture["request"]>) => Promise<ConsoleResponse>;
+};
+type JsFixture = Awaited<ReturnType<typeof staticEgressFixtureJs>>;
+type JsDeployedFixture = Extract<JsFixture, { fixtureKind: "deployed" }>;
+type JsUndeployedFixture = Extract<JsFixture, { fixtureKind: "undeployed" }>;
+type DeployedFixture = Pick<
+  JsDeployedFixture,
+  | "fixtureKind"
+  | "namespace"
+  | "runtimeNamespace"
+  | "attachment"
+  | "egress"
+  | "installation"
+  | "observed"
+  | "providerRequests"
+  | "secretReads"
+  | "sandboxDriver"
+  | "capture"
+  | "resolve"
+  | "authorize"
+  | "permitRequest"
+> & {
+  controller: OpenClawController;
+  revision: unknown;
+  context: unknown;
+  providers: ReadonlyMap<string, unknown>;
+  createAgent?: ConsoleAppFixture["createAgent"];
+  deployAgent: ConsoleAppFixture["deployAgent"];
+};
+type UndeployedFixture = Pick<JsUndeployedFixture, "fixtureKind" | "namespace"> & {
+  controller: OpenClawController;
+  agent: unknown;
+  request: (
+    ...args: Parameters<ConsoleAppFixture["request"]>
+  ) => Promise<{ status: number; body: unknown }>;
+};
+type AppFactory = (
+  context: TestContext,
+  options?: ConsoleOptions,
+  transportDatabaseUrl?: string,
+) => Promise<ConsoleFixture>;
+interface StaticEgressFactory {
+  (
+    context: TestContext,
+    options: { admitRevision: false; appFactory: AppFactory },
+  ): Promise<UndeployedFixture>;
+  (
+    context: TestContext,
+    options?: { admitRevision?: true; recordInstallation?: boolean; inertProviderRule?: boolean },
+  ): Promise<DeployedFixture>;
+}
+export const staticEgressFixture: StaticEgressFactory = staticEgressFixtureJs;
 
 export async function deployedContext(f: DeployedFixture): Promise<ProxyRevisionContext> {
   const fixture = asRecord(f);

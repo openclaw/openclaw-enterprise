@@ -8,13 +8,20 @@ import {
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { createConsoleAppFixture as createConsoleAppFixtureJs } from "../helpers/console-app.mjs";
 import { registerStartupAdmissionCases } from "./static-egress-startup-admission-cases.ts";
 import {
   deployedContext,
   registerPolicyAdmissionCases,
+  staticEgressFixture,
+  type ConsoleFixture,
+  type ConsoleOptions,
 } from "./static-egress-policy-admission-cases.ts";
+
+const createConsoleAppFixture: <Options extends object>(
+  context: Parameters<typeof createConsoleAppFixtureJs>[0],
+  options?: Options & ConsoleOptions,
+) => Promise<ConsoleFixture> = createConsoleAppFixtureJs;
 
 interface AdmissionDependencies {
   admissionCases: (revision: AgentRevision) => unknown;
@@ -181,15 +188,7 @@ export function createStaticEgressAdmissionCases({
         assert.ok(admissionController instanceof OpenClawController);
         const admissionAgentId = admissionAgent?.id;
         assert.ok(typeof admissionAgentId === "string", "undeployed fixture Agent");
-        const admissionHttp: {
-          request: (
-            ...args: Parameters<Awaited<ReturnType<typeof createConsoleAppFixture>>["request"]>
-          ) => Promise<{
-            status: number;
-            body: unknown;
-          }>;
-        } = admission;
-        const response = await admissionHttp.request(
+        const response = await admission.request(
           "POST",
           `/namespaces/${admission.namespace.id}/agents/${admissionAgentId}/deploy`,
         );
