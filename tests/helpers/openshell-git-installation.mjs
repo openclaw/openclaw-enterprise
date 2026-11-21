@@ -34,6 +34,7 @@ import {
   assertStockSupervisorImport,
   stockSupervisorConfig,
   stockSupervisorManifest,
+  waitForStockSupervisor,
 } from "./openshell-stock-supervisor-image.ts";
 import { stopProcess } from "./stop-process.mjs";
 
@@ -881,30 +882,23 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       "the workload must have exactly one matching supervisor Pod",
     );
     const pod = supervisors[0];
-    assert.equal(pod.metadata.annotations?.["openshell.ai/sandbox-id"], sandboxId);
-    assert.ok(
-      pod.metadata.ownerReferences?.some(
-        (owner) => owner.kind === "Sandbox" && owner.uid === resource.metadata.uid,
-      ),
-      "the supervisor must belong to the selected Sandbox resource",
-    );
     const container = pod.spec.containers.find(({ name }) => name === "supervisor");
-    const status = pod.status.containerStatuses?.find(({ name }) => name === "supervisor");
-    assert.ok(
-      container && status?.ready && status.state.running,
-      "the supervisor must be running and ready",
-    );
-    assert.equal(
-      container.image,
-      supervisor.reference,
-      "the supervisor must select the verified stock image",
-    );
-    // CRI implementations report either the manifest or image-config digest.
-    // Both digests were verified against the pinned stock image.
-    const runningDigest = status.imageID.match(/sha256:[a-f0-9]{64}$/)?.[0];
-    assert.ok(
-      [supervisor.image.digest, supervisor.configDigest].includes(runningDigest),
-      "the running supervisor image must match the verified stock image",
+    const status = await waitForStockSupervisor(
+      pod,
+      async (signal) =>
+        JSON.parse(
+          await kube(["get", "pod", pod.metadata.name, "-n", sandboxNamespace, "-o", "json"], {
+            signal,
+          }),
+        ),
+      {
+        sandboxId,
+        sandboxUid: resource.metadata.uid,
+        image: supervisor.reference,
+        // CRI implementations report either the verified manifest or image-config digest.
+        digests: [supervisor.image.digest, supervisor.configDigest],
+      },
+      t.signal,
     );
 
     // The selected Sandbox determines the expected stock generation, independently of its Pod mount.
