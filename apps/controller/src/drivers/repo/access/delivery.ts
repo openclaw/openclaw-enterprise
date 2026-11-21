@@ -11,7 +11,9 @@ export interface RepositoryGitDeliveryBinding {
         readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
         readonly scopedRest?: readonly Readonly<{
           repository: string;
+          version?: "v1" | "v2";
           readIssues: boolean;
+          createIssues?: true;
           createPullRequests?: true;
         }>[];
         readonly permissions: Readonly<Record<string, string>>;

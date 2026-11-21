@@ -43,6 +43,7 @@ type GitHubScope =
   | {
       readonly scope: "github-repository";
       readonly sameRepositoryPullRequests?: true;
+      readonly issueCreationRepositories?: readonly string[];
       readonly repositories: readonly Readonly<{ repository: string }>[];
     };
 
@@ -219,6 +220,16 @@ function isUnqualifiedBranch(value: unknown): boolean {
   );
 }
 
+function permitsIssueCreation(body: object): boolean {
+  return (
+    "title" in body &&
+    typeof body.title === "string" &&
+    body.title.trim().length > 0 &&
+    (!("body" in body) || typeof body.body === "string") &&
+    Object.keys(body).every((key) => key === "title" || key === "body")
+  );
+}
+
 function permitsSameRepositoryPull(body: object): boolean {
   // head_repo selects a fork and issue converts an existing issue. Only accept creation fields.
   const fields = ["title", "head", "base", "body", "draft", "maintainer_can_modify"];
@@ -248,7 +259,11 @@ function installationApiOperation(
   const maximumBody = binding.scope === "github-repository" && !graph ? 1024 * 1024 : 64 * 1024;
   const read = method === "GET" || method === "HEAD";
   const scopedWrite =
-    !read && binding.scope === "github-repository" && binding.sameRepositoryPullRequests;
+    !read &&
+    binding.scope === "github-repository" &&
+    (binding.sameRepositoryPullRequests || binding.issueCreationRepositories !== undefined)
+      ? binding
+      : undefined;
   const apiRoot = path === "/" && read && query === "";
   if (
     head.contentEncoding !== "identity" ||
@@ -291,8 +306,16 @@ function installationApiOperation(
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return;
     }
-    if (scopedWrite && !permitsSameRepositoryPull(body)) {
-      return;
+    if (scopedWrite) {
+      if (method !== "POST") {
+        return;
+      }
+      if (scopedWrite.issueCreationRepositories?.some((repo) => path === `/repos/${repo}/issues`)) {
+        return permitsIssueCreation(body) ? "github-rest" : undefined;
+      }
+      if (!/^\/repos\/[^/]+\/[^/]+\/pulls$/.test(path) || !permitsSameRepositoryPull(body)) {
+        return;
+      }
     }
     if (!graph) {
       return "github-rest";

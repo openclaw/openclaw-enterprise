@@ -514,10 +514,28 @@ test("selected repository standing approval binds permissions and rechecks deliv
     () => createGitHubRepositoryDeliveryResolver(optedIn)(deliveryRevision(finiteState)),
     /selected-repository-grant-changed/,
   );
-  assert.notEqual(
-    resolveGitHubRepositoryBinding(optedIn, request).grant.grantId,
-    binding.grant.grantId,
+  const v1Binding = resolveGitHubRepositoryBinding(optedIn, request);
+  assert.notEqual(v1Binding.grant.grantId, binding.grant.grantId);
+
+  // Changing only the REST version requires a fresh binding and approval.
+  const upgraded = structuredClone(enabled);
+  const registration = upgraded.repositories[0].namespaces[0];
+  Object.assign(registration, { scopedRest: "v2" });
+  const v2Registry = validateGitHubRepositoryRegistry(upgraded);
+  const v2Binding = resolveGitHubRepositoryBinding(v2Registry, request);
+  assert.notEqual(v2Binding.grant.grantId, v1Binding.grant.grantId);
+  const v1ScopeInput = { ...scopeInput, binding: v1Binding };
+  assert.ok(resolveGitHubStandingApprovalScope(optedIn, v1ScopeInput));
+  assert.equal(resolveGitHubStandingApprovalScope(v2Registry, v1ScopeInput), undefined);
+  assert.throws(
+    () =>
+      createGitHubRepositoryDeliveryResolver(v2Registry)(
+        deliveryRevision({ ...finiteState, bindings: [v1Binding] }),
+      ),
+    /selected-repository-grant-changed/,
   );
+  Object.assign(registration, { scopedRest: "v3" });
+  assert.throws(() => validateGitHubRepositoryRegistry(upgraded), /invalid-repository-registry/);
 
   const reordered = structuredClone(input);
   reordered.repositories[0].namespaces[0].permissions = {

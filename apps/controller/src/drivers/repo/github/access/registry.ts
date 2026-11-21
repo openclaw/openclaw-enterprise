@@ -38,8 +38,8 @@ export interface GitHubRepositoryRegistration {
     namespaceId: string;
     profiles: readonly (GitHubProfile | "github-repository")[];
     permissions?: Readonly<Record<string, string>>;
-    /** Enable the versioned REST subset when this binding also has a repository network ACL. */
-    scopedRest?: "v1";
+    /** With a repository network ACL, v2 adds issue creation to v1 when both grants allow writes. */
+    scopedRest?: "v1" | "v2";
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
     transport?: "git-only" | "git-and-draft-pr";
@@ -99,6 +99,13 @@ function text(value: unknown, pattern = selectorPattern): string {
 
 function numericId(value: unknown): string {
   if (typeof value !== "string" || parseGitHubNumericId(value) === undefined) {
+    return invalid();
+  }
+  return value;
+}
+
+function scopedRestVersion(value: unknown): "v1" | "v2" {
+  if (value !== "v1" && value !== "v2") {
     return invalid();
   }
   return value;
@@ -222,7 +229,10 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
-      if (Object.hasOwn(policy, "scopedRest") && (!selected || policy.scopedRest !== "v1")) {
+      const scopedRest = Object.hasOwn(policy, "scopedRest")
+        ? scopedRestVersion(policy.scopedRest)
+        : undefined;
+      if (scopedRest && !selected) {
         return invalid();
       }
       const permissions = selected
@@ -282,7 +292,7 @@ export function validateGitHubRepositoryRegistry(
         namespaceId: text(policy.namespaceId),
         profiles: Object.freeze(profiles),
         ...(permissions && { permissions }),
-        ...(policy.scopedRest === "v1" && { scopedRest: "v1" as const }),
+        ...(scopedRest !== undefined && { scopedRest }),
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
         ...(transport === undefined ? {} : { transport }),
@@ -350,13 +360,16 @@ const installationGrantPolicy = Object.freeze({
 } as const);
 
 function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
-  if (policy.scopedRest !== "v1") {
+  const version = policy.scopedRest;
+  if (version !== "v1" && version !== "v2") {
     return undefined;
   }
+  const issues = policy.permissions?.issues;
   return {
-    version: policy.scopedRest,
+    version,
     ...(policy.permissions?.pull_requests === "write" && { createPullRequests: true as const }),
-    readIssues: policy.permissions?.issues === "read" || policy.permissions?.issues === "write",
+    readIssues: issues === "read" || issues === "write",
+    ...(version === "v2" && issues === "write" && { createIssues: true as const }),
   };
 }
 

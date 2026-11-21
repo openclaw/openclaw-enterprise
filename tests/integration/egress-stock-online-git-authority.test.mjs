@@ -748,6 +748,7 @@ test("repository API credential issuance is refused while ordinary collaboration
   ];
   let scope = "github-repository";
   let sameRepositoryPullRequests;
+  const issueCreationRepositories = [];
   const { client, keys } = await openShellOnlineGitWire(t, {
     budgetMs: 3000,
     lookupBinding: async () =>
@@ -757,6 +758,7 @@ test("repository API credential issuance is refused while ordinary collaboration
             ...binding,
             scope,
             sameRepositoryPullRequests,
+            ...(issueCreationRepositories.length > 0 && { issueCreationRepositories }),
             installationId: "71",
             apiOrigin: "https://api.github.com",
             repositories,
@@ -825,6 +827,83 @@ test("repository API credential issuance is refused while ordinary collaboration
       }
       assert.equal(approvals, before);
       sameRepositoryPullRequests = undefined;
+    },
+  );
+  await t.test(
+    "scoped issue creation binds the exact collection and payload before approval",
+    async (t) => {
+      t.after(() => {
+        issueCreationRepositories.length = 0;
+        sameRepositoryPullRequests = undefined;
+        current = true;
+      });
+      const root = `/repos/${binding.repository}`;
+      const issues = `${root}/issues`;
+      const pulls = `${root}/pulls`;
+      const other = `/repos/${repositories[1].repository}/issues`;
+      const issue = { title: "Investigate a regression" };
+      const pull = { title: "Fix", head: "topic/fix", base: "main" };
+      const create = (body) => evaluate(issues, "POST", body);
+      const refused = async (path, method, body) => {
+        const before = approvals;
+        const result = await evaluate(path, method, body);
+        assert.equal(result.reason_code, "request_not_allowed", `${method} ${path}`);
+        assert.equal(approvals, before, `${method} ${path} reached the owner`);
+      };
+
+      const labeled = { ...issue, labels: ["bug"] };
+      assert.equal((await create(labeled)).decision, 1, "ordinary selected scope");
+      sameRepositoryPullRequests = true;
+      await refused(issues, "POST", issue);
+      await refused(issues, "POST", pull);
+
+      issueCreationRepositories.push(binding.repository);
+      for (const body of [issue, { ...issue, body: "Details" }, { ...issue, body: "" }]) {
+        const before = approvals;
+        assert.equal((await create(body)).decision, 1);
+        assert.equal(approvals, before + 1);
+      }
+      assert.equal((await evaluate(other, "GET")).decision, 1);
+      assert.equal((await evaluate(pulls, "POST", pull)).decision, 1);
+      for (const body of [
+        undefined,
+        null,
+        [],
+        {},
+        { body: "Missing title" },
+        { title: "" },
+        { title: "  " },
+        { title: 42 },
+        { ...issue, body: null },
+        labeled,
+        pull,
+      ]) {
+        await refused(issues, "POST", body);
+      }
+      for (const raw of ['{"title":', '{"title":"one","title":"two"}']) {
+        const input = request(issues, "POST", Buffer.from(raw), [
+          { name: "content-type", value: "application/json" },
+        ]);
+        input.target.host = "api.github.com";
+        const before = approvals;
+        assert.equal((await send(input)).reason_code, "request_not_allowed");
+        assert.equal(approvals, before);
+      }
+      await refused(other, "POST", issue);
+      await refused(other, "POST", pull);
+      await refused("/repos/unselected/project/issues", "POST", issue);
+      await refused(issues, "PUT", issue);
+      await refused(`${issues}/42`, "PATCH", issue);
+      await refused(`${issues}/42/comments`, "POST", pull);
+      await refused("/graphql", "POST", { query: "{ viewer { login } }" });
+      await refused(pulls, "POST", issue);
+      await refused(pulls, "POST", { ...pull, head: "fork:fix" });
+      await refused(pulls, "POST", { ...pull, issue: 42 });
+
+      current = false;
+      const before = approvals;
+      assert.equal((await create(issue)).reason_code, "access_withdrawn");
+      assert.equal(approvals, before + 1);
     },
   );
   await t.test("gh authentication discovery uses the current API grant", async () => {

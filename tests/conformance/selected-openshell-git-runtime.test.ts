@@ -109,7 +109,8 @@ const managedModelEndpoint = {
   access: "NETWORK_ACCESS_PRESET_READ_WRITE",
 };
 
-type Acl = boolean | { permissions: Record<string, string>; firstOnly?: boolean };
+type Acl =
+  boolean | { permissions: Record<string, string>; firstOnly?: boolean; scopedRest?: "v1" | "v2" };
 type SelectedV5Options = {
   modelSourceId?: string;
   storedBindings?: readonly AdmittedRepositoryBinding[];
@@ -159,7 +160,9 @@ async function selectedV5(
                   : { issues: "read", pull_requests: "write" }),
               },
               ...(typeof acl === "object" &&
-                (!acl.firstOnly || repo === repository) && { scopedRest: "v1" }),
+                (!acl.firstOnly || repo === repository) && {
+                  scopedRest: acl.scopedRest ?? "v1",
+                }),
             },
           ],
         })),
@@ -1422,6 +1425,26 @@ test("ACL Git releases a stored Git-only revision only after rereading the loade
   ]);
 });
 
+test("released v2 hook binding limits issue creation to the writable repository", async (t) => {
+  const acl = {
+    scopedRest: "v2",
+    permissions: { issues: "write", pull_requests: "write" },
+  } as const;
+  const held = await heldGit(t, acl);
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
+  await held.f.runtime.releasePreview(
+    held.revision.id,
+    held.startupId,
+    releaseAttempt(async () => true),
+    t.signal,
+  );
+  const binding = await held.lookup();
+  assert.ok(binding?.scope === "github-repository" && binding.sameRepositoryPullRequests);
+  assert.ok("issueCreationRepositories" in binding);
+  assert.deepEqual(binding.issueCreationRepositories, ["example/delivery"]);
+});
+
 test("scoped REST intersects the selected permissions, registry opt-in and frozen Git ACL", async (t) => {
   const apiRules = async (acl: Acl) => {
     const held = await heldGit(t, acl);
@@ -1439,6 +1462,18 @@ test("scoped REST intersects the selected permissions, registry opt-in and froze
     [],
   );
   const issues = await apiRules({ permissions: { issues: "read" } });
+  assert.deepEqual(await apiRules({ permissions: { issues: "write" } }), issues);
+  assert.deepEqual(await apiRules({ scopedRest: "v2", permissions: { issues: "read" } }), issues);
+  assert.deepEqual(await apiRules({ scopedRest: "v2", permissions: {} }), []);
+  const writable = await apiRules({ scopedRest: "v2", permissions: { issues: "write" } });
+  assert.deepEqual(
+    writable.filter(({ method }) => method === "GET"),
+    issues,
+  );
+  assert.deepEqual(
+    writable.filter(({ method }) => method !== "GET"),
+    [{ method: "POST", path: "/repos/example/delivery/issues" }],
+  );
   for (const repo of ["application", "delivery"]) {
     const path = `/repos/example/${repo}/issues`;
     assert.ok(issues.some((r) => r.path === path));

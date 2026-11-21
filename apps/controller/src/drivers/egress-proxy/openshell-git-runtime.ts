@@ -222,6 +222,23 @@ type OpenShellGitScope = RepositoryGitDeliveryBinding & {
   readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
 };
 
+function issueCreationScope({ delivery, repositoryNetworkPolicy }: OpenShellGitScope) {
+  if (!("scope" in delivery) || delivery.permissions.issues !== "write") {
+    return {};
+  }
+  const issueCreationRepositories = delivery.scopedRest
+    ?.filter(
+      ({ repository, version, createIssues }) =>
+        version === "v2" &&
+        createIssues === true &&
+        repositoryNetworkPolicy?.some(
+          (grant) => grant.repository === repository && grant.access === "write",
+        ),
+    )
+    .map(({ repository }) => repository);
+  return issueCreationRepositories?.length ? { issueCreationRepositories } : {};
+}
+
 interface Entry extends OpenShellGitObservationEntry {
   readonly preview: ObservedHookPreview;
   continuityDiagnosticReported?: true;
@@ -2280,6 +2297,7 @@ export class OpenShellGitRuntime {
                       repositories: material.repositories,
                       ...(entry.authorization.repositoryNetworkPolicy && {
                         sameRepositoryPullRequests: true as const,
+                        ...issueCreationScope(entry.authorization),
                       }),
                     }
                   : { scope: material.scope }),

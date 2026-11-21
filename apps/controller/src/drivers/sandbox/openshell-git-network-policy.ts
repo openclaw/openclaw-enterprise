@@ -17,7 +17,9 @@ export type OpenShellGitNetworkInput = OpenShellGitNetworkTarget & {
   readonly binaries: readonly string[];
   readonly scopedRest?: readonly Readonly<{
     repository: string;
+    version?: "v1" | "v2";
     readIssues: boolean;
+    createIssues?: true;
     createPullRequests?: true;
   }>[];
   readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
@@ -175,8 +177,11 @@ function scopedApiEndpoints(
     if (access === "write" && rest?.createPullRequests === true) {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
     }
+    const path = `/repos/${repository}/issues`;
+    if (access === "write" && rest?.version === "v2" && rest.createIssues === true) {
+      rules.push({ allow: { method: "POST", path } });
+    }
     if (rest?.readIssues === true) {
-      const path = `/repos/${repository}/issues`;
       rules.push({ allow: { method: "GET", path } });
       // OpenShell matches globs. An unbounded * also admits /issues/comments and /issues/events.
       // Enumerate decimal widths through 19 digits (positive signed 64-bit issue numbers).
