@@ -462,27 +462,31 @@ export class KubernetesChannelEgress {
     return values[0].value === 0;
   }
 
+  private async inspectedResources(pod: Resource, resource: string): Promise<Record<string, unknown>[]> {
+    const body = await this.inspection(
+      pod,
+      `/config_dump?resource=${resource}`,
+      16 * 1024 * 1024,
+    );
+    if (!Array.isArray(body.configs) || body.configs.some((entry) => !asRecord(entry))) {
+      throw new Error("Channel egress returned invalid inspection resources.");
+    }
+    return body.configs.map((entry) => asRecord(entry)!);
+  }
+
   private async inspect(pod: Resource): Promise<Record<string, unknown>[]> {
-    const body = await this.inspection(pod, "/config_dump", 16 * 1024 * 1024);
-    const clusters = Array.isArray(body?.configs)
-      ? body.configs
-          .map(asRecord)
-          .find(
-            (config) =>
-              config?.["@type"] === "type.googleapis.com/envoy.admin.v3.ClustersConfigDump",
-          )
-      : undefined;
-    const forwarding = Array.isArray(clusters?.dynamic_active_clusters)
-      ? clusters.dynamic_active_clusters
-          .map((entry) => asRecord(asRecord(entry)?.cluster))
-          .filter((cluster) => cluster?.name === CHANNEL_EGRESS_FORWARD_CLUSTER.name)
-      : [];
-    const staticForwarding = Array.isArray(clusters?.static_clusters)
-      ? clusters.static_clusters.some(
-          (entry) =>
-            asRecord(asRecord(entry)?.cluster)?.name === CHANNEL_EGRESS_FORWARD_CLUSTER.name,
-        )
-      : false;
+    const [clusters, staticClusters, dynamic, staticListeners] = await Promise.all([
+      this.inspectedResources(pod, "dynamic_active_clusters"),
+      this.inspectedResources(pod, "static_clusters"),
+      this.inspectedResources(pod, "dynamic_listeners"),
+      this.inspectedResources(pod, "static_listeners"),
+    ]);
+    const forwarding = clusters
+      .map((entry) => asRecord(entry.cluster))
+      .filter((cluster) => cluster?.name === CHANNEL_EGRESS_FORWARD_CLUSTER.name);
+    const staticForwarding = staticClusters.some(
+      (entry) => asRecord(entry.cluster)?.name === CHANNEL_EGRESS_FORWARD_CLUSTER.name,
+    );
     if (
       staticForwarding ||
       forwarding.length !== 1 ||
@@ -498,33 +502,13 @@ export class KubernetesChannelEgress {
         "Channel egress forwarding does not use the qualified strict-DNS cluster configuration.",
       );
     }
-    const dump = Array.isArray(body?.configs)
-      ? body.configs
-          .map(asRecord)
-          .find(
-            (config) =>
-              config?.["@type"] === "type.googleapis.com/envoy.admin.v3.ListenersConfigDump",
-          )
-      : undefined;
-    if (!Array.isArray(dump?.dynamic_listeners)) {
-      throw new Error("Channel egress returned no installed listener generations.");
-    }
-    const dynamic = dump.dynamic_listeners.map((listener) => {
-      const value = asRecord(listener);
-      if (!value) {
-        throw new Error("Channel egress returned an invalid listener generation.");
+    const fixed = staticListeners.map((entry) => {
+      const listener = asRecord(entry.listener);
+      if (!listener) {
+        throw new Error("Channel egress returned an invalid static listener.");
       }
-      return value;
+      return { name: listener.name, active_state: { listener } };
     });
-    const fixed = Array.isArray(dump.static_listeners)
-      ? dump.static_listeners.map((entry) => {
-          const listener = asRecord(asRecord(entry)?.listener);
-          if (!listener) {
-            throw new Error("Channel egress returned an invalid static listener.");
-          }
-          return { name: listener.name, active_state: { listener } };
-        })
-      : [];
     return [...dynamic, ...fixed];
   }
 
