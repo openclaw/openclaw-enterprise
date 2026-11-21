@@ -28,7 +28,6 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import {
   assertProvisioningSourceStatus,
   assertProvisioningSourceWithdrawal,
@@ -393,57 +392,6 @@ export function registerCredentialCases() {
       harnessAuth: { method: "credential_source", sourceId },
     };
   }
-
-  test(
-    "a Gateway Source PATCH waiting for its Source does not lock the Namespace",
-    { ...requiresPostgres, timeout: 60_000 },
-    async (context) => {
-      const fixture = await createFixture(context, sourceProvisioningDrivers());
-      const namespace = await fixture.bootstrapNamespace();
-      const { source } = await createProvisioningModelSource(fixture, namespace.id);
-      const holder = await fixture.pool.connect();
-      let patching: ReturnType<typeof fixture.request> | undefined;
-      try {
-        // A previous Gateway update can own the Source while it waits for its external store.
-        // Hold that exact row so the next real HTTP PATCH reaches the same database wait.
-        await holder.query("BEGIN");
-        const held = await holder.query<{ pid: number }>(
-          `SELECT pg_backend_pid() AS pid FROM occ.credential_sources
-           WHERE namespace_id = $1 AND id = $2 FOR UPDATE`,
-          [namespace.id, source.id],
-        );
-        assert.equal(held.rowCount, 1);
-        patching = fixture.request(
-          "PATCH",
-          `/namespaces/${namespace.id}/credential-sources/${source.id}`,
-          { body: {} },
-        );
-        await waitForLockWaiter(fixture.pool, held.rows[0]!.pid, "the Gateway Source PATCH", {
-          queryLike: "%occ.credential_sources%",
-        });
-
-        // Unrelated Namespace mutations must remain possible while that Source is unavailable.
-        await assert.doesNotReject(
-          holder.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE NOWAIT", [
-            namespace.id,
-          ]),
-          "a Source PATCH waiting for its Source must not hold the Namespace row",
-        );
-      } finally {
-        try {
-          await holder.query("ROLLBACK");
-        } finally {
-          holder.release();
-          if (patching) {
-            await Promise.allSettled([patching]);
-          }
-        }
-      }
-      assert.ok(patching);
-      const patched = await patching;
-      assert.equal(patched.status, 200, JSON.stringify(patched.body));
-    },
-  );
 
   test(
     "source provisioning status preserves saved work when its Gateway catalog is unavailable",
