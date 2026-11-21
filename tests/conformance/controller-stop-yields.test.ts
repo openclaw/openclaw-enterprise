@@ -21,12 +21,14 @@ import {
 } from "../../apps/controller/src/worker/stop-yields.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
 import type { AgentProvisioningRecord } from "../../packages/occ/src/ports/agent-provisioning.ts";
-import type { ControllerWork } from "../../packages/occ/src/controller-work.ts";
+import {
+  revisionAdmittedBeforeWork,
+  type ControllerWork,
+} from "../../packages/occ/src/controller-work.ts";
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
-  revisionAdmittedBeforeWork,
-} from "../../packages/occ/src/state/controller-work.ts";
+} from "../../packages/occ/src/deployment-work-status.ts";
 import { DEPLOYMENT_FAILED, WORKSPACE_SETUP_RETRYING } from "../helpers/refusal-text.mjs";
 
 // Findings 1093 and 1094: stops that yield during their Gateway drain (#2145) are rechecked on
