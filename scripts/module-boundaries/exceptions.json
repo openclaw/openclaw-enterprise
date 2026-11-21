@@ -385,18 +385,6 @@
     },
     {
       "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/agent-provisioning.ts",
-      "specifier": "./state/agent-provisioning.ts",
-      "kind": "import",
-      "typeOnly": true,
-      "bindings": ["type:AgentProvisioningCheckpoint", "type:AgentProvisioningRecord"],
-      "owner": "Agent provisioning persistence",
-      "reason": "The provisioning service uses the persisted provisioning record contract owned by the current State module; this edge imports types only.",
-      "removeWhen": "Move the shared provisioning record contracts into neutral ports and update this type-only import."
-    },
-    {
-      "rule": "domain-to-implementation",
       "from": "packages/occ/src/provisioning-effects.ts",
       "to": "packages/occ/src/state/agent-provisioning.ts",
       "specifier": "./state/agent-provisioning.ts",
