@@ -6,7 +6,6 @@ import type {
   EgressMaterialEvidence,
   ProtectedEgressSource,
   SecretReference,
-  TokenServiceRegistration,
 } from "@openclaw-enterprise/contracts";
 
 export type StoredCredentialWithdrawal = CredentialWithdrawal;
@@ -77,18 +76,10 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     credentialSourceId: string,
     secrets: Readonly<Record<string, SecretReference>>,
   ): Promise<Readonly<CredentialSource> | undefined>;
-  /** Claims dispatch or clears it after independent cleanup of a deleting source. */
-  setCredentialSourceRegistrationDispatch(
-    namespaceId: string,
-    credentialSourceId: string,
-    dispatchedAt: string | undefined,
-  ): Promise<boolean>;
-  /** Moves a registering source to `ready` once its owner confirms its copy. */
+  /** Moves a registering source to `ready` after the owner confirms registration. */
   markCredentialSourceReady(
     namespaceId: string,
     credentialSourceId: string,
-    registration?: TokenServiceRegistration,
-    config?: Readonly<Record<string, string>>,
   ): Promise<Readonly<CredentialSource> | undefined>;
   updateCredentialSourceConfig(
     namespaceId: string,

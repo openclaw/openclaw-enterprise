@@ -65,16 +65,6 @@
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
-      "MANAGED_SOURCE_NOT_IMPLEMENTED": {
-        "summary": "NOT_IMPLEMENTED",
-        "value": {
-          "error": {
-            "code": "NOT_IMPLEMENTED",
-            "message": "Managed credential source enrollment is unavailable."
-          },
-          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-        }
-      },
       "MODEL_DISCOVERY_RATE_LIMITED": {
         "summary": "MODEL_DISCOVERY_RATE_LIMITED",
         "value": {
@@ -291,7 +281,7 @@
       },
       "RegisterTokenServiceSourceBody": {
         "additionalProperties": false,
-        "description": "Staged managed static registration contract. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC allocates the identity and selects the TokenService owner.",
+        "description": "Register a managed static Source. OCC allocates its identity and selects the TokenService owner.",
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
@@ -327,7 +317,7 @@
       },
       "UpdateTokenServiceSourceBody": {
         "additionalProperties": false,
-        "description": "Supply at least one of config or secret. Omitted fields retain their values. Change or remove provider_preset separately from credential replacement; otherwise the update returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
+        "description": "Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
         "minProperties": 1,
         "properties": {
           "config": {
@@ -37959,13 +37949,11 @@
           "501": {
             "content": {
               "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/MANAGED_SOURCE_NOT_IMPLEMENTED" }
-                },
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
                 "schema": { "$ref": "#/components/schemas/def-7" }
               }
             },
-            "description": "Managed credential source enrollment is unavailable."
+            "description": "The selected Driver does not support this operation."
           },
           "503": {
             "content": {
@@ -37979,7 +37967,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Register a Credential Gateway source; managed static registration is staged",
+        "summary": "Register a credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
@@ -38457,17 +38445,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/MANAGED_SOURCE_NOT_IMPLEMENTED" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Managed credential source enrollment is unavailable."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -38480,7 +38457,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Update a Credential Gateway source; managed updates are staged",
+        "summary": "Update a Source through its recorded owner",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "credential_source", "scope": "requested" },

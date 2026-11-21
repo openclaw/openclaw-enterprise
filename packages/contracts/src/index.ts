@@ -6,7 +6,6 @@ import type {
   RepositoryWorkerRestartDisposition,
 } from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
-import type { TokenServiceRegistration } from "./drivers/token-service/index.ts";
 import type {
   ExecutionAdmission,
   ProtectedEgressSource,
@@ -601,10 +600,6 @@ type CredentialSourceOwner =
       readonly driverId?: never;
       /** Present for registrations owned by an Installation-selected credential store. */
       readonly tokenServiceInstanceId?: string;
-      /** Private owner receipt, recorded only after registration succeeds. */
-      readonly registration?: TokenServiceRegistration;
-      /** Durable dispatch fence for a registration whose owner write may be uncertain. */
-      readonly registrationDispatchedAt?: string;
     };
 
 export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
@@ -1746,9 +1741,7 @@ export type {
 export type {
   TokenServiceSourceRef,
   InstallationClientSecretRef,
-  TokenServiceRegistration,
   TokenServiceSourceInstance,
-  RegisteredTokenServiceSource,
   SourceLifecycleConfig,
   SourceRegistrationInput,
   SourceUpdate,
