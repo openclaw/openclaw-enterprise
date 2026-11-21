@@ -873,7 +873,7 @@ test("Compute preserves admitted Codex commands and forwards proxy settings on n
         // embeds the startup schema thresholds, so it moves with the pin.
         assert.equal(
           createHash("sha256").update(JSON.stringify(command)).digest("hex"),
-          "a7412cefc1b7f4cfa68243b92e3f9ea789376c9182e4291e1af2872c2bb216a0",
+          "9680e0d1a3bba52621a1485d9688f942c52a9b90a07892c0547285e1fd9f5ddd",
           "a stored Sandbox must keep its admitted command byte for byte",
         );
       }
