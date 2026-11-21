@@ -316,6 +316,7 @@ async function configuredController(options = {}) {
   const fixture = await createInjectedFixture(options);
   return {
     fixture,
+    /** @type {import("./occ-api-injected-fixture.ts").FixtureRequest} */
     request: (method, pathname, options) => injectedRequest(fixture.app, method, pathname, options),
   };
 }

@@ -255,12 +255,17 @@ export function registerDeploymentAuthorizationEvidenceCase(
   });
 }
 
+function assertMemoryAuditFixture(
+  fixture: Fixture,
+): asserts fixture is Fixture & { auditSink: InMemoryAuditSink } {
+  assert(fixture.auditSink instanceof InMemoryAuditSink);
+}
+
 export async function prepareAuditMutations(configureController: ConfigureController) {
   const controller = await configureController();
   const { fixture, request } = controller;
+  assertMemoryAuditFixture(fixture);
   const { auditSink, principal, installationId } = fixture;
-  assert(auditSink instanceof InMemoryAuditSink);
-  const memoryAuditSink: InMemoryAuditSink = auditSink;
   const originalIAMDriverId = fixture.iamDriver.id;
   await bootstrapInstallation(controller, "Audited installation");
   const namespace = await createNamespace(controller, "audited-namespace");
@@ -338,7 +343,7 @@ export async function prepareAuditMutations(configureController: ConfigureContro
     );
     // Both refusals are audited, so a denied destructive request leaves evidence
     // naming the principal who attempted it.
-    const denials = memoryAuditSink.events.filter((event) => event.kind === "authorization_denial");
+    const denials = auditSink.events.filter((event) => event.kind === "authorization_denial");
     assert.equal(denials.length, 2);
     for (const denial of denials) {
       assert.equal(denial.outcome, "denied");
@@ -354,7 +359,7 @@ export async function prepareAuditMutations(configureController: ConfigureContro
       ],
     );
     assert.equal(denials[1]?.authorization?.resource.id, targetAgent.id);
-    const recorded = stringifyEvidence(memoryAuditSink.events);
+    const recorded = stringifyEvidence(auditSink.events);
     assert.equal(recorded.includes(fixture.session.cookie), false);
     assert.equal(recorded.includes("never-log-this-request-body"), false);
   }
@@ -372,10 +377,9 @@ export async function verifyBootstrapRecovery(
   fixture: Fixture,
   failedBootstrap: Awaited<ReturnType<typeof injectedRequest>>,
 ) {
-  const { auditSink } = fixture;
-  assert(auditSink instanceof InMemoryAuditSink);
+  assertMemoryAuditFixture(fixture);
   assertDependencyUnavailable(failedBootstrap);
-  assert.deepEqual(auditSink.events, []);
+  assert.deepEqual(fixture.auditSink.events, []);
   assert.equal((await injectedRequest(fixture.app, "GET", "/installation")).status, 404);
   const recoveredBootstrap = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
     body: { name: "recovered installation" },
