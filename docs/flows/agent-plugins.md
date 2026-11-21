@@ -1,14 +1,14 @@
 ---
 created: 2026-09-08
-updated: 2026-11-19
-last_updated_session: authoring-run/0cdd91e7-47ea-4661-a124-c23fd4479805
+updated: 2026-11-20
+last_updated_session: authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa
 ---
 
 # Agent Plugin Deployment Flow
 
 ## Overview
 
-OCC validates selections against the Harness catalog and snapshots the Driver and policy at deployment. The Harness owns tools and approvals.
+OCC validates selections and snapshots the Driver and policy at deployment. The Harness owns tools and approvals.
 
 ## Entry Points
 
@@ -70,27 +70,26 @@ graph TD
 ### Credential-scoped discovery
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a
-Harness, Agent `create`, and caller `operate` on stored sources. Wrong Namespace:
-`400`; missing Secret: `404`; unavailable explicit CredentialSource: `409`.
+Harness, Agent `create`, and stored-source `operate`. Wrong Namespace `400`,
+missing Secret `404`, unavailable explicit CredentialSource `409`.
 
 Saved discovery requires a dedicated Agent and caller `read`/`update`. Bound sources
 require caller and Agent `operate`; explicit sources require caller `operate`.
 Missing or unready bound sources return `404`. Hosted catalogs require credentials;
 curated catalogs do not.
 
-The OpenShell Backend reads metadata and exports through operator mTLS. External
-Gateways retain optional `withSourceToken`. OCC checks source/Gateway ownership,
-then rechecks authority, attachment and catalog before dispatch. Cancellation
-discards late credentials; refresh stays with its owner.
+OpenShell uses operator mTLS for metadata and exports. External Gateways may use
+`withSourceToken`. OCC checks source and Gateway ownership, then rechecks authority,
+attachment, and catalog before dispatch. Owners refresh credentials. Cancellation
+discards late credentials.
 
-`packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
+`packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools`
 
 Managed MCP uses Secret Driver, rechecking before `tools/list`.
 `driverPolicy.toolNames` pins upstream names across runtimes.
 
-Closing cancels; account changes clear results; Harness changes clear selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-bound size/time, reject redirects and credential echoes, and return safe metadata
-with `Cache-Control: no-store`.
+Closing cancels. Account changes clear results. Harness changes clear selections and approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
+bound size and time, reject redirects and credential echoes, and set `Cache-Control: no-store`.
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
 `requires_local_executor`; explicit `true` without skills remains unavailable.
 Details reject unmatched MCP/scheduled tasks. Optional stdio
@@ -387,6 +386,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:13: Update discovery source. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
 
 - 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)
 

@@ -91,7 +91,7 @@ enabled, into `ControllerOptions.bundledPresetVersions`. A conformance test in
 `tests/conformance/presets.test.ts` fails when a bundled file changes without
 its previous version archived there.
 
-`packages/occ/src/index.ts:OpenClawController.initializeDefaultPresets`
+`packages/occ/src/preset-operations.ts:initializeDefaultPresets`
 
 Initialization authorizes Installation administration, locks Namespaces in ID
 order in one transaction, and skips failed/deleting Namespaces. Missing names
@@ -121,11 +121,11 @@ transport budget for 1 MiB templates, JSON escapes and the envelope; overflow
 returns 413. Their `onRequest` hook runs `authorizePresetWrite`: callers without
 the grant get 403 before any body is read.
 
-`packages/occ/src/index.ts:OpenClawController.createPreset`
+`packages/occ/src/preset-operations.ts:createPreset`
 
-[`OpenClawController.createPreset` and `admitPresetTemplate`](../../packages/occ/src/index.ts)
-lock the Namespace, check the exact collection grant and ready state, then call
-[`normalizePresetTemplate`](../../packages/contracts/src/presets.ts).
+The [Preset operations module](../../packages/occ/src/preset-operations.ts) checks
+the exact collection grant, locks the Namespace, and checks the grant again and
+the ready state. It then calls [`normalizePresetTemplate`](../../packages/contracts/src/presets.ts).
 The normalizer copies the template and fills omitted `namespaceId` fields in
 Harness authentication and Configuration Secret binding sources from the locked
 Namespace. Explicit scopes remain unchanged for same-Namespace validation.
