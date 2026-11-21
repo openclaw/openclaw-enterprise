@@ -813,6 +813,9 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
       networkMatches = true;
     },
     async prepareStagedHarness(context, projections) {
+      if (started) {
+        return;
+      }
       if (!sandboxReady) {
         throw new ActivationPendingError(
           "CREDENTIAL_ACTIVATION_PENDING",
@@ -833,7 +836,8 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
       started = true;
     },
     async harnessStatus() {
-      return { state: started ? "serving" : "starting" };
+      // A native OpenClaw worker connects outward and never serves this inbound handshake.
+      return { state: "starting" };
     },
     async withdrawHarnessExposure() {
       events.push("withdraw");
@@ -1085,11 +1089,24 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   assert.equal(objects.has(key("HTTPRoute", chatName)), false);
   state.providerPod = readyNativeHarnessPod(namespace, workloadLabels);
   state.connected = true;
+  assert.equal(
+    read("Secret", driver.workspaceNodeName(revision)).data.enrolledRevisionId,
+    undefined,
+    "the connected node has not yet been credited to this revision",
+  );
+  await assert.rejects(driver.activateRevision(revision, context), {
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  const nodeSecret = read("Secret", driver.workspaceNodeName(revision));
+  assert.equal(
+    Buffer.from(nodeSecret.data.enrolledRevisionId ?? "", "base64").toString("utf8"),
+    revision.id,
+    "postactivation readiness must record the connected node for this revision",
+  );
+  assert.equal(objects.has(key("HTTPRoute", chatName)), false);
   assert.equal((await prepare()).ready, false, "the Gateway must apply the node binding");
   markReady(gatewayName);
   state.gatewayWorkspaceNodeId = "node-1";
-  assert.equal((await prepare()).ready, false, "the Gateway rollout contains the enrolled node");
-  markReady(gatewayName);
   assert.equal((await prepare()).ready, true);
   await driver.activateRevision(revision, context);
   assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
