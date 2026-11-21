@@ -538,7 +538,6 @@ export function createCredentialEgressAdmission(
     return { plan, assertProvidersCurrent };
   }
 
-  /** Bind the configured adapter to the actual durable credential store before use. */
   function ordinaryCredentialGatewayAllowed(type: CredentialSourceType): boolean {
     return (
       !dependencies.hasProxy() ||

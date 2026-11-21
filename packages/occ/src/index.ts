@@ -193,7 +193,6 @@ import type {
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
   AccessBinding,
-  AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
   AgentChatCompletionsResolution,
@@ -6321,6 +6320,7 @@ export class OpenClawController {
     issuer: (ref) => this.preparedTokens?.issuer(ref),
   });
 
+  /** Bind the configured adapter to the actual durable credential store before use. */
   async activateTokenServiceInstance(driverId: string, storeIdentity: string): Promise<string> {
     if (!isNonEmptyString(driverId) || !isNonEmptyString(storeIdentity)) {
       throw new DriverSelectionError("The TokenService store identity is unavailable.");
