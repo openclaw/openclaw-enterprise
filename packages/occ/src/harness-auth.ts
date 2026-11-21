@@ -432,6 +432,7 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
     }
   }
 
+  // API calls see the selected Driver. Workers can identify its configured ID.
   function missingAccessTokenError() {
     return dependencies.hasServiceAccountDriver()
       ? new ResourceStateConflictError(

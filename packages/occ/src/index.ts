@@ -1,6 +1,5 @@
 import {
   reconcileNamespaceLifecycle,
-  selectedNamespaceLifecycle,
   type NamespaceLifecycleBinding,
   type NamespaceLifecycleEvidence,
 } from "./namespace-lifecycle.ts";
@@ -114,7 +113,7 @@ export type {
   EgressStreamLease,
   EgressStreamProgress,
 } from "@openclaw-enterprise/contracts";
-import { InstalledDriver } from "./installed-driver.ts";
+import type { InstalledDriver } from "./installed-driver.ts";
 import {
   createPresetOperations,
   type BundledPresetVersion,
@@ -135,7 +134,6 @@ export type {
 } from "./preset-operations.ts";
 
 export { InstalledDriver } from "./installed-driver.ts";
-import type { DriverByCapability } from "@openclaw-enterprise/contracts";
 import {
   DriverConfigurationRegistry,
   type DriverConfigurationRegistration,
@@ -296,7 +294,6 @@ import type {
   HarnessAuthSnapshot,
 } from "@openclaw-enterprise/contracts";
 import {
-  HARNESS_EXECUTION_MODES,
   isName,
   NAME_RULE,
   normalizeInitialWorkspaceFiles,
@@ -327,10 +324,12 @@ import {
 } from "./agent-queries.ts";
 import { requireDeployableRoster, withAgentIdentityName } from "./openclaw-roster.ts";
 import {
-  capability,
-  driverHasCapabilityContract,
-  driverHasValidLifecycleHooks,
-} from "./driver-contract.ts";
+  DriverRegistry,
+  unchangedDriver,
+  type DriverFor,
+  type RegisteredDriver,
+} from "./driver-registry.ts";
+import { readInstallationCapabilities } from "./installation-capabilities.ts";
 import {
   AGENT_NAME_CONFLICT,
   AgentCredentialSourceBindingError,
@@ -1167,17 +1166,6 @@ export interface AgentProvisioningWorkerOptions {
   readonly runEffect?: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>;
 }
 
-interface RegisteredDriver {
-  readonly harnessId?: string;
-  readonly owner?: InstalledDriver;
-  readonly driver: Driver;
-  readonly capability: DriverCapability;
-  readonly id: string;
-  readonly implementation: string;
-}
-
-type DriverFor<Capability extends DriverCapability> = DriverByCapability[Capability];
-
 // The bundled Kubernetes Compute Driver's implementations: the Installation default and the
 // Driver's own default.
 const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
@@ -1880,7 +1868,7 @@ export class OpenClawController {
         if (
           identity.capability !== "repo" ||
           !isNonEmptyString(identity.implementation) ||
-          !controller.unchangedDriver(identity)
+          !unchangedDriver(identity)
         ) {
           throw new DriverSelectionError("The bound repository policy is unavailable.");
         }
@@ -1910,13 +1898,10 @@ export class OpenClawController {
   private readonly shouldRecordOperations: boolean;
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
-  private readonly registry = new Map<string, RegisteredDriver>();
+  private readonly drivers: DriverRegistry;
   private readonly pluginDiscovery: ReturnType<typeof createPluginDiscovery>;
   private tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
   private readonly preparedTokens: TokenService | undefined;
-  private readonly selections = new Map<DriverCapability, RegisteredDriver>();
-  private readonly namespaceLifecycleBindings: readonly NamespaceLifecycleBinding[];
-  private pluginRegistrations: readonly RegisteredDriver[] = [];
   private readonly backends: readonly BackendDefinition[];
   private readonly presets: ReturnType<
     typeof createPresetOperations<PlatformReadView, PlatformUnitOfWork>
@@ -1928,7 +1913,12 @@ export class OpenClawController {
   private readonly configuredServiceAccountDriverId: string | undefined;
 
   constructor(installation: Installation, options: ControllerOptions = {}) {
-    this.namespaceLifecycleBindings = options.namespaceLifecycleBindings ?? [];
+    this.drivers = new DriverRegistry({
+      configurations: this.configurations,
+      namespaceLifecycleBindings: options.namespaceLifecycleBindings ?? [],
+      hasBuiltInRepositoryPolicy: () =>
+        this.installationRepositoryAdmission?.policyMode === "built-in",
+    });
     if (!isNonEmptyString(installation.id)) {
       throw new ScopeViolationError("The controller requires one valid server-owned Installation.");
     }
@@ -2053,7 +2043,7 @@ export class OpenClawController {
       validateConfigurationContent: (values, validation) =>
         this.validateConfigurationContent(values, validation),
       validateAgentBackend: (backendId) => this.backendId(backendId),
-      hasPluginDrivers: () => this.pluginRegistrations.length > 0,
+      hasPluginDrivers: () => this.drivers.hasPluginDrivers(),
       enabledPluginDrivers: () => this.enabledPluginDrivers(),
       normalizeAgentPluginApprovers,
     });
@@ -2083,14 +2073,14 @@ export class OpenClawController {
       secretDriver: (id) => this.secretDriver(id),
       secretOperation: (operation) => this.secretOperation(operation),
       isManagedTokenServiceSource,
-      hasCredentialGateway: () => this.selections.has("credential_gateway"),
+      hasCredentialGateway: () => this.drivers.hasSelection("credential_gateway"),
       assertCredentialGatewaySelected: () => this.assertCredentialGatewaySelected(),
       ownedTokenServiceDriver: (id) => this.ownedTokenServiceDriver(id),
       ownedCredentialGatewayDriver: (source) => this.ownedCredentialGatewayDriver(source),
       credentialGatewayDriver: (id) => this.credentialGatewayDriver(id),
       credentialSourceType: (driver, type) => this.credentialSourceType(driver, type),
       hasServiceAccountDriver: () =>
-        this.selections.has("service_account") ||
+        this.drivers.hasSelection("service_account") ||
         this.configuredServiceAccountDriverId !== undefined,
       serviceAccountDriverId: () => this.serviceAccountDriverId(),
       sandboxDriver: () => this.sandboxDriver(),
@@ -2099,7 +2089,7 @@ export class OpenClawController {
     });
     this.validateSavedAgentTopology = createSavedAgentTopologyValidator({
       sandboxDriver: () => this.sandboxDriver(),
-      selectedCompute: () => this.selections.get("compute")?.driver as ComputeDriver | undefined,
+      selectedCompute: () => this.drivers.selection("compute")?.driver as ComputeDriver | undefined,
       validatePluginPlacement: (driver, plugins, harness) =>
         this.validatePluginPlacement(driver, plugins, harness),
       validateRepositoryBrokerNetworkProxy: (harness, values, sandbox) =>
@@ -2133,44 +2123,12 @@ export class OpenClawController {
   }
 
   registerDriver<T extends Driver | InstalledDriver>(driver: T): T {
-    const owner = driver instanceof InstalledDriver ? driver : undefined;
-    const views = owner ? owner.capabilities.map((key) => owner.require(key)) : [driver as Driver];
-    const entries = views.map((view) => this.driverRegistrationEntry(view, owner));
-    if (
-      owner &&
-      [...this.registry.values()].some((entry) => entry.owner?.ref.id === owner.ref.id)
-    ) {
-      throw new DriverSelectionError(
-        "A Driver is already registered for this installation identity.",
-      );
-    }
-    // Check every capability and conflict before exposing any part of this registration.
-    for (const [key, entry] of entries) {
-      this.registry.set(key, entry);
-    }
-    return driver;
+    return this.drivers.registerDriver(driver);
   }
 
   /** Install one trusted catalog per Harness family. */
   installPluginDrivers(drivers: readonly PluginDriver[]): void {
-    const registrations = drivers.map((driver) => this.driverRegistrationEntry(driver));
-    if (
-      new Set(drivers.map((driver) => driver.harnessId)).size !== drivers.length ||
-      new Set(drivers.map((driver) => driver.id)).size !== drivers.length
-    ) {
-      throw new DriverSelectionError(
-        "Each Plugin Driver must have a distinct identity and Harness.",
-      );
-    }
-    this.selectPluginRegistrations(registrations.map(([, entry]) => entry));
-    for (const [key, entry] of registrations) {
-      this.registry.set(key, entry);
-    }
-  }
-
-  private selectPluginRegistrations(entries: readonly RegisteredDriver[]): void {
-    this.applyLifecycleDrivers(this.selections, entries);
-    this.pluginRegistrations = entries;
+    this.drivers.installPluginDrivers(drivers);
   }
 
   /** Register one configured owner, then select its exact capability views. */
@@ -2182,127 +2140,25 @@ export class OpenClawController {
     }
   }
 
-  private driverRegistrationEntry(
-    driver: Driver,
-    owner?: InstalledDriver,
-  ): [string, RegisteredDriver] {
-    if (
-      !driver ||
-      !isNonEmptyString(driver.id) ||
-      !isNonEmptyString(driver.implementation) ||
-      !capability(driver.capability) ||
-      !driverHasCapabilityContract(driver) ||
-      !driverHasValidLifecycleHooks(driver)
-    ) {
-      throw new DriverSelectionError("The Driver does not satisfy its exact capability contract.");
-    }
-    if (
-      driver.capability === "repo" &&
-      this.installationRepositoryAdmission?.policyMode === "built-in"
-    ) {
-      throw new DriverSelectionError(
-        "Built-in repository policy cannot be combined with a registered Repo Driver.",
-      );
-    }
-    const key = this.driverKey(driver.capability, driver.id);
-    if (this.registry.has(key)) {
-      throw new DriverSelectionError(
-        "A Driver is already registered for this exact capability and identity.",
-      );
-    }
-    if (driver.capability === "sandbox" && (driver as SandboxDriver).networkPolicy !== undefined) {
-      this.configurations.resolve("sandbox", driver.id, "agent", "sandbox-network-policy");
-    }
-    return [
-      key,
-      Object.freeze({
-        driver,
-        ...(driver.capability === "plugin"
-          ? { harnessId: (driver as PluginDriver).harnessId }
-          : {}),
-        capability: driver.capability,
-        id: driver.id,
-        implementation: driver.implementation,
-        ...(owner && { owner }),
-      }),
-    ];
-  }
-
   selectDriver<Capability extends DriverCapability>(
     selectedCapability: Capability,
     driverId: string,
   ): DriverFor<Capability> {
-    if (!capability(selectedCapability) || !isNonEmptyString(driverId)) {
-      throw new DriverSelectionError(
-        "The Driver capability or implementation identity is invalid.",
-      );
-    }
-    const selected = this.registry.get(this.driverKey(selectedCapability, driverId));
-    if (!selected || !this.unchangedDriver(selected)) {
-      throw new DriverSelectionError(
-        "No registered Driver matches the exact selected capability and identity.",
-      );
-    }
-    if (selectedCapability === "plugin") {
-      this.selectPluginRegistrations([selected]);
-      return selected.driver as DriverFor<Capability>;
-    }
-    return this.applyDriverSelection(selectedCapability, selected);
+    return this.drivers.selectDriver(selectedCapability, driverId);
   }
 
   selectedDriver<Capability extends DriverCapability>(
     selectedCapability: Capability,
   ): DriverFor<Capability> {
-    if (!capability(selectedCapability)) {
-      throw new DriverSelectionError("The requested Driver capability is invalid.");
-    }
-    const selected =
-      selectedCapability === "plugin" && this.pluginRegistrations.length === 1
-        ? this.pluginRegistrations[0]
-        : this.selections.get(selectedCapability);
-    if (!selected || !this.unchangedDriver(selected)) {
-      throw new DriverSelectionError(
-        "The selected Driver is unavailable or no longer matches its capability.",
-      );
-    }
-    return selected.driver as DriverFor<Capability>;
+    return this.drivers.selectedDriver(selectedCapability);
   }
 
   private selectedProxyOwner(): InstalledDriver {
-    const proxy = this.selections.get("credential_proxy");
-    const sandbox = this.selections.get("sandbox");
-    const owner = proxy?.owner;
-    if (
-      !owner ||
-      owner !== sandbox?.owner ||
-      owner.require("sandbox") !== sandbox.driver ||
-      owner.require("credential_proxy") !== proxy.driver
-    ) {
-      throw new DriverSelectionError(
-        "Protected execution requires Sandbox and Credential Proxy from the same registered Driver.",
-      );
-    }
-    return owner;
+    return this.drivers.selectedProxyOwner();
   }
 
   async validateBackendConfiguration(): Promise<void> {
-    const delivery = this.selections.get("credential_proxy_delivery");
-    if (
-      delivery !== undefined &&
-      (!delivery.owner ||
-        delivery.owner !== this.selections.get("sandbox")?.owner ||
-        delivery.owner.require("credential_proxy_delivery") !== delivery.driver)
-    ) {
-      throw new DriverSelectionError(
-        "Credential delivery and Sandbox must come from the same registered Driver.",
-      );
-    }
-    const selected = Object.fromEntries(
-      [...this.selections.entries()].map(([capability, selection]) => [
-        capability,
-        selection.driver,
-      ]),
-    );
+    const selected = this.drivers.backendDrivers();
     const admission = this.installationRepositoryAdmission;
     if (admission?.policyMode === "built-in") {
       const owner = this.repositoryPermissionOwner(admission);
@@ -2314,7 +2170,7 @@ export class OpenClawController {
     validateSelectedBackendDrivers(
       this.backends,
       selected,
-      this.selections.has("credential_proxy") ? this.selectedProxyOwner() : undefined,
+      this.drivers.hasSelection("credential_proxy") ? this.selectedProxyOwner() : undefined,
     );
   }
 
@@ -2342,105 +2198,31 @@ export class OpenClawController {
     return immutableCopy(capabilities);
   }
 
-  private async capabilities(): Promise<InstallationCapabilities> {
-    // openclaw lists the execution modes admission accepts for OpenClaw; an empty list means
-    // none (#2670), and sandboxDriverUnavailable says that is an outage, not the Installation's
-    // shape (finding 1624). nativeWorkers promises that dedicated native OpenClaw can be
-    // admitted, so it is reported only when that mode is listed (finding 1608).
-    const {
-      nativeWorkers: _unchecked,
-      openclaw: _derived,
-      pluginCatalogs: _catalogs,
-      ...declared
-    } = this.installation.capabilities ?? {};
-    const openclaw = this.openClawExecutionModes();
-    const nativeWorkers = openclaw.executionModes.includes("dedicated")
-      ? this.nativeWorkers
-      : undefined;
-    const gatewayTypes = this.selections.has("credential_gateway")
-      ? await this.credentialGatewayOperation(() =>
-          this.credentialGatewayDriver().listSourceTypes({
-            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-          }),
-        )
-      : undefined;
-    const protectedTypes = this.protectedSourceTypes().map(({ type }) => type);
-    const types = [
-      ...protectedTypes,
-      ...(gatewayTypes ?? []).filter(
-        (type) =>
-          !protectedTypes.some((p) => p.type === type.type) &&
-          (this.ordinaryCredentialGatewayAllowed(type) || this.staticSourceTypeAvailable(type)),
-      ),
-    ];
-    const capabilities = {
-      ...declared,
-      ...(nativeWorkers === undefined ? {} : { nativeWorkers: { support: nativeWorkers } }),
-      openclaw,
-      ...(gatewayTypes || types.length ? { credentialSources: { types } } : {}),
-    };
-    const catalogs = this.enabledPluginDrivers().map((driver) => ({
-      harnessId: driver.harnessId,
-      pluginPolicies: {
-        driver: { id: driver.id, implementation: driver.implementation },
-        ...driver.policyCapabilities,
-      },
-      ...(driver.discoverCatalog && driver.getCatalogPlugin
-        ? { pluginDiscovery: { credential: driver.discoveryCredential ?? "required" } }
-        : {}),
-    }));
-    return {
-      ...capabilities,
-      ...(catalogs.length > 0 ? { pluginCatalogs: catalogs } : {}),
-    };
-  }
-
-  /**
-   * The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent
-   * deploy. A selected Sandbox Driver that is unavailable admits none until it returns.
-   */
-  private openClawExecutionModes(): {
-    executionModes: HarnessExecutionMode[];
-    settingRefusals?: Partial<Record<HarnessExecutionMode, string>>;
-    sandboxDriverUnavailable?: true;
-  } {
-    let sandbox: SandboxDriver | undefined;
-    try {
-      sandbox = this.sandboxDriver();
-    } catch (error) {
-      if (error instanceof DependencyUnavailableError) {
-        return { executionModes: [], sandboxDriverUnavailable: true };
-      }
-      throw error;
-    }
-    const executionModes: HarnessExecutionMode[] = [];
-    const settingRefusals: Partial<Record<HarnessExecutionMode, string>> = {};
-    for (const mode of HARNESS_EXECUTION_MODES) {
-      const admission = admitsOpenClawExecutionMode(sandbox, mode, this.nativeWorkers);
-      if (admission === true) {
-        executionModes.push(mode);
-      } else if (
-        mode === "dedicated" &&
-        admission instanceof ConfigurationHarnessError &&
-        sandbox?.supportsHarnessExecutionMode.openclaw[mode].reason !== undefined
-      ) {
-        // A Sandbox Driver that provisions dedicated OpenClaw but whose settings refuse it: say
-        // which setting, in admission's own words (finding 2373).
-        settingRefusals[mode] = admission.message;
-      }
-    }
-    return {
-      executionModes,
-      ...(Object.keys(settingRefusals).length ? { settingRefusals } : {}),
-    };
+  private capabilities(): Promise<InstallationCapabilities> {
+    return readInstallationCapabilities(this.installation, this.nativeWorkers, {
+      sandboxDriver: () => this.sandboxDriver(),
+      admitOpenClawExecutionMode: admitsOpenClawExecutionMode,
+      readGatewaySourceTypes: () =>
+        this.drivers.hasSelection("credential_gateway")
+          ? this.credentialGatewayOperation(() =>
+              this.credentialGatewayDriver().listSourceTypes({
+                signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+              }),
+            )
+          : undefined,
+      protectedSourceTypes: () => this.protectedSourceTypes().map(({ type }) => type),
+      allowsGatewaySourceType: (type) =>
+        this.ordinaryCredentialGatewayAllowed(type) || this.staticSourceTypeAvailable(type),
+      enabledPluginDrivers: () => this.enabledPluginDrivers(),
+    });
   }
 
   async getInstallationDeploymentInventory(
     principalId: string,
   ): Promise<Readonly<InstallationDeploymentInventory>> {
     const before = await this.deploymentInventorySnapshot(principalId);
-    const computeSelection = this.selections.get("compute");
-    const sandboxSelection = this.selections.get("sandbox");
+    const computeSelection = this.drivers.selection("compute");
+    const sandboxSelection = this.drivers.selection("sandbox");
     let compute: ComputeDriver | undefined;
     try {
       compute = this.selectedDriver("compute");
@@ -2462,11 +2244,11 @@ export class OpenClawController {
     const after = await this.deploymentInventorySnapshot(principalId);
     if (
       !isDeepStrictEqual(before, after) ||
-      computeSelection !== this.selections.get("compute") ||
-      sandboxSelection !== this.selections.get("sandbox") ||
+      computeSelection !== this.drivers.selection("compute") ||
+      sandboxSelection !== this.drivers.selection("sandbox") ||
       (compute !== undefined &&
         computeSelection !== undefined &&
-        !this.unchangedDriver(computeSelection))
+        !unchangedDriver(computeSelection))
     ) {
       throw new DependencyUnavailableError(
         "The Agent deployment inventory changed during repository observation. Read it again.",
@@ -4260,7 +4042,7 @@ export class OpenClawController {
     if (
       revision.sandboxDriverId === undefined ||
       typeof compute.resolveSandboxNamespace !== "function" ||
-      !this.selections.has("sandbox")
+      !this.drivers.hasSelection("sandbox")
     ) {
       return undefined;
     }
@@ -5815,7 +5597,7 @@ export class OpenClawController {
   // The bundled Kubernetes Compute Driver: OCC applies its documented facts that no Driver member
   // carries (existing namespace adoption, channel credentials delivered only from bindings).
   private bundledKubernetesCompute(): boolean {
-    const implementation = this.selections.get("compute")?.driver.implementation;
+    const implementation = this.drivers.selection("compute")?.driver.implementation;
     return implementation !== undefined && BUNDLED_KUBERNETES_COMPUTE.has(implementation);
   }
 
@@ -5827,7 +5609,7 @@ export class OpenClawController {
     values: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
   ): void {
-    const compute = this.selections.get("compute")?.driver as ComputeDriver | undefined;
+    const compute = this.drivers.selection("compute")?.driver as ComputeDriver | undefined;
     compute?.validateConfiguration?.(values, options);
   }
 
@@ -6536,7 +6318,7 @@ export class OpenClawController {
   private staticEgressProvider(gatewayType: CredentialSourceType, previous?: EgressRef) {
     const type = gatewayType.type;
     const driver = this.selectedDriver("credential_proxy");
-    const owner = this.selections.get("credential_proxy")?.owner;
+    const owner = this.drivers.selection("credential_proxy")?.owner;
     const control = driver.sourceControl;
     // A new admission uses catalog order. An existing approval names a specific registration.
     const resolve = () => {
@@ -6561,7 +6343,7 @@ export class OpenClawController {
     const assertCurrent = () => {
       if (
         this.selectedDriver("credential_proxy") !== driver ||
-        this.selections.get("credential_proxy")?.owner !== owner ||
+        this.drivers.selection("credential_proxy")?.owner !== owner ||
         (owner !== undefined && owner.require("credential_proxy") !== driver) ||
         driver.sourceControl !== control ||
         resolve() !== provider ||
@@ -6703,7 +6485,7 @@ export class OpenClawController {
     // deploy grant and the authorization of every bound source: a retry never helps, so each is a
     // 409 with fixed text that names no source or repository (finding 2536).
     const installationAccess = isInstallationRepositoryProfile(repositoryGit?.bindings[0]?.profile);
-    if (!this.selections.has("credential_proxy")) {
+    if (!this.drivers.hasSelection("credential_proxy")) {
       if (installationAccess) {
         throw new CredentialProxyAdmissionError("installationAccess");
       }
@@ -7730,7 +7512,7 @@ export class OpenClawController {
       ) {
         const previous = source.egress?.key.provider;
         const admitted =
-          previous && this.selections.has("credential_proxy")
+          previous && this.drivers.hasSelection("credential_proxy")
             ? this.staticEgressProvider(type, previous)
             : undefined;
         if (!admitted && !(input.adoption === "live" && input.authorityScope === "execution")) {
@@ -8813,7 +8595,10 @@ export class OpenClawController {
       id: namespaceId,
       namespaceId,
     });
-    if (!this.selections.has("credential_gateway") || !this.selections.has("credential_refresh")) {
+    if (
+      !this.drivers.hasSelection("credential_gateway") ||
+      !this.drivers.hasSelection("credential_refresh")
+    ) {
       throw new NotImplementedError(
         "agent_device_authorization",
         "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
@@ -8989,7 +8774,7 @@ export class OpenClawController {
       throw new ResourceStateConflictError("Device login expired or was cancelled. Connect again.");
     }
     const { gateway, context } = await this.credentialSourceContext(namespaceId, session.sourceId);
-    const refresh = this.selections.has("credential_refresh")
+    const refresh = this.drivers.hasSelection("credential_refresh")
       ? this.credentialRefreshDriver()
       : undefined;
     if (
@@ -9070,7 +8855,7 @@ export class OpenClawController {
     );
     if (
       current.gateway.id !== session.credentialGatewayId ||
-      !this.selections.has("credential_refresh") ||
+      !this.drivers.hasSelection("credential_refresh") ||
       this.credentialRefreshDriver().id !== session.credentialRefreshId
     ) {
       throw new ResourceStateConflictError("The login Driver changed. Connect again.");
@@ -9490,7 +9275,7 @@ export class OpenClawController {
     if (activeRevision !== undefined && !unprotectedPolicyRevision(activeRevision)) {
       return true;
     }
-    if (!this.selections.has("credential_proxy")) {
+    if (!this.drivers.hasSelection("credential_proxy")) {
       return false;
     }
     if (
@@ -10625,7 +10410,7 @@ export class OpenClawController {
     namespaceId: string,
     configuration: Pick<Configuration, "values" | "secretBindings">,
     driverFailure: () => SecretDriverOwnershipError,
-    driver = this.selections.get("channel")?.driver as ChannelDriver | undefined,
+    driver = this.drivers.selection("channel")?.driver as ChannelDriver | undefined,
     authorizeUse?: () => Promise<void>,
   ): Promise<void> {
     if (driver?.validateCredentials === undefined) {
@@ -10695,13 +10480,13 @@ export class OpenClawController {
   }
 
   private assertPreparedDeploymentDrivers(prepared: PreparedDeploymentChannels): void {
-    const configuration = this.selections.get("configuration");
-    const channel = this.selections.get("channel");
+    const configuration = this.drivers.selection("configuration");
+    const channel = this.drivers.selection("channel");
     if (
       configuration?.driver !== prepared.configurationDriver ||
-      !this.unchangedDriver(configuration) ||
+      !unchangedDriver(configuration) ||
       channel?.driver !== prepared.channel ||
-      (channel !== undefined && !this.unchangedDriver(channel)) ||
+      (channel !== undefined && !unchangedDriver(channel)) ||
       prepared.channel?.validateCredentials !== prepared.channelValidator
     ) {
       throw new ResourceStateConflictError(
@@ -10714,7 +10499,7 @@ export class OpenClawController {
     principalId: string,
     input: DeployAgentInput,
   ): Promise<PreparedDeploymentChannels | undefined> {
-    if (this.selections.get("channel") === undefined) {
+    if (this.drivers.selection("channel") === undefined) {
       return undefined;
     }
     await this.authorize(principalId, "deploy", {
@@ -10767,7 +10552,9 @@ export class OpenClawController {
     // would, as provisioning does (findings 2506, 2516).
     this.requireBundledChannelBindings(configuration.values, configuration.secretBindings ?? {});
     await configurationDriver.validate(configuration);
-    const channel = this.selections.has("channel") ? this.selectedDriver("channel") : undefined;
+    const channel = this.drivers.hasSelection("channel")
+      ? this.selectedDriver("channel")
+      : undefined;
     const channelValidator = channel?.validateCredentials;
     await this.validateChannelCredentials(
       principalId,
@@ -12148,20 +11935,10 @@ export class OpenClawController {
     signal: AbortSignal,
     record: (evidence: NamespaceLifecycleEvidence) => void | Promise<void>,
   ): Promise<NamespaceEnsureResult | NamespaceDeleteResult> {
-    const owners = [...this.selections.values(), ...this.pluginRegistrations].map((selected) => {
-      if (!this.unchangedDriver(selected)) {
-        throw new DriverSelectionError("A selected Namespace lifecycle Driver changed identity.");
-      }
-      return selected.owner ?? selected.driver;
-    });
-    return reconcileNamespaceLifecycle(
+    const { compute, participants } = this.drivers.namespaceLifecycle(() =>
       this.selectedDriver("compute"),
-      selectedNamespaceLifecycle(owners, this.namespaceLifecycleBindings),
-      namespace,
-      target,
-      signal,
-      record,
     );
+    return reconcileNamespaceLifecycle(compute, participants, namespace, target, signal, record);
   }
 
   /**
@@ -12507,7 +12284,7 @@ export class OpenClawController {
    * exact source, so a caller without that grant still gets 403 first.
    */
   private assertCredentialGatewaySelected(): void {
-    if (!this.selections.has("credential_gateway")) {
+    if (!this.drivers.hasSelection("credential_gateway")) {
       throw new CredentialGatewayNotConfiguredError();
     }
   }
@@ -12567,7 +12344,7 @@ export class OpenClawController {
       }
       if (
         source.ownerCapability === "credential_proxy" &&
-        !this.selections.has("credential_proxy")
+        !this.drivers.hasSelection("credential_proxy")
       ) {
         // An Installation change dropped the Proxy that owns this source, so Agent save and
         // deploy cannot bind it. The caller holds this source's operate grant, and the text names
@@ -13390,7 +13167,7 @@ export class OpenClawController {
     record: Readonly<AgentProvisioningRecord>,
   ): boolean {
     return (
-      this.selections.has("configuration") &&
+      this.drivers.hasSelection("configuration") &&
       asRecord(record.plan.drivers)?.configuration === this.configurationDriver().id
     );
   }
@@ -13836,7 +13613,7 @@ export class OpenClawController {
    * administer: there is no enforcement to opt out of. Without a selected Compute it is on.
    */
   private gatewayManagedModeSupported(): boolean {
-    const compute = this.selections.get("compute")?.driver as ComputeDriver | undefined;
+    const compute = this.drivers.selection("compute")?.driver as ComputeDriver | undefined;
     return compute === undefined || compute.supportsGatewayManagedMode === true;
   }
 
@@ -14253,7 +14030,7 @@ export class OpenClawController {
     gateway: CredentialGatewayDriver,
     type: string,
   ): Promise<CredentialRefreshDriver | undefined> {
-    if (!this.selections.has("credential_refresh")) {
+    if (!this.drivers.hasSelection("credential_refresh")) {
       return undefined;
     }
     const catalog = await this.credentialGatewayOperation(() =>
@@ -14312,7 +14089,7 @@ export class OpenClawController {
 
   private ordinaryCredentialGatewayAllowed(type: CredentialSourceType): boolean {
     return (
-      !this.selections.has("credential_proxy") ||
+      !this.drivers.hasSelection("credential_proxy") ||
       (this.selectedProxyOwner().allowsOrdinaryCredentialGateway() &&
         type.harnessAuth !== undefined &&
         this.staticSourceLifecycleMatches(type))
@@ -14330,7 +14107,7 @@ export class OpenClawController {
       auth?.method !== "credential_source" ||
       agent.credentialSources?.length !== 1 ||
       agent.credentialSources[0]?.sourceId !== auth.sourceId ||
-      !this.selections.has("credential_gateway")
+      !this.drivers.hasSelection("credential_gateway")
     ) {
       return false;
     }
@@ -14401,7 +14178,7 @@ export class OpenClawController {
 
   /** A protected source is offered only by the selected pair and its installed lifecycle owner. */
   private protectedSourceTypes() {
-    if (!this.selections.has("credential_proxy")) {
+    if (!this.drivers.hasSelection("credential_proxy")) {
       return [];
     }
     const driver = this.selectedProxyOwner().require("credential_proxy");
@@ -14414,7 +14191,7 @@ export class OpenClawController {
   }
 
   private assertCredentialSourceOwnerSelected(): void {
-    if (!this.selections.has("credential_proxy")) {
+    if (!this.drivers.hasSelection("credential_proxy")) {
       this.assertCredentialGatewaySelected();
     }
   }
@@ -14850,7 +14627,7 @@ export class OpenClawController {
   }
 
   private serviceAccountDriver(): ServiceAccountDriver | undefined {
-    if (!this.selections.has("service_account")) {
+    if (!this.drivers.hasSelection("service_account")) {
       return undefined;
     }
     try {
@@ -14860,10 +14637,6 @@ export class OpenClawController {
     }
   }
 
-  /**
-   * Without a ChatGPT Backend no account can hold an access token, so that refusal names the
-   * missing Backend. The API selects the Driver; the worker knows only its configured id.
-   */
   private serviceAccountDriverId(): string | undefined {
     const driver = this.serviceAccountDriver();
     if (
@@ -14879,7 +14652,7 @@ export class OpenClawController {
   }
 
   private sandboxDriver(): SandboxDriver | undefined {
-    if (!this.selections.has("sandbox")) {
+    if (!this.drivers.hasSelection("sandbox")) {
       return undefined;
     }
     try {
@@ -14992,8 +14765,8 @@ export class OpenClawController {
       return;
     }
     driver.validatePlacement?.(plugins, harness, this.selectedDriver("compute").implementation, {
-      sandbox: this.selections.get("sandbox")?.implementation,
-      gateway: this.selections.get("credential_gateway")?.implementation,
+      sandbox: this.drivers.selection("sandbox")?.implementation,
+      gateway: this.drivers.selection("credential_gateway")?.implementation,
     });
     const required = pluginRuntimeHarnessRequirement(driver.implementation, harness);
     if (required !== undefined) {
@@ -15057,18 +14830,11 @@ export class OpenClawController {
   }
 
   private configurationDriverSelected(capability: DriverCapability, id: string): boolean {
-    return capability === "plugin"
-      ? this.pluginRegistrations.some((entry) => entry.id === id)
-      : this.selections.get(capability)?.id === id;
+    return this.drivers.configurationDriverSelected(capability, id);
   }
 
   private enabledPluginDrivers(): readonly PluginDriver[] {
-    return this.pluginRegistrations.map((entry) => {
-      if (!this.unchangedDriver(entry)) {
-        throw new DependencyUnavailableError("A configured Plugin Driver is unavailable.");
-      }
-      return entry.driver as PluginDriver;
-    });
+    return this.drivers.enabledPluginDrivers();
   }
 
   private pluginDriver(harnessId: string, selection = false): PluginDriver {
@@ -15147,7 +14913,8 @@ export class OpenClawController {
 
   private get repositoryConfigured(): boolean {
     return (
-      this.installationRepositoryAdmission?.policyMode === "built-in" || this.selections.has("repo")
+      this.installationRepositoryAdmission?.policyMode === "built-in" ||
+      this.drivers.hasSelection("repo")
     );
   }
 
@@ -15157,14 +14924,14 @@ export class OpenClawController {
       if (
         identity === undefined ||
         identity.driver !== admission.policy ||
-        !this.unchangedDriver(identity)
+        !unchangedDriver(identity)
       ) {
         return undefined;
       }
       return {
         driver: admission.policy,
         admission,
-        unchanged: () => this.unchangedDriver(identity),
+        unchanged: () => unchangedDriver(identity),
       };
     }
     let driver: RepositoryPolicyDriver;
@@ -15180,8 +14947,8 @@ export class OpenClawController {
       driver,
       admission,
       unchanged: () => {
-        const selected = this.selections.get("repo");
-        return selected?.driver === driver && this.unchangedDriver(selected);
+        const selected = this.drivers.selection("repo");
+        return selected?.driver === driver && unchangedDriver(selected);
       },
     };
   }
@@ -15189,7 +14956,7 @@ export class OpenClawController {
   private selectedStandingRepositoryAdmission(): InstallationRepositoryAdmission | undefined {
     const admission = this.installationRepositoryAdmission;
     return admission?.policyMode === "built-in" ||
-      admission?.policy === this.selections.get("repo")?.driver
+      admission?.policy === this.drivers.selection("repo")?.driver
       ? admission
       : undefined;
   }
@@ -15505,10 +15272,6 @@ export class OpenClawController {
     return now.toISOString();
   }
 
-  private driverKey(selectedCapability: DriverCapability, driverId: string): string {
-    return `${selectedCapability}\u0000${driverId}`;
-  }
-
   private backendId(value: BackendRef | undefined, preserve?: BackendRef): BackendRef {
     const backendId = value === undefined ? (preserve ?? null) : value;
     const backend = assertConfiguredBackend(this.backendMap, backendId, "Backend");
@@ -15516,84 +15279,6 @@ export class OpenClawController {
       throw new ScopeViolationError("The Agent Backend must support its Harness association.");
     }
     return backendId;
-  }
-
-  private applyDriverSelection<Capability extends DriverCapability>(
-    selectedCapability: Capability,
-    selected: RegisteredDriver,
-  ): DriverFor<Capability> {
-    const proposed = new Map(this.selections);
-    proposed.set(selectedCapability, selected);
-    this.applyLifecycleDrivers(proposed, this.pluginRegistrations);
-    this.selections.set(selectedCapability, selected);
-    return selected.driver as DriverFor<Capability>;
-  }
-
-  private applyLifecycleDrivers(
-    proposed: ReadonlyMap<DriverCapability, RegisteredDriver>,
-    plugins: readonly RegisteredDriver[],
-  ): void {
-    const namespaceParticipants = selectedNamespaceLifecycle(
-      [...proposed.values(), ...plugins].map((entry) => entry.owner ?? entry.driver),
-      this.namespaceLifecycleBindings,
-    );
-    const lifecycleDrivers = this.lifecycleDrivers(proposed, plugins);
-    const compute = proposed.get("compute");
-    if (compute !== undefined) {
-      if (!this.unchangedDriver(compute)) {
-        throw new DriverSelectionError("The selected compute Driver identity has changed.");
-      }
-      const selectedCompute = compute.driver as ComputeDriver;
-      if (
-        namespaceParticipants.some(({ hooks }) => hooks.deleteNamespace !== undefined) &&
-        typeof selectedCompute.checkNamespaceDeletion !== "function"
-      ) {
-        throw new DriverSelectionError(
-          "Namespace cleanup requires Compute deletion eligibility checks.",
-        );
-      }
-      if (typeof selectedCompute.setLifecycleDrivers === "function") {
-        selectedCompute.setLifecycleDrivers(lifecycleDrivers);
-      } else if (lifecycleDrivers.length > 0) {
-        throw new DriverSelectionError(
-          "The selected compute Driver cannot accept selected lifecycle Drivers.",
-        );
-      }
-    }
-  }
-
-  private lifecycleDrivers(
-    selections: ReadonlyMap<DriverCapability, RegisteredDriver>,
-    plugins: readonly RegisteredDriver[],
-  ): readonly Driver[] {
-    const drivers = new Set<Driver>();
-    for (const selected of [...selections.values(), ...plugins]) {
-      if (selected.capability === "compute") {
-        continue;
-      }
-      if (!this.unchangedDriver(selected)) {
-        throw new DriverSelectionError(
-          "A selected lifecycle Driver no longer matches its registered identity.",
-        );
-      }
-      const lifecycle = selected.owner ? selected.owner.lifecycleDriver : selected.driver;
-      if (lifecycle?.computeLifecycleHooks !== undefined) {
-        drivers.add(lifecycle);
-      }
-    }
-    return Object.freeze([...drivers]);
-  }
-
-  private unchangedDriver(selected: RegisteredDriver): boolean {
-    return (
-      (!selected.owner || selected.owner.require(selected.capability) === selected.driver) &&
-      selected.driver.id === selected.id &&
-      selected.driver.capability === selected.capability &&
-      selected.driver.implementation === selected.implementation &&
-      (selected.capability !== "plugin" ||
-        (selected.driver as PluginDriver).harnessId === selected.harnessId) &&
-      driverHasCapabilityContract(selected.driver)
-    );
   }
 
   private read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
