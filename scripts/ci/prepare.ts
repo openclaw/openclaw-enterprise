@@ -58,6 +58,7 @@ import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.ts";
 import {
   assertNodeBaseImage,
+  baselineCompilerCache,
   imageBuildArgs,
   imageBuildBudgetMs,
   imageBuildDeadlineMs,
@@ -67,6 +68,7 @@ import {
   laneImageCommand,
   observesImageCache,
   reuseEngineImage,
+  seedBaselineCompilerCache,
   warmImageBuildCache,
 } from "./image-build-cache.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.ts";
@@ -565,6 +567,10 @@ async function buildRuntimeImages(
           `org.opencontainers.image.revision=${revision}`,
           "--provenance=false",
         ];
+  const compilerCache =
+    sourceRoot !== repositoryRoot && revision === nativeProfileBaseline.revision
+      ? baselineCompilerCache(revision)
+      : undefined;
   const build = async (role: "controller" | "runtime", args: string[]) => {
     if (cacheWarm) {
       await warmImageBuildCache(role, args, requireCacheExport, progress);
@@ -575,6 +581,11 @@ async function buildRuntimeImages(
         imageBuildBudgetMs(),
         sourceRoot === repositoryRoot ? "current-build" : "baseline-build",
       );
+      const seedArgs =
+        role === "runtime" ? compilerCache?.seedArgs(args, result.stderr) : undefined;
+      if (seedArgs) {
+        await seedBaselineCompilerCache(seedArgs);
+      }
       imageCacheObservation(state.lane, role, "load", result.stderr, progress);
     }
   };
@@ -670,6 +681,7 @@ async function buildRuntimeImages(
         tag,
         args: [
           ...imageBuildArgs(state.lane, "runtime", localStore),
+          ...(compilerCache ? ["--cache-from", compilerCache.from] : []),
           ...plainProgress,
           ...revisionArgs,
           ...sourceArguments,

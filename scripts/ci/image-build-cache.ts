@@ -10,7 +10,7 @@ type ImageRole = "controller" | "runtime";
 type Progress = (lane: string, message: string) => void;
 type CachePhase = "probe" | "load" | "direct-publish";
 
-// Lanes that restore the hosted BuildKit cache. Only the main-only warm job
+// Lanes that restore the current-image BuildKit cache. Only the main-only warm job
 // (ci-image-cache.yml) exports it, building with images-packaging's state.
 export const imageCacheLanes = new Map([
   ["slack", { localStore: false }],
@@ -199,6 +199,9 @@ function nodeCompileState(output: string) {
     }
     const event = line.slice(vertex.length + 2);
     const done = /^DONE(?: (\d{1,9}(?:\.\d{1,3})?)s)?$/.exec(event);
+    if ((done || event === "CACHED") && state !== "completion unobserved") {
+      return "ambiguous";
+    }
     if (done) {
       state = done[1] === undefined ? "completed (duration unknown)" : `completed in ${done[1]}s`;
     } else if (event === "CACHED") {
@@ -262,6 +265,69 @@ export function observesImageCache(lane: string) {
   return (
     isOpenShellLane(lane) ||
     ["slack", "production-tui", "gateway-routing", "k3d-otel"].includes(lane)
+  );
+}
+
+// The current runtime no longer builds the repaired Node binary. Seed that
+// historical stage from the longer advisory job when it had to compile it.
+export function baselineCompilerCache(revision: string, env = process.env) {
+  if (
+    env.OCC_CI_IMAGE_CACHE !== "1" ||
+    env.GITHUB_REPOSITORY !== "openclaw/openclaw-enterprise" ||
+    env.GITHUB_REF !== "refs/heads/main" ||
+    env.GITHUB_EVENT_NAME !== "schedule"
+  ) {
+    return undefined;
+  }
+  const cache = `type=gha,version=2,scope=oce-ci-native-node-compiled-${revision}-${process.platform}-${process.arch}-v1`;
+  const advisory =
+    env.GITHUB_WORKFLOW_REF ===
+      "openclaw/openclaw-enterprise/.github/workflows/qa-advisory.yml@refs/heads/main" &&
+    env.GITHUB_JOB === "oidc-agent-chat";
+
+  return {
+    from: `${cache},timeout=60s`,
+    seedArgs(args: string[], stderr: string) {
+      if (!advisory || !nodeCompileState(stderr).startsWith("completed ")) {
+        return undefined;
+      }
+      return imageCacheOnlyArgs(
+        args,
+        "--target",
+        "node-compiled",
+        "--cache-to",
+        `${cache},mode=min,timeout=160s`,
+      );
+    },
+  };
+}
+
+export async function seedBaselineCompilerCache(args: string[]) {
+  const message = "Cache for the pinned native profile upgrade build.";
+  // Keep the Gateway job's 35 minutes after the three-minute export allowance.
+  if ((imageBuildBudgetMs() ?? 0) < 38 * 60_000) {
+    process.stdout.write(
+      `::notice title=Baseline compiler cache seed skipped (insufficient budget)::${message}\n`,
+    );
+    return;
+  }
+
+  const started = performance.now();
+  let outcome = "exported";
+  try {
+    await execFile(
+      process.env.OCC_DOCKER_BIN ?? "docker",
+      args,
+      // The command helper can spend another ten seconds terminating the process group.
+      { timeoutMs: 170_000, processGroup: true, maxOutputChars: 1024 },
+    );
+  } catch (error) {
+    outcome = asRecord(error)?.timedOut === true ? "timed out" : "failed";
+  }
+  const severity = outcome === "exported" ? "notice" : "warning";
+  const seconds = ((performance.now() - started) / 1000).toFixed(1);
+  process.stdout.write(
+    `::${severity} title=Baseline compiler cache seed ${outcome} (${seconds}s)::${message}\n`,
   );
 }
 
