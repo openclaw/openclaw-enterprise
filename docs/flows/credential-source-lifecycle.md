@@ -15,7 +15,7 @@ OpenClaw Control Plane (OCC) authorizes CredentialSource operations and records 
 - Trigger: CredentialSource create, update, or delete; Agent binding and deployment; or Agent source withdrawal.
 - Source: `apps/controller/src/http/credential-sources.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:createCredentialSource`
-- Source: `packages/occ/src/index.ts:withdrawAgentCredentialSource`
+- Source: `packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`
 - Context: a ready Namespace, selected owner Driver, and grants for the exact source operation.
 
 ## Flow
@@ -80,7 +80,7 @@ When OCC TokenService is selected, composition pairs `credential_proxy_delivery`
 
 ### 5. Withdraw or delete a source
 
-`packages/occ/src/index.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `packages/occ/src/index.ts:deleteCredentialSource`
+`packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `packages/occ/src/index.ts:deleteCredentialSource`
 
 Withdrawal requires `agent:operate` and queues version-scoped work without deploying a revision. The worker rechecks each requester's grant. For legacy Gateway delivery, Compute detaches the OpenShell Provider and confirms its receipt; protected Proxy sources instead reduce the approved policy. Denied requesters require replay. Unconfirmed revocation retries, and replay or maintenance recovers pending work. Deploy and repair never restore withdrawn access, including after a late Sandbox create.
 
