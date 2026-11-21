@@ -503,9 +503,21 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         }
         if (capability === "refused after stop began") {
           await fixture.start(computeSupportingRepositoryPolicy(compute));
-          await waitFor("the candidate to begin the predecessor sweep", async () =>
-            prepared.includes(candidate.id) ? true : undefined,
-          );
+          const queue = new PostgresWorkQueue(fixture.observerPool);
+          // Entering Compute does not release the claim. Park the candidate only after
+          // its recorded deferral, in the same update that checks it is unclaimed.
+          await waitFor("the prepared candidate to defer and release its claim", async () => {
+            if (!(await queue.findWorkAttempt(candidate.idempotencyKey, "REVISION_INCOMPLETE"))) {
+              return;
+            }
+            const parked = await fixture.observerPool.query(
+              `UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour'
+               WHERE idempotency_key = $1 AND state = 'queued' AND claim_token IS NULL`,
+              [candidate.idempotencyKey],
+            );
+            return parked.rowCount === 1 ? true : undefined;
+          });
+          assert.ok(prepared.includes(candidate.id));
           await fixture.stop();
           const replacement = await fixture.state.read((view) =>
             view.agents.findPredecessorReplacement(fixture.namespace.id, owner.id),
@@ -526,10 +538,12 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         ).length;
         // Hold candidate work so no candidate-owned stop can mask the
         // effects of the predecessor's maintenance claim.
-        await fixture.observerPool.query(
-          "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = ANY($1::text[])",
-          [[candidate.idempotencyKey, ...(later ? [later.idempotencyKey] : [])]],
-        );
+        if (capability !== "refused after stop began") {
+          await fixture.observerPool.query(
+            "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = ANY($1::text[])",
+            [[candidate.idempotencyKey, ...(later ? [later.idempotencyKey] : [])]],
+          );
+        }
         const {
           rows: [next],
         } = await fixture.advanceMaintenance(previous);
