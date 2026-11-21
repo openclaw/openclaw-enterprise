@@ -57,14 +57,10 @@ import {
   MAX_AGENT_CREDENTIAL_SOURCES,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
-  credentialFreeMetadataGrant,
   isInstallationRepositoryProfile,
-  repositoryGitDeliveryProfile,
   repositoryGitAuthorization,
   credentialFreeMetadataType,
   credentialSourceMatchesSnapshot,
-  revisionCredentialSourceSnapshot,
-  credentialFreeProviderRef,
   pluginRuntimeHarnessRequirement,
   codexProxiesRepositoryBroker,
   validPluginDriverIdentity,
@@ -74,22 +70,22 @@ import {
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import { createEgressAuthority } from "./credential-egress-authority.ts";
 import {
-  matchesAdmittedSourceType,
-  registeredCredentialProvider,
-} from "./credential-provider-selection.ts";
+  CREDENTIAL_GATEWAY_TIMEOUT_MS,
+  createCredentialSourceDrivers,
+  credentialGatewayOperation,
+} from "./credential-source-drivers.ts";
+import {
+  CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES,
+  createCredentialEgressAdmission,
+} from "./credential-egress-admission.ts";
 import type {
   ExecutionAdmission,
-  StaticEgressSource,
   ProxyPlan,
-  CredentialFreeEgressSource,
-  PreparedTokenSource,
-  PreparedTokenIssuer,
   TokenService,
   EgressRef,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialProxy,
-  supportsStaticCredentials,
   resolveCredentialProxyCapacity,
   type CredentialProxyCapacity,
 } from "./credential-proxy.ts";
@@ -162,7 +158,7 @@ import {
   unprotectedPolicyRevision,
 } from "./sandbox-policy.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   accessBindingsTargeting,
@@ -207,7 +203,6 @@ import type {
   ConfigurationDriver,
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
-  CredentialProviderDefinition,
   OAuthConnectionTemplateVersion,
   SavedConnection,
   OAuthRefreshTokenRegistration,
@@ -1203,8 +1198,6 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
   "occ/kubernetes",
   "kubernetes-local",
 ]);
-/** Bounds each synchronous Credential Gateway call made while serving an API request. */
-const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
 function credentialSourceRef(source: Readonly<CredentialSource>): CredentialSourceReference {
   return { kind: "credential_source", id: source.id, namespaceId: source.namespaceId };
 }
@@ -1253,8 +1246,6 @@ const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 /** Only a claimed server-side consent attempt may operate on its still-pending source. */
 const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
 const MANAGED_SOURCE: unique symbol = Symbol("managed-source");
-const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
-  "Credential source Secrets cannot cross Namespaces.";
 // Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.
 const HARNESS_OBSERVATION_TIMEOUT_MS = 10_000;
 const REPOSITORY_RESTART_OBSERVATION_TIMEOUT_MS = 10_000;
@@ -6252,7 +6243,7 @@ export class OpenClawController {
         selectedProxyOwner: () => this.selectedProxyOwner(),
         secretDriver: (id) => this.secretDriver(id),
         computeDriver: () => this.selectedDriver("compute"),
-        credentialPlacement: () => this.credentialPlacement(),
+        credentialPlacement: () => this.credentialSourceDrivers.credentialPlacement(),
         credentialNamespace: (namespace) => this.credentialNamespace(namespace),
         credentialGatewayOperation: (operation) => this.credentialGatewayOperation(operation),
         authorizationAuthority: (principalId) => this.authorizationAuthority(principalId),
@@ -6293,253 +6284,6 @@ export class OpenClawController {
     return lifecycle;
   }
 
-  private async admitPreparedTokenSource(
-    lifecycle: Pick<PreparedTokenIssuer, "admission" | "provider">,
-    state: PlatformUnitOfWork,
-    principalId: string,
-    namespaceId: string,
-    sourceId: string,
-    config: Readonly<Record<string, string>>,
-    issuer: SecretReference,
-  ): Promise<{ source: PreparedTokenSource; issuer: Readonly<Secret> }> {
-    const control = this.selectedDriver("credential_proxy").sourceControl;
-    const { origin, grant, schemaVersion } = lifecycle.admission(config);
-    await this.authorize(principalId, "operate", {
-      kind: "agent",
-      namespaceId,
-      id: grant.isolationId,
-    });
-    const agent = await state.agents.findAgent(namespaceId, grant.isolationId);
-    // An Agent the caller may operate but that does not exist stays a 404. The refusals after it
-    // concern an Agent the caller holds operate on, or the Secret reference the request sent, so
-    // they name their cause (finding 2536).
-    if (!agent) {
-      throw new ScopeViolationError(
-        "A prepared credential source requires an Agent in this Namespace.",
-      );
-    }
-    this.assertProtectedSourceAgent(agent);
-    if (issuer?.namespaceId !== namespaceId) {
-      throw new SecretBindingValidationError(CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
-    }
-    if (!/^https:\/\/[a-z0-9.-]+(?::\d+)?$/.test(origin)) {
-      // The origin is the Installation's issuer setting, validated at startup.
-      throw new ScopeViolationError(
-        "A prepared credential source requires a trusted HTTPS origin.",
-      );
-    }
-    await this.authorize(principalId, "operate", issuer);
-    const secret = await state.secrets.lockSecret(namespaceId, issuer.id);
-    if (!secret) {
-      throw new ScopeViolationError("Prepared credential issuer material is unavailable.");
-    }
-    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
-    return {
-      source: immutableCopy({
-        key: {
-          installationId: this.installation.id,
-          namespaceId,
-          source: { id: sourceId, generation: 1 },
-          provider: lifecycle.provider,
-          backend: control.backend,
-        },
-        sender: control.sender,
-        resolver: control.resolver,
-        origin,
-        grant,
-        schemaVersion,
-        adoption: "prepared" as const,
-        retention: "none" as const,
-      }),
-      issuer: secret,
-    };
-  }
-
-  /**
-   * A protected source names its Agent in `config.agent_id`, after the caller's operate grant on
-   * it and its lookup, so a refusal may name the Agent's state (finding 2536).
-   */
-  private assertProtectedSourceAgent(agent: Readonly<Agent>): void {
-    if (agent.status !== "active") {
-      throw new AgentDeletingError();
-    }
-    if (agent.executionMode !== "dedicated") {
-      throw new ResourceStateConflictError(
-        "config.agent_id names an embedded Agent, and a protected credential source serves only a dedicated Agent. Name a dedicated Agent in this Namespace.",
-      );
-    }
-  }
-
-  private async admitCredentialFreeMetadata(
-    state: PlatformUnitOfWork,
-    principalId: string,
-    namespaceId: string,
-    sourceId: string,
-    config: Readonly<Record<string, string>>,
-  ): Promise<CredentialFreeEgressSource> {
-    const control = this.selectedDriver("credential_proxy").sourceControl;
-    const grant = credentialFreeMetadataGrant(config);
-    const id = grant.isolationId;
-    await this.authorize(principalId, "operate", { kind: "agent", namespaceId, id });
-    const agent = await state.agents.findAgent(namespaceId, id);
-    if (!agent) {
-      throw new ScopeViolationError("Credential-free metadata requires this dedicated Agent.");
-    }
-    this.assertProtectedSourceAgent(agent);
-    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
-    return immutableCopy({
-      key: {
-        installationId: this.installation.id,
-        namespaceId,
-        source: { id: sourceId, generation: 1 },
-        provider: credentialFreeProviderRef,
-        backend: control.backend,
-      },
-      sender: control.sender,
-      resolver: control.resolver,
-      origin: config.origin!,
-      grant,
-      schemaVersion: 3 as const,
-      adoption: "credential_free" as const,
-      retention: "none" as const,
-    });
-  }
-
-  private staticEgressProvider(gatewayType: CredentialSourceType, previous?: EgressRef) {
-    const type = gatewayType.type;
-    const driver = this.selectedDriver("credential_proxy");
-    const owner = this.selections.get("credential_proxy")?.owner;
-    const control = driver.sourceControl;
-    // A new admission uses catalog order. An existing approval names a specific registration.
-    const resolve = () => {
-      const ref =
-        previous ?? control.providers.find((entry) => entry.sourceType.type === type)?.ref;
-      return ref ? registeredCredentialProvider(control.providers, ref) : undefined;
-    };
-    const provider = resolve();
-    if (provider === "ambiguous") {
-      throw new ResourceStateConflictError(
-        "The admitted credential provider has duplicate registrations. Ask an Installation administrator to resolve them.",
-      );
-    }
-    if (!provider) {
-      return undefined;
-    }
-    const ref = immutableCopy(provider.ref);
-    // Catalog entries may be retained by their Drivers across asynchronous admission.
-    const admittedGatewayType = immutableCopy(gatewayType);
-    const admittedProviderType = immutableCopy(provider.sourceType);
-    const { inject, normalizeConfig } = provider;
-    const assertCurrent = () => {
-      if (
-        this.selectedDriver("credential_proxy") !== driver ||
-        this.selections.get("credential_proxy")?.owner !== owner ||
-        (owner !== undefined && owner.require("credential_proxy") !== driver) ||
-        driver.sourceControl !== control ||
-        resolve() !== provider ||
-        !isDeepStrictEqual(gatewayType, admittedGatewayType) ||
-        !isDeepStrictEqual(provider.sourceType, admittedProviderType) ||
-        !isDeepStrictEqual(provider.ref, ref) ||
-        provider.inject !== inject ||
-        provider.normalizeConfig !== normalizeConfig
-      ) {
-        throw new ResourceStateConflictError(
-          "The selected credential provider changed during admission. Check the Installation's provider configuration before retrying this credential-source request.",
-        );
-      }
-      owner?.assertNewStaticProviderUse(ref);
-    };
-    return { provider, ref, inject, normalizeConfig, assertCurrent, gatewayType };
-  }
-
-  private async admitStaticEgressSource(
-    state: PlatformUnitOfWork,
-    principalId: string,
-    namespaceId: string,
-    sourceId: string,
-    type: string,
-    config: Readonly<Record<string, string>>,
-    references: Readonly<Record<string, SecretReference>>,
-    generation: number,
-    selection: ReturnType<OpenClawController["staticEgressProvider"]>,
-  ): Promise<StaticEgressSource> {
-    const control = this.selectedDriver("credential_proxy").sourceControl;
-    if (
-      !selection ||
-      selection.gatewayType.type !== type ||
-      selection.provider.sourceType.type !== type ||
-      !this.staticSourceLifecycleMatches(selection.gatewayType, selection.provider.sourceType) ||
-      selection.provider.sourceType.secrets.length !== 1
-    ) {
-      // An Installation property about the type the request sent (finding 2536). The who comes
-      // before the type list, so the 256-character cap never cuts it.
-      throw new ResourceStateConflictError(
-        `The selected Credential Proxy cannot protect ${type} sources. Ask an Installation administrator, or create a type it protects: ${control.providers.map((entry) => entry.sourceType.type).join(", ")}.`,
-      );
-    }
-    const { provider, ref, inject, normalizeConfig, assertCurrent } = selection;
-    const reference = references[provider.sourceType.secrets[0]!.name];
-    assertCurrent();
-    Reflect.apply(normalizeConfig, provider, [config]);
-    // An Installation property: a Proxy that cannot serve the source refuses it before any
-    // Secret is read (finding 2360).
-    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
-    if (!reference) {
-      throw new ScopeViolationError(
-        "Protected source material must belong to the exact Namespace.",
-      );
-    }
-    if (reference.namespaceId !== namespaceId) {
-      // The reference the request sent, refused as the Credential Gateway path refuses it.
-      throw new SecretBindingValidationError(CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
-    }
-    await this.authorize(principalId, "operate", reference);
-    const secret = await state.secrets.lockSecret(namespaceId, reference.id);
-    if (!secret) {
-      throw new ScopeViolationError("Protected source material is unavailable.");
-    }
-    const secretDriver = this.secretDriver(secret.driverId);
-    if (!secretDriver.readCredentialInput) {
-      throw new DependencyUnavailableError(
-        "Protected egress requires authoritative versioned Secret reads.",
-      );
-    }
-    const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
-    assertCurrent();
-    const material = await secretDriver.readCredentialInput({
-      secret,
-      lifetime: {
-        signal,
-        deadlineAt: new Date(Date.now() + CREDENTIAL_GATEWAY_TIMEOUT_MS).toISOString(),
-      },
-      retention: "none",
-    });
-    // Validate format before committing the candidate, without retaining or exporting material.
-    assertCurrent();
-    Reflect.apply(inject, provider, [material.value]);
-    assertCurrent();
-    if (!material.version || !Number.isFinite(Date.parse(material.authoritativeObservedAt))) {
-      throw new DependencyUnavailableError("The Secret Driver returned no version evidence.");
-    }
-    return immutableCopy({
-      key: {
-        installationId: this.installation.id,
-        namespaceId,
-        source: { id: sourceId, generation },
-        backend: control.backend,
-        provider: ref,
-      },
-      schemaVersion: 1 as const,
-      adoption: "live" as const,
-      materialRefId: crypto.randomUUID(),
-      secret: reference,
-      secretDriver: { id: secretDriver.id, generation: 1 },
-      sender: control.sender,
-      resolver: control.resolver,
-      retention: "none" as const,
-    });
-  }
-
   private async admitProxyPlan(
     state: PlatformUnitOfWork,
     agent: Readonly<Agent>,
@@ -6550,209 +6294,37 @@ export class OpenClawController {
     harnessAuth?: HarnessAuthSnapshot,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
   ): Promise<{ plan: ProxyPlan; assertProvidersCurrent: () => void } | undefined> {
-    const sources: CredentialSource[] = [];
-    let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
-    for (const binding of agent.credentialSources ?? []) {
-      const source = await state.credentialSources.findCredentialSource(
-        agent.namespaceId,
-        binding.sourceId,
-      );
-      if (source?.egress !== undefined) {
-        sources.push(source);
-      } else if (
-        repositoryGit &&
-        source?.state === "ready" &&
-        harnessAuth?.method === "credential_source" &&
-        source.id === harnessAuth.sourceId &&
-        credentialSourceMatchesSnapshot(source, harnessAuth)
-      ) {
-        // admitHarnessAuth and admitCredentialSources already authorized this ordinary
-        // Harness source. Bind its identity to release, without giving Git any model authority.
-        harnessCredentialSource = harnessAuth;
-      }
-    }
-    // Each refusal below is an Installation property or the Agent's saved bindings, after the
-    // deploy grant and the authorization of every bound source: a retry never helps, so each is a
-    // 409 with fixed text that names no source or repository (finding 2536).
-    const installationAccess = isInstallationRepositoryProfile(repositoryGit?.bindings[0]?.profile);
-    if (!this.selections.has("credential_proxy")) {
-      if (installationAccess) {
-        throw new CredentialProxyAdmissionError("installationAccess");
-      }
-      if (sources.length > 0) {
-        throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
-      }
-      return undefined;
-    }
-    // Only a positively installed repository-only owner permits ordinary model delivery.
-    // Source-free Agents and full/unknown profiles retain protected admission, including empty plans.
-    if (
-      sources.length === 0 &&
-      repositoryGit === undefined &&
-      harnessAuth !== undefined &&
-      this.selectedProxyOwner().allowsOrdinaryCredentialGateway() &&
-      (await this.ordinaryModelBinding(state, agent, harnessAuth))
-    ) {
-      return undefined;
-    }
-    const sourceCount = sources.length + (harnessCredentialSource ? 1 : 0);
-    const owner = this.selectedProxyOwner();
-    const driver = owner.require("credential_proxy");
-    // Retirement is permanent; an unavailable counterpart cannot make this deployment retryable.
-    for (const source of sources) {
-      if (source.egress?.adoption === "live") {
-        owner.assertNewStaticProviderUse(source.egress.key.provider);
-      }
-    }
-    if ((agent.credentialSources?.length ?? 0) !== sourceCount) {
-      throw new CredentialSourceUnprotectedError();
-    }
-    if (sourceCount > 1 && !repositoryGit && driver.policyReduction?.version !== 1) {
-      throw new CredentialProxyAdmissionError("oneSource");
-    }
-    // Deploy refuses a selected Sandbox with another execution mode first
-    // (requireSandboxExecutionMode), so this is an Installation without a Sandbox Driver.
-    if (!sandboxDriverId || agent.executionMode !== "dedicated") {
-      throw new CredentialProxyAdmissionError("dedicatedSandbox");
-    }
-    if (installationAccess) {
-      owner.requireRepositoryGitTransport();
-    }
-    const gitProfile = repositoryGitDeliveryProfile(repositoryGit);
-    if (repositoryGit !== undefined && gitProfile === undefined) {
-      // Finding 2204: protected admission v4-v7 requires a mapped delivery profile, so
-      // git-read, git-full or several bindings could never start. Refuse them by name before
-      // reading the counterpart; its non-Git check would answer a generic 503 or admit a plan
-      // that assertExecutionAdmission then rejects as an internal error.
-      throw new RepositoryGitProfileUnsupportedError(repositoryGit.bindings.length);
-    }
-    const gitAuthorization = await repositoryGitAuthorization(
-      driver.sourceControl,
-      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      gitProfile,
-    );
-    if (gitAuthorization === "unavailable") {
-      throw new DependencyUnavailableError(
-        "The selected Credential Proxy did not confirm installation-wide repository access.",
-      );
-    }
-    const reducibleGit =
-      gitProfile !== undefined &&
-      gitAuthorization === "exact-dispatch" &&
-      driver.policyReduction?.version === 2;
-    if (repositoryGit && sources.length && !reducibleGit) {
-      throw new CredentialProxyAdmissionError("gitAlone");
-    }
-    if (reducibleGit && driver.policyReduction?.version === 2) {
-      await driver.policyReduction.assertAvailable(
-        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      );
-    }
-    let policyReductionVersion: ProxyPlan["policyReductionVersion"] = reducibleGit ? 2 : undefined;
-    if (!repositoryGit && sources.length > 0 && driver.policyReduction?.version === 1) {
-      policyReductionVersion = 1;
-    }
-    const selection = asRecord(asRecord(configuration.agents)?.defaults)?.model;
-    const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
-    if (
-      sources.some((source) => source.egress?.adoption === "live") &&
-      (typeof model !== "string" || !model.includes("/"))
-    ) {
-      // The caller holds read on the Agent's Configuration (deploy checked it), so the refusal
-      // names the setting, as other Configuration Harness refusals do (finding 2536).
-      throw new ConfigurationHarnessError(
-        "Configuration setting agents.defaults.model must name a provider/model: a live-adopted credential source routes protected inference only to an explicit provider. Set it in the Agent's Configuration, then deploy again.",
-      );
-    }
-    const modelId = typeof model === "string" ? model.slice(model.indexOf("/") + 1) : "";
-    const execution = {
-      installationId: this.installation.id,
-      namespaceId: agent.namespaceId,
-      agentId: agent.id,
-      servicePrincipalId: agent.servicePrincipalId,
+    return this.egressAdmission.admitProxyPlan(
+      state,
+      agent,
       revisionId,
-      executionId: repositoryGit ? randomBytes(24).toString("base64url") : crypto.randomUUID(),
-    };
-    const control = driver.sourceControl;
-    const requireProvider = (source: CredentialSource, expected?: CredentialProviderDefinition) => {
-      const admitted = source.egress!;
-      const provider = registeredCredentialProvider(control.providers, admitted.key.provider);
-      if (
-        provider === "ambiguous" ||
-        (expected && provider !== expected) ||
-        (provider && !matchesAdmittedSourceType(source, provider))
-      ) {
-        throw new ResourceStateConflictError(
-          "The admitted credential provider changed or is incompatible. Ask an Installation administrator to restore its unique registration.",
-        );
-      }
-      if (!provider || !isDeepStrictEqual(control.backend, admitted.key.backend)) {
-        throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
-      }
-      return provider;
-    };
-    const registrations = sources.map((source) => ({ source, provider: requireProvider(source) }));
-    const routes = registrations.flatMap(({ source, provider }) => {
-      const admitted = source.egress!;
-      const grant = provider.normalizeGrant([modelId], source.config);
-      let digestGrant = grant;
-      if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
-        const canonical = credentialFreeMetadataGrant(source.config);
-        if (!isDeepStrictEqual(grant, canonical)) {
-          throw new ScopeViolationError(
-            "Credential-free metadata grant does not match the source.",
-          );
-        }
-        // Preserve the contracts digest without dropping any Driver-supplied grant fields.
-        digestGrant = canonical;
-      }
-      return provider.routes(
-        source,
-        {
-          binding: { id: crypto.randomUUID(), generation: 1 },
-          execution,
-          source: admitted.key,
-          grant,
-          grantHash: createHash("sha256").update(JSON.stringify(digestGrant)).digest("hex"),
-          isolationId: agent.id,
-        },
-        harnessConfiguration,
-      );
-    });
-    const plan: ProxyPlan = immutableCopy({
-      id: crypto.randomUUID(),
-      generation: 1,
-      execution,
+      configuration,
       sandboxDriverId,
-      egressDriverId: driver.id,
-      driver: owner.ref,
-      ...(policyReductionVersion !== undefined && { policyReductionVersion }),
-      ...(repositoryGit && { repositoryGit }),
-      ...(repositoryGit &&
-        (gitAuthorization === "online-request" || gitAuthorization === "request-hook-observed") && {
-          repositoryGitAuthorization: gitAuthorization,
-        }),
-      ...(harnessCredentialSource && { harnessCredentialSource }),
-      routes,
-    });
-    // The plan is durable; the receiver identities stay local to this admission.
-    const assertProvidersCurrent = () => {
-      if (registrations.length === 0) {
-        return;
-      }
-      if (this.selectedProxyOwner() !== owner || driver.sourceControl !== control) {
-        throw new ResourceStateConflictError(
-          "The selected Credential Proxy changed during deployment.",
-        );
-      }
-      for (const { source, provider } of registrations) {
-        requireProvider(source, provider);
-      }
-    };
-    return { plan, assertProvidersCurrent };
+      repositoryGit,
+      harnessAuth,
+      harnessConfiguration,
+    );
   }
 
-  /** Bind the configured adapter to the actual durable credential store before use. */
+  private readonly credentialSourceDrivers = createCredentialSourceDrivers({
+    selectedDriver: (capability) => this.selectedDriver(capability),
+    hasRefreshDriver: () => this.selections.has("credential_refresh"),
+    selectedProxyOwner: () => this.selectedProxyOwner(),
+  });
+
+  private readonly egressAdmission = createCredentialEgressAdmission({
+    installationId: () => this.installation.id,
+    authorize: (principalId, action, resource) => this.authorize(principalId, action, resource),
+    hasProxy: () => this.selections.has("credential_proxy"),
+    proxyDriver: () => this.selectedDriver("credential_proxy"),
+    proxyRegistrationOwner: () => this.selections.get("credential_proxy")?.owner,
+    selectedProxyOwner: () => this.selectedProxyOwner(),
+    hasGateway: () => this.selections.has("credential_gateway"),
+    sourceDrivers: this.credentialSourceDrivers,
+    secretDriver: (id) => this.secretDriver(id),
+    issuer: (ref) => this.preparedTokens?.issuer(ref),
+  });
+
   async activateTokenServiceInstance(driverId: string, storeIdentity: string): Promise<string> {
     if (!isNonEmptyString(driverId) || !isNonEmptyString(storeIdentity)) {
       throw new DriverSelectionError("The TokenService store identity is unavailable.");
@@ -7277,10 +6849,15 @@ export class OpenClawController {
       }
       const requiresStaticAdmission =
         !protectedType && !this.ordinaryCredentialGatewayAllowed(type);
-      const staticSelection = requiresStaticAdmission ? this.staticEgressProvider(type) : undefined;
+      const staticSelection = requiresStaticAdmission
+        ? this.egressAdmission.staticEgressProvider(type)
+        : undefined;
       if (
         requiresStaticAdmission &&
-        !this.staticSourceLifecycleMatches(type, staticSelection?.provider.sourceType)
+        !this.egressAdmission.staticSourceLifecycleMatches(
+          type,
+          staticSelection?.provider.sourceType,
+        )
       ) {
         throw new ResourceStateConflictError(
           "The selected Credential Proxy cannot preserve this credential source's lifecycle.",
@@ -7299,7 +6876,7 @@ export class OpenClawController {
       }
       const sourceId = this.nextIdentifier("credential_source");
       const prepared = protectedType?.issuer
-        ? await this.admitPreparedTokenSource(
+        ? await this.egressAdmission.admitPreparedTokenSource(
             protectedType.issuer,
             state,
             principalId,
@@ -7312,7 +6889,7 @@ export class OpenClawController {
       let egress: CredentialSource["egress"] = prepared?.source;
       if (egress === undefined) {
         if (type.type === credentialFreeMetadataType) {
-          egress = await this.admitCredentialFreeMetadata(
+          egress = await this.egressAdmission.admitCredentialFreeMetadata(
             state,
             principalId,
             locked.id,
@@ -7320,7 +6897,7 @@ export class OpenClawController {
             config,
           );
         } else if (!this.ordinaryCredentialGatewayAllowed(type)) {
-          egress = await this.admitStaticEgressSource(
+          egress = await this.egressAdmission.admitStaticEgressSource(
             state,
             principalId,
             locked.id,
@@ -7603,7 +7180,7 @@ export class OpenClawController {
         const previous = source.egress?.key.provider;
         const admitted =
           previous && this.selections.has("credential_proxy")
-            ? this.staticEgressProvider(type, previous)
+            ? this.egressAdmission.staticEgressProvider(type, previous)
             : undefined;
         if (!admitted && !(input.adoption === "live" && input.authorityScope === "execution")) {
           throw new ResourceStateConflictError(
@@ -7618,7 +7195,7 @@ export class OpenClawController {
             "Protected source changes require an unbound source.",
           );
         }
-        const egress = await this.admitStaticEgressSource(
+        const egress = await this.egressAdmission.admitStaticEgressSource(
           state,
           principalId,
           namespace.id,
@@ -7627,7 +7204,7 @@ export class OpenClawController {
           source.config,
           secretRefs,
           (source.egress?.key.source.generation ?? 0) + 1,
-          admitted ?? this.staticEgressProvider(type),
+          admitted ?? this.egressAdmission.staticEgressProvider(type),
         );
         if (input.secrets !== undefined) {
           await state.credentialSources.replaceCredentialSourceSecrets(
@@ -14643,202 +14220,51 @@ export class OpenClawController {
     }
   }
 
-  /**
-   * The selected Credential Gateway Driver when it registered a source the caller has already
-   * been granted and looked up; otherwise CredentialSourceDriverError, whose fixed message names
-   * the fix. Call it only after the grant and the lookup, so it is no existence oracle. No usable
-   * selected driver is an outage, not an ownership problem: it keeps the generic 503.
-   */
   private ownedCredentialGatewayDriver(source: CredentialSource): CredentialGatewayDriver {
-    const driver = this.credentialGatewayDriver();
-    if (source.ownerCapability !== "credential_gateway" || driver.id !== source.driverId) {
-      throw new CredentialSourceDriverError();
-    }
-    return driver;
+    return this.credentialSourceDrivers.ownedCredentialGatewayDriver(source);
   }
 
   private credentialGatewayDriver(expectedId?: string): CredentialGatewayDriver {
-    try {
-      const driver = this.selectedDriver("credential_gateway");
-      if (expectedId !== undefined && driver.id !== expectedId) {
-        throw new Error("Driver identity mismatch.");
-      }
-      return driver;
-    } catch {
-      throw new DependencyUnavailableError(
-        "The selected Credential Gateway Driver is unavailable or does not own this source.",
-      );
-    }
+    return this.credentialSourceDrivers.credentialGatewayDriver(expectedId);
   }
 
-  /**
-   * Reading and deleting an existing source must not depend on the current catalog: a source
-   * stays observable and deletable after its type is no longer offered. An unoffered type
-   * cannot be classified, so it gets no refresh call; without the role, the gateway's own
-   * status and removal are all that is left.
-   */
-  private async refreshDriverForSource(
+  private refreshDriverForSource(
     gateway: CredentialGatewayDriver,
     type: string,
   ): Promise<CredentialRefreshDriver | undefined> {
-    if (!this.selections.has("credential_refresh")) {
-      return undefined;
-    }
-    const catalog = await this.credentialGatewayOperation(() =>
-      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
-    );
-    return catalog.some((entry) => entry.type === type && entry.rotation === "refresh")
-      ? this.credentialRefreshDriver()
-      : undefined;
+    return this.credentialSourceDrivers.refreshDriverForSource(gateway, type);
   }
 
-  /** The refresh role is selectable only on the Credential Gateway's own Backend. */
   private credentialRefreshDriver(): CredentialRefreshDriver {
-    try {
-      return this.selectedDriver("credential_refresh");
-    } catch {
-      throw new DependencyUnavailableError(
-        "The selected Credential Refresh Driver is unavailable for this refresh-type source.",
-      );
-    }
+    return this.credentialSourceDrivers.credentialRefreshDriver();
   }
 
-  private async credentialGatewayOperation<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      if (error instanceof ScopeViolationError || error instanceof ResourceConflictError) {
-        throw error;
-      }
-      throw new DependencyUnavailableError(
-        "The Credential Gateway operation failed or its outcome is unknown.",
-      );
-    }
+  private credentialGatewayOperation<T>(operation: () => Promise<T>): Promise<T> {
+    return credentialGatewayOperation(operation);
   }
 
-  /** Credential Gateways share the paired Sandbox's view, whose name is Compute's placement. */
-  private async credentialNamespace(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>> {
-    const { compute, resolve } = this.credentialPlacement();
-    return this.credentialGatewayOperation(() => Reflect.apply(resolve, compute, [namespace]));
-  }
-
-  private credentialPlacement() {
-    let compute: ComputeDriver;
-    try {
-      compute = this.selectedDriver("compute");
-    } catch {
-      throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
-    }
-    const resolve = compute.resolveSandboxNamespace;
-    if (resolve === undefined) {
-      throw new DependencyUnavailableError(
-        "The selected Compute Driver cannot place Credential Gateway sources.",
-      );
-    }
-    return { compute, resolve };
+  private credentialNamespace(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>> {
+    return this.credentialSourceDrivers.credentialNamespace(namespace);
   }
 
   private ordinaryCredentialGatewayAllowed(type: CredentialSourceType): boolean {
-    return (
-      !this.selections.has("credential_proxy") ||
-      (this.selectedProxyOwner().allowsOrdinaryCredentialGateway() &&
-        type.harnessAuth !== undefined &&
-        this.staticSourceLifecycleMatches(type))
-    );
+    return this.egressAdmission.ordinaryCredentialGatewayAllowed(type);
   }
 
-  /** The compatibility grant covers only the model Harness, never other bound sources. */
-  private async ordinaryModelBinding(
+  private ordinaryModelBinding(
     state: PlatformReadView,
     agent: Readonly<Agent>,
     admitted?: HarnessAuthSnapshot,
   ): Promise<boolean> {
-    const auth = agent.harnessAuth;
-    if (
-      auth?.method !== "credential_source" ||
-      agent.credentialSources?.length !== 1 ||
-      agent.credentialSources[0]?.sourceId !== auth.sourceId ||
-      !this.selections.has("credential_gateway")
-    ) {
-      return false;
-    }
-    const source = await state.credentialSources.findCredentialSource(
-      agent.namespaceId,
-      auth.sourceId,
-    );
-    const gateway = this.credentialGatewayDriver();
-    if (
-      source?.state !== "ready" ||
-      source.egress !== undefined ||
-      source.ownerCapability !== "credential_gateway" ||
-      source.driverId !== gateway.id
-    ) {
-      return false;
-    }
-    let type: CredentialSourceType;
-    try {
-      type = await this.credentialSourceType(gateway, source.type);
-    } catch (error) {
-      if (error instanceof CredentialSourceTypeNotOfferedError) {
-        return false;
-      }
-      throw error;
-    }
-    if (type.harnessAuth === undefined || !this.staticSourceLifecycleMatches(type)) {
-      return false;
-    }
-    const snapshot: HarnessAuthSnapshot = {
-      method: "credential_source",
-      sourceId: source.id,
-      sourceType: source.type,
-      credentialGatewayId: gateway.id,
-      loginMode: type.harnessAuth.loginMode,
-    };
-    return admitted === undefined || isDeepStrictEqual(admitted, snapshot);
-  }
-
-  private staticSourceLifecycleMatches(
-    type: CredentialSourceType,
-    provider?: CredentialSourceType,
-  ): boolean {
-    return (
-      supportsStaticCredentials(type) &&
-      (provider === undefined || supportsStaticCredentials(provider))
-    );
+    return this.egressAdmission.ordinaryModelBinding(state, agent, admitted);
   }
 
   private staticSourceTypeAvailable(type: CredentialSourceType): boolean {
-    try {
-      const selection = this.staticEgressProvider(type);
-      if (
-        !selection ||
-        !this.staticSourceLifecycleMatches(type, selection.provider.sourceType) ||
-        selection.provider.sourceType.secrets.length !== 1
-      ) {
-        return false;
-      }
-      selection.assertCurrent();
-      return true;
-    } catch (error) {
-      if (error instanceof ResourceStateConflictError) {
-        return false;
-      }
-      throw error;
-    }
+    return this.egressAdmission.staticSourceTypeAvailable(type);
   }
 
-  /** A protected source is offered only by the selected pair and its installed lifecycle owner. */
   private protectedSourceTypes() {
-    if (!this.selections.has("credential_proxy")) {
-      return [];
-    }
-    const driver = this.selectedProxyOwner().require("credential_proxy");
-    return driver.sourceControl.providers.flatMap((provider) => {
-      const issuer = this.preparedTokens?.issuer(provider.ref);
-      return issuer || isDeepStrictEqual(provider.ref, credentialFreeProviderRef)
-        ? [{ driver, type: provider.sourceType, issuer }]
-        : [];
-    });
+    return this.egressAdmission.protectedSourceTypes();
   }
 
   private assertCredentialSourceOwnerSelected(): void {
@@ -14847,56 +14273,19 @@ export class OpenClawController {
     }
   }
 
-  /** Resolve exactly the recorded capability, then check its Driver and protected backend. */
   private credentialSourceOwner(source: CredentialSource) {
-    if (source.ownerCapability === "credential_proxy") {
-      const driver = this.selectedProxyOwner().require("credential_proxy");
-      if (
-        source.driverId !== driver.id ||
-        !source.egress ||
-        !isDeepStrictEqual(source.egress.key.backend, driver.sourceControl.backend)
-      ) {
-        throw new DependencyUnavailableError(
-          "The Credential Proxy that admitted the source is unavailable.",
-        );
-      }
-      return { kind: "proxy" as const, driver };
-    }
-    return { kind: "gateway" as const, driver: this.ownedCredentialGatewayDriver(source) };
+    return this.credentialSourceDrivers.credentialSourceOwner(source);
   }
 
-  /** Recheck the immutable admission and its selected owner in the use or observation transaction. */
   private currentCredentialSourceOwner(source: CredentialSource, revision: AgentRevision): boolean {
-    if (
-      !credentialSourceMatchesSnapshot(
-        source,
-        revisionCredentialSourceSnapshot(revision, source.id),
-      )
-    ) {
-      return false;
-    }
-    try {
-      this.credentialSourceOwner(source);
-      return true;
-    } catch {
-      return false;
-    }
+    return this.credentialSourceDrivers.currentCredentialSourceOwner(source, revision);
   }
 
-  private async credentialSourceType(
+  private credentialSourceType(
     driver: CredentialGatewayDriver,
     type: string,
   ): Promise<CredentialSourceType> {
-    const catalog = await this.credentialGatewayOperation(() =>
-      driver.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
-    );
-    const entry = catalog.find((candidate) => candidate.type === type);
-    if (entry === undefined) {
-      // Callers check the caller's grant and look up an existing source first. The catalog is
-      // Installation configuration, so the refusal names the fix instead of a generic 404.
-      throw new CredentialSourceTypeNotOfferedError();
-    }
-    return entry;
+    return this.credentialSourceDrivers.credentialSourceType(driver, type);
   }
 
   private credentialSourceMetadata(
