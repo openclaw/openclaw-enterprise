@@ -4425,40 +4425,30 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 
 /* Progressive disclosure keeps the launch form focused on everyday choices. */
-/* The start cards keep the card's own padding, which narrows on a phone (finding 2404). */
-.launch-intro {
-  margin: var(--space-5) 0;
-}
-/* A card heading sits a step under the page title on the type scale (finding 2097). */
-.launch-intro h2 {
-  font-size: var(--text-xl);
-  line-height: var(--text-xl--line-height);
-  margin-bottom: var(--space-3);
-}
-.launch-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-.launch-preset {
-  margin-top: var(--space-5);
-}
-.launch-preset fieldset {
+.create-preset {
   border: 0;
   padding: 0;
   margin: 0;
 }
-.launch-preset legend {
+.create-preset legend {
   display: none;
 }
-.launch-advanced,
+/* A tab's first field starts at the card's padding: the chooser on Basics, the JSON on
+   Configuration. */
+.create-preset > .field:first-of-type,
+#create-agent-form > [role="tabpanel"] > .field:first-child {
+  margin-top: 0;
+}
+/* Use Preset ends a chosen Preset's variables, a field's gap above the form's own fields. */
+.create-preset > button {
+  margin-bottom: var(--space-5);
+}
 .launch-runtime,
 .repository-customize {
   border-top: 1px solid var(--line);
   padding-top: var(--space-4);
   margin-top: var(--space-5);
 }
-.launch-advanced > summary,
 .launch-runtime > summary,
 .repository-customize > summary {
   cursor: pointer;
@@ -4472,9 +4462,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .repository-profile > span {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.launch-advanced[open] > .form-field:first-of-type {
-  margin-top: var(--space-5);
 }
 @media (max-width: 760px) {
   .repository-profiles {
@@ -4515,28 +4502,40 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .harness-auth-fields .model-selection .form-field {
   margin-bottom: 0;
 }
-.launch-intro,
-.launch-preset,
-#create-agent-form ~ .create-channels,
-#create-agent-form ~ p[role="alert"],
-#create-agent-form ~ p[role="status"],
-#create-agent-form ~ .form-actions {
+/* Create Agent: the bar under the title holds the form's state and actions, above the tabs. */
+.create-agent-bar,
+#create-agent-sections,
+#create-agent-sections ~ p[role="alert"],
+#create-agent-sections ~ p[role="status"] {
   max-width: 960px;
 }
-/* A Preset fills a form taller than the window, so Create Agent stays in view at its foot
-   instead of two screens down (finding 2098). */
-#create-agent-form ~ .form-actions {
+/* A section can be taller than the window, so the bar stays in view at the top and Create Agent
+   is never a scroll away (finding 2098). */
+.create-agent-bar {
   position: sticky;
-  bottom: 0;
+  top: 0;
   z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-5);
   padding-block: var(--space-3);
-  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
   background: var(--color-canvas);
 }
-/* Keyboard focus scrolls a control into view above that row, not under it. Two rows of buttons
-   fit on a phone. */
+.create-agent-bar > * {
+  margin: 0;
+}
+/* The Channels tab's editor is outside the form, so the form's card would show empty. */
+#create-agent-form:not(:has(> [role="tabpanel"]:not([hidden]))) {
+  display: none;
+}
+/* Keyboard and validation focus scroll a control into view under the bar, not behind it, with
+   room below for the error that follows it. The bar takes two rows on a phone. */
 html:has(#create-agent-form) {
-  scroll-padding-bottom: calc(2 * var(--control-h) + 2 * var(--space-3) + var(--space-4));
+  scroll-padding-block: calc(2 * var(--control-h) + 2 * var(--space-3) + var(--space-4));
 }
 .repository-customize .repository-option {
   margin-top: var(--space-4);

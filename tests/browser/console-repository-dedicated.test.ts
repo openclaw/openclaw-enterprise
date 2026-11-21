@@ -1,6 +1,7 @@
 import {
   openCreateSecretDialog,
   createAgentThroughForm,
+  openCreateTab,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -59,11 +60,12 @@ for (const issuesEnabled of [true, false]) {
     const { id: presetId }: PresetWire = preset.data;
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(presetId);
+    await page.getByLabel("Preset", { exact: true }).selectOption(presetId);
     await page.getByRole("button", { name: "Use Preset" }).click();
     await page.getByLabel("Agent name").fill("Repository teammate");
     await page.getByLabel("Harness", { exact: true }).selectOption("codex");
     // An omitted profile in a legacy Preset retains the API's git-write default as Custom.
+    await openCreateTab(page, "repositories");
     await page.getByText("Contributor · no issue management · Custom", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Access for example/application" }).click();
     await page.locator("#repository-inherit-application").check();

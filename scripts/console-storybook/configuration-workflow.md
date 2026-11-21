@@ -44,7 +44,7 @@ story names and proof limits with the media; refresh it after material UI edits.
 ## Change the shared model in a roster
 
 Open **Pages → Create Agent → Change a roster's shared primary model**. Change
-Model ID, then inspect Advanced settings → Configuration JSON. Defaults and
+Model ID, then inspect Configuration JSON on the Configuration tab. Defaults and
 explicit roster selections share the new primary; inherited selections remain
 omitted. Clear the field and select another model: local policies and ordered
 fallbacks remain. This story simulates the API and does not deploy a runtime.
@@ -52,7 +52,7 @@ fallbacks remain. This story simulates the API and does not deploy a runtime.
 ## Correct a model configuration draft
 
 Open **Pages → Create Agent → Enter another model ID** (`createModelManual`).
-Select a listed Codex model, then open **Advanced settings → Configuration JSON**.
+Select a listed Codex model, then open **Configuration JSON** on the **Configuration** tab.
 Change only `plugins.allow` to each of `"codex"`, `7`, `null`, and `["keep-plugin", 7]`.
 For each value, select **Choose a model from the list**. Check that the editor
 receives focus and describes how to correct `plugins.allow`. The raw JSON and

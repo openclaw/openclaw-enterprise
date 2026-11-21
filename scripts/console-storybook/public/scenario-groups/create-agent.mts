@@ -10,6 +10,7 @@ import {
   modelCredentialSourceTypes,
   presetSecretsPath,
   readyForm,
+  tab,
 } from "../create-agent-form-data.mts";
 import {
   pluginCapabilities,
@@ -118,10 +119,7 @@ const passwordPresetForm: StoryAction[] = [
   { selector: "#preset-variable-modelSecret", value: "storybook-model-key" },
   click("Use Preset"),
 ];
-const nativePluginForm: StoryAction[] = [
-  ...passwordPresetForm,
-  { selector: ".launch-advanced summary", click: true },
-];
+const nativePluginForm: StoryAction[] = [...passwordPresetForm, tab("configuration")];
 const nativePlugins = {
   entries: { knowledge: { enabled: true, config: { collection: "team-notes" } } },
 };
@@ -224,7 +222,6 @@ const repositoryOptionsPath =
 
 const createWorkspaceFields: StoryAction[] = [
   ...form,
-  { selector: ".launch-advanced summary", click: true },
   { selector: "#agent-name", value: "Workspace seed demo" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
   ...createModelSecret("storybook-model-api-key"),
@@ -255,14 +252,14 @@ export const createAgentFormScenarios = {
     path: create,
     namespaceStatus: "provisioning",
     description:
-      "Create Agent in a Namespace that is still provisioning names its status above the starting points, before any Secret is asked for.",
+      "Create Agent in a Namespace that is still provisioning names its status above the form, before any Secret is asked for.",
   },
   createFormNamespaceProvisioning: {
     group: "Pages/Create Agent",
     name: "Form, Namespace still provisioning",
     path: create,
     namespaceStatus: "provisioning",
-    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    actions: [{ selector: "#agent-auth-method", value: "api_key" }],
     description:
       "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created. Create Agent stays disabled, described by that line; an Embedded OpenClaw draft still saves.",
     steps: [
@@ -276,7 +273,6 @@ export const createAgentFormScenarios = {
     namespaceStatus: "provisioning",
     namespaceRechecks: [503, "ready"],
     actions: [
-      click("Start without Preset"),
       { selector: "#agent-auth-method", value: "api_key" },
       { selector: "#agent-name", value: "Release notes Agent", focus: true },
     ],
@@ -293,7 +289,7 @@ export const createAgentFormScenarios = {
     path: create,
     namespaceStatus: "provisioning",
     namespaceRechecks: ["failed"],
-    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    actions: [{ selector: "#agent-auth-method", value: "api_key" }],
     description:
       'A Namespace that fails while the form is open never becomes ready by waiting. The next recheck shows its failed status, ends the recheck, and Create Agent stays disabled for every plan, described by "This Namespace cannot hold new Agents, so Create Agent is unavailable."',
     steps: [
@@ -307,7 +303,7 @@ export const createAgentFormScenarios = {
     path: create,
     namespaceStatus: "provisioning",
     namespaceRechecks: ["missing"],
-    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    actions: [{ selector: "#agent-auth-method", value: "api_key" }],
     description:
       "The Namespace list the form rereads no longer holds its Namespace: it was deleted, or the reader lost access. The recheck ends, the note asks for another Namespace, and Create Agent stays disabled for every plan. Start over keeps that answer.",
     steps: [
@@ -317,11 +313,14 @@ export const createAgentFormScenarios = {
   },
   createStart: {
     group: "Pages/Create Agent",
-    name: "Choose a starting point",
+    name: "New form",
     path: create,
-    description: "Choose a Preset or start with standard defaults.",
+    description:
+      "A new form opens on Basics with No Preset, and the status under Preset names the default one. The bar under the title says the Agent is not created yet and holds Cancel, Start over and Create Agent. The page header names the Namespace once.",
     steps: [
-      "Tab to Use Preset. It takes focus and looks unavailable; its description is the status line under the chooser, and Enter or Space does nothing until a Preset is chosen.",
+      "Select each tab: Basics, Configuration, Plugins, Channels, Repositories, Workspace files. Each shows its own section, and the bar stays in place.",
+      "Focus Basics and press Right, Left, End and Home. Each key selects the tab it moves to.",
+      "In Preset, choose default-codex and select Use Preset. The form is filled and its badge names the Preset. Choose No Preset: the form empties and the badge goes.",
     ],
   },
   createForm: {
@@ -439,7 +438,7 @@ export const createAgentFormScenarios = {
     description:
       "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
     steps: [
-      "Check the initial syntax error, then select Reset template and confirm discarding the edited launch settings. Expand Advanced settings and keep the restored Configuration JSON.",
+      "Check the initial syntax error on the Configuration tab, then select Reset template and confirm discarding the edited launch settings. Keep the restored Configuration JSON.",
       'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the other entries and model settings. This is valid JSON syntax with an out-of-range number. Select Create Agent.',
       "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that Configuration JSON has focus, its exact text is unchanged, and neither an Agent nor a Configuration is written.",
       "If the form shows a model list, select Enter model ID manually. Change Model ID and leave the field. Check that the range error focuses Configuration JSON and the rejected draft is not rewritten. Restore the original Model ID, change only 1e400 to 2, and select Create Agent. Inspect the created Agent's Configuration for [1,2,3]. All saves and deployment state in this story are simulated.",
@@ -1129,13 +1128,12 @@ export const createAgentProvisioningScenarios = {
     path: create,
     actions: [
       ...readyForm,
-      { selector: ".launch-advanced summary", click: true },
       { selector: "#workspace-AGENTS-md", value: "a".repeat(16_385) },
-      { selector: ".launch-advanced summary", click: true },
+      tab("basics"),
       click("Create Agent"),
     ],
     description:
-      "Create Agent with an AGENTS.md over 16 KiB: the check opens Advanced settings and AGENTS.md names itself and the rule under the field, with focus, before anything is saved.",
+      "Create Agent from Basics with an AGENTS.md over 16 KiB: the check selects the Workspace files tab and AGENTS.md names itself and the rule under the field, with focus, before anything is saved.",
   },
   createModelSecretRequired: {
     group: "Pages/Create Agent",
@@ -1209,7 +1207,7 @@ export const createAgentProvisioningScenarios = {
       { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
       { selector: "#preset-variable-name", value: "Workspace preset example" },
       click("Use Preset"),
-      { selector: ".launch-advanced summary", click: true },
+      tab("workspace"),
     ],
     description:
       "The Preset renders IDENTITY.md and explicitly clears USER.md. Omitted files keep the ordinary defaults; these are editable creation-time copies.",
@@ -1255,7 +1253,7 @@ export const createAgentProvisioningScenarios = {
       { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
       { selector: "#preset-variable-name", value: "Multiline preset example" },
       click("Use Preset"),
-      { selector: ".launch-advanced summary", click: true },
+      tab("workspace"),
     ],
     description:
       "Use Preset preserves the line structure in the editable workspace copy. Workspace textareas follow the existing LF submission contract; no Agent is created by this story.",
@@ -1872,7 +1870,7 @@ export const createAgentProvisioningScenarios = {
       "Model ID changes the shared primary in defaults and matching explicit roster entries, preserving local policies and ordered fallbacks. Inherited model selections stay omitted. Simulated UI proof; no deployment or model request occurs.",
     steps: [
       "Change Model ID from primary-model to replacement-model, then leave the field.",
-      "Open Advanced settings. Configuration JSON has the new primary in defaults, main and assistant; inherited has no model field.",
+      "Open the Configuration tab. Configuration JSON has the new primary in defaults, main and assistant; inherited has no model field.",
       "Clear Model ID and enter another-model. Local aliases, parameters and ordered fallbacks remain, and unreferenced old provider rows are retired.",
     ],
   },
@@ -1885,7 +1883,7 @@ export const createAgentProvisioningScenarios = {
       { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
       click("Use Preset"),
       { selector: "#agent-model", value: "fallback-one" },
-      { selector: ".launch-advanced summary", click: true },
+      tab("configuration"),
     ],
     description:
       "Changing the primary removes the unused old model and preserves the ordered fallback references, their model metadata and the existing transport. Simulated UI proof; no model request is executed.",
@@ -1901,10 +1899,11 @@ export const createAgentProvisioningScenarios = {
     path: create,
     actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
     description:
-      "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft. With a Preset chosen, Use Preset is the filled button and Start with default Preset is secondary.",
+      "A reusable template with required and defaulted variables, chosen in Preset on Basics. Its variables show under the chooser; the form below is unchanged until Use Preset.",
     steps: [
-      'Under Start with default Preset, the hint reads "The default Preset is default-codex."',
-      "Use Preset is filled and Start with default Preset is secondary. Choose Choose a Preset in Preset template: the filled style returns to Start with default Preset.",
+      "Select Use Preset with Name empty: Name shows its error and the form is unchanged.",
+      "Fill Name and select Use Preset. The form is filled from Research assistant, its badge names that Preset, and the variables and Use Preset no longer show.",
+      "Choose default-codex in Preset. It has no variables to fill, and still waits for Use Preset: select it, and the form is filled from default-codex.",
     ],
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
   },
@@ -1992,7 +1991,7 @@ export const createAgentProvisioningScenarios = {
     name: "Codex allowlist round-trip",
     path: create,
     standardCodexPreset: true,
-    actions: [...passwordPresetForm, { selector: ".launch-advanced summary", click: true }],
+    actions: [...passwordPresetForm, tab("configuration")],
     description: "The shipped Codex Preset keeps its codex-only allowlist across Harness switches.",
     steps: [
       'Inspect plugins.allow, switch to OpenClaw, then back to Codex. The list stays ["codex"] throughout. OpenClaw uses existing provider admission without an additional editor restriction.',
@@ -2148,10 +2147,10 @@ export const createAgentProvisioningScenarios = {
     description:
       "Unsaved settings remain in memory while navigating the Console. Password inputs clear when leaving the form. Start over explicitly discards the draft.",
     steps: [
-      "Rename the Agent and edit a workspace file under Advanced settings.",
+      "Rename the Agent and edit a file on the Workspace files tab.",
       "Open Namespaces, then use browser Back and Forward to revisit both pages.",
       "Open Agents and Create Agent: the edited draft returns with an empty API key field.",
-      "Select Start over, cancel once, then confirm. Navigate away and return to see the fresh Preset chooser.",
+      "Select Start over, cancel once, then confirm. Navigate away and return to see a new form.",
     ],
     gap: "Simulated UI proof only; this walkthrough does not save or deploy an Agent.",
   },
@@ -2293,7 +2292,8 @@ export const createAgentProvisioningScenarios = {
     name: "Loading default Preset",
     path: create,
     rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), hold: true }],
-    description: "Quick-start waits for the authorized Namespace Preset list.",
+    description:
+      "The form is usable while the authorized Namespace Preset list loads. Preset is disabled and the status under it says the Presets are loading.",
   },
   createDefaultPresetDenied: {
     group: "Pages/Create Agent",
@@ -2301,10 +2301,7 @@ export const createAgentProvisioningScenarios = {
     path: create,
     rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), status: 403 }],
     description:
-      "Denied Preset access leaves quick-start disabled and reports the error. Start without Preset remains available as a separate action.",
-    steps: [
-      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the Presets unavailable status; Enter, Space or a click does nothing.",
-    ],
+      "Denied Preset access opens the form without a Preset. Preset stays disabled, and the status under it reports the error.",
   },
   createPresetInvalidField: {
     group: "Pages/Create Agent",
@@ -2317,7 +2314,7 @@ export const createAgentProvisioningScenarios = {
       click("Use Preset"),
     ],
     description:
-      "The Preset API saves launch-field errors such as an unknown execution mode. Use Preset names the first field the form cannot use and keeps the chooser open.",
+      "The Preset API saves launch-field errors such as an unknown execution mode. Use Preset names the first field the form cannot use and keeps the Preset's variables. The form is unchanged.",
     gap: "The fixture edits a simulated Preset; Preset CRUD has no console page.",
   },
   createPresetNonTextPrimary: {
@@ -2344,16 +2341,16 @@ export const createAgentProvisioningScenarios = {
       },
     ],
     actions: [
-      click("Start with default Preset"),
+      { selector: "#agent-preset", value: "pre_default_codex" },
       { selector: "#preset-variable-marker", value: "Retained chooser draft" },
       click("Use Preset"),
     ],
     description:
-      "An older stored Preset has a numeric primary that the current Controller refuses to save. The production form explains that the primary must be text and keeps the chooser and entered Marker intact.",
+      "An older stored default-codex has a variable and a numeric primary that the current Controller refuses to save. With default-codex chosen and its variable filled, Use Preset explains that the primary must be text and keeps the entered Marker.",
     steps: [
-      "Confirm the refusal says the primary model must be text and offers another Preset or a template fix. No Agent form opens and Marker still reads Retained chooser draft.",
-      "Select the Agents link, then Create Agent. Confirm Marker is retained. Choose Research assistant, enter a Name, and select Use Preset: the normal Agent form opens.",
-      "Reset the story. Choose Research assistant, then default-codex in Preset template. Enter a Marker and select Use Preset to check the same refusal through explicit selection.",
+      "Confirm the refusal says the primary model must be text and offers another Preset or a template fix. The form is unchanged and Marker still reads Retained chooser draft.",
+      "Select the Agents link, then Create Agent. Confirm Marker is retained. Choose Research assistant, enter a Name, and select Use Preset: the form is filled from that Preset.",
+      "Reset the story. Choose Research assistant, then default-codex in Preset. Enter a Marker and select Use Preset to check the same refusal through explicit selection.",
     ],
     gap: "The exact Preset GET is simulated; this preview does not save invalid data through the Controller. The owning console-agent-presets browser case covers the current PATCH 400, legacy stored value, both entry paths, and fallback recovery.",
   },
@@ -2470,10 +2467,7 @@ export const createAgentProvisioningScenarios = {
     path: create,
     emptyPresets: true,
     description:
-      "The default starter is unavailable until an administrator installs a readable Preset. Start without Preset opens an independent form.",
-    steps: [
-      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the hint under it, “default-codex is not available to you in this Namespace.” Enter, Space or a click does nothing (finding 2937).",
-    ],
+      "With no readable Preset, the form opens without one. The status under Preset says that no Presets are available and what to ask an administrator for.",
   },
   createNoDefaultPreset: {
     group: "Pages/Create Agent",
@@ -2481,20 +2475,10 @@ export const createAgentProvisioningScenarios = {
     path: create,
     noDefaultPreset: true,
     description:
-      "Another Preset is readable, but default-codex is not. The chooser's status says “Choose a Preset.” and the hint under Start with default Preset says why the shortcut is unavailable, once (finding 2946).",
+      "Another Preset is readable, but default-codex is not. The form opens with No Preset chosen, and Preset lists the other Preset.",
     steps: [
-      "Tab to Use Preset. It is described by “Choose a Preset.” Then Tab to Start with default Preset. It is described by the hint, “default-codex is not available to you in this Namespace.”",
+      "Choose Research assistant in Preset. Its variables and Use Preset show; the form is unchanged until Use Preset.",
     ],
-  },
-  createWithoutPreset: {
-    group: "Pages/Create Agent",
-    name: "Start without Preset",
-    path: create,
-    emptyPresets: true,
-    actions: [click("Start without Preset")],
-    description: "Create an editable Agent draft independently of a saved Preset.",
-    steps: ["Enter an Agent name, choose a model and credential, and review the Configuration."],
-    gap: "The fixture simulates API responses and does not verify deployment.",
   },
   createBoundCredentialPreset: {
     group: "Pages/Create Agent",
@@ -2689,7 +2673,7 @@ export const createAgentOutcomeScenarios = {
     description:
       "The fixed model list is available before entering a credential and starts with Choose a model. No model is selected by default.",
     steps: [
-      'Before choosing a model, open Advanced settings and add "models": {"providers": {"codex": {"models": {}}}} to Configuration JSON. Close Advanced settings and choose gpt-6-sol. Confirm the list returns to Choose a model and Advanced settings opens with JSON focused and guidance to use an array of model objects with an id or remove the field. The raw JSON stays unchanged.',
+      'Before choosing a model, open the Configuration tab and add "models": {"providers": {"codex": {"models": {}}}} to Configuration JSON. Return to Basics and choose gpt-6-sol. Confirm the list returns to Choose a model and the Configuration tab opens with JSON focused and guidance to use an array of model objects with an id or remove the field. The raw JSON stays unchanged.',
       'Replace the inner models value with [{"id":"gpt-6-astra","cost":{"input":1}}], then choose gpt-6-astra. Set models.providers.codex.models to [null] and edit Model ID to gpt-6-sol, then press Tab. Confirm the same guidance appears and the raw JSON stays unchanged. Choose a model from the list must also keep manual entry visible.',
       'Restore models.providers.codex.models to [{"id":"gpt-6-astra","cost":{"input":1}}] and retry Model ID gpt-6-sol, then press Tab. Confirm the guidance clears, the primary becomes codex/gpt-6-sol, and cost.input remains 1. Return to the list and choose gpt-6-luna. Do not create an Agent; reset the story before checking credentials.',
       "Select gpt-6.1-sol before entering a dummy API key. Confirm gpt-6-sol is also listed and that gpt-6.1-sol stays selected after entering or replacing the key.",
@@ -2712,9 +2696,9 @@ export const createAgentOutcomeScenarios = {
       "Select Choose a model from the list. Confirm the custom ID is cleared and Choose a model is selected, then select a listed model.",
       "Select Enter model ID manually again. Confirm Model ID keeps the selected model and receives focus. Edit it to another listed model, then return to the list and confirm that model is selected.",
       "Repeat the switch and edit Model ID to an ID outside the list. Return to the list and confirm a new selection is required; credentials and other form values remain.",
-      'With a Codex model selected, open Advanced settings and set plugins.allow to "codex", then to 7, null, and ["keep-plugin", 7]. For each value, select Choose a model from the list. Confirm Configuration JSON receives focus and an array-of-strings remedy; the JSON text and manual model choice stay unchanged.',
+      'With a Codex model selected, open the Configuration tab and set plugins.allow to "codex", then to 7, null, and ["keep-plugin", 7]. For each value, return to Basics and select Choose a model from the list. Confirm the Configuration tab opens, Configuration JSON receives focus and an array-of-strings remedy; the JSON text and manual model choice stay unchanged.',
       'Correct plugins.allow to [], then ["keep-plugin"], or remove the field. Retry the switch and select gpt-6-sol or gpt-6-luna. Confirm the selected model and whole plugin entries are preserved. Repeat at 1440 px and 390 px without creating an Agent.',
-      "Under Advanced settings, edit Configuration JSON to use an anthropic/ model. Select Choose a model from the list and confirm it offers Anthropic models.",
+      "On the Configuration tab, edit Configuration JSON to use an anthropic/ model. On Basics, select Choose a model from the list and confirm it offers Anthropic models.",
     ],
   },
   createSecretDenied: {
@@ -2755,7 +2739,6 @@ export const createAgentOutcomeScenarios = {
     path: create,
     actions: [
       ...readyForm,
-      { selector: ".launch-advanced summary", click: true },
       { selector: "#configuration-json", value: "[]" },
       click("Create Agent"),
     ],
@@ -2874,7 +2857,7 @@ export const createAgentOutcomeScenarios = {
       "Create Agent asks the API first whether it would refuse the plugin selections with this Configuration. The API refuses: the Configuration denies every tool of the selected plugin. Nothing is saved, so the refusal is the only line, takes focus in view, and every field stays editable, the Configuration JSON included.",
     steps: [
       "At 360-390 px, confirm the focused refusal is on screen with no Secret or Configuration saved line and no sideways scroll.",
-      "Open Configuration JSON under Advanced settings and confirm it is editable, then select Create Agent again; the Agent is created.",
+      "Open the Configuration tab and confirm Configuration JSON is editable, then select Create Agent again; the Agent is created.",
     ],
     gap: "The refusal is simulated; the in-memory API's preflight is covered by tests/browser/console-agent-plugin-refusals.test.ts and tests/integration/agent-create-validate-api.test.ts.",
   },

@@ -1,3 +1,4 @@
+import { openCreateTab } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
@@ -56,7 +57,7 @@ test("repository selection and access edits send no descriptionRefs during the p
         response.request().method() === "GET"
       );
     }),
-    page.getByRole("button", { name: "Start without Preset" }).click(),
+    page.locator("#create-agent-form").waitFor(),
   ]);
   assert.equal(response.status(), 200);
   const envelope: RepositoryOptionListResponse = await response.json();
@@ -65,6 +66,7 @@ test("repository selection and access edits send no descriptionRefs during the p
     ["application"],
   );
   const choice = repositoryCheckbox(page, "example/application");
+  await openCreateTab(page, "repositories");
   await choice.waitFor({ state: "visible" });
   assert.equal(await choice.isEnabled(), true);
   await passDescriptionWindow(page);

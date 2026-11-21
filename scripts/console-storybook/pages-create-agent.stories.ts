@@ -2,7 +2,7 @@ import { story } from "./story.ts";
 
 export default { title: "Pages/Create Agent" };
 
-export const CreateStart = { ...story("createStart"), name: "Choose a starting point" };
+export const CreateStart = { ...story("createStart"), name: "New form" };
 export const NamespaceProvisioning = {
   ...story("createNamespaceProvisioning"),
   name: "Namespace still provisioning",
@@ -248,10 +248,6 @@ export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets"
 export const CreateNoDefaultPreset = {
   ...story("createNoDefaultPreset"),
   name: "Other Presets, no default",
-};
-export const CreateWithoutPreset = {
-  ...story("createWithoutPreset"),
-  name: "Start without Preset",
 };
 export const CreateAnthropic = {
   ...story("createAnthropic"),

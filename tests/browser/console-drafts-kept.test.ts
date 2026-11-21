@@ -5,6 +5,8 @@ import {
   createAgentThroughForm,
   waitForCreateFormReads,
   LIVE_BUTTON,
+  openCreateTab,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -166,7 +168,7 @@ async function failNextNamespacesRead(page: Page) {
 }
 
 async function startDefaultPreset(page: Page) {
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).waitFor();
 }
 
@@ -223,9 +225,9 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(text(record(preset.data).id));
+  await page.getByLabel("Preset", { exact: true }).selectOption(text(record(preset.data).id));
   await page.getByLabel("Name", { exact: true }).fill("Existing Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-refused-key");
   await page.getByRole("button", { name: "Use Preset" }).click();
   const name = page.getByLabel("Agent name", { exact: true });
@@ -294,9 +296,9 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
     await route.fulfill(proxyErrorResponse(429));
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(text(record(preset.data).id));
+  await page.getByLabel("Preset", { exact: true }).selectOption(text(record(preset.data).id));
   await page.getByLabel("Name", { exact: true }).fill("Refused configuration Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-refused-key");
   await page.getByRole("button", { name: "Use Preset" }).click();
   const name = page.getByLabel("Agent name", { exact: true });
@@ -338,7 +340,7 @@ test("an administrator's kept draft that a Restriction now refuses says why Crea
   const namespace = resource(await fixture.createNamespace("Restricted later", { ready: true }));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await page.locator("#create-agent-form").waitFor();
   const name = page.getByLabel("Agent name", { exact: true });
   await name.fill("Kept administrator draft");
   await waitForCreateFormReads(page);
@@ -353,6 +355,7 @@ test("an administrator's kept draft that a Restriction now refuses says why Crea
   await page.goBack();
   await name.waitFor();
   assert.equal(await name.inputValue(), "Kept administrator draft");
+  await openCreateTab(page, "repositories");
   await page
     .getByText(`Repository choices are not shown. ${AGENT_CREATE_RESTRICTED}`, { exact: true })
     .waitFor();
@@ -410,21 +413,24 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   await page.getByLabel("Namespace", { exact: true }).selectOption(namespace.id);
   await settled(page);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  await page.locator("#create-agent-form").waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
   // The chooser of a ready Namespace adds no status line, and no stray "null" text.
   assert.equal(
-    await page.locator('.content [aria-live="polite"]:not([inert])').evaluate((view) =>
-      [...view.childNodes].some((node) => {
-        if (node.nodeType !== globalThis.Node.TEXT_NODE) {
-          return false;
-        }
-        if (node.textContent === null) {
-          throw new Error("Expected text node content");
-        }
-        return node.textContent.includes("null");
-      }),
-    ),
+    await page
+      .locator('.content [aria-live="polite"]:not([inert])')
+      .first()
+      .evaluate((view) =>
+        [...view.childNodes].some((node) => {
+          if (node.nodeType !== globalThis.Node.TEXT_NODE) {
+            return false;
+          }
+          if (node.textContent === null) {
+            throw new Error("Expected text node content");
+          }
+          return node.textContent.includes("null");
+        }),
+      ),
     false,
   );
 });
@@ -1020,7 +1026,7 @@ test("a changed Preset variable still asks before a reload after a return", asyn
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(text(record(preset.data).id));
+  await page.getByLabel("Preset", { exact: true }).selectOption(text(record(preset.data).id));
   const variable = page.getByLabel("Name", { exact: true });
   await variable.fill("Touched draft");
   assert.equal(await asksBeforeUnload(page), true);
@@ -1085,15 +1091,15 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
 // A refusal keeps the Create form as a draft only when a retry cannot repeat a write: an
 // uncertain outcome, an admitted provisioning job, a pending credential registration, a job that
 // created its Agent and a repository policy refusal keep none (finding 1965).
-// The sidebar leaves the refused form and Create Agent returns to the chooser: no kept draft
-// reopens it or asks before a reload.
+// The sidebar leaves the refused form and Create Agent opens a new one: no kept draft reopens
+// the refused form or asks before a reload.
 async function expectNoKeptDraft(page: Page) {
   await sidebarLink(page, "Agents").click();
   await heading(page, "Agents").waitFor();
   assert.equal(await asksBeforeUnload(page), false);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  await page.locator("#create-agent-form").waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
   assert.equal(await asksBeforeUnload(page), false);
 }
 
@@ -1105,7 +1111,7 @@ async function fillProvisionedAgent(
   name: string,
 ) {
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill(name);
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "synthetic-guard-model-key");
@@ -1209,7 +1215,7 @@ test("a refused credential registration keeps no draft", async (t) => {
     await route.fulfill(proxyErrorResponse(429));
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Registration Agent");
   await enterManualModel(page, "synthetic-guard-model-key", "gpt-5");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -1247,6 +1253,7 @@ test("a repository-scoped Agent refusal keeps no draft", async (t) => {
   await startDefaultPreset(page);
   await enterManualModel(page, "synthetic-guard-model-key", "gpt-5.1");
   await page.getByLabel("Agent name", { exact: true }).fill("Repository Agent");
+  await openCreateTab(page, "repositories");
   await repositoryCheckbox(page, "example/application").click();
   await page.locator("#repository-default-git-read").check();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();

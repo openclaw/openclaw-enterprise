@@ -145,6 +145,13 @@ try {
     let node: Element | null | undefined;
     while (Date.now() < deadline) {
       node = actionTarget(action);
+      // Create Agent keeps each section in a tab: select the tab that holds the target.
+      const tab = node
+        ?.closest('#create-agent-sections [role="tabpanel"][hidden]')
+        ?.getAttribute("aria-labelledby");
+      if (tab) {
+        document.getElementById(tab)?.click();
+      }
       if (
         node &&
         !isDisabled(node) &&

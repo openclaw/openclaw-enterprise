@@ -2,6 +2,7 @@
 
 import {
   enterManualModel,
+  openCreateTab,
   submitCreateAgent,
   createAgentThroughForm,
 } from "./console-agents-ui-test-support.ts";
@@ -59,7 +60,8 @@ test("Agent repository access labels target the right repository when references
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   await repositoryCheckbox(page, "example/app").click();
   await page.getByRole("button", { name: "Access for example/app", exact: true }).click();
   const settings = page.getByRole("group", { name: "Access for example/app", exact: true });
@@ -107,7 +109,8 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   await page.getByText("Select repositories for this Agent.", { exact: false }).waitFor();
   const accessDetails = page.locator(".repository-access-details");
   const accessSummary = accessDetails.locator("summary");
@@ -194,6 +197,8 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     { repositoryRef: "application", profile: "git-full" },
     { repositoryRef: "documentation", profile: "git-read" },
   ]);
+  // Create Agent has tabs of the same names: wait for the Agent page before selecting its tab.
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   await page.getByText("Contributor · Custom", { exact: true }).waitFor();
   // Reversing an edit restores the saved intent, including explicit overrides.
@@ -373,8 +378,10 @@ test("Create Agent lets a draft drop retained repositories once repository acces
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   await repositoryCheckbox(page, "example/application").click();
+  await openCreateTab(page, "basics");
   await page.getByLabel("Agent name").fill("Retained repository Agent");
   await enterManualModel(page, "retained-repository-model-key", "gpt-5.1");
   // The operator removes the repository settings: discovery now answers as it does without them.
@@ -392,6 +399,7 @@ test("Create Agent lets a draft drop retained repositories once repository acces
   const status = page.getByRole("status").filter({
     hasText: REPOSITORY_ACCESS_NOT_CONFIGURED,
   });
+  await openCreateTab(page, "repositories");
   await status.waitFor();
   assert.match(
     await status.innerText(),
@@ -659,15 +667,18 @@ test("Preset repository access and plugin policies remain independent during Age
   const { id: presetId }: PresetWire = preset.data;
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(presetId);
+  await page.getByLabel("Preset", { exact: true }).selectOption(presetId);
   await page.getByRole("button", { name: "Use Preset" }).click();
+  await openCreateTab(page, "repositories");
   await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
   await dialog.getByRole("button", { name: pluginId, exact: true }).click();
   await dialog.getByLabel(`Enable ${pluginId}`, { exact: true }).check();
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await openCreateTab(page, "repositories");
   await page.locator("#repository-default-git-full").check();
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
     [pluginId]: { enabled: true },
@@ -725,8 +736,9 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(presetId);
+  await page.getByLabel("Preset", { exact: true }).selectOption(presetId);
   await page.getByRole("button", { name: "Use Preset" }).click();
+  await openCreateTab(page, "repositories");
   await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), initialPlugins);
 
@@ -764,6 +776,7 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
   await page.getByRole("button", { name: "Reload repository choices" }).click();
   await page.getByText(/Repository choices reloaded/).waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
@@ -774,6 +787,7 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), updatedPlugins);
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
 
+  await openCreateTab(page, "repositories");
   await repositoryCheckbox(page, "example/project").click();
   await page.locator("#repository-default-git-full").check();
   const created = await createAgentThroughForm(page, fixture, namespace.id);
@@ -916,7 +930,8 @@ for (const includeInstallationAccess of [false, true]) {
         response.request().method() === "GET" &&
         response.url().endsWith(`/namespaces/${namespace.id}/agents/repository-options`),
     );
-    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.locator("#create-agent-form").waitFor();
+    await openCreateTab(page, "repositories");
     const response = await discovery;
     assert.equal(response.status(), 200);
     const { data, meta }: RepositoryOptionListResponse = await response.json();
@@ -956,7 +971,8 @@ for (const count of [1, 5, 25, 140]) {
     );
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.locator("#create-agent-form").waitFor();
+    await openCreateTab(page, "repositories");
     await repositoryCheckbox(page, "example/repository-001").waitFor();
     await page.getByRole("heading", { name: "Approved repositories" }).waitFor();
     assert.equal(await page.getByText("Reference: repository-001", { exact: true }).count(), 0);
@@ -1010,7 +1026,8 @@ for (const count of [1, 5, 25, 140]) {
       await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
       await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
       await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-      await page.getByRole("button", { name: "Start without Preset" }).click();
+      await page.locator("#create-agent-form").waitFor();
+      await openCreateTab(page, "repositories");
       await page.getByText(/Recently used/).waitFor();
       assert.equal(
         await page.locator("#repository-results .repository-result-row strong").first().innerText(),
@@ -1019,7 +1036,8 @@ for (const count of [1, 5, 25, 140]) {
       await search.fill("repository-139");
       await search.press("Enter");
       await page.reload();
-      await page.getByRole("button", { name: "Start without Preset" }).click();
+      await page.locator("#create-agent-form").waitFor();
+      await openCreateTab(page, "repositories");
       await page.getByText(/Recently used/).waitFor();
       assert.equal(
         await page.locator("#repository-results .repository-result-row strong").first().innerText(),
@@ -1053,7 +1071,8 @@ test("Agent repository search is stable in a Turkish browser locale", async (t) 
     };
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   const search = page.getByLabel("Find a repository");
   // Finding 1252: a query with the Turkish capital İ or the dotless ı finds an ASCII i.
   const names = page.locator("#repository-results .repository-identity strong");
@@ -1151,7 +1170,8 @@ test("Repository descriptions show hidden and direction-changing characters as e
     await route.fulfill({ response, json: body });
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   const text = page
     .locator(".repository-result-row")
     .filter({ hasText: "example/application" })
@@ -1180,7 +1200,8 @@ test("Repository choices distinguish names, references, and restricted access", 
   ]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   const application = page
     .locator(".repository-result-row")
     .filter({ hasText: "example/application" });
@@ -1213,7 +1234,8 @@ test("Agent repository pagination keeps focus when every result on a page is sel
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   const search = page.getByLabel("Find a repository");
   await search.fill("repository-021");
   await repositoryCheckbox(page, "example/repository-021").click();
@@ -1252,7 +1274,8 @@ test("Agent repository search prioritizes exact names before prefix matches", as
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   const search = page.getByLabel("Find a repository");
   const results = page.locator("#repository-results");
   const missing = results.getByRole("status").filter({
@@ -1299,7 +1322,8 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.locator("#create-agent-form").waitFor();
+    await openCreateTab(page, "repositories");
     const search = page.getByLabel("Find a repository");
     await search.fill("repository-025");
     await search.press("Enter");
@@ -1331,6 +1355,7 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
     await page.getByText(/Repository choices reloaded/).waitFor();
     assert.equal(await search.count(), 0);
     assert.equal(await page.locator(".repository-card").count(), 0);
+    await openCreateTab(page, "repositories");
     assert.equal(await page.locator("#repository-results").isVisible(), true);
     const add = repositoryCheckbox(page, "example/repository-001");
     assert.equal(await add.count(), 1);
@@ -1380,9 +1405,11 @@ test("selected repository collaborators never override an explicit Read-only Age
   ]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   const modelSecret = await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Explicit repository access");
+  await openCreateTab(page, "repositories");
   await repositoryCheckbox(page, "example/a").check();
   await repositoryCheckbox(page, "example/b").check();
   await page.locator("#repository-default-git-read").check();
@@ -1427,6 +1454,8 @@ test("selected repository collaborators never override an explicit Read-only Age
     })),
   });
   assert.deepEqual(created.repositoryBindings, created.repositoryAccess.repositories);
+  // Create Agent has tabs of the same names: wait for the Agent page before selecting its tab.
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   await page.getByRole("button", { name: "Access for example/a", exact: true }).click();
   await page.locator("#repository-inherit-a").check();
@@ -1446,13 +1475,16 @@ test("selected repository collaborators never override an explicit Read-only Age
   assert.equal(saved.data.repositoryAccess?.defaultProfile, "git-read");
 
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
+  await openCreateTab(page, "repositories");
   assert.ok(modelSecret);
+  await openCreateTab(page, "basics");
   await page.locator("#provider-credential-secret").fill(modelSecret.name);
   await page.getByRole("option", { name: modelSecret.name, exact: true }).click();
   await page.getByRole("button", { name: "Enter model ID manually" }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Agent name").fill("Fresh collaborators");
+  await openCreateTab(page, "repositories");
   await repositoryCheckbox(page, "example/a").check();
   await repositoryCheckbox(page, "example/b").check();
   const fresh = await createAgentThroughForm(page, fixture, namespace.id);

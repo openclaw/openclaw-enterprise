@@ -864,22 +864,15 @@ test("Refresh sharing, the Configuration editor and the Create Agent shortcuts k
   await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
   assert.equal(await focusedText(page), "Edit Configuration");
 
-  for (const shortcut of ["Start with default Preset", "Start without Preset"]) {
-    await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-    const start = page.getByRole("button", { name: shortcut });
-    await page
-      .getByRole("button", { name: "Start with default Preset", disabled: false })
-      .waitFor();
-    await start.focus();
-    await page.keyboard.press("Enter");
-    await page.getByLabel("Agent name").waitFor();
-    await page.waitForFunction(() => globalThis.document.activeElement?.tagName !== "BODY");
-    assert.equal(
-      await page.evaluate(() => globalThis.document.activeElement?.tagName),
-      "H1",
-      shortcut,
-    );
-  }
+  // Use Preset replaces the form, and with it the button that had focus: focus goes to the page
+  // heading, not the document.
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset", { exact: true }).selectOption({ label: "default-codex" });
+  await page.getByRole("button", { name: "Use Preset", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
+  await page.waitForFunction(() => globalThis.document.activeElement?.tagName !== "BODY");
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "H1");
 });
 
 test("saving and reloading plugin selections update the Agent page in place", async (t) => {

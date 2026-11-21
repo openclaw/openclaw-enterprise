@@ -2485,7 +2485,7 @@ for (const viewport of [
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${empty.id}`);
     await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
     await page.getByText(AGENT_CREATE_DENIED).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Start without Preset" }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Start over" }).count(), 0);
     assert.equal(await page.getByRole("link", { name: "← Agents" }).isVisible(), true);
   });
 }

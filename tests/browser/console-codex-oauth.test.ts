@@ -1,4 +1,4 @@
-import { submitCreateAgent } from "./console-agents-ui-test-support.ts";
+import { submitCreateAgent, openCreateTab } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { APIResponse, Page, Route } from "playwright";
@@ -201,7 +201,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const requests = apiRequests(page, fixture.origin);
   await page.clock.install();
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).isVisible(), false);
   // The Console polls only after the interval the login asks for, and follows a longer one a
@@ -268,6 +268,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal(started.length, 2);
   assert.ok(started[1]);
   assert.deepEqual(started[1].body, { harnessId: "codex" });
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await page.getByRole("button", { name: "Calendar", exact: true }).click();
   await page.getByRole("button", { name: "Add Calendar", exact: true }).click();
@@ -279,6 +280,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.ok(discovery);
   const discoveryBody = jsonObject(discovery.body);
   assert.equal(jsonObject(discoveryBody.credentialSource).kind, "credential_source");
+  await openCreateTab(page, "basics");
   await page.getByLabel("Agent name", { exact: true }).fill("OAuth Agent");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
@@ -571,7 +573,7 @@ for (const savedAgent of [false, true]) {
           : `/console/agents/new?namespace=${namespace.id}`,
       );
       if (!agent) {
-        await page.getByRole("button", { name: "Start without Preset" }).click();
+        await page.locator("#create-agent-form").waitFor();
       }
       await page
         .getByLabel(agent ? "Authentication source" : "Authentication method")
@@ -634,7 +636,7 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
   await waitForEnabled(start);
@@ -714,7 +716,7 @@ for (const savedAgent of [false, true]) {
         : `/console/agents/new?namespace=${namespace.id}`,
     );
     if (!agent) {
-      await page.getByRole("button", { name: "Start without Preset" }).click();
+      await page.locator("#create-agent-form").waitFor();
     }
     const methodLabel = agent ? "Authentication source" : "Authentication method";
     await page.getByLabel(methodLabel).selectOption("credential_source");
@@ -1102,7 +1104,7 @@ test("a refused device login start on Create Agent names the create grants it ch
   revokeAdministratorGrant(fixture, ["create", "credential_source"]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   const refused = page.waitForResponse(
     (response) =>
@@ -1131,7 +1133,7 @@ test("a member's refused Installation read leaves Sign in offered on Create Agen
     (response) => new URL(response.url()).pathname === "/installation",
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   assert.equal((await installationRead).status(), 403);
   await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();

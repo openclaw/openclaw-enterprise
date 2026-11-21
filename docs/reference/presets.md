@@ -84,15 +84,13 @@ Codex `config.toml` or a reasoning-effort override.
 
 ### Plain console default
 
-**Start with default Preset** reads the authorized `default-codex` copy in the
-selected Namespace. Its shipped template has no variables, model, name, or
-credential; the ordinary form collects them. An operator-customized copy with
-variables opens the variable chooser first. Missing or unreadable defaults
-disable quick-start, and the text beside it says why; other readable Presets
-remain selectable. Install the file
-through `includeDefaults`, `presets.files`, or Preset POST to enable it.
-**Start without Preset** is independent of Namespace Presets; it uses the
-console's shared configuration base and ordinary creation permissions.
+A new Create Agent form opens with **No Preset**, and the text under **Preset**
+names the authorized `default-codex` copy in the selected Namespace. That copy
+fills the form only after you choose it and select **Use Preset**. Its shipped
+template has no variables, model, name, or credential; the form collects them.
+Install the file through `includeDefaults`, `presets.files`, or Preset POST to
+enable it. **No Preset** uses the console's shared configuration base and
+ordinary creation permissions.
 
 The shipped default file also supplies the console's shared configuration base
 for empty templates, **Reset template**, and provider/Harness switches. The
@@ -215,8 +213,8 @@ takes a string message.
 `IDENTITY.md`, and `USER.md`. Values must be valid Unicode strings without NUL,
 at most 16 KiB of UTF-8 per file. Limits also apply after variable expansion.
 Omitted files keep the Console defaults; an explicit empty string creates an
-empty file. Users can review and edit the rendered contents in **Advanced settings →
-Workspace files** before creation. Password variables are not allowed in files.
+empty file. Users can review and edit the rendered contents on the **Workspace files**
+tab before creation. Password variables are not allowed in files.
 
 For example, add this within `template.agent`:
 
@@ -375,9 +373,9 @@ and an Agent separately. Follow [partial-save recovery](console/create-and-deplo
 if the second save fails or a response is lost.
 
 A Preset is read once when selected. **Use Preset** renders its variables and
-opens an ordinary editable Agent form; changing the draft does not update or
-reread the Preset. **Start over** discards the unsaved draft
-and returns to the chooser, but is disabled once a Configuration has saved or a
+fills the ordinary editable Agent form; changing the draft does not update or
+reread the Preset. **Start over** discards the unsaved draft and opens a new
+form. It and **Preset** are disabled once a Configuration has saved or a
 save outcome is uncertain.
 
 A valid Preset is not necessarily a valid Agent configuration. Later deployments

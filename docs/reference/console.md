@@ -231,7 +231,7 @@ session may not be revoked.
 
 ## Set initial workspace contents
 
-The create form's **Workspace files** section contains editable OpenClaw defaults
+The create form's **Workspace files** tab contains editable OpenClaw defaults
 for `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`, as complete rendered
 templates: keep or replace each, or clear a field for an empty file.
 Textareas submit LF newlines. The form submits all four fields, including unchanged values,

@@ -4,6 +4,8 @@ import {
   enterManualModel,
   openAdvancedSettings,
   submitCreateAgent,
+  openCreateTab,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -308,7 +310,7 @@ async function openModelSourceForm(
 ) {
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Harness", { exact: true }).selectOption(harness);
   if (harness === "openclaw") {
     await page.locator(".launch-runtime:not([open]) > summary").click();
@@ -333,7 +335,7 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Provisioned inline credential");
   await pickCodexCredential(page);
   await openAdvancedSettings(page);
@@ -392,7 +394,7 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Taken provisioned");
   await pickCodexCredential(page);
   const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
@@ -453,7 +455,7 @@ test("A refused provisioning request reads the Secret answer again", async (t) =
   const requests = apiRequests(page, fixture.origin);
   const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Revoked operate Agent");
   await selectSecret(page, "API key Secret", secret);
   await page.getByText("Secret selected. Create Agent binds it.").waitFor();
@@ -499,7 +501,7 @@ test("A taken-name refusal after an unknown provisioning outcome unlocks the nam
     await route.fallback();
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   const name = page.getByLabel("Agent name");
   await name.fill("Taken after loss");
   await pickCodexCredential(page);
@@ -539,7 +541,7 @@ test("The pinned runtime lets the Console request dedicated OpenClaw provisionin
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await page.locator(".launch-runtime:not([open]) > summary").click();
   const mode = page.getByLabel("Execution mode");
@@ -592,7 +594,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await page.locator(".launch-runtime:not([open]) > summary").click();
   await page.getByLabel("Execution mode").selectOption("dedicated");
@@ -601,6 +603,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  await openCreateTab(page, "channels");
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const slack = page.getByRole("dialog", { name: "Configure Slack" });
   await slack.getByLabel("Direct-message policy").selectOption("disabled");
@@ -626,6 +629,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   const cardText = (form: string) =>
     `Slack bot token ${form}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`;
   const card = page.locator(".channel-card", { hasText: "Slack bot token holds" });
+  await openCreateTab(page, "channels");
   await card.getByText(cardText(inline), { exact: true }).waitFor();
   // The card re-renders many times per edit and submit. Each render once read both bound
   // Secrets again, about 386 reads per edit (finding 2601); the view now reads each once.
@@ -644,6 +648,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   const lookups = slackCalls;
   const submitWith = async (botToken: string) => {
     slackValues.botToken = botToken;
+    await openCreateTab(page, "configuration");
     await configuration.fill(JSON.stringify(values, null, 2));
     const response = await submitCreateAgent(page, fixture, namespace.id, {
       path: "agents/provision",
@@ -668,11 +673,11 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   ] satisfies [string, string, string][]) {
     const error = await submitWith(botToken);
     assert.equal(error.message, message, botToken);
-    await page.locator(".channel-card").getByText(cardText(form), { exact: true }).waitFor();
     // A refusal that asks for a binding says where this form makes one.
     const shown = message.includes(" in secretBindings")
       ? `${message} ${CHANNEL_BINDING_FORM_REMEDY}`
       : message;
+    // The refusal selects the Configuration tab to show it.
     await jsonError.getByText(shown, { exact: true }).waitFor();
     // Once: no alert repeats it, and the JSON that holds the value takes focus.
     assert.equal(await page.getByText(message).count(), 1, botToken);
@@ -681,10 +686,13 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     await page.waitForFunction(
       () => globalThis.document.activeElement?.id === "configuration-json",
     );
+    await openCreateTab(page, "channels");
+    await page.locator(".channel-card").getByText(cardText(form), { exact: true }).waitFor();
   }
   // A model edit does not repair the unbound Slack reference or own its field error.
   const writesBeforeModelChange = nonAuthWriteRequests(requests);
   const model = page.getByLabel("Model ID", { exact: true });
+  await openCreateTab(page, "basics");
   await model.fill("gpt-6-sol");
   await model.press("Tab");
   const changed = object(JSON.parse(await configuration.inputValue()));
@@ -694,6 +702,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     await jsonError.textContent(),
     `${unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN")} ${CHANNEL_BINDING_FORM_REMEDY}`,
   );
+  await openCreateTab(page, "configuration");
   assert.equal(await jsonError.isVisible(), true);
   assert.equal(await configuration.getAttribute("aria-invalid"), "true");
   assert.match(
@@ -1203,7 +1212,7 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
   const namespace = await readyNamespace(fixture, "Provision refusal focus");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Provisioned refusal focus");
   await pickCodexCredential(page);
   await openAdvancedSettings(page);
@@ -1267,7 +1276,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
   const namespace = await readyNamespace(fixture, "Provision not ready");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name").fill("Provisioned before ready");
   await pickCodexCredential(page);
   // The API's answer while the Namespace is provisioning.
@@ -1335,7 +1344,7 @@ async function openPreset(
     await routeInstallationWithoutProvisioning(page, fixture, { openclaw });
   }
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(presetId);
+  await page.getByLabel("Preset", { exact: true }).selectOption(presetId);
   await page.getByRole("button", { name: "Use Preset" }).click();
   return page;
 }
@@ -1346,7 +1355,7 @@ async function startWithoutPreset(
   namespace: Pick<Namespace, "id">,
 ) {
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
 }
 
 test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated OpenClaw", async (t) => {
@@ -1435,6 +1444,7 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
     "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw.",
   );
   assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "dedicated");
+  await openCreateTab(presetPage, "basics");
   assert.match(
     await presetPage.locator(".launch-runtime summary").innerText(),
     /Execution mode unavailable/,
@@ -1443,7 +1453,7 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
     await presetPage.locator("#agent-harness-hint").textContent(),
     "This Agent cannot run OpenClaw with Dedicated execution on this installation.",
   );
-  assert.equal(await presetPage.locator("#create-agent-form > [role=status]").innerText(), "");
+  assert.equal(await presetPage.locator("#create-panel-basics > [role=status]").innerText(), "");
   assert.equal(
     await presetPage.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
     true,
@@ -1588,7 +1598,7 @@ test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent 
   await alert.waitFor();
   assert.equal(await alert.textContent(), NO_OPENCLAW_MODE);
   const runtimeSummary = page.locator(".launch-runtime summary");
-  const createStatus = page.locator("#create-agent-form > [role=status]");
+  const createStatus = page.locator("#create-panel-basics > [role=status]");
   assert.match(await runtimeSummary.innerText(), /Execution mode unavailable/);
   assert.equal(await createStatus.innerText(), "");
   const create = page.getByRole("button", { name: "Create Agent", exact: true });
@@ -1737,9 +1747,9 @@ async function submitBoundCodexPreset(t: TestContext, options: ConsoleOptions, n
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   // Observe every form write after authentication, including applying the Preset.
   const requests = apiRequests(page, fixture.origin);
-  await page.getByLabel("Preset template").selectOption({ label: "Bound Codex token" });
+  await page.getByLabel("Preset", { exact: true }).selectOption({ label: "Bound Codex token" });
   await page.getByLabel("Name", { exact: true }).fill("bound-codex");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-4.1");
   await page.getByRole("button", { name: "Use Preset" }).click();
   const agentsPath = `${fixture.origin}/namespaces/${namespace.id}/agents`;
   const refused = page.waitForResponse(
@@ -1842,9 +1852,9 @@ test("Create Agent refuses an unplaceable Dedicated Agent before a Credential Ga
     assert.equal(preset.status, 201, JSON.stringify(preset.body));
     const { page } = await newPage(t, fixture, { browser });
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption({ label: "Gateway Codex" });
+    await page.getByLabel("Preset", { exact: true }).selectOption({ label: "Gateway Codex" });
     await page.getByLabel("Name", { exact: true }).fill("gateway-codex");
-    await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
+    await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-4.1");
     await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-model-key");
     await page.getByRole("button", { name: "Use Preset" }).click();
     await assertGatewayPreflightRefusal({ page, origin: fixture.origin, namespace, calls });
@@ -1988,7 +1998,7 @@ test("Without a Sandbox Driver, the same Create Agent steps save an Embedded Ope
   assert.equal(await mode.locator('option[value="embedded"]').isDisabled(), false);
   assert.match(await page.locator(".launch-runtime summary").innerText(), /Embedded/);
   assert.match(
-    await page.locator("#create-agent-form > [role=status]").innerText(),
+    await page.locator("#create-panel-basics > [role=status]").innerText(),
     /Embedded Agents are saved as drafts/,
   );
   assert.equal(
@@ -2477,7 +2487,7 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
     await t.test(answer.name, async (t) => {
       const { page } = await newPage(t, fixture, { browser });
       await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-      await page.getByRole("button", { name: "Start without Preset" }).click();
+      await page.locator("#create-agent-form").waitFor();
       await page.getByLabel("Agent name").fill(`Provision refusal ${index}`);
       await pickCodexCredential(page);
       const requestId = `req_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
@@ -2512,7 +2522,7 @@ test("Agent name counts characters, as the API does, not UTF-16 code units", asy
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await pickCodexCredential(page);
   const name = page.getByLabel("Agent name");
   // Only the writes a submit makes. Once a credential is selected, the form also prefetches

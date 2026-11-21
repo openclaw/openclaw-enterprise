@@ -1,3 +1,4 @@
+import { useDefaultPreset } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { cp } from "node:fs/promises";
 import { join } from "node:path";
@@ -1201,7 +1202,7 @@ test("console keeps loaded route families visible while return reads refresh", a
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByRole("heading", { name: "Create Agent", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Retained draft Agent");
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
@@ -1222,7 +1223,8 @@ test("console keeps loaded route families visible while return reads refresh", a
     }
     return name?.value === "Retained draft Agent" && !name.closest("[inert]");
   });
-  assert.equal(await page.getByLabel("Preset template").count(), 0);
+  // The restored form still names the Preset it started from.
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
 });
 
 test("the account menu stays open and focused while the page under it finishes loading", async (t) => {
@@ -1641,7 +1643,7 @@ test("a session replaced by another tab signs this tab out instead of being adop
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await useDefaultPreset(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Old session draft");
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
@@ -1673,10 +1675,10 @@ test("a session replaced by another tab signs this tab out instead of being adop
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  await page.locator("#create-agent-form").waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/agents/new");
   assert.equal(new URL(page.url()).searchParams.get("namespace"), namespace.id);
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await useDefaultPreset(page);
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
 
@@ -3344,7 +3346,7 @@ test("a page address with a trailing slash opens that page", async (t) => {
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/namespaces");
   await page.goto(`${fixture.origin}/console/agents/new/?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  await page.locator("#create-agent-form").waitFor();
   const url = new URL(page.url());
   assert.equal(url.pathname + url.search, `/console/agents/new?namespace=${namespace.id}`);
   // Every trailing slash goes, not only the last; the query and tab stay.
@@ -3526,7 +3528,7 @@ test("a naturally expired session returns to the requested page after sign-in", 
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  await page.locator("#create-agent-form").waitFor();
   // The button shows before the Namespace's Preset read returns, and that read must not find
   // the expiry. Expire the actual session: the controller must reject it before returning to
   // login.
@@ -3549,7 +3551,7 @@ test("session expiry after a failed check returns to the requested page", async 
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  await page.locator("#create-agent-form").waitFor();
   await page.route(
     "**/api/auth/session",
     (route) =>
