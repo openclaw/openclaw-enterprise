@@ -5,9 +5,9 @@ import { listen } from "./listen.ts";
 // A PostgreSQL server for the CI preparation and cleanup tests (ci-prepare test suites,
 // ci-cleanup-postgres-cases.ts): scripts/ci/postgres-admin.ts connects to a lane server's
 // published port, and this listens on one in the test process. It speaks just enough of the frontend/
-// backend protocol for node-postgres: startup, a cleartext password request, and simple
-// queries, each answered with an empty CommandComplete. It records every session's user,
-// password and database and each query it receives, in order.
+// backend protocol for node-postgres: startup, a cleartext password request, simple queries,
+// and unnamed extended queries with one text parameter. It records every session's user,
+// password and database and each query's SQL text, in order.
 //
 // `onQuery(query, session)` decides an answer: undefined (success), `{ error: "message" }`
 // (an ErrorResponse; the session stays usable, as on a real server), `{ hang: true }` (no
@@ -178,9 +178,32 @@ function errorResponse(text: string) {
   );
 }
 
+const unnamedTextBindPrefix = Buffer.from([0, 0, 0, 1, 0, 0, 0, 1]);
+const textResultFormat = Buffer.from([0, 1, 0, 0]);
+const unnamedPortalFrames = new Map([
+  ["D", cstring("P")],
+  ["E", Buffer.alloc(5)],
+  ["S", Buffer.alloc(0)],
+]);
+
+function matchesUnnamedPortalFrame(type: string, body: Buffer) {
+  if (type === "B") {
+    // Empty portal and statement names, one text parameter, and text results.
+    return (
+      body.length >= 16 &&
+      body.subarray(0, 8).equals(unnamedTextBindPrefix) &&
+      body.readInt32BE(8) === body.length - 16 &&
+      body.subarray(-4).equals(textResultFormat)
+    );
+  }
+  const expected = unnamedPortalFrames.get(type);
+  return expected !== undefined && body.equals(expected);
+}
+
 function serveSession(socket: Socket, sessions: FakePostgresSession[], onQuery: FakePostgresQuery) {
   let buffer: Buffer = Buffer.alloc(0);
   let session: FakePostgresSession | undefined;
+  let extended: { query: string; remaining: string } | undefined;
   let queue = Promise.resolve();
   socket.on("data", (chunk) => {
     if (!Buffer.isBuffer(chunk)) {
@@ -242,6 +265,34 @@ function serveSession(socket: Socket, sessions: FakePostgresSession[], onQuery: 
       }
       const body = buffer.subarray(5, length + 1);
       buffer = buffer.subarray(length + 1);
+      if (type === "X") {
+        socket.end();
+        return;
+      }
+      if (type === "P" && !extended) {
+        const queryEnd = body.indexOf(0, 1);
+        if (
+          body[0] !== 0 ||
+          queryEnd < 2 ||
+          queryEnd !== body.length - 3 ||
+          body.readUInt16BE(queryEnd + 1) !== 0
+        ) {
+          socket.destroy();
+          return;
+        }
+        extended = { query: body.toString("utf8", 1, queryEnd), remaining: "BDES" };
+        continue;
+      }
+      if (extended || "BDES".includes(type)) {
+        if (!extended || type !== extended.remaining[0] || !matchesUnnamedPortalFrame(type, body)) {
+          socket.destroy();
+          return;
+        }
+        if (type !== "S") {
+          extended.remaining = extended.remaining.slice(1);
+          continue;
+        }
+      }
       if (type === "p") {
         session.password = body.toString("utf8").replace(/\0$/, "");
         socket.write(
@@ -251,8 +302,9 @@ function serveSession(socket: Socket, sessions: FakePostgresSession[], onQuery: 
             readyForQuery(),
           ]),
         );
-      } else if (type === "Q") {
-        const query = body.toString("utf8").replace(/\0$/, "");
+      } else if (type === "Q" || type === "S") {
+        const query = extended?.query ?? body.toString("utf8").replace(/\0$/, "");
+        extended = undefined;
         session.queries.push(query);
         const activeSession = session;
         queue = queue.then(async () => {
@@ -260,17 +312,21 @@ function serveSession(socket: Socket, sessions: FakePostgresSession[], onQuery: 
           if (answer?.hang || socket.destroyed) {
             return new Promise<void>(() => {});
           }
+          const descriptionAndRows = answer?.rows ? textRows(answer.rows) : [];
+          if (type === "S") {
+            descriptionAndRows.unshift(message("1"), message("2")); // ParseComplete, BindComplete.
+            if (!answer?.rows) {
+              descriptionAndRows.push(message("n")); // NoData for Describe.
+            }
+          }
           socket.write(
             Buffer.concat([
-              ...(answer?.rows ? textRows(answer.rows) : []),
+              ...descriptionAndRows,
               answer?.error ? errorResponse(answer.error) : message("C", cstring("OK")),
               readyForQuery(),
             ]),
           );
         });
-      } else if (type === "X") {
-        socket.end();
-        return;
       }
     }
   });

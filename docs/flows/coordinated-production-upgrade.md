@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-21
+last_updated_session: authoring-run/c71fe5bf-0518-4e32-a61a-8f6a6324a728
 ---
 
 # Production image upgrade flow
@@ -154,26 +154,27 @@ migrator and CA Secret UIDs and resource versions, and requires
 history. After cleanup, separate mode rechecks identities and
 `scripts/upgrade-evidence.py` binds them to the prepared run.
 
-`apps/controller/src/composition/console-theme.ts:loadConsoleTheme` checks API
-theme bundles. Both writers use `loadStartupConfigurationSnapshot` and
-`loadInstallationConfiguration` without database access. For OpenShell
-`bearerTokenFile`, each Job checks file type and readability without reading the token.
+`loadConsoleTheme` checks API themes. OpenShell checks `bearerTokenFile` type
+and readability without reading tokens.
 
-`connectionPlan` preserves private OIDC CA mounts and database preload. Writer
-Jobs use `OCC_DATABASE_URL` to verify that one read-only `occ.installation` result
-matches OCC and the startup Secret. Statement and lock timeouts are five seconds,
-with 15 seconds for the full check. Logs omit connection errors and rows.
+`connectionPlan` preserves OIDC CA mounts and database preload. Both writers
+match `occ.installation` against OCC and the startup Secret via `OCC_DATABASE_URL`
+in read-only transactions (5 seconds per statement or lock, 15 overall). Logs
+omit connection errors and rows.
 
-`preflight_resume` checks history and both writer identities before shutdown or
-Helm, even with both stopped. Completed Helm releases skip these Jobs.
-Preflight verifies Job and Pod identities around log retrieval and rejects NUL
-bytes. `formatStartupConfigurationFailure` reports up to 32 field diagnostics.
+`preflight_resume` checks history and writer identities before shutdown or Helm.
+Completed releases skip these Jobs. Log retrieval verifies Job and Pod identities
+and rejects NUL bytes. `formatStartupConfigurationFailure` reports up to 32 fields.
 
-Kubernetes Compute preflight uses the Pod service account. It refuses
-[split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
-on single-cluster upgrades. The image's `isName` checks Installation names when
-available. `refuseUndeployableConfigurationValues` checks recorded drafts.
-Older images or gzipped inputs over 1 MiB warn and defer to deployment.
+Kubernetes Compute uses the Pod service account and refuses single-cluster
+[split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
+`isName` checks Installation names. `refuseUndeployableConfigurationValues` checks
+drafts. Older images or inputs over 1 MiB can defer checks.
+
+During runtime upgrades, `checkHarnessDestinations` checks the active revision,
+Configuration generation and Harness binding. Kubernetes Compute resolves OpenAI
+overrides against candidate defaults. A mismatch, incomplete check or oversized
+source-backed drafts block shutdown. Deployment rechecks consent.
 
 Experimental two-cluster Jobs use `verifyExecutionTenantGrants` to check API
 Pod, proxy, and optional log/Event access, plus worker Pod patch and Job get,
@@ -373,6 +374,7 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-21 23:05: Trace accompanying Harness destination refusal. (authoring-run/c71fe5bf-0518-4e32-a61a-8f6a6324a728 - e9abd3462452c20c0919e8b96ae1db2f5cd79507)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 

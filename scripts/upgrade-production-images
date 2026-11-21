@@ -780,6 +780,7 @@ timeout_seconds=900
 doctor_heap_mib=384
 resume=0
 preflight_only=0
+check_harness_destinations=false
 migration_check_only=0
 migration_apply_only=0
 verbose=0
@@ -1636,6 +1637,10 @@ run_preflight_jobs() {
             grep -qx installation-startup-ready "$evidence_dir/preflight-$component.log" ||
               message="the $component startup preflight succeeded without its result line; no ${writer_qualifier}OCC writer was stopped."
           fi
+          if [[ -z "$message" && "$component" == api && -n "$drafts" && "$check_harness_destinations" == true ]] &&
+            ! grep -Exq 'harness-destinations-(checked|not-applicable)' "$evidence_dir/preflight-api.log"; then
+            message="the api startup preflight did not report a Harness destination forecast result; no OCC writer was stopped."
+          fi
           if [[ -z "$message" && "$component" == api && -n "$drafts" ]] &&
             grep -qx agent-draft-check-unavailable "$evidence_dir/preflight-api.log"; then
             warn "the selected controller image cannot check Agent drafts before the upgrade; OCC checks each draft when the upgrade deploys it."
@@ -1672,6 +1677,9 @@ run_preflight_jobs() {
             message="the selected controller image refuses to deploy $(grep -c '^Agent draft refused: ' "$evidence_dir/preflight-api.log") recorded Agent draft(s):
 $draft_refusals
 No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Correct each draft as its refusal says, for example remove a setting the new release retired, or stop the Agent, then start again with a new evidence directory."
+          elif [[ "$component" == api ]] &&
+            grep -Fxq 'Harness destination forecast could not complete.' "$evidence_dir/preflight-api.log"; then
+            message="the selected controller image could not verify the retained Harness destinations. No OCC writer was stopped; the old release keeps serving. Check the candidate Drivers and whether the recorded drafts, active revisions or source bindings changed. Start again with a new evidence directory."
           elif [[ "$component" == api && -n "$drafts" ]] &&
             grep -Fxq 'Agent draft check could not load the configured Harness resolver.' "$evidence_dir/preflight-api.log"; then
             message="the selected controller image could not check saved Agent drafts because its configured Harness resolver is unavailable. No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Select a corrected controller image and start again with a new evidence directory."
@@ -1769,6 +1777,9 @@ preflight_startup() {
       "$drafts" "$channel_targets" >/dev/null || drafts_status=$?
     [[ -s "$channel_targets" ]] || channel_targets=''
     if ((drafts_status == 3)); then
+      if [[ "$check_harness_destinations" == true ]]; then
+        die "the recorded Agent drafts do not fit in the startup preflight Secret, so the bound Harness destinations could not be checked. No OCC writer was stopped."
+      fi
       warn "the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it."
       drafts=
     elif ((drafts_status != 0)); then
@@ -2579,7 +2590,7 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
   agent_drafts="$evidence_dir/inventory/agent-drafts.jsonl"
   : >"$agent_drafts"
   while IFS= read -r target; do
-    json_fields "$target" namespace_id=namespaceId agent_id=agentId execution_mode=executionMode
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId execution_mode=executionMode baseline_revision_id=baselineRevisionId
     prefix="$evidence_dir/inventory/$(json_file_name "$namespace_id--$agent_id")"
     "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" </dev/null \
       >"$prefix.agent.json" ||
@@ -2592,13 +2603,26 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
       die "cannot read Configuration $configuration_id of Agent $agent_id in Namespace $namespace_id to check its draft; no cluster changes were made."
     jq -ec --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
       --arg configurationId "$configuration_id" --arg executionMode "$execution_mode" \
+      --arg runtimeImage "$runtime_image" --arg baselineRevisionId "$baseline_revision_id" \
       --slurpfile agent "$prefix.agent.json" '
       select(.id == $configurationId and (.values | type) == "object") |
       {namespaceId: $namespaceId, agentId: $agentId, name: $agent[0].name,
         configurationId: $configurationId, executionMode: $executionMode, values: .values}
+      + (if $runtimeImage == "" then {}
+        elif $agent[0].configurationReadError != null then empty
+        elif $agent[0].harnessAuth.method == "credential_source" then
+          ($agent[0] | select(.id == $agentId and .namespaceId == $namespaceId and
+            .activeRevisionId == $baselineRevisionId and .executionMode == $executionMode and
+            (.harnessAuth.sourceId | type == "string" and length > 0))) as $bound |
+          select(.namespaceId == $namespaceId and (.generation | type == "number" and . > 0 and floor == .)) |
+          {destination: {revisionId: $baselineRevisionId, sourceId: $bound.harnessAuth.sourceId,
+            generation: .generation, mode: $executionMode}}
+        else {} end)
     ' "$prefix.configuration.json" >>"$agent_drafts" ||
-      die "OCC returned no values for Configuration $configuration_id of Agent $agent_id; no cluster changes were made."
+      die "cannot confirm the recorded draft or Harness source binding of Agent $agent_id in Namespace $namespace_id; no cluster changes were made."
   done <"$targets"
+  check_harness_destinations=$(jq -n 'any(inputs; has("destination"))' "$agent_drafts") ||
+    die "cannot read the recorded Harness source bindings for startup preflight; no OCC writer was stopped."
 
   if [[ -n "$runtime_image" ]]; then
   current_gateway=$(yq -er '.drivers.compute.configuration.images.gateway' "$evidence_dir/before-installation.yaml")

@@ -1757,6 +1757,8 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         out({
           id,
           kind: "agent",
+          namespaceId: fileArg("--namespace"),
+          generation: 1,
           values: optionalField(state.configurationValues, String(id)) ?? {},
         });
       } else if (args.includes("deploy")) {
@@ -1799,12 +1801,14 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         }
         out({ id });
       } else if (args.includes("agent") && args.includes("get")) {
-        out({
-          id: "agt_test",
-          name: "Mail triage",
-          configurationId: "cfg_agt_test",
-          activeRevisionId: state.activeRevision ?? "rev_old",
-        });
+        out(
+          optionalField(state.agentDrafts, requiredArg("get")) ?? {
+            id: "agt_test",
+            name: "Mail triage",
+            configurationId: "cfg_agt_test",
+            activeRevisionId: state.activeRevision ?? "rev_old",
+          },
+        );
       } else if (args.includes("deployment-status")) {
         const namespaceId = fileArg("--namespace");
         const agentId = args.at(-2);

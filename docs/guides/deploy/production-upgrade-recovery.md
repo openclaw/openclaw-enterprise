@@ -157,17 +157,20 @@ For stalled ReplicaSet creation, check [namespace object capacity](upgrade-check
 
 ## Correct a refused Agent deployment
 
-The startup preflight refuses some such drafts before any writer stops. If
-OCC still refuses an Agent's deployment with a 4xx answer, such as
-`HTTP 400 ... must use reviewed task actions`, it saved no new version. The same
-applies when `occ` sends no request because it cannot establish the active
-revision's Harness overrides. The command lists each such Agent with the
-message, keeps it in `dispatch/*.rejected`, and stops. Correct the cause, for
-example with `occ configuration update`, and repeat the command with `--resume`.
-The resume deploys each refused Agent once; do not deploy it yourself. A 408 or
-5xx answer stays an unknown dispatch. When OCC rejects the command's service
-key, the command lists the Agents it did not deploy; get a new key, point
-`OCC_SERVICE_KEY_FILE` at it, and resume.
+If startup preflight refuses `authorized_base_url`, settle a revision with
+authorized Harness overrides. Restart the upgrade with fresh evidence.
+
+After dispatch, `dispatch/*.rejected` records a definite refusal without a
+new revision. Correct the draft or replace a rejected key (`OCC_SERVICE_KEY_FILE`).
+For `authorized_base_url`, confirm the retained destination is intended.
+Use `occ agent update ID --file FILE` to select a ready source already authorized
+for it. Replace both `harnessAuth` and the corresponding `credentialSources`
+entry, preserving `configurationId` and other bindings. Verify caller and Agent
+source permissions. If you need another destination, stop. Manual deploy cannot
+repair the journal.
+
+Use the original checkout, command and evidence with `--resume` after correction.
+Reconcile unknown dispatches (408, 5xx or lost reply). Never resend them blindly.
 
 ## Correct a Doctor failure
 

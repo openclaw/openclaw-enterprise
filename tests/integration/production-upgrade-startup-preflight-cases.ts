@@ -3229,6 +3229,105 @@ exec "$0.fixture" "$@"
     }
   });
 
+  test("the runtime upgrade refuses unauthorized retained Harness destinations before stopping writers", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    const fallback = "https://provider.example.test/v1";
+    const explicit = "https://evaluation.example.test/v1";
+    const provider = (baseUrl: string) => ({ protocol: "openai-responses", baseUrl });
+    const { backend, drivers } = createCredentialProxyInstallationConfiguration();
+    const gateway = drivers.credential_gateway;
+    const tenant = restartInventory().namespaces[0]!;
+    const agents = ["mismatch", "matching", "explicit"].map((scenario) => ({
+      ...tenant.agents[0]!,
+      id: `agt_${scenario}`,
+      activeRevisionId: `rev_${scenario}`,
+      executionMode: "dedicated",
+    }));
+    // Only the inherited destination without matching consent should refuse.
+    const rows = agents.map((agent) => ({
+      namespace_id: tenant.id,
+      agent_id: agent.id,
+      revision_id: agent.activeRevisionId,
+      source_id: `src_${agent.id}`,
+      source_type: "openai",
+      driver_id: gateway.id,
+      overrides: JSON.stringify(
+        agent.id === "agt_explicit" ? { modelProvider: provider(explicit) } : {},
+      ),
+      config: JSON.stringify({
+        authorized_base_url: agent.id === "agt_matching" ? fallback : explicit,
+      }),
+    }));
+    const values = {
+      agents: { defaults: { model: "codex/gpt-5.1" } },
+      models: { providers: { codex: { agentRuntime: { id: "codex" } } } },
+    };
+    const f = await fixture(t, {
+      agent: true,
+      chart: {
+        installation: (installation) => {
+          installation.drivers.compute.configuration.runtime.modelProvider = provider(fallback);
+          installation.backend = [
+            {
+              ...backend[0],
+              configuration: {
+                ...backend[0].configuration,
+                auth: {
+                  mode: "mtls",
+                  certificatePath: "/synthetic/tls.crt",
+                  privateKeyPath: "/synthetic/tls.key",
+                },
+              },
+              drivers: { sandbox: drivers.sandbox.id, credential_gateway: gateway.id },
+            },
+          ];
+          installation.drivers.sandbox = drivers.sandbox;
+          installation.drivers.credential_gateway = gateway;
+          return installation;
+        },
+      },
+      inventoryNamespaces: [{ ...tenant, agents }],
+      configurationValues: Object.fromEntries(agents.map(({ id }) => [`cfg_${id}`, values])),
+      databaseAnswer: (query) => ({
+        rows: query.includes("occ.agent_revisions") ? rows : [{ id: "ins_test" }],
+      }),
+    });
+    const seed = await f.state();
+    seed.agentDrafts = Object.fromEntries(
+      agents.map((agent) => [
+        agent.id,
+        {
+          ...agent,
+          namespaceId: tenant.id,
+          name: "Mail triage",
+          configurationId: `cfg_${agent.id}`,
+          harnessAuth: { method: "credential_source", sourceId: `src_${agent.id}` },
+        },
+      ]),
+    );
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(seed));
+    // End the stock run at the first Helm submission, after it crosses the writer stop boundary.
+    await f.failNext("reject-helm-submission");
+
+    const { stderr, error } = await runForFailure(f.run);
+    assert.match(
+      stderr,
+      /refuses to deploy 1 recorded Agent draft\(s\):\n {2}- Agent agt_mismatch "Mail triage" in Namespace ns_test: [^\n]*config\.authorized_base_url[^\n]*retained Harness destination/,
+    );
+    assert.match(stderr, /No OCC writer was stopped; the old release keeps serving\./);
+    const log = await f.readEvidence("preflight-api.log");
+    assert.equal(log.match(/^Agent draft refused: /gm)?.length, 1);
+    const diagnostics = commandStdout(error) + stderr + log;
+    for (const value of [fallback, explicit, ...rows.map(({ source_id }) => source_id)]) {
+      assert.ok(!diagnostics.includes(value), "destination details must remain private");
+    }
+    const state = await assertStoppedBeforeWriters(f);
+    assert.equal(state.helmSubmissions ?? 0, 0);
+    assert.equal(state.dispatches, 0);
+  });
+
   // The degraded draft-check paths. Each one either warns and lets OCC check the draft at deploy,
   // as before finding 2809, or stops before any writer stops; none reports drafts as checked
   // when they were not (finding 2815).
