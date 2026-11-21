@@ -1234,7 +1234,12 @@ function upgradedCanonicalData(data) {
   return {
     ...data,
     agents: data.agents.map(({ value }) => {
-      const current = { ...value, predecessor_replacement: value.predecessor_replacement ?? null };
+      const current = {
+        ...value,
+        predecessor_replacement: value.predecessor_replacement ?? null,
+        network_proxy_url: value.network_proxy_url ?? null,
+        network_proxy_secret_id: value.network_proxy_secret_id ?? null,
+      };
       delete current.restart_generation;
       delete current.restart_domain;
       return { value: current };
@@ -1242,6 +1247,9 @@ function upgradedCanonicalData(data) {
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
         ...value,
+        network_proxy_url: value.network_proxy_url ?? null,
+        network_proxy_secret_id: value.network_proxy_secret_id ?? null,
+        network_proxy_admission: value.network_proxy_admission ?? null,
         first_deployment_digest: null,
         admitted_spec: Object.hasOwn(value.admitted_spec, "execution_admission")
           ? value.admitted_spec
@@ -1470,6 +1478,8 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preAgentNetworkProxy"],
+      [86, "preAgentNetworkProxyAdmission"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1746,6 +1756,8 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preAgentNetworkProxy"],
+      [86, "preAgentNetworkProxyAdmission"],
     ]);
     for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
@@ -2054,6 +2066,8 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preAgentNetworkProxy"],
+      [86, "preAgentNetworkProxyAdmission"],
     ])) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2244,6 +2258,8 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preAgentNetworkProxy"],
+      [86, "preAgentNetworkProxyAdmission"],
     ])) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
