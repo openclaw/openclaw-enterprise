@@ -157,7 +157,7 @@ admission remains in `apps/controller/src/index.ts`.
 
 `apps/controller/src/http/native-admin.ts:getNativeAdminStatus`
 `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-`packages/occ/src/index.ts:getBrowserAccessibleActiveAgentRevision`
+`packages/occ/src/agent-queries.ts:getAuthorizedActiveAgentRevision`
 
 `getAgentBrowserAccess` handles disabled access; `getBrowserAccessibleActiveAgentRevision` handles enabled access, requiring origin, domain and selected version. Both use `authorizeAgentAccess` and one Agent read. IAM failures propagate, never selecting chat.
 
