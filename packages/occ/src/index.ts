@@ -1606,12 +1606,7 @@ export class OpenClawController {
       guardProvisioningConfiguration: (state, namespaceId, id) =>
         this.guardProvisioningConfiguration(state, namespaceId, id),
       backendId: (value, preserve) => this.backendId(value, preserve),
-      normalizeCredentialSources: (value) => this.agentCredentialSources(value),
-      assertHarnessSourceListed: (list, auth) => this.assertHarnessSourceListed(list, auth),
-      authorizeBoundCredentialSources: (actorId, namespaceId, sources) =>
-        this.authorizeBoundCredentialSources(actorId, namespaceId, sources),
-      authorizeAgentCredentialSources: (state, actorId, namespaceId, sources, auth) =>
-        this.authorizeAgentCredentialSources(state, actorId, namespaceId, sources, auth),
+      credentialAccess: this.agentCredentialAccess,
       isManagedTokenServiceSource,
       bindings: (value) => this.bindings(value),
       authorizeBindings: (state, actorId, namespaceId, bindings) =>

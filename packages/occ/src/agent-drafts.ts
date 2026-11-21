@@ -22,6 +22,11 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
+  assertHarnessSourceListed,
+  parseAgentCredentialSources,
+  type AgentCredentialAccess,
+} from "./agent-credential-access.ts";
+import {
   normalizeGatewayManagedMode,
   validExecutionMode,
   type HarnessResolver,
@@ -101,25 +106,10 @@ interface AgentDraftDependencies {
     id: string,
   ) => Promise<void>;
   readonly backendId: (value: BackendRef | undefined, preserve?: BackendRef) => BackendRef;
-  readonly normalizeCredentialSources: (
-    value: unknown,
-  ) => readonly AgentCredentialSourceBinding[] | undefined;
-  readonly assertHarnessSourceListed: (
-    bindings: readonly AgentCredentialSourceBinding[],
-    harnessAuth: HarnessAuthBinding | null | undefined,
-  ) => void;
-  readonly authorizeBoundCredentialSources: (
-    principalId: string,
-    namespaceId: string,
-    sources: readonly AgentCredentialSourceBinding[],
-  ) => Promise<void>;
-  readonly authorizeAgentCredentialSources: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    namespaceId: string,
-    sources: readonly AgentCredentialSourceBinding[],
-    harnessAuth: HarnessAuthBinding | null | undefined,
-  ) => Promise<readonly CredentialSource[]>;
+  readonly credentialAccess: Pick<
+    AgentCredentialAccess,
+    "authorizeBoundCredentialSources" | "authorizeAgentCredentialSources"
+  >;
   readonly isManagedTokenServiceSource: (source: Readonly<CredentialSource> | undefined) => boolean;
   readonly bindings: (value: unknown) => SecretBindings;
   readonly authorizeBindings: (
@@ -324,7 +314,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       throw new ScopeViolationError("The initial workspace setup input is invalid.");
     }
     const harnessAuth = harnessAuthBinding(input.harnessAuth ?? null);
-    const credentialSources = dependencies.normalizeCredentialSources(input.credentialSources);
+    const credentialSources = parseAgentCredentialSources(input.credentialSources);
     const executionMode = input.executionMode ?? "embedded";
     if (!validExecutionMode(executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
@@ -370,7 +360,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         namespace.id,
         harnessAuth,
       );
-      const sources = await dependencies.authorizeAgentCredentialSources(
+      const sources = await dependencies.credentialAccess.authorizeAgentCredentialSources(
         state,
         principalId,
         namespace.id,
@@ -576,7 +566,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     }
     const requestedAuth =
       input.harnessAuth === undefined ? undefined : harnessAuthBinding(input.harnessAuth);
-    const requestedSources = dependencies.normalizeCredentialSources(input.credentialSources);
+    const requestedSources = parseAgentCredentialSources(input.credentialSources);
     if (input.executionMode !== undefined && !validExecutionMode(input.executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
@@ -634,7 +624,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         .catch((error: unknown) => {
           throw QualifiedAuthorizationDeniedError.qualify(error, "current_harness_auth");
         });
-      await dependencies.authorizeBoundCredentialSources(
+      await dependencies.credentialAccess.authorizeBoundCredentialSources(
         principalId,
         namespace.id,
         agent.credentialSources ?? [],
@@ -652,7 +642,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       let sources =
         requestedSources === undefined
           ? undefined
-          : await dependencies.authorizeAgentCredentialSources(
+          : await dependencies.credentialAccess.authorizeAgentCredentialSources(
               state,
               principalId,
               namespace.id,
@@ -661,7 +651,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
             );
       if (requestedSources === undefined && requestedAuth !== undefined) {
         const retained = agent.credentialSources ?? [];
-        dependencies.assertHarnessSourceListed(retained, requestedAuth);
+        assertHarnessSourceListed(retained, requestedAuth);
         // Admission permits a managed TokenService source only as the Harness source, so
         // changing authentication can leave only the previous selection attached incorrectly.
         if (
@@ -704,7 +694,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         plugins &&
         Object.values(plugins).some((p) => p.driverPolicy !== undefined)
       ) {
-        sources = await dependencies.authorizeAgentCredentialSources(
+        sources = await dependencies.credentialAccess.authorizeAgentCredentialSources(
           state,
           principalId,
           namespace.id,
