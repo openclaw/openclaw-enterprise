@@ -4,6 +4,7 @@ import type { TestContext } from "node:test";
 import {
   type AgentRevision,
   type RepositoryNetworkGrant,
+  type SandboxNetworkGrant,
   type SandboxPolicy,
   type SandboxPolicyApplication,
   type SandboxPolicySnapshot,
@@ -212,8 +213,8 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
       [namespace.id, agent.id],
     );
   const deployed = await inject("POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`);
-  assert.equal(deployed.statusCode, 404, deployed.body);
-  assert.equal(deployed.json().error.code, "NOT_FOUND");
+  assert.equal(deployed.statusCode, 409, deployed.body);
+  assert.equal(deployed.json().error.code, "RESOURCE_CONFLICT");
   assert.deepEqual((await revisions()).rows, [{ id: revision.id }]);
   assert.deepEqual(await readPolicy(), desired);
 
@@ -338,7 +339,17 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   }
 
   const denyAll = { ...desired, version: desired.version + 1, repositoryNetworkPolicy: [] };
-  assert.deepEqual(await savePolicy(denyAll, desired.version), denyAll);
+  // The user can withdraw existing grants even after losing the Sandbox Driver.
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+  const enabled = await inject("PATCH", path + "/editing", { enabled: true });
+  assert.equal(enabled.statusCode, 200, enabled.body);
+  const withdrawal = await inject("PUT", path, {
+    expectedVersion: desired.version,
+    additions: [],
+    repositoryNetworkPolicy: [],
+  });
+  assert.equal(withdrawal.statusCode, 200, withdrawal.body);
+  assert.deepEqual(await readPolicy(), denyAll);
   assert.deepEqual((await readPolicy())?.repositoryNetworkPolicy, []);
   assert.deepEqual(
     (await readRevision(revision.id))?.executionAdmission,
@@ -348,4 +359,84 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
     (await readRevision(revision.id))?.sandboxPolicy?.repositoryNetworkPolicy,
     undefined,
   );
+}
+
+export async function editStoredRepositoryGrants(
+  { deployAgent, inject, state, pool }: Awaited<ReturnType<typeof createPostgresAgentApp>>,
+  addition: SandboxNetworkGrant,
+): Promise<void> {
+  const { namespace, agent } = await deployAgent("Edit stored repository grants");
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+  const read = async () => {
+    const response = await inject("GET", path);
+    assert.equal(response.statusCode, 200, response.body);
+    return response.json().data.policy;
+  };
+  const stored = async () => {
+    const { rows } = await pool.query<{ document: SandboxPolicy }>(
+      "SELECT document FROM occ.sandbox_policies WHERE namespace_id=$1 AND agent_id=$2",
+      [namespace.id, agent.id],
+    );
+    assert.equal(rows.length, 1);
+    return rows[0]!.document;
+  };
+  const enabled = await inject("PATCH", path + "/editing", { enabled: true });
+  assert.equal(enabled.statusCode, 200, enabled.body);
+
+  const original = await stored();
+  assert.equal(Object.hasOwn(await read(), "repositoryNetworkPolicy"), false);
+  const grants = [{ repository: "example/project", access: "write" }] as const;
+  for (const repositoryNetworkPolicy of [[], grants]) {
+    const first = await inject("PUT", path, {
+      expectedVersion: original.version,
+      additions: [],
+      repositoryNetworkPolicy,
+    });
+    assert.equal(first.statusCode, 409, first.body);
+    assert.deepEqual(await stored(), original);
+  }
+
+  // Begin with a policy persisted by an installation supporting grant creation.
+  const existing = { ...original, version: original.version + 1, repositoryNetworkPolicy: grants };
+  await state.transact((unit) => unit.sandboxPolicies.save(existing, original.version));
+  assert.deepEqual(await read(), existing);
+
+  const saved = await inject("PUT", path, {
+    expectedVersion: existing.version,
+    additions: [addition],
+  });
+  assert.equal(saved.statusCode, 200, saved.body);
+  const preserved = { ...existing, version: existing.version + 1, additions: [addition] };
+  assert.deepEqual(await stored(), preserved);
+  assert.deepEqual(await read(), preserved);
+
+  const withdrawal = {
+    expectedVersion: preserved.version,
+    additions: [addition],
+    repositoryNetworkPolicy: [],
+  };
+  const stale = await inject("PUT", path, { ...withdrawal, expectedVersion: existing.version });
+  assert.equal(stale.statusCode, 409, stale.body);
+  assert.deepEqual(await stored(), preserved);
+  const updated = await inject("PUT", path, withdrawal);
+  assert.equal(updated.statusCode, 200, updated.body);
+  const cleared = { ...preserved, version: preserved.version + 1, repositoryNetworkPolicy: [] };
+  assert.deepEqual(await stored(), cleared);
+  assert.deepEqual(await read(), cleared);
+  const regrant = await inject("PUT", path, {
+    ...withdrawal,
+    expectedVersion: cleared.version,
+    repositoryNetworkPolicy: grants,
+  });
+  assert.equal(regrant.statusCode, 409, regrant.body);
+  assert.deepEqual(await stored(), cleared);
+
+  const restriction = "restriction-" + randomUUID();
+  await pool.query(
+    "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'update','sandbox_policy',$3,'deny')",
+    [restriction, namespace.id, existing.id],
+  );
+  const forbidden = await inject("PUT", path, { ...withdrawal, expectedVersion: cleared.version });
+  assert.equal(forbidden.statusCode, 403, forbidden.body);
+  assert.deepEqual(await stored(), cleared);
 }
