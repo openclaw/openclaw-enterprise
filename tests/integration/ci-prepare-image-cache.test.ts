@@ -7,7 +7,11 @@ import { describe, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { formatBaselineRuntimeBuildNotice } from "../../scripts/ci/image-build-cache.ts";
+import {
+  baselineCompilerCache,
+  formatBaselineRuntimeBuildNotice,
+} from "../../scripts/ci/image-build-cache.ts";
+import { nativeProfileBaseline } from "../../scripts/ci/native-profile-upgrade.ts";
 import {
   assertStderrMatch,
   fixtureImageCommands,
@@ -552,6 +556,7 @@ process.exit(73);
       ["completion unobserved", [header, "#120 CACHED", "#12 DONE 1..2s", "#12 1.2 #12 CACHED"]],
       ["completion unobserved", [header, "#12 DONE 9.2s::notice::synthetic"]],
       ["ambiguous", [header, "#12 CACHED", header.replace("#12 ", "#14 ")]],
+      ["ambiguous", [header, "#12 CACHED", "#12 DONE 1.2s"]],
       ["canceled", [header, "#12 CANCELED"]],
       ["failed", [header, "#12 ERROR: exit code 1"]],
       ["unobserved", [`${header} && other-command`, "#12 DONE 1.2s"]],
@@ -562,6 +567,55 @@ process.exit(73);
         `::notice title=Baseline runtime image build 3.2s (node-compiled ${state})::` +
           "BuildKit progress for the pinned upgrade image.\n",
       );
+    }
+  });
+
+  test("scheduled main restores the pinned compiler and only the advisory seeds a miss", () => {
+    const repo = "openclaw/openclaw-enterprise";
+    const ref = "refs/heads/main";
+    const env = {
+      ...imageCacheEnv,
+      GITHUB_REPOSITORY: repo,
+      GITHUB_REF: ref,
+      GITHUB_EVENT_NAME: "schedule",
+      GITHUB_WORKFLOW_REF: `${repo}/.github/workflows/qa-advisory.yml@${ref}`,
+      GITHUB_JOB: "oidc-agent-chat",
+    };
+    const { revision } = nativeProfileBaseline;
+    const scope = `type=gha,version=2,scope=oce-ci-native-node-compiled-${revision}-${process.platform}-${process.arch}-v1`;
+    const cache = baselineCompilerCache(revision, env);
+    assert.ok(cache);
+    assert.equal(cache.from, `${scope},timeout=60s`);
+    const inputs = ["--cache-from", cache.from, "-f", "Dockerfile", "."];
+    const load = ["buildx", "build", "--load", "-t", "test:local", ...inputs];
+    const header = "#12 [node-compiled 1/1] RUN --network=none sh /node-repair/build.sh";
+    const done = `${header}\n#12 DONE 300.1s`;
+    assert.deepEqual(cache.seedArgs(load, done), [
+      "buildx",
+      "build",
+      "--output",
+      "type=cacheonly",
+      "--target",
+      "node-compiled",
+      "--cache-to",
+      `${scope},mode=min,timeout=160s`,
+      ...inputs,
+    ]);
+    for (const output of [header, `${header}\n#12 CACHED`, `${done}\n#12 CACHED`]) {
+      assert.equal(cache.seedArgs(load, output), undefined);
+    }
+    for (const key of ["GITHUB_JOB", "GITHUB_WORKFLOW_REF"]) {
+      const reader = baselineCompilerCache(revision, { ...env, [key]: "other" });
+      assert.equal(reader?.from, cache.from);
+      assert.equal(reader?.seedArgs(load, done), undefined);
+    }
+    for (const key of [
+      "OCC_CI_IMAGE_CACHE",
+      "GITHUB_REPOSITORY",
+      "GITHUB_REF",
+      "GITHUB_EVENT_NAME",
+    ]) {
+      assert.equal(baselineCompilerCache(revision, { ...env, [key]: "other" }), undefined);
     }
   });
 
