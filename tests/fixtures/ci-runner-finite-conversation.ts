@@ -381,7 +381,7 @@ function seedTranscript(db: DatabaseSync, key: string, marker: string, scenario:
 export async function registerFiniteConversationTests() {
   // The outer test imports the inventory without initializing the child readers.
   const { DatabaseSync } = await import("node:sqlite");
-  const { run } = await import("./repository-credentials/process.mjs");
+  const { run } = await import("./repository-credentials/process.ts");
   const { createFiniteGitConversation, finiteGitConversationFailureStage } =
     await import("../helpers/finite-git-conversation.ts");
 
@@ -470,6 +470,9 @@ export async function registerFiniteConversationTests() {
             const file = scenario.name.replaceAll(" ", "-") + ".sqlite";
             const db = new DatabaseSync(file);
             try {
+              // The seed is scratch data inside the turn's 1 s budget: skip the per-statement
+              // journal and fsync, which take most of a second on a busy disk.
+              db.exec("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF");
               seedTranscript(db, key, marker, scenario);
             } finally {
               db.close();

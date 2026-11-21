@@ -7,15 +7,15 @@ import fs from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { once } from "node:events";
 import { buffer } from "node:stream/consumers";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import { startGitHubFixture } from "../fixtures/repository-credentials/github.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { callControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
 import type { OperationReceipt } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { request as requestHttps } from "node:https";
 import { syncBuiltinESMExports } from "node:module";
-import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
+import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service-fixture.ts";
 import {
   appendFile,
   cp,
@@ -37,11 +37,11 @@ import {
   reservePort,
   reservedPortArgs,
 } from "../helpers/available-port.ts";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { credentialClientPath } from "../fixtures/repository-credentials/runtime.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
+import { credentialClientPath } from "../fixtures/repository-credentials/runtime.ts";
 import type { RuntimeRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
 import type { ClientFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import type {
@@ -613,11 +613,12 @@ test(
               },
             },
             (response) => {
-              void buffer(response).then(
-                (bytes) =>
-                  resolve({ status: response.statusCode, body: JSON.parse(bytes.toString()) }),
-                reject,
-              );
+              void buffer(response)
+                .then((bytes) => {
+                  const body: unknown = JSON.parse(bytes.toString());
+                  resolve({ status: response.statusCode, body });
+                })
+                .catch(reject);
             },
           );
           outgoing.on("error", reject);

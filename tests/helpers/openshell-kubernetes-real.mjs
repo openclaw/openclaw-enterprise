@@ -413,6 +413,7 @@ export function openshellHash(value, length = 12) {
   return sha256Hex(value, length);
 }
 
+/** @param {string} agentId */
 export function openShellAgentName(agentId) {
   return `agent-${openshellHash(agentId)}`;
 }
@@ -421,10 +422,21 @@ export function openShellGatewayName(agentId) {
   return `gateway-${openshellHash(agentId)}`;
 }
 
+/** @param {{agentId: string, id: string}} revision */
 export function openShellRevisionName(revision) {
   return `${openShellAgentName(revision.agentId)}-rev-${openshellHash(revision.id)}`;
 }
 
+/**
+ * @param {string} namespace
+ * @param {{namespaceId: string, agentId: string, id: string}} revision
+ * @param {{apiVersion: string, metadata: {namespace: string, name: string, uid: string, labels?: Record<string, string>}}} sandbox
+ * @param {Required<Pick<import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").V1Pod, "metadata">> &
+ *   {spec: Pick<import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").V1PodSpec,
+ *     "serviceAccountName" | "automountServiceAccountToken" | "volumes">}} pod
+ * @param {string} [profile] Untrusted profile names are rejected by this oracle.
+ * @param {string} [configuredServiceAccountName]
+ */
 export function assertOpenShellHarnessBinding(
   namespace,
   revision,
@@ -625,7 +637,6 @@ export function createOpenShellInstallationConfiguration({
   platformNamespace,
   gatewayImage,
   codexImage,
-  openShellRuntimeClass = "openshell-sandbox",
   cluster,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
@@ -683,8 +694,8 @@ export function createOpenShellInstallationConfiguration({
   configuration.drivers.sandbox = {
     id: "sandbox-openshell-kubernetes",
     configuration: {
+      integrationMode: "legacy",
       gateway: {
-        workspaceMode: "operator",
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },
@@ -695,7 +706,6 @@ export function createOpenShellInstallationConfiguration({
         networkPolicyResources: [],
       },
       kubernetes: {
-        runtimeClassName: openShellRuntimeClass,
         // Match the Compute-owned Harness budget. The cluster's 1 GiB default
         // can OOM-kill a real worker while it installs the Gateway bundle.
         agentResources: structuredClone(
@@ -933,7 +943,7 @@ export function openShellGatewayNetworkPolicies(namespace, apiPeers) {
  *   codexCommandGraceMs?: number | undefined,
  *   modelAtCapacityRetry?: Parameters<typeof retryModelAtCapacity>[1],
  *   openShellGatewayImage?: string | undefined, openShellSandboxImage?: string | undefined,
- *   openShellSupervisorImage?: string | undefined, openShellRuntimeClass?: string | undefined,
+ *   openShellSupervisorImage?: string | undefined,
  *   openShellHelmPath?: string | undefined, openShellHelmChart?: string | undefined,
  *   openShellWorkspaceHelmChart?: string | undefined, openShellChartVersion?: string | undefined,
  *   commandTimeoutMs?: number | undefined, signal?: AbortSignal | undefined,
@@ -953,7 +963,6 @@ export function createOpenShellKubernetesFixture({
   openShellGatewayImage,
   openShellSandboxImage,
   openShellSupervisorImage,
-  openShellRuntimeClass = "openshell-sandbox",
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
@@ -1048,7 +1057,6 @@ export function createOpenShellKubernetesFixture({
       maxBuffer: 1024 * 1024,
     });
     const kubeconfig = await base.validatePrerequisites();
-    await kubectl("get", "runtimeclass", openShellRuntimeClass, "-o", "json");
     const resources = await kubectl("api-resources", "--api-group=agents.x-k8s.io", "-o", "name");
     assert.match(
       resources,
@@ -1258,7 +1266,6 @@ export function createOpenShellKubernetesFixture({
         "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
         "--set=workspaceResources.enabled=false",
         "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-        `--set-string=server.defaultRuntimeClassName=${openShellRuntimeClass}`,
         ...chartImageValues("gateway.image", openShellGatewayImage),
         ...chartImageValues("sandboxRuntime.image", openShellSandboxImage),
         ...chartImageValues("supervisor.image", openShellSupervisorImage),
@@ -1667,12 +1674,65 @@ export function createOpenShellKubernetesFixture({
     assert.equal(claims.sub, `system:serviceaccount:${namespace}:${pod.spec.serviceAccountName}`);
   }
 
-  function assertApprovedOpenShellPrivileges(pod) {
+  async function assertRestrictedPodSecurity(namespace) {
+    const tenant = await base.resource("namespace", namespace);
     assert.equal(
-      pod.spec.runtimeClassName,
-      openShellRuntimeClass,
-      "OpenShell Pods must use the trusted RuntimeClass selected for the admission exemption.",
+      tenant.metadata.labels?.["pod-security.kubernetes.io/enforce"],
+      "restricted",
+      "admission proof must use the actual restricted Agent tenant, without relabeling it",
     );
+    const directory = await mkdtemp(join(tmpdir(), "openshell-tenant-psa-"));
+    try {
+      // Admission must reject valid API input for both forbidden privilege paths
+      // in the same tenant where this journey admits real OpenShell workloads.
+      for (const privileged of [true, false]) {
+        const name = privileged ? "privileged" : "capability";
+        const path = join(directory, `${name}.json`);
+        await writeFile(
+          path,
+          JSON.stringify({
+            apiVersion: "v1",
+            kind: "Pod",
+            metadata: { name: `openshell-psa-${name}`, namespace },
+            spec: {
+              restartPolicy: "Never",
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: 10001,
+                seccompProfile: { type: "RuntimeDefault" },
+              },
+              containers: [
+                {
+                  name: "probe",
+                  image: openShellSandboxImage,
+                  command: ["sh", "-c", "true"],
+                  securityContext: privileged
+                    ? { privileged: true, capabilities: { drop: ["ALL"] } }
+                    : {
+                        allowPrivilegeEscalation: false,
+                        capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
+                      },
+                },
+              ],
+            },
+          }),
+          { mode: 0o600 },
+        );
+        await assert.rejects(
+          () => kubectl("apply", "--namespace", namespace, "--dry-run=server", "-f", path),
+          (error) =>
+            /violates PodSecurity ["']restricted/.test(`${error.stderr ?? ""}\n${error.message}`),
+          `the Agent tenant must reject the ${name} probe through restricted PSA, not API validation or RBAC`,
+        );
+      }
+    } finally {
+      // Server-side dry runs persist no Pods; only local manifest files need cleanup.
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  function assertApprovedOpenShellPrivileges(pod) {
+    assert.equal(pod.spec.runtimeClassName, undefined, "OCE must not select a runtime class.");
     const initCapabilities = new Set(
       (pod.spec.initContainers ?? []).flatMap(
         (container) => container.securityContext?.capabilities?.add ?? [],
@@ -1750,6 +1810,7 @@ export function createOpenShellKubernetesFixture({
     // so Node's own startup diagnostics cannot accidentally contain a valid frame.
     const nativeTag = gatewayTurn && commandTimeoutMs !== undefined ? randomUUID() : undefined;
     const script = String.raw`
+      const WebSocket = require("ws");
       const nativeTag = ${JSON.stringify(nativeTag)};
       let timeout, socket;
       let urlShape = "unknown", tokenPresent = null;
@@ -2072,7 +2133,12 @@ export function createOpenShellKubernetesFixture({
             entry.resolve(message.result);
           }
         } else if (method === "item/completed") {
-          if (item?.type === "agentMessage") assistant = item.text ?? "";
+          if (item?.type === "agentMessage" && (!${gatewayTurn} ||
+              (message.id === undefined && typeof threadId === "string" && threadId &&
+               turnId && lastAcknowledged === "turn/start" &&
+               params.threadId === threadId && params.turnId === turnId))) {
+            assistant = item.text ?? "";
+          }
         } else if (message.method === "turn/completed") {
           if (${gatewayTurn && observeFailure} &&
               (message.id !== undefined || typeof threadId !== "string" || !threadId ||
@@ -2124,7 +2190,7 @@ export function createOpenShellKubernetesFixture({
           fail(error);
         }
       });
-      socket.addEventListener("error", () => {
+      socket.addEventListener("error", (event) => {
         if (finished) return;
         if (commandDeadline) return unknownCommandOutcome("websocket-error");
         fail(new Error("Codex harness connection failed"), "websocket-error");
@@ -2243,6 +2309,7 @@ export function createOpenShellKubernetesFixture({
     assertWorkspaceMounts,
     assertServicePrincipalTokenProjection,
     assertApprovedOpenShellPrivileges,
+    assertRestrictedPodSecurity,
     assertGatewayBootstrapPolicies,
     assertNoSecretBytes,
     requestCodexTurnFromGatewayPod,

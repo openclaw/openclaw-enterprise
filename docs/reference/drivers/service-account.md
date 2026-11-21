@@ -118,4 +118,4 @@ completes a deletion that applied but failed. See
 ## Related
 
 - [ServiceAccount resource](../service-accounts.md), [settings](../settings.md), and [deployment](../../guides/deploy.md)
-- [OCC account operations](../../../packages/occ/src/index.ts)
+- [OCC account operations](../../../packages/occ/src/service-account-operations.ts)

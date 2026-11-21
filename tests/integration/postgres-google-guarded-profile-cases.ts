@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import type { Pool } from "pg";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import {
   authRowCounts,
   currentSession,
   sessionCookieName,
-  type fakeGoogle,
 } from "../helpers/production-sign-in.mjs";
+import { type fakeGoogle, type GoogleAuthorization } from "../helpers/google-sign-in.ts";
 import {
   authOperation,
   accountPrincipalId,
@@ -25,13 +25,8 @@ import {
   type SessionHeaders,
   type SignInApp,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
-import type { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 
-export type GoogleAuthorization = {
-  subject: string;
-  claims?: Record<string, unknown>;
-  key?: string;
-};
 export type GoogleSignIn = {
   callback: InjectedResponse;
   attemptId: string;
@@ -44,7 +39,7 @@ export type GoogleSignIn = {
 type GuardedProfileContext = {
   app: SignInApp;
   pool: Pool;
-  state: Awaited<ReturnType<typeof preparePostgresSignInInstallation>>["state"];
+  state: PostgresPlatformState;
   google: ReturnType<typeof fakeGoogle>;
   admin: FixtureAccount;
   member: FixtureAccount;

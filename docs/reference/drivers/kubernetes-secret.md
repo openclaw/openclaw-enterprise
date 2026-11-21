@@ -11,11 +11,8 @@ lifecycle. This page owns Kubernetes setup and operator procedures.
 
 The Driver stores values for environment delivery, transient server-side
 hosted plugin discovery, and [credential source](../credential-sources.md)
-registration. **Experimental** Codex OAuth device login stores only a private
-Gateway handle and source reference here. Atomic compare-and-swap fences
-concurrent polling and cancellation. Provider tokens remain in the external
-credential service; no runtime handoff seals or consumes this Secret. See
-[Codex OAuth storage](kubernetes-compute/codex-oauth-storage.md).
+registration. OCC stores [Codex device-login sessions](kubernetes-compute/codex-oauth-storage.md)
+in PostgreSQL.
 
 Single-cluster Compute uses the tenant workload namespace, including adopted
 namespaces. The two-cluster profile retains separate control-cluster storage.

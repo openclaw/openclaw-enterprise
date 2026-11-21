@@ -8,7 +8,7 @@ import {
   repositoryBoundary,
   withUnavailableIAM,
 } from "../helpers/postgres-worker-revision-support.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   required,
   type RevisionSetup,

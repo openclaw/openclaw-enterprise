@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-14
-last_updated_session: authoring-run/b17203e9-337c-40cf-9a41-0139532525fe
+updated: 2026-11-19
+last_updated_session: authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a
 ---
 
 # Installation Profile Rendering Flow
@@ -126,26 +126,24 @@ and paired metrics selectors. Invalid values fail preflight.
 
 `signInProvider` checks GitHub, Google and OIDC Secret names and keys; client-ID
 and client-secret keys must differ after chart defaults. `dedicatedSecrets`
-preserves chart ordering: ChatGPT admin, database CA, gateway API key, sign-in
-and repository Secrets cannot match `occ-installation-startup`, `occ-database`,
-`occ-auth`, generated Gateway Secrets (`chartGatewaySecretNames`), enabled log
+refuses bootstrap, ChatGPT admin, database CA, gateway API key, sign-in and
+repository Secret collisions with `occ-installation-startup`, `occ-database`,
+`occ-auth`, generated Gateway Secrets (`chartGatewaySecretNames`), enabled
 collector Secrets, or earlier listed Secrets. Only the two public CA Secrets
-may share one; collisions fail preflight.
+may share.
 
 `scripts/render-installation-profile.ts:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and
-`runtime.gatewayNodeSelector` against the chart and bootstrap-volume helper's
+`runtime.gatewayNodeSelector` against the chart's
 Kubernetes label-key and label-value rules (values may be empty). Compute copies
 the runtime selectors into Pod specs, where Kubernetes applies the same rule.
 Invalid placement labels fail preflight without deployment files; legal YAML
 lookalike values remain strings. `peerSelector` applies Compute's `validatePeer`
 rule to DNS, API client and metrics scraper selectors. Both selector kinds use
 Kubernetes label keys and values, including empty values. Their qualified
-prefixes and bootstrap password claim names are DNS subdomains of at most 253
+prefixes and bootstrap credential Secret names are DNS subdomains of at most 253
 characters total, without a per-segment cap. Namespace names and unqualified
-label names/values retain their 63 limit. The chart and
-`scripts/prepare-bootstrap-volume:is_dns_subdomain` share this prefix/claim
-rule; the chart checks peers only for nonempty maps. Repository Backend IDs
+label names/values retain their 63 limit. The chart checks peers only for nonempty maps. Repository Backend IDs
 follow their rule within 200 UTF-16 code units, as in the chart. After composing
 all Backends, preflight also checks the startup rule that their IDs are unique.
 A repository Backend cannot use `chatgpt-primary` when managed ChatGPT accounts
@@ -156,6 +154,11 @@ produces failed preflight without either deployment file.
 
 `scripts/render-installation-profile.ts:buildRendered`
 
+`controlPlane.bootstrapCredentialsSecretName` selects
+`bootstrap.credentials.secretName`. The renderer writes a Secret reference, not
+credentials or storage. The operator must precreate this Secret before Helm
+installation; upgrades do not require its projection.
+
 `controlPlane.databaseCa.key` allows letters, digits, `.`, `_`, or `-`, at most
 253 characters; neither `.` nor a `..` prefix. Thus `..ca.pem` and 254-character
 keys fail preflight before Helm. Omission uses `ca.pem`.
@@ -164,6 +167,8 @@ keys fail preflight before Helm. Omission uses `ca.pem`.
 mounts: Installation, worker runtime, bootstrap, gateway key and private gateway CA.
 Relative, dot-segment and trailing-slash aliases collide too. Repository and
 ChatGPT paths are reserved only when enabled; execution-cluster paths remain free.
+Prepared Git also reserves `/etc/openclaw/prepared-repository`, including relative,
+dot-segment and trailing-slash aliases, when repository credentials are enabled.
 Without CA configuration no restriction applies; omission keeps
 `/etc/openclaw/database-ca`. A collision adds a field-specific error and withholds
 both deployment files. Noncolliding paths retain their supplied spelling.
@@ -181,10 +186,13 @@ already checked in step 3 with the API's `parseCidr` rules
 IPv4-mapped address, and no range that covers every IPv4 peer. Like the chart,
 preflight also refuses a zone ID, which the API accepts.
 
-When `channels.managedSlackProxy` is true, the values also enable the
-chart-managed Slack proxy Service. The chart allows that proxy public IPv4 HTTPS
-egress, excluding private and reserved ranges, and the proxy authorizes Slack
-hostnames. Repository values render only when the input explicitly sets
+When `channels.managedEgress` is true, the renderer writes matching
+`channelEgress` Helm values and `runtime.channelEgress` Compute configuration.
+The operator supplies installation address exclusions. OCC derives its reserved
+listener from that configuration; Compute assigns each enabled Agent its own
+listener. See [channel egress](channel-egress.md).
+
+Repository values render only when the input explicitly sets
 `repository.enabled: true`. Repository provider CIDRs pass through unchanged,
 so operators can keep their existing GitHub ranges without DNS snapshots. The
 renderer copies `repository.serviceName` only when the input sets it, and only
@@ -202,7 +210,7 @@ profile schema accepts only string labels.
 `scripts/render-installation-profile.ts:buildRendered`
 
 The Installation output selects Kubernetes Configuration, native IAM,
-Kubernetes Compute, Kubernetes Secrets, default Preset seeding, and the profile
+Kubernetes Compute, Kubernetes Secrets, Preset seeding, and the profile
 PluginDriver. Compute settings consume the runtime image, DNS peer, trusted
 proxy CIDRs, plugin-status proxy CIDRs, gateway routing identity, runtime
 storage class, node selectors, and transport Secret prefix. The Codex profile
@@ -224,10 +232,11 @@ truncates `<releaseName>-agent-gateways` to 63 characters and removes a trailing
 hyphen. HTTPRoute parent references therefore match the Gateway the chart
 renders.
 
-Optional `presets.files` adds operator-selected JSON paths and retains both standard
-Presets. Preflight rejects non-lists and empty/non-string entries without reading
-files; controller startup resolves paths and validates contents. Changes alter
-the Installation checksum.
+Optional `presets.includeDefaults` selects bundled Preset seeding and defaults
+to `true`. Optional `presets.files` adds operator-selected JSON paths. Preflight
+rejects a non-boolean `includeDefaults`, a non-list `files`, and empty or
+non-string entries without reading files; controller startup resolves paths and
+validates contents. Changes alter the Installation checksum.
 
 `runtime.transportSecretPrefix` must produce the same DNS-safe name that
 Kubernetes Compute startup requires: `<prefix>-<12 hex characters>`, at most
@@ -315,6 +324,16 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 05:13: Replace the shared channel proxy setting with managed channel egress inputs. (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - fc683cdfe9b73215d0503cdfaf7917f54be7f17e)
+
+- 2026-11-18: Render `presets.includeDefaults` from site input, defaulting to `true`. (accompanying change)
+
+- 2026-11-16 16:10: Reject bootstrap Secret collisions before emitting deployment files. (authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70 - 294c801cd)
+
+- 2026-11-16 09:42: Trace the bootstrap credential Secret profile input in the accompanying uncommitted renderer change. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
+
+- 2026-11-15 10:07: Align database CA mount preflight with prepared Git mounts. (authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
 
 - 2026-11-14 12:18: Run the installation profile command directly from its TypeScript source in the accompanying change. (authoring-run/b17203e9-337c-40cf-9a41-0139532525fe - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 

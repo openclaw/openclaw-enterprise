@@ -15,12 +15,12 @@ import type {
   RepositorySessionRepository,
 } from "../../packages/occ/src/ports/repository-sessions.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
-import type { PlatformStateStore } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import {
   repositoryBinding,
   repositoryCredentials,
   repositoryGrant,
-} from "../fixtures/repository-credentials/session-state.mjs";
+} from "../fixtures/repository-credentials/session-state.ts";
 
 type CreateAttemptInput = Parameters<RepositorySessionRepository["createAttempt"]>[0];
 type AdvanceAttemptInput = Parameters<RepositorySessionRepository["advanceAttempt"]>[0];
@@ -37,7 +37,7 @@ interface SeededSessionRevision {
 export interface RepositorySessionCaseBuilders {
   seedSessionRevision(
     store: PlatformStateStore,
-    credentials?: ReturnType<typeof repositoryCredentials>,
+    credentials?: RepositoryRevisionState,
   ): Promise<SeededSessionRevision>;
   sessionAttempt(
     revision: SessionRevision,

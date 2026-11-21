@@ -27,14 +27,16 @@ import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_NOT_FOUND,
   SECRET_CREATE_DENIED,
+  SECRET_NAME_CONFLICT,
+  tooManyRequestsIn,
+} from "../helpers/refusal-text.mjs";
+import {
   SECRET_DELETE_DENIED,
   SECRET_LINK_UNLISTED,
   secretLinkUnlistedAdministrator,
-  SECRET_NAME_CONFLICT,
   SECRET_UPDATE_DENIED,
-  tooManyRequestsIn,
-} from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+} from "../helpers/refusal-access.ts";
+import { restrict } from "../helpers/iam-grants.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
@@ -555,55 +557,69 @@ test("deleting a template and client targets the selected availability and prese
   assert.equal(await removeClient.count(), 0);
 });
 
-test("a lost template creation response closes registration and reloads the committed template", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery");
-  const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, secretsUrl(namespace));
-  await page
-    .getByRole("navigation", { name: "Credential sections" })
-    .getByRole("link", { name: "OAuth clients", exact: true })
-    .click();
-  const open = page.getByRole("button", { name: "Register OAuth client", exact: true });
-  await open.click();
-  const registration = dialog(page, "Register OAuth client");
-  const choice = registration.getByLabel("Connection template", { exact: true });
-  await registration
-    .getByRole("button", { name: "Create connection template", exact: true })
-    .click();
-  const editor = dialog(page, "Create connection template");
-  await fillDirectoryTemplate(editor);
-  assert.equal(await editor.getByLabel("OAuth scope limit").inputValue(), "unrestricted");
-  // The real API commits the template. Only the browser response is lost.
-  await page.route(fixture.origin + "/connection-templates", async (route) => {
-    if (route.request().method() !== "POST") {
-      return route.continue();
-    }
-    const response = await route.fetch();
-    assert.equal(response.status(), 201);
-    await route.abort("failed");
+for (const outcome of ["lost", "versionless"]) {
+  test(`a ${outcome} template creation response closes registration and reloads the committed template`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery");
+    const { page } = await newPage(t, fixture, { browser });
+    await login(page, fixture, secretsUrl(namespace));
+    await page
+      .getByRole("navigation", { name: "Credential sections" })
+      .getByRole("link", { name: "OAuth clients", exact: true })
+      .click();
+    const open = page.getByRole("button", { name: "Register OAuth client", exact: true });
+    await open.click();
+    const registration = dialog(page, "Register OAuth client");
+    const choice = registration.getByLabel("Connection template", { exact: true });
+    await registration
+      .getByRole("button", { name: "Create connection template", exact: true })
+      .click();
+    const editor = dialog(page, "Create connection template");
+    await fillDirectoryTemplate(editor);
+    assert.equal(await editor.getByLabel("OAuth scope limit").inputValue(), "unrestricted");
+    // The real API commits the template. Only the browser confirmation is disrupted.
+    await page.route(fixture.origin + "/connection-templates", async (route) => {
+      if (route.request().method() !== "POST") {
+        return route.continue();
+      }
+      const response = await route.fetch();
+      assert.equal(response.status(), 201);
+      if (outcome === "lost") {
+        return route.abort("failed");
+      }
+      const payload: { data: { current: { version?: number } } } = await response.json();
+      assert.equal(payload.data.current.version, 1);
+      delete payload.data.current.version;
+      await route.fulfill({ response, json: payload });
+    });
+    await editor.getByRole("button", { name: "Create template", exact: true }).click();
+    await editor.getByText(/The template may have been saved/).waitFor();
+    assert.equal(
+      await editor.getByRole("button", { name: "Create template", exact: true }).isDisabled(),
+      true,
+    );
+    const reloaded = responseTo(page, "GET", fixture.origin + "/connection-templates");
+    const close = editor.getByRole("button", { name: "Close" });
+    assert.equal(await close.evaluate((button) => button === document.activeElement), true);
+    await page.keyboard.press("Enter");
+    const saved = (await (await reloaded).json()).data;
+    const committed = saved.filter(
+      (template: { namespaceId?: string }) => template.namespaceId === namespace.id,
+    );
+    assert.equal(committed.length, 1);
+    await registration.waitFor({ state: "hidden" });
+    await page.getByText(/Reopen registration and check the template list/).waitFor();
+    await open.click();
+    await choice.selectOption(committed[0].id);
+    assert.equal(
+      await choice.getByRole("option", { name: /Directory OAuth · Namespace/ }).count(),
+      1,
+    );
+    assert.equal(
+      await registration.getByLabel("Client availability").inputValue(),
+      "Namespace · Registration recovery",
+    );
   });
-  await editor.getByRole("button", { name: "Create template", exact: true }).click();
-  await editor.getByText(/Could not confirm the template change/).waitFor();
-  const reloaded = responseTo(page, "GET", fixture.origin + "/connection-templates");
-  await editor.getByRole("button", { name: "Cancel" }).click();
-  const saved = (await (await reloaded).json()).data;
-  const committed = saved.filter(
-    (template: { namespaceId?: string }) => template.namespaceId === namespace.id,
-  );
-  assert.equal(committed.length, 1);
-  await registration.waitFor({ state: "hidden" });
-  await page.getByText(/Reopen registration and check the template list/).waitFor();
-  await open.click();
-  await choice.selectOption(committed[0].id);
-  assert.equal(
-    await choice.getByRole("option", { name: /Directory OAuth · Namespace/ }).count(),
-    1,
-  );
-  assert.equal(
-    await registration.getByLabel("Client availability").inputValue(),
-    "Namespace · Registration recovery",
-  );
-});
+}
 
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
   const audit = new InMemoryAuditSink();
@@ -719,7 +735,7 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   for (const [linkedId, shown] of [
     [secret.id, `Secret ${secret.id}`],
     ["sec_not-a-secret-id", "such Secret"],
-  ]) {
+  ] satisfies [string, string][]) {
     await page.goto(`${fixture.origin}${secretsUrl(namespace)}&secret=${linkedId}`);
     await page
       .getByRole("status")

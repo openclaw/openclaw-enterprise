@@ -11,7 +11,7 @@ import type {
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
-import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
+import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import {
   deployFiniteAgent,
   deployStandingAgent,
@@ -25,8 +25,10 @@ import {
 } from "../helpers/finite-git-conversation.ts";
 import {
   createOpenShellGitDenial,
+  gitRemovalDenialCategory,
+  gitRemovalDenialCommand,
   openShellGitDenialFailureStage,
-} from "../helpers/openshell-git-denial.mjs";
+} from "../helpers/openshell-git-denial.ts";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
@@ -700,15 +702,9 @@ test(
           const startedAt = Date.now();
           // Keep the raw Git error inside the workload. A transport category only
           // qualifies with the exact, ordered supervisor evidence below.
-          const result = await execute(a.target, [
-            "sh",
-            "-ceu",
-            "set +e; error=$(" +
-              git +
-              ' 2>&1); status=$?; set -e; test "$status" -ne 0; test "$status" -ne 126; test "$status" -ne 127; case "$error" in *"returned error: 403"*|*"response 403"*) printf signed ;; *) printf transport ;; esac',
-          ]);
+          const result = await execute(a.target, gitRemovalDenialCommand(git));
           const endedAt = Date.now();
-          const category = result.stdout.toString("utf8");
+          const category = gitRemovalDenialCategory(result);
           if (category === "signed") {
             assert.equal(mode, "live", "completed detach must refuse before HTTP");
             phase = step.signed;
@@ -740,7 +736,6 @@ test(
               workerUid: previous.workerUid,
             });
           } else {
-            assert.equal(category, "transport");
             phase = step.marker;
             const markerHost = `git-retention-${randomUUID()}.invalid`;
             await execute(a.target, [

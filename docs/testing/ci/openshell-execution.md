@@ -153,7 +153,7 @@ emits one workspace-entry marker that sets `truncated` if received; later
 invocations still run but emit no installation records. These intervals do not
 establish model execution or whole-file success.
 
-When a measured operation rejects, the [stage helper](../../../tests/helpers/openshell-stage.mjs)
+When a measured operation rejects, the [stage helper](../../../tests/helpers/openshell-stage.ts)
 emits an `openshell-stage-failure` record before fixture cleanup. The CI runner
 shows its fixed category/code and workflow owner in the live log; direct Node
 runs show the structured progress record. The workflow owner is not the throw
@@ -191,7 +191,7 @@ initialization, running, readiness, and observation. They retain no Pod identity
 or configuration. Pod readiness timing does not replace the model and required
 worker proof.
 
-`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
+`tests/helpers/local-first-agent-native-placement.ts:nativeWorkerPlacementObservation`
 classifies public placement errors and projects environment/tunnel states, node
 connection and capability counts, and exact workspace-node matches. The expected
 node comes from the selected revision's Gateway Pod. Failure reads of

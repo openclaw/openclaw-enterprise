@@ -26,6 +26,12 @@ are preserved and reported as a cleanup failure. If directory or SQL creation wa
 not durably confirmed, cleanup preserves any unconfirmed contents and state.
 Inspect their ownership before manual removal; a competing process may own the directory.
 
+Install dependencies in the same checkout and with the same pnpm settings used
+to run preparation. This includes the `CI` environment setting. Before creating
+a disposable PostgreSQL server, preparation runs pnpm's dependency check in that
+checkout. If pnpm reports an incompatible install, run `pnpm install` with the
+settings for the intended test run.
+
 Use Docker Compose, or set `OCC_DOCKER_BIN` to the `podman` executable and
 configure its Compose provider. If you use standalone `podman-compose`, use a
 release that accepts `up --wait`, such as 1.6.0. Then run:
@@ -37,7 +43,7 @@ release that accepts `up --wait`, such as 1.6.0. Then run:
   PG_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-postgres.XXXXXX")"
   printf 'Run directory: %s\n' "$PG_RUN_DIR"
   trap 'status=$?; node scripts/ci/cleanup.ts --state "$PG_RUN_DIR/state.json" || status=1; exit "$status"' EXIT
-  node scripts/ci/prepare.mjs --lane postgres-application \
+  node scripts/ci/prepare.ts --lane postgres-application \
     --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/owner.env"
   node scripts/ci/run-tests.ts run postgres-application \
     --state "$PG_RUN_DIR/state.json" --results "$PG_RUN_DIR/results.json"
@@ -47,7 +53,7 @@ release that accepts `up --wait`, such as 1.6.0. Then run:
 For one Agent revision worker file, replace the `run-tests` command above with:
 
 ```sh
-node scripts/ci/prepare.mjs --lane postgres-application \
+node scripts/ci/prepare.ts --lane postgres-application \
   --file tests/integration/postgres-worker-agent-revision.test.mjs \
   --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/test.env"
 env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
@@ -179,6 +185,12 @@ loopback database named `openclaw_failures_*` via
 `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`; their reset changes its tables. See
 [the test](../../tests/integration/postgres-bootstrap-failures.test.ts) for
 its optional migration URL. Do not share that database with another process.
+
+The [internal static TokenService lifecycle test](../../tests/integration/postgres-static-token-service-lifecycle.test.ts) also needs
+`OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL` for the migrator role on
+the same disposable database as `OCC_TEST_DATABASE_URL`. It uses that role to
+install temporary audit-rejection constraints; application operations use the
+limited application role.
 
 ## Canonical migration compatibility
 

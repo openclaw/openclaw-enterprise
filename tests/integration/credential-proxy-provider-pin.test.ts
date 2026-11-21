@@ -8,27 +8,24 @@ import type {
   CredentialGatewayDriver,
   CredentialSource,
   EgressInstallation,
-  EgressRequest,
 } from "../../packages/contracts/src/index.ts";
 import type {
   OpenClawController,
   PlatformStateStore,
   PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
-import {
-  CredentialProxy,
-  type EgressAuthorityPorts,
-} from "../../packages/occ/src/credential-proxy.ts";
+import { CredentialProxy } from "../../packages/occ/src/credential-proxy.ts";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 
 test("classification diagnostics reject contradictory reports and preserve audit-write refusal", async (t) => {
   // This checks the shared registry's provider and audit ports. The PostgreSQL
   // egress case separately proves signed transport and persisted attribution.
   const f = await syntheticDispatchFixture(t, new EgressSendReceipts(new InMemoryPlatformState()));
-  const ports = f.ports as unknown as EgressAuthorityPorts;
+  const ports = f.ports;
   const peer = await ports.exchangeOwner.verify("synthetic-peer");
   assert.ok(peer);
   const installed = await ports.installation(peer);
@@ -81,7 +78,7 @@ test("classification diagnostics reject contradictory reports and preserve audit
         body: Buffer.from(
           JSON.stringify({ model: "fixture-model", input: "hello", store: !scenario.accept }),
         ),
-      } as unknown as EgressRequest;
+      };
       const reads = f.reads;
       const result = await proxy.resolve(
         "synthetic-peer",
@@ -352,7 +349,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
     t,
     new EgressSendReceipts(new InMemoryPlatformState()),
   );
-  const ports = synthetic.ports as unknown as EgressAuthorityPorts;
+  const ports = synthetic.ports;
   const syntheticPeer = await ports.exchangeOwner.verify("synthetic-peer");
   assert.ok(syntheticPeer);
   const installed = await ports.installation(syntheticPeer);
@@ -384,13 +381,137 @@ test("credential exchange refuses a conflicted eligible provider before route fa
     "synthetic-peer",
     syntheticPeer.sandboxId,
     {
-      ...(synthetic.request as unknown as EgressRequest),
+      ...synthetic.request,
       bindingId: healthyRoute.binding.binding.id,
     },
     AbortSignal.timeout(5_000),
   );
   assert.equal(bound.kind, "ready", "an explicit healthy binding excludes the conflicted route");
   assert.equal(synthetic.reads, 1);
+});
+
+test("static deployment refuses ambiguous or incompatible providers without redirecting its exact binding", async (t) => {
+  const f = await staticEgressFixture(t, { admitRevision: false });
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((provider) => provider.sourceType.type === "openai")!;
+  const alternate = { ...original, ref: { ...original.ref, id: "another-provider" } };
+  const deploy = () =>
+    f.request("POST", `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`);
+  const controller: OpenClawController = f.controller;
+  const reads = f.countSecretReads();
+
+  // Source admission succeeded. A changed catalog cannot redirect the saved reference.
+  const incompatible: CredentialProviderDefinition = {
+    ...original,
+    sourceType: {
+      ...original.sourceType,
+      harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+    },
+  };
+  const duplicateDuringPlanning: CredentialProviderDefinition = {
+    ...original,
+    normalizeGrant(...args) {
+      const grant = original.normalizeGrant.apply(this, args);
+      providers.push(original);
+      return grant;
+    },
+  };
+  const changedLifecycle: CredentialProviderDefinition = {
+    ...original,
+    sourceType: { ...original.sourceType },
+    routes(...args) {
+      const routes = original.routes.apply(this, args);
+      Reflect.set(this.sourceType, "rotation", "refresh");
+      return routes;
+    },
+  };
+  // A valid plan must not survive replacement while OCC finishes admission.
+  const replacedAfterPlanning = { ...original };
+  const compute = controller.selectedDriver("compute");
+  const validate = compute.validateExecutionAdmission;
+  assert.ok(validate);
+  t.after(() => {
+    compute.validateExecutionAdmission = validate;
+  });
+  compute.validateExecutionAdmission = function (...args) {
+    validate.apply(this, args);
+    if (providers[0] === replacedAfterPlanning) {
+      providers[0] = original;
+    }
+  };
+  for (const [reason, entries, status] of [
+    ["replaced after plan construction", [replacedAfterPlanning], 409],
+    ["duplicated while building the grant", [duplicateDuringPlanning], 409],
+    ["incompatible while building routes", [changedLifecycle], 409],
+    ["missing", [alternate], 503],
+    ["duplicate", [original, { ...original }], 409],
+    ["managed login", [incompatible], 409],
+    [
+      "different type",
+      [{ ...original, sourceType: { ...original.sourceType, type: "other" } }],
+      409,
+    ],
+  ] as const) {
+    providers.splice(0, providers.length, ...entries);
+    const response = await deploy();
+    const revisions = await controller.transact((unit) =>
+      unit.revisions.listRevisionMetadata(f.namespace.id, f.agent.id),
+    );
+    assert.deepEqual(
+      { status: response.status, revisions: revisions.length, reads: f.countSecretReads() - reads },
+      { status, revisions: 0, reads: 0 },
+      reason,
+    );
+  }
+  // First deployment can create transport Secrets outside the revision transaction.
+  // Change the registration during the real Kubernetes status read, after planning.
+  const { placement } = f;
+  const provision = t.mock.fn(placement.provisionAgentRuntimeCredentials.bind(placement));
+  const binding = { namespace: f.namespace, agent: f.agent };
+  const transportConfigured = async () =>
+    (await placement.getAgentRuntimeCredentialStatus(binding)).transportConfigured;
+  const stored = f.countStoredSecrets();
+  let changeProvider = true;
+  Object.assign(compute, {
+    requiresAgentRuntimeCredentials: true,
+    async getAgentRuntimeCredentialStatus(input) {
+      const status = await placement.getAgentRuntimeCredentialStatus(input);
+      if (changeProvider) {
+        providers[0] = replacedAfterPlanning;
+      }
+      return status;
+    },
+    provisionAgentRuntimeCredentials: provision,
+  } satisfies Partial<ComputeDriver>);
+  providers.splice(0, providers.length, original);
+  assert.equal(await transportConfigured(), false);
+  const refused = await deploy();
+  const revisions = await controller.transact((unit) =>
+    unit.revisions.listRevisionMetadata(f.namespace.id, f.agent.id),
+  );
+  assert.deepEqual(
+    {
+      status: refused.status,
+      revisions: revisions.length,
+      provisions: provision.mock.callCount(),
+      newSecrets: f.countStoredSecrets() - stored,
+      transport: await transportConfigured(),
+    },
+    { status: 409, revisions: 0, provisions: 0, newSecrets: 0, transport: false },
+  );
+  assert.equal(f.countSecretReads(), reads);
+  changeProvider = false;
+  providers.splice(0, providers.length, alternate, original);
+  const healthy = await deploy();
+  assert.equal(healthy.status, 202);
+  assert.equal(provision.mock.callCount(), 1);
+  assert.equal(await transportConfigured(), true);
+  const revision = await controller.transact((unit) =>
+    unit.revisions.findRevision(f.namespace.id, f.agent.id, healthy.data.id),
+  );
+  assert.deepEqual(revision?.egressPlan?.routes[0]?.binding.source.provider, original.ref);
 });
 
 test("credential exchange refuses duplicate and substituted providers before material access", async (t) => {
@@ -408,6 +529,22 @@ test("credential exchange refuses duplicate and substituted providers before mat
   ]) {
     providers.splice(0, providers.length, ...entries);
     assert.ok((await f.resolve(f.capture())).refused);
+  }
+
+  // A matching reference alone does not authorize a different credential lifecycle.
+  for (const sourceType of [
+    { ...original.sourceType, type: "other" },
+    {
+      ...original.sourceType,
+      harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+    },
+  ] as const) {
+    providers.splice(0, providers.length, { ...original, sourceType });
+    const result = await f.resolve(f.capture());
+    assert.deepEqual(
+      { refused: Boolean(result.refused), reads: f.secretReads - reads },
+      { refused: true, reads: 0 },
+    );
   }
 
   let substituteClassifications = 0;
@@ -897,11 +1034,17 @@ test("a source update withholds resolved material after its provider or injector
   assert.equal(f.providerRequests.length, 0);
 });
 
+function assertSandboxNamespaceResolution(
+  compute: ComputeDriver,
+): asserts compute is ComputeDriver & Required<Pick<ComputeDriver, "resolveSandboxNamespace">> {
+  assert.equal(typeof compute.resolveSandboxNamespace, "function");
+}
+
 test("live static registration does not require Compute placement", async (t) => {
   const f = await staticEgressFixture(t, { physicalPlacement: true });
   assert.ok("egress" in f);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
     throw new Error("placement unavailable");
@@ -1042,8 +1185,8 @@ test("live static registration losing to DELETE preserves its deleting row witho
       }),
   });
   assert.ok("egress" in f);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const placement = t.mock.method(compute, "resolveSandboxNamespace");
   const registration = t.mock.method(gateway, "registerSource");
@@ -1373,8 +1516,8 @@ test("explicit live adoption does not require Compute placement", async (t) => {
   assert.ok("egress" in f);
   assert.ok(f.legacySource);
   await ordinaryAdoptionSource(f.controller, f.namespace.id, f.legacySource.id);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
     throw new Error("placement unavailable");
   });

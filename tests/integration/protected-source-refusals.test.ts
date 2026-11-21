@@ -16,15 +16,17 @@ import {
 } from "../helpers/protected-source-refusals.ts";
 import {
   AGENT_DELETING,
+  LIVE_SOURCE_MODEL_REQUIRED,
+  RESOURCE_NOT_FOUND,
+} from "../helpers/refusal-text.mjs";
+import {
   CREDENTIAL_PROXY_SOURCES_WITHOUT_PROXY,
   CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES,
-  LIVE_SOURCE_MODEL_REQUIRED,
   PROTECTED_SOURCE_EMBEDDED_AGENT,
-  RESOURCE_NOT_FOUND,
   WITHDRAWAL_SOURCE_NOT_USED,
   protectedSourceTypeRefused,
-} from "../helpers/refusal-text.mjs";
-import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
+} from "../helpers/refusal-credential-admission.ts";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.ts";
 
 // Finding 2536: these refusals answered a generic 404 (or a 500), though each comes after the
 // caller's grants and is about the request or an Installation property. Each now names its

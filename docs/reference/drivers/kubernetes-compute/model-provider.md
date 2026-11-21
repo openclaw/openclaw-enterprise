@@ -26,6 +26,8 @@ Source-backed OpenAI credentials
 authorize the default `https://api.openai.com/v1` endpoint unless explicitly
 authorized for the configured custom endpoint.
 
+Before relying on a custom Responses endpoint for Codex, [verify a real conversation and tool call](../../../guides/operate/model-verification.md#qualify-a-custom-codex-provider). A successful startup probe does not establish tool compatibility.
+
 ## Harness behavior
 
 Codex receives the endpoint in its generated provider configuration. Its Gateway

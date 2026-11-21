@@ -7,7 +7,7 @@ import {
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
   reviewedCodexSeccompSecurityOptions,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
 import { verifyRuntimeSeccompRecord } from "./runtime-image-seccomp-case.ts";
 import { verifyRuntimeCodexAuthMount } from "./runtime-image-codex-auth-mount-case.ts";
@@ -67,7 +67,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", (t)
 test(
   "runtime image applies Dedicated repository policy to native Codex command execution",
   imageTestOptions,
-  () => verifyDedicatedCommand(requiredImage(), historicalCodex),
+  () => verifyDedicatedCommand(requiredImage(), controller.harness, historicalCodex),
 );
 
 test(
@@ -126,7 +126,7 @@ test(
 test(
   "runtime image routes sandboxed Git through stock Codex and a development token sender",
   imageTestOptions,
-  (t) => verifyStockBroker(t, requiredImage(), seccompOptions),
+  (t) => verifyStockBroker(t, requiredImage(), controller, seccompOptions),
 );
 
 test(

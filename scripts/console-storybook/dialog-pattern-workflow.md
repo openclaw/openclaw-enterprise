@@ -12,8 +12,10 @@ simulated data.
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
    Create Secret).
    In Delete, read what stays in the Namespace, then open **View separate cleanup
-   commands**. Each command includes the Namespace ID. Copying it keeps the
-   confirmation open and runs nothing.
+   commands**. Each command includes the Namespace ID. Press Enter on **Copy
+   Configuration command**, then on **Copy Secret command** if it appears. Only
+   the latest row shows feedback. If copying fails, its full command is selected.
+   Copying keeps the confirmation open and runs nothing. Choose **Cancel**.
    In **Backdrop at the desktop scrollbar**, choose **Open preview in its own tab**
    to check the window’s scrollbar gutter, rather than the surrounding frame.
    An empty gutter blends into the backdrop; a classic scrollbar remains visible.
@@ -85,3 +87,7 @@ return to Plugins, and open Configure plugins. The catalog must load instead of
 staying on Loading plugins. Calendar's saved selection and policy stay unchanged.
 Close and reopen the picker, then Reset story and repeat. This scenario simulates
 catalog responses; it does not establish plugin installation or runtime access.
+
+## Recover an unconfirmed template save
+
+Open **Pages / Credentials / Unconfirmed template save**. The preview edits Google OAuth and saves version 2, then omits the version from the response. Check that the warning and focused **Close** action are visible together, including at phone width. **Save new version** should be disabled. Press Enter to close the editor and confirm that the catalog shows one Google OAuth row at version 2.

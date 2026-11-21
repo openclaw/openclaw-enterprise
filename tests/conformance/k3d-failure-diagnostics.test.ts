@@ -12,8 +12,8 @@ import {
 } from "../helpers/k3d-failure-diagnostics.ts";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.ts";
-import { withHelmInstallDiagnostic } from "../helpers/production-helm-real.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { withHelmInstallDiagnostic } from "../helpers/production-helm-real.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 // Synthetic values only; none is a real credential.
 const syntheticSecret = "synthetic-diagnostic-secret-0123456789";

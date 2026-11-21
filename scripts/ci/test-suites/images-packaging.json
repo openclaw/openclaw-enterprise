@@ -20,15 +20,17 @@
   "fileConcurrency": 3,
   "parallelFiles": [
     "tests/integration/production-upgrade-signal-lock.test.ts",
-    "tests/integration/codex-model-probe.test.mjs",
+    "tests/integration/codex-model-probe.test.ts",
+    "tests/integration/production-tui-proxy.test.ts",
     "tests/integration/production-image-upgrade-recovery.test.ts",
     "tests/integration/production-upgrade-migration-preflight.test.ts",
     "tests/integration/upgrade-preflight-state.test.ts",
-    "tests/integration/docker-compute-token-retry.test.mjs",
+    "tests/integration/docker-compute-token-retry.test.ts",
     "tests/integration/workspace-setup-runtime.test.ts",
     "tests/integration/production-kubernetes-packaging.test.mjs",
     "tests/integration/production-kubernetes-network-policy.test.ts",
     "tests/integration/production-image-startup.test.mjs",
+    "tests/integration/production-image-bootstrap-mounts.test.ts",
     "tests/integration/container-registry-real.test.ts",
     "tests/integration/logging-packaging.test.ts",
     "tests/integration/repository-runtime-volume.test.ts",
@@ -52,7 +54,7 @@
       ]
     },
     {
-      "path": "tests/integration/docker-compute-token-retry.test.mjs",
+      "path": "tests/integration/docker-compute-token-retry.test.ts",
       "expectedTests": [
         "Docker driver keeps dedicated transport coherent and rejects foreign owners across retries",
         "Docker Namespace deletion cleans up owned containers after its network is removed"
@@ -68,11 +70,16 @@
       "path": "tests/integration/production-image-startup.test.mjs",
       "expectedTests": [
         "production image server startup loads bundled Kubernetes, OpenShell, and ChatGPT modules",
+        "production image startup rejects an invalid gateway StorageClass before persistence",
         "production image worker startup loads the shared runtime graph",
         "production image runs the chart's pre-upgrade Installation check",
         "production image includes the OpenShell gRPC proto asset",
         "production image includes console shell and public assets"
       ]
+    },
+    {
+      "path": "tests/integration/production-image-bootstrap-mounts.test.ts",
+      "expectedTests": ["development bootstrap mount copies support a different reader UID"]
     },
     {
       "path": "tests/integration/production-image-upgrade-recovery.test.ts"
@@ -84,7 +91,12 @@
       ]
     },
     {
-      "path": "tests/integration/upgrade-preflight-state.test.ts"
+      "path": "tests/integration/upgrade-preflight-state.test.ts",
+      "expectedTests": [
+        "profiled upgrade checks and recovery bind Kubernetes requests to the approved target",
+        "CI tool launcher preserves proxy and certificate settings without exposing their values",
+        "CI setup action starts without caller shell startup and reuses pinned yq"
+      ]
     },
     {
       "path": "tests/integration/production-image-qualification.test.ts"
@@ -98,6 +110,7 @@
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
         "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
+        "the chart runs the migration selected by each controller image in the same process",
         "the staged sign-in chart preserves the historical worker probes for both Helm operations",
         "the production image executes the chart worker probes as the worker user",
         "the plugin request guard installs beside OpenShell without control-plane access",
@@ -128,7 +141,7 @@
     {
       "path": "tests/integration/development-packaging.test.mjs",
       "expectedTests": [
-        "development packaging isolates bootstrap service key output to the bootstrap service"
+        "development packaging isolates precreated credential inputs to the bootstrap service"
       ]
     },
     {
@@ -155,7 +168,7 @@
       ]
     },
     {
-      "path": "tests/integration/codex-model-probe.test.mjs",
+      "path": "tests/integration/codex-model-probe.test.ts",
       "expectedTests": [
         "generated Codex launcher bounds model-probe recovery",
         "timeout then success",
@@ -165,6 +178,12 @@
         "malformed output",
         "tool event",
         "termination during backoff exits without another probe"
+      ]
+    },
+    {
+      "path": "tests/integration/production-tui-proxy.test.ts",
+      "expectedTests": [
+        "mounted production TUI proxy preserves the sign-in gate and HTTP forwarding"
       ]
     },
     {

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { ComputeCleanupFailedError } from "../../apps/controller/src/drivers/compute/cleanup-failure.ts";
 import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -13,19 +12,31 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { ActivationFailedError, TransientDependencyError } from "../../packages/occ/src/index.ts";
 import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
-import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   openShellPolicyOptions,
   openShellPolicySandbox,
 } from "../helpers/kubernetes-openshell-network-policy.ts";
 import {
+  firstPeerSelector,
+  matchLabels,
+  observedResource,
+  podSelector,
+  policyRules,
+  renderedPolicies,
+  resourceRecord,
+  resourceRecords,
+  selectorMatches,
+  serviceSelector,
+  templateLabels,
+} from "../helpers/kubernetes-rendered-resources.ts";
+import {
   authContext,
   digest,
   options,
   routedOptions,
   routedRevision,
-  selectorMatches,
   tenant,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
@@ -35,17 +46,7 @@ import {
   ORDINARY_PROFILE,
   ORDINARY_PROFILE_LABEL,
   computeDriver,
-  firstPeerSelector,
-  matchLabels,
-  observedResource,
-  podSelector,
-  policyRules,
   prepareUntilReady,
-  renderedPolicies,
-  resourceRecord,
-  resourceRecords,
-  serviceSelector,
-  templateLabels,
 } from "./kubernetes-network-profile-cases.ts";
 
 function openShellNetworkSandbox(
@@ -76,7 +77,11 @@ export async function checkOpenShellSupervisorGatewayIsolation() {
           "openshell.ai/boundary-role": "supervisor",
         }
       : undefined;
-  const installation = () => options(openShellPolicyOptions(options().network));
+  const installation = () => {
+    const configured = options();
+    const additions = openShellPolicyOptions();
+    return options({ ...additions, network: { ...configured.network, ...additions.network } });
+  };
   const driver = new KubernetesComputeDriver(installation(), {
     sandboxDriver: openShellNetworkSandbox({
       async workspaceNodePeerLabels(context) {
@@ -488,7 +493,6 @@ export async function checkLifecycleCleanupFailurePrecedence() {
   outage = Object.assign(new Error("Service Unavailable"), { code: 503 });
   const prepared = await failure(driver.prepareRevision(revision, fullContext));
   assertCleanupFailure(prepared, /HTTP 503/, [/lifecycle hook beforeWorkloadStop failed/]);
-  assert.ok(prepared instanceof ComputeCleanupFailedError);
   assert.ok(prepared.primary instanceof TransientDependencyError);
   assert.equal(prepared.primary.dependency, "kubernetes_api");
   assert.equal(prepared.primary.cause, outage);
@@ -511,7 +515,6 @@ export async function checkLifecycleCleanupFailurePrecedence() {
   outage = Object.assign(new Error("Service Unavailable"), { code: 503 });
   const unavailable = await failure(driver.activateRevision(successor, successorContext));
   assertCleanupFailure(unavailable, /HTTP 503/, [/lifecycle hook beforeWorkloadStop failed/]);
-  assert.ok(unavailable instanceof ComputeCleanupFailedError);
   assert.ok(unavailable.primary instanceof TransientDependencyError);
   assert.equal(unavailable.primary.cause, outage);
   assert.equal(cleanups, 3);

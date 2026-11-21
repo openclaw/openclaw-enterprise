@@ -17,7 +17,7 @@ import {
   PersistedStateInvalidError,
   type PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
-import type { ConfigurationOwnership } from "../../packages/occ/src/state/platform-state.ts";
+import type { ConfigurationOwnership } from "../../packages/occ/src/ports/configurations.ts";
 
 export function identifier(kind: string) {
   return `${kind}_${randomUUID()}`;

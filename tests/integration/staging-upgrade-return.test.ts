@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:https";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { delimiter, join } from "node:path";
@@ -960,9 +960,21 @@ test(
     });
     let actionStarted = false;
     const actionStartedAtRequest: boolean[] = [];
-    const request = (...args: Parameters<typeof rawRequest>) => {
+    // The action ends with the deadline request (case 8). That request returns to the
+    // helper only once the server has seen it close too, and the action settles right
+    // then, so the helper stops observing before it could start another request.
+    const deadlineEnded = Promise.withResolvers<void>();
+    const request = async (...args: Parameters<typeof rawRequest>) => {
       actionStartedAtRequest.push(actionStarted);
-      return rawRequest(...args);
+      if (actionStartedAtRequest.length !== 8) {
+        return await rawRequest(...args);
+      }
+      try {
+        return await rawRequest(...args);
+      } finally {
+        await timedOut.promise;
+        deadlineEnded.resolve();
+      }
     };
     let evidence:
       | {
@@ -1004,7 +1016,7 @@ test(
       directory,
       async () => {
         actionStarted = true;
-        await timedOut.promise;
+        await deadlineEnded.promise;
         return "upgrade completed";
       },
       async (details) => {

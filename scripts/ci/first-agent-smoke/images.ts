@@ -6,7 +6,7 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../../tests/helpers/runtime-model-provider.mjs";
-import { postgresImage, registryImage, runtimeNodeBaseImage } from "../fixture-support-images.mjs";
+import { postgresImage, registryImage, runtimeNodeBaseImage } from "../fixture-support-images.ts";
 import { ensureImage } from "../image-pull.ts";
 import {
   openclawBuildArguments,
@@ -306,9 +306,6 @@ type BuildResult<T> = PromiseFulfilledResult<T> | { status: "rejected"; reason: 
 
 export async function buildImages(step: Step, { preparedGit = false } = {}) {
   const selection = runtimeArtifactSelection(process.env);
-  if (selection && process.env.OCC_K3D_OPENCLAW_SOURCE) {
-    throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
-  }
   const revision = (await run("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
   if (selection) {
@@ -664,7 +661,7 @@ async function bakeAndPushImages(
         // Single-platform image manifests without attestation indexes, so the
         // recorded digest is the image manifest's.
         env: { ...process.env, BUILDX_NO_DEFAULT_ATTESTATIONS: "1" },
-        timeout: (runtimeArtifact ? 40 : 180) * minute,
+        timeout: 40 * minute,
         label: "image-bake",
       },
     ),
@@ -768,7 +765,7 @@ async function buildAndPushImages(
                 runtimeTag,
                 ".",
               ],
-              { timeout: 180 * minute, label: "runtime-build" },
+              { timeout: 40 * minute, label: "runtime-build" },
             ),
           ]),
     ]),

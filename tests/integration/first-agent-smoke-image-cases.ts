@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { postgresImage, runtimeNodeBaseImage } from "../../scripts/ci/fixture-support-images.mjs";
+import { postgresImage, runtimeNodeBaseImage } from "../../scripts/ci/fixture-support-images.ts";
 import {
   bakeReferences,
   providerImageDockerfile,
@@ -333,18 +333,25 @@ try {
       stderr,
       /Image pull attempt 1\/4 failed after \d+ ms \(timeout\).*aaaaaaaaaaaa: Downloading/,
     );
+    const commands = (await readFile(calls, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const command: unknown = JSON.parse(line);
+        assert.ok(Array.isArray(command));
+        return command.map(String);
+      });
+    // The timed-out pull seeds the layers once from mirror.gcr.io by the pinned digest;
+    // that seed's failure changes nothing, and the retry of the pin fails permanently.
     assert.deepEqual(
-      (await readFile(calls, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => {
-          const command: unknown = JSON.parse(line);
-          assert.ok(Array.isArray(command));
-          const first: unknown = command[0];
-          return first;
-        }),
-      ["info", "image", "pull", "pull"],
+      commands.map(([first]) => first),
+      ["info", "image", "pull", "pull", "pull"],
     );
+    assert.deepEqual(commands[3], [
+      "pull",
+      `mirror.gcr.io/library/postgres${postgresImage.slice(postgresImage.indexOf("@"))}`,
+    ]);
+    assert.deepEqual(commands[4], ["pull", postgresImage]);
   });
 
   test("the PostgreSQL copy refuses a registry manifest that names another image", async () => {

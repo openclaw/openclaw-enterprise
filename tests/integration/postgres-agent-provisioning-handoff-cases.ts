@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 import {
@@ -19,10 +20,10 @@ import type {
 import { handedOff, readPendingEffect, required } from "./postgres-agent-provisioning-setup.ts";
 
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitForLockWaiter, withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   createRuntimeComputeDriver,
   failingTransportDriver,
@@ -200,6 +201,90 @@ async function handoffCheckpoints(pool: pg.Pool, workId: string) {
 
 export function registerStopAndDeleteCases() {
   test(
+    "Guarded stop protects a queued successor and stops the exact deployed Agent",
+    { ...requiresPostgres, timeout: 60_000 },
+    async (context) => {
+      const fixture = await createFixture(context);
+      const { namespace, provisioning } = await admitProvisioning(fixture);
+      await fixture.startWorker();
+      const first = await waitFor("initial provisioning to succeed", async () => {
+        const { data } = await fixture.requestChecked(
+          AgentProvisioningStatusResponse,
+          "GET",
+          provisioning.url,
+        );
+        assert.notEqual(data.status, "failed", JSON.stringify(data));
+        return data.status === "succeeded" ? handedOff(data) : undefined;
+      });
+      fixture.cancelProvisioningAtTeardown(namespace.id, first.agentId);
+      await fixture.stopWorker();
+
+      const path = `/namespaces/${namespace.id}/agents/${first.agentId}`;
+      const stop = (id: string) =>
+        fixture.request("POST", `${path}/stop?expectedActiveRevisionId=${id}`);
+      const readAgent = async () =>
+        (await fixture.requestChecked(AgentReadResponse, "GET", path)).data;
+      const deploymentStatus = async (id: string) =>
+        (
+          await fixture.requestChecked(
+            AgentDeploymentStatusResponse,
+            "GET",
+            `${path}/deployments/${id}`,
+          )
+        ).data.status;
+      const stopEffects = () =>
+        fixture.pool.query<{ kind: string }>(
+          `SELECT 'work' AS kind FROM occ.controller_work
+           WHERE namespace_id = $1 AND agent_id = $2 AND agent_target = 'stopped'
+           UNION ALL
+           SELECT 'audit' FROM occ.audit_events
+           WHERE namespace_id = $1 AND resource_id = $2 AND outcome = 'success'
+             AND action = 'openclaw.agents.stop'
+           ORDER BY kind`,
+          [namespace.id, first.agentId],
+        );
+
+      assert.equal(await deploymentStatus(first.revisionId), "succeeded");
+      const second = await fixture.requestChecked(AgentRevisionResponse, "POST", `${path}/deploy`);
+      assert.equal(second.status, 202, JSON.stringify(second.body));
+      const before = await readAgent();
+      assert.equal(before.activeRevisionId, first.revisionId);
+      assert.equal(before.desiredRuntimeState, "running");
+      assertApiError(await stop(first.revisionId), 409, "RESOURCE_CONFLICT", "queued successor");
+      assert.equal(await deploymentStatus(second.data.id), "queued");
+      assert.deepEqual(await readAgent(), before);
+      assert.equal((await stopEffects()).rowCount, 0);
+
+      await fixture.startWorker();
+      await waitFor("replacement deployment to succeed", async () => {
+        const status = await deploymentStatus(second.data.id);
+        assert.notEqual(status, "failed");
+        return status === "succeeded" ? true : undefined;
+      });
+      await fixture.stopWorker();
+      assertApiError(await stop(first.revisionId), 409, "RESOURCE_CONFLICT", "stale revision");
+      // Two operators may act on the same inventory. Only one can change running intent.
+      const responses = await Promise.all([stop(second.data.id), stop(second.data.id)]);
+      const [accepted, duplicate] = responses.sort((a, b) => a.status - b.status);
+      assertApiError(duplicate, 409, "RESOURCE_CONFLICT", "competing stop");
+      const stopped = fixture.readResponse(AgentResponse, accepted);
+      assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+      assert.partialDeepStrictEqual(stopped.data, {
+        id: first.agentId,
+        configurationId: before.configurationId,
+        activeRevisionId: second.data.id,
+        desiredRuntimeState: "stopped",
+      });
+      assert.deepEqual((await stopEffects()).rows, [{ kind: "audit" }, { kind: "work" }]);
+
+      await fixture.startWorker();
+      await waitFor("the worker to clear the stopped Agent's active revision", async () =>
+        (await readAgent()).activeRevisionId === undefined ? true : undefined,
+      );
+    },
+  );
+
+  test(
     "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
     { ...requiresPostgres, timeout: 60_000 },
     async (context) => {
@@ -208,17 +293,28 @@ export function registerStopAndDeleteCases() {
         computeDriver: failingTransportDriver(() => reportStoredCredentials),
       });
       const stopTarget = await createFailedPreHandoffAgent(stopFixture);
-      const stopped = await stopFixture.requestChecked(
-        AgentResponse,
-        "POST",
-        `/namespaces/${stopTarget.namespace.id}/agents/${stopTarget.failed.agentId}/stop`,
+      const stopPath = `/namespaces/${stopTarget.namespace.id}/agents/${stopTarget.failed.agentId}/stop`;
+      const provisioningUrl = stopTarget.admitted.data.provisioning.url;
+      const workId = stopTarget.admitted.data.provisioning.workId;
+      const before = await provisioningJob(stopFixture.pool, workId);
+      // The ordinary stop below cancels the pending provisioning that the guarded stop leaves intact.
+      assertApiError(
+        await stopFixture.request(
+          "POST",
+          `${stopPath}?expectedActiveRevisionId=rev_${randomUUID()}`,
+        ),
+        409,
+        "RESOURCE_CONFLICT",
       );
+      assert.deepEqual(await provisioningJob(stopFixture.pool, workId), before);
+
+      const stopped = await stopFixture.requestChecked(AgentResponse, "POST", stopPath);
       assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
       assert.equal(stopped.data.desiredRuntimeState, "stopped");
       const stoppedProvisioning = await stopFixture.requestChecked(
         AgentProvisioningStatusResponse,
         "GET",
-        stopTarget.admitted.data.provisioning.url,
+        provisioningUrl,
       );
       assert.equal(stoppedProvisioning.status, 200, JSON.stringify(stoppedProvisioning.body));
       assert.equal(stoppedProvisioning.data.status, "failed");

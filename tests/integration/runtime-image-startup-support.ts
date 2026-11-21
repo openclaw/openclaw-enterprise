@@ -8,6 +8,10 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+  REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
 import type { CodexRepositoryBrokerNetworkPolicy } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { codexOpenClawConfiguration } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import { parseJson, record, text } from "../fixtures/runtime-image-startup/wire.ts";
@@ -17,6 +21,8 @@ type ControllerStartupInputs = {
   dockerGateway: string;
   kubernetesGateway: string;
   harness: string;
+  repositoryMaterialInit: string;
+  repositoryNativeGitInit: string;
   nativeWorker: string;
   gatewayStopTimeoutMs: number;
   pluginRuntimeHelpers: string;
@@ -46,6 +52,8 @@ export async function selectStartupProfile(
         dockerGateway: DOCKER_GATEWAY_ENTRYPOINT,
         kubernetesGateway: GATEWAY_RUNTIME_ENTRYPOINT,
         harness: AGENT_RUNTIME_ENTRYPOINT,
+        repositoryMaterialInit: REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+        repositoryNativeGitInit: REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
         nativeWorker: NATIVE_WORKER_ENTRYPOINT,
         gatewayStopTimeoutMs: GATEWAY_STOP_TIMEOUT_MS,
         pluginRuntimeHelpers: PLUGIN_RUNTIME_HELPERS,
@@ -93,10 +101,15 @@ export async function selectStartupProfile(
         GATEWAY_STOP_TIMEOUT_MS as gatewayStopTimeoutMs,
         PLUGIN_RUNTIME_HELPERS as pluginRuntimeHelpers,
       } from "./apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+      import {
+        REPOSITORY_MATERIAL_INIT_ENTRYPOINT as repositoryMaterialInit,
+        REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT as repositoryNativeGitInit,
+      } from "./apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
       import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT as policySourceCommit } from "./apps/controller/src/drivers/compute/gateway-tool-policy.ts";
       console.log(JSON.stringify({
         dockerGateway, kubernetesGateway, harness, nativeWorker,
         gatewayStopTimeoutMs, pluginRuntimeHelpers, policySourceCommit,
+        repositoryMaterialInit, repositoryNativeGitInit,
       }));
     `,
   ]);
@@ -115,6 +128,8 @@ export async function selectStartupProfile(
       dockerGateway: text(inputs.dockerGateway),
       kubernetesGateway: text(inputs.kubernetesGateway),
       harness: text(inputs.harness),
+      repositoryMaterialInit: text(inputs.repositoryMaterialInit),
+      repositoryNativeGitInit: text(inputs.repositoryNativeGitInit),
       nativeWorker: text(inputs.nativeWorker),
       gatewayStopTimeoutMs,
       pluginRuntimeHelpers: text(inputs.pluginRuntimeHelpers),

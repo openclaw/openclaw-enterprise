@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import type { PlatformStateStore } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import { AgentRevisionResponse } from "../../packages/contracts/src/api/resources.ts";
 import type { createFixtureResponse } from "./console-fixture-response.ts";
 

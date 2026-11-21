@@ -273,16 +273,22 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
     "SyntaxError: Unexpected token '}'",
   );
   // A message the reporter cut at 16 KiB still loses its possibly split tail after
-  // the raw pass has shortened it.
+  // the raw pass has shortened it. A run without spaces that reaches the cut can be a
+  // split token, so it goes whole.
   const cutMessage = `Bearer abcdefgh leak-value\n${"x".repeat(16_384 - 27 - 11)}jobonlyopaq`;
   assert.equal(cutMessage.length, 16_384);
-  const cutDetail = redactFailureDetail({ message: cutMessage }, secrets, "/repo")?.message;
-  assert(typeof cutDetail === "string", "missing redacted clipped message");
-  assert(
-    /^\[redacted credential-bearing line\]\nx+$/.test(cutDetail),
-    "clipped message must retain its safe prefix",
+  assert.equal(
+    redactFailureDetail({ message: cutMessage }, secrets, "/repo")?.message,
+    "[redacted credential-bearing line]\n",
   );
-  assert(!/jobonly|leak-value/.test(cutDetail), "clipped message must omit secret fragments");
+  // With spaces in it, the same message keeps its safe prefix: all but the last 256
+  // characters of the redacted text.
+  const cutWords = `Bearer abcdefgh leak-value\n${"x ".repeat(8_173)}jobonlyopaq`;
+  assert.equal(cutWords.length, 16_384);
+  assert.equal(
+    redactFailureDetail({ message: cutWords }, secrets, "/repo")?.message,
+    `[redacted credential-bearing line]\n${"x ".repeat(8_173).slice(0, -253)}`,
+  );
   // A control character inside a private key header cannot keep its body.
   const keyDetail = redactFailureDetail(
     {
@@ -553,80 +559,11 @@ test("replacement readiness goes only to the failed attempt diagnostic output", 
   const root = await createRunnerFixture(t);
   const { statePath, resultsPath } = runnerArtifactPaths(root, "replacement");
   const file = "tests/integration/replacement.test.mjs";
-  const moduleUrl = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
-  await writeFile(
-    join(root, file),
-    `
-import test from "node:test";
-import assert from "node:assert/strict";
-import { setImmediate as turn } from "node:timers/promises";
-import { syncBuiltinESMExports } from "node:module";
-import { createKubernetesClient } from ${moduleUrl("../helpers/kubernetes-real.ts")};
-import { waitForReplacementActivation } from ${moduleUrl("../helpers/openshell-sandbox-workflows.mjs")};
-import { createReplacementNodeObservation } from ${moduleUrl("../helpers/openshell-workspace-node-observation.ts")};
-import { observeWorkspaceNodeRead, recordWorkspaceNodeObservation } from ${moduleUrl("../../apps/controller/src/gateway/workspace-node-observation.ts")};
-
-test("long failure", async (t) => {
-  const receipt = createReplacementNodeObservation();
-  let reads = 0;
-  const driver = receipt.wrap({
-    async prepareRevision(revision, observation) {
-      const ready = await observeWorkspaceNodeRead(revision.id, async () => {
-        reads++;
-        recordWorkspaceNodeObservation(observation);
-        return observation === "accepted";
-      });
-      return { ready, pendingReason: ready ? undefined : "WORKSPACE_NODE_PENDING" };
-    },
-  });
-  const replacement = { id: "replacement" };
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
-  syncBuiltinESMExports();
-  const client = createKubernetesClient({ selection: {}, kubectl: () => assert.fail("unexpected cluster call") });
-  let agentReads = 0, deploymentReads = 0, timeout;
-
-  const topology = {
-    namespaceId: "ns",
-    agent: { id: "agent" },
-    replacementNode: receipt,
-    request: async (method, path) => {
-      assert.equal(method, "GET");
-      if (path.endsWith("/deployments/replacement")) {
-        deploymentReads++;
-        return { status: 200, data: { status: "pending" } };
-      }
-      agentReads++;
-      return { status: 200, data: { activeRevisionId: "previous" } };
-    },
-    diagnoseRevision: async () => {
-      await driver.prepareRevision(replacement, "no confirmed device");
-      return {};
-    },
-  };
-  const completion = waitForReplacementActivation(topology, { data: replacement }, t, async (...args) => {
-      await driver.prepareRevision(replacement, "no confirmed device");
-      await driver.prepareRevision(replacement, "disconnected");
-      await driver.prepareRevision({ id: "other" }, "no confirmed device");
-      await driver.prepareRevision(replacement, "accepted");
-      try {
-        return await client.waitFor(...args);
-      } catch (error) {
-        timeout = error;
-        throw error;
-      }
-    }, async () => "").catch(error => error);
-  await turn();
-  for (let interval = 0; interval < 320; interval++) {
-    t.mock.timers.tick(750);
-    await turn();
-  }
-  const failure = await completion;
-  assert.equal(failure, timeout);
-  assert.deepEqual([Date.now(), agentReads, deploymentReads, reads], [240000, 321, 321, 5]);
-  throw failure;
-});
-`,
+  const fixtureUrl = new URL(
+    "../fixtures/ci-runner-replacement-readiness-child.ts",
+    import.meta.url,
   );
+  await writeFile(join(root, file), `import ${JSON.stringify(fixtureUrl.href)};\n`);
   await writeRunnerManifest(root, { lanes: { replacement: { files: [{ path: file }] } } });
   const run = runRunnerSync(laneArgs(root, "replacement", statePath, resultsPath));
   assert.equal(run.status, 1);

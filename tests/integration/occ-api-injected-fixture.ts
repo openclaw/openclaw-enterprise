@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -10,8 +11,27 @@ import {
 } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
+  AgentResponse,
+  ConfigurationResponse,
+  InstallationResponse,
+  JsonValue,
+  NamespaceResponse,
+  PluginApproversSchema,
+  PluginDesiredSelectionSchema,
+  PluginDesiredStateSchema,
+  PluginDriverIdentitySchema,
+  PluginToolDefaultsSchema,
+  PluginToolPolicySchema,
+  RequestId,
+  SecretResponse,
   ServiceAccountResponse,
+  type AgentRuntimeCredentialStatus,
+  type AgentWire,
   type ChatGPTBackendDefinition,
+  type ComputeAgentBinding,
+  type HarnessAuthBinding,
+  type OpenClawConfigurationDocument,
+  type SecretReference,
 } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
@@ -19,9 +39,9 @@ import {
   authenticatedHeaders,
   createTestAuthPrincipal,
   signInToControllerApp,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 type ControllerOptions = NonNullable<ConstructorParameters<typeof OpenClawController>[1]>;
@@ -317,6 +337,12 @@ export async function createInjectedControllerFixture(
   };
 }
 
+const InjectedResponseEnvelope = Type.Object({
+  // Some responses add pagination fields to the request metadata.
+  meta: Type.Object({ requestId: RequestId }),
+  data: Type.Optional(Type.Unknown()),
+});
+
 export async function injectedRequest(
   app: ControllerApp & Partial<SessionApp>,
   method: string,
@@ -351,8 +377,8 @@ export async function injectedRequest(
   if (response.status === 204) {
     return { status: response.status, headers: response.headers };
   }
-  const body: { meta?: { requestId?: string }; data?: unknown } = await response.json();
-  assert.match(body.meta?.requestId ?? "", identifier("req"));
+  const body: unknown = await response.json();
+  assert(Check(InjectedResponseEnvelope, body), JSON.stringify(body));
   return { status: response.status, headers: response.headers, body, data: body.data };
 }
 
@@ -361,6 +387,211 @@ export type FixtureRequest = (
   pathname: string,
   options?: InjectedRequestOptions,
 ) => ReturnType<typeof injectedRequest>;
+
+type InjectedController = {
+  readonly fixture: Awaited<ReturnType<typeof createInjectedControllerFixture>>;
+  readonly request: FixtureRequest;
+};
+
+const responseSchemas = {
+  SafeJsonValue: JsonValue,
+  PluginApprovers: PluginApproversSchema,
+  PluginDesiredSelection: PluginDesiredSelectionSchema,
+  PluginDesiredState: PluginDesiredStateSchema,
+  PluginDriverIdentity: PluginDriverIdentitySchema,
+  PluginToolDefaults: PluginToolDefaultsSchema,
+  PluginToolPolicy: PluginToolPolicySchema,
+};
+
+export function checkedInjectedBody<Schema extends TSchema>(
+  response: Awaited<ReturnType<FixtureRequest>>,
+  status: number,
+  schema: Schema,
+): Static<Schema, typeof responseSchemas> {
+  const message = JSON.stringify(response.body);
+  assert.equal(response.status, status, message);
+  assert(Check(responseSchemas, schema, response.body), message);
+  return response.body;
+}
+
+export async function createConfiguration(
+  controller: Pick<InjectedController, "request">,
+  namespaceId: string,
+  values: OpenClawConfigurationDocument = {},
+) {
+  const result = await controller.request("POST", `/namespaces/${namespaceId}/configurations`, {
+    body: { kind: "agent", values },
+  });
+  const { data } = checkedInjectedBody(result, 201, ConfigurationResponse);
+  assert.match(data.id, identifier("cfg"));
+  assert.equal(data.namespaceId, namespaceId);
+  assert.deepEqual(data.values, values);
+  return data;
+}
+
+export async function createAgent(
+  controller: Pick<InjectedController, "request">,
+  namespaceId: string,
+  name: string,
+  values: OpenClawConfigurationDocument = {},
+) {
+  const configuration = await createConfiguration(controller, namespaceId, values);
+  const result = await controller.request("POST", `/namespaces/${namespaceId}/agents`, {
+    body: { name, configurationId: configuration.id },
+  });
+  const { data } = checkedInjectedBody(result, 201, AgentResponse);
+  assert.equal(data.name, name);
+  assert.equal(data.namespaceId, namespaceId);
+  assert.match(data.id, identifier("agt"));
+  assert.equal(data.configurationId, configuration.id);
+  assert.equal(Object.hasOwn(data, "installationId"), false);
+  return data;
+}
+
+export function createProvisioningCapableComputeDriver() {
+  const runtimeStatus = new Map<string, AgentRuntimeCredentialStatus>();
+  const keyOf = ({ namespace, agent }: ComputeAgentBinding) => `${namespace.id}:${agent.id}`;
+  return createReadyComputeDriver("compute-provisioning-api", {
+    agentProvisioning: { executionModes: ["dedicated"] },
+    requiresAgentRuntimeCredentials: true,
+    validateHarnessAuth() {},
+    validateAgentProvisioning() {},
+    async provisionAgentRuntimeCredentials(binding) {
+      runtimeStatus.set(keyOf(binding), { transportConfigured: true });
+      return { transportConfigured: true };
+    },
+    async getAgentRuntimeCredentialStatus(binding) {
+      return runtimeStatus.get(keyOf(binding)) ?? { transportConfigured: false };
+    },
+    async stopRevision() {},
+  });
+}
+
+export function slackValidationConfiguration({
+  appSource,
+  botSource,
+  appToken,
+  botToken,
+  model,
+}: {
+  appSource: SecretReference;
+  botSource: SecretReference;
+  appToken?: string;
+  botToken?: string;
+  model?: string;
+}) {
+  return {
+    kind: "agent",
+    values: {
+      ...(model === undefined ? {} : { agents: { defaults: { model } } }),
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: appToken ?? { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: botToken ?? { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+        },
+      },
+    },
+    secretBindings: {
+      SLACK_APP_TOKEN: { source: appSource, delivery: { type: "env" } },
+      SLACK_BOT_TOKEN: { source: botSource, delivery: { type: "env" } },
+    },
+  };
+}
+
+export async function bindHarnessKey(
+  fixture: InjectedController["fixture"],
+  namespaceId: string,
+  agent: Pick<AgentWire, "id" | "configurationId">,
+) {
+  const created = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceId}/secrets`, {
+    body: { name: `key-${agent.id}`, value: "synthetic-api-contract-key" },
+  });
+  const { data: secret } = checkedInjectedBody(created, 201, SecretResponse);
+  assert(fixture.controller, "bootstrap must create the controller");
+  const internalAgent = await fixture.controller.getAgent(
+    fixture.principal.id,
+    namespaceId,
+    agent.id,
+  );
+  const roleId = `harness-key-${agent.id}`;
+  fixture.state.identities.push({
+    kind: "service_principal",
+    id: internalAgent.servicePrincipalId,
+    namespaceId,
+  });
+  fixture.state.roles.push({
+    id: roleId,
+    namespaceId,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  fixture.state.bindings.push({
+    id: roleId,
+    namespaceId,
+    subjectKind: "identity",
+    subjectId: internalAgent.servicePrincipalId,
+    roleId,
+    resourceKind: "secret",
+    resourceId: secret.id,
+  });
+  const binding = { method: "api_key", source: secret.ref } satisfies HarnessAuthBinding;
+  const updated = await injectedRequest(
+    fixture.app,
+    "PATCH",
+    `/namespaces/${namespaceId}/agents/${agent.id}`,
+    {
+      body: { configurationId: agent.configurationId, harnessAuth: binding },
+    },
+  );
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  return binding;
+}
+
+export async function bootstrapInstallation(
+  { request }: Pick<InjectedController, "request">,
+  name = "Enterprise development",
+) {
+  const response = await request("POST", "/installation/bootstrap", { body: { name } });
+  const message = JSON.stringify(response.body);
+  assert.equal(response.status, 201, message);
+  assert(Check(InstallationResponse, response.body), message);
+  const { data } = response.body;
+  assert.equal(data.name, name);
+  assert.equal(Number.isNaN(Date.parse(data.createdAt)), false);
+  return data;
+}
+
+export async function createNamespace(
+  { request }: Pick<InjectedController, "request">,
+  name: string,
+) {
+  const response = await request("POST", "/namespaces", { body: { name } });
+  const message = JSON.stringify(response.body);
+  assert.equal(response.status, 201, message);
+  assert(Check(NamespaceResponse, response.body), message);
+  const { data } = response.body;
+  assert.equal(data.name, name);
+  assert.equal(data.status, "provisioning");
+  assert.equal(Object.hasOwn(data, "installationId"), false);
+  return data;
+}
+
+export async function createReadyNamespace(controller: InjectedController, name: string) {
+  const namespace = await createNamespace(controller, name);
+  await controller.fixture.markNamespaceReady(namespace.id);
+  return namespace;
+}
+
+export async function readyNamespaceFixture<Controller extends InjectedController>(
+  controller: Controller,
+  namespaceName: string,
+  bootstrapName?: string,
+) {
+  await bootstrapInstallation(controller, bootstrapName);
+  const namespace = await createReadyNamespace(controller, namespaceName);
+  return { fixture: controller.fixture, controller, namespace };
+}
 
 export async function createServiceAccount(
   request: FixtureRequest,

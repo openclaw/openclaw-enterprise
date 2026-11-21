@@ -8,8 +8,8 @@ import {
   WITHDRAWAL_NO_ACTIVE_VERSION,
   WITHDRAWAL_NOT_FOUND,
   WITHDRAWAL_SOURCE_NOT_USED,
-} from "../helpers/refusal-text.mjs";
-import { refusedAnswer } from "./credential-source-occ-refusals.ts";
+} from "../helpers/refusal-credential-admission.ts";
+import { refusedAnswer } from "../helpers/refusal-answers.ts";
 import { administrator, deployer, fixture } from "./credential-source-occ-fixture.ts";
 
 export function registerWithdrawalCases(): void {

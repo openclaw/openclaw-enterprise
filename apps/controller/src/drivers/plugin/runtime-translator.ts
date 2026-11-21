@@ -2,6 +2,8 @@ import type {
   OpenClawConfigurationDocument,
   PluginCatalogEntry,
   PluginApprovalMode,
+  PluginDeploymentContract,
+  PluginDeploymentDescription,
   PluginDesiredState,
   PluginApprovers,
 } from "@openclaw-enterprise/contracts";
@@ -9,7 +11,9 @@ import type { CodexPublicGithubRead } from "../repo/github/public-read/codex.ts"
 
 export type OpenClawRuntimeResolvedArtifacts = {
   readonly kind: "openclaw";
-  readonly configuration: OpenClawConfigurationDocument;
+  readonly configuration: OpenClawConfigurationDocument & {
+    readonly tools?: { readonly deny?: readonly string[] };
+  };
   readonly installs: readonly {
     readonly pluginId: string;
     readonly nativeId: string;
@@ -1141,13 +1145,66 @@ export function openClawRuntimeArtifact(
   failures: PluginRuntimeFailureInput = [],
   defaultApprovers?: PluginApprovers,
   gatewayPublicOrigin = false,
-): PluginRuntimeResolvedArtifacts {
+): OpenClawRuntimeResolvedArtifacts {
   return pluginRuntimeTranslator.openClawRuntimeArtifact(
     selections,
     failures,
     defaultApprovers,
     gatewayPublicOrigin,
-  ) as PluginRuntimeResolvedArtifacts;
+  ) as OpenClawRuntimeResolvedArtifacts;
+}
+
+export function describeNativeOpenClawDeployment({
+  plugin: { pluginId },
+  selection,
+  connections,
+}: Parameters<PluginDeploymentContract["describeDeployment"]>[0]): PluginDeploymentDescription {
+  if (Object.keys(connections).length > 0) {
+    throw new Error("Native OpenClaw plugins do not declare credential requirements.");
+  }
+  // Use the same resolved install and tool denials the Gateway receives.
+  const runtime = openClawRuntimeArtifact({ [pluginId]: selection });
+  const install = runtime.installs[0]!;
+  const descriptor = OPENCLAW_PLUGIN_CATALOG.find(({ nativeId }) => nativeId === install.nativeId)!;
+  const deniedTools = runtime.configuration.tools?.deny ?? [];
+  const toolId = descriptor.nativeId;
+  const node = "/usr/local/bin/node";
+  return {
+    // The Gateway installs each selected package, including a disabled one.
+    tools: [
+      {
+        kind: "installation",
+        id: toolId,
+        role: "gateway",
+        installation: {
+          kind: "openclaw-package",
+          package: `${descriptor.packageName}@${descriptor.version}`,
+          integrity: descriptor.integrity,
+        },
+        selectedTools: selection.enabled
+          ? descriptor.toolNames.filter((id) => !deniedTools.includes(id))
+          : [],
+      },
+    ],
+    workloadRequirements: [
+      {
+        role: "gateway",
+        mounts: [
+          { path: "/home/node", readOnly: false },
+          { path: "/tmp", readOnly: false },
+        ],
+      },
+    ],
+    networkRequirements: [
+      {
+        id: "npm-install",
+        toolId,
+        purpose: "installation",
+        match: { binary: node, host: "registry.npmjs.org", ports: [{ from: 443, to: 443 }] },
+      },
+    ],
+    credentials: {},
+  };
 }
 
 // The plugins.entries keys Kubernetes Compute renders for OpenClaw catalog selections.

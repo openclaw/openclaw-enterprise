@@ -21,10 +21,10 @@ import {
 } from "./postgres-agent-provisioning-setup.ts";
 
 import { ServiceAccountDriverNotConfiguredError } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { AGENT_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 import {

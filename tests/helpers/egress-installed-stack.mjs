@@ -11,7 +11,7 @@ import {
   readString,
   record,
 } from "./egress-observation-values.ts";
-import { createManagedWorkloadExec } from "./egress-managed-workload-exec.mjs";
+import { createManagedWorkloadExec } from "./egress-managed-workload-exec.ts";
 import { enforcementCapabilities } from "./egress-installed-agent.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { createRealKubernetesFixture } from "./kubernetes-real.ts";
@@ -92,13 +92,22 @@ export async function arrangeRealPrerequisites(t, progress, inputsPath, profile 
     openShellGatewayImage: input.images.openShellGateway,
     openShellSandboxImage: input.images.sandbox,
     openShellSupervisorImage: input.images.supervisor,
-    openShellRuntimeClass: input.runtimeClass,
     commandTimeoutMs: 120_000,
     signal: t.signal,
   });
   return { input, controller, selection, databaseUrl, f };
 }
 
+/**
+ * @param {Pick<import("node:test").TestContext, "signal" | "diagnostic">} t
+ * @param {{
+ *   input: Pick<import("./egress-upgrade-contracts.ts").ConnectedEvidenceLedger,
+ *     "oceCommit" | "harnessCommit" | "supplierCommit" | "images" | "controllerUpgrade">,
+ *   controller: { namespaceId?: string, apiOrigin: string, serviceKey: string } |
+ *     { namespaceId?: string, apiOrigin?: never, serviceKey?: never },
+ * }} setup
+ * @param {{stage?: string}} progress
+ */
 export async function createRunEvidence(t, setup, progress) {
   const { input, controller } = setup;
   const runId = randomUUID();
@@ -151,7 +160,9 @@ export async function createRunEvidence(t, setup, progress) {
     rotated: `SYNTHETIC-OCE-EGRESS-${runId}-v2`,
   };
   const protectedValues = new Set(Object.values(credentials));
+  /** @param {...string} values */
   const protect = (...values) => values.forEach((value) => protectedValues.add(value));
+  /** @param {unknown} value @param {string} label */
   const excludesCredentials = (value, label) => {
     const text = typeof value === "string" ? value : JSON.stringify(value);
     for (const secret of protectedValues) {
@@ -193,6 +204,8 @@ export async function createRunEvidence(t, setup, progress) {
     /** @type {{ status: number, body: unknown }} */
     let captured;
     try {
+      // Checkpoint-only observers have no controller authority.
+      assert.ok(controller.apiOrigin !== undefined, "controller binding required for requests");
       const response = await sendConnectedRequest(
         controller,
         wire,

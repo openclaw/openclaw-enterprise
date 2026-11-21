@@ -9,12 +9,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { accessBindingsRemovedWithAgent } from "../../packages/occ/src/iam-policy-cleanup.ts";
 import type { RepositorySessionRepository } from "../../packages/occ/src/ports/repository-sessions.ts";
-import {
-  InMemoryPlatformState,
-  type PlatformOperation,
-} from "../../packages/occ/src/state/platform-state.ts";
+import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformOperation } from "../../packages/occ/src/ports/platform-operations.ts";
 import { BINDING_SUBJECT_INELIGIBLE } from "../helpers/refusal-text.mjs";
-import { seedSessionRevision, sessionAttempt } from "./repository-sessions.contract.mjs";
+import { seedSessionRevision, sessionAttempt } from "./repository-sessions.contract.ts";
 
 type CreateAttemptInput = Parameters<RepositorySessionRepository["createAttempt"]>[0];
 
@@ -339,9 +337,36 @@ export async function completeAgentDeletion(): Promise<void> {
 export async function isolateRevisionHistory(): Promise<void> {
   const store = new InMemoryPlatformState();
   const { namespace, agent, revision } = await seedSessionRevision(store);
-  const committed = { ...revision, id: `rev_${randomUUID()}`, revision: 2 };
-  const rejected = { ...revision, id: `rev_${randomUUID()}`, revision: 3 };
+  const committed = { ...revision, id: `rev_${randomUUID()}`, revision: 3 };
+  const rejected = { ...revision, id: `rev_${randomUUID()}`, revision: 2 };
   const failure = new Error("revision transaction failed");
+
+  // Catch refusals inside one transaction so rollback cannot hide a partial write.
+  await store.transact(async ({ revisions }) => {
+    for (const ordinal of [NaN, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      await assert.rejects(
+        revisions.createRevision({ ...revision, id: `rev_${randomUUID()}`, revision: ordinal }),
+        { message: "The Agent revision number must be a positive safe integer." },
+      );
+    }
+    await assert.rejects(revisions.createRevision({ ...revision, revision: NaN }), {
+      message: "The server generated an existing AgentRevision identity.",
+    });
+    await assert.rejects(revisions.createRevision({ ...revision, id: `rev_${randomUUID()}` }), {
+      message: "The Agent already has a revision with this number.",
+    });
+  });
+  await store.read(async ({ revisions }) => {
+    const lists = ["listRevisions", "listRevisionMetadata", "listRevisionsForBrowsing"] as const;
+    for (const list of lists) {
+      const rows = await revisions[list](namespace.id, agent.id);
+      assert.deepEqual(
+        rows.map(({ id, revision }) => [id, revision]),
+        [[revision.id, revision.revision]],
+        list,
+      );
+    }
+  });
 
   await store.read(async (view) => {
     assert.deepEqual(await view.revisions.listRevisions(namespace.id, agent.id), [revision]);
@@ -355,8 +380,8 @@ export async function isolateRevisionHistory(): Promise<void> {
         await unit.revisions.createRevision(rejected);
         assert.deepEqual(await unit.revisions.listRevisions(namespace.id, agent.id), [
           revision,
-          committed,
           rejected,
+          committed,
         ]);
         throw failure;
       }),

@@ -16,6 +16,14 @@ const cleanupCodes = new Set([
   "RESOURCE_CONFLICT",
 ]);
 
+/**
+ * @param {{
+ *   remove: () => Promise<{status: number, body?: unknown}>,
+ *   record: (details: {observation?: string, status?: number | null, reason?: string,
+ *     afterConfirmedRetirement?: boolean, custody?: Record<string, number>}) => Promise<void>,
+ *   prepared?: false | {databaseUrl: string, namespaceId: string, sourceId: string} | undefined,
+ * }} input
+ */
 export async function deleteInstalledResource({ remove, record, prepared }) {
   const removeOnce = async (details = {}) => {
     // Started does not mean sent. If the transport or this process stops here, never replay it.
@@ -32,6 +40,7 @@ export async function deleteInstalledResource({ remove, record, prepared }) {
       return { status, reason: status === null ? "response-not-confirmed" : "invalid-response" };
     }
   };
+  /** @param {Awaited<ReturnType<typeof removeOnce>>} result */
   const removed = ({ status, reason }) =>
     (status === 204 && reason === "deleted") || (status === 404 && reason === "NOT_FOUND");
   const first = await removeOnce();

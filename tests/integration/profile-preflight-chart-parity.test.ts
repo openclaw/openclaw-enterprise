@@ -47,7 +47,7 @@ function input(controlPlane: TestInput = {}) {
       authBaseUrl: "https://console.oce.example.internal",
       agentNativeAdminDomain: "agents.oce.example.internal",
       adminEmail: "admin@example.invalid",
-      bootstrapPasswordClaimName: "occ-bootstrap-admin-password",
+      bootstrapCredentialsSecretName: "occ-bootstrap-credentials",
       apiClients: [{ namespace: "operator-tools", podLabels: { app: "occ-operator" } }],
       databaseCidrs: ["192.0.2.10/32"],
       clusterCidrs: ["192.0.2.11/32"],
@@ -73,7 +73,7 @@ function input(controlPlane: TestInput = {}) {
       gatewayNodeSelector: { "oce-role": "control" },
       transportSecretPrefix: "openclaw-agent-transport",
     },
-    channels: { managedSlackProxy: true },
+    channels: { managedEgress: true, excludedCidrs: ["10.0.0.0/8"] },
   };
 }
 
@@ -378,30 +378,6 @@ fieldParity("trusted proxy CIDRs get the same verdict from the preflight and the
   values: (cidr) => ({ api: { trustedProxy: { preset: "ingress-nginx", cidrs: [cidr] } } }),
 });
 
-// The API's Slack directory proxy: one literal IPv4 endpoint, and not the unspecified address.
-fieldParity("directory proxy URLs get the same verdict from the preflight and the chart", {
-  cases: [
-    ["http://192.0.2.10:3128", true],
-    ["https://192.0.2.10:443", true],
-    ["http://0.0.0.0:3128", false, /must not use host 0\.0\.0\.0, which names no proxy address/],
-    ["http://192.0.2.999:3128", false, /must contain valid IPv4 octets/],
-    ["http://192.0.2.10:65536", false, /must contain a TCP port from 1 to 65535/],
-    ["http://010.0.0.1:3128", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
-    // Both edges of the octet and port ranges, port 0 or a leading zero, a path, and the
-    // unspecified host over HTTPS.
-    ["http://192.0.2.255:3128", true],
-    ["http://192.0.2.256:3128", false, /must contain valid IPv4 octets/],
-    ["http://192.0.2.10:65535", true],
-    ["http://192.0.2.10:0", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
-    ["http://192.0.2.10:03128", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
-    ["http://192.0.2.10:3128/path", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
-    ["https://0.0.0.0:443", false, /must not use host 0\.0\.0\.0, which names no proxy address/],
-  ],
-  controlPlane: () => ({}),
-  extraInput: (url) => ({ channels: { managedSlackProxy: false, directoryProxyUrl: url } }),
-  values: (url) => ({ slackProxy: { enabled: false }, api: { channelDirectoryProxyUrl: url } }),
-});
-
 // The chart's clientAddressHeader refusal, in its order. generic still accepts a plain
 // address header; named presets keep reading x-forwarded-for.
 const refusedClientAddressHeaders = [
@@ -688,7 +664,7 @@ test(
   },
 );
 
-fieldParity("bootstrap password claim names get the same verdict from preflight and the chart", {
+fieldParity("bootstrap credential Secret names get the same verdict from preflight and the chart", {
   cases: [
     ["occ-bootstrap-admin-password", true],
     ["a".repeat(63), true],
@@ -704,9 +680,9 @@ fieldParity("bootstrap password claim names get the same verdict from preflight 
     ["occ..password", false],
     ["occ-password\n", false],
   ],
-  controlPlane: (claimName) => ({ bootstrapPasswordClaimName: claimName }),
-  values: (claimName) => ({ bootstrap: { password: { claimName } } }),
-  chartError: /bootstrap\.password\.claimName must be a DNS subdomain/,
+  controlPlane: (secretName) => ({ bootstrapCredentialsSecretName: secretName }),
+  values: (secretName) => ({ bootstrap: { credentials: { secretName } } }),
+  chartError: /bootstrap\.credentials\.secretName must be a DNS subdomain/,
 });
 
 test(
@@ -842,10 +818,10 @@ test(
         "/etc/openclaw/installation",
         "/run/openclaw-worker",
         "/var/run/openclaw-worker", // The controller image links /var/run to /run.
-        "/var/run/../var/lib/openclaw/bootstrap", // Dot segments apply after the link.
+        "/var/run/../run/openclaw-bootstrap", // Dot segments apply after the link.
         "/var/lock/../openclaw-worker", // The image links /var/lock to /run/lock, so this is /run.
         "/run/lock/../openclaw-worker",
-        "/var/lib/openclaw/bootstrap",
+        "/run/openclaw-bootstrap",
         "/etc/openclaw/gateway-api-key",
         "/etc/openclaw/gateway-ca",
       ]) {
@@ -875,6 +851,8 @@ test(
       for (const mountPath of [
         "/etc/openclaw/repository-registry",
         "/etc/openclaw/repository-ca",
+        "/etc/openclaw/prepared-repository",
+        "etc/openclaw/prepared-repository/",
         "/var/run/secrets/kubernetes.io/serviceaccount",
         "/run/secrets/kubernetes.io/serviceaccount",
         "/run/openclaw/repository-control",

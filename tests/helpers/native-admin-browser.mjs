@@ -3,21 +3,23 @@ import {
   submitChatTurnWithAssistantProof,
   textFromFrame,
   waitForStockUi,
-} from "../helpers/native-ui-chat.mjs";
+} from "../helpers/native-ui-chat.ts";
 import assert from "node:assert/strict";
 import { keycloakRealmAdmin } from "./ci-keycloak-realm.mjs";
 import { tlsPeerCertificate } from "./tls-peer-certificate.ts";
-import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { createServer as createHttpsServer } from "node:https";
-import { request as httpRequest } from "node:http";
-import { connect as connectTcp } from "node:net";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 
 import { chromium } from "playwright";
+
+import { runControllerProbe } from "./envoy-workspace-gateway.mjs";
+import {
+  legacyPairingMetadata,
+  observeLegacyBrowserPairing,
+} from "./native-profile-legacy-grant.ts";
+import { createKubernetesClient, explicitK3dSelection } from "./kubernetes-real.ts";
 
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import {
@@ -29,7 +31,45 @@ import {
   waitForReadyGatewayPod,
 } from "../helpers/harness-topology-k3d-real.mjs";
 
-const executeFile = promisify(execFile);
+import { createNativeIngressTransport } from "./native-admin-ingress-transport.ts";
+
+// Keep review media separate from the private ingress key and certificate.
+async function nativeMediaDirectory(scenario) {
+  const root = process.env.OPENCLAW_CI_NATIVE_BROWSER_EVIDENCE_DIR ?? tmpdir();
+  await mkdir(root, { recursive: true });
+  return mkdtemp(join(root, scenario + "-"));
+}
+
+async function recordNativeChatTurn(page, marker, frames, media, clip) {
+  if (!process.env.OPENCLAW_CI_NATIVE_BROWSER_EVIDENCE_DIR) {
+    return submitChatTurnWithAssistantProof(page, marker, frames, waitFor);
+  }
+  let recording;
+  let stopping;
+  let timer;
+  const stop = () => (stopping ??= recording?.dispose());
+  try {
+    return await submitChatTurnWithAssistantProof(page, marker, frames, waitFor, async () => {
+      // The helper has navigated away from settings. Start only on the synthetic
+      // chat composer, after authentication; never record login or raw config.
+      await waitForStockUi(page);
+      await page.locator(".agent-chat__composer-combobox > textarea").first().waitFor();
+      recording = await page.screencast.start({
+        path: join(media, clip + ".webm"),
+        size: page.viewportSize(),
+      });
+      // Bound review footage without shortening the real model-turn deadline.
+      timer = setTimeout(() => {
+        void stop().catch(() => {
+          // The finally block awaits the same promise and reports any failure.
+        });
+      }, 60_000);
+    });
+  } finally {
+    clearTimeout(timer);
+    await stop();
+  }
+}
 
 function hostSuffixPattern(domain) {
   return new RegExp(`\\.${domain.replaceAll(".", "\\.")}$`);
@@ -48,34 +88,10 @@ function expectedNativeAdminTarget(topology, publicOrigin, domain) {
 
 async function createNativeIngress(context, { artifacts, nativeDomain }) {
   const publicHost = `oce-native.${nativeDomain}`;
-  const certificate = await createLocalCertificate({ artifacts, nativeDomain, publicHost });
-  // Trust only this disposable ingress certificate. Chromium can loop on
-  // certificate-error retries for stylesheets with context ignoreHTTPSErrors.
-  const certificateSpki = createHash("sha256")
-    .update(new X509Certificate(certificate.cert).publicKey.export({ type: "spki", format: "der" }))
-    .digest("base64");
-  let upstream;
-  const sockets = new Set();
-  const trackSocket = (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-    return socket;
-  };
-  const server = createHttpsServer(certificate, (request, response) => {
-    if (upstream === undefined) {
-      response.writeHead(503).end("native admin ingress upstream not ready");
-      return;
-    }
-    proxyHttpRequest(upstream, request, response);
-  });
-  server.on("connection", trackSocket);
-  server.on("upgrade", (request, socket, head) => {
-    trackSocket(socket);
-    if (upstream === undefined) {
-      socket.destroy();
-      return;
-    }
-    proxyUpgrade(upstream, request, socket, head, trackSocket);
+  const { server, sockets, certificateSpki, setUpstream } = await createNativeIngressTransport({
+    artifacts,
+    nativeDomain,
+    publicHost,
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -99,97 +115,8 @@ async function createNativeIngress(context, { artifacts, nativeDomain }) {
       `--host-resolver-rules=MAP ${publicHost} 127.0.0.1,MAP *.${nativeDomain} 127.0.0.1`,
       `--ignore-certificate-errors-spki-list=${certificateSpki}`,
     ],
-    setUpstream(url) {
-      upstream = new URL(url);
-      assert.equal(
-        upstream.protocol,
-        "http:",
-        "local native ingress expects controller HTTP port-forward",
-      );
-    },
+    setUpstream,
   };
-}
-
-async function createLocalCertificate({ artifacts, nativeDomain, publicHost }) {
-  const keyPath = join(artifacts, "native-ingress.key");
-  const certPath = join(artifacts, "native-ingress.crt");
-  const configPath = join(artifacts, "native-ingress-openssl.cnf");
-  await writeFile(
-    configPath,
-    `[req]\n` +
-      `prompt = no\n` +
-      `distinguished_name = dn\n` +
-      `x509_extensions = v3_req\n` +
-      `[dn]\n` +
-      `CN = ${publicHost}\n` +
-      `[v3_req]\n` +
-      `subjectAltName = @alt_names\n` +
-      `[alt_names]\n` +
-      `DNS.1 = ${publicHost}\n` +
-      `DNS.2 = *.${nativeDomain}\n`,
-  );
-  await executeFile("openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-keyout",
-    keyPath,
-    "-out",
-    certPath,
-    "-days",
-    "1",
-    "-sha256",
-    "-config",
-    configPath,
-  ]);
-  return { key: await readFile(keyPath, "utf8"), cert: await readFile(certPath, "utf8") };
-}
-
-function proxyHttpRequest(upstream, incoming, outgoing) {
-  const request = httpRequest(
-    {
-      hostname: upstream.hostname,
-      port: upstream.port,
-      method: incoming.method,
-      path: incoming.url,
-      headers: incoming.headers,
-    },
-    (response) => {
-      outgoing.writeHead(response.statusCode ?? 502, response.headers);
-      response.pipe(outgoing);
-    },
-  );
-  request.on("error", (error) => {
-    outgoing.writeHead(502).end(String(error?.message ?? error));
-  });
-  incoming.pipe(request);
-}
-
-function proxyUpgrade(upstream, request, socket, head, trackSocket) {
-  const upstreamSocket = trackSocket(
-    connectTcp(Number(upstream.port), upstream.hostname, () => {
-      upstreamSocket.write(`${request.method} ${request.url} HTTP/${request.httpVersion}\r\n`);
-      for (const [name, value] of Object.entries(request.headers)) {
-        if (Array.isArray(value)) {
-          for (const entry of value) {
-            upstreamSocket.write(`${name}: ${entry}\r\n`);
-          }
-        } else if (value !== undefined) {
-          upstreamSocket.write(`${name}: ${value}\r\n`);
-        }
-      }
-      upstreamSocket.write("\r\n");
-      if (head.length > 0) {
-        upstreamSocket.write(head);
-      }
-      upstreamSocket.pipe(socket);
-      socket.pipe(upstreamSocket);
-    }),
-  );
-  upstreamSocket.on("error", () => socket.destroy());
-  socket.on("error", () => upstreamSocket.destroy());
 }
 
 async function launchBrowser(context, ingress) {
@@ -684,8 +611,10 @@ async function assertNativeAdminAudit(topology) {
   }
 }
 
-async function enrolledDeviceScopes(topology, deviceId) {
-  assert.ok(deviceId, "the real native connection must present a device identity");
+async function assertDeviceNotEnrolled(topology, deviceId) {
+  if (deviceId === undefined) {
+    return;
+  }
   // Inspect only enrollment metadata in the running Gateway's database. Do not
   // export device tokens, public keys, or other runtime state into test output.
   const script = `
@@ -709,15 +638,105 @@ async function enrolledDeviceScopes(topology, deviceId) {
       script,
     ),
   );
-  assert.equal(result.enrolled, true);
-  assert.ok(result.scopes.length > 0, "the enrolled device must retain its approved scopes");
-  return result.scopes.sort();
+  assert.equal(result.enrolled, false, "delegated browser access must not enroll a device");
 }
 
-async function assertSharedNativeSessions(
-  context,
-  { topology, browser, ingress, status, artifacts },
-) {
+// Use the public Gateway protocol on a fresh real connection. No in-page stores
+// or test-only native hooks may stand in for the authenticated profile response.
+async function nativeRpc(page, method, params = {}) {
+  return page.evaluate(
+    ({ method, params }) =>
+      new Promise((resolve, reject) => {
+        const socket = new WebSocket(globalThis.location.origin.replace(/^http/, "ws"));
+        const timer = setTimeout(() => {
+          socket.close();
+          reject(new Error(`Gateway ${method} timed out`));
+        }, 15000);
+        let auth;
+        const finish = (response) => {
+          clearTimeout(timer);
+          socket.close();
+          resolve({ auth, response });
+        };
+        socket.onerror = () => {
+          clearTimeout(timer);
+          reject(new Error(`Gateway ${method} connection failed`));
+        };
+        socket.onmessage = ({ data }) => {
+          const message = JSON.parse(data);
+          if (message.type === "event" && message.event === "connect.challenge") {
+            socket.send(
+              JSON.stringify({
+                type: "req",
+                id: "connect",
+                method: "connect",
+                params: {
+                  minProtocol: 4,
+                  maxProtocol: 4,
+                  client: {
+                    id: "gateway-client",
+                    version: "1.0.0",
+                    platform: "browser",
+                    mode: "backend",
+                  },
+                  role: "operator",
+                  scopes: ["operator.admin"],
+                  caps: [],
+                  commands: [],
+                },
+              }),
+            );
+          } else if (message.type === "res" && message.id === "connect") {
+            if (!message.ok) {
+              finish(message);
+              return;
+            }
+            auth = message.payload.auth;
+            socket.send(JSON.stringify({ type: "req", id: "proof", method, params }));
+          } else if (message.type === "res" && message.id === "proof") {
+            finish(message);
+          }
+        };
+      }),
+    { method, params },
+  );
+}
+
+async function nativeProfile(page, scope) {
+  const { auth, response } = await nativeRpc(page, "users.self");
+  assert.equal(response.ok, true, JSON.stringify(response.error));
+  assert.deepEqual(auth.scopes, [scope]);
+  assert.equal(
+    Boolean(auth.deviceToken),
+    false,
+    "delegated access must not issue a reusable token",
+  );
+  const profile = response.payload.profile;
+  assert.equal(typeof profile.id, "string");
+  assert.ok(profile.id.length > 0);
+  return profile;
+}
+
+async function assertNativeAttribution(page, terminalFrame, profileId, marker) {
+  const sessionKey = JSON.parse(textFromFrame(terminalFrame)).payload.sessionKey;
+  const listed = await nativeRpc(page, "sessions.list", { creatorId: profileId, limit: 100 });
+  assert.equal(listed.response.ok, true, JSON.stringify(listed.response.error));
+  const session = listed.response.payload.sessions.find((entry) => entry.key === sessionKey);
+  assert.ok(session, "the real browser-created session must be listed for its native creator");
+  assert.equal(session.createdActor.type, "human");
+  // The public session row projects persisted provenance into a typed identity.
+  assert.deepEqual(session.createdActor.identity, { type: "profile", id: profileId });
+  assert.equal(session.createdActor.id, profileId);
+  const history = await nativeRpc(page, "chat.history", { sessionKey, limit: 100 });
+  assert.equal(history.response.ok, true, JSON.stringify(history.response.error));
+  const userMessage = history.response.payload.messages.find(
+    (message) => message.role === "user" && JSON.stringify(message.content).includes(marker),
+  );
+  assert.ok(userMessage, "the persisted transcript must include the submitted user turn");
+  assert.deepEqual(userMessage.__openclaw.senderIdentity, { type: "profile", id: profileId });
+}
+
+async function assertSharedNativeSessions(context, { topology, browser, ingress, status, media }) {
   // Enrollment is a precondition: this existing Role permits Installation discovery,
   // but no Namespace or Agent access. Sharing itself uses ordinary policy APIs.
   const readerRoleId = `role-native-reader-${randomUUID()}`;
@@ -873,17 +892,15 @@ async function assertSharedNativeSessions(
       });
       deniedProbes.push(await nativeProbe(page, 403, siblingTarget.origin));
       const nativePage = await openNativeAdminConsole(page, status.origin, "chat");
-      await submitChatTurnWithAssistantProof(
-        nativePage,
-        `operator-chat-${randomUUID()}`,
-        frames,
-        waitFor,
-      );
+      const profile = await nativeProfile(nativePage, "operator.sessions.write");
+      const marker = `operator-chat-${randomUUID()}`;
+      const terminal = await submitChatTurnWithAssistantProof(nativePage, marker, frames, waitFor);
+      await assertNativeAttribution(nativePage, terminal, profile.id, marker);
       // Direct native requests exercise server enforcement even if an operator bypasses
       // hidden UI controls or asks for administrative scopes in a raw connect frame.
       await assertChatAdministrationDenied(nativePage);
       await nativePage.screenshot({
-        path: join(artifacts, "operator-browser-chat.png"),
+        path: join(media, "operator-browser-chat.png"),
         fullPage: true,
       });
       continue;
@@ -891,30 +908,44 @@ async function assertSharedNativeSessions(
     // Configuration remains denied, but exact Agent administer must still launch
     // the regular native UI. A fixture URL must not stand in for the Console link.
     const nativePage = await openNativeAdminConsole(page, status.origin);
-    const terminalFrame = await submitChatTurnWithAssistantProof(
+    const profile = await nativeProfile(nativePage, "operator.admin");
+    const marker = `sharing-${label}-${randomUUID()}`;
+    const terminalFrame = await recordNativeChatTurn(
       nativePage,
-      `sharing-${label}-${randomUUID()}`,
+      marker,
       frames,
-      waitFor,
+      media,
+      `shared-${label}`,
     );
+    await assertNativeAttribution(nativePage, terminalFrame, profile.id, marker);
     // Bind withdrawal to the connection that delivered the real assistant reply.
     // Records from previous page navigations do not establish a current stream.
     const socket = terminalFrame.socket;
     assert.ok(socket && !socket.isClosed(), "recipient has a confirmed active native stream");
+    const hello = frames
+      .filter((frame) => frame.socket === socket)
+      .map((frame) => JSON.parse(textFromFrame(frame)))
+      .find((message) => message.payload?.type === "hello-ok");
+    assert.ok(hello, "the model turn used a successful stock UI connection");
+    assert.equal(
+      Boolean(hello.payload.auth.deviceToken),
+      false,
+      "stock UI receives no reusable device token",
+    );
     const deviceId = deviceIds.get(socket);
-    // Identity grants supply administration independently of device scopes. Retaining
-    // this enrollment must not bypass later permission withdrawal or session expiry.
-    const deviceScopes = await enrolledDeviceScopes(topology, deviceId);
+    // The browser can present a device key, but delegation must not persist a
+    // reusable device grant that survives OCC withdrawal or session expiry.
+    await assertDeviceNotEnrolled(topology, deviceId);
     if (label === "withdrawn") {
       await nativePage.screenshot({
-        path: join(artifacts, "native-chat-before-withdrawal.png"),
+        path: join(media, "native-chat-before-withdrawal.png"),
         fullPage: true,
       });
     }
     people.push({
       page,
       deviceId,
-      deviceScopes,
+      profileId: profile.id,
       request,
       nativePage,
       frames,
@@ -926,6 +957,11 @@ async function assertSharedNativeSessions(
     });
   }
   const [withdrawn, unaffected] = people;
+  assert.notEqual(
+    withdrawn.profileId,
+    unaffected.profileId,
+    "people have distinct native profiles",
+  );
   await assertNativeDenied(readerPage);
   assert.equal(withdrawn.socket.isClosed(), false);
   assert.equal(unaffected.socket.isClosed(), false);
@@ -976,11 +1012,27 @@ async function assertSharedNativeSessions(
     200,
   );
   assert.equal((await withdrawn.request(namespacePath)).status, 200, "discovery grant remains");
-  assert.deepEqual(
-    await enrolledDeviceScopes(topology, withdrawn.deviceId),
-    withdrawn.deviceScopes,
-  );
+  await assertDeviceNotEnrolled(topology, withdrawn.deviceId);
   await assertNativeDenied(withdrawn.page);
+
+  // Restoring only operate access must reuse the person while applying the
+  // current lower scope; neither deployment nor the old admin connection grants it.
+  const regranted = await topology.adminRequest("POST", `${policyPath}/access-bindings`, {
+    subjectKind: "identity",
+    subjectId: withdrawn.principalId,
+    resourceKind: "agent",
+    resourceId: topology.agent.id,
+    roleId: roles[2].id,
+  });
+  assert.equal(regranted.status, 201, JSON.stringify(regranted.error));
+  await withdrawn.nativePage.reload({ waitUntil: "domcontentloaded" });
+  await waitForStockUi(withdrawn.nativePage);
+  assert.equal(
+    (await nativeProfile(withdrawn.nativePage, "operator.sessions.write")).id,
+    withdrawn.profileId,
+    "regrant reuses the existing native profile with current permissions",
+  );
+  await assertChatAdministrationDenied(withdrawn.nativePage);
   const lastReply = await submitChatTurnWithAssistantProof(
     unaffected.nativePage,
     `sharing-after-withdrawal-${randomUUID()}`,
@@ -1008,22 +1060,26 @@ async function assertSharedNativeSessions(
       .then(({ rowCount }) => assert.equal(rowCount, 1, "expired this recipient's session")),
   ]);
   assert.equal(health.status(), 403, "the open native tab observed the session refusal");
-  assert.deepEqual(
-    await enrolledDeviceScopes(topology, unaffected.deviceId),
-    unaffected.deviceScopes,
-  );
+  await assertDeviceNotEnrolled(topology, unaffected.deviceId);
   await assertNativeDenied(unaffected.page);
 
-  const reconnect = nativePage.getByRole("link", {
-    name: "Reconnect in browser",
-    exact: true,
+  // The refused reconnect opens the Agent UI's sign-in dialog; Sign in opens the root in a
+  // new tab while the first tab keeps its conversation.
+  const dialog = nativePage
+    .locator("openclaw-modal-dialog")
+    .filter({ hasText: "Sign in to continue loading content" });
+  await dialog.waitFor({ timeout: 45_000 });
+  const rootLoad = nativePage.context().waitForEvent("response", {
+    predicate: (response) =>
+      response.url() === status.url && response.request().isNavigationRequest(),
+    timeout: 15_000,
   });
-  const [root] = await Promise.all([
-    nativePage.waitForResponse(
-      (response) => response.url() === status.url && response.request().isNavigationRequest(),
-    ),
-    reconnect.click({ timeout: 15_000 }),
+  const [signInPage] = await Promise.all([
+    nativePage.context().waitForEvent("page", { timeout: 15_000 }),
+    dialog.getByRole("button", { name: "Sign in", exact: true }).click({ timeout: 15_000 }),
   ]);
+  const root = await rootLoad;
+  assert.equal(root.frame().page(), signInPage, "Sign in loads the root in the new tab");
   assert.equal(root.status(), 302);
   const agentKey = status.host.split(".")[0].slice("agent-".length);
   // Console removes the fragment before showing sign-in. Check the redirect itself.
@@ -1032,26 +1088,42 @@ async function assertSharedNativeSessions(
     ingress.origin + "/console/#native-agent=" + agentKey,
   );
   const [resolved] = await Promise.all([
-    nativePage.waitForResponse(ingress.origin + "/native-admin/return/" + agentKey),
-    login(nativePage, unaffected.credentials),
+    signInPage.waitForResponse(ingress.origin + "/native-admin/return/" + agentKey),
+    login(signInPage, unaffected.credentials),
   ]);
   assert.equal(resolved.status(), 200);
   const { agentId, namespaceId } = (await resolved.json()).data;
   assert.equal(agentId, topology.agent.id);
   assert.equal(namespaceId, topology.agent.namespaceId);
+  await signInPage.close();
 
-  const reopened = await openNativeAdminConsole(nativePage, status.origin);
-  await waitFor("a live Gateway hello on the page opened after signing back in", () =>
+  // Back on the first tab, focus or Check again rechecks access and closes the dialog; the
+  // tab then reconnects on its own.
+  await nativePage.bringToFront();
+  const checkAgain = dialog.getByRole("button", { name: "Check again", exact: true });
+  await waitFor("the first tab to recheck access and close the sign-in dialog", async () => {
+    if ((await dialog.count()) === 0) {
+      return true;
+    }
+    await checkAgain.click({ timeout: 2_000 }).catch(() => {});
+    return undefined;
+  });
+  await waitFor("a live Gateway hello on the first tab after signing back in", () =>
     unaffected.frames.find(
       (frame) =>
-        frame.page === reopened &&
+        frame.page === nativePage &&
         !frame.socket.isClosed() &&
         JSON.parse(textFromFrame(frame)).payload?.type === "hello-ok",
     ),
   );
+  assert.equal(
+    (await nativeProfile(nativePage, "operator.admin")).id,
+    unaffected.profileId,
+    "signing back in retains the same native person",
+  );
   // A positive ingress-log control proves the observer sees real upstream I/O.
   // Denied requests precede it and must never reach Envoy or the native Gateway.
-  const allowedProbe = await nativeProbe(reopened, 200);
+  const allowedProbe = await nativeProbe(nativePage, 200);
   const routing = topology.workspaceGateway.routing;
   const ingressLog = await waitFor("authorized native probe in Envoy access log", async () => {
     const log = await kubectl(
@@ -1073,12 +1145,297 @@ async function assertSharedNativeSessions(
     );
   }
   context.diagnostic(
-    "Read-only and revoked callers were refused before upstream I/O; an operate-only caller completed a real chat turn while HTTP and WebSocket administration were denied. Both administrator devices remained enrolled with unchanged approved scopes.",
+    "Read-only and revoked callers were refused before upstream I/O; distinct native people owned their browser sessions and transcript turns. Regrant preserved the profile with operator-only scopes, sign-in preserved the other profile, and neither browser received a device grant.",
   );
+}
+
+async function delegationSecret(topology) {
+  const name = topology.gatewayPod.spec.volumes.find(
+    (volume) => volume.name === "browser-delegation",
+  )?.secret?.secretName;
+  assert.ok(name, "the real Gateway must mount its revision delegation Secret");
+  const secret = await resource("secret", name, topology.gatewayPlacement);
+  assert.equal(secret.metadata.labels?.["openclaw.dev/agent"], topology.agent.id);
+  assert.equal(secret.metadata.labels?.["openclaw.dev/revision"], topology.revision.id);
+  assert.equal(secret.immutable, true);
+  assert.equal(secret.type, "Opaque");
+  assert.equal(Object.keys(secret.data).join(), "browser-key");
+  const key = Buffer.from(secret.data["browser-key"], "base64").toString("utf8");
+  assert.equal(/^[a-f0-9]{64}$/.test(key), true, "delegation credential has the supported format");
+  return { secret, key };
+}
+
+function boundaryProbe(
+  topology,
+  key,
+  { browser = true, authenticated = true, readProfile = true } = {},
+) {
+  const routing = topology.workspaceGateway.routing;
+  const authority = routing.endpointPort
+    ? `${routing.hostname}:${routing.endpointPort}`
+    : routing.hostname;
+  return runControllerProbe(topology, {
+    action: "browser-boundary",
+    url: `wss://${authority}${browser ? "/native-browser" : ""}/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+    ...(authenticated ? { apiKey: topology.workspaceGateway.apiKey } : {}),
+    readProfile,
+    extraHeaders: {
+      "x-occ-identity": "oce:v1:" + "a".repeat(64),
+      "x-openclaw-scopes": "operator.admin",
+      ...(key === undefined ? {} : { "x-occ-browser-key": key }),
+    },
+  });
+}
+
+async function assertDelegationDenied(topology, key, description) {
+  const result = await boundaryProbe(topology, key);
+  assert.equal(result.connected, false, description);
+  assert.equal(result.authReason, "trusted_proxy_delegation_denied", description);
+}
+
+async function assertRevisionDelegationBoundaries(context, topology) {
+  const { key } = await delegationSecret(topology);
+  const valid = await boundaryProbe(topology, key);
+  assert.equal(valid.connected, true, "the active revision accepts its actual credential");
+  assert.ok(valid.profileId);
+  assert.deepEqual(valid.scopes, ["operator.admin"]);
+  assert.equal(valid.deviceTokenIssued, false);
+  await assertDelegationDenied(
+    topology,
+    undefined,
+    "reserved subjects require a delegation credential",
+  );
+  await assertDelegationDenied(
+    topology,
+    "b".repeat(64),
+    "a forged credential must not create a person",
+  );
+
+  // This is an untrusted request at the real Envoy listener, not an authorized
+  // machine call: even possession of a revision key cannot bypass edge auth.
+  const external = await boundaryProbe(topology, key, { authenticated: false });
+  assert.equal(external.connected, false);
+  assert.ok(
+    [401, 403].includes(external.httpStatus),
+    "external reserved identity spoofing must fail at Envoy",
+  );
+  const machine = await boundaryProbe(topology, key, { browser: false });
+  assert.equal(machine.connected, true, "authorized machine routing remains available");
+  assert.deepEqual(machine.scopes, ["operator.admin"]);
+  assert.equal(machine.deviceTokenIssued, false);
+  assert.ok(machine.profileId, "the routed machine identity resolves its native profile");
+  assert.notEqual(
+    machine.profileId,
+    valid.profileId,
+    "the machine route must strip browser identity and credential headers",
+  );
+  const connection = await topology.workspaceGateway.connect(topology);
+  await connection.assertSecurity();
+
+  // Provision another real Agent with an independent revision Secret. The
+  // existing model Secret is referenced through the API, never copied here.
+  const configuration = await topology.adminRequest(
+    "GET",
+    `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
+  );
+  assert.equal(configuration.status, 200);
+  const admitted = await topology.adminRequest(
+    "POST",
+    `/namespaces/${topology.agent.namespaceId}/agents/provision`,
+    {
+      requestId: `req_${randomUUID()}`,
+      name: `delegation-boundary-${randomUUID()}`,
+      executionMode: "dedicated",
+      harnessAuth: topology.agent.harnessAuth,
+      nativeAdmin: true,
+      configuration: {
+        kind: "agent",
+        values: configuration.data.values,
+        ...(configuration.data.secretBindings
+          ? { secretBindings: configuration.data.secretBindings }
+          : {}),
+      },
+    },
+  );
+  assert.equal(admitted.status, 202, "the sibling Agent must be provisioned through OCC");
+  const provisioned = await waitFor("sibling Agent provisioning", async () => {
+    const result = await topology.adminRequest("GET", admitted.data.provisioning.url);
+    assert.equal(result.status, 200);
+    assert.notEqual(result.data.status, "failed", "sibling provisioning failed");
+    return result.data.revisionId ? result.data : undefined;
+  });
+  const base = `/namespaces/${topology.agent.namespaceId}/agents/${provisioned.agentId}`;
+  try {
+    const agent = await topology.adminRequest("GET", base);
+    const revision = await topology.adminRequest(
+      "GET",
+      `${base}/revisions/${provisioned.revisionId}`,
+    );
+    assert.equal(agent.status, 200);
+    assert.equal(revision.status, 200);
+    const sibling = { ...topology, agent: agent.data, revision: revision.data };
+    sibling.gatewayPod = await waitForReadyGatewayPod(sibling, revision.data.id);
+    const siblingKey = (await delegationSecret(sibling)).key;
+    assert.equal(siblingKey === key, false, "different Agents must have independent credentials");
+    await waitFor(
+      "sibling native route",
+      async () => (await boundaryProbe(sibling, siblingKey)).connected || undefined,
+    );
+    await assertDelegationDenied(sibling, key, "another Agent's real credential must be rejected");
+    await assertDelegationDenied(
+      topology,
+      siblingKey,
+      "credential isolation must hold in both directions",
+    );
+  } finally {
+    const removed = await topology.adminRequest("DELETE", base);
+    assert.equal(removed.status, 202, "the sibling Agent must enter normal deletion");
+  }
+  context.diagnostic(
+    "Real Envoy/native routes accepted their own revision credential and rejected absent, forged and cross-Agent credentials; unauthenticated edge spoofing and direct network access were denied.",
+  );
+  return key;
+}
+
+async function assertDelegationSecretRecovery(topology, nativePage, profileId) {
+  const { secret, key } = await delegationSecret(topology);
+  const { applyManifest } = createKubernetesClient({ selection: explicitK3dSelection() });
+  const health = () =>
+    nativePage.evaluate(async () => {
+      const response = await fetch("/healthz");
+      return {
+        status: response.status,
+        error: response.ok ? undefined : (await response.json()).error,
+      };
+    });
+  assert.equal((await health()).status, 200, "the signed-in native health request is authorized");
+  // The Pod retains its mounted bytes while lookup is unavailable. Only the
+  // exact test-owned immutable Secret is removed; restore the same material.
+  try {
+    await kubectl(
+      "delete",
+      "secret",
+      secret.metadata.name,
+      "--namespace",
+      topology.gatewayPlacement,
+      "--wait=true",
+    );
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const access = await topology.adminRequest(
+        "GET",
+        `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/native-admin`,
+      );
+      assert.equal(access.status, 503, "credential lookup failure must refuse access");
+      assert.equal(access.error?.code, "DEPENDENCY_UNAVAILABLE");
+      // Both public surfaces retain main’s dependency classification. The error
+      // must not disclose the missing Secret or grant machine access.
+      const refused = await health();
+      assert.equal(
+        refused.status,
+        503,
+        "the native proxy must not fall back to machine credentials",
+      );
+      assert.equal(
+        Object.keys(refused.error ?? {})
+          .sort()
+          .join(",") === "code,message" &&
+          refused.error.code === "DEPENDENCY_UNAVAILABLE" &&
+          refused.error.message === "A required platform dependency is unavailable.",
+        true,
+        "Agent-host refusal must contain only the canonical dependency error",
+      );
+      const recreated = await kubectl(
+        "get",
+        "secret",
+        secret.metadata.name,
+        "--namespace",
+        topology.gatewayPlacement,
+        "--ignore-not-found",
+        "-o",
+        "name",
+      );
+      assert.equal(recreated.trim(), "", "browser access must not reissue a missing Secret");
+    }
+  } finally {
+    await applyManifest(
+      JSON.stringify({
+        apiVersion: secret.apiVersion,
+        kind: secret.kind,
+        metadata: {
+          name: secret.metadata.name,
+          namespace: secret.metadata.namespace,
+          labels: secret.metadata.labels,
+          annotations: secret.metadata.annotations,
+          ownerReferences: secret.metadata.ownerReferences,
+        },
+        immutable: secret.immutable,
+        type: secret.type,
+        data: secret.data,
+      }),
+      { redactions: [key, secret.data["browser-key"]] },
+    );
+  }
+  await waitFor("native access after exact credential restoration", async () => {
+    const access = await topology.adminRequest(
+      "GET",
+      `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/native-admin`,
+    );
+    return access.status === 200 && access.data.status === "available";
+  });
+  assert.equal(
+    (await delegationSecret(topology)).key === key,
+    true,
+    "recovery restores the original credential",
+  );
+  // API lookup recovery precedes kubelet projection and native credential
+  // observation. Require fresh native admission, not merely Secret existence.
+  await waitFor("fresh native profile admission after Secret restoration", async () => {
+    let result;
+    try {
+      result = await nativeRpc(nativePage, "users.self");
+    } catch (error) {
+      if (/Gateway users\.self (?:connection failed|timed out)/.test(error.message)) {
+        return undefined;
+      }
+      throw error;
+    }
+    if (
+      !result.response.ok &&
+      result.response.error?.details?.authReason === "trusted_proxy_delegation_denied"
+    ) {
+      return undefined;
+    }
+    assert.equal(result.response.ok, true, "restored native profile request must succeed");
+    assert.deepEqual(result.auth.scopes, ["operator.admin"]);
+    assert.equal(Boolean(result.auth.deviceToken), false);
+    assert.equal(
+      result.response.payload.profile.id,
+      profileId,
+      "fresh admission preserves the native person",
+    );
+    return true;
+  });
+
+  // The initial chat URL can name a session that has not been persisted yet.
+  // Reopen the supported Open Agent UI entry instead of its public chat document.
+  const reopened = await nativePage.goto(new URL("/", nativePage.url()).href, {
+    waitUntil: "domcontentloaded",
+  });
+  assert.equal(reopened?.status(), 200, "the restored native document must be served");
+  assert.match(reopened.headers()["content-type"] ?? "", /^text\/html\b/i);
+  await waitForStockUi(nativePage);
+  assert.equal(
+    (await nativeProfile(nativePage, "operator.admin")).id,
+    profileId,
+    "Secret lookup recovery preserves the native person",
+  );
+  assert.equal((await health()).status, 200, "the same native health request recovers");
 }
 
 export async function runNativeAdminScenario(context) {
   const artifacts = await mkdtemp(join(tmpdir(), "openclaw-native-admin-browser-"));
+  const media = await nativeMediaDirectory("native-admin");
+  context.diagnostic(`native browser review media: ${media}`);
   context.diagnostic(`native admin browser artifacts: ${artifacts}`);
   const nativeDomain = process.env.OCC_TEST_NATIVE_ADMIN_DOMAIN ?? "native.example.test";
   const ingress = await createNativeIngress(context, { artifacts, nativeDomain });
@@ -1106,7 +1463,7 @@ export async function runNativeAdminScenario(context) {
     browser,
     ingress,
     status: initialStatus,
-    artifacts,
+    media,
   });
 
   await saveGatewayManagedMode(topology, false);
@@ -1170,6 +1527,9 @@ export async function runNativeAdminScenario(context) {
     .getByText("Gateway managed mode restricts administrative changes by default.")
     .waitFor();
   const nativePage = await openNativeAdminConsole(page, status.origin);
+  const nativePerson = await nativeProfile(nativePage, "operator.admin");
+  const previousDelegationKey = await assertRevisionDelegationBoundaries(context, topology);
+  await assertDelegationSecretRecovery(topology, nativePage, nativePerson.id);
 
   const deepLink = new URL("/settings/advanced", status.origin);
   const deepLinkResponse = await nativePage.goto(deepLink.href);
@@ -1201,8 +1561,15 @@ export async function runNativeAdminScenario(context) {
   );
 
   const marker = `native-admin-browser-${randomUUID()}`;
-  await submitChatTurnWithAssistantProof(nativePage, marker, nativeSocketFrames, waitFor);
-  await nativePage.screenshot({ path: join(artifacts, "stock-ui-chat.png"), fullPage: true });
+  const terminal = await recordNativeChatTurn(
+    nativePage,
+    marker,
+    nativeSocketFrames,
+    media,
+    "native-admin-chat",
+  );
+  await assertNativeAttribution(nativePage, terminal, nativePerson.id, marker);
+  await nativePage.screenshot({ path: join(media, "stock-ui-chat.png"), fullPage: true });
   await assertNoNativeCredentialLeak(nativePage, [
     topology.gatewayPassword,
     topology.workspaceGateway.apiKey,
@@ -1232,7 +1599,7 @@ export async function runNativeAdminScenario(context) {
     .catch((error) => error);
   if (!(sibling instanceof Error)) {
     await siblingPage.screenshot({
-      path: join(artifacts, "wrong-agent-host-denied.png"),
+      path: join(media, "wrong-agent-host-denied.png"),
       fullPage: true,
     });
   }
@@ -1257,6 +1624,11 @@ export async function runNativeAdminScenario(context) {
   );
   await nativePage.reload({ waitUntil: "domcontentloaded" });
   await waitForStockUi(nativePage);
+  assert.equal(
+    (await nativeProfile(nativePage, "operator.admin")).id,
+    nativePerson.id,
+    "Gateway Pod replacement with retained storage preserves the native person",
+  );
   const driftAccent = await leaveNativeAccentDrift(nativePage, status.origin);
   assert.deepEqual(
     await readOceControlState(topology),
@@ -1269,6 +1641,18 @@ export async function runNativeAdminScenario(context) {
     expectedManagedAccent,
     forbiddenRuntimeAccent: driftAccent,
   });
+  const activeKey = (await delegationSecret(topology)).key;
+  assert.equal(
+    activeKey === previousDelegationKey,
+    false,
+    "redeployment rotates the revision credential",
+  );
+  assert.equal((await boundaryProbe(topology, activeKey)).connected, true);
+  await assertDelegationDenied(
+    topology,
+    previousDelegationKey,
+    "the previous revision credential must be rejected by its successor",
+  );
   const currentStatus = await nativeAdminStatus(topology);
   assert.equal(currentStatus.status, "available");
   assert.equal(currentStatus.activeRevisionId, topology.revision.id);
@@ -1281,7 +1665,12 @@ export async function runNativeAdminScenario(context) {
     "the shared native admin session must reconnect to the current redeployed revision",
   );
   await waitForStockUi(currentSessionPage);
-  const banner = currentSessionPage.getByRole("paragraph").filter({
+  assert.equal(
+    (await nativeProfile(currentSessionPage, "operator.admin")).id,
+    nativePerson.id,
+    "OCE stop/redeploy preserves the native person across Agent revisions",
+  );
+  const banner = currentSessionPage.getByRole("status").filter({
     hasText: "edit and save the Agent’s draft Configuration, then select Deploy new version",
   });
   await banner.waitFor();
@@ -1300,6 +1689,8 @@ export async function runNativeAdminScenario(context) {
 // dedicated lifecycle case above separate so neither qualification replaces it.
 export async function runSharedNativeScenario(context) {
   const artifacts = await mkdtemp(join(tmpdir(), "openclaw-native-sharing-"));
+  const media = await nativeMediaDirectory("native-sharing");
+  context.diagnostic(`native browser review media: ${media}`);
   context.diagnostic(`native sharing artifacts: ${artifacts}`);
   const nativeDomain = process.env.OCC_TEST_NATIVE_ADMIN_DOMAIN ?? "native.example.test";
   const ingress = await createNativeIngress(context, { artifacts, nativeDomain });
@@ -1322,78 +1713,46 @@ export async function runSharedNativeScenario(context) {
   const status = await nativeAdminStatus(topology);
   assert.equal(status.status, "available");
   const browser = await launchBrowser(context, ingress);
-  await assertSharedNativeSessions(context, { topology, browser, ingress, status, artifacts });
+  await assertSharedNativeSessions(context, { topology, browser, ingress, status, media });
 }
 
-async function assertChatAdministrationDenied(nativePage) {
-  const denied = await nativePage.evaluate(async () => {
+async function assertChatAdministrationDenied(
+  nativePage,
+  spoofedSubject = "oce:v1:" + "a".repeat(64),
+) {
+  const denied = await nativePage.evaluate(async (spoofedSubject) => {
     const http = await fetch("/tools/invoke", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-openclaw-scopes": "operator.admin",
-        "x-occ-identity": "spoofed-administrator",
+        "x-occ-identity": spoofedSubject,
+        "x-occ-browser-key": "b".repeat(64),
       },
       body: JSON.stringify({ tool: "sessions_list", args: {} }),
     });
-    const websocket = await new Promise((resolve) => {
-      const socket = new WebSocket(globalThis.location.origin.replace(/^http/, "ws"));
-      const timer = setTimeout(() => {
-        socket.close();
-        resolve({ timeout: true });
-      }, 15000);
-      let scopes;
-      socket.onmessage = ({ data }) => {
-        const message = JSON.parse(data);
-        if (message.type === "event" && message.event === "connect.challenge") {
-          socket.send(
-            JSON.stringify({
-              type: "req",
-              id: "connect",
-              method: "connect",
-              params: {
-                minProtocol: 4,
-                maxProtocol: 4,
-                client: {
-                  id: "gateway-client",
-                  version: "1.0.0",
-                  platform: "browser",
-                  mode: "backend",
-                },
-                role: "operator",
-                scopes: ["operator.admin"],
-                caps: [],
-                commands: [],
-              },
-            }),
-          );
-        } else if (message.type === "res" && message.id === "connect" && message.ok) {
-          scopes = message.payload.auth.scopes;
-          socket.send(
-            JSON.stringify({ type: "req", id: "config", method: "config.get", params: {} }),
-          );
-        } else if (message.type === "res") {
-          clearTimeout(timer);
-          socket.close();
-          resolve({ scopes, ok: message.ok, error: message.error });
-        }
-      };
-    });
-    return { http: http.status, body: await http.text(), websocket };
-  });
+    return { http: http.status, body: await http.text() };
+  }, spoofedSubject);
   assert.equal(denied.http, 403);
   assert.match(denied.body, /missing scope/);
-  assert.deepEqual(denied.websocket.scopes, ["operator.sessions.write"]);
-  assert.equal(denied.websocket.ok, false);
-  assert.match(denied.websocket.error.message, /missing scope/);
+  const { auth, response } = await nativeRpc(nativePage, "config.get");
+  assert.deepEqual(auth.scopes, ["operator.sessions.write"]);
+  assert.equal(response.ok, false);
+  assert.match(response.error.message, /missing scope/);
 }
 
 /** The QA matrix reuses the native browser harness with a real, prepared OIDC provider. */
 export async function runOidcAgentChatScenario(context) {
+  await runOidcAgentChatUpgradeScenario(context);
+}
+
+export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefined) {
   const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
   const secrets = JSON.parse(await readFile(process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE, "utf8"));
   const caCert = await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT, "utf8");
   const artifacts = await mkdtemp(join(tmpdir(), "openclaw-oidc-agent-chat-"));
+  const media = await nativeMediaDirectory("oidc-agent-chat");
+  context.diagnostic(`native browser review media: ${media}`);
   context.diagnostic(`OIDC Agent chat artifacts: ${artifacts}`);
   const nativeDomain = process.env.OCC_TEST_NATIVE_ADMIN_DOMAIN ?? "native.example.test";
   const ingress = await createNativeIngress(context, { artifacts, nativeDomain });
@@ -1458,6 +1817,9 @@ export async function runOidcAgentChatScenario(context) {
   }
   const topology = await arrangeProductionTopology(context, "embedded", undefined, {
     publicOrigin: ingress.origin,
+    ...(upgrade === undefined
+      ? {}
+      : { images: upgrade.baseline, databaseUrl: upgrade.databaseUrl, upgrade }),
     defaultUser: true,
     nativeAdmin: { enabled: true, domain: nativeDomain },
     nativeOptions: { controlUi: { enabled: true } },
@@ -1510,8 +1872,9 @@ export async function runOidcAgentChatScenario(context) {
       resourceId,
     });
     assert.equal(result.status, 201, JSON.stringify(result.error));
+    return result.data;
   };
-  const signIn = async (username) => {
+  const signIn = async (username, password = secrets.users[username].password) => {
     const browserContext = await browser.newContext();
     context.after(() => browserContext.close());
     const page = await browserContext.newPage();
@@ -1519,7 +1882,7 @@ export async function runOidcAgentChatScenario(context) {
     await page.getByRole("button", { name: "Continue with Keycloak" }).click();
     await page.waitForURL((url) => url.origin === new URL(issuer).origin);
     await page.locator("#username").fill(username);
-    await page.locator("#password").fill(secrets.users[username].password);
+    await page.locator("#password").fill(password);
     const adopted = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/api/auth/providers/oidc/result",
     );
@@ -1608,11 +1971,363 @@ export async function runOidcAgentChatScenario(context) {
   assert.equal(ownerStatus.data.status, "available");
   assert.equal(ownerStatus.data.mode, "admin");
 
+  const ownerFrames = [];
+  const ownerConnectFrames = [];
+  ownerPage.context().on("page", (page) =>
+    page.on("websocket", (socket) => {
+      if (new URL(socket.url()).origin === ownerStatus.data.origin.replace(/^http/, "ws")) {
+        socket.on("framereceived", (frame) => ownerFrames.push({ ...frame, socket, page }));
+        if (upgrade !== undefined) {
+          socket.on("framesent", (frame) => ownerConnectFrames.push({ ...frame, socket, page }));
+        }
+      }
+    }),
+  );
+  let detailUrl = new URL(
+    agentDetailPath({ agent: created.data, revision: deployed.data }),
+    ingress.origin,
+  ).href;
+  await ownerPage.goto(detailUrl);
+  let ownerNativePage = await openNativeAdminConsole(ownerPage, ownerStatus.data.origin);
+  let legacy;
+  if (upgrade !== undefined) {
+    const legacyRole = await role("Legacy upgrade operator", [
+      { action: "read", resourceKind: "agent" },
+      { action: "operate", resourceKind: "agent" },
+    ]);
+    const legacyBinding = await bind(carol, legacyRole, "agent", created.data.id);
+    const legacyFrames = [];
+    firstOperatorPage
+      .context()
+      .on("page", (page) =>
+        page.on("websocket", (socket) =>
+          socket.on("framereceived", (frame) => legacyFrames.push({ ...frame, socket, page })),
+        ),
+      );
+    await firstOperatorPage.goto(detailUrl);
+    const legacyPage = await openNativeAdminConsole(
+      firstOperatorPage,
+      ownerStatus.data.origin,
+      "chat",
+    );
+    const sharedOwner = await nativeRpc(ownerNativePage, "users.self");
+    const sharedOperator = await nativeRpc(legacyPage, "users.self");
+    assert.equal(sharedOwner.response.ok, true);
+    assert.equal(sharedOperator.response.ok, true);
+    assert.equal(
+      sharedOperator.response.payload.profile.id,
+      sharedOwner.response.payload.profile.id,
+      "the pre-feature image must reproduce the shared native profile, not the candidate behavior",
+    );
+    const history = [];
+    for (const [page, frames, label] of [
+      [ownerNativePage, ownerFrames, "owner"],
+      [legacyPage, legacyFrames, "operator"],
+    ]) {
+      const marker = "before-upgrade-" + label + "-" + randomUUID();
+      const reply = await recordNativeChatTurn(page, marker, frames, media, "legacy-" + label);
+      const sessionKey = JSON.parse(textFromFrame(reply)).payload.sessionKey;
+      const listed = await nativeRpc(ownerNativePage, "sessions.list", { limit: 100 });
+      assert.equal(listed.response.ok, true);
+      const session = listed.response.payload.sessions.find(({ key }) => key === sessionKey);
+      assert.ok(session, "the old real browser turn must create durable history");
+      const transcript = await nativeRpc(ownerNativePage, "chat.history", {
+        sessionKey,
+        limit: 100,
+      });
+      assert.equal(transcript.response.ok, true);
+      const message = transcript.response.payload.messages.find(
+        (entry) => entry.role === "user" && JSON.stringify(entry.content).includes(marker),
+      );
+      assert.ok(message);
+      history.push({
+        sessionKey,
+        marker,
+        createdActor: session.createdActor,
+        senderIdentity: message.__openclaw?.senderIdentity,
+      });
+    }
+    const owned = { ...topology, agent: created.data, revision: deployed.data };
+    const previousPod = await waitForReadyGatewayPod(owned, deployed.data.id);
+    assert.equal(
+      previousPod.spec.containers.find(({ name }) => name === "gateway").image,
+      upgrade.baseline.runtime,
+    );
+    // Read the supported redacted list through the old real browser session.
+    // No signing storage, native database, or reusable credential is exported.
+    const oldPairing = await observeLegacyBrowserPairing({
+      page: ownerNativePage,
+      sent: ownerConnectFrames,
+      received: ownerFrames,
+      origin: ownerStatus.data.origin,
+      readPairingList: async () => {
+        const listed = await nativeRpc(ownerNativePage, "device.pair.list");
+        assert.equal(listed.response.ok, true);
+        return listed.response.payload;
+      },
+    });
+    const claims = previousPod.spec.volumes
+      .filter((volume) => volume.persistentVolumeClaim)
+      .map((volume) => volume.persistentVolumeClaim.claimName);
+    assert.ok(claims.length > 0, "upgrade must retain an actual Gateway PVC");
+    const claimUids = await Promise.all(
+      claims.map(async (name) => ({
+        name,
+        uid: (await resource("persistentvolumeclaim", name, topology.gatewayPlacement)).metadata
+          .uid,
+      })),
+    );
+    const identity = await topology.observerPool.query(
+      "SELECT id, namespace_id, service_principal_id FROM occ.agents WHERE id = $1",
+      [created.data.id],
+    );
+    assert.equal(identity.rows.length, 1);
+    await ownerNativePage.close();
+    await legacyPage.close();
+    await waitFor("old controller work to settle before replacing both writers", async () => {
+      const queued = await topology.observerPool.query(
+        "SELECT count(*) AS pending FROM occ.controller_work WHERE state IN ('queued','claimed')",
+      );
+      return Number(queued.rows[0].pending) === 0;
+    });
+    const images = await topology.upgradeInstallation();
+    context.diagnostic("native upgrade controller image custody: " + JSON.stringify(images));
+    assert.deepEqual(
+      (
+        await topology.observerPool.query(
+          "SELECT id, namespace_id, service_principal_id FROM occ.agents WHERE id = $1",
+          [created.data.id],
+        )
+      ).rows,
+      identity.rows,
+    );
+    assert.deepEqual(
+      await readAccount(alice.userId),
+      alice,
+      "OCE owner identity must survive the software upgrade",
+    );
+    assert.deepEqual(
+      await readAccount(carol.userId),
+      carol,
+      "OCE operator identity must survive the software upgrade",
+    );
+    const beforeRedeploy = await ownerRequest("GET", agentPath + "/native-admin");
+    assert.equal(
+      beforeRedeploy.status,
+      503,
+      "retained revision without a delegation credential must fail closed",
+    );
+    assert.equal(beforeRedeploy.error?.code, "DEPENDENCY_UNAVAILABLE");
+    const refusedPage = await ownerPage.context().newPage();
+    try {
+      const refused = await refusedPage.goto(ownerStatus.data.origin + "/healthz");
+      assert.equal(
+        refused.status(),
+        503,
+        "the retained legacy browser host must not fall back to machine access",
+      );
+      assert.equal((await refused.json()).error?.code, "DEPENDENCY_UNAVAILABLE");
+    } finally {
+      await refusedPage.close();
+    }
+    const retainedPod = await waitForReadyGatewayPod(owned, deployed.data.id);
+    assert.equal(
+      retainedPod.metadata.uid,
+      previousPod.metadata.uid,
+      "controller rollout alone must not manufacture a new Agent deployment",
+    );
+    const next = await ownerRequest("POST", agentPath + "/deploy");
+    assert.equal(next.status, 202, JSON.stringify(next.error));
+    assert.notEqual(next.data.id, deployed.data.id, "normal deploy must create the new revision");
+    deployed.data = next.data;
+    await waitFor("upgraded same Agent revision to become active", async () => {
+      const response = await ownerRequest("GET", agentPath);
+      assert.equal(response.status, 200);
+      assert.equal(response.data.id, created.data.id);
+      assert.equal(response.data.configurationId, created.data.configurationId);
+      return response.data.activeRevisionId === next.data.id;
+    });
+    assert.deepEqual(
+      (
+        await topology.observerPool.query(
+          "SELECT id, namespace_id, service_principal_id FROM occ.agents WHERE id = $1",
+          [created.data.id],
+        )
+      ).rows,
+      identity.rows,
+      "normal redeploy must preserve the same Agent service Principal",
+    );
+    const currentPod = await waitForReadyGatewayPod(owned, next.data.id);
+    assert.equal(
+      currentPod.spec.containers.find(({ name }) => name === "gateway").image,
+      process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
+    );
+    for (const claim of claimUids) {
+      assert.equal(
+        (await resource("persistentvolumeclaim", claim.name, topology.gatewayPlacement)).metadata
+          .uid,
+        claim.uid,
+      );
+      assert.ok(
+        currentPod.spec.volumes.some(
+          (volume) => volume.persistentVolumeClaim?.claimName === claim.name,
+        ),
+      );
+    }
+    const removed = await topology.adminRequest(
+      "DELETE",
+      policyPath + "/access-bindings/" + legacyBinding.id,
+    );
+    assert.equal(removed.status, 204);
+    detailUrl = new URL(
+      agentDetailPath({ agent: created.data, revision: next.data }),
+      ingress.origin,
+    ).href;
+    await ownerPage.goto(detailUrl);
+    ownerNativePage = await openNativeAdminConsole(ownerPage, ownerStatus.data.origin);
+    legacy = {
+      images,
+      claimUids,
+      runtime: [previousPod, currentPod].map((pod) => ({
+        uid: pod.metadata.uid,
+        image: pod.spec.containers.find(({ name }) => name === "gateway").image,
+        imageID: pod.status.containerStatuses.find(({ name }) => name === "gateway").imageID,
+      })),
+      history,
+      sharedProfileId: sharedOwner.response.payload.profile.id,
+      oldPairing,
+    };
+  }
+  const ownerProfile = await nativeProfile(ownerNativePage, "operator.admin");
+  if (legacy !== undefined) {
+    assert.notEqual(
+      ownerProfile.id,
+      legacy.sharedProfileId,
+      "new delegated owner must not reuse the shared identity",
+    );
+    for (const saved of legacy.history) {
+      const listed = await nativeRpc(ownerNativePage, "sessions.list", { limit: 100 });
+      assert.equal(listed.response.ok, true);
+      const session = listed.response.payload.sessions.find(({ key }) => key === saved.sessionKey);
+      assert.ok(
+        session,
+        "historical shared session must remain available to the native administrator",
+      );
+      assert.deepEqual(
+        session.createdActor,
+        saved.createdActor,
+        "never rewrite historical ownership to a new person",
+      );
+      const transcript = await nativeRpc(ownerNativePage, "chat.history", {
+        sessionKey: saved.sessionKey,
+        limit: 100,
+      });
+      assert.equal(transcript.response.ok, true);
+      const message = transcript.response.payload.messages.find(
+        (entry) => entry.role === "user" && JSON.stringify(entry.content).includes(saved.marker),
+      );
+      assert.ok(message);
+      assert.deepEqual(
+        message.__openclaw?.senderIdentity,
+        saved.senderIdentity,
+        "historical sender attribution must not be reassigned during upgrade",
+      );
+    }
+    const listedPairings = await nativeRpc(ownerNativePage, "device.pair.list");
+    assert.equal(listedPairings.response.ok, true);
+    assert.deepEqual(
+      legacyPairingMetadata(legacy.oldPairing, listedPairings.response.payload),
+      legacy.oldPairing,
+      "the same browser pairing identity and original approval metadata survive upgrade",
+    );
+  }
+  const ownerMarker = `oidc-owner-${randomUUID()}`;
+  const ownerReply = await recordNativeChatTurn(
+    ownerNativePage,
+    ownerMarker,
+    ownerFrames,
+    media,
+    "oidc-owner-chat",
+  );
+  await assertNativeAttribution(ownerNativePage, ownerReply, ownerProfile.id, ownerMarker);
+  await ownerNativePage.screenshot({ path: join(media, "oidc-owner-chat.png"), fullPage: true });
+
+  // Keep Alice and Carol's real first-login enrollment above. A separate owned
+  // account proves explicit password/OIDC linking without pre-seeding either person.
+  const linkedUsername = `native-linked-${randomUUID()}`;
+  const linkedPassword = randomUUID() + randomUUID();
+  const linkedEmail = `${linkedUsername}@example.test`;
+  await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/users", {
+    username: linkedUsername,
+    email: linkedEmail,
+    emailVerified: true,
+    enabled: true,
+    firstName: "Linked",
+    lastName: "Person",
+    credentials: [{ type: "password", value: linkedPassword, temporary: false }],
+  });
+  const [linkedUser] = await keycloakRealmAdmin(
+    issuer,
+    secrets.admin,
+    "GET",
+    `/users?exact=true&username=${linkedUsername}`,
+  );
+  assert.ok(linkedUser);
+  context.after(() =>
+    keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/users/${linkedUser.id}`),
+  );
+  await keycloakRealmAdmin(
+    issuer,
+    secrets.admin,
+    "PUT",
+    `/users/${linkedUser.id}/groups/${group.id}`,
+  );
+  const linkedAccount = await topology.adminRequest("POST", "/api/auth/accounts", {
+    email: linkedEmail,
+    password: linkedPassword,
+  });
+  assert.equal(linkedAccount.status, 201, JSON.stringify(linkedAccount.error));
+  const linkedState = await readAccount(linkedAccount.data.id);
+  const linked = await topology.adminRequest(
+    "POST",
+    `/api/auth/accounts/${linkedState.userId}/providers/oidc`,
+    { subject: linkedUser.id, expectedVersion: linkedState.version },
+  );
+  assert.equal(linked.status, 200, JSON.stringify(linked.error));
+  const linkedRole = await role("Linked native administrator", [
+    { action: "read", resourceKind: "agent" },
+    { action: "administer", resourceKind: "agent" },
+  ]);
+  await bind(linkedState, linkedRole, "agent", created.data.id);
+  const passwordContext = await browser.newContext();
+  context.after(() => passwordContext.close());
+  const passwordPage = await passwordContext.newPage();
+  await passwordPage.goto(detailUrl);
+  await login(passwordPage, { email: linkedEmail, password: linkedPassword });
+  await passwordPage.getByRole("heading", { name: created.data.name, exact: true }).waitFor();
+  const passwordNativePage = await openNativeAdminConsole(passwordPage, ownerStatus.data.origin);
+  const passwordProfile = await nativeProfile(passwordNativePage, "operator.admin");
+  const linkedPage = await signIn(linkedUsername, linkedPassword);
+  assert.equal(
+    (await requestFor(linkedPage)("GET", "/api/auth/session")).data.user.id,
+    linkedState.userId,
+  );
+  await linkedPage.goto(detailUrl);
+  const linkedNativePage = await openNativeAdminConsole(linkedPage, ownerStatus.data.origin);
+  assert.equal(
+    (await nativeProfile(linkedNativePage, "operator.admin")).id,
+    passwordProfile.id,
+    "password and OIDC methods attached to the same OCE account share one native person",
+  );
+  assert.notEqual(passwordProfile.id, ownerProfile.id);
+  await passwordNativePage.close();
+  await linkedNativePage.close();
+
   const operatorRole = await role("OIDC chat operator", [
     { action: "read", resourceKind: "agent" },
     { action: "operate", resourceKind: "agent" },
   ]);
-  await bind(carol, operatorRole, "agent", created.data.id);
+  const operatorBinding = await bind(carol, operatorRole, "agent", created.data.id);
   const operatorPage = await signIn("carol");
   const operatorRequest = requestFor(operatorPage);
   assert.equal((await operatorRequest("GET", "/api/auth/session")).data.user.id, carol.userId);
@@ -1642,46 +2357,206 @@ export async function runOidcAgentChatScenario(context) {
     new URL(agentDetailPath({ agent: created.data, revision: deployed.data }), ingress.origin).href,
   );
   const nativePage = await openNativeAdminConsole(operatorPage, status.data.origin, "chat");
-  // Retain the real browser/model exchange without recording IdP credentials.
-  const recording = await nativePage.screencast.start({
-    path: join(artifacts, "oidc-operator-chat.webm"),
-    size: { width: 1280, height: 720 },
-  });
+  const operatorProfile = await nativeProfile(nativePage, "operator.sessions.write");
+  assert.notEqual(operatorProfile.id, ownerProfile.id, "OIDC users have separate native people");
+  const initialMarker = `oidc-chat-${randomUUID()}`;
+  let initialReply;
   try {
-    const initialMarker = `oidc-chat-${randomUUID()}`;
-    const initialReply = await submitChatTurnWithAssistantProof(
+    initialReply = await recordNativeChatTurn(
       nativePage,
       initialMarker,
       frames,
-      waitFor,
-    );
-    const lifecycle = await assertChatStreamStopAndResume({
-      page: nativePage,
-      initialReply,
-      initialMarker,
-      receivedFrames: frames,
-      sentFrames,
-      waitFor,
-    });
-    context.diagnostic(
-      `OIDC chat: ${lifecycle.deltaCount} incremental model frames, exact-run Stop acknowledged and aborted, same persisted session reconnected and completed another real reply.`,
-    );
-    await assertChatAdministrationDenied(nativePage);
-    const siblingTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
-    const probe = await operatorPage.context().newPage();
-    assert.equal((await probe.goto(siblingTarget.origin + "/healthz")).status(), 403);
-    await probe.close();
-    await nativePage.screenshot({
-      path: join(artifacts, "oidc-operator-chat.png"),
-      fullPage: true,
-    });
-    context.diagnostic(
-      "Real Keycloak sign-in enabled ordinary-owner create/deploy and an exact-Agent operator model turn; native HTTP/WS administration and sibling access were denied.",
+      media,
+      "oidc-operator-chat",
     );
   } catch (error) {
-    await nativePage.screenshot({ path: join(artifacts, "oidc-chat-failure.png"), fullPage: true });
+    await nativePage.screenshot({ path: join(media, "oidc-chat-failure.png"), fullPage: true });
     throw error;
-  } finally {
-    await recording.dispose();
   }
+  await assertNativeAttribution(nativePage, initialReply, operatorProfile.id, initialMarker);
+  const lifecycle = await assertChatStreamStopAndResume({
+    page: nativePage,
+    initialReply,
+    initialMarker,
+    receivedFrames: frames,
+    sentFrames,
+    waitFor,
+  });
+  context.diagnostic(
+    `OIDC chat: ${lifecycle.deltaCount} incremental model frames, exact-run Stop acknowledged and aborted, same persisted session reconnected and completed another real reply.`,
+  );
+  assert.equal(
+    (await nativeProfile(nativePage, "operator.sessions.write")).id,
+    operatorProfile.id,
+    "persisted-session reconnect keeps the OIDC operator's native profile",
+  );
+  const ownerSubject =
+    "oce:v1:" +
+    createHash("sha256")
+      .update(JSON.stringify([topology.installation.id, alice.principalId]))
+      .digest("hex");
+  await assertChatAdministrationDenied(nativePage, ownerSubject);
+  const siblingTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
+  const probe = await operatorPage.context().newPage();
+  assert.equal((await probe.goto(siblingTarget.origin + "/healthz")).status(), 403);
+  await probe.close();
+
+  // Replace only the Agent created by this OIDC owner. Its retained native state
+  // must keep both identities and their attribution, independently of browser cookies.
+  const ownedTopology = { ...topology, agent: created.data };
+  const previousPod = await waitForReadyGatewayPod(ownedTopology, deployed.data.id);
+  await kubectl(
+    "delete",
+    "pod",
+    previousPod.metadata.name,
+    "--namespace",
+    topology.gatewayPlacement,
+    "--wait=true",
+    "--timeout=120s",
+  );
+  await waitForReadyGatewayPod(ownedTopology, deployed.data.id, previousPod.metadata.uid);
+  for (const [page, profile, scope, reply, marker] of [
+    [ownerNativePage, ownerProfile, "operator.admin", ownerReply, ownerMarker],
+    [nativePage, operatorProfile, "operator.sessions.write", initialReply, initialMarker],
+  ]) {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForStockUi(page);
+    assert.equal(
+      (await nativeProfile(page, scope)).id,
+      profile.id,
+      "retained native storage preserves each OIDC person's profile after Pod replacement",
+    );
+    await assertNativeAttribution(page, reply, profile.id, marker);
+  }
+  if (upgrade !== undefined) {
+    assert.notEqual(operatorProfile.id, legacy.sharedProfileId);
+    const stillOwner = await recordNativeChatTurn(
+      ownerNativePage,
+      "upgraded-owner-live-" + randomUUID(),
+      ownerFrames,
+      media,
+      "upgraded-owner-live",
+    );
+    const stillOperator = await recordNativeChatTurn(
+      nativePage,
+      "upgraded-operator-live-" + randomUUID(),
+      frames,
+      media,
+      "upgraded-operator-live",
+    );
+    assert.equal(stillOwner.socket.isClosed(), false);
+    assert.equal(stillOperator.socket.isClosed(), false);
+    await Promise.all([
+      stillOperator.socket.waitForEvent("close", { timeout: 30_000 }),
+      (async () => {
+        const revoked = await topology.adminRequest(
+          "DELETE",
+          policyPath + "/access-bindings/" + operatorBinding.id,
+        );
+        assert.equal(revoked.status, 204);
+      })(),
+    ]);
+    assert.equal((await operatorRequest("GET", agentPath + "/native-admin")).status, 403);
+    assert.equal(
+      stillOwner.socket.isClosed(),
+      false,
+      "withdrawal must not close the upgraded owner's stream",
+    );
+    await waitFor("upgraded operator's authorization-denied close audit", async () => {
+      const audit = await topology.observerPool.query(
+        "SELECT id FROM occ.audit_events WHERE actor_id = $1 AND resource_id = $2 AND action = 'openclaw.agents.native_admin.websocket.close' AND details->'nativeAdmin'->>'closeReason' = 'authorization_denied'",
+        [carol.principalId, created.data.id],
+      );
+      return audit.rowCount > 0 ? true : undefined;
+    });
+    const unaffectedMarker = "upgraded-owner-after-withdrawal-" + randomUUID();
+    const unaffectedReply = await recordNativeChatTurn(
+      ownerNativePage,
+      unaffectedMarker,
+      ownerFrames,
+      media,
+      "upgraded-owner-after-withdrawal",
+    );
+    await assertNativeAttribution(
+      ownerNativePage,
+      unaffectedReply,
+      ownerProfile.id,
+      unaffectedMarker,
+    );
+    await bind(carol, operatorRole, "agent", created.data.id);
+    await nativePage.reload({ waitUntil: "domcontentloaded" });
+    await waitForStockUi(nativePage);
+    assert.equal(
+      (await nativeProfile(nativePage, "operator.sessions.write")).id,
+      operatorProfile.id,
+    );
+    await assertChatAdministrationDenied(nativePage, ownerSubject);
+    const marker = "upgraded-regrant-" + randomUUID();
+    const reply = await recordNativeChatTurn(nativePage, marker, frames, media, "upgraded-regrant");
+    await assertNativeAttribution(nativePage, reply, operatorProfile.id, marker);
+    await assertDelegationSecretRecovery(
+      {
+        ...topology,
+        agent: created.data,
+        revision: deployed.data,
+        gatewayPod: await waitForReadyGatewayPod(
+          { ...topology, agent: created.data },
+          deployed.data.id,
+        ),
+      },
+      ownerNativePage,
+      ownerProfile.id,
+    );
+    // Strictly selected public build/Pod custody and successful predicates only.
+    // Pairing evidence is public metadata only; retain completed predicates,
+    // not device-list response bodies or conversation contents.
+    for (const pod of legacy.runtime) {
+      assert.match(pod.imageID, /sha256:[a-f0-9]{64}$/);
+    }
+    await writeFile(
+      join(media, "native-profile-upgrade-receipt.json"),
+      JSON.stringify(
+        {
+          version: 2,
+          kind: "native-profile-installation-upgrade",
+          limits: { sameOldBearerReplayAttempted: false },
+          baseline: upgrade.sourceReceipt,
+          candidateRevision: upgrade.candidateRevision,
+          candidateSource: upgrade.candidateSource,
+          controllerPods: { before: legacy.images.before, after: legacy.images.after },
+          initialization: legacy.images.initialization,
+          runtimePods: legacy.runtime,
+          retainedClaimUids: legacy.claimUids.map(({ uid }) => uid),
+          historicalSessions: legacy.history.length,
+          checks: {
+            sharedBaseline: true,
+            baselineOwnedBootstrap: true,
+            bothOldWritersStopped: true,
+            retainedInstallation: true,
+            sameAgentRedeployed: true,
+            retainedHistoryAttribution: true,
+            distinctProfiles: true,
+            newAttributedModelTurns: true,
+            legacyHelloTokenOmitted: true,
+            ownedRedactedPairingObserved: true,
+            originalPairingMetadataRetained: true,
+            legacyRevisionBrowserAccessRefused: true,
+            missingDelegationSecretRefused: true,
+            selectiveWithdrawal: true,
+            regrantProfileStable: true,
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      { mode: 0o600 },
+    );
+    context.diagnostic(
+      "Old-image bootstrap and shared-profile UI evidence, redacted pairing continuity, stopped old API/Worker, candidate migration/rollout, same-Agent normal redeploy, retained PVC/history, distinct new attribution, fail-closed browser access and selective withdrawal/regrant completed. No old bearer was exported or replayed.",
+    );
+  }
+  await nativePage.screenshot({ path: join(media, "oidc-operator-chat.png"), fullPage: true });
+  context.diagnostic(
+    "Real Keycloak sign-in enabled owner create/deploy and owner/operator model turns with distinct native creator/sender profiles. Password/OIDC methods on one account reused its profile; reconnect and retained-storage Pod replacement preserved identities and attribution. Spoofed owner identity and browser key did not grant native HTTP/WS administration; sibling access was denied.",
+  );
 }

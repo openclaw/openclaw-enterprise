@@ -1,3 +1,4 @@
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
@@ -15,14 +16,14 @@ import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/index.ts";
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
-import { readJsonObject, startRegistryFixture } from "./repository-credentials-driver-fixture.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
+import { waitUntil } from "../helpers/wait-for.ts";
+import { readJsonObject } from "./repository-credentials-driver-fixture.ts";
 import { registerAdmissionCapabilityCases } from "./repository-credentials-driver-admission-capability-cases.ts";
 
 type Registry = ConstructorParameters<typeof GitHubRepositoryPolicy>[1];
 type CreatedSession = Extract<OpenRepositorySessionResult, { kind: "created" }>;
-type RegistryFixture = NonNullable<Awaited<ReturnType<typeof startRegistryFixture>>>;
+type RegistryFixture = Awaited<ReturnType<typeof startRegistryCredentialServiceFixture>>;
 
 function isRetryable(error: unknown): error is { retryable: true } {
   return (
@@ -102,12 +103,11 @@ test(
   "concrete Driver resolves locally and controls exact sessions for two repositories",
   { timeout: 30000 },
   async (t) => {
-    const fixture = await startRegistryFixture(t, {
+    const fixture = await startRegistryCredentialServiceFixture(t, {
       namespaceId: `ns_${randomUUID()}`,
       autoOpen: false,
       gateway: { listen: "127.0.0.1:0" },
     });
-    assert.ok(fixture);
     const signal = new AbortController().signal;
     const local = driverFor(
       fixture.backendId,

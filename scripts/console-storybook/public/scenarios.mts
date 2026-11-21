@@ -110,6 +110,8 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
   };
 
+const deletionRetryDeniedAgentPath =
+  "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001";
 const draft =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=draft";
 const revision =
@@ -1285,7 +1287,10 @@ const authoredScenarios = {
     nativeAdmin: "available",
     nativeAdminMode: "chat",
     observabilityDenied: true,
-    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    rules: [
+      { path: "/installation", status: 403, code: "FORBIDDEN" },
+      { suffix: "/native-admin", skip: 1, delayMs: 1500 },
+    ],
     agentPermissionSummary: {
       update: false,
       deploy: false,
@@ -1304,7 +1309,8 @@ const authoredScenarios = {
       "An operator opens chat through the Agent’s restricted browser route. The card explains the shared conversations without promising administrative access. API responses are simulated.",
     steps: [
       "Open chat and confirm the simulated native page opens in another tab.",
-      "Return to the Agent and refresh access.",
+      "Return to the Agent, Tab to Refresh access, and press Enter. While Checking access… shows, Open chat is disabled and focus stays on Refresh access.",
+      "When the check finishes, confirm Open chat is a link again.",
     ],
   } satisfies LocalScenario,
   nativeAdmin: {
@@ -1775,6 +1781,9 @@ const authoredScenarios = {
     actions: [click("Delete Agent")],
     description:
       "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
+    steps: [
+      "Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
+    ],
   } satisfies LocalScenario,
   deleting: {
     group: "Components/Deletion",
@@ -1798,6 +1807,44 @@ const authoredScenarios = {
     actions: [click("Request deletion again")],
     description:
       "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and separate cleanup commands stay collapsed until opened.",
+  } satisfies LocalScenario,
+  deletionRetryDenied: {
+    group: "Components/Deletion",
+    name: "Repeat deletion grant denied after status refresh",
+    path: draft,
+    deleting: true,
+    rules: [
+      { path: `${deletionRetryDeniedAgentPath}/permissions`, method: "GET", skip: 1, status: 503 },
+      {
+        path: deletionRetryDeniedAgentPath,
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs Agent delete on Agent agt_00000000-0000-4000-8000-000000000001. Ask an Installation administrator to grant it.",
+        once: true,
+      },
+      {
+        path: deletionRetryDeniedAgentPath,
+        method: "GET",
+        skip: 1,
+        delayMs: 1300,
+      },
+    ],
+    actions: [
+      click("Request deletion again"),
+      { selector: ".agent-delete-dialog button.danger", click: true },
+      { selector: "#agent-deletion-refusal" },
+      click("Refresh deletion status"),
+      { text: "Refresh deletion status" },
+    ],
+    description:
+      "Refresh confirms the Agent is deleting but cannot verify the delete grant. The refusal remains and retry stays unavailable.",
+    steps: [
+      "Tab to Request deletion again. It remains unavailable and is described by the refusal; the Request ID remains visible. Enter, Space or a click sends no deletion request.",
+      "In a live Console, after an administrator restores Agent delete, use Refresh deletion status or reload the Agent page to verify permission before retrying.",
+    ],
+    gap: "The fixture simulates a refused DELETE and a failed permission recheck. It does not change IAM grants or demonstrate real grant recovery.",
   } satisfies LocalScenario,
   deletionRetryAccessEnded: {
     group: "Components/Deletion",

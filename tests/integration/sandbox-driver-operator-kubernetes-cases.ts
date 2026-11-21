@@ -11,7 +11,10 @@ import {
   type SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.ts";
+import {
+  openShellWorkspaceChartResources,
+  openShellWorkspaceChartSkip,
+} from "../fixtures/openshell-workspace-chart.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { callCount } from "./sandbox-driver-gateway-response-fixture.ts";
 import { buildOperatorIngressManifests } from "./sandbox-driver-operator-chart-case.ts";
@@ -151,7 +154,6 @@ function operatorGateway(): Gateway {
     ...workspaceGatewayClient(),
     getProviderProfile: unexpectedGatewayOperation,
     listProviderProfiles: unexpectedGatewayOperation,
-    getServiceUrl: unexpectedGatewayOperation,
     deleteService: unexpectedGatewayOperation,
     execSandbox: unexpectedGatewayOperation,
     getServiceDocument: unexpectedGatewayOperation,
@@ -323,24 +325,29 @@ export function registerSandboxDriverOperatorKubernetesCases() {
   // A field discarded by SDK serialization could widen a rule, such as a typo in a Pod selector.
   test(
     "startup refuses operator Kubernetes fields the client would not send as written",
+    { skip: openShellWorkspaceChartSkip },
     refusesUnsentKubernetesFields,
   );
 
-  test("OpenShell startup admits and applies the stock workspace chart exactly as written", async (t) => {
-    const { chart, forms, crd, installation } = await prepareStockWorkspaceChart(t);
-    const driver = openShellDriver(operatorGateway(), installation.drivers.sandbox.configuration);
-    const { context, writes } = objectApi({
-      ...coreDiscovery,
-      ...rbacDiscovery,
-      ...policyDiscovery,
-    });
-    await driver.ensureNamespace(context);
-    // The Driver adds ownership metadata without altering the chart or provider value forms.
-    assert.deepEqual(
-      writes,
-      [...chart, forms, crd].map((resource) => ({ method: "PATCH", body: owned(resource) })),
-    );
-  });
+  test(
+    "OpenShell startup admits and applies the stock workspace chart exactly as written",
+    { skip: openShellWorkspaceChartSkip },
+    async (t) => {
+      const { chart, forms, crd, installation } = await prepareStockWorkspaceChart(t);
+      const driver = openShellDriver(operatorGateway(), installation.drivers.sandbox.configuration);
+      const { context, writes } = objectApi({
+        ...coreDiscovery,
+        ...rbacDiscovery,
+        ...policyDiscovery,
+      });
+      await driver.ensureNamespace(context);
+      // The Driver adds ownership metadata without altering the chart or provider value forms.
+      assert.deepEqual(
+        writes,
+        [...chart, forms, crd].map((resource) => ({ method: "PATCH", body: owned(resource) })),
+      );
+    },
+  );
 
   for (const kind of ["Role", "RoleBinding"] as const) {
     test(`OpenShell verifies operator ${kind} from actual KubernetesObjectApi deserialization`, async () => {

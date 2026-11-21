@@ -42,7 +42,7 @@ func TestRejectedServiceKeyNamesTheKeyFileNotHeaderAdvice(t *testing.T) {
 }
 
 func TestServiceKeyFileErrorsNameTheReason(t *testing.T) {
-	const advice = ` Use the complete JSON file from "occ service-key create".`
+	const advice = ` Use a JSON file containing data.key, such as a prepared bootstrap key file or the response from "occ service-key create".`
 	for _, test := range []struct {
 		contents string
 		reason   string

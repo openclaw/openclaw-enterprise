@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 
-import type { CleanupRegistrar } from "./console-file-app.ts";
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
 
 // Local runs share one TMPDIR across every lane and pin loop, so a directory a test
 // leaves behind stays there. This hook is added when the module is imported, so it

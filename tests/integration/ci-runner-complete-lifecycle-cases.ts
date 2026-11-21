@@ -35,6 +35,17 @@ type LifecycleFixtureOptions = {
 type PreparationProcess = { pid: number; pgid: number };
 type DetachedProcess = PreparationProcess & { ppid: number; start: string };
 
+function writeLifecycleManifest(
+  root: string,
+  file: { path: string; expectedTests?: readonly string[] },
+) {
+  return writeRunnerManifest(
+    root,
+    { lanes: { lifecycle: { files: [file] } } },
+    "scripts/ci/test-suites.json",
+  );
+}
+
 function fixturePaths(root: string) {
   const attempt = join(root, "attempt");
   return {
@@ -174,7 +185,7 @@ async function lifecycleFixture(
     { mode: 0o700 },
   );
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     [
       'import { spawn } from "node:child_process";',
       'import { randomBytes } from "node:crypto";',
@@ -266,11 +277,7 @@ async function lifecycleFixture(
       "",
     ].join("\n"),
   );
-  await writeRunnerManifest(
-    root,
-    { lanes: { lifecycle: { files: [{ path: "tests/integration/lifecycle.test.mjs" }] } } },
-    "scripts/ci/test-suites.json",
-  );
+  await writeLifecycleManifest(root, { path: "tests/integration/lifecycle.test.mjs" });
   return {
     root,
     ...paths,
@@ -437,18 +444,10 @@ export function registerCompleteLifecycleCases() {
               'test("unselected lifecycle case", () => { throw new Error("unselected case executed"); });\n',
               { flag: "a" },
             );
-            await writeRunnerManifest(
-              fixture.root,
-              {
-                lanes: {
-                  lifecycle: {
-                    files: [{ path, expectedTests: [name, "unselected lifecycle case"] }],
-                  },
-                },
-                groups: { ci: ["lifecycle"] },
-              },
-              "scripts/ci/test-suites.json",
-            );
+            await writeLifecycleManifest(fixture.root, {
+              path,
+              expectedTests: [name, "unselected lifecycle case"],
+            });
             const result = await runRunnerAsync(
               [...fixture.args, "--file", path, "--test-name", name],
               {},
@@ -496,11 +495,7 @@ import test from "node:test";
 test(${JSON.stringify(name)}, () => writeFile("ran", "ran"));
 `,
         );
-        await writeRunnerManifest(
-          root,
-          { lanes: { lifecycle: { files: [{ path: file, expectedTests: [name] }] } } },
-          "scripts/ci/test-suites.json",
-        );
+        await writeLifecycleManifest(root, { path: file, expectedTests: [name] });
 
         // Start the real phase child to exercise values the public CLI cannot serialize.
         // A bad selection must still publish its receipt. A bad result path is
@@ -676,155 +671,88 @@ test(${JSON.stringify(name)}, () => writeFile("ran", "ran"));
     "complete lifecycle refuses invalid attempts and legacy output paths before starting phases",
     { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
     async (t) => {
-      const scenarios = [
-        "existing attempt",
-        "missing selected file",
-        "missing parent",
-        "legacy state",
-        "legacy results",
-        "legacy state/result alias",
-        "name without file",
-        "missing name value",
-        "name followed by option",
-        "empty equals name",
-        "duplicate separate then equals",
-        "duplicate equals then separate",
-        "duplicate separate",
-        "duplicate equals",
-        "duplicate empty then separate",
-        "duplicate empty then equals",
-        "unregistered name",
-        "empty name",
-        "overlong name",
-        "reserved root name",
-        "reserved file name",
-        "name on audit",
-        "removed pattern option",
-        "removed equals pattern option",
-      ] as const;
-      type Scenario = (typeof scenarios)[number];
-      for (const scenario of scenarios) {
-        await t.test(scenario, async (t) => {
+      type Fixture = Awaited<ReturnType<typeof lifecycleFixture>>;
+      type Scenario = [
+        name: string,
+        buildArgs: (fixture: Fixture) => string[],
+        condition?: "existing" | "missing file" | "missing parent" | "duplicate",
+      ];
+      const file = "tests/integration/lifecycle.test.mjs";
+      const registeredName = "owned lifecycle resource is usable";
+      const separate = ["--test-name", registeredName];
+      const equals = `--test-name=${registeredName}`;
+      const selected =
+        (...selectors: string[]) =>
+        (fixture: Fixture) => [...fixture.args, "--file", file, ...selectors];
+      const scenarios: Scenario[] = [
+        ["existing attempt", ({ args }) => args, "existing"],
+        ["missing selected file", ({ args }) => args, "missing file"],
+        [
+          "missing parent",
+          ({ args, root }) => [...args.slice(0, -1), join(root, "missing", "attempt")],
+          "missing parent",
+        ],
+        ["legacy state", ({ args, state }) => [...args, "--state", state]],
+        ["legacy results", ({ args, results }) => [...args, "--results", results]],
+        // The former result/ownership-marker collision must be refused before either write.
+        [
+          "legacy state/result alias",
+          ({ args, state }) => [...args, "--state", state, "--results", `${state}.lifecycle-owner`],
+        ],
+        ["name without file", ({ args }) => [...args, "--test-name", "resource"]],
+        ["missing name value", selected("--test-name")],
+        ["name followed by option", ({ args }) => [...args, "--test-name", "--file", file]],
+        ["empty equals name", selected("--test-name=")],
+        ["duplicate separate then equals", selected(...separate, equals), "duplicate"],
+        ["duplicate equals then separate", selected(equals, ...separate), "duplicate"],
+        ["duplicate separate", selected(...separate, ...separate), "duplicate"],
+        ["duplicate equals", selected(equals, equals), "duplicate"],
+        ["duplicate empty then separate", selected("--test-name=", ...separate), "duplicate"],
+        ["duplicate empty then equals", selected("--test-name=", equals), "duplicate"],
+        ["unregistered name", selected("--test-name", "unregistered")],
+        ["empty name", selected("--test-name", " ")],
+        ["overlong name", selected("--test-name", "é".repeat(129))],
+        ["reserved root name", selected("--test-name", "<root>")],
+        [
+          "reserved file name",
+          ({ args, root }) => [...args, "--file", file, "--test-name", join(root, file)],
+        ],
+        [
+          "name on audit",
+          ({ args }) => ["audit", ...args.slice(2), "--file", file, "--test-name", "resource"],
+        ],
+        ["removed pattern option", selected("--test-name-pattern", "resource")],
+        ["removed equals pattern option", selected("--test-name-pattern=resource")],
+      ];
+      for (const [label, buildArgs, condition] of scenarios) {
+        await t.test(label, async (t) => {
           const fixture = await lifecycleFixture(t);
           const sentinel = "state belongs to an earlier owner\n";
-          let args = fixture.args;
-          if (scenario === "existing attempt") {
+          if (condition === "existing") {
             await mkdir(fixture.attempt);
             await writeFile(fixture.state, sentinel);
-          } else if (scenario === "missing selected file") {
-            await rm(join(fixture.root, "tests/integration/lifecycle.test.mjs"));
-          } else if (scenario === "missing parent") {
-            args = [...args.slice(0, -1), join(fixture.root, "missing", "attempt")];
-          } else if (scenario === "legacy state") {
-            args = [...args, "--state", fixture.state];
-          } else if (scenario === "legacy results") {
-            args = [...args, "--results", fixture.results];
-          } else if (scenario === "missing name value") {
-            args = [...args, "--file", "tests/integration/lifecycle.test.mjs", "--test-name"];
-          } else if (scenario === "name followed by option") {
-            args = [...args, "--test-name", "--file", "tests/integration/lifecycle.test.mjs"];
-          } else if (scenario === "empty equals name") {
-            args = [...args, "--file", "tests/integration/lifecycle.test.mjs", "--test-name="];
-          } else if (scenario.startsWith("duplicate ")) {
-            const name = "owned lifecycle resource is usable";
-            await writeRunnerManifest(
-              fixture.root,
-              {
-                lanes: {
-                  lifecycle: {
-                    files: [
-                      { path: "tests/integration/lifecycle.test.mjs", expectedTests: [name] },
-                    ],
-                  },
-                },
-              },
-              "scripts/ci/test-suites.json",
-            );
-            const selectors: Partial<Record<Scenario, string[]>> = {
-              "duplicate separate then equals": ["--test-name", name, `--test-name=${name}`],
-              "duplicate equals then separate": [`--test-name=${name}`, "--test-name", name],
-              "duplicate separate": ["--test-name", name, "--test-name", name],
-              "duplicate equals": [`--test-name=${name}`, `--test-name=${name}`],
-              "duplicate empty then separate": ["--test-name=", "--test-name", name],
-              "duplicate empty then equals": ["--test-name=", `--test-name=${name}`],
-            };
-            const selection = selectors[scenario];
-            assert.ok(selection, "expected duplicate selectors for this scenario");
-            args = [...args, "--file", "tests/integration/lifecycle.test.mjs", ...selection];
-          } else if (scenario === "unregistered name") {
-            args = [
-              ...args,
-              "--file",
-              "tests/integration/lifecycle.test.mjs",
-              "--test-name",
-              "unregistered",
-            ];
-          } else if (scenario === "name without file") {
-            args = [...args, "--test-name", "resource"];
-          } else if (
-            scenario === "empty name" ||
-            scenario === "overlong name" ||
-            scenario === "reserved root name" ||
-            scenario === "reserved file name"
-          ) {
-            const names = {
-              "empty name": " ",
-              "overlong name": "é".repeat(129),
-              "reserved root name": "<root>",
-              "reserved file name": join(fixture.root, "tests/integration/lifecycle.test.mjs"),
-            };
-            args = [
-              ...args,
-              "--file",
-              "tests/integration/lifecycle.test.mjs",
-              "--test-name",
-              names[scenario],
-            ];
-          } else if (scenario === "name on audit") {
-            args = [
-              "audit",
-              ...args.slice(2),
-              "--file",
-              "tests/integration/lifecycle.test.mjs",
-              "--test-name",
-              "resource",
-            ];
-          } else if (
-            scenario === "removed pattern option" ||
-            scenario === "removed equals pattern option"
-          ) {
-            args = [
-              ...args,
-              "--file",
-              "tests/integration/lifecycle.test.mjs",
-              ...(scenario === "removed pattern option"
-                ? ["--test-name-pattern", "resource"]
-                : ["--test-name-pattern=resource"]),
-            ];
-          } else if (scenario === "legacy state/result alias") {
-            // The former result/ownership-marker collision is rejected as a
-            // legacy configuration before either pathname can be written.
-            args = [
-              ...args,
-              "--state",
-              fixture.state,
-              "--results",
-              `${fixture.state}.lifecycle-owner`,
-            ];
+          } else if (condition === "missing file") {
+            await rm(join(fixture.root, file));
+          } else if (condition === "duplicate") {
+            await writeLifecycleManifest(fixture.root, {
+              path: file,
+              expectedTests: [registeredName],
+            });
           }
+          const args = buildArgs(fixture);
           const result = await runRunnerAsync(args, {}, { timeout: 30_000 });
           assert.equal(result.error, undefined, result.stderr);
           assert.equal(result.status, 1, result.stderr);
-          if (scenario.startsWith("duplicate ")) {
+          if (condition === "duplicate") {
             // Reject during parsing, before preparation or creation of an owned attempt.
             assert.match(result.stderr, /--test-name may only be specified once/);
           }
-          if (scenario === "existing attempt") {
+          if (condition === "existing") {
             assert.equal(await readFile(fixture.state, "utf8"), sentinel);
           } else {
             await assert.rejects(stat(fixture.attempt), { code: "ENOENT" });
           }
-          if (scenario === "missing parent") {
+          if (condition === "missing parent") {
             await assert.rejects(stat(join(fixture.root, "missing")), { code: "ENOENT" });
           }
           await assert.rejects(readFile(fixture.trace), { code: "ENOENT" });

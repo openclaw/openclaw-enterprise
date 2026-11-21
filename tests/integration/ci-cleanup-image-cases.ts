@@ -81,7 +81,7 @@ if (args[0] === "tag" && !rows.some((row) => row[3] === args[1])) {
       spawnSync(
         process.execPath,
         [
-          join(repositoryRoot, "scripts/ci/prepare.mjs"),
+          join(repositoryRoot, "scripts/ci/prepare.ts"),
           "--lane",
           "qa-matrix",
           "--state",

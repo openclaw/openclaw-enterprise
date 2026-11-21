@@ -8,7 +8,7 @@ import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type ImageState = {
   version: number;
@@ -463,7 +463,7 @@ export function registerCommandOwnershipCases({
             new URL("../helpers/postgres-worker-revision-fixture.mjs", import.meta.url).href,
           );
           const waitImport = JSON.stringify(
-            new URL("../helpers/wait-for.mjs", import.meta.url).href,
+            new URL("../helpers/wait-for.ts", import.meta.url).href,
           );
           const body =
             scenario === "fixture-exit"
@@ -508,7 +508,7 @@ export function registerCommandOwnershipCases({
             if (scenario === "runner-cleanup-exit") {
               await mkdir(join(root, "scripts/ci"), { recursive: true });
               await writeFile(
-                join(root, "scripts/ci/prepare.mjs"),
+                join(root, "scripts/ci/prepare.ts"),
                 `
               import { cleanupState } from ${cleanupImport};
               export async function prepareFile() {

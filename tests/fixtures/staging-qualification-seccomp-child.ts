@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reviewedCodexSeccompSecurityOptions } from "../helpers/runtime-image-startup.mjs";
+import { reviewedCodexSeccompSecurityOptions } from "../helpers/runtime-image-startup.ts";
 
 test("runtime startup child consumes the reviewed Codex startup inputs", async () => {
   const profile = process.env.OCC_TEST_CODEX_SECCOMP_PROFILE;

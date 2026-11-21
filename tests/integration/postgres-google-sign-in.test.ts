@@ -9,20 +9,18 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
-  fakeGoogle,
   oidcUpgradeSettings,
-  googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
   fakeOidc,
   fixtureOidcIssuer,
 } from "../helpers/production-sign-in.mjs";
+import { fakeGoogle, googleSignIn, type GoogleAuthorization } from "../helpers/google-sign-in.ts";
 import {
   authOperation,
   changeAccount,
   injectLocalhost,
   oidcSignIn,
-  onboarded,
   parseAuthResponse,
   passwordSignIn,
   readAccount,
@@ -34,12 +32,11 @@ import {
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import {
   runGoogleGuardedProfileCases,
-  type GoogleAuthorization,
   type GoogleSignIn,
 } from "./postgres-google-guarded-profile-cases.ts";
-import { providerInstanceId } from "../helpers/human-login-transport.mjs";
+import { providerInstanceId } from "../helpers/human-login-transport.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 
 const googleClientId = "fixture-oce.apps.googleusercontent.com";
 const googleClientSecret = "fixture-google-client-secret";
@@ -97,19 +94,16 @@ test(
     });
     const address = clientAddresses("198.19");
     // Password onboarding on the default install, before Google is configured.
-    const { admin, accounts } = onboarded(
-      await authOperation("onboard accounts", () =>
-        onboard({
-          passwordSlowLaneFloors: slowLane,
-          remoteAddress: address(),
-          accounts: {
-            member: { email: `google-member@${hostedDomain}` },
-            disabled: { email: `google-disabled@${hostedDomain}` },
-            both: { email: `google-both@${hostedDomain}` },
-          },
-        }),
-      ),
-      ["member", "disabled", "both"],
+    const { admin, accounts } = await authOperation("onboard accounts", () =>
+      onboard({
+        passwordSlowLaneFloors: slowLane,
+        remoteAddress: address(),
+        accounts: {
+          member: { email: `google-member@${hostedDomain}` },
+          disabled: { email: `google-disabled@${hostedDomain}` },
+          both: { email: `google-both@${hostedDomain}` },
+        },
+      }),
     );
     const { member, disabled, both } = accounts;
 
@@ -177,10 +171,10 @@ test(
       return {
         callback,
         cookie,
-        attemptId: text(signIn.attemptId),
-        url: text(signIn.url),
-        state: text(signIn.state),
-        bindingCookie: text(signIn.bindingCookie),
+        attemptId: signIn.attemptId,
+        url: signIn.url,
+        state: signIn.state,
+        bindingCookie: signIn.bindingCookie,
       };
     }
 

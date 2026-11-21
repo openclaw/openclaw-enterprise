@@ -8,7 +8,7 @@ import type {
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
 } from "../../packages/contracts/src/index.ts";
-import { unreadableGatewayPasswordRefusal } from "../helpers/refusal-text.mjs";
+import { unreadableGatewayPasswordRefusal } from "../helpers/refusal-credential-diagnostics.ts";
 import {
   dockerDriver,
   dockerGatewayRevision,
@@ -181,11 +181,14 @@ export function registerGatewayLaunchCases() {
             "OPENCLAW_GATEWAY_PASSWORD",
           ],
           [passwordAuth({ source: "vault", provider: "default", id: "X" }), "shape"],
-        ] satisfies [OpenClawConfigurationDocument, string, ...string[]][]
-      ).map(([configuration, held, ...shown]): [OpenClawConfigurationDocument, string, RegExp] => [
+        ] satisfies [
+          OpenClawConfigurationDocument,
+          ...Parameters<typeof unreadableGatewayPasswordRefusal>,
+        ][]
+      ).map(([configuration, ...diagnostic]): [OpenClawConfigurationDocument, string, RegExp] => [
         configuration,
         "gateway.auth.password",
-        exactly(unreadableGatewayPasswordRefusal(held, ...shown)),
+        exactly(unreadableGatewayPasswordRefusal(...diagnostic)),
       ]),
     ];
     for (const [configuration, setting, expected] of refusals) {

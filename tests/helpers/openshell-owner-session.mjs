@@ -13,7 +13,7 @@ import { chromium } from "playwright";
 import { publishedJSON } from "./dev-up-keycloak.mjs";
 import { launchTrustingBrowser, preflightTrustingBrowser } from "./trusted-chromium.ts";
 import { enableInstalledOidcNativeAdmin } from "./native-admin-oidc-k3d.mjs";
-import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
+import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.ts";
 
 const execute = promisify(execFile);
 
