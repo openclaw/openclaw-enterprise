@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-18
-last_updated_session: authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Harness Execution Topology Flow
@@ -14,7 +14,7 @@ Deployment saves settings and authentication. Compute checks workload readiness,
 
 - Trigger: exact-Agent `POST /namespaces/:namespaceId/agents/:agentId/deploy` and durable version
   reconciliation.
-- Source: `packages/occ/src/index.ts:OpenClawController.deployAgent` and
+- Source: `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment` and
   `apps/controller/src/worker.ts:ControllerWorker`.
 - Assumptions: authorized actor; ready Namespace; same-Namespace native agent Configuration;
   explicit execution mode; and a supported `harnessAuth` binding with an authorized
@@ -56,7 +56,7 @@ graph TD
 
 ### 1. Freeze Gateway and Harness settings
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 OCC locks the authorized Agent and Configuration, resolves `agentRuntime.id`,
 and validates primary/fallback routes and Harness modes. Fallbacks preserve native order,
@@ -352,6 +352,7 @@ removal.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-18 22:35: Retain native scope policy (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
 
 - 2026-11-18 20:10: Remove the recovery-generation boundary; later Gateway startup uses native eligibility (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 11cef2cb9)

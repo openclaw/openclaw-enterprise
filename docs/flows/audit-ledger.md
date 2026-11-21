@@ -145,10 +145,11 @@ The caller can append alongside resource changes in one unit of work. The
 standalone PostgreSQL audit sink opens its own transaction. With Control Plane
 audit enabled, PostgreSQL limits each statement and lock wait in the API's
 standalone audit write to two seconds. Separately, the work queue commits queue
-and claim events with the corresponding change. The queue event records the API
-request ID when a request started the work. The claim event carries a distinct
-attempt ID. That ID also identifies later evidence for the same claim. A claim
-insert failure leaves the job available.
+and claim events with the corresponding change. When the API supplies a request
+ID, the queue event records it from
+`packages/occ/src/controller-work-recorder.ts:record`.
+The claim event carries a distinct attempt ID. That ID also identifies later
+evidence for the same claim. A claim insert failure leaves the job available.
 
 The worker uses `transactWithQueue` for some transitions. It also calls pool-backed
 stale-work recovery, which issues two separate SQL statements. Each statement is
@@ -159,8 +160,13 @@ work `failed_permanent`) are ordinary details, not reserved metadata.
 
 ### 4. The transaction owner finishes or fails
 
-`packages/occ/src/state/postgres-state.ts:PostgresPlatformState` and
+`packages/occ/src/controller-transactions.ts:createControllerTransactions`,
+`packages/occ/src/state/postgres-state.ts:PostgresPlatformState`, and
 `packages/occ/src/ports/transaction.ts:RepositoryTransactionLifetime`
+
+Nested controller mutations use the current unit of work. The transaction scope
+keeps any registered compensation callbacks with that unit. Definite failures
+run compensation. OCC propagates an unknown commit before invoking these callbacks.
 
 After the callback returns, State closes admission to repository operations and
 waits for already admitted operations to settle before committing. On failure it
@@ -205,8 +211,8 @@ copies and array are immutable.
 
 ### 6. The Agent audit API saves a disclosure for each page
 
-`apps/controller/src/http/agent-audit.ts:createAgentAuditReader` and
-`packages/occ/src/index.ts:OpenClawController.listAgentAuditEvents`, and
+`apps/controller/src/http/agent-audit.ts:createAgentAuditReader`,
+`packages/occ/src/agent-audit-reader.ts:listAgentAuditEvents`, and
 `apps/controller/src/composition/control-plane-audit.ts:postgresAgentAuditState`
 
 When audit is enabled, composition supplies the PostgreSQL audit reader. The

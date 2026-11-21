@@ -27,7 +27,7 @@ import { deploymentDiagnostics } from "../../packages/occ/src/deployment-diagnos
 import {
   validateFailureData,
   validateRuntimeFailureEvidence,
-} from "../../packages/occ/src/state/controller-work.ts";
+} from "../../packages/occ/src/controller-work-result.ts";
 import type { RuntimeDiagnosticCheck } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 

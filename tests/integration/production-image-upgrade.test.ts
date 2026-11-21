@@ -553,7 +553,7 @@ fi
       cwd: repository,
       env: environment,
     }),
-    /protected Helm values differ from the live release/,
+    /the protected Helm values differ from the live release\..*before-values\.yaml to before-live-values\.yaml in the evidence directory/u,
   );
   await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
 
@@ -620,7 +620,7 @@ fi
         assert.equal(failure.code, 1);
         assert.match(
           failure.stderr,
-          /the protected Installation YAML differs from the live Secret/,
+          /the protected Installation YAML differs from the live Secret\..*before-installation\.yaml to before-live-installation\.yaml in the evidence directory/u,
         );
         return true;
       },

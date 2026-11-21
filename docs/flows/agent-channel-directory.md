@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-19
-last_updated_session: authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a
+updated: 2026-11-20
+last_updated_session: authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -22,7 +22,7 @@ actionable error.
 - Assumptions: the caller can create an Agent or update the exact Agent or
   Configuration, and can operate the selected same-Namespace Secret.
 - Source: `apps/controller/src/console/agents/slack-directory.mts:createSlackDirectoryField`,
-  `packages/occ/src/index.ts:OpenClawController.lookupChannelDirectory`,
+  `packages/occ/src/setup-discovery.ts:SetupDiscovery.lookupChannelDirectory`,
   and `apps/controller/src/drivers/channel/slack.ts:SlackChannelDriver.lookupDirectory`.
 
 ## Flow
@@ -49,7 +49,7 @@ graph TD
 
 ### 1. Authorize the selected Secret
 
-`packages/occ/src/index.ts:OpenClawController.channelDirectorySecret`
+`packages/occ/src/setup-discovery.ts:SetupDiscovery.channelDirectorySecret`
 
 The request names a same-Namespace Secret and optionally an Agent or
 Configuration being edited. OCC checks the matching create or exact update
@@ -58,7 +58,7 @@ platform state. A missing or foreign target is rejected before provider I/O.
 
 ### 2. Read and use the current value
 
-`packages/occ/src/index.ts:OpenClawController.lookupChannelDirectory`
+`packages/occ/src/setup-discovery.ts:SetupDiscovery.lookupChannelDirectory`
 
 Composition binds the Slack Driver to the reserved OCC channel-egress listener
 from the validated Installation configuration. Missing routing prevents provider
@@ -159,6 +159,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
 
 - 2026-11-19 00:02: Routed provider requests through managed OCC channel egress (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - e05a54b4b3daf86249c89aaeb2a8491dd52c80cc)
 
