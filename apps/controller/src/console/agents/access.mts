@@ -83,7 +83,7 @@ function directGrantLabel(grants: readonly DirectGrant[]) {
     return "Open Agent UI · administer";
   }
   if (has("operate")) {
-    return "Open chat · operate";
+    return "Chat access · operate";
   }
   if (grants.every(({ role }) => isReadOnlyAgentRole(role))) {
     return viewAgentLabel;

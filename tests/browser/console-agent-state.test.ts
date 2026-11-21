@@ -2470,7 +2470,9 @@ test("Access groups exact Agent grants and removes only the selected binding", a
   await administration.getByRole("button", { name: "Remove binding", exact: true }).click();
   assert.equal((await deleted).status(), 204);
   await panel.getByText("Binding removed.", { exact: false }).waitFor();
-  await row.locator("summary").getByText("Open chat · operate", { exact: true }).waitFor();
+  const summaryLabel = row.locator(":scope > summary");
+  await summaryLabel.getByText("Chat access · operate", { exact: true }).waitFor();
+  assert.equal(await summaryLabel.getByRole("link").count(), 0);
   await row.getByText(chat.bindingId, { exact: true }).waitFor();
   assert.equal(await administration.count(), 0);
 });

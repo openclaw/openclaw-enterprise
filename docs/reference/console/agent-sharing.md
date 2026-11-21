@@ -39,8 +39,9 @@ email is not shown. The Console does not search for people or list accounts.
 A denied or failed name read does not change the grants or the available actions.
 
 For a Principal, **Open Agent UI · administer** means a listed Role grants
-exact-Agent `administer`. Otherwise **Open chat · operate** means a listed Role
-grants exact-Agent `operate`. A Role name or read grant does not determine the
+exact-Agent `administer`. Otherwise **Chat access · operate** means a listed
+Role grants exact-Agent `operate`. The badge is not a launch link; **Open chat**
+remains in the Agent header when available to the signed-in user. A Role name or read grant does not determine the
 label. A binding whose Role is not listed remains visible. These labels are not
 an effective-access report and do not confirm that the Agent UI is available.
 

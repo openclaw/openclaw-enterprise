@@ -113,7 +113,7 @@ In **Pages → Agent detail → Direct Agent grant roster**, expand **Morgan Che
 to see the full Principal ID and both bindings. **Research support** shows
 **View Agent in OCC**; open **Technical details** to see the raw permission and
 IDs. Remove **Research support** and check that **Research chat** and the
-**Open chat · operate** label remain. The read-only Principal uses the ID
+**Chat access · operate** label remain. The read-only Principal uses the ID
 because no name is available. The Service
 Principal is listed separately. **Direct Agent grant names unavailable** shows
 the ID fallback when the optional name read is refused. **Share an Agent**
