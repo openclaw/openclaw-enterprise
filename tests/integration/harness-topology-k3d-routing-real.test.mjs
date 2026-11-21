@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
   arrangeProductionTopology,
@@ -8,12 +9,111 @@ import {
   assertRoutedWorkspaceFileReads,
   assertRoutedWorkspaceFilesThroughOcc,
   assertRoutedWorkspaceModelTurn,
+  gatewayCall,
   kubectl,
+  messageText,
   requiresGatewayRouting,
   resource,
   waitFor,
+  waitForGatewayHistory,
   waitForReadyGatewayPod,
 } from "../helpers/harness-topology-k3d-real.mjs";
+
+async function pinSkillForReplacement(topology, sessionKey) {
+  const call = (method, params) => gatewayCall(topology, method, params);
+  const claimUid = async () => {
+    const volume = topology.gatewayPod.spec.volumes.find(
+      (v) => v.name === "openclaw-gateway-state",
+    );
+    const name = volume.persistentVolumeClaim.claimName;
+    const claim = await resource("persistentvolumeclaim", name, topology.gatewayPlacement);
+    assert.ok(claim.metadata.uid);
+    return claim.metadata.uid;
+  };
+  const pvc = await claimUid();
+  const before = await call("chat.history", { sessionKey });
+  assert.ok(before.sessionId);
+  assert.ok(
+    before.messages.some(
+      (m) => m.role === "assistant" && messageText(m).includes(topology.publicGithubRead.marker),
+    ),
+    "expected the original reader session",
+  );
+
+  // Generate both answers after the last model turn. Only a fresh read of A can supply its answer.
+  const slug = `continuity${randomUUID().slice(0, 8)}`;
+  const answer = `PINNED_${randomUUID().replaceAll("-", "")}`;
+  const other = `NEWER_${randomUUID().replaceAll("-", "")}`;
+  const bundle = (value) =>
+    `---\nname: ${slug}\ndescription: Return a synthetic continuity answer.\n---\n\nReturn exactly ${value} and no other text.\n`;
+  const content = bundle(answer);
+  const { entry } = await call("skills.library.save", { slug, content, expectedRevision: null });
+  const { skillId, revision } = entry;
+  const pin = { sessionKey, skillId, revision };
+  const selected = (selections) => {
+    const matches = selections.filter((v) => v.skillId === skillId);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0].revision, revision);
+    assert.ok(matches[0].name);
+    return matches[0].name;
+  };
+  const attached = await call("skills.library.activate", { ...pin, action: "attach" });
+  const name = selected(attached.selections);
+  assert.equal((await call("skills.library.read", pin)).content, content);
+  const newer = await call("skills.library.save", {
+    slug,
+    skillId,
+    expectedRevision: revision,
+    content: bundle(other),
+  });
+  assert.equal(newer.entry.skillId, skillId);
+  assert.notEqual(newer.entry.revision, revision);
+
+  return async () => {
+    assert.equal(await claimUid(), pvc);
+    const restored = await waitForGatewayHistory(
+      topology,
+      sessionKey,
+      "restored session",
+      (h) => h,
+    );
+    assert.equal(restored.sessionId, before.sessionId);
+    assert.ok(!JSON.stringify(restored.messages).includes(answer));
+    assert.equal(
+      selected((await call("skills.library.list", { sessionKey })).session.selections),
+      name,
+    );
+    assert.equal((await call("skills.library.read", pin)).content, content);
+    const prompt = `/skill ${name} Return the pinned answer.`;
+    const { runId } = await call("chat.send", {
+      sessionKey,
+      idempotencyKey: randomUUID(),
+      message: prompt,
+    });
+    assert.ok(runId);
+    const turn = await call("agent.wait", { runId, timeoutMs: 120_000 });
+    assert.equal(turn.runId, runId);
+    assert.equal(turn.status, "ok");
+    await waitForGatewayHistory(topology, sessionKey, "pinned skill continuation", (history) => {
+      assert.equal(history.sessionId, before.sessionId);
+      const rows = history.messages.filter((m) => m.__openclaw?.runId === runId);
+      const replies = rows.filter((m) => m.role === "assistant" && m.stopReason === "stop");
+      if (!replies.length) {
+        return undefined;
+      }
+      // The user row can lack a run ID. Its skill name is unique to this turn.
+      assert.equal(
+        history.messages.filter((m) => m.role === "user" && messageText(m).includes(prompt)).length,
+        1,
+      );
+      assert.ok(
+        messageText(replies.at(-1)).trim() === answer,
+        "expected the pinned revision's answer",
+      );
+      return true;
+    });
+  };
+}
 
 test(
   "production dedicated Codex consumes Envoy-routed workspace files through OCC",
@@ -29,7 +129,7 @@ test(
       const connection = await topology.workspaceGateway.connect(topology);
       // Trusted-proxy routing must retain password-authenticated direct loopback access.
       await assertActualModelTurn(topology);
-      await assertActualPublicGithubRead(topology);
+      const sessionKey = await assertActualPublicGithubRead(topology);
       const routeBefore = await resource(
         "httproute",
         topology.gatewayServiceName,
@@ -75,6 +175,8 @@ test(
         "Real Envoy rejected missing/invalid credentials and direct peers; key rotation and served certificate renewal preserved OCC access without restart.",
       );
 
+      const verifyPinnedSkill = await pinSkillForReplacement(topology, sessionKey);
+
       // Replace only the Pod: the stable route and Service must preserve the same workspace.
       const recoveryStartedAt = Date.now();
       const previousUid = topology.gatewayPod.metadata.uid;
@@ -92,6 +194,7 @@ test(
         topology.revision.id,
         previousUid,
       );
+      assert.notEqual(topology.gatewayPod.metadata.uid, previousUid);
       context.diagnostic(
         "Replacement Gateway Pod is Ready; waiting for its native workspace connection.",
       );
@@ -134,6 +237,8 @@ test(
       context.diagnostic(
         "Gateway Pod UID changed; unchanged route served four persisted files and a second fresh model session.",
       );
+      await verifyPinnedSkill();
+      context.diagnostic("The original session answered from its pinned Skill Library revision.");
       // Stop through OCC so the normal worker must remove both serving routes
       // and the node policy, rather than relying on namespace teardown.
       const stopped = await topology.request(
