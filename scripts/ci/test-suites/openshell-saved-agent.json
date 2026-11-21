@@ -8,7 +8,10 @@
     "OPENAI_API_KEY": "fixture-only-no-model-call",
     "OCC_TEST_OPENAI_MODEL": "fixture-only-no-model-call"
   },
-  "optionalEnv": ["OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER"],
+  "optionalEnv": [
+    "OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER",
+    "OCC_TEST_OPENSHELL_SAVED_AGENT_REST_WRITE"
+  ],
   "prepare": {},
   "files": [
     {

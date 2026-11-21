@@ -18,6 +18,10 @@ export const scopedRestFixturePermissions = Object.freeze({
   issues: "read",
   pull_requests: "write",
 });
+export const scopedRestWriteFixturePermissions = Object.freeze({
+  ...scopedRestFixturePermissions,
+  issues: "write",
+});
 
 // Test-only origin. Callers own close(); no environment credentials or user Git
 // configuration are inherited. Only snapshot() is intended for logged evidence.
@@ -34,7 +38,7 @@ export async function startSkipperPrivateGitOrigin({
   seedRefs = 0,
   witnessIssuedGit = false,
   networkAcl = /** @type {boolean | "issued"} */ (false),
-  scopedRest = false,
+  scopedRest = /** @type {boolean | "writes"} */ (false),
 } = {}) {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(repository)) {
     throw new Error("repository must be owner/name");
@@ -240,7 +244,13 @@ export async function startSkipperPrivateGitOrigin({
       }),
       additionalPermissions: [
         ...(teamReview ? [{ metadata: "read", contents: "write", pull_requests: "write" }] : []),
-        ...(scopedRest ? [scopedRestFixturePermissions] : []),
+        ...(scopedRest
+          ? [
+              scopedRest === "writes"
+                ? scopedRestWriteFixturePermissions
+                : scopedRestFixturePermissions,
+            ]
+          : []),
       ],
     });
     const reviewHead = approvalRef.slice("refs/heads/".length);
@@ -250,6 +260,8 @@ export async function startSkipperPrivateGitOrigin({
     /** @typedef {{ ref: string, sha: string, repo: { id: number, full_name: string } }} ScopedPullSide */
     /** @type {Map<string, { number: number, title: string, state: string, draft: boolean, head: ScopedPullSide, base: ScopedPullSide }>} */
     const scopedPulls = new Map();
+    const scopedIssues = new Map();
+    let redirectIssueReadToC = false;
     const observePullRequest = async () => {
       if (!pullRequest) {
         return null;
@@ -326,7 +338,7 @@ export async function startSkipperPrivateGitOrigin({
       const authorization = request.headers.authorization;
       const authenticated = authority.authorize(authorization);
       const operation = {
-        issues: "rest-issue-list",
+        issues: request.method === "POST" ? "rest-issue-create" : "rest-issue-list",
         "issues/42": "rest-issue-read",
         pulls: "rest-pull-create",
       }[route];
@@ -342,21 +354,50 @@ export async function startSkipperPrivateGitOrigin({
         return;
       }
       const permissions = authority.permissions(authorization);
-      if (route !== "pulls" && request.method === "GET" && permissions?.issues === "read") {
+      if (
+        route !== "pulls" &&
+        request.method === "GET" &&
+        (permissions?.issues === "read" || permissions?.issues === "write")
+      ) {
+        if (redirectIssueReadToC && name === "fixture/b" && route === "issues/42") {
+          redirectIssueReadToC = false;
+          reply(302, {}, { location: "/repos/fixture/c/issues/42" });
+          return;
+        }
         const issue = { number: 42, title: `Fixture issue in ${name}`, state: "open" };
-        reply(200, route === "issues" ? [issue] : issue);
+        const created = scopedIssues.get(name);
+        reply(200, route === "issues" ? (created ? [issue, created] : [issue]) : issue);
         return;
       }
-      if (
-        route !== "pulls" ||
-        request.method !== "POST" ||
-        permissions?.pull_requests !== "write"
-      ) {
+      const createIssue =
+        scopedRest === "writes" && route === "issues" && permissions?.issues === "write";
+      const createPull = route === "pulls" && permissions?.pull_requests === "write";
+      if (request.method !== "POST" || (!createIssue && !createPull)) {
         reply(403);
         return;
       }
       const fields = await readPullBody(request, reply);
       if (fields === undefined) {
+        return;
+      }
+      if (createIssue) {
+        const { title, body } = fields;
+        if (
+          typeof title !== "string" ||
+          !title ||
+          typeof body !== "string" ||
+          scopedIssues.has(name)
+        ) {
+          reply(422);
+          return;
+        }
+        if (!authority.authorize(authorization)) {
+          reply(403);
+          return;
+        }
+        const issue = { number: 43, title, body, state: "open" };
+        scopedIssues.set(name, issue);
+        reply(201, issue);
         return;
       }
       const { title, head, base, draft = false } = fields;
@@ -411,11 +452,12 @@ export async function startSkipperPrivateGitOrigin({
       if (networkAcl) {
         unknownNetworkRequests++;
       }
-      const reply = (status, body = {}) => {
+      const reply = (status, body = {}, headers = {}) => {
         count(endpoint, status);
         response.writeHead(status, {
           "content-type": "application/json",
           ...(status === 401 ? { "www-authenticate": 'Basic realm="private fixture"' } : {}),
+          ...headers,
         });
         response.end(status === 204 ? undefined : JSON.stringify(body));
       };
@@ -825,6 +867,11 @@ export async function startSkipperPrivateGitOrigin({
           requests: () => networkRequests.map((entry) => ({ ...entry })),
           /** @param {string} name */
           pullRequest: (name) => structuredClone(scopedPulls.get(name)),
+          createdIssue: (name) => structuredClone(scopedIssues.get(name)),
+          redirectNextIssueReadToC() {
+            assert.ok(scopedRest === "writes" && !redirectIssueReadToC);
+            redirectIssueReadToC = true;
+          },
           unknownRequests: () => unknownNetworkRequests,
           async ref(name, ref) {
             assert.ok(networkRepositories.includes(name));

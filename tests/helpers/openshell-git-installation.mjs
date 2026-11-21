@@ -22,6 +22,7 @@ import { createTlsMaterial, run } from "../fixtures/repository-credentials/proce
 import {
   scopedRestFixturePermissions,
   startSkipperPrivateGitOrigin,
+  scopedRestWriteFixturePermissions,
 } from "../fixtures/skipper-private-git-origin.mjs";
 import { startSyntheticEgressProvider } from "../fixtures/synthetic-egress-provider.mjs";
 import { availablePort } from "./available-port.ts";
@@ -250,7 +251,7 @@ async function certificates(
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, issueReads?: boolean }} [options]
+ * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, issueReads?: boolean, restWrites?: "v1" | "v2" }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
@@ -260,6 +261,7 @@ export function createOpenShellGitInstallation(
     allowStandingApprovals = false,
     nativeGit = false,
     issueReads = false,
+    restWrites,
   } = {},
 ) {
   return ownFirstAgentWork(t)(
@@ -269,18 +271,20 @@ export function createOpenShellGitInstallation(
       allowStandingApprovals,
       nativeGit,
       issueReads,
+      restWrites,
     }),
   );
 }
 
 async function installOpenShellGit(
   t,
-  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, issueReads },
+  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, issueReads, restWrites },
 ) {
   assert.ok(
     !nativeGit || !allowStandingApprovals,
     "Native Git requires the finite selected-repository fixture",
   );
+  assert.ok(!restWrites || issueReads);
   assert.ok(!issueReads || nativeGit, "Issue reads require the native selected-repository fixture");
   if (nativeGit) {
     assert.equal(process.env.OPENAI_API_KEY, "fixture-only-no-model-call");
@@ -522,7 +526,7 @@ async function installOpenShellGit(
     advertisedHost: originHost,
     witnessIssuedGit: nativeGit || witnessIssuedGit,
     ...(nativeGit && { networkAcl: "issued", repository: "fixture/a" }),
-    scopedRest: issueReads,
+    scopedRest: restWrites ? "writes" : issueReads,
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
@@ -621,10 +625,13 @@ async function installOpenShellGit(
           namespaceId: space.id,
           profiles: ["github-repository"],
           permissions: optedIn
-            ? scopedRestFixturePermissions
+            ? restWrites
+              ? scopedRestWriteFixturePermissions
+              : scopedRestFixturePermissions
             : { metadata: "read", contents: "write" },
           ...(nativeGit && { nativeGit: "v1" }),
-          ...(optedIn && { scopedRest: "v1" }),
+          ...(optedIn && { scopedRest: restWrites ?? "v1" }),
+          ...(optedIn && restWrites && { nativeRestWrites: true }),
           ...(allowStandingApprovals && { allowStandingApproval: true }),
         };
       }),
@@ -973,18 +980,22 @@ async function installOpenShellGit(
     ...gatewayValues.supervisor.network,
     additionalCaConfigMapName: destinationCa.metadata.name,
   };
-  gatewayValues.gatewayConfig["openshell.supervisor.middleware"] = [
-    {
-      name: "oce-prepared-git",
-      grpc_endpoint: callbacks ? callbacks.endpoint : `https://${authorityHost}:8445`,
-      tls_ca_cert_path: "/etc/openshell-git-ca/ca.crt",
-      audience: "oce-prepared-git",
-      binding_policy: "allowlist",
-      bindings: ["http_request_pre_credentials"],
-      max_payload_bytes: 4194304,
-      timeout: "5s",
-    },
-  ];
+  const middleware = {
+    name: "oce-prepared-git",
+    grpc_endpoint: callbacks ? callbacks.endpoint : `https://${authorityHost}:8445`,
+    tls_ca_cert_path: "/etc/openshell-git-ca/ca.crt",
+    audience: "oce-prepared-git",
+    binding_policy: "allowlist",
+    bindings: ["http_request_pre_credentials"],
+    max_payload_bytes: 4194304,
+    timeout: "5s",
+  };
+  gatewayValues.gatewayConfig["openshell.supervisor.middleware"] = restWrites
+    ? [
+        middleware,
+        { ...middleware, name: "oce-prepared-git-rest-writes", http_request_methods: ["POST"] },
+      ]
+    : [middleware];
   gatewayValues.server.extraVolumes = [
     ...(gatewayValues.server.extraVolumes ?? []),
     { name: "git-authority-ca", configMap: { name: "git-fixture-ca" } },
@@ -1921,8 +1932,8 @@ process.stdout.write(JSON.stringify(await inspectObserver(process.argv[1])));`,
   assert.equal(initial.disabled, false);
   let disabled = false;
   const observedAttempts = async (action) => {
-    if (action === "disable") {
-      disabled = true;
+    if (action !== "read") {
+      disabled = action === "disable";
     }
     const receipt = await inspect(action);
     assert.equal(receipt.generation, initial.generation, "Git callback observer restarted");
@@ -1932,6 +1943,7 @@ process.stdout.write(JSON.stringify(await inspectObserver(process.argv[1])));`,
   return {
     read: () => observedAttempts("read"),
     disable: () => observedAttempts("disable"),
+    resume: () => observedAttempts("resume"),
     endpoint: `https://${name}.${platform}.svc.cluster.local:${port}`,
   };
 }
