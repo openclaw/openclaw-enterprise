@@ -65,32 +65,43 @@ async function cliJson(stack: SmokeStack, args: string[]): Promise<unknown> {
 
 // A deployment must settle at succeeded with its revision active; a failed
 // status fails the smoke at once. Serving is proven separately by a model turn.
-async function waitForDeployment(
-  stack: SmokeStack,
+export async function waitForDeployment(
+  stack: Pick<SmokeStack, "namespaceId" | "api">,
   agentId: string,
   revisionId: string | undefined,
   label: string,
+  clock?: Parameters<typeof waitFor>[3],
 ) {
   const base = `/namespaces/${stack.namespaceId}/agents/${agentId}`;
   await waitFor(
     `${label} revision ${revisionId}`,
     async () => {
-      const [deployment, agent] = await Promise.all([
-        stack.api("GET", `${base}/deployments/${revisionId}`),
-        stack.api("GET", base),
-      ]);
-      const status = wireField(deployment, "status");
-      if (status === "failed") {
-        throw new Error(
-          `${label}: deployment failed ${JSON.stringify(wireField(deployment, "error"))}`,
-        );
+      const deploymentRead = stack
+        .api("GET", `${base}/deployments/${revisionId}`)
+        .then((deployment) => {
+          if (deployment != null && wireField(deployment, "status") === "failed") {
+            throw new Error(
+              `${label}: deployment failed ${JSON.stringify(wireField(deployment, "error"))}`,
+            );
+          }
+          return deployment;
+        });
+      let agentRead: Promise<unknown>;
+      try {
+        agentRead = stack.api("GET", base);
+      } catch (error) {
+        // Join both reads while preserving the settlement order of returned promises.
+        agentRead = Promise.reject(error);
       }
+      const [deployment, agent] = await Promise.all([deploymentRead, agentRead]);
+      const status = wireField(deployment, "status");
       return {
         done: status === "succeeded" && wireField(agent, "activeRevisionId") === revisionId,
         state: { deployment: status, active: wireField(agent, "activeRevisionId") },
       };
     },
     10 * minute,
+    clock,
   );
 }
 
