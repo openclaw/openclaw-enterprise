@@ -452,14 +452,14 @@ import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformOperation } from "./ports/platform-operations.ts";
 import type { PlatformStateStore } from "./ports/platform-state-store.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import type { DeploymentStatusResult } from "./controller-work.ts";
 import {
   controllerWorkDeploymentStatus,
   deploymentErrorForWork,
   deploymentProgressForWork,
   deploymentStatusForWork,
   deploymentWarningsForWork,
-  type DeploymentStatusResult,
-} from "./state/controller-work.ts";
+} from "./deployment-work-status.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
 import {
   validAdmittedRepositoryBindings,
@@ -512,8 +512,11 @@ export {
   restrictionsRemovedWithAgent,
 } from "./iam-policy-cleanup.ts";
 export type { RemovedAccessBinding } from "./iam-policy-cleanup.ts";
-export { OPERATION_REFUSAL_HINT_CODES, operationRefusalHintCode } from "./state/controller-work.ts";
-export type { OperationRefusalHintCode } from "./state/controller-work.ts";
+export {
+  OPERATION_REFUSAL_HINT_CODES,
+  operationRefusalHintCode,
+} from "./deployment-work-status.ts";
+export type { OperationRefusalHintCode } from "./deployment-work-status.ts";
 export {
   ActivationFailedError,
   ComputePreparationFailedError,
@@ -774,19 +777,20 @@ export type { WorkClaim } from "./controller-work.ts";
 export { CREDENTIAL_WITHDRAWAL_TARGET } from "./controller-work.ts";
 export type { ClaimedWork, ControllerWork, ControllerWorkState } from "./controller-work.ts";
 export {
-  controllerWorkDeploymentStatus,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
   revisionAdmittedBeforeWork,
-  runtimeFailureCause,
-  validateRuntimeFailureEvidence,
-  type DeploymentStatus,
-  type DeploymentStatusError,
-  type DeploymentStatusResult,
-  type PluginDeploymentWarning,
-  type RuntimeFailureCause,
-  type RuntimeFailureEvidence,
-} from "./state/controller-work.ts";
+} from "./controller-work.ts";
+export type {
+  DeploymentStatus,
+  DeploymentStatusError,
+  DeploymentStatusResult,
+  PluginDeploymentWarning,
+} from "./controller-work.ts";
+export { controllerWorkDeploymentStatus } from "./deployment-work-status.ts";
+export { runtimeFailureCause } from "./runtime-failure-cause.ts";
+export { validateRuntimeFailureEvidence } from "./controller-work-result.ts";
+export type { RuntimeFailureCause, RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 export type {
   ActiveAgentRevisionSelection,
   AgentRevisionListing,

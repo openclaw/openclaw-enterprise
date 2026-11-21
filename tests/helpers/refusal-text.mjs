@@ -287,7 +287,7 @@ export const catalogRowUnselected = (provider) =>
 export const catalogRowNoModel = (provider) =>
   `Configuration setting ${provider}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`;
 // Deployment progress that asks an administrator to act, in fixed copy that never shows the
-// quota's numbers or the image reference (packages/occ/src/state/controller-work.ts).
+// quota's numbers or the image reference (packages/occ/src/deployment-work-status.ts).
 export const POD_QUOTA_FULL =
   "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.";
 export const IMAGE_PULL_FAILING =
