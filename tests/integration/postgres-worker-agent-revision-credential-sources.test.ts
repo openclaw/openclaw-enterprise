@@ -120,6 +120,9 @@ async function stagedCredentialScenario(
     { capabilities: { sandbox, credential_proxy_delivery: proxy } },
   );
   assert.deepEqual(workerRegistration.ref, registration.ref);
+  const workerNamespaceLifecycleBindings = runtime.namespaceLifecycleBindings?.map((binding) =>
+    binding.owner === registration ? { ...binding, owner: workerRegistration } : binding,
+  );
   const placedName = `placed-${randomUUID().slice(0, 8)}`;
   const compute = extendCompute({
     ...fixture.compute,
@@ -220,7 +223,7 @@ async function stagedCredentialScenario(
         },
       },
       secretDriver,
-      namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
+      namespaceLifecycleBindings: workerNamespaceLifecycleBindings,
       credentialDeliveryRegistration: workerRegistration,
       sandboxDriver: sandbox,
     }),
