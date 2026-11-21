@@ -54,7 +54,8 @@ interface SandboxPolicyDependencies {
     operation: Parameters<PlatformUnitOfWork["operations"]["append"]>[0],
   ) => Promise<void>;
   readonly resolveConfiguration: DriverConfigurationRegistry["resolve"];
-  readonly sandboxDriver: () => SandboxDriver | undefined;
+  readonly hasSandboxSelection: () => boolean;
+  readonly selectSandbox: () => SandboxDriver;
   readonly selectedCompute: () => ComputeDriver;
   readonly timestamp: () => string;
 }
@@ -188,6 +189,17 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   const { authorize, authorizationDecision, authorizationAuthority, holdAuthority } =
     dependencies.authority;
 
+  function sandboxDriver(): SandboxDriver | undefined {
+    if (!dependencies.hasSandboxSelection()) {
+      return undefined;
+    }
+    try {
+      return dependencies.selectSandbox();
+    } catch {
+      throw new DependencyUnavailableError("The selected Sandbox Driver is unavailable.");
+    }
+  }
+
   async function authorizePolicyEdit(principalId: string, namespaceId: string, agentId: string) {
     await authorize(principalId, "manage_policy", {
       kind: "agent",
@@ -205,7 +217,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   }
 
   function networkPolicyUnavailable(): string | undefined {
-    const driver = dependencies.sandboxDriver();
+    const driver = sandboxDriver();
     if (driver === undefined) {
       return NO_SANDBOX_DRIVER_NETWORK_POLICY;
     }
@@ -228,7 +240,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     revision: Readonly<AgentRevision> | undefined,
     facet: SandboxFacet,
   ): Promise<DriverConfigurationDescriptor | undefined> {
-    const driver = dependencies.sandboxDriver();
+    const driver = sandboxDriver();
     if (driver?.networkPolicy === undefined) {
       return undefined;
     }
@@ -374,7 +386,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         agent,
         policy.repositoryNetworkPolicy !== undefined,
       );
-      const driver = dependencies.sandboxDriver();
+      const driver = sandboxDriver();
       const unavailableReason = networkPolicyUnavailable();
       const defaults =
         revision === null
@@ -395,7 +407,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         protectedExecution:
           revision === null ||
           (await dependencies.protectedExecutionApplies(state, agent, revision)),
-        capability: dependencies.sandboxDriver()?.networkPolicy ?? null,
+        capability: sandboxDriver()?.networkPolicy ?? null,
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
         repositoryNetworkPolicySaveSupported:
@@ -465,7 +477,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     defaults?: SandboxPolicySnapshot["defaults"],
     scope?: { readonly repositoryCredentials: boolean },
   ): SandboxPolicySnapshot {
-    const driver = dependencies.sandboxDriver();
+    const driver = sandboxDriver();
     if (driver?.networkPolicy === undefined || driver.admitNetworkPolicy === undefined) {
       throw new ResourceStateConflictError(
         networkPolicyUnavailable() ?? SANDBOX_DRIVER_WITHOUT_NETWORK_POLICY,
@@ -531,7 +543,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       id: policy.id,
       namespaceId: policy.namespaceId,
     });
-    const driver = dependencies.sandboxDriver();
+    const driver = sandboxDriver();
     if (!driver?.admitNetworkPolicy) {
       return;
     }
@@ -710,10 +722,10 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       }
       if (policy.repositoryNetworkPolicy !== undefined) {
         throw new ResourceStateConflictError(
-          "Live application is unavailable for the saved repository network policy. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped. Applying the saved policy requires a deployment that can enforce it.",
+          "Live application cannot enforce repository grants. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped. Applying the saved policy requires a deployment that can enforce it.",
         );
       }
-      const driver = dependencies.sandboxDriver();
+      const driver = sandboxDriver();
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
       if (revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
         throw new ResourceStateConflictError(
@@ -806,7 +818,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       }
       return { namespace, revision };
     });
-    const driver = dependencies.sandboxDriver();
+    const driver = sandboxDriver();
     if (binding.revision.sandboxDriverId === undefined) {
       throw new ResourceStateConflictError(
         "This version runs without a Sandbox, so it records no network denials to recommend policy from. Policy recommendations need an Agent deployed with a Sandbox Driver such as OpenShell.",
@@ -899,6 +911,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   }
 
   return {
+    sandboxDriver,
     validateAgentSandboxPolicy,
     getAgentSandboxPolicy,
     setAgentSandboxPolicyEditing,

@@ -29,7 +29,7 @@ import {
   ScopeViolationError,
 } from "./errors.ts";
 import { exactNamespace } from "./resource-scope.ts";
-import { secretOperation } from "./secret-operations.ts";
+import { sameSecretBackend, secretOperation } from "./secret-operations.ts";
 
 export interface LookupChannelDirectoryInput {
   readonly secretId: string;
@@ -56,7 +56,6 @@ interface SetupDiscoveryDependencies {
   readonly selectCompute: () => ComputeDriver;
   readonly selectChannel: () => ChannelDriver;
   readonly secretDriver: (driverId: string) => SecretDriver;
-  readonly sameSecretBackend: (left: Secret, right: Secret) => boolean;
 }
 
 function validateChannelDirectoryInput(
@@ -233,7 +232,7 @@ export class SetupDiscovery {
         try {
           // Recheck the exact target grant and Secret identity after backend I/O.
           const current = await this.channelDirectorySecret(principalId, namespaceId, input);
-          if (!this.dependencies.sameSecretBackend(first.secret, current.secret)) {
+          if (!sameSecretBackend(first.secret, current.secret)) {
             return {
               validationError: new ResourceStateConflictError(
                 "The channel directory credential changed. Refresh and retry.",

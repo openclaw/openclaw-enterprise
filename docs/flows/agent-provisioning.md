@@ -17,7 +17,7 @@ See [worker reconciliation](controller-worker.md) and [Harness topology](harness
 ## Entry Points
 
 - Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mts`.
-- API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
+- API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/agent-provisioning-requests.ts:provisionAgent`.
 - Preconditions: a ready Namespace, Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
 
 ## Flow
@@ -75,7 +75,7 @@ For a draft, Console creates the Configuration and Agent, then grants access to 
 
 ### 2. OCC admits one job
 
-`packages/occ/src/index.ts:OpenClawController.provisionAgent`
+`packages/occ/src/agent-provisioning-requests.ts:provisionAgent`
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
@@ -168,7 +168,7 @@ Console parses each reply in
 recovery. A malformed present `agentId` or `revisionId` makes even a terminal
 `failed` reply unknown. The form keeps the accepted job URL and original request,
 disables Create, and offers Retry without a recovery link. Retry posts to the same
-job's `/retry`. `packages/occ/src/index.ts:retryAgentProvisioning` refuses a changed
+job's `/retry`. `packages/occ/src/agent-provisioning-requests.ts:retryAgentProvisioning` refuses a changed
 Agent lifecycle or an existing deployment handoff with `409`. After refusal during
 unknown-outcome recovery, the form enables a resend of the original request ID.
 

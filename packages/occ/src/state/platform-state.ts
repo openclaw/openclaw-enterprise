@@ -78,7 +78,7 @@ import {
   normalizedRepositoryBindings,
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
-} from "./repository-credential-state.ts";
+} from "../repository-credential-validation.ts";
 import type {
   ConnectionTemplate,
   OAuthConnectionTemplateVersion,
