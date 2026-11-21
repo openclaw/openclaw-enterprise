@@ -6,6 +6,8 @@ rfc: index.md
 
 This companion extends [RFC-0021](index.md) to direct human administration. OCE admins define the Agent's desired configuration, and OCC owns its deployment. A Gateway admin may also have permission to change OC directly. Managed mode is an OCE deployment setting that restricts those human actions while it is enabled.
 
+For the shipped settings, upstream OpenClaw changes and deployment limits, see the [Gateway managed mode reference](../../../docs/reference/agents/gateway-managed-mode.md).
+
 Managed mode defaults on. Only an authorized OCE admin can change it; Gateway privileges cannot change or bypass the setting. Turning it off lets authorized Gateway users experiment with local configuration without updating the OCE deployment each time. Existing Gateway permissions and deployment limits still apply. Local edits do not change OCE's desired state and may be lost on redeployment. When turning managed mode back on, stop further Gateway-local admin mutations and quiesce or contain prior Gateway-hosted admin execution. Report the mode active only after restoring OCE's desired configuration and applying the restrictions.
 
 OCE installs the saved Gateway tool policy in both modes. With managed mode off, an authorized Gateway admin can explicitly widen the local allowlist. After a native Gateway restart, subsequent model turns can use the newly allowed tools, including turns started by other people. Asking the Agent to act still uses the active tool policy. Redeploying with managed mode on restores the saved policy and blocks further local config writes.
