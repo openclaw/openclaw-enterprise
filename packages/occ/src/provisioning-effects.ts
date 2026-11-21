@@ -1,31 +1,11 @@
+import type {
+  AgentProvisioningRecord,
+  ProvisioningEffectReceipt,
+  ProvisioningEffectTarget,
+  ProvisioningPendingEffect,
+} from "./ports/agent-provisioning.ts";
 import { randomUUID } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-
-import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
-
-export type ProvisioningEffectKind = "configuration" | "transport";
-
-export interface ProvisioningEffectTarget {
-  readonly kind: ProvisioningEffectKind;
-  readonly targetId?: string;
-}
-
-export interface ProvisioningPendingEffect extends ProvisioningEffectTarget {
-  readonly owner?: string;
-  readonly targetId: string;
-  /**
-   * When the effect was recorded, on the database clock (the repository stamps it). Effects
-   * recorded before it existed have none.
-   */
-  readonly startedAt?: Date;
-  readonly targetMatches: boolean;
-  readonly ownerPresent: boolean;
-}
-
-export interface ProvisioningEffectReceipt extends ProvisioningEffectTarget {
-  readonly owner: string;
-  readonly targetId: string;
-}
 
 function targetIdFor(
   record: Pick<AgentProvisioningRecord, "agentId" | "configurationId">,
@@ -152,4 +132,48 @@ export function settleProvisioningEffect(
       targetId: targetIdFor(record, receipt),
     }),
   });
+}
+
+/**
+ * Names the Configuration a refused job wrote but never recorded, from just before its delete
+ * until the delete is known to have succeeded (finding 1399). The next attempt deletes it first.
+ */
+const UNRECORDED_CONFIGURATION = "unrecordedConfigurationId";
+
+function progressWithout(
+  progress: Readonly<Record<string, unknown>>,
+  keys: readonly string[],
+): Readonly<Record<string, unknown>> {
+  return Object.freeze(
+    Object.fromEntries(Object.entries(progress).filter(([key]) => !keys.includes(key))),
+  );
+}
+
+/**
+ * The job's progress without its external effect, marking the written Configuration for
+ * deletion instead, for a refusal that deletes what it wrote.
+ */
+export function withUnrecordedProvisioningConfiguration(
+  progress: Readonly<Record<string, unknown>>,
+  configurationId: string,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    ...progressWithout(progress, ["pendingEffect", "effectReceipt"]),
+    [UNRECORDED_CONFIGURATION]: configurationId,
+  });
+}
+
+/** The Configuration an earlier refusal of this job marked for deletion, if any. */
+export function unrecordedProvisioningConfiguration(
+  progress: Readonly<Record<string, unknown>>,
+): string | undefined {
+  const id = progress[UNRECORDED_CONFIGURATION];
+  return isNonEmptyString(id) ? id : undefined;
+}
+
+/** The job's progress once its marked Configuration is deleted. */
+export function withoutUnrecordedProvisioningConfiguration(
+  progress: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return progressWithout(progress, [UNRECORDED_CONFIGURATION]);
 }

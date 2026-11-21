@@ -5,6 +5,7 @@ import type {
   Configuration,
   ConfigurationDriver,
   ConfigurationReference,
+  ConfigurationValidationOptions,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { validateModelCredentialReferences } from "../model-auth.ts";
@@ -39,8 +40,11 @@ export class FilesystemConfigurationDriver implements ConfigurationDriver {
     this.root = resolve(root);
   }
 
-  async validateValues(values: OpenClawConfigurationDocument): Promise<void> {
-    validateModelCredentialReferences(values);
+  async validateValues(
+    values: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): Promise<void> {
+    validateModelCredentialReferences(values, options);
   }
 
   async validate(configuration: Configuration): Promise<void> {
@@ -93,6 +97,8 @@ export class FilesystemConfigurationDriver implements ConfigurationDriver {
     const file = await open(temporary, "wx", 0o600);
     try {
       try {
+        // Creation mode is filtered by umask; a replacement must stay owner-readable.
+        await file.chmod(0o600);
         await file.writeFile(`${JSON.stringify(configuration)}\n`);
       } finally {
         await file.close();

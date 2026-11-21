@@ -8,13 +8,12 @@ export const configurationSchema = Object.freeze({
 });
 
 export function validateConfiguration(configuration) {
-  if (typeof configuration.endpoint !== "string" || !configuration.endpoint.startsWith("memory:")) {
-    throw new Error("The test Configuration Driver requires a memory endpoint.");
-  }
+  return configuration.endpoint.startsWith("memory:")
+    ? []
+    : [{ path: "/endpoint", code: "INVALID_VALUE", message: "Use a memory endpoint." }];
 }
 
-export function createDriver({ id, implementation, configuration }) {
-  validateConfiguration(configuration);
+export function createDriver({ id, implementation }) {
   const values = new Map();
   const key = ({ namespaceId, id: configurationId }) => `${namespaceId}/${configurationId}`;
   return Object.freeze({
@@ -27,7 +26,9 @@ export function createDriver({ id, implementation, configuration }) {
     },
     async read(reference) {
       const value = values.get(key(reference));
-      if (value === undefined) {throw new Error("The selected Configuration does not exist.");}
+      if (value === undefined) {
+        throw new Error("The selected Configuration does not exist.");
+      }
       return structuredClone(value);
     },
     async update(value) {

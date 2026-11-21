@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-10
-last_updated_session: authoring-run/e833fed6-3411-4493-bc8a-237fef04c6b3
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Platform Startup Flow
@@ -16,13 +16,13 @@ its Backend client and Driver. PostgreSQL-backed development uses the
 Docker Compute Driver by default, while the development filesystem
 Configuration Driver is API-only. The singleton invariant is the selected Driver
 identity, not JavaScript object identity. This trace ends when the API accepts
-requests and the worker begins polling durable work.
+requests and the worker starts polling PostgreSQL for queued operations.
 
 ## Entry Points
 
 - Trigger: Start the API with `node apps/controller/src/server.mjs`; start the
   worker separately with `node apps/controller/src/worker.mjs`.
-- Source: `apps/controller/src/server.mjs:start`,
+- Source: `apps/controller/src/api-startup.ts:startApi`,
   `apps/controller/src/worker.mjs:configuration`, and
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`.
 - Assumptions: PostgreSQL-backed startup requires the same migrated application
@@ -46,9 +46,9 @@ graph TD
   end
 
   subgraph API["OCC API process"]
-    A["server.mjs validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
+    A["startApi validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
     B --> C["Compose authorized OCC and Fastify"]
-    C --> E["Listen for requests and enqueue durable work"]
+    C --> E["Accept requests and queue controller operations"]
   end
 
   subgraph Worker["Controller worker process"]
@@ -60,7 +60,7 @@ graph TD
   subgraph Runtime["Compute-owned tenant runtimes"]
     N["One isolated backing namespace per Namespace"]
     J["One OpenClaw gateway per deployed Agent"]
-    K["Embedded OpenClaw or dedicated Codex revision"]
+    K["Embedded OpenClaw or dedicated Codex Agent revision"]
   end
 
   Y --> B
@@ -68,7 +68,7 @@ graph TD
   D --> C
   D --> H
   E -->|persist lifecycle work| D
-  D -->|claim durable work| I
+  D -->|claim queued operations| I
   I -->|provision Namespace infrastructure| N
   I -->|prepare each deployed Agent's gateway| J
   I -->|development or production AgentRevision work| K
@@ -78,18 +78,19 @@ graph TD
 
 ### 1. Launch independent API and worker processes
 
-`apps/controller/src/server.mjs:start`
+`apps/controller/src/api-startup.ts:startApi`
 
 Before launch, the operator runs the supported migration command using the
 separate migrator role. Its
-[history preflight](../../scripts/migration-history.mjs) accepts only reviewed
+[history preflight](../../scripts/migration-history-preflight.ts) accepts only reviewed
 receipt and catalog prefixes, including the two published 31-receipt completed
 lineages: the current Backend terminology history and the historical Provider
 terminology history. The append-only compatibility migration converts the
 Provider schema and owned persisted JSON to Backend terminology without
 rewriting applied receipts or terminal provisioning fingerprints. It refuses
 mixed receipt histories, manually edited catalogs, and the older divergent
-credential history before migration DDL. The
+credential history before migration DDL. It also refuses invalid release metadata
+before connecting to PostgreSQL. The
 [migration history reference](../reference/settings/operations.md#migration-history)
 owns the exact supported shapes and recovery boundary. Neither API nor worker
 startup rewrites migration receipts or converts an unsupported database.
@@ -114,8 +115,17 @@ and does not receive API authentication configuration.
 
 When `OCC_CONFIG_PATH` is set, each process reads the same trusted file and
 constructs its own Installation, Compute, Configuration, and mandatory
-`createIAMDriver(state)` bundle. The shared loader parses Backend integration
+`createIAMDriver(state)` bundle. Kubernetes Compute's
+`apps/controller/src/drivers/compute/kubernetes/index.ts:validateResources` refuses
+negative CPU or memory requests and limits for Gateways, Agents, and Namespace
+container defaults before persistence. Signed zero remains valid; each request
+must also fit its limit. The shared loader parses Backend integration
 metadata but never reads an admin credential or initializes a Backend client.
+`packages/occ/src/backends.ts:validateOpenShellBackend` classifies an admitted
+HTTPS endpoint case-insensitively, matching both gateway transports. HTTPS still
+needs bearer-token authentication to count as protected; operator TLS cannot
+replace that ordinary-RPC identity. HTTP still requires the explicit NetworkPolicy
+boundary and cannot carry operator TLS.
 Production requires the startup file. Development may omit it: the API then
 uses PostgreSQL plus the filesystem Configuration Driver rooted at
 `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, and the worker uses the Docker Compute
@@ -126,7 +136,7 @@ comes from server-owned singleton state, never startup YAML.
 
 API and worker use matching logical Driver identities but separate instances.
 Each IAM Driver loads current persisted policy for every identity lookup and
-authorization decision. Only `server.mjs` reads the mounted ChatGPT admin key,
+authorization decision. Only `api-startup.ts` reads the mounted ChatGPT admin key,
 constructs `Backend<ChatGPTClient>`, and injects it into the optional
 ServiceAccount Driver factory. The worker consumes only nonsecret Backend
 metadata and never receives the client or admin credential. Startup validates
@@ -157,10 +167,27 @@ also runs optional Compute preflight before initializing authentication or
 registering routes. The default unconfigured development API retains its existing
 startup path. The [production startup flow](production-startup.md#4-start-private-api-and-worker-deployments)
 owns the Kubernetes version decision and warning details.
-It registers IAM, Compute, Configuration, and any selected API-only
+The production and configured PostgreSQL development APIs pass the resolved
+`drivers.credential_proxy.requestCapacity` to the `OpenClawController` constructor.
+`packages/occ/src/controller-composition.ts:createControllerComposition` validates
+the limits again. When a protected Driver is selected, `installEgressAuthority`
+calls `packages/occ/src/controller.ts:OpenClawController.createCredentialProxy` to build
+the exchange registry with those limits. The worker validates the setting when
+loading Installation configuration and uses the default capacity for its
+provisioning controller. See the
+[Credential Proxy reference](../reference/drivers/credential-proxy.md#request-time-capacity).
+The API composition registers IAM, Compute, Configuration, and any selected API-only
 ServiceAccount Driver with OCC before
 [`createFastifyApp`](../../apps/controller/src/index.ts) installs authenticated,
 exact-resource-authorized API routes.
+Route request validators and response serializers come from
+[`route-compilers.ts`](../../apps/controller/src/http/route-compilers.ts). When
+[`precompile-route-schemas.ts`](../../apps/controller/src/precompile-route-schemas.ts)
+has written `apps/controller/dist/route-compilers.cjs`, as the image build does, the API
+loads code generated for exactly the same schema, options, Node version and lockfile
+instead of compiling it; anything else compiles at start, as before. The
+[development image](../../Dockerfile) copies `pnpm-lock.yaml` with ownership for
+the `node` user so this startup check can read a lockfile with restrictive permissions.
 
 Development with `OCC_DATABASE_URL` instead calls
 [`composePostgresDevelopment`](../../apps/controller/src/composition/development-postgres.ts)
@@ -212,7 +239,7 @@ own selected ComputeDriver under the claim's ownership and cancellation scope.
 Compute prepares Namespace backing infrastructure and creates one gateway for
 each deployed Agent. Default PostgreSQL-backed development uses Docker networks
 and runtime containers; the bundled Kubernetes Driver prepares either an
-embedded OpenClaw or dedicated Codex revision, activates its exact Agent-owned
+embedded OpenClaw or dedicated Codex Agent revision, activates its exact Agent-owned
 gateway route, and retires any predecessor. Reviewed installed Compute Drivers
 can also be selected in development and production. Docker containers and
 Kubernetes Pods are downstream tenant
@@ -222,8 +249,9 @@ execution begins in the adjacent
 
 ## Debugging and Verification
 
-- Verify matching selection and process-local instances with
-  `node --test --test-name-pattern='independent API and worker startup construct the same selected runtime Drivers' tests/integration/configuration-startup.test.mjs`.
+- Check the startup errors reported when no Installation ID is set with
+  `node --test --test-name-pattern='production server and worker resolve singleton startup without an Installation ID' tests/integration/configuration-startup.test.mjs`.
+  The API rejects the missing authentication base URL before it loads Drivers. The worker reports the unavailable PostgreSQL connection.
 - Expect API `{"event":"listening",...}` and worker
   `{"event":"worker.started","computeDriverId":"..."}` events, followed by
   `worker.health`. Startup failures emit `startup-error` or
@@ -237,8 +265,8 @@ execution begins in the adjacent
   required to prove gateway or Agent workload execution; startup tests alone do
   not establish that outcome.
 - With a selected ServiceAccount Driver, verify the admin key and ChatGPT client
-  exist only in the API process; provider-issued access tokens require the
-  genuine scenario in `tests/integration/service-account-driver-real.test.mjs`.
+  exist only in the API process. See [service-account coverage](../testing/slack.md#service-account-coverage)
+  for the checks and their limits.
 
 ## Related docs
 
@@ -248,7 +276,7 @@ execution begins in the adjacent
 - [Controller worker operation](../reference/controller.md)
 - [Controller and Installation configuration](../reference/settings.md)
 - [ComputeDriver contract](../reference/drivers/compute.md)
-- [Configuration Driver and Agent Revision flow](configuration-driver.md)
+- [Configuration Driver and Agent revision flow](configuration-driver.md)
 - [Installation Driver package loading flow](driver-plugin-loading.md)
 - [Compute Driver lifecycle-hook flow](compute-driver-lifecycle-hooks.md)
 - [Service Account Driver credential delivery flow](service-account-driver-credential-delivery.md)
@@ -260,6 +288,21 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 18:44: Update controller construction sources. (authoring-run/38e2165b-e5b2-4007-92cf-748673a94e25 - 261eb78aef5e3ae3b61bb0a0ea7e0583b5e59371)
+- 2026-11-18 01:13: Record release-metadata refusal before the migration connection. (authoring-run/9a169618-9c17-48f1-927c-556605a302b2 - 254d0a96f86744b23f2394d233f0d7728480e844)
+
+- 2026-11-12 00:19: Give the development image runtime user ownership of the lockfile used by route compiler checks. (authoring-run/a7e18694-91f7-4a70-9555-4ef0ed62d27b - a1e00c855e88f42499d266baeea4dca599e3b227)
+
+- 2026-11-04 20:24: Refuse negative Kubernetes workload resources before persistence. (01a12074-7896-7f63-99fe-9f42e9041d02 - 9d714d63dd7d54b2b94546616f7d8c30571d70d3)
+
+- 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
+- 2026-10-23: Pass the Installation's Credential Proxy request capacity from startup to the exchange registry.
+
+- 2026-10-21: Load the route validators and serializers the image build precompiled.
+
+- 2026-10-18 15:15: Match protected OpenShell transport admission to case-insensitive HTTPS schemes. (authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 
 - 2026-10-10 04:40: Refuse invalid Kubernetes resource pairs during selected Driver construction. (authoring-run/e833fed6-3411-4493-bc8a-237fef04c6b3 - 8e5a06cec7f622185222a8a7dbafe3b0a7228d9f)
 

@@ -1,0 +1,589 @@
+{
+  "request": {
+    "model": "fixture-model",
+    "stream": true,
+    "input": [
+      {
+        "type": "message",
+        "id": "msg_fixture_0",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Synthetic input for protocol compatibility."
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "id": "msg_fixture_1",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Synthetic input for protocol compatibility."
+          },
+          {
+            "type": "input_text",
+            "text": "Synthetic input for protocol compatibility."
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "id": "msg_fixture_2",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Synthetic input for protocol compatibility."
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "id": "msg_fixture_3",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Synthetic input for protocol compatibility."
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "fixture_function_0",
+        "description": "Local tool parameter.",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "cmd": {
+              "type": "string",
+              "description": "Local tool parameter."
+            },
+            "justification": {
+              "type": "string",
+              "description": "Local tool parameter."
+            },
+            "login": {
+              "type": "boolean",
+              "description": "Local tool parameter."
+            },
+            "max_output_tokens": {
+              "type": "number",
+              "description": "Local tool parameter."
+            },
+            "prefix_rule": {
+              "type": "array",
+              "description": "Local tool parameter.",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sandbox_permissions": {
+              "type": "string",
+              "description": "Local tool parameter.",
+              "enum": ["use_default", "require_escalated"]
+            },
+            "shell": {
+              "type": "string",
+              "description": "Local tool parameter."
+            },
+            "tty": {
+              "type": "boolean",
+              "description": "Local tool parameter."
+            },
+            "workdir": {
+              "type": "string",
+              "description": "Local tool parameter."
+            },
+            "yield_time_ms": {
+              "type": "number",
+              "description": "Local tool parameter."
+            }
+          },
+          "required": ["cmd"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "fixture_function_1",
+        "description": "Local tool parameter.",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chars": {
+              "type": "string",
+              "description": "Local tool parameter."
+            },
+            "max_output_tokens": {
+              "type": "number",
+              "description": "Local tool parameter."
+            },
+            "session_id": {
+              "type": "number",
+              "description": "Local tool parameter."
+            },
+            "yield_time_ms": {
+              "type": "number",
+              "description": "Local tool parameter."
+            }
+          },
+          "required": ["session_id"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "fixture_function_2",
+        "description": "Local tool parameter.",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "questions": {
+              "type": "array",
+              "description": "Local tool parameter.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "header": {
+                    "type": "string",
+                    "description": "Local tool parameter."
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "Local tool parameter."
+                  },
+                  "options": {
+                    "type": "array",
+                    "description": "Local tool parameter.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "description": {
+                          "type": "string",
+                          "description": "Local tool parameter."
+                        },
+                        "label": {
+                          "type": "string",
+                          "description": "Local tool parameter."
+                        }
+                      },
+                      "required": ["label", "description"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "question": {
+                    "type": "string",
+                    "description": "Local tool parameter."
+                  }
+                },
+                "required": ["id", "header", "question", "options"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["questions"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "fixture_function_3",
+        "description": "Local tool parameter.",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Local tool parameter."
+            }
+          },
+          "required": ["path"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "namespace",
+        "name": "fixture_namespace_4",
+        "description": "Local tool parameter.",
+        "tools": [
+          {
+            "type": "function",
+            "name": "fixture_local_0",
+            "description": "Local tool parameter.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "description": "Local tool parameter."
+                }
+              },
+              "required": ["target"],
+              "additionalProperties": false
+            }
+          },
+          {
+            "type": "function",
+            "name": "fixture_local_1",
+            "description": "Local tool parameter.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Local tool parameter."
+                }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            }
+          },
+          {
+            "type": "function",
+            "name": "fixture_local_2",
+            "description": "Local tool parameter.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "interrupt": {
+                  "type": "boolean",
+                  "description": "Local tool parameter."
+                },
+                "items": {
+                  "type": "array",
+                  "description": "Local tool parameter.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "audio_url": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "image_url": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "path": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "text": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "type": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Local tool parameter."
+                },
+                "target": {
+                  "type": "string",
+                  "description": "Local tool parameter."
+                }
+              },
+              "required": ["target"],
+              "additionalProperties": false
+            }
+          },
+          {
+            "type": "function",
+            "name": "fixture_local_3",
+            "description": "Local tool parameter.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "fork_context": {
+                  "type": "boolean",
+                  "description": "Local tool parameter."
+                },
+                "items": {
+                  "type": "array",
+                  "description": "Local tool parameter.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "audio_url": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "image_url": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "path": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "text": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      },
+                      "type": {
+                        "type": "string",
+                        "description": "Local tool parameter."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Local tool parameter."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Local tool parameter."
+                },
+                "reasoning_effort": {
+                  "type": "string",
+                  "description": "Local tool parameter."
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          {
+            "type": "function",
+            "name": "fixture_local_4",
+            "description": "Local tool parameter.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "targets": {
+                  "type": "array",
+                  "description": "Local tool parameter.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "timeout_ms": {
+                  "type": "number",
+                  "description": "Local tool parameter."
+                }
+              },
+              "required": ["targets"],
+              "additionalProperties": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "function",
+        "name": "fixture_function_5",
+        "description": "Local tool parameter.",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "fixture_function_6",
+        "description": "Local tool parameter.",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "objective": {
+              "type": "string",
+              "description": "Local tool parameter."
+            },
+            "token_budget": {
+              "type": "integer",
+              "description": "Local tool parameter."
+            }
+          },
+          "required": ["objective"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "fixture_function_7",
+        "description": "Local tool parameter.",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "Local tool parameter.",
+              "enum": ["complete", "blocked", "paused"]
+            }
+          },
+          "required": ["status"],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "reasoning": {
+      "summary": "auto"
+    },
+    "store": false,
+    "include": ["reasoning.encrypted_content"],
+    "prompt_cache_key": "fixture-cache-key",
+    "client_metadata": {
+      "turn_id": "00000000-0000-4000-8000-000000000001",
+      "root_turn_id": "00000000-0000-4000-8000-000000000001",
+      "session_id": "00000000-0000-4000-8000-000000000001",
+      "x-codex-turn-metadata": "{\"installation_id\":\"fixture\",\"session_id\":\"fixture\",\"thread_id\":\"fixture\",\"agent_name\":\"fixture\",\"turn_id\":\"fixture\",\"window_id\":\"fixture\",\"window_number\":0,\"context_window_id\":\"fixture\",\"request_kind\":\"turn\",\"history_initialization\":\"fixture\",\"root_turn_id\":\"fixture\",\"thread_source\":\"fixture\",\"turn_trigger\":\"fixture\",\"sandbox\":\"fixture\",\"sandbox_mode\":\"fixture\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1791985502416,\"analytics_enabled\":true,\"model\":\"fixture-model\"}",
+      "x-codex-window-id": "00000000-0000-4000-8000-000000000001",
+      "thread_id": "00000000-0000-4000-8000-000000000001",
+      "x-codex-installation-id": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "responseEvents": [
+    {
+      "type": "response.created",
+      "response": {
+        "id": "resp_runtime_probe",
+        "object": "response",
+        "model": "fixture-model",
+        "created_at": 1791985502,
+        "status": "in_progress",
+        "output": []
+      }
+    },
+    {
+      "type": "response.output_item.added",
+      "output_index": 0,
+      "item": {
+        "type": "message",
+        "id": "msg_runtime_probe",
+        "status": "in_progress",
+        "role": "assistant",
+        "content": []
+      }
+    },
+    {
+      "type": "response.content_part.added",
+      "item_id": "msg_runtime_probe",
+      "output_index": 0,
+      "content_index": 0,
+      "part": {
+        "type": "output_text",
+        "text": "",
+        "annotations": []
+      }
+    },
+    {
+      "type": "response.output_text.delta",
+      "item_id": "msg_runtime_probe",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "READY"
+    },
+    {
+      "type": "response.output_text.done",
+      "item_id": "msg_runtime_probe",
+      "output_index": 0,
+      "content_index": 0,
+      "text": "READY"
+    },
+    {
+      "type": "response.content_part.done",
+      "item_id": "msg_runtime_probe",
+      "output_index": 0,
+      "content_index": 0,
+      "part": {
+        "type": "output_text",
+        "text": "READY",
+        "annotations": []
+      }
+    },
+    {
+      "type": "response.output_item.done",
+      "output_index": 0,
+      "item": {
+        "type": "message",
+        "id": "msg_runtime_probe",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "READY",
+            "annotations": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "response.completed",
+      "response": {
+        "id": "resp_runtime_probe",
+        "object": "response",
+        "model": "fixture-model",
+        "created_at": 1791985502,
+        "status": "completed",
+        "output": [
+          {
+            "type": "message",
+            "id": "msg_runtime_probe",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "READY",
+                "annotations": []
+              }
+            ]
+          }
+        ],
+        "usage": {
+          "input_tokens": 1,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 1,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 2
+        }
+      }
+    }
+  ],
+  "refusedTools": [
+    {
+      "type": "web_search",
+      "external_web_access": false
+    }
+  ]
+}

@@ -1,0 +1,307 @@
+# Enroll repositories for OpenShell Agents
+
+This Helm walkthrough covers repository access with matching OpenShell **0.1.6**
+components. Check the [OpenShell qualification contract](../../reference/drivers/openshell-sandbox.md#qualification-contract)
+before planning a production rollout. Runtime admission checks the required facilities and policy proof.
+The [local setup guide](../deploy/local-openshell-images.md) lists component versions. Select Kubernetes
+Compute, dedicated Codex, and the same OpenShell Driver for Sandbox and
+Credential Proxy. Repository access requires its own explicit Namespace policy;
+installing OpenShell does not grant it.
+
+### Identify the Namespace for the registry
+
+On a fresh installation, bootstrap the control plane with repository access
+disabled. Confirm Helm reports the release as `deployed` and the API and worker
+are ready. If the install failed or is pending, preserve its receipt and
+[check the original initialization Job](../deploy/production-handoff.md#resume-an-installation-in-progress).
+
+Fresh bootstrap creates an OCE Namespace named `default`. If you followed a
+quickstart, finish its platform setup and use the ready Namespace ID saved as
+`namespace` in the [operator session](../deploy/quickstart-session.md).
+That session also supports [first-Agent model registration](../deploy/deploy-first-agent.md#1-select-or-register-the-model-credential).
+For a custom production install, authenticate and run `occ namespace list`.
+Identify the intended OCE Namespace, [prepare its tenant access](../deploy/production-agents.md#prepare-each-namespace)
+while it is provisioning, and confirm it reaches `ready`. Use its server-assigned
+ID in the registry. Create the registry ConfigMap in the control plane’s
+Kubernetes namespace.
+
+### Register the Harness model source first
+
+For a fresh local k3d installation, use the authenticated
+[Gateway setup](#prepare-an-authenticated-local-gateway).
+
+Select the OpenShell Gateway and Sandbox, then
+[register one static model source using the OpenAI API-key example](../deploy/openshell-credential-sources.md#register-the-key).
+You can register it before or after enabling the validated bundled `repository.openShell`
+Git-only transport. Keep a separately selected OCE Credential Gateway for model
+delivery; the OpenShell gateway service alone does not select that capability. Verify that
+its state and Gateway status are ready and that it has no `egress`. Reuse an existing
+Gateway-owned source only if it meets these same static-source requirements.
+The selected Gateway catalog must declare Harness authentication without refresh,
+device authorization or ChatGPT OAuth. Bind only this one model source to the Agent.
+
+Keep the Gateway selected and use the source with
+`harnessAuth.method: credential_source`. Configure the repository Credential Proxy
+as described below. Changing an existing installation can affect running Agents.
+
+### Prepare an authenticated local Gateway
+
+Complete [local setup](../deploy/local-setup.md) before adding repository access.
+The Kubernetes-only launcher enables Gateway TLS, mTLS and authentication before
+its first startup. It keeps Credential Gateway selected for model access.
+
+Leave `OCC_DEVELOPMENT_PROTECTED_EGRESS` unset, empty or set to `0`. The value `1`
+is rejected because new local [static-inference launches are retired](../deploy/local-openshell-images.md#select-the-protected-profile).
+Remove `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` entirely; any presence is rejected.
+Repository access retains the ordinary authenticated Gateway defaults. No Gateway
+configuration repair or Pod deletion is needed for the default profile.
+
+### Configure authorized repositories
+
+Start with the shipped
+[OpenShell Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml)
+and [repository registry](../../../deploy/examples/repository-credentials/openshell.registry.json).
+Merge the fragment into your Installation, preserving other Backends and Drivers.
+Set the existing OpenShell Backend's `drivers.credential_proxy` to the same ID as
+`drivers.sandbox.id`. For example, when the Sandbox ID is `openshell-sandbox`,
+add this selection to the Installation:
+
+```yaml
+drivers:
+  credential_proxy:
+    id: openshell-sandbox
+    configuration: {}
+```
+
+Keep `drivers.credential_gateway` and its Backend member for model authentication.
+`repository.openShell` configures the selected Credential Proxy's connection to
+OpenShell. To grant repository access, configure the Namespace registry and
+grant access to the Agent separately. Keep this Driver's `configuration: {}`
+empty; do not copy the static-inference Proxy configuration into it.
+Use the normal [production Installation and Helm procedure](../deploy/production-installation.md).
+The development launcher's native repository input is a separate path and does
+not accept this protected registry.
+
+Do not combine it with `repository.nativeSender` or Compute
+`network.repositoryCredentials`. The separate `registry.json` example is for
+ref-limited native Git; leave existing narrow grants unchanged.
+
+Replace the example App ID, installation ID, Namespace ID, repository names and
+stable numeric repository IDs with operator-verified values. Add one entry per
+repository that the Namespace may select. Set `profiles: ["github-repository"]`
+explicitly. Copy the same approved repository permission map to each entry in a
+selection. The example permits contents, pull requests and issues writes; it does
+not grant those permissions to the App. Configure the App and installed permissions
+accordingly. Do not substitute `github-installation`, organization permissions or
+an installation-wide token. No branch list or preview workspace is required.
+
+Mount the edited registry as `registry.json` in an immutable versioned ConfigMap.
+In the OCE Helm values set `repositoryCredentials.registryConfigMapName` to that
+ConfigMap, `backendId: repository-backend`, `authority: prepared-git`, and
+`enabled: false`. Set `appKeySecretName` and `preparedCustodySecretName` to the
+operator-managed worker-only Secrets, and `upstreamCidrs` to the
+[worker GitHub API ranges](#allow-the-worker-to-reach-github).
+Preserve the custody key across restarts. Never put keys in Agent JSON.
+
+Complete [the request-phase service setup](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service):
+set `openshellGit.enabled: true`, `mode: protected`, its TLS Secret, public issuer
+key ConfigMap and trusted Gateway/supervisor clients. Match the fragment's port
+8445, issuer, audience and key ID to the actual Gateway. Register `oce-prepared-git`
+with `binding_policy: allowlist` and `bindings: [http_request_pre_credentials]`.
+Missing or response-only bindings are not sufficient. With a mutable Installation
+Secret, apply the registry and listener settings as an
+[Installation configuration change](../deploy/production-installation-changes.md)
+on the deployed release. An immutable Secret requires a separately reviewed
+configuration change that selects a new Secret with the same Installation
+identity and retains the original for recovery. Verify startup before admitting Agents.
+
+### Allow the worker to reach GitHub
+
+`repositoryCredentials.upstreamCidrs` is an OCE Helm value: a nonempty list of
+approved IPv4 ranges for the worker's outbound repository-credential requests.
+The chart uses it in a Kubernetes NetworkPolicy with
+`repositoryCredentials.upstreamPort` (default `443`). It does not grant the Agent
+or OpenShell supervisor network access.
+
+For this GitHub.com setup, the worker calls `api.github.com` to check the App
+installation and issue or revoke tokens. Get the current `api` ranges from
+[GitHub's Meta endpoint](https://docs.github.com/en/rest/meta/meta#get-github-meta-information).
+Run this in the operator shell to generate a Helm YAML fragment:
+
+```bash
+gh api --hostname github.com /meta --jq '
+  [.api[] | select(contains(":") | not)] | unique |
+  "repositoryCredentials:\n  upstreamCidrs:\n" +
+  (map("    - " + .) | join("\n"))
+' > "$RUN_DIR/github-api-egress.yaml"
+cat "$RUN_DIR/github-api-egress.yaml"
+```
+
+Review the ranges, then merge this fragment into the existing OCE Helm values
+without replacing the other `repositoryCredentials` settings. Keep the approved
+ranges with the deployment record and refresh them when GitHub changes its
+inventory. Do not substitute a snapshot of DNS answers. If the worker uses a
+private issuer or an outbound proxy, use its approved destination ranges instead.
+The OpenShell supervisor's HTTPS access to the Git origin is configured separately.
+
+### Allow the Supervisor to reach the authority
+
+If the Supervisor namespace enforces egress, add this policy to the Sandbox
+configuration's `gateway.networkPolicyResources`. For an existing namespace,
+also apply the same file there before deployment. Replace `openclaw-system` with
+the OCE Kubernetes namespace and the release label with the worker's observed
+label. Keep existing DNS and management allowances.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-oce-prepared-git
+spec:
+  podSelector:
+    matchLabels:
+      openshell.ai/managed-by: openshell
+      openshell.ai/boundary-role: supervisor
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openclaw-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw-enterprise
+              app.kubernetes.io/instance: openclaw-enterprise
+              app.kubernetes.io/component: worker
+      ports:
+        - { protocol: TCP, port: 8445 }
+```
+
+```bash
+kubectl --context "$CONTEXT" -n "$SUPERVISOR_NAMESPACE" \
+  apply -f supervisor-authority-egress.yaml
+```
+
+`SUPERVISOR_NAMESPACE` is the observed Kubernetes namespace, not its OCE Namespace
+ID. If the Gateway is also isolated for egress, allow its observed Pod labels to
+the same worker and port. Do not select Agent workload Pods as trusted peers.
+
+### Select repositories and deploy
+
+Before activating a repository binding, verify the App installation from the
+current worker. Use its mounted signing key and the issuer's CA configuration;
+an operator's `gh` result or an unsigned HTTPS read does not check this path.
+The [installation check](../../snippets/openshell-quickstart/verify-github-installation.mts)
+uses the worker's signer and issuer request-options factory, but sends only a
+bodyless installation GET. It creates no admission and requests no token.
+
+Set `ISSUER_CA_PATH` to `repository.preparedGitHub.issuerCaPath`, or leave it
+empty if that setting is absent. The example uses the fragment's standard mount
+paths and GitHub.com. Use `namespace` from the quickstart session for the OCE Namespace ID approved in the
+registry. Set `WORKER_POD` to the current worker Pod and `PLATFORM_NS`
+to its Kubernetes namespace. Run the command from the matching release checkout.
+For a downloaded site tree, set
+`installation_check=docs/assets/openshell-quickstart/verify-github-installation.mjs`
+from the directory that contains `docs/`.
+
+```bash
+kubectl --context "$CONTEXT" -n "$PLATFORM_NS" get pod "$WORKER_POD" \
+  -o jsonpath='{.metadata.uid}{"\n"}{.spec.containers[?(@.name=="worker")].image}{"\n"}{.status.containerStatuses[?(@.name=="worker")].imageID}{"\n"}'
+
+kubectl --context "$CONTEXT" -n "$PLATFORM_NS" exec -i "$WORKER_POD" -c worker -- \
+  node --input-type=module-typescript - "$namespace" "${ref:-application}" "${ISSUER_CA_PATH:-}" \
+  < "${installation_check:-docs/snippets/openshell-quickstart/verify-github-installation.mts}"
+```
+
+Require `success: true`: HTTP 200, verified TLS and matching App and installation
+IDs. The helper keeps the key, JWT, headers and response body inside the worker.
+Save the context, Pod UID, selected image, runtime image ID and result together.
+Check the result's `connection` addresses against the worker's enforced egress
+rule and approved provider inventory. The helper records at most four DNS
+addresses and four connection errors, plus TCP, verified TLS and request-end
+stages. A DNS snapshot from another Pod or workstation does not verify this path.
+If it fails, keep the Agent stopped and correct the observed prerequisite before
+deployment. A successful GET does not prove token issuance or Git access. If an
+issuance is already uncertain, preserve its original recovery bound and follow
+the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle).
+
+Select any authorized set of up to 16 repositories on the Agent. The normal Agent
+create/update JSON uses registry references, for example:
+
+```json
+{
+  "repositoryBindings": [{ "repositoryRef": "application" }, { "repositoryRef": "library" }]
+}
+```
+
+This is a fragment of the Agent request; preserve its other required fields.
+For CLI updates, include the current `configurationId` from `occ agent get` in
+`agent.json`, then run `occ agent update "$AGENT_ID" --file agent.json`.
+Omitting `repositoryBindings` preserves the selection on update; an empty array
+clears it.
+Omitting `profile` resolves to `github-repository` only for the explicit policy
+above. It does not widen an existing `git-write` grant. All selected repositories
+must share the registry's App and installation and the same approved permissions.
+The worker prepares a token restricted to exactly the selected numeric IDs.
+Repository availability in the registry alone does not authorize an Agent.
+
+Save the Agent with the selected repositories and the Gateway model source, provision
+its runtime credentials, and deploy. Once the revision is ready, run these commands
+inside the Agent. Replace `example/project` with a selected repository that has at
+least one commit and for which the Agent has Contents read or write permission.
+OCE supplies authentication for Git over HTTPS and for `gh`; no personal token or
+`gh auth login` is needed.
+
+```bash
+git ls-remote https://github.com/example/project.git HEAD
+gh api repos/example/project --jq .full_name
+```
+
+Git should print a commit ID followed by `HEAD`, and `gh` should print the
+repository's full name. These checks verify reads, not permission to push or
+open a pull request.
+
+GitHub App permissions and normal GitHub branch rules still apply. OCE adds no
+branch list for `github-repository`; it does not promise every administrative
+operation. Access is finite by default. Change selections and deploy a new revision
+to change access; do not rewrite a narrow grant into a broader one in place.
+
+### Work with GitHub issues and pull requests
+
+The runtime bundles a [GitHub REST skill](../../../deploy/runtime/repository-credentials/github-repository-rest/SKILL.md)
+in Codex’s standard skill directory. Deploy an image containing the skill and
+ask the Agent to work on a configured repository. Codex can discover the
+instructions automatically.
+
+The skill shows how to choose a REST endpoint and call it with `gh api`.
+The deployed binding and network policy determine which requests succeed.
+For example, posting a conversation comment on a PR requires permission to
+write to the issue comments endpoint. A grant limited to reading issues and
+opening PRs excludes commenting. For a ref-constrained draft, keep using the
+[designated client](../../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+
+### Plan for request limits
+
+Unmodified OpenShell 0.1.6 buffers complete requests. These are byte limits, not
+repository or source-file size allowances:
+
+| Request                                                  | Maximum                 |
+| -------------------------------------------------------- | ----------------------- |
+| Selected-repository REST JSON                            | 1 MiB (1,048,576 bytes) |
+| GraphQL, installation-preview API, ref-scoped draft JSON | 64 KiB (65,536 bytes)   |
+| Git fetch negotiation request                            | 1 MiB                   |
+| Complete Git push request                                | 4 MiB (4,194,304 bytes) |
+
+For Contents API writes, base64 expansion, JSON metadata and whitespace all count.
+Use canonical repository paths: letters, digits, underscores, hyphens and dots in
+resource segments; percent-escaped filenames are currently refused. Other shape,
+permission and current-authority checks still apply, including draft field limits.
+
+Use native Git for larger file payloads where available, but measure the complete
+push: pack bytes, commands and framing must fit 4 MiB. HTTP chunking cannot bypass
+the limit; chunk framing and trailers also consume the supplier's allowance.
+Smaller pushes can help only when each complete request fits; they cannot split
+an arbitrary large new object into admissible requests. Larger objects and uploads
+need an approved separate workflow. Do not bypass the protected route or increase
+its configured maximum beyond stock support. The authority deadline starts after
+buffering; it is not an end-to-end upload deadline.

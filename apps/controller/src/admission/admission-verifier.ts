@@ -16,6 +16,8 @@ export interface AdmissionRequest {
   readonly requestId: string;
   readonly method: string;
   readonly routeId: string;
+  /** The route pattern (`/agents/:agentId/chat`), for log lines; never the request's path. */
+  readonly route?: string;
   readonly requestedScope: AdmissionScope;
   readonly transport: TrustedTransportEvidence;
   readonly authorizationHeader?: string;
@@ -65,14 +67,15 @@ export const UNTRUSTED_ORIGIN_MESSAGE =
 export class AdmissionFailure extends Error {
   readonly status: 401 | 403;
   readonly code: "UNAUTHENTICATED" | "FORBIDDEN";
-  // A reason that is safe to explain to the caller; other admission failures stay generic.
-  readonly reason: "untrusted_origin" | undefined;
+  // A reason that is safe to explain to the caller, from the caller's own request; other
+  // admission failures stay generic.
+  readonly reason: "untrusted_origin" | "authorization_header" | undefined;
 
   constructor(
     status: 401 | 403,
     code: "UNAUTHENTICATED" | "FORBIDDEN",
     message: string,
-    reason?: "untrusted_origin",
+    reason?: "untrusted_origin" | "authorization_header",
   ) {
     super(message);
     this.name = "AdmissionFailure";

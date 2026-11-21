@@ -1,3 +1,4 @@
+import { refuseRewrittenIpv4Host } from "../auth/configuration.ts";
 import { constants } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
@@ -17,6 +18,7 @@ function validateUrl(value: string): string {
   } catch {
     throw new Error("workspace-files endpoint url must be a valid absolute URL.");
   }
+  refuseRewrittenIpv4Host("workspace-files endpoint", value, parsed);
   if (
     parsed.protocol !== "wss:" ||
     parsed.username.length > 0 ||

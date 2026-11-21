@@ -8,6 +8,94 @@ This record preserves the dated changes to the Agent plugin deployment flow. See
 
 ## Changelog
 
+- 2026-11-19 01:12: With the runtime pin at OpenClaw `44f24d8398`, dedicated Codex lists a pinned Skill Library skill by name and description with a note to read it through `skills_read` instead of its Gateway-only path. (authoring-run/0cdd91e7-47ea-4661-a124-c23fd4479805 - cea7d46c6956c59ba9604a710022159930eb5aa4)
+- 2026-11-18 22:08: Allow Gateway-side read-only `skills_search` and `skills_read` over session-eligible skills in the default Gateway tool policy, so a dedicated Harness can read skills whose files exist only in the Gateway, such as pinned Skill Library instructions. (authoring-run/19cca54a-1443-4e43-87cd-86a89718b7e4 - 715d7cfbc45f99abdfe9181049affc68218db2c2)
+- 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
+
+- 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
+
+- 2026-11-02 23:59: Discover live MCP tools. (authoring-run/f6c72b81-af00-4c3d-9758-96b1d6ca64b1 - 6f95625048a1d20ebb5cc6e26368192b3300849c)
+
+- 2026-11-02 23:45: Describe discovery and deployment from a managed MCP release. (authoring-run/39268f6b-739c-4af1-82dd-3ecfe85d6ffa - 5d58446a2a6e200510da738698ef832612aab50d)
+
+- 2026-11-02 22:29: Trace the Slack account and tool selection through dedicated Agent deployment. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
+
+- 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
+- 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
+
+- 2026-10-28 14:40: Trace worker installation and discovery of Slack MCP tools. (authoring-run/55da35a7-f123-436e-9c32-65036b85894d - 0ba3c0fd5a26a82dba6551f04b74a697c5324fdd)
+
+- 2026-10-31 03:03: Resolve plugins through the pinned catalog API with these changes. (authoring-run/19fe4474-0b66-462e-9fcd-5afe08fe9c8a - d10715a3d0dfef7592ca35efebed0b3c6867c7ab)
+
+- 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
+
+- 2026-10-28 22:10: Move Google request checks to the shared execution-cluster guard. (authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106 - ce4688a9)
+
+- 2026-10-28 20:30: Trace independent credential attachment, Google request authorization and recovery after withdrawal. (authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded - dbe0d78a)
+
+- 2026-10-27 17:55: Trace the Google account binding and the worker’s guarded request. (01a169f0-a851-7b81-8e83-ff597893aa21)
+
+- 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)
+
+- 2026-10-27 15:00: Repeat a stop signal that OpenClaw ignored during an in-place restart (finding 2711). (fix-2711-gateway-stop)
+
+- 2026-10-27 03:30: Check the Gateway tool policy at Configuration save and for embedded Agents on every Compute, not on maintenance passes (findings 2688, 2689, 2694, 2695). (fix-2688-policy)
+
+- 2026-10-26 20:21: Stop hosted reads on disconnect and clarify credential checks and catalog results. (authoring-run/dc13892f-22e2-4838-b5d7-a716768e7243 - cbad284a4d3d5f567e96e6c3dbb3fc5e7b86b14e)
+
+- 2026-10-18 03:00: Check the primary model's `tools.byProvider` deny lists and a sole entry's `alsoAllow` under a profile (findings 1855, 1857). (lows-1018c)
+
+- 2026-10-18 02:20: Check roster entries' `tools.deny` in the OpenClaw Driver's selection check (finding 1848). (lows-1018b - 628ee9fbf)
+
+- 2026-10-17 06:05: Preserve OAuth discovery changes while integrating the native reader fix. (authoring-run/629826fb-b521-49bb-865a-dbc1b5c975a5 - 23965d64cc2824f0c5a2b5d704f767fead13f11b)
+
+- 2026-10-17 00:10: Contain non-object native catalog envelopes in the discovery error path. (authoring-run/3d8efdc8-6da6-4cf9-99f7-adebd5e5649d - 42fb0a90337209e28318765c1b537bc4f3623506)
+
+- 2026-10-16 19:14: Apply the Gateway tool policy after plugin grants, before startup or peer respawn. (01a13683-3916-7880-b1a6-27175b853600 - b768af1b24c6d9130e46eb0bb470fa761ade2bfb)
+
+- 2026-10-15 22:26: Reconcile main and OpenShell OAuth in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
+
+- 2026-10-15 04:39: Grant read-only access to bundled Codex system skills. (authoring-run/97a67c3a-0aaa-4d59-bccf-19183079b169 - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
+
+- 2026-10-14 12:23: Document runtime-status streaming limits and oversized error responses. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
+
+- 2026-10-14 17:46: Preserve Docker Codex readiness reasons and transport codes when a loopback status response is interrupted. (issue-2403 - 944068b35b5a9bd86a3b1cf7361038a12b3de71a)
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
+- 2026-10-10 09:00: Render `on-failure` as the Gateway's `on-request`; Compute refuses `untrusted`, and the Codex PluginDriver an automatic reviewer without an explicit policy. (fix-987-988)
+
+- 2026-10-10 04:49: Preserve writable native configuration during Harness peer recovery and same-Pod container restarts. (codex/thirty-compute-07-oct10 - 8e5a06ce)
+
+- 2026-10-10 04:10: Check the Codex automatic reviewer policy at Agent create and update too. (fix-994-995)
+
+- 2026-10-10 04:00: Hold an unusable writable-configuration peer bridge record unready with its file and remedy named. (fix-994-995)
+
+- 2026-10-10 00:30: Keep the earlier Codex `config.toml` of revisions prepared before an upgrade. (fix-982)
+
+- 2026-10-09 17:01: Clarify that CredentialGateway retrieval may refresh before authorized plugin discovery in the accompanying change. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 4f902e2ab7738568fc8bb278296e54255355b8b7)
+
+- 2026-10-09 15:02: Preserve the configured Codex session approval policy during startup. (authoring-run/72c276e8-6db5-44e5-aac1-f9e3fdc34ff2 - 504bf89a0707b66e1612d26e3d67ed6f6b16232f)
+
+- 2026-10-08 22:00: Integrate validated plugin default-off grants before native install, with final app-policy verification and skill-only selections. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - 65911984b3f6d9ee398aed913a0b8dd08e2ae094)
+
+- 2026-10-07 17:42: Replace login-bundle discovery with warm CredentialSource token callbacks. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
+- 2026-10-07 19:30: Pass the admitted model to native Codex before reviewer validation. (authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02 - b1be0e0602b9db1035a689ca2a4ac4982f6d0b3b)
+
+- 2026-09-30 13:32: Clarify readiness and routing propagation. (codex/01a0b0e4-839a-71b3-9ec1-3b1000b5d06a - a0ca6376)
+
+- 2026-10-04 05:00: Recheck Create Agent discovery grants after the Secret read. (bughunt-11)
+
+- 2026-10-01 00:57: Reconcile peer recovery with current runtime. (codex/01a0b0e4-839a-71b3-9ec1-3b1000b5d06a - e57e777238104b1de0d3bee5c6c631722c4af575)
+
+- 2026-09-30 02:10: Recheck the peer before replacement readiness. (authoring-run/fc09b5f8-3fc8-4144-ac80-8bfd8ef24f52 - ed69e6eee87ca004d2970069e8e18cf4cce29a32)
+
+- 2026-09-30 00:33: Propagate Gateway exits while awaiting peer recovery. (authoring-run/bf3b8146-9d72-42a4-84e5-2293581c890c - 0d72f6a4e4e3003d457c4498e81e7de414f85649)
+
+- 2026-09-28 21:26: Batch Codex metadata reads; preserve ordered writes and verification. (authoring-run/7c8bff1b-a2d1-48f6-a996-1be6a06719fa - 8352c0932bcbde43e88b44c6975496ca5431ff55)
+
+- 2026-09-28 10:46: Materialize inherited app policy; native proof pending. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 44ed2405)
+
 - 2026-10-03 18:00: Create discovery and existing-Agent `oauthLogin` discovery reject a Secret reference to another Namespace as an invalid request instead of not-found. (binding-400b)
 
 - 2026-09-28 00:02: Reconciled Codex startup policy verification with approval scopes. (01a0b17c-68b6-7e11-bedc-f74de7d606ed - b96eadc1)

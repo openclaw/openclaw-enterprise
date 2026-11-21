@@ -1,8 +1,6 @@
 {{- $collector := .Values.logging.collector -}}
 {{- if $collector.enabled -}}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $collector.image) -}}
-{{- fail "logging.collector.image must be an approved immutable SHA-256 image reference" -}}
-{{- end -}}
+{{- include "openclaw.validateImageReference" (dict "label" "logging.collector.image" "image" $collector.image) -}}
 {{- if or (not $collector.configSecretName) (not $collector.envSecretName) -}}
 {{- fail "logging.collector requires dedicated operator-created config and environment Secrets" -}}
 {{- end -}}
@@ -24,10 +22,10 @@
 {{- end -}}
 {{/* Null clears the chart default. quote skips nil and renders YAML null, which leaves emptyDir unlimited. */}}
 {{- if not (kindIs "invalid" $collector.state.sizeLimit) -}}
-{{- include "openclaw.quantity" (dict "name" "logging.collector.state.sizeLimit" "value" $collector.state.sizeLimit) -}}
+{{- include "openclaw.nonNegativeQuantity" (dict "name" "logging.collector.state.sizeLimit" "value" $collector.state.sizeLimit) -}}
 {{- end -}}
 {{- if not (kindIs "invalid" $collector.tmp.sizeLimit) -}}
-{{- include "openclaw.quantity" (dict "name" "logging.collector.tmp.sizeLimit" "value" $collector.tmp.sizeLimit) -}}
+{{- include "openclaw.nonNegativeQuantity" (dict "name" "logging.collector.tmp.sizeLimit" "value" $collector.tmp.sizeLimit) -}}
 {{- end -}}
 {{- include "openclaw.resourceRequirements" (dict "name" "logging.collector.resources" "requirements" $collector.resources) -}}
 {{- if not (kindIs "bool" $collector.metrics.enabled) -}}

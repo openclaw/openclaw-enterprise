@@ -1,10 +1,14 @@
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "./password-hasher.ts";
+import { postgresAgentAuditState } from "../../apps/controller/src/composition/control-plane-audit.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { AgentResponse, SecretResponse } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.mjs";
@@ -12,19 +16,20 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "./bootstrap-installation.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createFixtureResponse } from "./console-fixture-response.ts";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
-import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import { databaseUrl } from "./postgres-database.mjs";
 import { createRuntimeLogComputeDriver } from "./runtime-logs.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
-const origin = "http://127.0.0.1";
+const origin = "https://console.oce.localhost";
 
 // Bootstraps the shared development Installation once per database; later suites reuse it.
-async function ensureBootstrap(t, { label, authSecret }) {
+export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
   const observer = new pg.Pool({ connectionString: databaseUrl, max: 2 });
   t.after(() => observer.end());
   if ((await new PostgresPlatformState(observer).loadInstallation()) !== undefined) {
@@ -37,6 +42,7 @@ async function ensureBootstrap(t, { label, authSecret }) {
     password: adminPassword,
     authSecret,
     authBaseURL: origin,
+    agentDomain: "agents.oce.localhost",
     installationName: `${label} PostgreSQL test`,
   });
 }
@@ -47,13 +53,21 @@ async function ensureBootstrap(t, { label, authSecret }) {
  * and Secret are the test Drivers.
  *
  * @param t the test context; pools and the app close after it.
+ * @param {object} options
  * @param options.label names the Drivers (`<label>-pg-iam`, …) and, when this run bootstraps
  *   the database, its Installation.
  * @param options.authSecret the session signing secret (at least 32 characters).
- * @param options.createAuditSink receives the PostgreSQL audit sink and returns the sink the
+ * @param [options.createAuditSink] receives the PostgreSQL audit sink and returns the sink the
  *   app writes to (default: that sink).
- * @param options.appOptions extra Fastify app options, such as `agentRuntimeLogs`. They are
+ * @param [options.requestAudit] wires the same durable sink for required HTTP request evidence.
+ * @param [options.appOptions] extra Fastify app options, such as `agentRuntimeLogs`. They are
  *   spread last, so they may also replace a default above.
+ * @param [options.controllerOptions]
+ * @param [options.stateOptions]
+ * @param [options.sandboxDriver]
+ * @param [options.secretDriver]
+ * @param [options.transportDatabaseUrl]
+ * @param [options.poolOptions]
  * @returns `{ pool, state, controller, computeDriver, app, principal, inject, deployAgent }`.
  *   `inject(method, url, body)` sends an administrator request. `deployAgent(name)` creates a
  *   ready Namespace, an Agent Configuration and API-key Secret, and an Agent whose
@@ -62,43 +76,80 @@ async function ensureBootstrap(t, { label, authSecret }) {
  */
 export async function createPostgresAgentApp(
   t,
-  { label, authSecret, createAuditSink = (persisted) => persisted, appOptions },
+  {
+    label,
+    authSecret,
+    createAuditSink = (persisted) => persisted,
+    requestAudit = false,
+    appOptions,
+    controllerOptions,
+    stateOptions,
+    sandboxDriver,
+    transportDatabaseUrl = databaseUrl,
+    secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` }),
+    poolOptions = {},
+  },
 ) {
-  await ensureBootstrap(t, { label, authSecret });
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+  await ensurePostgresAgentBootstrap(t, { label, authSecret });
+  const pool = new pg.Pool({ connectionString: transportDatabaseUrl, max: 6, ...poolOptions });
   t.after(() => pool.end());
-  const state = new PostgresPlatformState(pool);
+  const state = new PostgresPlatformState(pool, stateOptions);
   const installation = await state.loadInstallation();
   assert.ok(installation);
   const auth = await createPostgresControllerAuth({
     mode: "development",
     installationId: installation.id,
     baseURL: origin,
+    agentDomain: "agents.oce.localhost",
     secret: authSecret,
     pool,
   });
   const iamDriver = new NativeIAMDriver(state, { id: `${label}-pg-iam` });
-  const computeDriver = createRuntimeLogComputeDriver({ id: `${label}-pg-compute` });
+  const computeDriver = createRuntimeLogComputeDriver({
+    id: `${label}-pg-compute`,
+    ...(sandboxDriver === undefined ? {} : { sandboxNamespaceName: kubernetesNamespaceName }),
+  });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
-  const secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` });
-  const controller = new OpenClawController(installation, { state, recordOperations: false });
+  const controller = new OpenClawController(installation, {
+    state,
+    ...(appOptions?.agentAuditCursorSecret === undefined
+      ? {}
+      : { agentAuditState: postgresAgentAuditState(state) }),
+    recordOperations: false,
+    namespaceLifecycleBindings:
+      sandboxDriver?.ensureNamespace === undefined
+        ? []
+        : [sandboxNamespaceLifecycleBinding(computeDriver, sandboxDriver)],
+    ...controllerOptions,
+  });
   for (const driver of [iamDriver, computeDriver, configurationDriver, secretDriver]) {
     controller.registerDriver(driver);
     controller.selectDriver(driver.capability, driver.id);
   }
-  const app = createFastifyApp({
-    controller,
-    iamDriver,
-    computeDriver,
-    configurationDriver,
-    secretDriver,
-    resolveHarness: resolveApprovedHarness,
-    auditSink: createAuditSink(state.auditSink),
-    auth,
-    development: { enabled: false },
-    ...appOptions,
-  });
-  t.after(() => app.close());
+  if (sandboxDriver !== undefined) {
+    controller.registerDriver(sandboxDriver);
+    controller.selectDriver("sandbox", sandboxDriver.id);
+  }
+  function createApp(selectedController = controller) {
+    const auditSink = createAuditSink(state.auditSink);
+    const created = createFastifyApp({
+      controller: selectedController,
+      iamDriver,
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      resolveHarness: resolveApprovedHarness,
+      auditSink,
+      ...(requestAudit ? { durableRequestAuditSink: state.auditSink } : {}),
+      auth,
+      development: { enabled: false },
+      ...appOptions,
+    });
+    t.after(() => created.close());
+    return created;
+  }
+  const app = createApp();
+  const fixtureResponse = createFixtureResponse(app.getSchemas());
 
   const signIn = await app.inject({
     method: "POST",
@@ -112,8 +163,8 @@ export async function createPostgresAgentApp(
     origin,
     cookie: cookieHeaderFromSetCookie(Array.isArray(setCookie) ? setCookie : [setCookie]),
   };
-  const inject = (method, url, body) =>
-    app.inject({
+  const inject = (method, url, body, selectedApp = app) =>
+    selectedApp.inject({
       method,
       url,
       headers: {
@@ -137,23 +188,36 @@ export async function createPostgresAgentApp(
     await controller.handleNamespaceLifecycle(principal.id, namespace.id, "ready");
     const configuration = await inject("POST", `/namespaces/${namespace.id}/configurations`, {
       kind: "agent",
-      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+      values: createHarnessConfiguration(
+        sandboxDriver === undefined ? "openclaw" : "codex",
+        "gpt-4.1",
+      ),
     });
     assert.equal(configuration.statusCode, 201, configuration.body);
     const secret = await inject("POST", `/namespaces/${namespace.id}/secrets`, {
       name: `${name} key ${randomUUID()}`,
       value: `test-key-${randomUUID()}`,
     });
-    assert.equal(secret.statusCode, 201, secret.body);
-    const secretRef = secret.json().data.ref;
+    const {
+      data: { ref: secretRef },
+    } = fixtureResponse(
+      { status: secret.statusCode, body: /** @type {unknown} */ (secret.json()) },
+      201,
+      SecretResponse,
+      "create harness Secret",
+    );
     const createdAgent = await inject("POST", `/namespaces/${namespace.id}/agents`, {
       name: `${name} ${randomUUID()}`,
+      ...(sandboxDriver === undefined ? {} : { executionMode: "dedicated" }),
       configurationId: configuration.json().data.id,
       harnessAuth: { method: "api_key", source: secretRef },
     });
-    assert.equal(createdAgent.statusCode, 201, createdAgent.body);
-    const agent = createdAgent.json().data;
-    // The Agent's ServicePrincipal is the subject of this Secret binding.
+    const { data: agent } = fixtureResponse(
+      { status: createdAgent.statusCode, body: /** @type {unknown} */ (createdAgent.json()) },
+      201,
+      AgentResponse,
+      "create Agent",
+    );
     await grantAgentSecretOperate(pool, agent, secretRef.id);
     const revision = await controller.deployAgent(
       principal.id,
@@ -163,5 +227,16 @@ export async function createPostgresAgentApp(
     return { namespace, secretRef, agent, revision };
   }
 
-  return { pool, state, controller, computeDriver, app, principal, inject, deployAgent };
+  return {
+    pool,
+    state,
+    controller,
+    computeDriver,
+    app,
+    createApp,
+    principal,
+    inject,
+    deployAgent,
+    adminAccount: { email: adminEmail, password: adminPassword },
+  };
 }

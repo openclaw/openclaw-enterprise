@@ -1,0 +1,23 @@
+# Use the controller image from the OCE release that deploys the plugin operation map.
+image: ""
+replicas: 2
+port: 9445
+
+# TLS certificate and key for the guard's Service, and the supervisor issuer's
+# public.pem verification key. The guard needs no signing key or OCE API credentials.
+tlsSecretName: ""
+issuerSecretName: ""
+issuer: ""
+keyId: ""
+
+# Select the OpenShell Gateway for registration and the supervisors for request checks.
+# Set the namespace and release labels to match the execution cluster.
+# - namespaceSelector:
+#     matchLabels: { kubernetes.io/metadata.name: openshell }
+#   podSelector:
+#     matchLabels: { app.kubernetes.io/name: openshell, app.kubernetes.io/instance: openshell }
+# - namespaceSelector:
+#     matchLabels: { kubernetes.io/metadata.name: agent-execution }
+#   podSelector:
+#     matchLabels: { openshell.ai/managed-by: openshell, openshell.ai/boundary-role: supervisor }
+clients: []

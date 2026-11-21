@@ -6,6 +6,9 @@ import {
   PLUGIN_RUNTIME_HELPERS,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
+import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
+
 const nodeRequire = createRequire(import.meta.url);
 
 export const WORKSPACE_NODE_BINDING_PATH = "/run/openclaw-workspace-node/workspace-node.json";
@@ -19,6 +22,8 @@ export function workspaceNodeBinding(deviceId, revisionId = WORKSPACE_NODE_REVIS
 
 export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
   const gatewayRuntime =
+    options.launcher === "docker" ||
+    options.env?.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined ||
     options.workspaceNodeId !== undefined ||
     options.workspaceNodeBindingPath === true ||
     options.env?.APP_SERVER_URL !== undefined;
@@ -43,21 +48,36 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
         },
       ),
     ],
+    // Launcher tests supply the candidate image identity. Native image tests
+    // separately verify the built runtime's source and enforcement behavior.
+    [
+      "/opt/oce/runtime/provenance.json",
+      JSON.stringify({
+        source: "https://github.com/openclaw/openclaw",
+        commit: GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+      }),
+    ],
     ...(options.files ?? []),
     ...(options.workspaceNodeId === undefined
       ? []
       : [[WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding(options.workspaceNodeId)]]),
   ]);
+  const writeDescriptors = new Map();
+  let nextDescriptor = 3;
   let temporaryDirectory = 0;
   const gatewayUnavailable = new Error("Gateway unavailable");
   const sandbox = {
     AbortController,
     Buffer,
+    structuredClone,
     files,
     process: {
       env: {
         OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
         HOME: "/home/node",
+        ...(options.launcher === "docker"
+          ? { OPENCLAW_CONFIG_JSON: files.get("/etc/openclaw/openclaw.json") }
+          : {}),
         ...bindingEnvironment,
         ...(options.env ?? {}),
       },
@@ -88,7 +108,7 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
           async callGatewayFromCli(method, rpcOptions, params, extra) {
             assert.equal(extra.sharedStateMode, "read-only");
             calls.push({ method, params });
-            const value = await options.gatewayCall?.(method, extra.signal);
+            const value = await options.gatewayCall?.(method, extra.signal, { rpcOptions, extra });
             if (value === undefined) {
               throw gatewayUnavailable;
             }
@@ -134,7 +154,14 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
           existsSync(path) {
             return files.has(path);
           },
+          lstatSync(path) {
+            if (!files.has(path)) {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            }
+            return { isFile: () => true, mode: 0o600 };
+          },
           mkdirSync() {},
+          chmodSync() {},
           mkdtempSync(prefix) {
             if (options.mkdtempError !== undefined) {
               throw options.mkdtempError;
@@ -154,7 +181,19 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
             }
             return files.get(path);
           },
-          writeFileSync(path, data) {
+          openSync(path, flags) {
+            assert.equal(flags, "w");
+            const descriptor = nextDescriptor++;
+            files.set(path, "");
+            writeDescriptors.set(descriptor, path);
+            return descriptor;
+          },
+          closeSync(descriptor) {
+            assert.ok(writeDescriptors.delete(descriptor), "unknown file descriptor");
+          },
+          writeFileSync(file, data) {
+            const path = typeof file === "number" ? writeDescriptors.get(file) : file;
+            assert.notEqual(path, undefined, "unknown file descriptor");
             files.set(path, String(data));
           },
           renameSync(from, to) {
@@ -172,11 +211,13 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       !gatewayRuntime
         ? `${PLUGIN_RUNTIME_HELPERS}
 result.value = installOpenClawPlugins(${JSON.stringify(runtime)}, ${JSON.stringify(options.failures ?? [])});`
-        : GATEWAY_RUNTIME_ENTRYPOINT,
+        : options.launcher === "docker"
+          ? DOCKER_GATEWAY_RUNTIME_ENTRYPOINT
+          : GATEWAY_RUNTIME_ENTRYPOINT,
       sandbox,
     );
     if (gatewayRuntime) {
-      return execution.then(() => ({ calls, files, sandbox }));
+      return Promise.resolve(execution).then(() => ({ calls, files, sandbox }));
     }
   } catch (error) {
     if (options.captureError === true) {

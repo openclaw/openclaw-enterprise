@@ -1,198 +1,165 @@
+import {
+  assertChatGPTStartupMetadata,
+  checkNativeRepositoryStartup,
+  checkProtectedRepositoryWorker,
+  checkRepositoryLifecycle,
+  checkRepositoryResolution,
+  prepareRepositoryFiles,
+  createChatGPTInstallation,
+  createStartupProcesses,
+  checkCountedQuotaStartup,
+  registerChatGPTStartupRefusals,
+  registerStartupDriverResolutionCases,
+  registerStartupProcessResolutionCases,
+  startupDiagnostic,
+} from "./configuration-startup-resolution-cases.ts";
+import {
+  checkCredentialProxySelection,
+  registerStartupCredentialProxyCases,
+} from "./configuration-startup-credential-proxy-cases.ts";
+import {
+  registerStartupDiagnosticsCases,
+  registerStartupPresetCases,
+} from "./configuration-startup-validation-cases.ts";
+import {
+  checkExternalObservabilityUrl,
+  checkNativeWorkerSupport,
+  registerDevelopmentMetricsStartupCase,
+  registerStartupInstallationInputCases,
+  registerStartupYamlInputCases,
+} from "./configuration-startup-input-cases.ts";
+import { reconcileNamespaceLifecycle } from "../../packages/occ/src/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { before } from "node:test";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+} from "../../apps/controller/src/auth/configuration.ts";
+import { PresetFileError } from "../../apps/controller/src/composition/installation-presets.ts";
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  ConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
+import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
+import { spawnSync } from "node:child_process";
+import { reservedPortArgs, reservePort } from "../helpers/available-port.ts";
+import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import {
+  createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
+  createInstallationDriverConfiguration as installation,
+} from "../helpers/installation-driver-configuration.ts";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-function jsonLines(text) {
-  return text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
-}
+const startupInputs = {
+  fixture,
+  loadInstallationConfiguration,
+  loadStartupConfigurationSnapshot,
+  ConfigurationValidationError,
+};
+const chatgptInstallation = () => createChatGPTInstallation(installation);
 
-function startupDiagnostic(stderr, event) {
-  const diagnostic = jsonLines(stderr).find((line) => line.event === event);
-  assert.ok(diagnostic, stderr);
-  return diagnostic;
-}
+// The startup cases boot the real API and worker processes with an allowlisted environment,
+// which drops NODE_COMPILE_CACHE, so it is passed explicitly: the lane's cache in CI, otherwise
+// a temporary one owned by this file, so each boot after the first reuses compiled code.
+const compileCache = await fileCompileCache("configuration-startup");
 
+const { boot, productionServer, warmStartupProcesses } = createStartupProcesses({
+  captureChild,
+  concurrencyLimit,
+  compileCache,
+});
+
+// Warm the compile cache with one API and one worker boot through production startup to the
+// database connection, the furthest any case here goes. Node writes a cold cache when a process
+// exits, and the first test starts all its boots at once: each one compiled the whole graph and
+// spent seconds writing the same cache at exit, so on a loaded runner the valid case's API had
+// logged its startup error but had not exited within its 15 s budget.
+before(async () => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-installation-warm-"));
+  try {
+    const path = join(directory, "installation.yaml");
+    await writeFile(path, JSON.stringify(installation()), "utf8");
+    await warmStartupProcesses(path);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {Readonly<Record<string, unknown>>} configuration
+ */
 async function fixture(t, configuration = installation()) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-installation-startup-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-installation-startup-");
   const path = join(directory, "installation.yaml");
   // JSON is valid YAML; mutations exercise the same real SDK YAML parser as controller startup.
   await writeFile(path, JSON.stringify(configuration), "utf8");
   return path;
 }
 
-test("Installation startup validates the optional external observability URL", async (t) => {
+test("TokenService registration selection does not require a Sandbox or Credential Proxy", async (t) => {
   const configuration = installation();
-  configuration.observability = { url: "https://metrics.example.test/d/operations" };
+  configuration.drivers.token_service = { id: "occ", configuration: {} };
   const path = await fixture(t, configuration);
   const loaded = await loadInstallationConfiguration({
     mode: "development",
     environment: { OCC_CONFIG_PATH: path },
   });
-  assert.equal(loaded.installation.observability.url, configuration.observability.url);
-
-  const url = configuration.observability.url;
-  for (const [observability, message] of [
-    ...[
-      "javascript:alert(1)",
-      syntheticCredentialUrl({
-        username: "user",
-        password: "pass",
-        host: "example.test",
-      }),
-      "relative",
-      "https://x.example/#f",
-    ].map((invalid) => [{ url: invalid }, /observability\.url/]),
-    [{ url, extra: 1 }, /observability contains unsupported option extra/],
-  ]) {
-    configuration.observability = observability;
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "development",
-        environment: { OCC_CONFIG_PATH: path },
-      }),
-      message,
-    );
-  }
+  assert.equal(loaded.installation.drivers.token_service.id, "occ");
+  assert.equal(loaded.installation.drivers.sandbox, undefined);
+  assert.equal(loaded.installation.drivers.credential_proxy, undefined);
 });
 
-test("Installation startup declares native worker support only as a custom runtime image", async (t) => {
-  const configuration = installation();
+test("Credential Proxy startup preserves the selection and refuses retired keys", async (t) => {
+  const configuration = credentialProxyInstallation();
   const path = await fixture(t, configuration);
   const load = () =>
-    loadInstallationConfiguration({ mode: "development", environment: { OCC_CONFIG_PATH: path } });
-  // Off by default: the pinned runtime cannot run dedicated native OpenClaw.
-  assert.equal((await load()).installation.runtime, undefined);
-  configuration.runtime = { nativeWorkerSupport: "custom-image" };
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  assert.deepEqual((await load()).installation.runtime, { nativeWorkerSupport: "custom-image" });
-  for (const [runtime, message] of [
-    [{ nativeWorkerSupport: true }, /runtime\.nativeWorkerSupport must be "custom-image"/],
-    [
-      { nativeWorkerSupport: "pinned-runtime" },
-      /runtime\.nativeWorkerSupport must be "custom-image"/,
-    ],
-    [{}, /runtime\.nativeWorkerSupport must be "custom-image"/],
-    [
-      { nativeWorkerSupport: "custom-image", image: "x" },
-      /runtime contains unsupported option image/,
-    ],
-  ]) {
-    configuration.runtime = runtime;
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    await assert.rejects(load(), message);
-  }
-});
-
-test("development accepts a Metrics URL with its default Compose Drivers", async (t) => {
-  const url = "https://metrics.example.test/d/operations";
-  const path = await fixture(t, { observability: { url } });
-  const environment = { OCC_CONFIG_PATH: path };
-  const snapshot = await loadStartupConfigurationSnapshot({ mode: "development", environment });
-  assert.equal(snapshot.observability.url, url);
-  assert.equal(
-    await loadInstallationConfiguration({
+    loadInstallationConfiguration({
       mode: "development",
-      environment,
-      startupConfiguration: snapshot,
-    }),
-    undefined,
-  );
+      environment: { OCC_CONFIG_PATH: path },
+    });
+  await checkCredentialProxySelection(t, configuration, path, load, validateSelectedBackendDrivers);
 });
 
-function chatgptInstallation() {
-  const configuration = installation();
-  configuration.backend = [
-    {
-      id: "openai",
-      type: "chatgpt",
-      configuration: {
-        workspaceId: "f7f33107-5fb9-4ee1-8922-3eae76b5b5a0",
-        apiKeyPath: "/tmp/nonexistent-occ-chatgpt-admin-key",
-        credentialTtlSeconds: 3600,
-      },
-      drivers: {
-        service_account: "chatgpt-service-accounts",
-      },
-    },
-  ];
-  configuration.drivers.service_account = {
-    id: "chatgpt-service-accounts",
-    configuration: {},
-  };
-  return configuration;
-}
+test("Installation startup validates the optional external observability URL", async (t) => {
+  await checkExternalObservabilityUrl(t, startupInputs);
+});
 
-function retiredChatgptInstallation() {
-  const configuration = installation();
-  configuration.integrations = {
-    chatgpt: {
-      workspaceId: "f7f33107-5fb9-4ee1-8922-3eae76b5b5a0",
-      adminKeyPath: "/tmp/nonexistent-occ-chatgpt-admin-key",
-      credentialTtlSeconds: 3600,
-    },
-  };
-  configuration.drivers.service_account = {
-    id: "chatgpt-service-accounts",
-    configuration: {},
-  };
-  return configuration;
-}
+registerStartupDiagnosticsCases({ boot, fixture, readFile, settled });
+test("Installation startup declares native worker support only as a custom runtime image", async (t) => {
+  await checkNativeWorkerSupport(t, startupInputs);
+});
+
+registerDevelopmentMetricsStartupCase(startupInputs);
 
 async function repositoryInstallation(t) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-repository-startup-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-repository-startup-");
   const tls = await createTlsMaterial(t);
-  await chmod(tls.certFile, 0o644);
-  const writableCaPath = join(directory, "writable-ca.crt");
-  await writeFile(writableCaPath, tls.ca);
-  await chmod(writableCaPath, 0o666);
-  const registry = {
-    version: 1,
-    backendId: "github-primary",
-    providerInstanceId: "github-com",
-    appId: "12345",
-    githubInstallationId: "67890",
-    maximumDurationSeconds: 3600,
-    repositories: [
-      {
-        repositoryRef: "application",
-        repositoryId: "34567",
-        repository: "example/application",
-        namespaces: [{ namespaceId: "ns_repository", profiles: ["git-read", "git-write"] }],
-      },
-    ],
-  };
-  const registrySource = join(directory, "registry-generation.json");
-  await writeFile(registrySource, JSON.stringify(registry), { mode: 0o644 });
-  const registryPath = join(directory, "registry.json");
-  // Kubernetes ConfigMap/public-CA projection uses symlinks; these nonsecret
-  // inputs must not inherit the service's stricter private-file loader.
-  await symlink(registrySource, registryPath);
-  const publicCaPath = join(directory, "ca.crt");
-  await symlink(tls.certFile, publicCaPath);
+  const { writableCaPath, registry, registrySource, registryPath, publicCaPath } =
+    await prepareRepositoryFiles(directory, tls.certFile, tls.ca);
   const configuration = installation();
   configuration.backend = [
     {
@@ -202,12 +169,16 @@ async function repositoryInstallation(t) {
       drivers: { repo: "repository-credentials" },
     },
   ];
-  configuration.drivers.repo = {
+  configuration.repository = {
     id: "repository-credentials",
-    configuration: {
+    configuration: { sessionDurationSeconds: 600 },
+    nativeSender: {
       controlSocket: "/run/openclaw/repository-control/private/control.sock",
-      sessionDurationSeconds: 600,
-      publicCaPath,
+      publicCaPath: publicCaPath,
+    },
+    preparedGitHub: {
+      custodyKeyPath: join(directory, "custody.key"),
+      privateKeyPath: join(directory, "app.pem"),
     },
   };
   configuration.drivers.compute.configuration.network.repositoryCredentials = {
@@ -221,6 +192,15 @@ async function repositoryInstallation(t) {
   return { configuration, registry, registrySource, tls, writableCaPath };
 }
 
+for (const mode of ["native", "selected-blocked", "selected"]) {
+  test(`Installation loads prepared GitHub lifecycle only for selected metadata: ${mode}`, async (t) => {
+    await checkRepositoryLifecycle(t, mode, fixture, {
+      native: async () => (await repositoryInstallation(t)).configuration,
+      proxy: credentialProxyInstallation,
+    });
+  });
+}
+
 test("repository startup constructs the same local resolver without a private socket or App key", async (t) => {
   const { configuration, registry, registrySource } = await repositoryInstallation(t);
   const path = await fixture(t, configuration);
@@ -232,80 +212,127 @@ test("repository startup constructs the same local resolver without a private so
     mode: "production",
     environment: { OCC_CONFIG_PATH: path },
   });
-  assert.equal(api.repoDriver.capability, "repo");
-  // The capability name does not replace the operator's opaque Driver identity.
-  assert.equal(api.repoDriver.id, "repository-credentials");
-  assert.equal(worker.repoDriver.id, api.repoDriver.id);
-  assert.deepEqual(api.installation.backend[0].drivers, { repo: api.repoDriver.id });
+  for (const runtime of [api, worker]) {
+    assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
+    assert.equal(Object.hasOwn(runtime.installation.drivers, "repo"), false);
+    assert.equal(runtime.repositoryAdmission.policyMode, "built-in");
+    assert.equal(runtime.repositoryAdmission.backendId, registry.backendId);
+  }
+  const policy = api.repositoryAdmission.policy;
+  const workerPolicy = worker.repositoryAdmission.policy;
+  assert.equal(policy.capability, "repo");
+  // The capability name does not replace the operator's opaque policy identity.
+  assert.equal(policy.id, "repository-credentials");
+  assert.equal(workerPolicy.id, policy.id);
+  assert.deepEqual(api.installation.backend[0].drivers, { repo: policy.id });
   assert.equal(Object.hasOwn(api.installation.drivers, "repository_credentials"), false);
-  assert.equal(api.installation.drivers.repo.implementation, api.repoDriver.implementation);
-  const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
-  const resolved = api.repoDriver.resolve(selection);
-  assert.deepEqual(worker.repoDriver.resolve(selection), resolved);
-  assert.equal(resolved.bindings[0].profile, "git-write");
-  assert.equal(resolved.bindings[0].grant.repositoryId, "34567");
-  assert.equal(resolved.sessionDurationSeconds, 600);
-  assert.throws(
-    () => api.repoDriver.resolve({ ...selection, namespaceId: "ns_other" }),
-    /permitted/,
+  assert.equal(api.installation.repository.implementation, policy.implementation);
+  await checkRepositoryResolution(
+    t,
+    { policy, workerPolicy, configuration, registry, registrySource, path },
+    { boot, fixture, productionServer, chatgptInstallation },
   );
-  const chatgpt = chatgptInstallation();
-  const combined = structuredClone(configuration);
-  combined.backend.push(...chatgpt.backend);
-  combined.drivers.service_account = chatgpt.drivers.service_account;
-  const combinedDrivers = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, combined) },
-  });
-  assert.deepEqual(
-    combinedDrivers.installation.backend.map((backend) => backend.type),
-    ["github", "chatgpt"],
-  );
-  // Repository bindings store a GitHub Backend ID under a 200 UTF-16 code unit bound, so
-  // 101 emoji (101 characters, 202 units) is refused for a GitHub Backend only.
-  const astral = structuredClone(configuration);
-  astral.backend[0].id = "😀".repeat(101);
-  await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, astral) },
-    }),
-    /backend\[0\]\.id must fit in 200 UTF-16 code units for a GitHub Backend, because/,
-  );
-  // 100 emoji is exactly 200 units, so it fits; its registry names the same Backend ID.
-  astral.backend[0].id = "😀".repeat(100);
-  astral.backend[0].configuration.registryPath = join(dirname(registrySource), "astral.json");
-  await writeFile(
-    astral.backend[0].configuration.registryPath,
-    JSON.stringify({ ...registry, backendId: astral.backend[0].id }),
-    { mode: 0o644 },
-  );
-  const fits = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, astral) },
-  });
-  assert.equal(fits.installation.backend[0].id, astral.backend[0].id);
-
-  // The actual API reaches its ordinary database dependency while the configured
-  // Unix directory is absent. No private service inputs are supplied to it.
-  const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: path,
-      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-      OCC_HOST: "192.0.2.10",
-      OCC_PORT: "8080",
-      OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-      OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
-    },
-    encoding: "utf8",
-    timeout: 10000,
-  });
-  assert.equal(server.status, 1);
-  assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "PERSISTENCE_UNAVAILABLE");
 });
+
+test("the worker refuses a repository App key that cannot sign before it reports ready", async (t) => {
+  // Finding 2217: the worker read the App key only at its first token preparation, so it
+  // reported ready and each pass logged PREPARED_GITHUB_MAINTENANCE_FAILED without a reason.
+  const { configuration, registry, registrySource } = await repositoryInstallation(t);
+  // The prepared owner admits only one explicit write ref per Namespace.
+  Object.assign(registry.repositories[0].namespaces[0], {
+    profiles: ["git-write"],
+    transport: "git-only",
+    pushRefAllowlist: ["refs/heads/review"],
+  });
+  await writeFile(registrySource, JSON.stringify(registry));
+  const { preparedGitHub } = configuration.repository;
+  // Each case binds its own control and prepared-git-use sockets under a short directory.
+  const sockets = await socketDirectory(t, "occ-app-key-", {
+    longest: "group-writable/prepared-git-use.sock",
+  });
+  await writeFile(preparedGitHub.custodyKeyPath, randomBytes(32), { mode: 0o600 });
+  const directory = dirname(preparedGitHub.custodyKeyPath);
+  const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const pkcs8 = { type: "pkcs8", format: "pem" };
+  const keys = [
+    ["valid", rsa.export(pkcs8), 0o600],
+    ["group-writable", rsa.export(pkcs8), 0o620, "app_key_unreadable"],
+    ["missing", undefined, 0o600, "app_key_unreadable"],
+    [
+      "public",
+      createPublicKey(rsa).export({ type: "spki", format: "pem" }),
+      0o600,
+      "app_key_unparsable",
+    ],
+    [
+      "encrypted",
+      rsa.export({ ...pkcs8, cipher: "aes-256-cbc", passphrase: "unused-passphrase" }),
+      0o600,
+      "app_key_unparsable",
+    ],
+    [
+      "ec",
+      generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export(pkcs8),
+      0o600,
+      "app_key_unsupported",
+    ],
+  ];
+  await Promise.all(
+    keys.map(async ([name, pem, mode, reason]) => {
+      const keyPath = join(directory, `${name}.pem`);
+      if (pem !== undefined) {
+        await writeFile(keyPath, pem, { mode });
+        await chmod(keyPath, mode);
+      }
+      const mutated = structuredClone(configuration);
+      mutated.repository.preparedGitHub.privateKeyPath = keyPath;
+      mutated.repository.nativeSender.controlSocket = join(sockets, name, "control.sock");
+      const worker = await boot("apps/controller/src/worker.mjs", {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        OCC_CONFIG_PATH: await fixture(t, mutated),
+        OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      });
+      assert.equal(worker.status, 1, name);
+      const diagnostic = startupDiagnostic(worker.stderr, "worker.startup-error");
+      // A usable key gets past the owner to the unreachable database.
+      assert.deepEqual(
+        [diagnostic.code, diagnostic.reason],
+        reason === undefined
+          ? ["PERSISTENCE_UNAVAILABLE", undefined]
+          : ["PREPARED_GITHUB_APP_KEY_INVALID", reason],
+        `${name}: ${worker.stderr}`,
+      );
+      assert.ok(!worker.stderr.includes("-----BEGIN") && !worker.stderr.includes(directory));
+    }),
+  );
+});
+
+test("the worker binds bundled OpenShell Git with the prepared owner's protected authority", async (t) => {
+  const {
+    configuration: repository,
+    registry,
+    registrySource,
+    tls,
+  } = await repositoryInstallation(t);
+  await checkProtectedRepositoryWorker(
+    t,
+    { repository, registry, registrySource, certFile: tls.certFile, keyFile: tls.keyFile },
+    { boot, fixture, reservePort, reservedPortArgs, credentialProxyInstallation },
+  );
+});
+
+function nativeSenderRefusal(path, code, message) {
+  return (error) => {
+    assert.equal(error.name, "ConfigurationValidationError");
+    assert.deepEqual(
+      error.error.details.map((detail) => [detail.path, detail.code]),
+      [[path, code]],
+    );
+    assert.equal(error.error.details[0].message, message);
+    return true;
+  };
+}
 
 test("repository startup rejects unmatched ownership, registry identity, duration and CA inputs", async (t) => {
   const { configuration: baseline, tls, writableCaPath } = await repositoryInstallation(t);
@@ -313,8 +340,8 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     [(value) => delete value.backend, /requires an owning backend/],
     [
       (value) => {
-        value.drivers.repository_credentials = value.drivers.repo;
-        delete value.drivers.repo;
+        value.drivers.repository_credentials = value.repository;
+        delete value.repository;
       },
       /unsupported option repository_credentials/,
     ],
@@ -325,7 +352,7 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
       },
       /plaintext credential/,
     ],
-    [(value) => delete value.drivers.repo, /requires drivers\.repo/],
+    [(value) => delete value.repository, /requires repository/],
     [(value) => (value.backend[0].drivers.repo = "other-driver"), /must match/],
     [
       (value) => (value.backend[0].configuration.registryPath = "relative.json"),
@@ -338,21 +365,44 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [(value) => (value.backend[0].id = "other-backend"), /invalid-repository-registry/],
     [
-      (value) => (value.drivers.repo.configuration.sessionDurationSeconds = 3601),
+      (value) => (value.repository.configuration.sessionDurationSeconds = 3601),
       /duration|configuration/,
     ],
-    [(value) => (value.drivers.repo.configuration.publicCaPath = tls.keyFile), /public CA/],
-    [(value) => (value.drivers.repo.configuration.publicCaPath = writableCaPath), /public CA/],
-    [(value) => (value.drivers.repo.package = "@example/driver"), /unsupported option package/],
-    [(value) => (value.drivers.repo.implementation = "other"), /unsupported option implementation/],
-    [(value) => (value.drivers.compute.id = "compute-ssh"), /bundled Kubernetes/],
+    [(value) => (value.repository.nativeSender.publicCaPath = tls.keyFile), /invalid-public-ca/],
+    [(value) => (value.repository.nativeSender.publicCaPath = writableCaPath), /invalid-public-ca/],
+    // An existing CA file under a non-canonical path is refused before file loading.
     [
-      (value) => delete value.drivers.compute.configuration.network.repositoryCredentials,
-      /repository service peer/,
+      (value) =>
+        (value.repository.nativeSender.publicCaPath =
+          value.repository.nativeSender.publicCaPath.replace(/\/ca\.crt$/, "/./ca.crt")),
+      nativeSenderRefusal(
+        "/publicCaPath",
+        "INVALID_VALUE",
+        "repository.nativeSender.publicCaPath must be a canonical absolute path without ASCII control characters.",
+      ),
     ],
+    // Both diagnostics identify the configured field without repeating the supplied path.
+    ...["private-relative/control.sock", `/${"é".repeat(52)}`].map((controlSocket) => [
+      (value) => (value.repository.nativeSender.controlSocket = controlSocket),
+      nativeSenderRefusal(
+        "/controlSocket",
+        "INVALID_VALUE",
+        "repository.nativeSender.controlSocket must be a canonical absolute path without ASCII control characters, at most 103 UTF-8 bytes.",
+      ),
+    ]),
+    [(value) => (value.repository.package = "@example/driver"), /unsupported option package/],
+    [(value) => (value.repository.implementation = "other"), /unsupported option implementation/],
+    [(value) => (value.drivers.compute.id = "compute-ssh"), /bundled Kubernetes/],
+    // A missing or misplaced native broker peer: see "native repository delivery names a
+    // missing or misplaced broker peer in startup logs".
+    // Without native delivery no repository material Secret exists and the chart grants no
+    // Secret list, so a peer left behind is refused rather than looping on 403 (finding 2212).
     [
-      (value) => (value.drivers.compute.configuration.network.repositoryCredentials.port = 443),
-      /repository service peer/,
+      (value) => {
+        delete value.repository;
+        delete value.backend;
+      },
+      /drivers\.compute\.configuration\.network\.repositoryCredentials requires repository\.nativeSender/,
     ],
     [
       (value) => (value.backend[0].drivers.repo = "ghp_notarealtoken123456"),
@@ -381,6 +431,29 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
       expected,
     );
   }
+});
+
+test("public CA loading rejects repeated malformed certificates without stalling", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-public-ca-");
+  const path = join(directory, "ca.pem");
+  await writeFile(
+    path,
+    "-----BEGIN CERTIFICATE-----\nA-----END CERTIFICATE-----\n".repeat(32) + "!",
+    { mode: 0o644 },
+  );
+  // A separate process keeps a pathological parser from blocking the test runner indefinitely.
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      'import { loadPublicCa } from "./apps/controller/src/composition/repository-credentials/public-ca.ts"; await loadPublicCa(process.argv[1]).catch((error) => console.log(error.message));',
+      path,
+    ],
+    { encoding: "utf8", timeout: 3000 },
+  );
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  assert.equal(result.stdout.trim(), "invalid-public-ca");
 });
 
 test("startup loads singleton Installation YAML and validates Drivers before construction", async (t) => {
@@ -419,126 +492,10 @@ test("shared startup loads backend metadata without reading the API-only ChatGPT
     environment: { OCC_CONFIG_PATH: await fixture(t, chatgptInstallation()) },
   });
 
-  assert.deepEqual(drivers.installation.backend, [
-    {
-      id: "openai",
-      type: "chatgpt",
-      configuration: {
-        workspaceId: "f7f33107-5fb9-4ee1-8922-3eae76b5b5a0",
-        apiKeyPath: "/tmp/nonexistent-occ-chatgpt-admin-key",
-        credentialTtlSeconds: 3600,
-      },
-      drivers: {
-        service_account: "chatgpt-service-accounts",
-      },
-    },
-  ]);
-  assert.equal(Object.hasOwn(drivers.installation.backend[0].configuration, "adminKeyPath"), false);
-  assert.deepEqual(drivers.installation.drivers.service_account, {
-    id: "chatgpt-service-accounts",
-  });
-  assert.equal(Object.hasOwn(drivers, "serviceAccountDriver"), false);
-  assert.equal(Object.hasOwn(drivers, "chatgptClient"), false);
+  assertChatGPTStartupMetadata(drivers);
 });
 
-test("ChatGPT startup rejects retired integrations and unsafe backend configuration", async (t) => {
-  await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, retiredChatgptInstallation()) },
-    }),
-    /integrations is retired.*backend.*apiKeyPath/,
-  );
-
-  for (const [mutate, expected] of [
-    [(value) => delete value.backend, /requires an owning backend/],
-    [(value) => delete value.drivers.service_account, /requires drivers\.service_account/],
-    [
-      (value) => delete value.backend[0].drivers.service_account,
-      /drivers\.service_account.*required/,
-    ],
-    [(value) => (value.backend[0].configuration.workspaceId = "untrusted"), /workspaceId.*invalid/],
-    [
-      (value) => (value.backend[0].configuration.apiKeyPath = "relative-admin-key"),
-      /absolute mounted file path/,
-    ],
-    [
-      (value) => (value.backend[0].configuration.credentialTtlSeconds = 2_592_001),
-      /between 1 and 2592000/,
-    ],
-    [
-      (value) => (value.backend[0].configuration.apiKey = "plaintext-admin-key"),
-      /plaintext credential|unsupported option/,
-    ],
-    [
-      (value) => (value.backend[0].configuration.adminKeyPath = "/tmp/old-admin-key"),
-      /adminKeyPath.*unsupported/,
-    ],
-    [
-      (value) => (value.backend[0].id = " openai"),
-      /backend\[0\]\.id must be a string of 1 to 200 characters with no leading or trailing whitespace and no control characters or line or paragraph separators\./,
-    ],
-    [
-      (value) => (value.backend[0].id = "a".repeat(201)),
-      /backend\[0\]\.id must be a string of 1 to 200/,
-    ],
-    // 201 code points, a C1 control and a line separator, refused as the API refuses them, and
-    // a lone surrogate, which has no UTF-8 spelling.
-    ...[
-      "openai ",
-      "open\u0007ai",
-      7,
-      "😀".repeat(201),
-      "open\u0085ai",
-      "open\u2028ai",
-      "open\ud800ai",
-    ].map((id) => [
-      (value) => (value.backend[0].id = id),
-      /backend\[0\]\.id must be a string of 1 to 200/,
-    ]),
-    [(value) => (value.backend[0].type = "installed"), /must be chatgpt/],
-    [(value) => (value.backend[0].package = "@example/backend"), /unsupported option package/],
-    [
-      (value) => (value.backend[0].drivers.service_account = "other-service-accounts"),
-      /must match the selected drivers\.service_account\.id/,
-    ],
-    [
-      (value) => value.backend.push(structuredClone(value.backend[0])),
-      /Backend IDs must be unique/,
-    ],
-    [
-      (value) => {
-        const duplicate = structuredClone(value.backend[0]);
-        duplicate.id = "other-openai";
-        value.backend.push(duplicate);
-      },
-      /A Driver cannot belong to multiple Backends/,
-    ],
-    [
-      (value) => (value.drivers.service_account.configuration.backendId = "openai"),
-      /unsupported option/,
-    ],
-  ]) {
-    const configuration = chatgptInstallation();
-    mutate(configuration);
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      }),
-      expected,
-    );
-  }
-
-  // The stated rule's upper edge: 200 characters, interior whitespace allowed.
-  const longest = chatgptInstallation();
-  longest.backend[0].id = `open ${"a".repeat(195)}`;
-  const accepted = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, longest) },
-  });
-  assert.equal(accepted.installation.backend[0].id, longest.backend[0].id);
-});
+registerChatGPTStartupRefusals(fixture, installation);
 
 test("production embedded replacements preserve their active Service across failed activation", async (t) => {
   const drivers = await loadInstallationConfiguration({
@@ -553,12 +510,17 @@ test("production embedded replacements preserve their active Service across fail
   }));
   const pool = new pg.Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
   t.after(async () => pool.end());
+  const events = [];
   const worker = createControllerWorker({
     pool,
     mode: "production",
     drivers,
-    emit: () => {},
+    emit: (event) => events.push(event),
   });
+  const completed = () =>
+    events
+      .filter(({ event }) => event === "worker.completed")
+      .map(({ workId, outcome, result, code }) => ({ workId, outcome, result, code }));
   // Queue health is outside this selector unit; the PostgreSQL suites exercise
   // real health observations while activation holds and renews its claim.
   t.mock.method(worker.queue, "pending", async () => 0);
@@ -579,6 +541,8 @@ test("production embedded replacements preserve their active Service across fail
     configurationId: `cfg_production-${harness.mode}-cutover`,
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       createHarnessConfiguration(harness.id, "gpt-4.1"),
       "info",
@@ -593,6 +557,13 @@ test("production embedded replacements preserve their active Service across fail
     servicePrincipalId,
     createdAt: new Date().toISOString(),
   };
+  predecessor.harness = { ...harness, overrides: {} };
+  predecessor.harness.configuration = computeDriver.resolveHarnessConfiguration(
+    predecessor.harness,
+    predecessor.harnessAuth,
+    predecessor.configuration,
+  );
+  predecessor.compute.admission = computeDriver.admitRevision(predecessor);
   const candidate = {
     ...predecessor,
     id: `rev_production-${harness.mode}-candidate`,
@@ -721,13 +692,37 @@ test("production embedded replacements preserve their active Service across fail
   assert.equal(activeAgent.activeRevisionId, predecessor.id);
   assert.deepEqual(service.spec.selector, activeSelector);
   assert.deepEqual(serviceWrites, []);
+  // The pass logs the retry it committed, not the success it resolved (finding 1611).
+  const lostRace = {
+    workId: claim.idempotencyKey,
+    outcome: "retry",
+    result: "retry",
+    code: "ACTIVE_REVISION_CHANGED",
+  };
+  assert.deepEqual(completed(), [lostRace]);
+
+  // The pointer moved before the compare-and-set: the same retry, and the same log.
+  activeAgent.activeRevisionId = `rev_production-${harness.mode}-newer`;
+  await worker.finalizeRevision(claim, observation);
+  assert.equal(compareAndSetAttempts, 1);
+  assert.deepEqual(retries, Array(2).fill({ code: "ACTIVE_REVISION_CHANGED" }));
+  assert.deepEqual(completed(), [lostRace, lostRace]);
+
+  // The pointer moved after activation committed it: completion retries and logs that retry too.
+  await worker.completeActivatedRevision(claim, { ...observation, revision: candidate });
+  assert.deepEqual(retries, Array(3).fill({ code: "ACTIVE_REVISION_CHANGED" }));
+  assert.deepEqual(completed(), [lostRace, lostRace, lostRace]);
+  activeAgent.activeRevisionId = predecessor.id;
 
   // Recovery for an older claim must never replace a gateway already advanced to a newer revision.
   const newerGateway = computeDriver.deployment(
     name,
     ownership,
     { name: kubernetesNamespaceName(namespaceId), plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
+    {
+      runtime: "openclaw-enterprise/gateway-fixture:local",
+      workspaceSetup: computeDriver.options.images.gateway,
+    },
     `agent-${shortHash(agentId, 12)}`,
     "gateway",
     {},
@@ -773,525 +768,265 @@ test("production embedded replacements preserve their active Service across fail
   heartbeat.mock.restore();
 });
 
-test("startup accepts actual block-style YAML instead of requiring JSON", async (t) => {
-  const path = await fixture(t);
-  const configuration = installation();
-  const yaml = `occ:\n  cluster: production-west\ndrivers:\n  configuration: ${JSON.stringify(configuration.drivers.configuration)}\n  iam: ${JSON.stringify(configuration.drivers.iam)}\n  compute: ${JSON.stringify(configuration.drivers.compute)}\n  secret: ${JSON.stringify(configuration.drivers.secret)}\n`;
-  await writeFile(path, yaml, "utf8");
-  const loaded = await loadInstallationConfiguration({
+registerStartupYamlInputCases(startupInputs);
+
+registerStartupProcessResolutionCases(
+  { boot, fixture, productionServer },
+  {
+    installation,
+    isDevelopmentBrowserOrigin,
+    developmentBrowserOriginRule: DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  },
+);
+
+registerStartupInstallationInputCases(startupInputs);
+
+registerStartupPresetCases({
+  boot,
+  fixture,
+  PresetFileError,
+  productionServer,
+  settled,
+});
+
+registerStartupCredentialProxyCases({ boot, fixture, productionServer, settled });
+
+registerStartupDriverResolutionCases(
+  { boot, fixture, productionServer },
+  { installation, credentialProxyInstallation, repositoryInstallation },
+);
+
+test("native repository delivery names a missing or misplaced broker peer in startup logs", async (t) => {
+  await checkNativeRepositoryStartup(
+    t,
+    { boot, fixture, productionServer },
+    repositoryInstallation,
+  );
+});
+
+test("closed Installation observes only its operator-bound Namespace, including Secret and Configuration custody", async (t) => {
+  const { gatewayRouting, digest } = await import("../helpers/kubernetes-routed-scenarios.mjs");
+  const controllerRequire = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  );
+  const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
+  const configuration = credentialProxyInstallation();
+  configuration.drivers.sandbox.configuration.gateway.operatorNamespaceLabels = {
+    "openshell.ai/openclaw-workspace": "true",
+  };
+  configuration.drivers.sandbox.configuration.gateway.operatorWorkspaceResources = [
+    {
+      apiVersion: "v1",
+      kind: "ServiceAccount",
+      metadata: { name: "sandbox" },
+      automountServiceAccountToken: false,
+    },
+  ];
+  const approvedWorkspacePolicy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name: "workspace-deny" },
+    spec: { podSelector: {}, policyTypes: ["Ingress"] },
+  };
+  configuration.drivers.sandbox.configuration.gateway.networkPolicyResources = [
+    approvedWorkspacePolicy,
+  ];
+  const compute = configuration.drivers.compute.configuration;
+  const id = "ns_closed_binding_test";
+  const name = kubernetesNamespaceName(id);
+  const uid = "19fc773a-b474-499e-9406-ba18ee701689";
+  compute.gatewayRouting = gatewayRouting;
+  delete compute.network.gatewayClients;
+  const environment = {
+    OCC_CONFIG_PATH: await fixture(t, configuration),
+    OCC_PREPROVISIONED_NAMESPACE: JSON.stringify({ namespaceId: id, uid }),
+  };
+  const drivers = await loadInstallationConfiguration({
     mode: "production",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  assert.equal(loaded.installation.occ.cluster, "production-west");
-});
-
-test("production requires one YAML while development may start without a ConfigurationDriver", async (t) => {
-  await assert.rejects(
-    loadInstallationConfiguration({ mode: "production", environment: {} }),
-    /OCC_CONFIG_PATH/,
-  );
-  assert.equal(
-    await loadInstallationConfiguration({ mode: "development", environment: {} }),
-    undefined,
-  );
-  // Unusable paths and unparsable files get fixed messages that never echo the path or the
-  // filesystem or parser error.
-  const invalidYaml = await fixture(t);
-  await writeFile(invalidYaml, "drivers: [\n", "utf8");
-  for (const [path, message] of [
-    [" ", "OCC_CONFIG_PATH must identify the Installation startup YAML."],
-    [
-      "relative/installation.yaml",
-      "OCC_CONFIG_PATH must identify an absolute Installation startup YAML path.",
-    ],
-    [`${invalidYaml}.missing`, "The configured Installation startup YAML is unavailable."],
-    [invalidYaml, "The configured Installation startup file must contain valid YAML."],
-  ]) {
-    await assert.rejects(
-      loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
-      { message },
-      JSON.stringify(path),
-    );
-  }
-});
-
-test("production server and worker resolve singleton startup without an Installation ID", async (t) => {
-  const path = await fixture(t);
-  const shared = {
-    PATH: process.env.PATH,
-    NODE_ENV: "production",
-    OCC_CONFIG_PATH: path,
-    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-  };
-
-  // The actual server gets beyond singleton/Driver startup and fails only at missing session auth.
-  const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      ...shared,
-      OCC_HOST: "192.0.2.10",
-      OCC_PORT: "8080",
-    },
-    encoding: "utf8",
-    timeout: 10_000,
-  });
-  assert.equal(server.status, 1);
-  assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "AUTH_BASE_URL_INVALID");
-  assert.doesNotMatch(server.stderr, /OCC_AUTH_BASE_URL|OCC_AUTH_SECRET|OCC_INSTALLATION_ID/);
-
-  // The real worker likewise reaches PostgreSQL; no test-owned database or driver is substituted.
-  const worker = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
-    cwd: process.cwd(),
-    env: shared,
-    encoding: "utf8",
-    timeout: 10_000,
-  });
-  assert.equal(worker.status, 1);
-  assert.equal(
-    startupDiagnostic(worker.stderr, "worker.startup-error").code,
-    "PERSISTENCE_UNAVAILABLE",
-  );
-  assert.doesNotMatch(worker.stderr, /OCC_INSTALLATION_ID|explicit Installation/);
-});
-
-test("only the actual API process reads ChatGPT admin credentials and backend accounts require PostgreSQL", async (t) => {
-  const path = await fixture(t, chatgptInstallation());
-  const shared = {
-    PATH: process.env.PATH,
-    NODE_ENV: "production",
-    OCC_CONFIG_PATH: path,
-    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-  };
-
-  // API startup fails on its missing mounted admin key before opening the configured database.
-  const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      ...shared,
-      OCC_HOST: "192.0.2.10",
-      OCC_PORT: "8080",
-      OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-      OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
-    },
-    encoding: "utf8",
-    timeout: 10_000,
-  });
-  assert.equal(server.status, 1);
-  assert.equal(
-    startupDiagnostic(server.stderr, "startup-error").code,
-    "CHATGPT_ADMIN_KEY_UNAVAILABLE",
-  );
-  assert.doesNotMatch(server.stderr, /ChatGPT admin-key Secret is unavailable/);
-
-  // The same configured worker cannot read that mount and fails only when PostgreSQL is unavailable.
-  const worker = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
-    cwd: process.cwd(),
-    env: shared,
-    encoding: "utf8",
-    timeout: 10_000,
-  });
-  assert.equal(worker.status, 1);
-  assert.equal(
-    startupDiagnostic(worker.stderr, "worker.startup-error").code,
-    "PERSISTENCE_UNAVAILABLE",
-  );
-  assert.doesNotMatch(worker.stderr, /ChatGPT|admin-key|ServiceAccount Driver/);
-
-  // Driver-private backend bindings cannot silently fall back to ephemeral in-memory persistence.
-  const inMemory = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      PATH: process.env.PATH,
-      NODE_ENV: "development",
-      OCC_CONFIG_PATH: path,
-      OCC_HOST: "127.0.0.1",
-      OCC_PORT: "8080",
-    },
-    encoding: "utf8",
-    timeout: 10_000,
-  });
-  assert.equal(inMemory.status, 1);
-  assert.equal(
-    startupDiagnostic(inMemory.stderr, "startup-error").code,
-    "SERVICE_ACCOUNT_REQUIRES_POSTGRES",
-  );
-  assert.doesNotMatch(
-    inMemory.stderr,
-    /ServiceAccounts require PostgreSQL persistence|ChatGPT admin-key Secret/,
-  );
-});
-
-test("startup rejects caller-selected Installation IDs and obsolete Driver selectors", async (t) => {
-  const path = await fixture(t);
-  for (const [name, value] of [
-    ["OCC_INSTALLATION_ID", "ins_untrusted"],
-    ["OCC_COMPUTE_DRIVER", "kubernetes"],
-    ["OCC_KUBERNETES_CONFIG_PATH", "/tmp/obsolete.json"],
-    ["OCC_NATIVE_IAM_DRIVER_ID", "native-iam"],
-  ]) {
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: path, [name]: value },
-      }),
-      new RegExp(name),
-    );
-  }
-
-  const injected = installation();
-  injected.drivers.compute.configuration.authentication.installation_id = "ins_untrusted";
-  await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, injected) },
+    environment,
+    createOpenShellBackend: (definition) => ({
+      id: definition.id,
+      drivers: definition.drivers,
+      client: {
+        clientForNamespace: () => ({
+          health: async () => {},
+          getWorkspace: async () => ({
+            name,
+            phase: 1,
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/namespace-id": id,
+            },
+          }),
+        }),
+      },
     }),
-    /must not contain an Installation ID/,
-  );
-});
-
-test("startup rejects plaintext secrets, caller-authored identities, and unsupported schema options", async (t) => {
-  for (const [mutate, expected] of [
-    [(value) => (value.drivers.compute.configuration.apiKey = "plaintext"), /plaintext credential/],
-    [
-      (value) => (value.drivers.configuration.implementation = "occ/docker-config"),
-      /unsupported option.*implementation/,
-    ],
-    [
-      (value) =>
-        (value.drivers.configuration.configuration.authentication = { mode: "kubeconfig" }),
-      /schema|authentication/,
-    ],
-    [(value) => (value.drivers.iam.configuration.unexpected = true), /schema|unsupported option/],
-    [
-      (value) => (value.drivers.compute.configuration.resources.gateway.unexpected = true),
-      /schema|unsupported option/,
-    ],
-    [
-      (value) => (value.drivers.compute.configuration.images.requireImmutableDigest = false),
-      /immutable image digests/,
-    ],
-    [
-      (value) =>
-        (value.drivers.compute.configuration.network.gatewayPort = Number.MAX_SAFE_INTEGER + 1),
-      /schema|integer|port/,
-    ],
-    [
-      (value) =>
-        (value.drivers.compute.configuration.images.gateway = "registry.example/gateway:latest"),
-      /immutable SHA-256 digest/,
-    ],
-    [
-      (value) =>
-        (value.drivers.compute.configuration.images.agent = "registry.example/agent:latest"),
-      /immutable SHA-256 digest/,
-    ],
-    [
-      (value) => delete value.drivers.compute.configuration.runtime,
-      /explicitly configured Codex runtime/,
-    ],
-    [
-      (value) =>
-        (value.drivers.compute.configuration.runtime.modelSecretPrefix =
-          value.drivers.compute.configuration.runtime.transportSecretPrefix),
-      /schema|unsupported option/,
-    ],
-    // The reader refuses these anywhere in the file, before any Driver schema runs.
-    [
-      (value) => (value.drivers.compute.configuration.unexpected = 2 ** 53 + 2),
-      /\.unexpected must be a safe integer\.$/,
-    ],
-    [
-      (value) => (value.drivers.compute.configuration.constructor = {}),
-      /contains an unsafe configuration key\.$/,
-    ],
-    [
-      (value) => (value.drivers.compute.configuration.secretRef = "installation-secret"),
-      /Installation-scoped secret references cannot be resolved safely\.$/,
-    ],
-  ]) {
-    const configuration = installation();
-    mutate(configuration);
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      }),
-      expected,
-    );
-  }
-});
-
-test("Installation default Presets are opt-in and reject ambiguous YAML settings", async (t) => {
-  for (const presets of [undefined, {}, { includeDefaults: false }]) {
-    const configuration = installation();
-    if (presets !== undefined) {
-      configuration.presets = presets;
-    }
-    const loaded = await loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    });
-    assert.deepEqual(loaded.defaultPresets, []);
-  }
-  const enabled = installation();
-  enabled.presets = { includeDefaults: true };
-  const enabledRuntime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, enabled) },
   });
-  assert.deepEqual(enabledRuntime.defaultPresets.map((preset) => preset.name).sort(), [
-    "Standard Codex",
-    "Standard OpenClaw",
-    "default-codex",
-  ]);
-  for (const presets of [
-    { includeDefaults: "true" },
-    { includeDefaults: 1 },
-    { includeDefault: true },
-    { files: "preset.json" },
-    { files: [1] },
-    { files: [""] },
-    null,
-  ]) {
-    const configuration = installation();
-    configuration.presets = presets;
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      }),
-      /presets/,
-    );
-  }
-});
-
-test("an Installation Preset file named like a bundled default replaces that default", async (t) => {
-  // default-codex became a bundled default after operators could already name a file
-  // default-codex. Startup must keep the operator's file instead of refusing to start.
-  const operatorCodex = {
-    name: "default-codex",
-    template: { agent: { name: "Operator Codex", executionMode: "dedicated" } },
-  };
-  const configuration = installation();
-  configuration.presets = { includeDefaults: true, files: ["presets/codex.json"] };
-  const path = await fixture(t, configuration);
-  await mkdir(join(dirname(path), "presets"), { recursive: true });
-  const presetPath = join(dirname(path), "presets", "codex.json");
-  await writeFile(presetPath, JSON.stringify(operatorCodex));
-  const runtime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  assert.deepEqual(runtime.defaultPresets.map((preset) => preset.name).sort(), [
-    "Standard Codex",
-    "Standard OpenClaw",
-    "default-codex",
-  ]);
-  assert.deepEqual(
-    runtime.defaultPresets.find((preset) => preset.name === "default-codex").template,
-    operatorCodex.template,
-  );
-  // The resolved path names the file the operator must keep or rename.
-  assert.deepEqual(runtime.shadowedDefaultPresets, [
-    { presetName: "default-codex", presetFile: presetPath },
-  ]);
-  // Without includeDefaults nothing is shadowed: the file is an ordinary default.
-  configuration.presets.includeDefaults = false;
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  const filesOnly = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  assert.deepEqual(
-    filesOnly.defaultPresets.map((preset) => preset.name),
-    ["default-codex"],
-  );
-  assert.deepEqual(filesOnly.shadowedDefaultPresets, []);
-});
-
-test("Installation Preset JSON files resolve beside startup YAML and fail closed", async (t) => {
-  const validPreset = {
-    name: "from-file",
-    template: {
-      variables: { name: { type: "string" } },
-      agent: {
-        name: "{{ vars.name }}",
-        initialWorkspaceFiles: {
-          "AGENTS.md": "# Agent\nName: {{ vars.name }}\n",
-          "USER.md": "",
-        },
+  const { computeDriver: driver, configurationDriver, secretDriver } = drivers;
+  const ns = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    status: { phase: "Active" },
+    metadata: {
+      name,
+      uid,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openshell.ai/openclaw-workspace": "true",
+        "openclaw.dev/namespace": id,
+        "openclaw.dev/gateway-namespace": id,
+        "openclaw-enterprise.io/gateway": digest(
+          gatewayRouting.gatewayNamespace + "/" + gatewayRouting.gatewayName,
+        ),
+        ...Object.fromEntries(
+          ["enforce", "audit", "warn"].map((x) => [
+            "pod-security.kubernetes.io/" + x,
+            "restricted",
+          ]),
+        ),
+      },
+      annotations: {
+        "openclaw.dev/namespace-id": id,
+        "openclaw.dev/namespace-lifecycle": "preprovisioned",
       },
     },
   };
-  const relativeConfiguration = installation();
-  // Entries are trimmed before they resolve, so whitespace inside a quoted YAML entry does not
-  // change the path.
-  relativeConfiguration.presets = {
-    includeDefaults: false,
-    files: ["  presets/from-file.json\t"],
+  let observed = structuredClone(ns);
+  const reads = [];
+  const writes = [];
+  const readNamespace = async (query) => {
+    assert.deepEqual(query, { name });
+    reads.push(name);
+    return observed;
   };
-  const relativePath = await fixture(t, relativeConfiguration);
-  const relativeDirectory = dirname(relativePath);
-  await mkdir(join(relativeDirectory, "presets"), { recursive: true });
-  await writeFile(
-    join(relativeDirectory, "presets", "from-file.json"),
-    JSON.stringify(validPreset),
-  );
-  const relativeRuntime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: relativePath },
+  const absent = async (q) => {
+    assert.equal(q.namespace, name);
+    throw Object.assign(new Error("not found"), { code: 404 });
+  };
+  const write = async (q) => {
+    assert.equal(q.namespace, name);
+    assert.equal(q.body.metadata.annotations["openclaw.dev/namespace-id"], id);
+    writes.push(q.body.kind + "/" + q.name);
+    return q.body;
+  };
+  // Namespace API is GET of this name only. A list, adoption, or delete has no implementation.
+  const core = {
+    readNamespace,
+    readNamespacedResourceQuota: absent,
+    patchNamespacedResourceQuota: write,
+    readNamespacedLimitRange: absent,
+    patchNamespacedLimitRange: write,
+  };
+  const account = {
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    automountServiceAccountToken: false,
+    metadata: {
+      name: "sandbox",
+      namespace: name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": id,
+      },
+      annotations: { "openclaw.dev/namespace-id": id },
+    },
+  };
+  const workspacePolicy = {
+    ...approvedWorkspacePolicy,
+    metadata: { ...account.metadata, name: "workspace-deny" },
+  };
+  let policies = [workspacePolicy];
+  const objects = Object.create(KubernetesObjectApi.prototype);
+  objects.read = async (ref) =>
+    ref.kind === "Namespace" ? observed : ref.kind === "NetworkPolicy" ? workspacePolicy : account;
+  objects.patch = async () => {
+    throw Error("unexpected OpenShell Kubernetes write");
+  };
+  driver.apiClients = Promise.resolve({
+    objects,
+    version: { getCode: async () => ({ gitVersion: "v1.35.0" }) },
+    core,
+    networking: {
+      listNamespacedNetworkPolicy: async (q) => (
+        assert.equal(q.namespace, name),
+        { items: policies }
+      ),
+      readNamespacedNetworkPolicy: absent,
+      patchNamespacedNetworkPolicy: write,
+    },
   });
-  assert.deepEqual(
-    relativeRuntime.defaultPresets.map((preset) => preset.name),
-    ["from-file"],
+  await driver.preflight();
+  await configurationDriver.controlNamespace(core, id);
+  await secretDriver.readyNamespace(core, id);
+  assert.equal(reads.length, 3);
+
+  const tenant = { id };
+  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, true);
+  assert.ok(writes.includes("ResourceQuota/openclaw-quota"));
+  assert.ok(writes.includes("NetworkPolicy/default-deny"));
+
+  const ownedPolicy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { ...account.metadata, name: "unexpected-allow" },
+    spec: { podSelector: {}, policyTypes: ["Egress"], egress: [{}] },
+  };
+  writes.length = 0;
+  policies = [ownedPolicy];
+  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  assert.deepEqual(writes, []);
+  policies = [{ ...ownedPolicy, metadata: { ...ownedPolicy.metadata, name: "default-deny" } }];
+  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  assert.deepEqual(writes, []);
+  policies = [workspacePolicy];
+
+  account.automountServiceAccountToken = true;
+  // Sandbox validation now runs through the shared lifecycle after Compute observation.
+  const observation = await reconcileNamespaceLifecycle(
+    driver,
+    drivers.namespaceLifecycleBindings.map(({ owner, hooks }) => ({ id: owner.id, hooks })),
+    tenant,
+    "ready",
+    new AbortController().signal,
+    () => {},
   );
-  assert.equal(
-    relativeRuntime.defaultPresets[0].template.agent.initialWorkspaceFiles["AGENTS.md"],
-    "# Agent\nName: {{ vars.name }}\n",
-  );
-
-  const absoluteConfiguration = installation();
-  const absolutePreset = join(relativeDirectory, "absolute.json");
-  absoluteConfiguration.presets = { includeDefaults: false, files: [absolutePreset] };
-  await writeFile(absolutePreset, JSON.stringify({ ...validPreset, name: "absolute-file" }));
-  const absoluteRuntime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, absoluteConfiguration) },
-  });
-  assert.equal(absoluteRuntime.defaultPresets[0].name, "absolute-file");
-
-  // Editors on Windows often save JSON with a UTF-8 byte order mark. Like Driver package
-  // manifests and the startup YAML, a Preset file may carry one leading mark.
-  const markedConfiguration = installation();
-  const markedPreset = join(relativeDirectory, "marked.json");
-  markedConfiguration.presets = { includeDefaults: false, files: [markedPreset] };
-  await writeFile(markedPreset, `\uFEFF${JSON.stringify({ ...validPreset, name: "marked-file" })}`);
-  const markedRuntime = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, markedConfiguration) },
-  });
-  assert.equal(markedRuntime.defaultPresets[0].name, "marked-file");
-
-  for (const [filename, contents, expected] of [
-    ["missing.json", undefined, /Preset file .* is unavailable/],
-    ["malformed.json", '{"name":', /Preset file .* must contain valid JSON/],
-    // Only one leading mark is stripped; a second is not JSON.
-    [
-      "double-mark.json",
-      `\uFEFF\uFEFF${JSON.stringify(validPreset)}`,
-      /Preset file .* must contain valid JSON/,
-    ],
-    [
-      "missing-name.json",
-      JSON.stringify({ template: {} }),
-      /Preset file .*missing-name\.json\.name must be a nonempty string/,
-    ],
-    [
-      "unsupported.json",
-      JSON.stringify({ name: "unsupported", template: {}, unexpected: true }),
-      /unsupported option unexpected/,
-    ],
-    [
-      "invalid-template.json",
-      JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
-      /Preset agent: contains unsupported fields/,
-    ],
-    [
-      "invalid-name.json",
-      JSON.stringify({ name: "edge\u00a0", template: {} }),
-      /Preset file .*invalid-name\.json\.name must follow the Name rule: 1 to 200 characters/,
-    ],
-    [
-      "duplicate.json",
-      JSON.stringify({ name: "Standard Codex", template: {} }),
-      /Default Preset Standard Codex is configured more than once: .*duplicate\.json and .*duplicate-b\.json/,
-    ],
-  ]) {
-    const configuration = installation();
-    // Two operator files may not share a name, even one that shadows a bundled default.
-    configuration.presets = {
-      includeDefaults: filename === "duplicate.json",
-      files:
-        filename === "duplicate.json"
-          ? [`cases/${filename}`, "cases/duplicate-b.json"]
-          : [`cases/${filename}`],
-    };
-    const path = await fixture(t, configuration);
-    const directory = dirname(path);
-    await mkdir(join(directory, "cases"), { recursive: true });
-    if (contents !== undefined) {
-      await writeFile(join(directory, "cases", filename), contents);
-    }
-    if (filename === "duplicate.json") {
-      await writeFile(join(directory, "cases", "duplicate-b.json"), contents);
-    }
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: path },
-      }),
-      expected,
-    );
+  assert.equal(observation.namespaceReady, false);
+  account.automountServiceAccountToken = false;
+  writes.length = 0;
+  const before = reads.length;
+  for (const request of [{ id: id + "_other" }, { id, existingNamespace: name }]) {
+    const result = await driver.ensureNamespace(request);
+    assert.equal(result.failure, "permanent");
+    assert.equal(result.namespaceReady, false);
   }
+  assert.equal((await driver.deleteNamespace(tenant)).namespaceDeleted, false);
+  assert.equal(reads.length, before);
+  for (const corrupt of [
+    (x) => (x.metadata.uid = uid + "replaced"),
+    (x) => (x.metadata.annotations["openclaw.dev/namespace-id"] += "_foreign"),
+    (x) => delete x.metadata.annotations["openclaw.dev/namespace-lifecycle"],
+    (x) => (x.metadata.labels["pod-security.kubernetes.io/enforce"] = "privileged"),
+    (x) => delete x.metadata.labels["openclaw-enterprise.io/gateway"],
+    (x) => delete x.metadata.labels["openclaw.dev/gateway-namespace"],
+    (x) => (x.metadata.deletionTimestamp = new Date().toISOString()),
+  ]) {
+    observed = structuredClone(ns);
+    corrupt(observed);
+    const result = await driver.ensureNamespace(tenant);
+    assert.equal(result.failure, "permanent");
+    assert.equal(result.namespaceReady, false);
+  }
+  await assert.rejects(configurationDriver.controlNamespace(core, id), {
+    message: /does not match the Installation|control-plane storage namespace/,
+  });
+  await assert.rejects(secretDriver.readyNamespace(core, id), {
+    message: /Kubernetes Secret namespace verification/,
+  });
+  assert.deepEqual(writes, []);
 });
 
-test("API and worker name a Preset file failure in their startup error code", async (t) => {
-  // An operator who lists a file the image lacks, or a broken one, needs a cause rather
-  // than STARTUP_FAILED. The file path and the loader message stay out of the log.
-  const duplicate = JSON.stringify({ name: "twice", template: {} });
-  for (const [filename, contents, files] of [
-    ["missing.json", undefined],
-    [
-      "invalid-template.json",
-      JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
-    ],
-    ["invalid-name.json", JSON.stringify({ name: "line\u2028break", template: {} })],
-    ["duplicate.json", duplicate, ["cases/duplicate.json", "cases/duplicate-b.json"]],
-    ["not-a-list.json", undefined, "cases/not-a-list.json"],
-    ["blank-entry", undefined, ["  "]],
-  ]) {
-    const configuration = installation();
-    configuration.presets = { includeDefaults: false, files: files ?? [`cases/${filename}`] };
-    const path = await fixture(t, configuration);
-    await mkdir(join(dirname(path), "cases"), { recursive: true });
-    if (contents !== undefined) {
-      await writeFile(join(dirname(path), "cases", filename), contents);
-      await writeFile(join(dirname(path), "cases", "duplicate-b.json"), duplicate);
-    }
-    const shared = {
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: path,
-      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-    };
-    const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-      cwd: process.cwd(),
-      env: {
-        ...shared,
-        OCC_HOST: "192.0.2.10",
-        OCC_PORT: "8080",
-        OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-        OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
-      },
-      encoding: "utf8",
-      timeout: 10_000,
-    });
-    assert.equal(server.status, 1, filename);
-    const apiDiagnostic = startupDiagnostic(server.stderr, "startup-error");
-    assert.equal(apiDiagnostic.code, "PRESET_FILE_INVALID", filename);
-    assert.equal(apiDiagnostic.message, undefined);
-    assert.ok(!server.stderr.includes(dirname(path)), server.stderr);
-
-    const worker = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
-      cwd: process.cwd(),
-      env: shared,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
-    assert.equal(worker.status, 1, filename);
-    const workerDiagnostic = startupDiagnostic(worker.stderr, "worker.startup-error");
-    assert.equal(workerDiagnostic.code, "PRESET_FILE_INVALID", filename);
-    assert.equal(workerDiagnostic.message, undefined);
-    assert.ok(!worker.stderr.includes(dirname(path)), worker.stderr);
-  }
+// The public startup processes must reject the quota before persistence, while a
+// valid mixed-unit control reaches the deliberately unavailable database.
+test("API and worker startup refuse fractional counted quotas before persistence", async (t) => {
+  await checkCountedQuotaStartup(t, { boot, fixture, productionServer }, installation);
 });

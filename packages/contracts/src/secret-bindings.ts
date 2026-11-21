@@ -22,7 +22,7 @@ const controlNames = new Set([
   "NO_PROXY",
 ]);
 
-const providerPrefix = /^(?:OPENAI_|ANTHROPIC_)/i;
+const providerPrefix = /^(?:OPENAI_|ANTHROPIC_|OCE_MODEL_API_KEY$)/i;
 
 /** The destination rule a Secret binding name breaks, or undefined when it is allowed. */
 type SecretBindingDestinationRule = "invalid_format" | "reserved_prefix" | "reserved_name";

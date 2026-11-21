@@ -7,13 +7,17 @@ backend:
       registryPath: /etc/openclaw/repository-registry/registry.json
     drivers:
       repo: repository-credentials
+repository:
+  id: repository-credentials
+  configuration:
+    sessionDurationSeconds: 86400
+  nativeSender:
+    controlSocket: /run/openclaw/repository-control/private/control.sock
+    publicCaPath: /etc/openclaw/repository-ca/ca.crt
+  preparedGitHub:
+    custodyKeyPath: /etc/openclaw/prepared-repository/custody.key
+    privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
 drivers:
-  repo:
-    id: repository-credentials
-    configuration:
-      controlSocket: /run/openclaw/repository-control/private/control.sock
-      sessionDurationSeconds: 86400
-      publicCaPath: /etc/openclaw/repository-ca/ca.crt
   compute:
     configuration:
       network:

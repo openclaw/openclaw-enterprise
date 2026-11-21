@@ -1,0 +1,138 @@
+import { createHash } from "node:crypto";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { routedGatewayConfiguration } from "./kubernetes-routed-options.ts";
+
+export { routedGatewayConfiguration };
+export { gatewayRouting, options, routedOptions } from "./kubernetes-routed-options.ts";
+
+export { selectorMatches } from "./kubernetes-rendered-resources.ts";
+
+export const tenant = {
+  id: "ns_00000000-0000-4000-8000-000000000001",
+  name: "Conformance tenant",
+  status: "ready",
+  createdAt: "2026-08-18T00:00:00.000Z",
+};
+
+export const apiKeyAuth = {
+  method: "api_key",
+  source: {
+    kind: "secret",
+    namespaceId: tenant.id,
+    id: "sec_00000000-0000-4000-8000-000000000001",
+  },
+  secretDriverId: "kubernetes-secret",
+};
+
+export function authContext(revision, namespace = kubernetesNamespaceName(tenant.id)) {
+  return {
+    harnessAuth:
+      revision.harnessAuth.source?.kind === "secret"
+        ? {
+            ...revision.harnessAuth,
+            backendRef: {
+              namespaceName: namespace,
+              name: "occ-model-key",
+              key: "value",
+              uid: "model-secret-uid",
+            },
+          }
+        : revision.harnessAuth,
+  };
+}
+
+export function preparedAuth(driver, namespace, embedded = false, harnessAuth = apiKeyAuth) {
+  const revision = {
+    namespaceId: tenant.id,
+    harness: embedded
+      ? { id: "openclaw", version: "1.0.0", mode: "embedded" }
+      : { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harnessAuth,
+    configuration: { agents: { defaults: { model: embedded ? "openai/gpt-5" : "codex/gpt-5" } } },
+  };
+  revision.harness.overrides = {};
+  revision.harness.configuration = driver.resolveHarnessConfiguration(
+    revision.harness,
+    revision.harnessAuth,
+    revision.configuration,
+  );
+  return driver.harnessAuthForRevision(revision, authContext(revision, namespace), {
+    name: namespace,
+    plane: "execution",
+  });
+}
+
+export function digest(value, length = 12) {
+  return createHash("sha256").update(value).digest("hex").slice(0, length);
+}
+
+/** Construct the immutable settings that production admission resolves before execution. */
+export function admitRevisionHarness(driver, revision) {
+  revision.harness = { ...revision.harness, overrides: revision.harness.overrides ?? {} };
+  revision.harness.configuration = driver.resolveHarnessConfiguration(
+    revision.harness,
+    revision.harnessAuth,
+    revision.configuration,
+  );
+  revision.compute.admission = driver.admitRevision(revision);
+  revision.compute.runtimeInputs = driver.snapshotRuntimeInputs?.(revision);
+  return revision;
+}
+
+/** @returns {import("../../packages/contracts/src/index.ts").AgentRevision} */
+export function routedRevision(driver, overrides = {}) {
+  const revision = {
+    id: "revision-routed-1",
+    backendId: null,
+    executionAdmission: { version: 2, mode: "unprotected" },
+    namespaceId: tenant.id,
+    agentId: "agent-routed",
+    revision: 1,
+    configurationId: "cfg_00000000-0000-4000-8000-000000000009",
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    gatewayManagedMode: driver.options?.runtime !== undefined,
+    configuration: {
+      agents: { defaults: { model: "codex/gpt-5" } },
+      logging: {
+        level: "info",
+        consoleLevel: "info",
+        consoleStyle: "json",
+      },
+      diagnostics: { otel: { logs: false } },
+      gateway: routedGatewayConfiguration(),
+    },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harnessAuth: apiKeyAuth,
+    compute: { id: driver.id, implementation: driver.implementation },
+    servicePrincipalId: "service-principal-routed",
+    createdAt: tenant.createdAt,
+    ...overrides,
+  };
+  // Use the real Compute admission contract; execution never fills missing revision settings.
+  revision.harness = {
+    ...revision.harness,
+    overrides: revision.harness.overrides ?? {},
+    configuration:
+      revision.harness.configuration ??
+      driver.resolveHarnessConfiguration?.(
+        revision.harness,
+        revision.harnessAuth,
+        revision.configuration,
+      ) ??
+      {},
+  };
+  if (
+    !Object.hasOwn(revision.compute, "admission") &&
+    !Object.hasOwn(revision.compute, "runtimeInputs")
+  ) {
+    revision.compute.admission = driver.admitRevision?.(revision);
+    revision.compute.runtimeInputs = driver.snapshotRuntimeInputs?.(revision);
+  }
+  return revision;
+}
+
+/** The labels an equality-only Kubernetes `labelSelector` string ("key=value,key=value") names. */
+export function labelSelectorLabels(selector) {
+  return Object.fromEntries(selector.split(",").map((entry) => entry.split("=")));
+}

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set +x
+set +a
+set -euo pipefail
+
+# Do not retain caller export attributes on variables that hold configuration.
+unset protected observed
+
+if (($# != 2)); then
+  echo 'Usage: scripts/compare-upgrade-baseline PROTECTED_YAML OBSERVED_YAML' >&2
+  exit 2
+fi
+for parser in yq jq; do
+  if ! command -v "$parser" >/dev/null 2>&1; then
+    echo 'Comparison unavailable: install yq v4 and jq, then retry.' >&2
+    exit 2
+  fi
+done
+
+# pipefail retains a failed YAML read even if jq accepts its partial output.
+# Keep canonical JSON in shell memory; never pass it as a process argument.
+canonical_mapping() {
+  [[ -f "$1" && -r "$1" ]] || return 1
+  yq -p=yaml -o=json '.' -- "$1" |
+    jq -ceS --slurp '
+      if length == 1 and (.[0] | type == "object")
+      then .[0] else error("expected one mapping") end
+    '
+}
+
+if ! protected=$(canonical_mapping "$1" 2>/dev/null) || [[ -z "$protected" ]]; then
+  echo 'Cannot read protected configuration: provide one valid YAML mapping and retry.' >&2
+  exit 2
+fi
+if ! observed=$(canonical_mapping "$2" 2>/dev/null) || [[ -z "$observed" ]]; then
+  echo 'Cannot read observed configuration: provide one valid YAML mapping and retry.' >&2
+  exit 2
+fi
+if [[ "$protected" != "$observed" ]]; then
+  echo 'Configurations differ: reconcile the protected and observed files before maintenance.' >&2
+  exit 1
+fi
+echo 'Configurations match.'

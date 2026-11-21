@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -28,7 +29,9 @@ func (r *runner) createK3dCluster(ctx context.Context, args ...string) error {
 		cmd := r.command(ctx, "k3d", args...)
 		cmd.Stdout = io.MultiWriter(r.opts.Out, output)
 		cmd.Stderr = io.MultiWriter(r.opts.Err, output)
+		started := time.Now()
 		err := cmd.Run()
+		r.commandTiming("k3d", args, started, err)
 		if err == nil {
 			return nil
 		}
@@ -41,6 +44,17 @@ func (r *runner) createK3dCluster(ctx context.Context, args ...string) error {
 	}
 }
 
+// k3dCreateFailure is a failed k3d cluster create. rolledBack records that
+// k3d reported rolling back every change it made.
+type k3dCreateFailure struct {
+	err        error
+	message    string
+	rolledBack bool
+}
+
+func (f *k3dCreateFailure) Error() string { return f.message }
+func (f *k3dCreateFailure) Unwrap() error { return f.err }
+
 // k3dCreateError repeats k3d's last error line, which a caller showing only
 // the tail of startup output would otherwise lose behind the rollback, and
 // adds at most one hint chosen by k3dFailureHint.
@@ -52,7 +66,7 @@ func k3dCreateError(err error, output []byte, legacyNATUnconfirmed bool) error {
 	if hint := k3dFailureHint(output, legacyNATUnconfirmed); hint != "" {
 		detail.WriteString("\n" + hint)
 	}
-	return fmt.Errorf("k3d failed: %w%s", err, detail.String())
+	return &k3dCreateFailure{err: err, message: fmt.Sprintf("k3d failed: %v%s", err, detail.String()), rolledBack: k3dRolledBack.Match(output)}
 }
 
 // k3d resolves a +channel image through update.k3s.io before it creates
@@ -68,7 +82,7 @@ var k3dLegacyNATFailure = regexp.MustCompile(`(?i)can't initialize iptables|ipta
 // Causes k3d's output can name that a missing nat table does not explain.
 // k3d's own startup timeout ("context deadline exceeded") is not one: a
 // node that cannot load the nat table fails exactly that way.
-var k3dOtherFailure = regexp.MustCompile(`(?i)x509|certificate|tls:|status code '?\d{3}|\b404\b|no such host|server misbehaving|i/o timeout|Client\.Timeout|handshake timeout|pull access denied|manifest unknown|failed to pull|ErrImagePull|ImagePullBackOff|port is already allocated|driver failed programming external connectivity`)
+var k3dOtherFailure = regexp.MustCompile(`(?i)x509|certificate|tls:|status code '?\d{3}|\b404\b|no such host|server misbehaving|i/o timeout|Client\.Timeout|handshake timeout|pull access denied|manifest unknown|failed to pull|ErrImagePull|ImagePullBackOff|port is already allocated|driver failed programming external connectivity|all predefined address pools have been fully subnetted`)
 
 // defaultK3sChannel is the Compose profile's node image without OpenShell;
 // k3d resolves it through update.k3s.io.

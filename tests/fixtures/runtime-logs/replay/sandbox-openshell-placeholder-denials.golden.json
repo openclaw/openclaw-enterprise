@@ -1,0 +1,436 @@
+{
+  "input": 20,
+  "withheld": 0,
+  "records": [
+    {
+      "type": "line",
+      "time": "2026-10-26T20:43:13.940000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:PUBLISHED [INFO] Policy DNS mapped fake-model.oce-r52-fake.svc.cluster.local resolved=10.43.77.55 synthetic=198.18.0.2 ports=8080 mapping_id=35efb49a-76c2-46b0-ae12-e68bd01add6d",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:PUBLISHED",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:43:13.953000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "warn",
+      "message": "Denied staged transparent connection",
+      "subsystem": "openshell_supervisor_network::proxy",
+      "fields": {
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:43:13.953000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "binary": "/usr/bin/python3.11",
+        "host": "fake-model.oce-r52-fake.svc.cluster.local",
+        "port": 8083,
+        "reason": "transparent_tcp_mapping_denied"
+      },
+      "level": "warn",
+      "message": "NET:OPEN [MED] DENIED /usr/bin/python3.11(0) -> 198.18.0.2:8083 [reason:transparent_tcp_mapping_denied]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:OPEN",
+        "action": "DENIED",
+        "binary": "/usr/bin/python3.11",
+        "pid": "0",
+        "dst_placeholder_ip": "198.18.0.2",
+        "dst_port": "8083",
+        "reason": "transparent_tcp_mapping_denied",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:43:14.017000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:PUBLISHED [INFO] Policy DNS mapped fake-model.oce-r52-fake.svc.cluster.local resolved=10.43.77.55 synthetic=198.18.0.2 ports=8080 mapping_id=af57a99d-089a-4a14-8a87-6a0260ed9b95",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:PUBLISHED",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:43:14.021000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "warn",
+      "message": "Denied staged transparent connection",
+      "subsystem": "openshell_supervisor_network::proxy",
+      "fields": {
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:43:14.021000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "binary": "/usr/bin/python3.11",
+        "host": "fake-model.oce-r52-fake.svc.cluster.local",
+        "port": 8084,
+        "reason": "transparent_tcp_mapping_denied"
+      },
+      "level": "warn",
+      "message": "NET:OPEN [MED] DENIED /usr/bin/python3.11(0) -> 198.18.0.2:8084 [reason:transparent_tcp_mapping_denied]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:OPEN",
+        "action": "DENIED",
+        "binary": "/usr/bin/python3.11",
+        "pid": "0",
+        "dst_placeholder_ip": "198.18.0.2",
+        "dst_port": "8084",
+        "reason": "transparent_tcp_mapping_denied",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:43:14.108000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:PUBLISHED [INFO] Policy DNS mapped fake-model.oce-r52-fake.svc.cluster.local resolved=10.43.77.55 synthetic=198.18.0.2 ports=8080 mapping_id=e7b30f98-ab5a-4120-beeb-c84da03434e9",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:PUBLISHED",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:10.254000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:PUBLISHED [INFO] Policy DNS mapped fake-model.oce-r52-fake.svc.cluster.local resolved=10.43.77.55 synthetic=198.18.0.6 ports=8080,8083 mapping_id=e79c0745-e37f-47a5-908d-a7769bde0009",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:PUBLISHED",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:10.260000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "decision": {
+        "decision": "allowed",
+        "enforcement": "reported",
+        "binary": "/usr/bin/python3.11",
+        "host": "fake-model.oce-r52-fake.svc.cluster.local",
+        "port": 8083,
+        "rule": "oce-agent-network-d8171cf7-795d-4c14-a8df-ed026c6bb793",
+        "engine": "opa"
+      },
+      "level": "info",
+      "message": "NET:OPEN [INFO] ALLOWED /usr/bin/python3.11(0) -> fake-model.oce-r52-fake.svc.cluster.local:8083 [policy:oce-agent-network-d8171cf7-795d-4c14-a8df-ed026c6bb793 engine:opa]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:OPEN",
+        "action": "ALLOWED",
+        "binary": "/usr/bin/python3.11",
+        "pid": "0",
+        "dst_host": "fake-model.oce-r52-fake.svc.cluster.local",
+        "dst_port": "8083",
+        "rule_name": "oce-agent-network-d8171cf7-795d-4c14-a8df-ed026c6bb793",
+        "rule_type": "opa",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:10.321000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:PUBLISHED [INFO] Policy DNS mapped fake-model.oce-r52-fake.svc.cluster.local resolved=10.43.77.55 synthetic=198.18.0.6 ports=8080,8083 mapping_id=e3627bac-07ab-40a8-9464-c5c84dd5ede2",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:PUBLISHED",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:10.325000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "warn",
+      "message": "Denied staged transparent connection",
+      "subsystem": "openshell_supervisor_network::proxy",
+      "fields": {
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:10.326000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "binary": "/usr/bin/python3.11",
+        "host": "fake-model.oce-r52-fake.svc.cluster.local",
+        "port": 8084,
+        "reason": "transparent_tcp_mapping_denied"
+      },
+      "level": "warn",
+      "message": "NET:OPEN [MED] DENIED /usr/bin/python3.11(0) -> 198.18.0.6:8084 [reason:transparent_tcp_mapping_denied]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:OPEN",
+        "action": "DENIED",
+        "binary": "/usr/bin/python3.11",
+        "pid": "0",
+        "dst_placeholder_ip": "198.18.0.6",
+        "dst_port": "8084",
+        "reason": "transparent_tcp_mapping_denied",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:10.411000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:PUBLISHED [INFO] Policy DNS mapped fake-model.oce-r52-fake.svc.cluster.local resolved=10.43.77.55 synthetic=198.18.0.6 ports=8080,8083 mapping_id=88772677-81ac-48b9-b728-fd25199fc2f8",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:PUBLISHED",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:31.198000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "warn",
+      "message": "Denied staged transparent connection",
+      "subsystem": "openshell_supervisor_network::proxy",
+      "fields": {
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:31.198000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "binary": "/usr/bin/python3.11",
+        "host": "kubernetes.default.svc.cluster.local",
+        "port": 443,
+        "reason": "transparent_tcp_policy_denied"
+      },
+      "level": "warn",
+      "message": "NET:OPEN [MED] DENIED /usr/bin/python3.11(0) -> kubernetes.default.svc.cluster.local:443 [reason:transparent_tcp_policy_denied]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:OPEN",
+        "action": "DENIED",
+        "binary": "/usr/bin/python3.11",
+        "pid": "0",
+        "dst_host": "kubernetes.default.svc.cluster.local",
+        "dst_port": "443",
+        "reason": "transparent_tcp_policy_denied",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:31.222000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "host": "example.com",
+        "reason": "policy_dns_ineligible"
+      },
+      "level": "warn",
+      "message": "NET:REFUSE [MED] DENIED example.com [reason:policy_dns_ineligible]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:REFUSE",
+        "action": "DENIED",
+        "dst_host": "example.com",
+        "reason": "policy_dns_ineligible",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:31.222000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:OBSERVATION [INFO] Policy DNS staged unapproved name example.com synthetic=198.18.0.8 for TCP policy review",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:OBSERVATION",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:31.227000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "warn",
+      "message": "Denied staged transparent connection",
+      "subsystem": "openshell_supervisor_network::proxy",
+      "fields": {
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:31.227000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "binary": "/usr/bin/curl",
+        "host": "example.com",
+        "port": 443,
+        "reason": "transparent_tcp_policy_denied"
+      },
+      "level": "warn",
+      "message": "NET:OPEN [MED] DENIED /usr/bin/curl(0) -> example.com:443 [reason:transparent_tcp_policy_denied]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:OPEN",
+        "action": "DENIED",
+        "binary": "/usr/bin/curl",
+        "pid": "0",
+        "dst_host": "example.com",
+        "dst_port": "443",
+        "reason": "transparent_tcp_policy_denied",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-26T20:47:31.302000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:PUBLISHED [INFO] Policy DNS mapped fake-model.oce-r52-fake.svc.cluster.local resolved=10.43.77.55 synthetic=198.18.0.6 ports=8080,8083 mapping_id=eb0ee416-6799-435d-aa31-bdf72a682cc9",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:PUBLISHED",
+        "source": "sandbox"
+      }
+    }
+  ]
+}

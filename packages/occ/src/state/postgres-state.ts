@@ -1,17 +1,51 @@
+import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
+import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
+import {
+  assertExecutionAdmission,
+  CONFIGURED_IAM_ID_PREFIXES,
+  CONTROLLER_WORK_AUDIT_ACTIONS,
+  isConfiguredRoleId,
+} from "@openclaw-enterprise/contracts";
+import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
+import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
+import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
+import type {
+  AgentRepository,
+  AgentRevisionRepository,
+  SandboxPolicyRepository,
+  WorkspaceSetupRepository,
+} from "../ports/agents.ts";
+import type {
+  CredentialSourceRepository,
+  StoredCredentialWithdrawal,
+} from "../ports/credential-sources.ts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
 
+import {
+  CREDENTIAL_WITHDRAWAL_TARGET,
+  credentialWithdrawalOperationId,
+  credentialWithdrawalWorkKey,
+} from "../controller-work.ts";
+import { REPOSITORY_CLEANUP_KEY_SEPARATOR } from "../repository-withdrawal.ts";
+import type { PresetRepository } from "../ports/presets.ts";
+import type { AgentAuditSelection } from "../ports/agent-audit.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
+import { postgresSavedConnections } from "./postgres-saved-connections.ts";
+import { postgresAuthenticationStates } from "./postgres-authentication-states.ts";
+import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
+import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
 import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
-} from "./repository-credential-state.ts";
+} from "../repository-credential-validation.ts";
 import type {
   AccessBinding,
   Agent,
@@ -19,19 +53,20 @@ import type {
   AgentMetadata,
   AgentRead,
   AgentRevisionMetadata,
+  AgentRevisionSummary,
   AgentRevisionRead,
   ConfigurationReadError,
   WorkspaceSetup,
   AgentRevision,
   AuditEvent,
   CredentialSource,
-  CredentialWithdrawal,
   Group,
   GroupMembership,
   Identity,
   Installation,
   Namespace,
   PluginDesiredState,
+  PluginDriverIdentity,
   PluginApprovers,
   Preset,
   Permission,
@@ -45,7 +80,6 @@ import type {
   ServicePrincipal,
 } from "@openclaw-enterprise/contracts";
 import {
-  harnessAuthBindingFromSnapshot,
   normalizePluginDesiredState,
   normalizePluginApprovers,
   normalizeHarnessAuthBinding,
@@ -55,43 +89,49 @@ import {
   validPluginRevisionState,
   validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
-import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
+  asRecord,
+  freezeSnapshot,
+  immutableCopy,
+  isNonEmptyString,
+} from "@openclaw-enterprise/utils";
+import {
+  CallerStateDeniedError,
   AGENT_NAME_CONFLICT,
+  AuditAppendUnavailableError,
   CREDENTIAL_SOURCE_NAME_CONFLICT,
   DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
+  PersistedStateInvalidError,
+  EGRESS_REVISION_INSTALLED_CONFLICT,
+  EGRESS_SANDBOX_INSTALLED_CONFLICT,
   IAMPolicyValidationError,
   IAMRoleInUseError,
   NAMESPACE_NAME_CONFLICT,
   PRESET_NAME_CONFLICT,
+  PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
   SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
+  RepositorySessionWithdrawnError,
+  WorkClaimLostError,
 } from "../errors.ts";
-import type {
-  AgentRepository,
-  WorkspaceSetupRepository,
-  AgentRevisionRepository,
-  ConfigurationOwnership,
-  ConfigurationRepository,
-  CredentialSourceRepository,
-  InstallationRepository,
-  IAMPolicyRepository,
-  NamespaceRepository,
-  PersistedNamespace,
-  PresetRepository,
-  PlatformAuditSink,
-  PlatformOperation,
-  PlatformReadView,
-  PlatformStateStore,
-  PlatformUnitOfWork,
-  SecretReferenceKind,
-  SecretRepository,
-  ServiceAccountRepository,
-} from "./platform-state.ts";
+
+import type { ConfigurationOwnership, ConfigurationRepository } from "../ports/configurations.ts";
+
+import type { InstallationRepository } from "../ports/installations.ts";
+import type { IAMPolicyRepository } from "@openclaw-enterprise/contracts";
+import type { NamespaceRepository, PersistedNamespace } from "../ports/namespaces.ts";
+import type { PlatformAuditSink } from "./platform-state.ts";
+import type { PlatformOperation } from "../ports/platform-operations.ts";
+import type { PlatformReadView } from "../ports/platform-read-view.ts";
+import type { PlatformStateStore } from "../ports/platform-state-store.ts";
+import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
+import type { SecretReferenceKind, SecretRepository } from "../ports/secrets.ts";
+import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
+import type { TokenServiceInstance } from "../ports/token-service.ts";
 import {
   copyProvisioningRecord,
   phaseAtLeast,
@@ -100,36 +140,63 @@ import {
   validateProvisioningEffectSettlement,
   validateProvisioningFailure,
   validateProvisioningReplay,
-  type AgentProvisioningCheckpoint,
-  type AgentProvisioningEffectSettlement,
-  type AgentProvisioningFailure,
-  type AgentProvisioningRecord,
-  type CreateAgentProvisioningRecord,
 } from "./agent-provisioning.ts";
+import type {
+  AgentProvisioningCheckpoint,
+  AgentProvisioningEffectSettlement,
+  AgentProvisioningFailure,
+  AgentProvisioningRecord,
+  CreateAgentProvisioningRecord,
+} from "../ports/agent-provisioning.ts";
 import {
   assertHarnessAuthAvailable,
+  assertRevisionAuthAvailable,
   assertSameCredentialSourceFields,
   harnessAuthMatches,
   credentialSourcesMatch,
   validCredentialSourceSnapshots,
   namespaceRoleGrantsBeyondRead,
+  assertBindingSubjectNotEmail,
   validHarnessAuthSnapshot,
 } from "./platform-state.ts";
 import {
   asWork,
-  WorkClaimLostError,
   PostgresWorkQueue,
+  repositoryCleanupSql,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
 } from "./postgres-work-queue.ts";
 import { beginProvisioningEffectProgress } from "../provisioning-effects.ts";
-import {
-  CREDENTIAL_WITHDRAWAL_TARGET,
-  credentialWithdrawalOperationId,
-  credentialWithdrawalWorkKey,
-} from "./controller-work.ts";
 
 type PostgresRow = Record<string, unknown>;
+
+function predecessorReplacementFromJson(
+  value: unknown,
+): Readonly<PredecessorReplacement> | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (
+    !record ||
+    !isNonEmptyString(record.predecessorRevisionId) ||
+    !isNonEmptyString(record.candidateRevisionId) ||
+    (record.phase !== "pre-stop" && record.phase !== "stopping") ||
+    typeof record.startedAt !== "string" ||
+    !Number.isFinite(Date.parse(record.startedAt)) ||
+    (record.phase === "stopping" &&
+      (typeof record.stoppingAt !== "string" || !Number.isFinite(Date.parse(record.stoppingAt))))
+  ) {
+    throw new PersistedStateInvalidError("Persisted predecessor replacement is invalid.");
+  }
+  return immutableCopy({
+    predecessorRevisionId: record.predecessorRevisionId,
+    candidateRevisionId: record.candidateRevisionId,
+    phase: record.phase,
+    startedAt: record.startedAt,
+    ...(typeof record.stoppingAt === "string" ? { stoppingAt: record.stoppingAt } : {}),
+  });
+}
 
 export interface PostgresClient extends PostgresQueryClient {
   release(discard?: boolean): void;
@@ -152,21 +219,64 @@ export interface PersistedNativeIAMState {
 }
 
 export interface PostgresPlatformStateOptions {
+  /** Installed Token Service binds its custody proof to this exact transaction. */
+  readonly preparedTokenProof?:
+    ((transaction: PostgresQueryClient) => PreparedTokenCurrentProof) | undefined;
   readonly bootstrapNativeIAM?: PersistedNativeIAMState;
   readonly workQueue?: PostgresWorkQueueOptions;
+  /** Server-side deadline for statements in standalone audit writes. */
+  readonly auditWriteTimeoutMs?: number;
 }
 
 export interface PersistedNativeIAMPrincipalSeed {
   readonly principal: Principal;
   readonly roles: readonly Role[];
   readonly bindings: readonly AccessBinding[];
+  /** Configured Installation Groups the new Principal joins, such as `iam.defaultUserGroups`. */
+  readonly groupIds?: readonly string[];
 }
 
-export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
-  constructor() {
-    super("The PostgreSQL transaction commit outcome is unknown.");
-    this.name = "PostgresCommitOutcomeUnknownError";
+export { PostgresCommitOutcomeUnknownError };
+
+/**
+ * Node and OpenSSL codes for a server certificate that failed identity or chain validation.
+ */
+const CERTIFICATE_ERROR_CODES = new Set([
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "CERT_REVOKED",
+  "CERT_SIGNATURE_FAILURE",
+  "CERT_UNTRUSTED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+
+/**
+ * The database server's TLS certificate was refused. `reason` is only the TLS error code,
+ * never the certificate or the connection URL, so startup can log it.
+ */
+export class PostgresCertificateRejectedError extends DependencyUnavailableError {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super("The platform persistence repository is unavailable.");
+    this.name = "PostgresCertificateRejectedError";
+    this.reason = reason;
   }
+}
+
+function checkoutFailure(error: unknown): Error {
+  if (error instanceof ScopeViolationError || error instanceof DependencyUnavailableError) {
+    return error;
+  }
+  const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && CERTIFICATE_ERROR_CODES.has(code)
+    ? new PostgresCertificateRejectedError(code)
+    : new DependencyUnavailableError("The platform persistence repository is unavailable.");
 }
 
 interface TransactionContext {
@@ -174,6 +284,12 @@ interface TransactionContext {
   readonly client: PostgresClient;
   installation: Readonly<Installation> | undefined;
   installationLoaded: boolean;
+  /** A READ ONLY REPEATABLE READ unit: every statement sees one snapshot and nothing writes. */
+  readonly readOnly: boolean;
+  /** Statements issued on this unit so far, counted when each is issued. */
+  statements: number;
+  /** The policy this unit last read, with the statement count of the read that produced it. */
+  nativeIAM: { readonly state: PersistedNativeIAMState; readonly statement: number } | undefined;
 }
 
 const PERMISSION_ACTIONS = new Set<string>(PLATFORM_PERMISSION_ACTIONS);
@@ -196,6 +312,14 @@ function rows(value: unknown[]): PostgresRow[] {
 function text(row: PostgresRow, key: string): string {
   const value = row[key];
   if (typeof value !== "string" || value.length === 0) {
+    throw new PersistedStateInvalidError("Persisted platform state is invalid or incomplete.");
+  }
+  return value;
+}
+
+function boolean(row: PostgresRow, key: string): boolean {
+  const value = row[key];
+  if (typeof value !== "boolean") {
     throw new DependencyUnavailableError("Persisted platform state is invalid or incomplete.");
   }
   return value;
@@ -213,7 +337,7 @@ function timestamp(row: PostgresRow, key: string): string {
   const value = row[key];
   const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
   if (date === null || Number.isNaN(date.getTime())) {
-    throw new DependencyUnavailableError("Persisted platform state has an invalid timestamp.");
+    throw new PersistedStateInvalidError("Persisted platform state has an invalid timestamp.");
   }
   return date.toISOString();
 }
@@ -221,12 +345,12 @@ function timestamp(row: PostgresRow, key: string): string {
 function jsonObject(value: unknown): Record<string, unknown> {
   const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new DependencyUnavailableError("Persisted platform state contains invalid JSON.");
+    throw new PersistedStateInvalidError("Persisted platform state contains invalid JSON.");
   }
   return parsed as Record<string, unknown>;
 }
 
-class SavedConfigurationReadError extends DependencyUnavailableError {
+class SavedConfigurationReadError extends PersistedStateInvalidError {
   readonly field: ConfigurationReadError["field"];
 
   constructor(field: ConfigurationReadError["field"], message: string) {
@@ -247,7 +371,7 @@ function configurationRead<T>(field: ConfigurationReadError["field"], read: () =
 }
 
 function invalidPersistedPluginState(message: string): never {
-  throw new DependencyUnavailableError(message);
+  throw new PersistedStateInvalidError(message);
 }
 
 function browseSavedConfiguration<T extends object, M extends object>(
@@ -307,10 +431,10 @@ function repositoryBindingsFromJson(value: unknown): Agent["repositoryBindings"]
   try {
     parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   } catch {
-    throw new DependencyUnavailableError("Persisted Agent repository bindings are invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent repository bindings are invalid.");
   }
   if (!validRepositoryBindingSelections(parsed)) {
-    throw new DependencyUnavailableError("Persisted Agent repository bindings are invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent repository bindings are invalid.");
   }
   return parsed;
 }
@@ -326,7 +450,7 @@ function installationFromRow(row: PostgresRow): Readonly<Installation> {
 function namespaceFromRow(row: PostgresRow): Readonly<PersistedNamespace> {
   const status = text(row, "status");
   if (!["provisioning", "ready", "failed", "deleting"].includes(status)) {
-    throw new DependencyUnavailableError("Persisted Namespace status is invalid.");
+    throw new PersistedStateInvalidError("Persisted Namespace status is invalid.");
   }
   const deletedAt =
     row.deleted_at === null || row.deleted_at === undefined
@@ -358,22 +482,24 @@ function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
 
   const desiredRuntimeState = text(row, "desired_runtime_state");
   if (desiredRuntimeState !== "running" && desiredRuntimeState !== "stopped") {
-    throw new DependencyUnavailableError("Persisted Agent desired runtime state is invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent desired runtime state is invalid.");
   }
-  return immutableCopy({
+  return Object.freeze({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     name: text(row, "name"),
     configurationId: text(row, "configuration_id"),
     backendId: row.backend_id === null ? null : text(row, "backend_id"),
     executionMode: text(row, "execution_mode") as Agent["executionMode"],
+    gatewayManagedMode: boolean(row, "gateway_managed_mode"),
+    sandboxPolicyEditing: row.sandbox_policy_editing === true,
 
     servicePrincipalId: text(row, "service_principal_id"),
     ...(activeRevisionId === undefined ? {} : { activeRevisionId }),
     desiredRuntimeState,
     status: text(row, "status") as Agent["status"],
     createdAt: timestamp(row, "created_at"),
-  });
+  } satisfies AgentMetadata & Record<string, string | number | boolean | null | undefined>);
 }
 
 function agentFromRow(row: PostgresRow, metadata = agentMetadataFromRow(row)): Readonly<Agent> {
@@ -410,6 +536,9 @@ function agentFromRow(row: PostgresRow, metadata = agentMetadataFromRow(row)): R
   }
   return immutableCopy({
     ...metadata,
+    ...(row.plugin_driver == null
+      ? {}
+      : { pluginDriver: row.plugin_driver as PluginDriverIdentity }),
     ...(plugins === undefined ? {} : { plugins }),
     ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
     ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -487,20 +616,29 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 }
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
-  cs.driver_id, cs.state, cs.created_at,
+  cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
+  cs.token_service_instance_id,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
     WHERE css.credential_source_id = cs.id
   ), '{}'::jsonb) AS secret_ids`;
 
+// Preserve the original reliable installation receipt. The current view uses only a
+// separately confirmed successor; an unobserved request never changes authority.
+const currentEgressInstallation = `SELECT COALESCE((
+  SELECT policy_observed FROM occ.credential_delivery_reductions r
+  WHERE r.revision_id=e.revision_id AND r.policy_observed IS NOT NULL
+  ORDER BY (r.policy_observed #>> '{plan,generation}')::bigint DESC LIMIT 1
+), installation) AS installation FROM occ.egress_installations e`;
+
 const CREDENTIAL_WITHDRAWAL_COLUMNS = `namespace_id, agent_id, revision_id, credential_source_id,
   state, requested_by, requested_at, completed_at, last_reason, last_attempt_at`;
 
-function credentialWithdrawalFromRow(row: PostgresRow): Readonly<CredentialWithdrawal> {
+function credentialWithdrawalFromRow(row: PostgresRow): Readonly<StoredCredentialWithdrawal> {
   const state = text(row, "state");
   if (state !== "pending" && state !== "revoked") {
-    throw new DependencyUnavailableError("Persisted credential withdrawal state is invalid.");
+    throw new PersistedStateInvalidError("Persisted credential withdrawal state is invalid.");
   }
   const completedAt = row.completed_at === null ? undefined : timestamp(row, "completed_at");
   const lastReason = optionalText(row, "last_reason");
@@ -524,15 +662,19 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   const namespaceId = text(row, "namespace_id");
   const state = text(row, "state");
   if (state !== "registering" && state !== "ready" && state !== "deleting") {
-    throw new DependencyUnavailableError("Persisted credential source state is invalid.");
+    throw new PersistedStateInvalidError("Persisted credential source state is invalid.");
   }
   const config = jsonObject(row.config);
   const secretIds = jsonObject(row.secret_ids);
+  const ownerCapability = text(row, "owner_capability");
   if (
+    (ownerCapability !== "credential_gateway" &&
+      ownerCapability !== "token_service" &&
+      (ownerCapability !== "credential_proxy" || row.egress == null)) ||
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
   ) {
-    throw new DependencyUnavailableError("Persisted credential source metadata is invalid.");
+    throw new PersistedStateInvalidError("Persisted credential source metadata is invalid.");
   }
   return immutableCopy({
     id: text(row, "id"),
@@ -540,13 +682,23 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     name: text(row, "name"),
     type: text(row, "type"),
     config: config as Record<string, string>,
+    ...(row.egress == null
+      ? {}
+      : { egress: jsonObject(row.egress) as unknown as ProtectedEgressSource }),
     secrets: Object.fromEntries(
       Object.entries(secretIds as Record<string, string>).map(([field, id]) => [
         field,
         { kind: "secret" as const, namespaceId, id },
       ]),
     ),
-    driverId: text(row, "driver_id"),
+    ...(ownerCapability === "token_service"
+      ? {
+          ownerCapability,
+          ...(row.token_service_instance_id == null
+            ? {}
+            : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
+        }
+      : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
     createdAt: timestamp(row, "created_at"),
   });
@@ -556,15 +708,48 @@ function revisionMetadataFromRow(row: PostgresRow): Readonly<AgentRevisionMetada
   const rawNumber = row.revision_number;
   const revision = typeof rawNumber === "string" ? Number(rawNumber) : rawNumber;
   if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision <= 0) {
-    throw new DependencyUnavailableError("Persisted AgentRevision numbering is invalid.");
+    throw new PersistedStateInvalidError("Persisted AgentRevision numbering is invalid.");
   }
-  return immutableCopy({
+  return Object.freeze({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     agentId: text(row, "agent_id"),
     revision,
     backendId: row.backend_id === null ? null : text(row, "backend_id"),
     createdAt: timestamp(row, "admitted_at"),
+  } satisfies Record<string, string | number | boolean | null | undefined>);
+}
+
+function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary> {
+  const metadata = revisionMetadataFromRow(row);
+  const rawGeneration = row.configuration_generation;
+  const configurationGeneration =
+    typeof rawGeneration === "string" ? Number(rawGeneration) : rawGeneration;
+  const harness = asRecord(row.harness);
+  if (
+    typeof configurationGeneration !== "number" ||
+    !Number.isSafeInteger(configurationGeneration) ||
+    configurationGeneration <= 0 ||
+    harness === undefined ||
+    typeof harness.id !== "string" ||
+    typeof harness.version !== "string" ||
+    (harness.mode !== "embedded" && harness.mode !== "dedicated")
+  ) {
+    throw new PersistedStateInvalidError("Persisted AgentRevision summary is invalid.");
+  }
+  return immutableCopy({
+    ...metadata,
+    configurationId: text(row, "configuration_id"),
+    configurationGeneration,
+    harness: {
+      id: harness.id,
+      version: harness.version,
+      mode: harness.mode,
+      ...(harness.overrides === undefined ? {} : { overrides: jsonObject(harness.overrides) }),
+      ...(harness.configuration === undefined
+        ? {}
+        : { configuration: jsonObject(harness.configuration) }),
+    },
   });
 }
 
@@ -580,17 +765,37 @@ function revisionFromRow(
     harness: AgentRevision["harness"];
     compute: AgentRevision["compute"];
     sandbox_driver_id?: AgentRevision["sandboxDriverId"];
-    harness_auth: AgentRevision["harnessAuth"];
+    sandbox_policy?: AgentRevision["sandboxPolicy"];
+    harness_auth: AgentRevision["harnessAuth"] & { readonly protectedExecutionVersion?: number };
     credential_sources?: AgentRevision["credentialSources"];
+    egress_plan?: AgentRevision["egressPlan"];
+    execution_admission: AgentRevision["executionAdmission"];
     secret_driver_id?: AgentRevision["secretDriverId"];
     secret_bindings?: AgentRevision["secretBindings"];
     plugins?: AgentRevision["plugins"];
     plugin_approvers?: AgentRevision["pluginApprovers"];
     repository_credentials?: AgentRevision["repositoryCredentials"];
   };
+  try {
+    assertExecutionAdmission({
+      executionAdmission: admitted.execution_admission,
+      ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
+    });
+  } catch {
+    throw new SavedConfigurationReadError(
+      "configuration",
+      "Persisted AgentRevision execution admission is missing, unsupported or inconsistent.",
+    );
+  }
+  // Older readers require an exact Harness-auth shape, rejecting the protected
+  // reader version before handing a revision to Compute. It grants no authority.
+  const { protectedExecutionVersion, ...harnessAuth } = admitted.harness_auth ?? {};
+  const protectedAdmission = admitted.execution_admission.mode === "protected";
   if (
     Object.hasOwn(admitted, "service_account") ||
-    !validHarnessAuthSnapshot(admitted.harness_auth, text(row, "namespace_id"))
+    protectedExecutionVersion !==
+      (protectedAdmission ? admitted.execution_admission.version : undefined) ||
+    !validHarnessAuthSnapshot(harnessAuth, text(row, "namespace_id"))
   ) {
     throw new SavedConfigurationReadError(
       "harnessAuth",
@@ -636,8 +841,10 @@ function revisionFromRow(
     configurationKind: admitted.configuration_kind,
     configurationGeneration: admitted.configuration_generation,
     configuration: admitted.draft_spec,
+    gatewayManagedMode: boolean(row, "gateway_managed_mode"),
     harness: admitted.harness,
     compute: admitted.compute,
+    ...(admitted.sandbox_policy === undefined ? {} : { sandboxPolicy: admitted.sandbox_policy }),
     ...(admitted.sandbox_driver_id === undefined
       ? {}
       : { sandboxDriverId: admitted.sandbox_driver_id }),
@@ -652,7 +859,9 @@ function revisionFromRow(
     ...(admitted.repository_credentials === undefined
       ? {}
       : { repositoryCredentials: admitted.repository_credentials }),
-    harnessAuth: admitted.harness_auth,
+    harnessAuth,
+    executionAdmission: admitted.execution_admission,
+    ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
     ...(admitted.credential_sources === undefined
       ? {}
       : { credentialSources: admitted.credential_sources }),
@@ -662,28 +871,37 @@ function revisionFromRow(
 
 function revisionForBrowsingFromRow(row: PostgresRow): Readonly<AgentRevisionRead> {
   const metadata = revisionMetadataFromRow(row);
-  return browseSavedConfiguration(metadata, () => revisionFromRow(row, metadata));
+  return browseSavedConfiguration(metadata, () => {
+    const revision = revisionFromRow(row, metadata);
+    if (revision.harness.overrides === undefined || revision.harness.configuration === undefined) {
+      throw new SavedConfigurationReadError(
+        "configuration",
+        "This revision predates recorded Harness settings.",
+      );
+    }
+    return revision;
+  });
 }
 
 function secretBindingsFromJson(value: unknown, namespaceId: string): SecretBindings | undefined {
   if (!NAMESPACE_IDENTIFIER.test(namespaceId)) {
-    throw new DependencyUnavailableError("Persisted Secret bindings have an invalid Namespace.");
+    throw new PersistedStateInvalidError("Persisted Secret bindings have an invalid Namespace.");
   }
   let parsed: unknown;
   try {
     parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   } catch {
-    throw new DependencyUnavailableError("Persisted Secret bindings are invalid.");
+    throw new PersistedStateInvalidError("Persisted Secret bindings are invalid.");
   }
   let normalized: SecretBindings;
   try {
     normalized = normalizeSecretBindings(parsed);
   } catch {
-    throw new DependencyUnavailableError("Persisted Secret bindings are invalid.");
+    throw new PersistedStateInvalidError("Persisted Secret bindings are invalid.");
   }
   for (const { source } of Object.values(normalized)) {
     if (source.namespaceId !== namespaceId || !SECRET_IDENTIFIER.test(source.id)) {
-      throw new DependencyUnavailableError("Persisted Secret bindings reference invalid Secrets.");
+      throw new PersistedStateInvalidError("Persisted Secret bindings reference invalid Secrets.");
     }
   }
   return Object.keys(normalized).length === 0 ? undefined : immutableCopy(normalized);
@@ -740,7 +958,17 @@ const NAME_CONFLICTS: Readonly<Record<string, string>> = Object.freeze({
   credential_sources_namespace_id_name_unique: CREDENTIAL_SOURCE_NAME_CONFLICT,
   // The inline `name ... UNIQUE` on occ.namespaces (0000_occ_initial.sql) gets this default name.
   namespaces_name_key: NAMESPACE_NAME_CONFLICT,
+  // Not a name: the installation's inline UNIQUE (namespace_id, revision_id). A second
+  // Sandbox for one revision is the state conflict the memory store raises, not an id collision.
+  egress_installations_namespace_id_revision_id_key: EGRESS_REVISION_INSTALLED_CONFLICT,
+  egress_installations_current_sandbox: EGRESS_SANDBOX_INSTALLED_CONFLICT,
 });
+
+const AUDIT_ROW_CHECKS = new Set([
+  "audit_events_id_format",
+  "audit_events_outcome_valid",
+  "audit_events_details_object",
+]);
 
 function databaseError(error: unknown): Error {
   if (
@@ -754,9 +982,27 @@ function databaseError(error: unknown): Error {
   }
 
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  const constraint =
+    "constraint" in error && typeof error.constraint === "string" ? error.constraint : undefined;
+  if (constraint === "control_plane_audit_capacity") {
+    return new AuditAppendUnavailableError("AUDIT_CAPACITY_EXCEEDED");
+  }
+  // Preserve the existing scope error for an audit row that violates the ledger schema.
+  const invalidAuditRow =
+    code === "23502" || (constraint !== undefined && AUDIT_ROW_CHECKS.has(constraint));
+  if (
+    ("table" in error && error.table === "audit_events" && !invalidAuditRow) ||
+    constraint === "control_plane_audit_event_size"
+  ) {
+    return new AuditAppendUnavailableError();
+  }
+  if (code === "23514" && constraint === "held_authentication_session_is_current") {
+    return new CallerStateDeniedError("The assigning session is no longer current.");
+  }
+  if (code === "23514" && constraint === "repository_session_admission_not_withdrawn") {
+    return new RepositorySessionWithdrawnError();
+  }
   if (code === "23505") {
-    const constraint =
-      "constraint" in error && typeof error.constraint === "string" ? error.constraint : undefined;
     const nameConflict =
       constraint !== undefined && Object.hasOwn(NAME_CONFLICTS, constraint)
         ? NAME_CONFLICTS[constraint]
@@ -776,6 +1022,9 @@ function databaseError(error: unknown): Error {
     code === "55000"
   ) {
     return new ScopeViolationError("The resource violates its exact platform ownership or state.");
+  }
+  if (queryAbandonedByClient(error)) {
+    return new DependencyUnavailableError("The platform persistence query timeout expired.");
   }
   if (code === "55P03") {
     // A lock timeout is transient contention, retryable like a statement timeout (57014).
@@ -861,9 +1110,9 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
   if (
     !RESOURCE_KINDS.has(resourceKind) ||
     !["success", "denied", "failure"].includes(outcome) ||
-    !["bootstrap", "mutation", "access", "authorization_denial"].includes(kind)
+    !["bootstrap", "mutation", "access", "authorization_denial", "api_request"].includes(kind)
   ) {
-    throw new DependencyUnavailableError("Persisted audit evidence contains an invalid event.");
+    throw new PersistedStateInvalidError("Persisted audit evidence contains an invalid event.");
   }
 
   const rawDetails = row.details === null ? undefined : jsonObject(row.details);
@@ -913,6 +1162,25 @@ function timestampDate(row: PostgresRow, key: string): Date {
   return new Date(timestamp(row, key));
 }
 
+const PROVISIONING_CLAIM_OWNER_CTE = `owner AS MATERIALIZED (
+  SELECT work.*
+  FROM occ.controller_work AS work
+  JOIN occ.agent_provisioning_work AS provisioning
+    ON provisioning.work_id = work.idempotency_key
+  WHERE provisioning.work_id = $1
+    AND work.work_kind = 'provisioning'
+    AND work.namespace_id = provisioning.namespace_id
+    AND work.agent_id IS NULL
+    AND work.actor_id = provisioning.actor_id
+    AND work.revision_id IS NULL
+    AND work.namespace_target IS NULL
+    AND work.agent_target IS NULL
+    AND work.state = 'claimed'
+    AND work.claim_token = $2::uuid
+    AND work.lease_expires_at > clock_timestamp()
+  FOR UPDATE OF work
+)`;
+
 function provisioningRecordFromRow(row: PostgresRow): Readonly<AgentProvisioningRecord> {
   const status = text(row, "status");
   if (
@@ -922,7 +1190,7 @@ function provisioningRecordFromRow(row: PostgresRow): Readonly<AgentProvisioning
     status !== "succeeded" &&
     status !== "cancelled"
   ) {
-    throw new DependencyUnavailableError("Persisted Agent provisioning status is invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent provisioning status is invalid.");
   }
   const completedPhase = text(row, "completed_phase");
   if (
@@ -931,7 +1199,7 @@ function provisioningRecordFromRow(row: PostgresRow): Readonly<AgentProvisioning
     completedPhase !== "transport" &&
     completedPhase !== "handoff"
   ) {
-    throw new DependencyUnavailableError("Persisted Agent provisioning phase is invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent provisioning phase is invalid.");
   }
   const agentId = optionalText(row, "agent_id");
   const configurationId = optionalText(row, "configuration_id");
@@ -1028,7 +1296,7 @@ function restrictionFromRow(row: PostgresRow): Readonly<Restriction> {
     !RESOURCE_KINDS.has(resourceKind) ||
     text(row, "effect") !== "deny"
   ) {
-    throw new DependencyUnavailableError("Persisted IAM restriction is invalid.");
+    throw new PersistedStateInvalidError("Persisted IAM restriction is invalid.");
   }
   return immutableCopy({
     id: text(row, "id"),
@@ -1043,7 +1311,7 @@ function restrictionFromRow(row: PostgresRow): Readonly<Restriction> {
 function permissions(value: unknown): readonly Permission[] {
   const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   if (!Array.isArray(parsed)) {
-    throw new DependencyUnavailableError("Persisted IAM permissions must be an array.");
+    throw new PersistedStateInvalidError("Persisted IAM permissions must be an array.");
   }
   return Object.freeze(
     parsed.map((permission): Permission => {
@@ -1055,9 +1323,10 @@ function permissions(value: unknown): readonly Permission[] {
         typeof permission.resourceKind !== "string" ||
         !RESOURCE_KINDS.has(permission.resourceKind)
       ) {
-        throw new DependencyUnavailableError("Persisted IAM permissions are invalid.");
+        throw new PersistedStateInvalidError("Persisted IAM permissions are invalid.");
       }
-      return immutableCopy({
+      // A new object of two strings: freezing it is all a copy would add.
+      return Object.freeze({
         action: permission.action as Permission["action"],
         resourceKind: permission.resourceKind as Permission["resourceKind"],
       });
@@ -1065,20 +1334,47 @@ function permissions(value: unknown): readonly Permission[] {
   );
 }
 
+/** The advisory lock that serializes writes of durable authority with the `iam` configuration. */
+const IAM_CONFIGURATION_LOCK_KEY = "occ:iam-configuration";
+
+/** A LIKE pattern for IDs that start with `prefix`, which contains `_`. */
+function prefixPattern(prefix: string): string {
+  return `${prefix.replaceAll("_", "\\_")}%`;
+}
+
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
   private readonly pool: PostgresPool;
   private readonly queueOptions: PostgresWorkQueueOptions;
+  private readonly preparedTokenProof: NonNullable<
+    PostgresPlatformStateOptions["preparedTokenProof"]
+  >;
   private bootstrapNativeIAM: PersistedNativeIAMState | undefined;
   private readonly contexts = new WeakMap<PlatformUnitOfWork, TransactionContext>();
   private readonly currentTransaction = new AsyncLocalStorage<TransactionContext>();
 
   constructor(pool: PostgresPool, options: PostgresPlatformStateOptions = {}) {
     this.pool = pool;
+    this.preparedTokenProof =
+      options.preparedTokenProof ?? (() => ({ current: async () => false }));
     this.queueOptions = Object.freeze({ ...(options.workQueue ?? {}) });
     this.bootstrapNativeIAM = options.bootstrapNativeIAM;
+    const auditWriteTimeoutMs = options.auditWriteTimeoutMs;
     this.auditSink = {
-      append: async (event) => this.transact(async (state) => state.audit.append(event)),
+      append: async (event) =>
+        this.execute(false, async (state, context) => {
+          if (auditWriteTimeoutMs !== undefined) {
+            // A local setting leaves other transactions on the pooled connection unaffected.
+            await context.client.query(
+              `SELECT pg_catalog.set_config(name,
+                 CASE WHEN setting::integer = 0 THEN $1::text
+                      ELSE LEAST(setting::integer, $1::integer)::text END, true)
+               FROM pg_catalog.pg_settings WHERE name IN ('statement_timeout', 'lock_timeout')`,
+              [String(auditWriteTimeoutMs)],
+            );
+          }
+          await state.audit.append(event);
+        }),
     };
   }
 
@@ -1135,10 +1431,20 @@ export class PostgresPlatformState implements PlatformStateStore {
       throw new ScopeViolationError("IAM state belongs to another Installation.");
     }
 
+    // Read the policy once per unit of work, not once per decision. A READ ONLY REPEATABLE
+    // READ unit sees one snapshot and writes nothing, so its policy cannot change. Any other
+    // unit reuses the policy only while no statement has been issued since it was read, so
+    // its own IAM writes (and anything else it does) are always seen. A commit by another
+    // unit, even one nested in this unit's callback, is not a statement here: back-to-back
+    // decisions do not see it, as if it had committed just after them. Nothing outlives the
+    // unit: a new unit always reads again.
+    const cached = context.nativeIAM;
+    if (cached !== undefined && (context.readOnly || cached.statement === context.statements)) {
+      return cached.state;
+    }
+
     // One statement gives the borrowed READ COMMITTED unit one policy snapshot.
-    const [snapshot] = rows(
-      (
-        await context.client.query(`SELECT
+    const pending = context.client.query(`SELECT
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
           (SELECT id, namespace_id, agent_id, kind, issuer, subject FROM occ.iam_identities) v),
           '[]'::jsonb) AS identities,
@@ -1157,13 +1463,14 @@ export class PostgresPlatformState implements PlatformStateStore {
           '[]'::jsonb) AS bindings,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
           (SELECT id, namespace_id, action, resource_kind, resource_id, effect
-            FROM occ.iam_restrictions) v), '[]'::jsonb) AS restrictions`)
-      ).rows,
-    );
+            FROM occ.iam_restrictions) v), '[]'::jsonb) AS restrictions`);
+    // The query counted itself when it was issued; a later statement makes this policy stale.
+    const statement = context.statements;
+    const [snapshot] = rows((await pending).rows);
     const collection = (key: keyof PersistedNativeIAMState): PostgresRow[] => {
       const value = snapshot?.[key];
       if (!Array.isArray(value)) {
-        throw new DependencyUnavailableError("Persisted IAM collections are invalid.");
+        throw new PersistedStateInvalidError("Persisted IAM collections are invalid.");
       }
       return rows(value);
     };
@@ -1179,55 +1486,55 @@ export class PostgresPlatformState implements PlatformStateStore {
       const kind = text(row, "kind");
       const namespaceId = optionalText(row, "namespace_id");
       if (kind === "principal") {
-        return immutableCopy({
+        return {
           id,
           kind,
           issuer: text(row, "issuer"),
           subject: text(row, "subject"),
-        });
+        };
       }
       if (kind === "service_principal") {
         const agentId = optionalText(row, "agent_id");
         if (agentId !== undefined && namespaceId === undefined) {
-          throw new DependencyUnavailableError("Persisted IAM identity has an invalid owner.");
+          throw new PersistedStateInvalidError("Persisted IAM identity has an invalid owner.");
         }
-        return immutableCopy({
+        return {
           id,
           kind,
           ...(namespaceId === undefined ? {} : { namespaceId }),
           ...(agentId === undefined ? {} : { agentId }),
-        });
+        };
       }
-      throw new DependencyUnavailableError("Persisted IAM identity has an invalid owner.");
+      throw new PersistedStateInvalidError("Persisted IAM identity has an invalid owner.");
     });
 
     const roles = roleRows.map((row): Role => {
       const namespaceId = optionalText(row, "namespace_id");
       const name = optionalText(row, "name");
-      return immutableCopy({
+      return {
         id: text(row, "id"),
         ...(namespaceId === undefined ? {} : { namespaceId }),
         ...(name === undefined ? {} : { name }),
         permissions: permissions(row.permissions),
-      });
+      };
     });
 
     const groups = groupRows.map((row): Group => {
       const namespaceId = optionalText(row, "namespace_id");
-      return immutableCopy({
+      return {
         id: text(row, "id"),
         ...(namespaceId === undefined ? {} : { namespaceId }),
         name: text(row, "name"),
-      });
+      };
     });
 
     const memberships = membershipRows.map((row): GroupMembership => {
       const namespaceId = optionalText(row, "namespace_id");
-      return immutableCopy({
+      return {
         ...(namespaceId === undefined ? {} : { namespaceId }),
         groupId: text(row, "group_id"),
         principalId: text(row, "principal_id"),
-      });
+      };
     });
 
     const bindings = bindingRows.map((row): AccessBinding => {
@@ -1238,14 +1545,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         (resourceKind === undefined) !== (resourceId === undefined) ||
         (resourceKind !== undefined && !RESOURCE_KINDS.has(resourceKind))
       ) {
-        throw new DependencyUnavailableError("Persisted IAM binding has an invalid resource.");
+        throw new PersistedStateInvalidError("Persisted IAM binding has an invalid resource.");
       }
       const identitySubjectId = optionalText(row, "identity_subject_id");
       const groupSubjectId = optionalText(row, "group_subject_id");
       if ((identitySubjectId === undefined) === (groupSubjectId === undefined)) {
-        throw new DependencyUnavailableError("Persisted IAM binding has an ambiguous subject.");
+        throw new PersistedStateInvalidError("Persisted IAM binding has an ambiguous subject.");
       }
-      return immutableCopy({
+      return {
         id: text(row, "id"),
         ...(namespaceId === undefined ? {} : { namespaceId }),
         subjectKind: identitySubjectId === undefined ? "group" : "identity",
@@ -1255,14 +1562,20 @@ export class PostgresPlatformState implements PlatformStateStore {
           ? {}
           : { resourceKind: resourceKind as NonNullable<AccessBinding["resourceKind"]> }),
         ...(resourceId === undefined ? {} : { resourceId }),
-      });
+      };
     });
 
     const restrictions = restrictionRows.map(restrictionFromRow);
 
     const state = { identities, groups, memberships, roles, bindings, restrictions };
     this.validateIAMState(state, true);
-    return immutableCopy(state);
+    // Everything above was built from this query's rows and is shared with nobody, so freezing
+    // it in place makes the whole policy immutable without a copy (permissions and restrictions
+    // come back already frozen all the way down). An immutable snapshot also lets the IAM
+    // Driver validate and index it once per unit.
+    const policy = freezeSnapshot(state);
+    context.nativeIAM = { state: policy, statement };
+    return policy;
   }
 
   async seedNativeIAM(state: PersistedNativeIAMState): Promise<void> {
@@ -1313,12 +1626,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (
         binding.subjectKind !== "identity" ||
         binding.subjectId !== seed.principal.id ||
-        binding.resourceKind !== "installation" ||
-        binding.resourceId !== installation.id ||
-        binding.namespaceId !== undefined
+        (binding.resourceKind !== undefined &&
+          (binding.resourceKind !== "installation" ||
+            binding.resourceId !== installation.id ||
+            binding.namespaceId !== undefined)) ||
+        (binding.resourceKind === undefined && binding.resourceId !== undefined)
       ) {
         throw new ScopeViolationError(
-          "Account provisioning requires an exact Installation binding.",
+          "Account provisioning requires a supported initial Role binding.",
         );
       }
     }
@@ -1342,7 +1657,7 @@ export class PostgresPlatformState implements PlatformStateStore {
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           binding.id,
-          null,
+          binding.namespaceId ?? null,
           binding.subjectId,
           null,
           binding.roleId,
@@ -1350,6 +1665,22 @@ export class PostgresPlatformState implements PlatformStateStore {
           binding.resourceId,
         ],
       );
+    }
+    if ((seed.groupIds ?? []).length > 0) {
+      // A configuration change that deletes one of these Groups commits before or after this.
+      await context.client.query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))", [
+        IAM_CONFIGURATION_LOCK_KEY,
+      ]);
+    }
+    for (const groupId of seed.groupIds ?? []) {
+      const inserted = await context.client.query(
+        `INSERT INTO occ.iam_group_memberships (namespace_id, group_id, principal_id)
+         SELECT NULL, id, $2 FROM occ.iam_groups WHERE id = $1 AND namespace_id IS NULL`,
+        [groupId, seed.principal.id],
+      );
+      if (inserted.rowCount !== 1) {
+        throw new ScopeViolationError(`The configured IAM Group ${groupId} does not exist.`);
+      }
     }
     return installation.id;
   }
@@ -1368,6 +1699,11 @@ export class PostgresPlatformState implements PlatformStateStore {
     return this.execute(false, async (state) => work(state));
   }
 
+  /** Observe changes committed while acquiring locks, regardless of the connection default. */
+  async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.execute(false, async (state) => work(state), true);
+  }
+
   /**
    * Run one read-only statement on a pooled connection outside any transaction (one round
    * trip, no BEGIN/COMMIT). Only for a single SELECT that needs no snapshot shared with
@@ -1381,9 +1717,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     try {
       client = await this.pool.connect();
     } catch (error) {
-      throw error instanceof ScopeViolationError || error instanceof DependencyUnavailableError
-        ? error
-        : new DependencyUnavailableError("The platform persistence repository is unavailable.");
+      throw checkoutFailure(error);
     }
     let transportError: Error | undefined;
     const onTransportError = (error: Error) => {
@@ -1475,6 +1809,65 @@ export class PostgresPlatformState implements PlatformStateStore {
     return context.lifetime.run(() => context.client.query(statement, parameters));
   }
 
+  async boundAgentAuditTransaction(unit: PlatformUnitOfWork): Promise<void> {
+    // A caller can configure a lower timeout. Keep it for this transaction too.
+    await this.queryInTransaction(
+      unit,
+      `SELECT pg_catalog.set_config(name,
+          CASE WHEN setting::integer = 0 THEN maximum::text
+               ELSE LEAST(setting::integer, maximum)::text END, true)
+        FROM pg_catalog.pg_settings JOIN (VALUES
+          ('lock_timeout', 1000), ('statement_timeout', 3000), ('transaction_timeout', 5000)
+        ) AS limits(name, maximum) USING (name)`,
+    );
+  }
+
+  async holdAgentAuditResource(
+    unit: PlatformUnitOfWork,
+    installationId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<boolean> {
+    const namespace = await this.queryInTransaction(
+      unit,
+      `SELECT id FROM occ.namespaces
+        WHERE id = $1 AND status = 'ready' AND deleted_at IS NULL FOR SHARE NOWAIT`,
+      [namespaceId],
+    );
+    if (namespace.rowCount !== 1) {
+      return false;
+    }
+    const agent = await this.queryInTransaction(
+      unit,
+      `SELECT id FROM occ.agents
+        WHERE namespace_id = $1 AND id = $2 AND status = 'active' FOR SHARE NOWAIT`,
+      [namespaceId, agentId],
+    );
+    if (agent.rowCount !== 1) {
+      return false;
+    }
+    await this.queryInTransaction(unit, "SELECT occ.hold_agent_audit_policy($1)", [installationId]);
+    return true;
+  }
+
+  async listAgentAuditInTransaction(
+    unit: PlatformUnitOfWork,
+    namespaceId: string,
+    agentId: string,
+    selection: AgentAuditSelection,
+  ) {
+    const result = await this.queryInTransaction(unit, SELECT_AGENT_AUDIT, [
+      namespaceId,
+      agentId,
+      selection.start,
+      selection.end,
+      selection.after?.occurredAt ?? null,
+      selection.after?.id ?? null,
+      selection.limit + 1,
+    ]);
+    return rows(result.rows).map(projectAgentAuditRow);
+  }
+
   /**
    * Hold the native IAM policy barrier on the original unit. The SQL supplier
    * verifies the preheld Installation authority. Account and session writers
@@ -1558,7 +1951,11 @@ export class PostgresPlatformState implements PlatformStateStore {
       "fail",
       "recoverStale",
       "findWork",
+      "findWorkByKeys",
       "findWorkAttempt",
+      "hasRepositoryExecutionRedeployRequired",
+      "repositoryExpiryState",
+      "latestRevisionMaintenanceKey",
       "countRefusedStopWaits",
     ]);
   }
@@ -1574,9 +1971,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     } catch (error) {
       // No statement has run yet, so any checkout failure (DNS, routing, TLS,
       // credentials or a password callback) is unavailability, not a server verdict.
-      throw error instanceof ScopeViolationError || error instanceof DependencyUnavailableError
-        ? error
-        : new DependencyUnavailableError("The platform persistence repository is unavailable.");
+      throw checkoutFailure(error);
     }
 
     // Checked-out pg clients emit transport errors independently of query rejection.
@@ -1628,6 +2023,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         lifetime,
         client: {
           query: async (statement, parameters) => {
+            // Counted before anything can fail: a cached policy must not outlive a write
+            // that was issued, even one whose outcome is unknown.
+            context.statements += 1;
             lifetime.assertActive();
             if (transportError !== undefined) {
               throw transportError;
@@ -1651,6 +2049,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         installation: undefined,
         installationLoaded: false,
+        readOnly,
+        statements: 0,
+        nativeIAM: undefined,
       };
       const activeUnit = bindPlatformUnitOfWork(this.repositories(context), lifetime);
       unit = activeUnit;
@@ -1792,6 +2193,58 @@ export class PostgresPlatformState implements PlatformStateStore {
         const installation = await this.currentInstallation(context);
         return installation === undefined ? undefined : immutableCopy(installation);
       },
+      selectTokenServiceInstance: async (candidate: TokenServiceInstance) => {
+        const installation = await this.requireInitialized(context);
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          "token_service_instance:" + installation.id,
+        ]);
+        const [row] = rows(
+          (
+            await client.query(
+              "SELECT id, driver_id, store_identity FROM occ.token_service_instances WHERE installation_id=$1",
+              [installation.id],
+            )
+          ).rows,
+        );
+        if (
+          row &&
+          text(row, "driver_id") === candidate.driverId &&
+          text(row, "store_identity") === candidate.storeIdentity
+        ) {
+          return immutableCopy({
+            id: text(row, "id"),
+            driverId: text(row, "driver_id"),
+            storeIdentity: text(row, "store_identity"),
+          });
+        }
+        if (row) {
+          const id = text(row, "id");
+          if (id === candidate.id) {
+            throw new ResourceStateConflictError(
+              "The TokenService instance still has registrations.",
+            );
+          }
+          try {
+            await client.query("DELETE FROM occ.token_service_instances WHERE id=$1", [id]);
+          } catch (error) {
+            const failure = asRecord(error);
+            if (
+              (failure?.code === "23001" || failure?.code === "23503") &&
+              failure.constraint === "credential_sources_token_service_instance_id_fkey"
+            ) {
+              throw new ResourceStateConflictError(
+                "The TokenService instance still has registrations.",
+              );
+            }
+            throw error;
+          }
+        }
+        await client.query(
+          "INSERT INTO occ.token_service_instances (installation_id,id,driver_id,store_identity) VALUES ($1,$2,$3,$4)",
+          [installation.id, candidate.id, candidate.driverId, candidate.storeIdentity],
+        );
+        return immutableCopy(candidate);
+      },
       createInstallation: async (installation) => {
         if ((await this.currentInstallation(context)) !== undefined) {
           throw new ResourceConflictError("An Installation has already been bootstrapped.");
@@ -1826,7 +2279,43 @@ export class PostgresPlatformState implements PlatformStateStore {
         );
         return account === undefined || account.disabled === false;
       },
+      holdAuthenticationSession: async (sessionId, userId) => {
+        // Account and method revocation lock the user first. Take the same order
+        // before Namespace/policy locks; deleting a held session then waits for COMMIT.
+        const user = await client.query('SELECT id FROM occ."user" WHERE id = $1 FOR SHARE', [
+          userId,
+        ]);
+        if (user.rowCount !== 1) {
+          return false;
+        }
+        // The unchanged UPDATE both holds this row and queues its deferred
+        // currentness constraint. No session timestamp or lifetime is extended.
+        const session = await client.query(
+          `UPDATE occ.session SET updated_at = updated_at
+           WHERE id = $1 AND user_id = $2 AND expires_at > clock_timestamp()
+           RETURNING id`,
+          [sessionId, userId],
+        );
+        return session.rowCount === 1;
+      },
+      holdIAMConfiguration: async (mode) => {
+        // A transaction-scoped advisory lock: no row stands for the whole configuration.
+        await client.query(
+          mode === "shared"
+            ? "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))"
+            : "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [IAM_CONFIGURATION_LOCK_KEY],
+        );
+      },
     };
+
+    async function namespaceResourceExists(
+      statement: string,
+      namespaceId: string,
+    ): Promise<boolean> {
+      const result = await client.query(statement, [namespaceId]);
+      return rows(result.rows)[0]?.present === true;
+    }
 
     const namespaces: NamespaceRepository = {
       findNamespace: async (namespaceId) => {
@@ -1893,28 +2382,16 @@ export class PostgresPlatformState implements PlatformStateStore {
         )[0];
         return found === undefined ? undefined : namespaceFromRow(found);
       },
-      hasAgents: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasConfigurations: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.configurations WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
+      hasAgents: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
+      hasConfigurations: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.configurations WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
       listConfigurationIds: async (namespaceId) =>
         Object.freeze(
           rows(
@@ -1926,50 +2403,26 @@ export class PostgresPlatformState implements PlatformStateStore {
             ).rows,
           ).map((row) => String(row.id)),
         ),
-      hasPresets: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.presets WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasServiceAccounts: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.service_accounts WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasSecrets: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasCredentialSources: async (namespaceId) => {
-        const found = rows(
-          (
-            await client.query(
-              "SELECT EXISTS (SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1) AS present",
-              [namespaceId],
-            )
-          ).rows,
-        )[0];
-        return found?.present === true;
-      },
+      hasPresets: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.presets WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
+      hasServiceAccounts: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.service_accounts WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
+      hasSecrets: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
+      hasCredentialSources: (namespaceId) =>
+        namespaceResourceExists(
+          "SELECT EXISTS (SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1) AS present",
+          namespaceId,
+        ),
       transitionNamespaceStatus: async (namespaceId, expected, next) => {
         await this.requireInitialized(context);
         const expectedStatuses = Array.isArray(expected) ? expected : [expected];
@@ -1998,6 +2451,10 @@ export class PostgresPlatformState implements PlatformStateStore {
           ).rows,
         )[0];
         if (updated !== undefined) {
+          await client.query(
+            "DELETE FROM occ.authentication_states WHERE kind = 'device_authorization' AND namespace_id = $1",
+            [namespaceId],
+          );
           return namespaceFromRow(updated);
         }
         const existing = rows(
@@ -2046,6 +2503,27 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
     const presets: PresetRepository = {
       findPreset,
+      listPresetSummaries: async (namespaceId) =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT p.id, p.namespace_id, p.name, p.created_at
+         FROM occ.presets AS p
+         JOIN occ.namespaces AS n ON n.id = p.namespace_id AND n.deleted_at IS NULL
+         WHERE p.namespace_id = $1 ORDER BY p.id`,
+                [namespaceId],
+              )
+            ).rows,
+          ).map((row) =>
+            immutableCopy({
+              id: text(row, "id"),
+              namespaceId: text(row, "namespace_id"),
+              name: text(row, "name"),
+              createdAt: timestamp(row, "created_at"),
+            }),
+          ),
+        ),
       listPresets: async (namespaceId) =>
         Object.freeze(
           rows(
@@ -2202,6 +2680,15 @@ export class PostgresPlatformState implements PlatformStateStore {
       findConfiguration,
       createConfiguration: async (configuration) => {
         await this.requireInitialized(context);
+        // The memory adapter's rule, checked before the INSERT: a fractional generation would
+        // otherwise fail PostgreSQL's bigint cast with a raw 22P02 instead of this refusal.
+        if (
+          configuration.kind !== "agent" ||
+          !Number.isSafeInteger(configuration.generation) ||
+          configuration.generation <= 0
+        ) {
+          throw new ScopeViolationError("The Configuration kind or generation is invalid.");
+        }
         const namespace = await namespaces.lockNamespace(configuration.namespaceId);
         if (
           namespace === undefined ||
@@ -2492,7 +2979,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       namespaceId: string,
       revisionId: string,
       credentialSourceId: string,
-    ): Promise<Readonly<CredentialWithdrawal> | undefined> => {
+    ): Promise<Readonly<StoredCredentialWithdrawal> | undefined> => {
       const found = rows(
         (
           await client.query(
@@ -2506,6 +2993,102 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
 
     const credentialSources: CredentialSourceRepository = {
+      isEgressMaterialRejected: async (evidence) => {
+        const found = await client.query(
+          "SELECT 1 FROM occ.egress_rejected_material WHERE namespace_id = $1 AND secret_driver_id = $2 AND material_id = $3 AND material_version = $4",
+          [
+            evidence.source.namespaceId,
+            evidence.kind === "static" ? evidence.secretDriver.id : evidence.source.provider.id,
+            evidence.materialId,
+            evidence.materialVersion,
+          ],
+        );
+        return found.rows.length > 0;
+      },
+      rejectEgressMaterial: async (evidence) => {
+        await client.query(
+          "INSERT INTO occ.egress_rejected_material (namespace_id, secret_driver_id, material_id, material_version) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+          [
+            evidence.source.namespaceId,
+            evidence.kind === "static" ? evidence.secretDriver.id : evidence.source.provider.id,
+            evidence.materialId,
+            evidence.materialVersion,
+          ],
+        );
+      },
+      findEgressInstallation: async (senderId, sandboxId) => {
+        const result = await client.query(
+          `${currentEgressInstallation} WHERE sender_id = $1 AND sandbox_id = $2 AND NOT retired`,
+          [senderId, sandboxId],
+        );
+        const row = rows(result.rows)[0];
+        return row === undefined
+          ? undefined
+          : immutableCopy(jsonObject(row.installation) as unknown as EgressInstallation);
+      },
+      findRevisionEgressInstallation: async (namespaceId, revisionId) => {
+        const result = await client.query(
+          `${currentEgressInstallation} WHERE namespace_id = $1 AND revision_id = $2`,
+          [namespaceId, revisionId],
+        );
+        const row = rows(result.rows)[0];
+        return row === undefined
+          ? undefined
+          : immutableCopy(jsonObject(row.installation) as unknown as EgressInstallation);
+      },
+      listCredentialPolicyReductions: (namespaceId, revisionId) =>
+        new CredentialDeliveryReductions(client).listPolicies(namespaceId, revisionId),
+      saveCredentialPolicyReduction: (namespaceId, revisionId, bindingId, expected, next) =>
+        new CredentialDeliveryReductions(client).savePolicy(
+          namespaceId,
+          revisionId,
+          bindingId,
+          expected,
+          next,
+        ),
+      recordEgressInstallation: async (installation) => {
+        const execution = installation.plan.execution;
+        const inserted = await client.query(
+          `INSERT INTO occ.egress_installations (sender_id, sandbox_id, namespace_id, revision_id, installation, agent_id)
+          SELECT $1, $2, $3, $4, $5::jsonb, $7 FROM occ.agent_revisions
+          WHERE namespace_id = $3 AND id = $4 AND admitted_spec->'egress_plan' = $6::jsonb
+          ON CONFLICT (sender_id, sandbox_id, revision_id) DO UPDATE SET installation = occ.egress_installations.installation
+          WHERE NOT occ.egress_installations.retired
+            AND occ.egress_installations.installation->'plan' = EXCLUDED.installation->'plan'
+            AND occ.egress_installations.installation->'sender' = EXCLUDED.installation->'sender'
+            AND occ.egress_installations.installation->'enforcement' = EXCLUDED.installation->'enforcement'`,
+          [
+            installation.sender.id,
+            installation.sandboxId,
+            execution.namespaceId,
+            execution.revisionId,
+            JSON.stringify(installation),
+            JSON.stringify(installation.plan),
+            execution.agentId,
+          ],
+        );
+        if (inserted.rowCount !== 1) {
+          throw new ResourceStateConflictError(
+            "Egress installation does not match its admitted execution.",
+          );
+        }
+      },
+      retireEgressInstallation: async (namespaceId, revisionId) => {
+        await client.query(
+          "UPDATE occ.egress_installations SET retired = true WHERE namespace_id = $1 AND revision_id = $2 AND NOT retired",
+          [namespaceId, revisionId],
+        );
+      },
+      admitEgressSource: async (namespaceId, sourceId, expectedGeneration, egress) => {
+        const updated = await client.query(
+          `UPDATE occ.credential_sources SET egress = $4::jsonb
+          WHERE namespace_id = $1 AND id = $2 AND state = 'ready'
+          AND COALESCE((egress->'key'->'source'->>'generation')::bigint, 0) = $3
+          AND ($4::jsonb->'key'->'source'->>'generation')::bigint = $3 + 1`,
+          [namespaceId, sourceId, expectedGeneration, JSON.stringify(egress)],
+        );
+        return updated.rowCount === 1 ? findCredentialSource(namespaceId, sourceId) : undefined;
+      },
       findCredentialSource,
       findCredentialWithdrawal,
       listCredentialWithdrawals: async (namespaceId, revisionId) =>
@@ -2642,21 +3225,30 @@ export class PostgresPlatformState implements PlatformStateStore {
             "Credential source Secret inputs must reference exact Secrets.",
           );
         }
-        await client.query(
-          `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
-          [
-            source.id,
-            source.namespaceId,
-            source.name,
-            source.type,
-            JSON.stringify(source.config),
-            source.driverId,
-            source.state,
-            source.createdAt,
-          ],
-        );
+        try {
+          await client.query(
+            `INSERT INTO occ.credential_sources
+             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11)`,
+            [
+              source.id,
+              source.namespaceId,
+              source.name,
+              source.type,
+              JSON.stringify(source.config),
+              source.driverId ?? null,
+              source.state,
+              source.createdAt,
+              source.egress === undefined ? null : JSON.stringify(source.egress),
+              source.ownerCapability,
+              source.ownerCapability === "token_service"
+                ? (source.tokenServiceInstanceId ?? null)
+                : null,
+            ],
+          );
+        } catch (error) {
+          throw databaseError(error);
+        }
         if (secretInputs.length > 0) {
           await client.query(
             `INSERT INTO occ.credential_source_secrets
@@ -2708,6 +3300,15 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         return findCredentialSource(namespaceId, credentialSourceId);
+      },
+      updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
+        const result = await client.query(
+          "UPDATE occ.credential_sources SET config=$3::jsonb WHERE namespace_id=$1 AND id=$2 AND state='ready' AND token_service_instance_id IS NOT NULL",
+          [namespaceId, credentialSourceId, JSON.stringify(config)],
+        );
+        return result.rowCount === 1
+          ? findCredentialSource(namespaceId, credentialSourceId)
+          : undefined;
       },
       markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
         const updated = await client.query(
@@ -2772,6 +3373,12 @@ export class PostgresPlatformState implements PlatformStateStore {
                          AND r.admitted_spec #>> '{harness_auth,sourceId}' = $2)
                      OR r.admitted_spec->'credential_sources' @> jsonb_build_array(
                           jsonb_build_object('sourceId', $2::text)))
+               ) OR EXISTS (
+                 -- Before an Agent exists, its queued plan still holds the model source.
+                 SELECT 1 FROM occ.agent_provisioning_work AS p
+                 WHERE p.namespace_id = $1 AND p.status IN ('queued', 'running')
+                   AND p.plan #>> '{harnessAuth,method}' = 'credential_source'
+                   AND p.plan #>> '{harnessAuth,sourceId}' = $2
                ) OR EXISTS (SELECT 1 FROM held_work WHERE NOT withdrawal) AS referenced,
                EXISTS (SELECT 1 FROM held_work WHERE withdrawal) AS withdrawal_work`,
               [namespaceId, credentialSourceId, CREDENTIAL_WITHDRAWAL_TARGET],
@@ -2981,8 +3588,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                    a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                    a.active_revision_id, a.desired_runtime_state, a.status, a.created_at
+                    a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                    a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode
              FROM occ.agents AS a
              JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
              WHERE a.namespace_id = $1 AND a.id = $2${lock ? " FOR UPDATE OF a" : ""}`,
@@ -3061,8 +3668,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                      a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                      a.active_revision_id, a.desired_runtime_state, a.status, a.created_at
+                      a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                      a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode
                FROM occ.agents AS a
                JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
                WHERE a.namespace_id = $1 ORDER BY a.created_at, a.id`,
@@ -3073,7 +3680,92 @@ export class PostgresPlatformState implements PlatformStateStore {
       return found;
     };
 
+    const sandboxPolicies: SandboxPolicyRepository = {
+      find: async (namespaceId, agentId) => {
+        const row = rows(
+          (
+            await client.query(
+              "SELECT document FROM occ.sandbox_policies WHERE namespace_id = $1 AND agent_id = $2",
+              [namespaceId, agentId],
+            )
+          ).rows,
+        )[0];
+        return row === undefined
+          ? undefined
+          : immutableCopy(row.document as unknown as SandboxPolicy);
+      },
+      save: async (policy, expectedVersion) => {
+        const result = await client.query(
+          "UPDATE occ.sandbox_policies SET version = $4, document = $5::jsonb WHERE namespace_id = $1 AND agent_id = $2 AND id = $3 AND version = $6 RETURNING document",
+          [
+            policy.namespaceId,
+            policy.agentId,
+            policy.id,
+            policy.version,
+            JSON.stringify(policy),
+            expectedVersion,
+          ],
+        );
+        const row = rows(result.rows)[0];
+        return row === undefined
+          ? undefined
+          : immutableCopy(row.document as unknown as SandboxPolicy);
+      },
+    };
     const agents: AgentRepository = {
+      findPredecessorReplacement: async (namespaceId, agentId) => {
+        const row = rows(
+          (
+            await client.query(
+              `SELECT a.predecessor_replacement FROM occ.agents a
+           JOIN occ.namespaces n ON n.id = a.namespace_id AND n.deleted_at IS NULL
+           WHERE a.namespace_id = $1 AND a.id = $2`,
+              [namespaceId, agentId],
+            )
+          ).rows,
+        )[0];
+        return predecessorReplacementFromJson(row?.predecessor_replacement);
+      },
+      recordPredecessorReplacement: async (namespaceId, agentId, input) => {
+        const row = rows(
+          (
+            await client.query(
+              `UPDATE occ.agents a SET predecessor_replacement =
+             CASE WHEN a.predecessor_replacement->>'predecessorRevisionId' = $3
+               THEN a.predecessor_replacement || jsonb_build_object('candidateRevisionId', $4::text) ||
+                 CASE WHEN $5 = 'stopping' AND a.predecessor_replacement->>'phase' = 'pre-stop'
+                   THEN jsonb_build_object('phase', 'stopping', 'stoppingAt', clock_timestamp()) ELSE '{}'::jsonb END
+               ELSE jsonb_build_object('predecessorRevisionId', $3::text, 'candidateRevisionId', $4::text,
+                 'phase', $5::text, 'startedAt', clock_timestamp()) ||
+                 CASE WHEN $5 = 'stopping' THEN jsonb_build_object('stoppingAt', clock_timestamp()) ELSE '{}'::jsonb END
+             END
+           FROM occ.namespaces n, occ.agent_revisions p, occ.agent_revisions c
+           WHERE a.namespace_id = $1 AND a.id = $2 AND a.active_revision_id = $3
+             AND n.id = a.namespace_id AND n.deleted_at IS NULL
+             AND p.namespace_id = a.namespace_id AND p.agent_id = a.id AND p.id = $3
+             AND c.namespace_id = a.namespace_id AND c.agent_id = a.id AND c.id = $4
+             AND c.revision_number > p.revision_number
+           RETURNING a.predecessor_replacement`,
+              [
+                namespaceId,
+                agentId,
+                input.predecessorRevisionId,
+                input.candidateRevisionId,
+                input.phase,
+              ],
+            )
+          ).rows,
+        )[0];
+        return predecessorReplacementFromJson(row?.predecessor_replacement);
+      },
+      setSandboxPolicyEditing: async (namespaceId, agentId, enabled) => {
+        await client.query(
+          "UPDATE occ.agents SET sandbox_policy_editing = $3 WHERE namespace_id = $1 AND id = $2",
+          [namespaceId, agentId, enabled],
+        );
+        const row = await findAgentRow(namespaceId, agentId);
+        return row === undefined ? undefined : agentFromRow(row);
+      },
       findAgent: async (namespaceId, agentId) => {
         const row = await findAgentRow(namespaceId, agentId);
         return row === undefined ? undefined : agentFromRow(row);
@@ -3084,8 +3776,33 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       listAgents: async (namespaceId) =>
         Object.freeze((await listAgentRows(namespaceId)).map((row) => agentFromRow(row))),
+      // One probe of the (namespace_id, name) unique index.
+      hasAgentNamed: async (namespaceId, name) =>
+        (
+          await client.query(
+            `SELECT 1
+             FROM occ.agents AS a
+             JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
+             WHERE a.namespace_id = $1 AND a.name = $2`,
+            [namespaceId, name],
+          )
+        ).rows.length > 0,
       listAgentsForBrowsing: async (namespaceId) =>
         Object.freeze((await listAgentRows(namespaceId)).map(agentForBrowsingFromRow)),
+      listAgentReferences: async () =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT a.id, a.namespace_id
+                 FROM occ.agents AS a
+                 JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL`,
+              )
+            ).rows,
+          ).map((row) =>
+            Object.freeze({ id: text(row, "id"), namespaceId: text(row, "namespace_id") }),
+          ),
+        ),
       lockAgent: async (namespaceId, agentId) => {
         const row = await findAgentRow(namespaceId, agentId, true);
         return row === undefined ? undefined : agentFromRow(row);
@@ -3132,6 +3849,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           providedCredentialSources?.length === 0 ? undefined : providedCredentialSources;
         const saved = immutableCopy({
           ...withoutPlugins,
+          gatewayManagedMode: agent.gatewayManagedMode ?? true,
           ...(agentCredentialSources === undefined
             ? {}
             : { credentialSources: agentCredentialSources }),
@@ -3139,6 +3857,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
           ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
           ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
+          sandboxPolicyEditing: false,
           desiredRuntimeState: "stopped" as const,
           status: "active" as const,
         });
@@ -3146,9 +3865,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           `INSERT INTO occ.agents
            (id, namespace_id, name, configuration_id, backend_id, execution_mode,
              service_principal_id, harness_auth, active_revision_id, created_at, plugins,
-             plugin_approvers, repository_bindings, repository_access, credential_sources)
+             plugin_approvers, repository_bindings, repository_access, credential_sources, gateway_managed_mode, plugin_driver)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb,
-                    $14::jsonb, $15::jsonb)`,
+                    $14::jsonb, $15::jsonb, $16, $17::jsonb)`,
           [
             saved.id,
             saved.namespaceId,
@@ -3165,6 +3884,8 @@ export class PostgresPlatformState implements PlatformStateStore {
             repositoryBindings === undefined ? null : JSON.stringify(repositoryBindings),
             repositoryAccess === undefined ? null : JSON.stringify(repositoryAccess),
             agentCredentialSources === undefined ? null : JSON.stringify(agentCredentialSources),
+            saved.gatewayManagedMode,
+            saved.pluginDriver === undefined ? null : JSON.stringify(saved.pluginDriver),
           ],
         );
         await client.query(
@@ -3186,6 +3907,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         pluginApprovers,
         repositoryAccess,
         nextCredentialSources,
+        gatewayManagedMode,
+        pluginDriver,
       ) => {
         if (harnessAuth !== undefined) {
           await assertHarnessAuthAvailable(
@@ -3215,13 +3938,15 @@ export class PostgresPlatformState implements PlatformStateStore {
                    plugin_approvers = CASE WHEN $11::boolean THEN $12::jsonb ELSE a.plugin_approvers END,
                    repository_bindings = CASE WHEN $13::boolean THEN $14::jsonb ELSE a.repository_bindings END,
                    repository_access = CASE WHEN $15::boolean THEN $16::jsonb ELSE a.repository_access END,
-                   credential_sources = CASE WHEN $17::boolean THEN $18::jsonb ELSE a.credential_sources END
+                   credential_sources = CASE WHEN $17::boolean THEN $18::jsonb ELSE a.credential_sources END,
+                   gateway_managed_mode = COALESCE($19::boolean, a.gateway_managed_mode),
+                   plugin_driver = CASE WHEN $20::boolean THEN $21::jsonb ELSE a.plugin_driver END
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                  RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
+                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [
                 namespaceId,
                 agentId,
@@ -3249,6 +3974,9 @@ export class PostgresPlatformState implements PlatformStateStore {
                 nextCredentialSources === undefined || nextCredentialSources.length === 0
                   ? null
                   : JSON.stringify(nextCredentialSources),
+                gatewayManagedMode ?? null,
+                pluginDriver !== undefined,
+                pluginDriver == null ? null : JSON.stringify(pluginDriver),
               ],
             )
           ).rows,
@@ -3270,8 +3998,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                 AND a.active_revision_id IS NOT DISTINCT FROM $3::text
                   AND n.id = a.namespace_id AND n.deleted_at IS NULL
                   RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
+                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [namespaceId, agentId, expectedRevisionId ?? null, candidateRevisionId],
             )
           ).rows,
@@ -3287,8 +4015,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                WHERE a.namespace_id = $1 AND a.id = $2 AND a.active_revision_id = $3
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
+                         a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [namespaceId, agentId, expectedRevisionId],
             )
           ).rows,
@@ -3306,8 +4034,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND a.desired_runtime_state = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
+                         a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [namespaceId, agentId, expectedStates, next],
             )
           ).rows,
@@ -3328,8 +4056,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND a.status = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
+                         a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [namespaceId, agentId, expectedStatuses, next],
             )
           ).rows,
@@ -3347,7 +4075,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec,
+                      r.admitted_spec, r.gateway_managed_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
@@ -3368,7 +4096,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec,
+                      r.admitted_spec, r.gateway_managed_mode,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
                JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
@@ -3382,6 +4110,32 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
 
     const revisions: AgentRevisionRepository = {
+      findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
+        const row = rows(
+          (
+            await client.query(
+              `SELECT r.id, r.namespace_id, r.agent_id, r.admitted_at,
+                  r.admitted_spec->>'configuration_id' AS configuration_id,
+                  r.admitted_spec->>'configuration_generation' AS configuration_generation
+           FROM occ.agent_revisions r
+           JOIN occ.namespaces n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+           WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.revision_number = 1
+             AND r.first_deployment_digest = $3`,
+              [namespaceId, agentId, digest],
+            )
+          ).rows,
+        )[0];
+        return row === undefined
+          ? undefined
+          : Object.freeze({
+              revisionId: text(row, "id"),
+              namespaceId,
+              agentId,
+              configurationId: text(row, "configuration_id"),
+              configurationGeneration: Number(row.configuration_generation),
+              createdAt: timestamp(row, "admitted_at"),
+            });
+      },
       findRevision: async (namespaceId, agentId, revisionId) => {
         const row = await findRevisionRow(namespaceId, agentId, revisionId);
         return row === undefined ? undefined : revisionFromRow(row);
@@ -3398,8 +4152,65 @@ export class PostgresPlatformState implements PlatformStateStore {
         Object.freeze(
           (await listRevisionRows(namespaceId, agentId)).map(revisionForBrowsingFromRow),
         ),
-      createRevision: async (revision) => {
+      listRevisionMetadata: async (namespaceId, agentId) =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
+                        r.admitted_at
+                 FROM occ.agent_revisions AS r
+                 JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
+                 JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+                 WHERE r.namespace_id = $1 AND r.agent_id = $2 ORDER BY r.revision_number`,
+                [namespaceId, agentId],
+              )
+            ).rows,
+          ).map(revisionMetadataFromRow),
+        ),
+      pageRevisionSummaries: async (namespaceId, agentId, { before, limit }) => {
+        // The inner query picks the page, plus one row that tells whether older revisions
+        // remain; only those rows open their snapshot, once each, for the few top-level fields
+        // a summary carries. The admitted_spec CHECK constraint guarantees their shape.
+        const found = rows(
+          (
+            await client.query(
+              `SELECT p.id, p.namespace_id, p.agent_id, p.revision_number, p.backend_id,
+                      p.admitted_at, s.configuration_id, s.configuration_generation, s.harness
+               FROM (
+                 SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
+                        r.admitted_at, r.admitted_spec
+                 FROM occ.agent_revisions AS r
+                 JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
+                 JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+                 WHERE r.namespace_id = $1 AND r.agent_id = $2
+                   AND ($3::bigint IS NULL OR r.revision_number < $3::bigint)
+                 ORDER BY r.revision_number DESC
+                 LIMIT $4
+               ) AS p
+               CROSS JOIN LATERAL jsonb_to_record(p.admitted_spec)
+                 AS s(configuration_id text, configuration_generation bigint, harness jsonb)
+               ORDER BY p.revision_number DESC`,
+              [namespaceId, agentId, before ?? null, limit + 1],
+            )
+          ).rows,
+        ).map(revisionSummaryFromRow);
+        const page = found.slice(0, limit);
+        return Object.freeze({
+          revisions: Object.freeze(page),
+          ...(found.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
+        });
+      },
+      createRevision: async (input, firstDeploymentDigest) => {
+        const revision = immutableCopy(input);
         await this.requireInitialized(context);
+        try {
+          assertExecutionAdmission(revision);
+        } catch {
+          throw new ScopeViolationError(
+            "The AgentRevision execution admission is missing or inconsistent.",
+          );
+        }
         if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
@@ -3409,16 +4220,51 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The AgentRevision harness authentication is invalid or legacy.",
           );
         }
-        await assertHarnessAuthAvailable(
+        if (
+          revision.credentialSources?.length ||
+          revision.harnessAuth?.method === "credential_source"
+        ) {
+          // OCC admission takes Namespace, Agent, then source locks. Take the ownership
+          // locks before sources too, rather than waiting for the Agent FK at INSERT.
+          await client.query(
+            "SELECT id FROM occ.namespaces WHERE id = $1 AND deleted_at IS NULL FOR SHARE",
+            [revision.namespaceId],
+          );
+          await client.query(
+            "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
+            [revision.namespaceId, revision.agentId],
+          );
+        }
+        await assertRevisionAuthAvailable(
           { secrets, serviceAccounts, credentialSources },
-          revision.namespaceId,
-          harnessAuthBindingFromSnapshot(revision.harnessAuth),
+          revision,
+          async (ids) =>
+            rows(
+              (
+                await client.query(
+                  `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability, cs.driver_id
+                   FROM occ.credential_sources AS cs
+                   JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
+                   WHERE cs.namespace_id = $1 AND cs.id = ANY($2::text[])
+                   ORDER BY cs.id COLLATE "C" FOR SHARE OF cs`,
+                  [revision.namespaceId, ids],
+                )
+              ).rows,
+            ).map((row) => ({
+              id: text(row, "id"),
+              namespaceId: text(row, "namespace_id"),
+              type: text(row, "type"),
+              state: text(row, "state") as CredentialSource["state"],
+              ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
+              driverId: text(row, "driver_id"),
+            })),
         );
         const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
         if (
           owner === undefined ||
           owner.servicePrincipalId !== revision.servicePrincipalId ||
           owner.backendId !== revision.backendId ||
+          revision.gatewayManagedMode !== owner.gatewayManagedMode ||
           !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
           !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
         ) {
@@ -3435,10 +4281,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (!validPluginApprovers(revision.pluginApprovers)) {
           throw new ScopeViolationError("The AgentRevision plugin approvers are invalid.");
         }
-        await client.query(
+        // The database clock stamps admission, as it stamps controller work, so a stop or
+        // deletion orders this revision against its own creation without controller clock
+        // skew (finding 1195). The caller's createdAt is replaced, not stored.
+        const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at, first_deployment_digest)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, clock_timestamp(), $8)
+           RETURNING admitted_at`,
           [
             revision.id,
             revision.namespaceId,
@@ -3452,6 +4302,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               draft_spec: revision.configuration,
               harness: revision.harness,
               compute: revision.compute,
+              ...(revision.sandboxPolicy === undefined
+                ? {}
+                : { sandbox_policy: revision.sandboxPolicy }),
               ...(revision.sandboxDriverId === undefined
                 ? {}
                 : { sandbox_driver_id: revision.sandboxDriverId }),
@@ -3466,18 +4319,32 @@ export class PostgresPlatformState implements PlatformStateStore {
               ...(revision.repositoryCredentials === undefined
                 ? {}
                 : { repository_credentials: revision.repositoryCredentials }),
-              harness_auth: revision.harnessAuth,
+              harness_auth:
+                revision.executionAdmission.mode === "protected"
+                  ? {
+                      ...revision.harnessAuth,
+                      protectedExecutionVersion: revision.executionAdmission.version,
+                    }
+                  : revision.harnessAuth,
+              execution_admission: revision.executionAdmission,
+              ...(revision.egressPlan === undefined ? {} : { egress_plan: revision.egressPlan }),
               ...(revision.credentialSources === undefined
                 ? {}
                 : { credential_sources: revision.credentialSources }),
             }),
-            revision.createdAt,
+            revision.gatewayManagedMode,
+            firstDeploymentDigest ?? null,
           ],
         );
+        const [stamped] = rows(admitted.rows);
+        if (stamped === undefined) {
+          throw new DependencyUnavailableError("The AgentRevision admission was not recorded.");
+        }
         const { secretBindings: _providedSecretBindings, ...withoutSecretBindings } = revision;
         return immutableCopy({
           ...withoutSecretBindings,
           ...(secretBindings === undefined ? {} : { secretBindings }),
+          createdAt: timestamp(stamped, "admitted_at"),
         });
       },
     };
@@ -3541,6 +4408,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         secret: "SELECT 1 FROM occ.secrets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         credential_source:
           "SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
+        sandbox_policy: `SELECT 1 FROM occ.sandbox_policies AS p JOIN occ.agents AS a ON a.namespace_id = p.namespace_id AND a.id = p.agent_id WHERE p.namespace_id = $1 AND p.id = $2 AND a.status = 'active' FOR SHARE OF a`,
         service_account:
           "SELECT 1 FROM occ.service_accounts WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
       };
@@ -3673,6 +4541,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The IAM AccessBinding must belong to an available Namespace.",
           );
         }
+        assertBindingSubjectNotEmail(binding.subjectId);
         // Same subject rule as the in-memory adapter: a human without a Namespace, a
         // non-Agent ServicePrincipal of the exact Namespace, or the ServicePrincipal of a
         // live Agent there. The Agent owner key is deferred, so it cannot vouch mid-unit.
@@ -3747,6 +4616,172 @@ export class PostgresPlatformState implements PlatformStateStore {
         );
         return deleted.rowCount === 1;
       },
+      listConfiguredPolicy: async () => {
+        const roles = rows(
+          (
+            await client.query(
+              `SELECT id, namespace_id, name, permissions FROM occ.iam_roles
+               WHERE id LIKE $1 ORDER BY id`,
+              [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.role)],
+            )
+          ).rows,
+        ).map(roleFromRow);
+        const groups = rows(
+          (
+            await client.query(`SELECT id, name FROM occ.iam_groups WHERE id LIKE $1 ORDER BY id`, [
+              prefixPattern(CONFIGURED_IAM_ID_PREFIXES.group),
+            ])
+          ).rows,
+        ).map((row) => Object.freeze({ id: text(row, "id"), name: text(row, "name") }));
+        const bindings = rows(
+          (
+            await client.query(
+              `SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
+                      resource_kind, resource_id
+               FROM occ.iam_access_bindings WHERE id LIKE $1 ORDER BY id`,
+              [prefixPattern(CONFIGURED_IAM_ID_PREFIXES.binding)],
+            )
+          ).rows,
+        ).map(accessBindingFromRow);
+        return Object.freeze({
+          roles: Object.freeze(roles),
+          groups: Object.freeze(groups),
+          bindings: Object.freeze(bindings),
+        });
+      },
+      putConfiguredRole: async (role) => {
+        await this.requireInitialized(context);
+        if (!isConfiguredRoleId(role.id) || role.namespaceId !== undefined) {
+          throw new ScopeViolationError("A configured IAM Role is an Installation Role.");
+        }
+        const existing = rows(
+          (
+            await client.query(
+              "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE id = $1 FOR UPDATE",
+              [role.id],
+            )
+          ).rows,
+        ).map(roleFromRow)[0];
+        const permissionsJson = JSON.stringify(role.permissions);
+        if (existing === undefined) {
+          await client.query(
+            "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, NULL, $2, $3::jsonb)",
+            [role.id, role.name ?? null, permissionsJson],
+          );
+          return "created";
+        }
+        if (
+          existing.name === role.name &&
+          JSON.stringify(existing.permissions) === permissionsJson
+        ) {
+          return "unchanged";
+        }
+        // iam_configured_role_update_only refuses an update of any other Role.
+        await client.query(
+          "UPDATE occ.iam_roles SET name = $2, permissions = $3::jsonb WHERE id = $1",
+          [role.id, role.name ?? null, permissionsJson],
+        );
+        return "updated";
+      },
+      deleteConfiguredRole: async (roleId) => {
+        if (!isConfiguredRoleId(roleId)) {
+          throw new ScopeViolationError("Only a configured IAM Role is deleted this way.");
+        }
+        const references = await client.query(
+          "SELECT id FROM occ.iam_access_bindings WHERE role_id = $1 ORDER BY id LIMIT 3",
+          [roleId],
+        );
+        if (references.rowCount !== 0) {
+          throw new ResourceConflictError(
+            `The configuration no longer lists IAM Role ${roleId}, but AccessBindings use it: ${rows(
+              references.rows,
+            )
+              .map((row) => text(row, "id"))
+              .join(", ")}. Delete those AccessBindings or list the Role again.`,
+          );
+        }
+        await client.query("DELETE FROM occ.iam_roles WHERE id = $1 AND namespace_id IS NULL", [
+          roleId,
+        ]);
+      },
+      createConfiguredGroup: async (group) => {
+        await this.requireInitialized(context);
+        if (
+          !group.id.startsWith(CONFIGURED_IAM_ID_PREFIXES.group) ||
+          group.namespaceId !== undefined
+        ) {
+          throw new ScopeViolationError("A configured IAM Group is an Installation Group.");
+        }
+        await client.query(
+          `INSERT INTO occ.iam_groups (id, namespace_id, name) VALUES ($1, NULL, $2)
+           ON CONFLICT (id) DO NOTHING`,
+          [group.id, group.name ?? group.id],
+        );
+      },
+      deleteConfiguredGroup: async (groupId) => {
+        if (!groupId.startsWith(CONFIGURED_IAM_ID_PREFIXES.group)) {
+          throw new ScopeViolationError("Only a configured IAM Group is deleted this way.");
+        }
+        const references = await client.query(
+          "SELECT id FROM occ.iam_access_bindings WHERE group_subject_id = $1 ORDER BY id LIMIT 3",
+          [groupId],
+        );
+        if (references.rowCount !== 0) {
+          throw new ResourceConflictError(
+            `The configuration no longer lists IAM Group ${groupId}, but AccessBindings use it: ${rows(
+              references.rows,
+            )
+              .map((row) => text(row, "id"))
+              .join(", ")}. Delete those AccessBindings or list the Group again.`,
+          );
+        }
+        await client.query("DELETE FROM occ.iam_group_memberships WHERE group_id = $1", [groupId]);
+        await client.query("DELETE FROM occ.iam_groups WHERE id = $1 AND namespace_id IS NULL", [
+          groupId,
+        ]);
+      },
+      createOCCBinding: async (binding) => {
+        await this.requireInitialized(context);
+        if (!isConfiguredRoleId(binding.roleId)) {
+          throw new ScopeViolationError("The AccessBinding must name a configured IAM Role.");
+        }
+        if (binding.namespaceId !== undefined) {
+          const namespace = await namespaces.lockNamespace(binding.namespaceId);
+          if (
+            namespace === undefined ||
+            (namespace.status !== "provisioning" && namespace.status !== "ready")
+          ) {
+            throw new ScopeViolationError(
+              "The AccessBinding must belong to an available Namespace.",
+            );
+          }
+        }
+        const inserted = await client.query(
+          `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, group_subject_id, role_id,
+            resource_kind, resource_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (id) DO NOTHING`,
+          [
+            binding.id,
+            binding.namespaceId ?? null,
+            binding.subjectKind === "identity" ? binding.subjectId : null,
+            binding.subjectKind === "group" ? binding.subjectId : null,
+            binding.roleId,
+            binding.resourceKind ?? null,
+            binding.resourceId ?? null,
+          ],
+        );
+        return inserted.rowCount === 1;
+      },
+      deleteConfiguredBinding: async (bindingId) => {
+        await this.requireInitialized(context);
+        const deleted = await client.query(
+          "DELETE FROM occ.iam_access_bindings WHERE id = $1 AND id LIKE $2",
+          [bindingId, prefixPattern(CONFIGURED_IAM_ID_PREFIXES.binding)],
+        );
+        return deleted.rowCount === 1;
+      },
       listServicePrincipals: async (namespaceId) =>
         Object.freeze(
           rows(
@@ -3799,15 +4834,25 @@ export class PostgresPlatformState implements PlatformStateStore {
       installations,
       namespaces,
       configurations,
+      savedConnections: postgresSavedConnections(client, () => this.requireInitialized(context)),
+      connectionTemplates: postgresConnectionTemplates(client, () =>
+        this.requireInitialized(context),
+      ),
       presets,
+      authenticationStates: postgresAuthenticationStates(client, () =>
+        this.requireInitialized(context),
+      ),
       secrets,
       credentialSources,
       serviceAccounts,
       agents,
+      sandboxPolicies,
       workspaceSetups,
       revisions,
       iamPolicy,
       repositorySessions: postgresRepositorySessions(client),
+      preparedTokenProof: this.preparedTokenProof(client),
+      egressSendReceipts: postgresEgressSendReceipts(client),
       provisioning: {
         findByWorkId: async (workId) => {
           const found = rows(
@@ -3920,15 +4965,18 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
           return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
         },
-        create: async (input: CreateAgentProvisioningRecord) => {
+        create: async (input: CreateAgentProvisioningRecord, requestId) => {
           const record = validateProvisioningCreate(input);
           await this.requireInitialized(context);
-          await queue.enqueue({
-            kind: "provisioning",
-            idempotencyKey: record.workId,
-            namespaceId: record.namespaceId,
-            actorId: record.actorId,
-          });
+          await queue.enqueue(
+            {
+              kind: "provisioning",
+              idempotencyKey: record.workId,
+              namespaceId: record.namespaceId,
+              actorId: record.actorId,
+            },
+            requestId,
+          );
           const inserted = rows(
             (
               await client.query(
@@ -3991,24 +5039,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           const updated = rows(
             (
               await client.query(
-                `WITH owner AS MATERIALIZED (
-                   SELECT work.*
-                   FROM occ.controller_work AS work
-                   JOIN occ.agent_provisioning_work AS provisioning
-                     ON provisioning.work_id = work.idempotency_key
-                   WHERE provisioning.work_id = $1
-                     AND work.work_kind = 'provisioning'
-                     AND work.namespace_id = provisioning.namespace_id
-                     AND work.agent_id IS NULL
-                     AND work.actor_id = provisioning.actor_id
-                     AND work.revision_id IS NULL
-                     AND work.namespace_target IS NULL
-                     AND work.agent_target IS NULL
-                     AND work.state = 'claimed'
-                     AND work.claim_token = $2::uuid
-                     AND work.lease_expires_at > clock_timestamp()
-                   FOR UPDATE OF work
-                 ), updated_provisioning AS (
+                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
                    UPDATE occ.agent_provisioning_work AS provisioning
                    SET status = 'running',
                        -- The database clock stamps the effect, so a later attempt on any
@@ -4071,24 +5102,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           const updated = rows(
             (
               await client.query(
-                `WITH owner AS MATERIALIZED (
-                   SELECT work.*
-                   FROM occ.controller_work AS work
-                   JOIN occ.agent_provisioning_work AS provisioning
-                     ON provisioning.work_id = work.idempotency_key
-	                   WHERE provisioning.work_id = $1
-	                     AND work.work_kind = 'provisioning'
-	                     AND work.namespace_id = provisioning.namespace_id
-		                     AND work.agent_id IS NULL
-	                     AND work.actor_id = provisioning.actor_id
-	                     AND work.revision_id IS NULL
-	                     AND work.namespace_target IS NULL
-	                     AND work.agent_target IS NULL
-	                     AND work.state = 'claimed'
-	                     AND work.claim_token = $2::uuid
-	                     AND work.lease_expires_at > clock_timestamp()
-                   FOR UPDATE OF work
-                 ), updated_provisioning AS (
+                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
                    UPDATE occ.agent_provisioning_work AS provisioning
                    SET completed_phase = $3::text,
                        status = COALESCE($4::text, provisioning.status),
@@ -4115,7 +5129,22 @@ export class PostgresPlatformState implements PlatformStateStore {
                      AND $3::text = 'handoff'
                      AND work.idempotency_key = $1
                      AND EXISTS (SELECT 1 FROM updated_provisioning)
-                   RETURNING work.idempotency_key
+                   RETURNING work.*
+                 ), completed_evidence AS (
+                   INSERT INTO occ.audit_events (
+                     id, occurred_at, kind, actor_id, action, namespace_id,
+                     resource_kind, resource_id, outcome, details
+                   )
+                   SELECT 'aud_' || gen_random_uuid()::text, clock_timestamp(), 'mutation',
+                     work.actor_id, '${CONTROLLER_WORK_AUDIT_ACTIONS.completed}', work.namespace_id,
+                     'agent', provisioning.agent_id, 'success',
+                     jsonb_build_object('workId', work.idempotency_key,
+                       'attemptId', 'aud_' || work.audit_attempt_id::text,
+                       'attemptCount', work.attempt_count, 'reasonCode', 'PROVISIONING_HANDOFF',
+                       'workState', work.state, 'agentId', provisioning.agent_id)
+                   FROM completed_work AS work
+                   JOIN updated_provisioning AS provisioning ON provisioning.work_id = work.idempotency_key
+                   WHERE work.audit_attempt_id IS NOT NULL
                  )
                  SELECT * FROM updated_provisioning`,
                 [
@@ -4170,24 +5199,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           const checkpointed = rows(
             (
               await client.query(
-                `WITH owner AS MATERIALIZED (
-	                   SELECT work.*
-	                   FROM occ.controller_work AS work
-	                   JOIN occ.agent_provisioning_work AS provisioning
-	                     ON provisioning.work_id = work.idempotency_key
-	                   WHERE provisioning.work_id = $1
-	                     AND work.work_kind = 'provisioning'
-	                     AND work.namespace_id = provisioning.namespace_id
-		                     AND work.agent_id IS NULL
-	                     AND work.actor_id = provisioning.actor_id
-	                     AND work.revision_id IS NULL
-	                     AND work.namespace_target IS NULL
-	                     AND work.agent_target IS NULL
-	                     AND work.state = 'claimed'
-	                     AND work.claim_token = $2::uuid
-	                     AND work.lease_expires_at > clock_timestamp()
-	                   FOR UPDATE OF work
-	                 ), updated_provisioning AS (
+                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
 	                   UPDATE occ.agent_provisioning_work AS provisioning
 	                   SET completed_phase = $3::text,
 	                       status = CASE
@@ -4313,24 +5325,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           const cancelled = rows(
             (
               await client.query(
-                `WITH owner AS MATERIALIZED (
-                   SELECT work.*
-                   FROM occ.controller_work AS work
-                   JOIN occ.agent_provisioning_work AS provisioning
-                     ON provisioning.work_id = work.idempotency_key
-                   WHERE provisioning.work_id = $1
-	                     AND work.work_kind = 'provisioning'
-	                     AND work.namespace_id = provisioning.namespace_id
-		                     AND work.agent_id IS NULL
-	                     AND work.actor_id = provisioning.actor_id
-	                     AND work.revision_id IS NULL
-	                     AND work.namespace_target IS NULL
-	                     AND work.agent_target IS NULL
-	                     AND work.state = 'claimed'
-	                     AND work.claim_token = $2::uuid
-	                     AND work.lease_expires_at > clock_timestamp()
-                   FOR UPDATE OF work
-                 ), updated_provisioning AS (
+                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
 	                   UPDATE occ.agent_provisioning_work AS provisioning
 		                   SET status = 'cancelled',
 		                       progress = provisioning.progress || jsonb_build_object(
@@ -4398,7 +5393,14 @@ export class PostgresPlatformState implements PlatformStateStore {
 		                   SET status = 'cancelled',
 		                       progress = provisioning.progress || jsonb_build_object(
 		                         'error', jsonb_build_object('code', $3::text, 'message', $4::text)
-		                       ),
+		                       ) || CASE
+		                         -- The live claim's attempt may still be writing until its lease
+		                         -- runs out: its worker stops issuing requests by then.
+		                         WHEN owner.state = 'claimed' THEN jsonb_build_object(
+		                           'cancelledClaimExpiresAt', to_jsonb(owner.lease_expires_at)
+		                         )
+		                         ELSE '{}'::jsonb
+		                       END,
 		                       updated_at = clock_timestamp()
                    FROM owner
                    WHERE provisioning.work_id = owner.idempotency_key
@@ -4415,14 +5417,66 @@ export class PostgresPlatformState implements PlatformStateStore {
                    FROM owner
                    WHERE work.idempotency_key = owner.idempotency_key
                      AND EXISTS (SELECT 1 FROM updated_provisioning)
-                   RETURNING work.idempotency_key
+                   RETURNING work.idempotency_key, CASE WHEN owner.state = 'claimed'
+                     THEN 'aud_' || owner.audit_attempt_id::text END AS attempt_id
                  )
-                 SELECT * FROM updated_provisioning`,
+                 SELECT idempotency_key, attempt_id FROM completed_work`,
                 [namespaceId, agentId, code, message],
               )
             ).rows,
           );
-          return cancelled[0] === undefined ? undefined : provisioningRecordFromRow(cancelled[0]);
+          if (cancelled[0] === undefined) {
+            return undefined;
+          }
+          const attemptId = optionalText(cancelled[0], "attempt_id");
+          return {
+            workId: text(cancelled[0], "idempotency_key"),
+            ...(attemptId === undefined ? {} : { attemptId }),
+          };
+        },
+        settleAbandonedEffect: async (namespaceId, agentId) => {
+          // A cancelled job never runs again (finding 1384). Once the claim that began its
+          // transport write has lapsed, its worker has stopped issuing requests, so the exact
+          // pending effect is recorded as settled, as Agent deletion does (a request already sent
+          // may still land; the write creates only absent Secrets). A receipt that already
+          // exists, or malformed evidence, matches nothing and stays fail-closed.
+          const settled = rows(
+            (
+              await client.query(
+                `WITH matched AS MATERIALIZED (
+                   SELECT provisioning.work_id,
+                          provisioning.progress -> 'pendingEffect' ->> 'owner' AS owner
+                   FROM occ.agent_provisioning_work AS provisioning
+                   WHERE provisioning.namespace_id = $1
+                     AND provisioning.agent_id = $2
+                     AND provisioning.status = 'cancelled'
+                     AND provisioning.revision_id IS NULL
+                     AND provisioning.progress -> 'pendingEffect' ->> 'kind' = 'transport'
+                     AND provisioning.progress -> 'pendingEffect' ->> 'targetId' = $2
+                     AND COALESCE(provisioning.progress -> 'pendingEffect' ->> 'owner', '') <> ''
+                     AND NOT (provisioning.progress ? 'effectReceipt')
+                     AND COALESCE(
+                       (provisioning.progress ->> 'cancelledClaimExpiresAt')::timestamptz
+                         <= clock_timestamp(),
+                       true
+                     )
+                   FOR UPDATE
+                 )
+                 UPDATE occ.agent_provisioning_work AS provisioning
+                 SET progress = provisioning.progress || jsonb_build_object(
+                       'effectReceipt', jsonb_build_object(
+                         'kind', 'transport', 'owner', matched.owner, 'targetId', $2::text
+                       )
+                     ),
+                     updated_at = clock_timestamp()
+                 FROM matched
+                 WHERE provisioning.work_id = matched.work_id
+                 RETURNING provisioning.*`,
+                [namespaceId, agentId],
+              )
+            ).rows,
+          );
+          return settled[0] === undefined ? undefined : provisioningRecordFromRow(settled[0]);
         },
         retryByWorkId: async (namespaceId, workId, actorId) => {
           const retried = rows(
@@ -4506,24 +5560,53 @@ export class PostgresPlatformState implements PlatformStateStore {
             throw new ScopeViolationError("The audit event and resource scopes do not match.");
           }
           const details = auditDetails(event);
-          await client.query(
-            `INSERT INTO occ.audit_events
-             (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id,
-              outcome, details)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
-            [
-              event.id,
-              event.occurredAt,
-              event.kind,
-              event.actorId,
-              event.action,
-              event.namespaceId ?? null,
-              event.resource.kind,
-              event.resource.id,
-              event.outcome,
-              details === undefined ? null : JSON.stringify(details),
-            ],
-          );
+          const values = [
+            event.id,
+            event.occurredAt,
+            event.kind,
+            event.actorId,
+            event.action,
+            event.namespaceId ?? null,
+            event.resource.kind,
+            event.resource.id,
+            event.outcome,
+            details === undefined ? null : JSON.stringify(details),
+          ];
+          let inserted;
+          try {
+            // Skip known IDs before the insert trigger checks capacity. A concurrent
+            // delivery may still win the insert, so read the stored row on either conflict.
+            inserted = await client.query(
+              `INSERT INTO occ.audit_events
+               (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id,
+                outcome, details)
+               SELECT $1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10::jsonb
+               WHERE NOT EXISTS (SELECT 1 FROM occ.audit_events WHERE id = $1)
+               ON CONFLICT (id) DO NOTHING`,
+              values,
+            );
+          } catch (error) {
+            const mapped = databaseError(error);
+            throw mapped instanceof AuditAppendUnavailableError ||
+              mapped instanceof ScopeViolationError
+              ? mapped
+              : new AuditAppendUnavailableError();
+          }
+          if (inserted.rowCount === 0) {
+            const sameEvent = await client.query(
+              `SELECT id FROM occ.audit_events
+               WHERE id = $1 AND occurred_at = $2::timestamptz AND kind = $3
+                 AND actor_id = $4 AND action = $5 AND namespace_id IS NOT DISTINCT FROM $6
+                 AND resource_kind = $7 AND resource_id = $8 AND outcome = $9
+                 AND details IS NOT DISTINCT FROM $10::jsonb`,
+              values,
+            );
+            if (sameEvent.rowCount !== 1) {
+              throw new ResourceConflictError(
+                "The audit event ID already identifies different evidence.",
+              );
+            }
+          }
         },
         list: async () => {
           const installation = await this.currentInstallation(context);
@@ -4543,7 +5626,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
       },
       operations: {
-        append: async (operation) => {
+        append: async (operation, requestId) => {
           await this.requireInitialized(context);
           const namespaceId = operation.namespaceId;
           if (namespaceId === undefined) {
@@ -4553,7 +5636,12 @@ export class PostgresPlatformState implements PlatformStateStore {
           let agentId: string | undefined;
           let revisionId: string | undefined;
           let namespaceTarget: "ready" | "deleted" | undefined;
-          let agentTarget: "stopped" | "deleted" | typeof CREDENTIAL_WITHDRAWAL_TARGET | undefined;
+          let agentTarget:
+            | "stopped"
+            | "deleted"
+            | "sandbox_policy"
+            | typeof CREDENTIAL_WITHDRAWAL_TARGET
+            | undefined;
           if (operation.kind === "namespace") {
             if (namespaceId !== operation.resourceId) {
               throw new ScopeViolationError("Namespace work does not match its exact owner.");
@@ -4596,28 +5684,32 @@ export class PostgresPlatformState implements PlatformStateStore {
             throw new ScopeViolationError("Unsupported controller work resource kind.");
           }
 
-          await queue.enqueue({
-            idempotencyKey:
-              operation.kind === "agent"
-                ? operation.target === "stopped"
-                  ? `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`
-                  : `agent:${operation.resourceId}:${operation.action}:${operation.target}`
-                : operation.kind === "agent_revision" &&
-                    operation.target === CREDENTIAL_WITHDRAWAL_TARGET
-                  ? credentialWithdrawalWorkKey(operation.resourceId, operation.operationId)
-                  : `${operation.kind}:${operation.resourceId}:${operation.action}${
-                      namespaceTarget === undefined ? "" : `:${namespaceTarget}`
-                    }`,
-            namespaceId,
-            ...(agentId === undefined ? {} : { agentId }),
-            ...(revisionId === undefined ? {} : { revisionId }),
-            ...(namespaceTarget === undefined ? {} : { namespaceTarget }),
-            ...(agentTarget === undefined ? {} : { agentTarget }),
-            actorId: operation.actorId,
-          });
+          await queue.enqueue(
+            {
+              idempotencyKey:
+                operation.kind === "agent"
+                  ? operation.target !== "deleted"
+                    ? `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`
+                    : `agent:${operation.resourceId}:${operation.action}:${operation.target}`
+                  : operation.kind === "agent_revision" &&
+                      operation.target === CREDENTIAL_WITHDRAWAL_TARGET
+                    ? credentialWithdrawalWorkKey(operation.resourceId, operation.operationId)
+                    : `${operation.kind}:${operation.resourceId}:${operation.action}${
+                        namespaceTarget === undefined ? "" : `:${namespaceTarget}`
+                      }`,
+              namespaceId,
+              ...(agentId === undefined ? {} : { agentId }),
+              ...(revisionId === undefined ? {} : { revisionId }),
+              ...(namespaceTarget === undefined ? {} : { namespaceTarget }),
+              ...(agentTarget === undefined ? {} : { agentTarget }),
+              actorId: operation.actorId,
+            },
+            requestId,
+          );
         },
         list: async () => {
           await this.requireInitialized(context);
+          // CASE skips revision-specific regex compilation for ordinary lifecycle work.
           const found = rows(
             (
               await client.query(
@@ -4625,6 +5717,10 @@ export class PostgresPlatformState implements PlatformStateStore {
                         namespace_target, agent_target
                  FROM occ.controller_work
                  WHERE work_kind = 'lifecycle'
+                   AND CASE
+                     WHEN strpos(idempotency_key, '${REPOSITORY_CLEANUP_KEY_SEPARATOR}') = 0 THEN TRUE
+                     ELSE NOT ${repositoryCleanupSql("controller_work")}
+                   END
                  ORDER BY created_at, idempotency_key`,
               )
             ).rows,
@@ -4646,7 +5742,7 @@ export class PostgresPlatformState implements PlatformStateStore {
               if (agentId === undefined) {
                 const target = text(row, "namespace_target");
                 if (target !== "ready" && target !== "deleted") {
-                  throw new DependencyUnavailableError(
+                  throw new PersistedStateInvalidError(
                     "Persisted Namespace work has an invalid target.",
                   );
                 }
@@ -4654,8 +5750,8 @@ export class PostgresPlatformState implements PlatformStateStore {
               }
               if (revisionId === undefined) {
                 const target = text(row, "agent_target");
-                if (target !== "stopped" && target !== "deleted") {
-                  throw new DependencyUnavailableError(
+                if (target !== "stopped" && target !== "deleted" && target !== "sandbox_policy") {
+                  throw new PersistedStateInvalidError(
                     "Persisted Agent work has an invalid target.",
                   );
                 }
@@ -4665,7 +5761,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                 const key = text(row, "idempotency_key");
                 const prefix = `agent:${agentId}:reconcile:${target}:`;
                 if (!key.startsWith(prefix) || key.length === prefix.length) {
-                  throw new DependencyUnavailableError(
+                  throw new PersistedStateInvalidError(
                     "Persisted Agent work has an invalid operation identity.",
                   );
                 }
@@ -4685,7 +5781,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                 text(row, "idempotency_key"),
               );
               if (revisionTarget !== CREDENTIAL_WITHDRAWAL_TARGET || operationId === undefined) {
-                throw new DependencyUnavailableError(
+                throw new PersistedStateInvalidError(
                   "Persisted AgentRevision work has an invalid target.",
                 );
               }
@@ -4726,9 +5822,17 @@ export class PostgresPlatformState implements PlatformStateStore {
           await this.requireInitialized(context);
           return queue.findWork(idempotencyKey);
         },
+        findWorkByKeys: async (idempotencyKeys) => {
+          await this.requireInitialized(context);
+          return queue.findWorkByKeys(idempotencyKeys);
+        },
         findWorkAttempt: async (idempotencyKey) => {
           await this.requireInitialized(context);
           return queue.findWorkAttempt(idempotencyKey);
+        },
+        hasRepositoryExecutionRedeployRequired: async (owner) => {
+          await this.requireInitialized(context);
+          return queue.hasRepositoryExecutionRedeployRequired(owner);
         },
         hasOutstandingCredentialWithdrawalWork: async (namespaceId, revisionId) => {
           await this.requireInitialized(context);
@@ -4765,13 +5869,13 @@ export class PostgresPlatformState implements PlatformStateStore {
     const restrictionIds = new Set<string>();
     for (const identity of state.identities) {
       if (identities.has(identity.id)) {
-        throw new DependencyUnavailableError("Persisted IAM identities are invalid or ambiguous.");
+        throw new PersistedStateInvalidError("Persisted IAM identities are invalid or ambiguous.");
       }
       identities.set(identity.id, identity);
     }
     for (const group of state.groups) {
       if (groups.has(group.id)) {
-        throw new DependencyUnavailableError("Persisted IAM groups are invalid or ambiguous.");
+        throw new PersistedStateInvalidError("Persisted IAM groups are invalid or ambiguous.");
       }
       groups.set(group.id, group);
     }
@@ -4785,13 +5889,13 @@ export class PostgresPlatformState implements PlatformStateStore {
         group.namespaceId !== membership.namespaceId ||
         membershipKeys.has(key)
       ) {
-        throw new DependencyUnavailableError("Persisted IAM group memberships violate scope.");
+        throw new PersistedStateInvalidError("Persisted IAM group memberships violate scope.");
       }
       membershipKeys.add(key);
     }
     for (const role of state.roles) {
       if (roles.has(role.id)) {
-        throw new DependencyUnavailableError("Persisted IAM roles are invalid or ambiguous.");
+        throw new PersistedStateInvalidError("Persisted IAM roles are invalid or ambiguous.");
       }
       permissions(role.permissions);
       roles.set(role.id, role);
@@ -4808,7 +5912,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         (binding.subjectKind !== "identity" && binding.subjectKind !== "group") ||
         role === undefined ||
         (identity?.namespaceId !== undefined && identity.namespaceId !== binding.namespaceId) ||
-        (binding.subjectKind === "group" && group?.namespaceId !== binding.namespaceId) ||
+        // An Installation Group, such as a configured one, can be bound in one Namespace.
+        (group?.namespaceId !== undefined && group.namespaceId !== binding.namespaceId) ||
         (role.namespaceId !== undefined && role.namespaceId !== binding.namespaceId) ||
         (binding.resourceKind === undefined) !== (binding.resourceId === undefined) ||
         (binding.resourceKind !== undefined && !RESOURCE_KINDS.has(binding.resourceKind)) ||
@@ -4818,7 +5923,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           binding.resourceId !== undefined &&
           binding.resourceId !== binding.namespaceId)
       ) {
-        throw new DependencyUnavailableError("Persisted IAM access bindings violate exact scope.");
+        throw new PersistedStateInvalidError("Persisted IAM access bindings violate exact scope.");
       }
       bindingIds.add(binding.id);
     }
@@ -4834,7 +5939,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           restriction.resourceId !== restriction.namespaceId) ||
         (restriction.namespaceId !== undefined && restriction.resourceKind === "installation")
       ) {
-        throw new DependencyUnavailableError("Persisted IAM restrictions violate exact scope.");
+        throw new PersistedStateInvalidError("Persisted IAM restrictions violate exact scope.");
       }
       restrictionIds.add(restriction.id);
     }
@@ -4844,7 +5949,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         state.roles.length === 0 ||
         state.bindings.length === 0)
     ) {
-      throw new DependencyUnavailableError("Persisted native IAM state is incomplete.");
+      throw new PersistedStateInvalidError("Persisted native IAM state is incomplete.");
     }
   }
 
@@ -4920,5 +6025,3 @@ export class PostgresPlatformState implements PlatformStateStore {
     }
   }
 }
-
-export { PostgresPlatformState as PostgresPlatformStateStore };

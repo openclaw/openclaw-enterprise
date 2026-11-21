@@ -3,7 +3,7 @@
 Single-cluster Installations created by the 2026-09-28 release keep each
 Namespace's Gateways, Gateway state and canonical Secrets in a separate
 `oce-gateways-<hash>` namespace. The current controller refuses to start on that
-layout; the [breaking-change notice](breaking-changes-before-2026-10-10.md#2026-10-05-split-layout-tenants-block-the-controller-upgrade)
+layout; [split-layout installations](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 says how to tell. This page moves each tenant to the shared layout before the
 [control-plane upgrade](production-upgrade.md#upgrade-the-control-plane). Adopt
 in place where you can; use the export fallback for tenants that can't be
@@ -12,7 +12,7 @@ adopted.
 ## Adopt in place
 
 Each `oce-gateways-<hash>` namespace becomes its tenant's namespace. OCC's database is not changed, so IDs, Namespace names,
-revisions, Secrets, service-account credentials, chat history and Harness
+versions, Secrets, service-account credentials, chat history and Harness
 workspaces all stay. The old namespace's workspace and embedded Gateway claims
 move into it by PersistentVolume rebind, and its Agent Secrets are copied.
 
@@ -22,13 +22,14 @@ seconds. `apply` also waits for the old Pods to stop, up to 5.5 minutes for a
 Gateway that is not ready, so stop such Agents first. Dedicated Gateways keep
 serving until they are deployed again; Harnesses and embedded Gateways are down
 from `apply` until then. Run the commands from a checkout of the target
-release, with cluster-admin `kubectl` for the cluster (`--context`/`--kubeconfig`
-are passed through).
+release. Use Node.js in the range specified by `engines.node` in
+`package.json` (`>=24.22.1 <26 || >=26.12.1`). Use a `kubectl` identity with
+cluster-admin access. Select the cluster with `--context` or `--kubeconfig`.
 
 1. Plan. This only reads:
 
    ```bash
-   node scripts/split-layout-adopt.mjs plan --out /secure/occ/adopt-plan.json
+   node scripts/split-layout-adopt.ts plan --out /secure/occ/adopt-plan.json
    ```
 
    It lists, per tenant, the claims, Secrets and routes to move and the Agents
@@ -52,13 +53,18 @@ are passed through).
    worker stays stopped:
 
    ```bash
-   node scripts/split-layout-adopt.mjs apply --archive /secure/occ/adopt --yes
+   node scripts/split-layout-adopt.ts apply --archive /secure/occ/adopt --yes
    ```
 
    It records each step on the `oce-gateways-*` namespace, so running it again
    after any failure continues. Until step 4 starts the new release,
-   `revert --archive /secure/occ/adopt --yes` restores the old layout and
-   restarts OCC. With `--namespace-id`, revert restores only those tenants and
+   the following command restores the old layout and restarts OCC.
+
+   ```bash
+   node scripts/split-layout-adopt.ts revert --archive /secure/occ/adopt --yes
+   ```
+
+   With `--namespace-id`, revert restores only those tenants and
    restarts the old API; the worker stays stopped until the rest are reverted
    or the new release starts. Keep the archive directory: it holds the old
    routes. Adopt every tenant before the upgrade: once the controller runs
@@ -74,12 +80,10 @@ are passed through).
 5. Deploy each Agent `apply` listed as running (`occ agent deploy <id>`) that is
    not running yet, and check it. A Gateway from the 2026-09-28 release
    migrates its agent database at its first start, about 15 seconds longer.
-   If one stops with `uses schema version 23`, see the
-   [notice](breaking-changes-before-2026-10-10.md#2026-10-09-released-gateways-need-an-agent-database-migration).
 6. Delete the old namespaces. After this there is no way back:
 
    ```bash
-   node scripts/split-layout-adopt.mjs finalize --yes
+   node scripts/split-layout-adopt.ts finalize --yes
    ```
 
    It refuses while the controller still runs the images `apply` recorded,
@@ -100,7 +104,7 @@ not come back:
 
 - chat history and other Gateway state (the copy keeps the transcripts for
   reference; loading them into the new Gateway is untested);
-- Agent revision history and bindings to old revisions;
+- Agent revision history and bindings to old versions;
 - group, Installation-wide and resource-less bindings (re-create them by hand);
 - issued service-account credentials and Agent runtime credentials;
 - the old IDs and Namespace names, so update anything outside OCE that uses them.
@@ -118,10 +122,11 @@ Configurations, workspace files, transcripts and Secret values.
 1. Export every Namespace from the old release:
 
    ```bash
-   node scripts/split-layout-tenants.mjs export --out /secure/occ/tenants.json
+   node scripts/split-layout-tenants.ts export --out /secure/occ/tenants.json
    ```
 
-   If a successful API response is malformed or lacks its data envelope, export
+   If a successful API response is malformed, lacks required restoration fields,
+   or reports unreadable saved Agent settings, export
    exits nonzero without writing a bundle. Restore the API response path and
    rerun export, then check its Namespace inventory before continuing.
 
@@ -151,13 +156,14 @@ Configurations, workspace files, transcripts and Secret values.
    `/secure/occ/tenant-secrets.json`, keyed by the old Namespace name, then
    Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
    `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
-4. Delete the tenants on the old release. The command refuses if a Namespace
-   gained an Agent or Secret after the export, or if the export could not read an
+4. Delete the tenants on the old release. The command refuses ambiguous source
+   IDs that the import map cannot represent, preserving those resources for manual
+   restoration. It also refuses if a Namespace gained an Agent or Secret after the export, or if the export could not read an
    Agent's workspace files; once step 2 has the copy, add
    `--allow-unread-workspace-files`:
 
    ```bash
-   node scripts/split-layout-tenants.mjs discard --bundle /secure/occ/tenants.json \
+   node scripts/split-layout-tenants.ts discard --bundle /secure/occ/tenants.json \
      --yes --allow-unread-workspace-files
    kubectl get namespaces -l openclaw.dev/gateway-namespace
    ```
@@ -172,17 +178,39 @@ Configurations, workspace files, transcripts and Secret values.
    Namespace you no longer need, such as an unused `default`:
 
    ```bash
-   node scripts/split-layout-tenants.mjs import --bundle /secure/occ/tenants.json \
+   node scripts/split-layout-tenants.ts import --bundle /secure/occ/tenants.json \
      --secret-values /secure/occ/tenant-secrets.json --map /secure/occ/tenant-ids.json \
      --rename team-a=team-a-2 --skip default
    ```
 
-   It creates the Namespaces and exits `3` until they are `ready`.
+   Give each selected source Namespace a distinct target name. Import refuses
+   overlapping `--rename` targets or two selected sources that resolve to one
+   Namespace through saved IDs or existing names, before it changes the target
+   or saves the map. A skipped source without a saved destination reserves
+   nothing; a saved destination stays reserved even while its source is skipped.
+   Choose separate targets or skip a source; review an old conflicting map and
+   any already imported resources before retrying. Malformed saved IDs and duplicate
+   source Namespace IDs, including skipped sources, are refused before any API request.
+   Import also refuses source IDs shared by different resource kinds or
+   Namespaces, including skipped sources: its flat map cannot keep their destinations separate. Preserve the
+   export and restore those colliding resources manually; do not alter IDs in the bundle.
+
+   It creates the Namespaces and exits `3` while they are `provisioning`.
    [Grant tenant RoleBindings](production-agents.md#grant-tenant-rolebindings)
    for each one, then run the same command again. The ID map records every old
-   and new ID, so a rerun after any failure resumes. Exit `4` lists what needs a
+   and new ID. If a write's response has an unexpected status, resource identity,
+   or success/error envelope, reconcile that write before resuming; it may already have committed. Redirects are refused: correct `OCC_URL` instead of replaying a write through a redirect. Failed or deleting Namespaces require
+   lifecycle recovery, not another RoleBinding wait. Exit `4` lists what needs a
    hand: Agents whose deploy failed, such as a service-account Agent without an
-   issued credential, and access bindings it could not re-create.
+   issued credential, and access bindings it could not re-create. The ID map does
+   not record those bindings, so each rerun lists them again and exits `4`, also
+   after you re-create them by hand. Exit `0` does not restore bindings to old
+   Agent revisions; the import only logs them.
+
+   Presets are restored after service-account IDs are mapped, so their Harness
+   authentication refers to the restored account. Existing mapped Presets are
+   left unchanged; inspect their account references before resuming an older
+   import. See the [tenant restore flow](../../flows/tenant-restore.md).
 
 7. Put each Harness workspace back once the new Agent's Harness Pod runs:
 

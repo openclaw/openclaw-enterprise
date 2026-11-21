@@ -28,6 +28,10 @@ Check `state.json` for `computeDriver: kubernetes`, `sandboxDriver: none`, and t
 
 Inspect the owned node and `controller`, `worker-kubernetes`, and `postgres` containers with `docker inspect`. Record their IPv4 addresses on `<project>_development`. The node is `k3d-<cluster>-server-0`; all four must share this private network. Do not publish the routing NodePort on the host. Use the **worker-kubernetes** service when refreshing Kubernetes settings; the `worker` service belongs to the alternative Compose profile.
 
+The chart enables routing by default. It does not install the dependencies below
+or connect Compose services to the private route. Complete these steps before
+rendering and applying the routing resources.
+
 ## Install routing prerequisites
 
 Install cert-manager and Envoy Gateway as described in [private routing prerequisites](workspace-routing.md#requirements). The local launcher pins cert-manager 1.18.4 and Envoy Gateway 1.6.7 in `internal/occdev/gateway_k3d.go`; use those versions for the matching local workflow. Verify their download checksums against that source. Wait for their controller Deployments to become available.
@@ -57,8 +61,8 @@ auth:
   baseUrl: http://127.0.0.1:3000 # Use the actual published OCC port.
 bootstrap:
   adminEmail: "<existing development administrator email>"
-  password:
-    claimName: bootstrap-password
+  credentials:
+    secretName: occ-bootstrap-credentials
 api:
   clients:
     - namespace: envoy-gateway-system
@@ -83,6 +87,8 @@ gatewayRouting:
     - "<Compose worker-kubernetes IP>/32"
     - "<k3d node IP>/32"
 ```
+
+List only the remote source addresses. The chart refuses a `/0` prefix; see the [routing reference](../../reference/gateway-routing.md#routing-configuration).
 
 Render and inspect the resource kinds before applying. There must be no OCC Deployment or PostgreSQL workload in this output:
 
@@ -140,14 +146,18 @@ For repositories, use the [standalone credential service](../repository-credenti
 
 Kubernetes consumers still require the [exact repository-service peer](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Expose the Compose broker through a namespace-scoped Service and a TCP relay Pod in `oce-system`. The relay forwards encrypted bytes to the exact broker container IP and port; it receives no keys or bearer material. Use the Service DNS name in the broker certificate and `publicOrigin`. Apply default-deny policies, permit only the selected Agent namespaces to the relay port, and permit the relay only to the broker's `/32` and HTTPS port. Configure `network.repositoryCredentials` with that exact namespace and relay Pod selector. Register the repository Backend and Agent binding through the [normal repository workflow](../repository-credentials.md#create-and-deploy-an-agent).
 
-For Slack, run the bundled `apps/controller/src/slack-proxy.mjs` in a private container on the same owned Docker network, with no host-published port. Set both `runtime.channels.proxyUrl` in the Installation and `OCC_CHANNEL_DIRECTORY_PROXY_URL` on the Compose API to its exact literal IPv4 endpoint. Restart `controller` and `worker-kubernetes`, then deploy the Slack Agent. Follow [both proxy checks](../integrations/slack.md#configure-both-slack-proxies). Embedded OpenClaw does not support external channel credentials in this topology; use dedicated Codex for this supported Slack path.
+Slack channel egress requires the Kubernetes-only control plane: the reserved
+OCC listener admits authorized API Pods. This Compose control-plane topology has
+no such grant. Use the [Kubernetes installation](kubernetes.md) and configure
+[managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md).
+Direct provider fallback is not supported.
 
 ## Verify and recover
 
 The development console remains at its loopback HTTP URL. This profile does not provide the Kubernetes-only shared-session native-admin browser domain. For native access, use the [optional loopback gateway password](production-tui.md) and a local forward to the exact Agent gateway. A browser needs a trusted local HTTPS endpoint, its exact origin in `gateway.controlUi.allowedOrigins`, and that gateway password. Use a local TLS relay and import only its public CA; do not disable browser certificate verification. In the native connection screen, **Change** opens the credential field, then **Connect** authenticates the optional password.
 
-Clone repositories under the Agent's persistent workspace, not `/tmp`: the runtime's temporary volume is bounded to 64 MiB and exceeding it evicts the Pod. A shallow clone avoids downloading unnecessary history.
+Clone repositories under the Agent's persistent workspace, not `/tmp`: the runtime's temporary volume has a 64 MiB size limit and exceeding it evicts the Pod. A shallow clone avoids downloading unnecessary history.
 
-If a model/tool workload is `OOMKilled`, raise the Installation's Gateway or Harness memory limit (`resources.gateway` or `resources.agent`) and deploy a new revision; the 3 GiB and 6 GiB defaults are not a guarantee for repository workloads. Preserve the failed revision and actual error. If a persisted owner lease prevents restart after eviction, verify the previous owner has stopped and allow its lease to expire before retrying. The pinned runtime uses a five-minute lease; kubelet restart backoff can add delay. Do not delete lease records to force a pass.
+If a model/tool workload is `OOMKilled`, raise the Installation's Gateway or Harness memory limit (`resources.gateway` or `resources.agent`) and deploy a new version; the 4 GiB and 6 GiB defaults are not a guarantee for repository workloads. Preserve the failed version and actual error. If a persisted owner lease prevents restart after eviction, verify the previous owner has stopped and allow its lease to expire before retrying. The pinned runtime uses a five-minute lease; kubelet restart backoff can add delay. Do not delete lease records to force a pass.
 
 Before cleanup, stop repository-bound Agents and confirm their broker sessions are disposed. Keep the broker and state if any credential cleanup is pending or uncertain. See [local repository cleanup](local-repository-credentials.md). Then use the original profile's `dev down`; remove only additional services and public CA trust entries created for this installation.

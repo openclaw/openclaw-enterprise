@@ -2,7 +2,7 @@
 {{- $routing := .Values.gatewayRouting }}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . }}
 {{- $serviceName := include "openclaw.gatewayRouting.serviceName" . }}
-{{- $hostname := default (printf "%s.%s.svc" $serviceName $routing.envoyNamespace) $routing.hostname }}
+{{- $hostname := include "openclaw.gatewayRouting.hostname" . }}
 {{- $tlsSecretName := include "openclaw.gatewayRouting.tlsSecretName" . }}
 {{- $routeNamespaceLabel := include "openclaw.gatewayRouting.routeNamespaceLabel" . }}
 {{- $rootSecretName := include "openclaw.gatewayRouting.rootSecretName" . }}
@@ -226,14 +226,7 @@ spec:
     {{- if $routing.sandbox.enabled }}
     - from:
         {{- range $index, $peer := $routing.sandbox.ingressPeers -}}
-        {{- if kindIs "map" $peer -}}
-        {{- range $selectorName := list "namespaceSelector" "podSelector" -}}
-        {{- $selector := index $peer $selectorName -}}
-        {{- if and (kindIs "map" $selector) (hasKey $selector "matchLabels") -}}
-        {{- $_ := include "openclaw.networkPolicy.matchLabels" (dict "name" (printf "gatewayRouting.sandbox.ingressPeers[%d].%s.matchLabels" $index $selectorName) "value" $selector.matchLabels) -}}
-        {{- end -}}
-        {{- end -}}
-        {{- end -}}
+        {{- include "openclaw.networkPolicy.peer" (dict "name" (printf "gatewayRouting.sandbox.ingressPeers[%d]" $index) "value" $peer) -}}
         {{- end -}}
         {{- toYaml $routing.sandbox.ingressPeers | nindent 8 }}
       ports:
@@ -298,4 +291,32 @@ spec:
       ports:
         - protocol: TCP
           port: 18000
+{{- if .Values.strandsBox.workerReadiness }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-strands-worker-readiness
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel | quote }}
+          podSelector:
+            matchLabels:
+              openclaw.dev/workload-role: agent
+            matchExpressions:
+              - key: openclaw.dev/strands-box
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 18791
+{{- end }}
 {{- end }}

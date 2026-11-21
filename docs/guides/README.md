@@ -7,16 +7,19 @@ platform itself, start with [Contribute](../contributing/README.md).
 
 ## Get started
 
-Read [Concepts](concepts.md) for Namespaces, Agents, revisions, and Secrets. Then choose a setup:
+Read [Concepts](concepts.md) for Namespaces, Agents, versions, and Secrets. Then choose a setup:
 
-- [Local Setup](quickstart.md): run the platform on your machine and [deploy your first Agent](first-agent.md).
-- [Kubernetes Setup](kubernetes-setup.md): install the control plane on an existing cluster, then [deploy and verify an Agent on it](deploy/production-agents.md).
+- [Local k3d](deploy/local-setup.md)
+- [Kubernetes](deploy/kubernetes-setup.md)
+- [Amazon EKS](deploy/eks-openshell-setup.md)
+
+After installing OpenShell, [deploy your first Agent](deploy/deploy-first-agent.md) and complete browser onboarding. Use the same saved session for [Add Git](repository-credentials/openshell-git-push.md), [Add Plugin](integrations/codex-plugins.md), and [Delete Agent](deploy/quickstart-delete-agent.md), then clean up the selected installation.
 
 ## Work with Agents
 
 - Use the [console](../reference/console.md) to manage Agents, Configuration,
   and workspace files.
-- Read about [deployments and revisions](../reference/agents/deployment.md)
+- Read about [deployments and versions](../reference/agents/deployment.md)
   or [Agent plugins](../reference/agent-plugins.md).
 - Use the [OCC CLI](cli.md) or [HTTP API](../reference/api.md) for automation.
 

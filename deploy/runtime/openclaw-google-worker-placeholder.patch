@@ -1,0 +1,44 @@
+--- a/src/node-host/node-worker-environment.ts
++++ b/src/node-host/node-worker-environment.ts
+@@ -36,6 +36,9 @@
+ ): NodeJS.ProcessEnv {
+   const windows = process.platform === "win32";
+   const snapshot: NodeJS.ProcessEnv = {};
++  const googleMarker = /^openshell:resolve:env:s[0-9a-f]{64}_GOG_ACCESS_TOKEN$/.test(
++    source.GOG_ACCESS_TOKEN ?? "",
++  );
+   const retainedWindowsKeys = new Map<string, string>();
+   for (const [key, value] of Object.entries(source)) {
+     if (value === undefined) {
+@@ -44,7 +47,8 @@
+     const normalized = windows ? key.toUpperCase() : key;
+     const allowed =
+       (windows ? WINDOWS_WORKER_ENV_KEYS : POSIX_WORKER_ENV_KEYS).has(normalized) ||
+-      normalized.startsWith("LC_");
++      normalized.startsWith("LC_") ||
++      (googleMarker && normalized === "GOG_ACCESS_TOKEN");
+     if (!allowed) {
+       continue;
+     }
+--- /dev/null
++++ b/src/node-host/node-worker-google-placeholder.test.ts
+@@ -0,0 +1,19 @@
++import { expect, test } from "vitest";
++import {
++  captureNodeWorkerPlatformTrust,
++  snapshotNodeWorkerEnv,
++  snapshotNodeWorkerExecutionEnv,
++} from "./node-worker-environment.js";
++
++test("a native worker receives only a scoped Google placeholder, with the node's trust", () => {
++  const marker = `openshell:resolve:env:s${"a".repeat(64)}_GOG_ACCESS_TOKEN`;
++  expect(snapshotNodeWorkerEnv({ GOG_ACCESS_TOKEN: marker }).GOG_ACCESS_TOKEN).toBe(marker);
++  for (const token of ["raw-token", marker.replace("GOG_ACCESS_TOKEN", "ANOTHER_TOKEN")]) {
++    expect(snapshotNodeWorkerEnv({ GOG_ACCESS_TOKEN: token }).GOG_ACCESS_TOKEN).toBeUndefined();
++  }
++  const trust = "/run/openshell-supervisor-ca/material/ca-bundle.crt";
++  const source = { GOG_ACCESS_TOKEN: marker, SSL_CERT_FILE: trust };
++  expect(
++    snapshotNodeWorkerExecutionEnv(source, undefined, captureNodeWorkerPlatformTrust(source)),
++  ).toMatchObject({ GOG_ACCESS_TOKEN: marker, SSL_CERT_FILE: trust });
++});

@@ -1,0 +1,51 @@
+{
+  "client": "gh 2.103.2 (unmodified runtime binary)",
+  "command": "gh pr create --repo openclaw/openclaw-enterprise --head test/offline-wire-209549c1 --base main --title \"Offline synthetic title\" --body \"Offline synthetic body\"",
+  "target": {
+    "scheme": "https",
+    "host": "api.github.com",
+    "port": 443,
+    "method": "POST",
+    "path": "/graphql",
+    "query": ""
+  },
+  "headers": [
+    ["user-agent", "GitHub CLI 2.103.2"],
+    [
+      "accept",
+      "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview"
+    ],
+    ["content-type", "application/json; charset=utf-8"],
+    ["graphql-features", "merge_queue"],
+    ["time-zone", "Etc/UTC"],
+    ["x-github-api-version", "2022-11-28"],
+    ["accept-encoding", "gzip"]
+  ],
+  "requests": [
+    {
+      "operation": "RepositoryInfo",
+      "body": "{\"query\":\"\\n\\tfragment repo on Repository {\\n\\t\\tid\\n\\t\\tdatabaseId\\n\\t\\tname\\n\\t\\towner { login }\\n\\t\\tsshUrl\\n\\t\\thasIssuesEnabled\\n\\t\\tdescription\\n\\t\\thasWikiEnabled\\n\\t\\tviewerPermission\\n\\t\\tdefaultBranchRef {\\n\\t\\t\\tname\\n\\t\\t}\\n\\t}\\n\\n\\tquery RepositoryInfo($owner: String!, $name: String!) {\\n\\t\\trepository(owner: $owner, name: $name) {\\n\\t\\t\\t...repo\\n\\t\\t\\tparent {\\n\\t\\t\\t\\t...repo\\n\\t\\t\\t}\\n\\t\\t\\tmergeCommitAllowed\\n\\t\\t\\trebaseMergeAllowed\\n\\t\\t\\tsquashMergeAllowed\\n\\t\\t}\\n\\t}\",\"variables\":{\"name\":\"openclaw-enterprise\",\"owner\":\"openclaw\"}}"
+    },
+    {
+      "operation": "PullRequestForBranch",
+      "body": "{\"query\":\"\\n\\tquery PullRequestForBranch($owner: String!, $repo: String!, $headRefName: String!, $states: [PullRequestState!]) {\\n\\t\\trepository(owner: $owner, name: $repo) {\\n\\t\\t\\tpullRequests(headRefName: $headRefName, states: $states, first: 30, orderBy: { field: CREATED_AT, direction: DESC }) {\\n\\t\\t\\t\\tnodes {url,id,number,state,baseRefName,headRefName,isCrossRepository,headRepositoryOwner{id,login,...on User{name}}}\\n\\t\\t\\t}\\n\\t\\t\\tdefaultBranchRef { name }\\n\\t\\t}\\n\\t}\",\"variables\":{\"headRefName\":\"test/offline-wire-209549c1\",\"owner\":\"openclaw\",\"repo\":\"openclaw-enterprise\",\"states\":[\"OPEN\"]}}"
+    },
+    {
+      "operation": "PullRequestCreate",
+      "body": "{\"query\":\"\\n\\t\\tmutation PullRequestCreate($input: CreatePullRequestInput!) {\\n\\t\\t\\tcreatePullRequest(input: $input) {\\n\\t\\t\\t\\tpullRequest {\\n\\t\\t\\t\\t\\tid\\n\\t\\t\\t\\t\\turl\\n\\t\\t\\t\\t}\\n\\t\\t\\t}\\n\\t}\",\"variables\":{\"input\":{\"baseRefName\":\"main\",\"body\":\"Offline synthetic body\",\"draft\":false,\"headRefName\":\"test/offline-wire-209549c1\",\"maintainerCanModify\":true,\"repositoryId\":\"R_OFFLINE_FIXTURE\",\"title\":\"Offline synthetic title\"}}}"
+    },
+    {
+      "operation": "REST readback",
+      "target": {
+        "method": "GET",
+        "path": "/repos/openclaw/openclaw-enterprise/pulls",
+        "query": "base=main&head=openclaw%3Atest%2Foffline-wire-209549c1&state=open"
+      },
+      "headers": {
+        "accept": "*/*",
+        "graphql-features": null
+      },
+      "body": ""
+    }
+  ]
+}

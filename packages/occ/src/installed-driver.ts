@@ -1,0 +1,172 @@
+import type { NamespaceLifecycleHooks } from "@openclaw-enterprise/contracts";
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import type {
+  ComputeLifecycleHooks,
+  LegacyEgressProxyDriver,
+  Driver,
+  DriverByCapability,
+  DriverCapability,
+  DriverRegistration,
+  DriverRegistrationRef,
+  EgressRef,
+  ProxyPlan,
+} from "@openclaw-enterprise/contracts";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { canonicalProvisioningJson } from "./agent-provisioning.ts";
+import {
+  capability,
+  validNamespaceLifecycleHooks,
+  driverHasCapabilityContract,
+  driverHasValidLifecycleHooks,
+} from "./driver-contract.ts";
+import { DriverSelectionError, ResourceStateConflictError } from "./errors.ts";
+
+/** One process-local owner. Its reference, unlike object identity, survives an API/worker handoff. */
+export class InstalledDriver {
+  readonly ref: DriverRegistrationRef;
+  readonly capabilities: readonly DriverCapability[];
+  readonly lifecycleDriver: Driver | undefined;
+  readonly namespaceLifecycleHooks: NamespaceLifecycleHooks | undefined;
+  readonly #views = new Map<DriverCapability, { id: string; driver: Driver }>();
+  readonly #close: (() => void | Promise<void>) | undefined;
+  readonly #retiredStaticProviderRefs: readonly EgressRef[];
+  readonly #repositoryOnly: boolean;
+  #closing: Promise<void> | undefined;
+
+  constructor(
+    selection: {
+      readonly id: string;
+      readonly implementation: string;
+      readonly configuration: unknown;
+      /** @internal Process-local admission policy supplied only by bundled composition. */
+      readonly retiredStaticProviderRefs?: readonly EgressRef[];
+      /** @internal Set only after bundled repository transport validation. */
+      readonly repositoryOnly?: boolean;
+    },
+    registration: DriverRegistration,
+    // Installation composition supplies the configured identity for each capability.
+    capabilityIds: Readonly<Partial<Record<DriverCapability, string>>> = {},
+  ) {
+    const { id, implementation, configuration } = selection;
+    this.#repositoryOnly = selection.repositoryOnly === true;
+    this.#retiredStaticProviderRefs = Object.freeze(
+      (selection.retiredStaticProviderRefs ?? []).map(({ id, generation }) =>
+        Object.freeze({ id, generation }),
+      ),
+    );
+    if (!isNonEmptyString(id) || !isNonEmptyString(implementation)) {
+      throw new DriverSelectionError(
+        "A Driver registration requires an identity and implementation.",
+      );
+    }
+    const configurationId = createHash("sha256")
+      .update(canonicalProvisioningJson({ configuration, capabilityIds }))
+      .digest("hex");
+    this.ref = Object.freeze({ id, implementation, configurationId });
+    for (const [key, driver] of Object.entries(registration.capabilities)) {
+      if (
+        !capability(key) ||
+        !asRecord(driver) ||
+        driver.capability !== key ||
+        driver.id !== (capabilityIds[key] ?? id) ||
+        driver.implementation !== implementation ||
+        driver.computeLifecycleHooks !== undefined ||
+        driver.namespaceLifecycleHooks !== undefined ||
+        !driverHasCapabilityContract(driver)
+      ) {
+        throw new DriverSelectionError(
+          "A Driver registration must provide the exact selected capability contracts and own their lifecycle.",
+        );
+      }
+      this.#views.set(key, { id: driver.id, driver });
+    }
+    const first = this.#views.keys().next().value;
+    if (first === undefined) {
+      throw new DriverSelectionError("A Driver registration must provide a capability.");
+    }
+    this.capabilities = Object.freeze([...this.#views.keys()]);
+    const hooks: ComputeLifecycleHooks | undefined = registration.computeLifecycleHooks;
+    if (hooks !== undefined) {
+      const lifecycle = { id, implementation, capability: first, computeLifecycleHooks: hooks };
+      if (!driverHasValidLifecycleHooks(lifecycle)) {
+        throw new DriverSelectionError("A Driver registration has invalid lifecycle hooks.");
+      }
+      this.lifecycleDriver = Object.freeze(lifecycle);
+    }
+    if (
+      registration.namespaceLifecycleHooks !== undefined &&
+      !validNamespaceLifecycleHooks(registration.namespaceLifecycleHooks)
+    ) {
+      throw new DriverSelectionError(
+        "A Driver registration has invalid Namespace lifecycle hooks.",
+      );
+    }
+    this.namespaceLifecycleHooks = registration.namespaceLifecycleHooks;
+    this.#close = registration.close?.bind(registration);
+    if (this.#repositoryOnly) {
+      this.requireRepositoryGitTransport();
+    }
+    Object.freeze(this);
+  }
+
+  /** Recheck the exact view and its identity, including after a package has returned it. */
+  require<K extends DriverCapability>(key: K): DriverByCapability[K] {
+    const view = this.#views.get(key);
+    if (
+      !view ||
+      view.driver.capability !== key ||
+      view.driver.id !== view.id ||
+      view.driver.implementation !== this.ref.implementation ||
+      !driverHasCapabilityContract(view.driver)
+    ) {
+      throw new DriverSelectionError(
+        "The installed Driver no longer supplies the selected capability.",
+      );
+    }
+    return view.driver as DriverByCapability[K];
+  }
+
+  /** @internal The validated repository-only installation retains ordinary model delivery. */
+  allowsOrdinaryCredentialGateway(): boolean {
+    return this.#repositoryOnly;
+  }
+
+  /** @internal Refuse new static admissions without changing retained provider behavior. */
+  assertNewStaticProviderUse(ref: EgressRef): void {
+    if (
+      this.#retiredStaticProviderRefs.some(
+        (retired) => retired.id === ref.id && retired.generation === ref.generation,
+      )
+    ) {
+      throw new ResourceStateConflictError(
+        "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.",
+      );
+    }
+  }
+
+  /** Admission needs both operational views; release still requires the observed recipient. */
+  requireRepositoryGitTransport(): NonNullable<LegacyEgressProxyDriver["bindRepositoryGit"]> {
+    const sandbox = this.require("sandbox");
+    const proxy = this.require("credential_proxy");
+    if (!sandbox.repositoryAccess || typeof proxy.bindRepositoryGit !== "function") {
+      throw new DriverSelectionError(
+        "Protected repository Git requires the selected Driver's Sandbox access and Credential Proxy transport.",
+      );
+    }
+    return proxy.bindRepositoryGit.bind(proxy);
+  }
+
+  /** Match the exact registered owner and configured capability identities. */
+  ownsProxyPlan(plan: ProxyPlan): boolean {
+    return (
+      this.require("sandbox").id === plan.sandboxDriverId &&
+      this.require("credential_proxy").id === plan.egressDriverId &&
+      isDeepStrictEqual(plan.driver, this.ref)
+    );
+  }
+
+  close(): Promise<void> {
+    return (this.#closing ??= Promise.resolve().then(() => this.#close?.()));
+  }
+}

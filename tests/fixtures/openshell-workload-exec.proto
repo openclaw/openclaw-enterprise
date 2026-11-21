@@ -1,0 +1,38 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package openshell.v1;
+
+import "google/protobuf/duration.proto";
+
+// The supplier's ExecSandbox wire subset used only by installed qualification.
+// The controller's OpenShell service definition deliberately does not include it.
+service OpenShell {
+  rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
+}
+
+message WorkspaceSelector {
+  oneof selection { string workspace = 1; }
+}
+
+message ExecSandboxRequest {
+  string sandbox = 1;
+  repeated string command = 2;
+  bool no_login_shell = 10;
+  string request_id = 11;
+  WorkspaceSelector workspace_scope = 12;
+  google.protobuf.Duration execution_timeout = 105;
+}
+
+message ExecSandboxEvent {
+  oneof payload {
+    ExecSandboxStdout stdout = 1;
+    ExecSandboxStderr stderr = 2;
+    ExecSandboxExit exit = 3;
+  }
+}
+message ExecSandboxStdout { bytes data = 1; }
+message ExecSandboxStderr { bytes data = 1; }
+message ExecSandboxExit { int32 exit_code = 1; }

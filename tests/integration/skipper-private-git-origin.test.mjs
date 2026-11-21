@@ -1,0 +1,895 @@
+import assert from "node:assert/strict";
+import { get as httpGet } from "node:http";
+import { json } from "node:stream/consumers";
+import { request } from "node:https";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import test from "node:test";
+import { withSkipperPrivateGitFixture } from "../../scripts/qualification/skipper-private-git-fixture.mjs";
+import {
+  assertOnlyTokenRetirement,
+  fetchAfterWithdrawalCommand,
+  startSkipperPrivateGitOrigin,
+  withdrawDuringFetchCommand,
+} from "../fixtures/skipper-private-git-origin.mjs";
+import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
+import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
+import { registerSkipperPrivateGitReplacementCases } from "./skipper-private-git-replacement-cases.ts";
+
+/**
+ * @param {{ origin: string, tls: { ca?: Buffer, cert?: Buffer } }} fixture
+ * @param {string} method
+ * @param {string} path
+ * @param {string} [authorization]
+ * @param {unknown} [body]
+ * @param {{ afterHeaders?: () => Promise<void>, contentType?: string, agent?: import("node:https").Agent | false }} [options]
+ */
+function api(
+  fixture,
+  method,
+  path,
+  authorization,
+  body,
+  { afterHeaders, contentType = "application/json", agent = false } = {},
+) {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      new URL(path, fixture.origin),
+      {
+        method,
+        agent,
+        ca: fixture.tls.ca ?? fixture.tls.cert,
+        headers: { ...(authorization && { authorization }), "content-type": contentType },
+        timeout: 10000,
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode,
+            body:
+              chunks.length && response.headers["content-type"] === "application/json"
+                ? JSON.parse(Buffer.concat(chunks).toString())
+                : undefined,
+          }),
+        );
+        response.on("error", reject);
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error("fixture request timed out")));
+    req.on("error", reject);
+    const send = () => req.end(body ? JSON.stringify(body) : undefined);
+    if (afterHeaders) {
+      req.flushHeaders();
+      afterHeaders().then(send, (error) => req.destroy(error));
+    } else {
+      send();
+    }
+  });
+}
+
+test("private origin reports a denied process-group probe before starting Git", async (t) => {
+  const kill = process.kill;
+  t.mock.method(process, "kill", (pid, signal) => {
+    if (pid < 0 && signal === 0) {
+      throw Object.assign(new Error("restricted runner detail"), { code: "EPERM" });
+    }
+    return kill(pid, signal);
+  });
+  // The invalid ref bounds startup even where the group probe must not run.
+  const message =
+    process.platform === "win32"
+      ? "fixture requires POSIX process groups"
+      : process.pid === 1
+        ? "command failed (exit 1)"
+        : "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.";
+  await assert.rejects(startSkipperPrivateGitOrigin({ approvalRef: "refs/heads/invalid.." }), {
+    message,
+  });
+});
+
+test("private Git witness remains reachable from direct and nested temporary roots", async (t) => {
+  const shortRoot = await mkdtemp("/tmp/skipper-test-");
+  t.after(() => rm(shortRoot, { recursive: true, force: true }));
+  const longRoot = join(shortRoot, "nested-".repeat(16));
+  await mkdir(longRoot);
+  const originalRoot = process.env.TMPDIR;
+  t.after(() => {
+    if (originalRoot === undefined) {
+      delete process.env.TMPDIR;
+    } else {
+      process.env.TMPDIR = originalRoot;
+    }
+  });
+  for (const [name, root] of [
+    ["direct", "/tmp"],
+    ["short nested", shortRoot],
+    ["long nested", longRoot],
+  ]) {
+    await t.test(name, async () => {
+      process.env.TMPDIR = root;
+      let directory;
+      let socketPath;
+      let originDirectory;
+      const childFailure = new Error("fixture command failed");
+      const fixture = withSkipperPrivateGitFixture(
+        { host: "127.0.0.1", teamReview: false },
+        async (env) => {
+          directory = env.OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY;
+          socketPath = env.OCC_TEST_SKIPPER_PRIVATE_GIT_WITNESS;
+          assert.equal(dirname(directory), root);
+          assert.match(socketPath, /^\/tmp\/oce-skipper-[a-zA-Z0-9]+\/witness\.sock$/);
+          if (root === "/tmp") {
+            assert.equal(dirname(socketPath), directory);
+          } else {
+            // Only inspect this test's own root to find the live synthetic Git origin.
+            const origins = (await readdir(root)).filter((entry) =>
+              entry.startsWith("skipper-private-git-"),
+            );
+            assert.equal(origins.length, 1);
+            originDirectory = join(root, origins[0]);
+          }
+          assert.equal((await stat(directory)).mode & 0o777, 0o700);
+          assert.equal((await stat(join(directory, "registry.json"))).mode & 0o777, 0o600);
+          assert.equal((await stat(dirname(socketPath))).mode & 0o777, 0o700);
+          const socket = await stat(socketPath);
+          assert.ok(socket.isSocket());
+          assert.equal(socket.mode & 0o777, 0o600);
+          const response = await new Promise((resolve, reject) => {
+            httpGet(
+              { socketPath, path: "/input", signal: AbortSignal.timeout(10_000) },
+              resolve,
+            ).on("error", reject);
+          });
+          assert.equal(response.statusCode, 200);
+          const input = await json(response);
+          assert.equal(input.repository, "fixture/skipper-" + input.id);
+          assert.match(input.initialSha, /^[0-9a-f]{40}$/);
+          // Exercise cleanup when the fixture's command fails after connecting.
+          if (root === longRoot) {
+            throw childFailure;
+          }
+        },
+      );
+      if (root === longRoot) {
+        await assert.rejects(fixture, (error) => error === childFailure);
+      } else {
+        await fixture;
+      }
+      for (const path of [socketPath, dirname(socketPath), directory, originDirectory].filter(
+        Boolean,
+      )) {
+        await assert.rejects(stat(path), { code: "ENOENT" });
+      }
+    });
+  }
+});
+
+test(
+  "private origin authenticates Git, constrains pushes, witnesses objects, and revokes tokens",
+  { timeout: 120000 },
+  async (t) => {
+    const fixture = await startSkipperPrivateGitOrigin({
+      witnessIssuedGit: true,
+      repositoryRef: "qualification-private",
+      approvalRef: "refs/heads/qualification/approved",
+      teamReview: true,
+    });
+    t.after(() => fixture.close());
+    const directory = await temporaryDirectory(t, "private-git-client-");
+    const caFile = join(directory, "ca.pem");
+    await writeFile(caFile, fixture.tls.ca);
+    const env = cleanEnvironment({
+      HOME: directory,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_SSL_CAINFO: caFile,
+    });
+    const git = (args, token, options = {}) =>
+      run("git", args, {
+        cwd: directory,
+        env: token
+          ? {
+              ...env,
+              GIT_CONFIG_COUNT: "2",
+              GIT_CONFIG_KEY_1: "http.extraHeader",
+              GIT_CONFIG_VALUE_1: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
+            }
+          : env,
+        ...options,
+      });
+    const issuePath = `/app/installations/${fixture.installationId}/access_tokens`;
+    const jwt = `Bearer ${fixture.createAppJwt()}`;
+    const privileges = { metadata: "read", contents: "write" };
+    const issue = (
+      permissions = privileges,
+      repositoryIds = [Number(fixture.repositoryId)],
+      authorization = jwt,
+    ) =>
+      api(fixture, "POST", issuePath, authorization, {
+        repository_ids: repositoryIds,
+        permissions,
+      });
+
+    // A real anonymous clone must fail before any object reaches the client.
+    const anonymous = await git(["clone", fixture.cloneUrl, "anonymous"], undefined, {
+      allowFailure: true,
+    });
+    assert.notEqual(anonymous.code, 0);
+    assert.equal(fixture.snapshot().endpoints["upload-advertise:401"], 1);
+    assert.equal((await issue(privileges, [999])).status, 403);
+    assert.equal((await issue({ ...privileges, administration: "write" })).status, 403);
+    assert.equal((await issue(privileges, [73], "Bearer invalid")).status, 403);
+    const forged = `${jwt.split(".").slice(0, 2).join(".")}.${Buffer.alloc(256).toString("base64url")}`;
+    assert.equal((await issue(privileges, [73], forged)).status, 403);
+    const issued = await issue();
+    assert.equal(issued.status, 201);
+    assert.deepEqual(issued.body.permissions, privileges);
+    assert.equal(issued.body.repository_selection, "selected");
+    assert.deepEqual(issued.body.repositories, [
+      { id: 73, full_name: fixture.repository, private: true },
+    ]);
+    assert.ok(Date.parse(issued.body.expires_at) > Date.now());
+    const token = issued.body.token;
+
+    const metadata = await issue({ metadata: "read" });
+    assert.equal(metadata.status, 201);
+    assert.notEqual(
+      (
+        await git(["clone", fixture.cloneUrl, "metadata-only"], metadata.body.token, {
+          allowFailure: true,
+        })
+      ).code,
+      0,
+    );
+    // Identify the credential Git actually used; issuance order alone is not evidence.
+    const usedIndex = (priorCount) => {
+      const indices = [...new Set(fixture.gitAttemptIndices().slice(priorCount))];
+      assert.equal(indices.length, 1);
+      return indices[0];
+    };
+    const beforeA = fixture.gitAttemptIndices().length;
+    await git(["clone", fixture.cloneUrl, "client"], token);
+    const indexA = usedIndex(beforeA);
+    assert.equal(await fixture.probeIssuedGit(indexA), 200);
+    const client = join(directory, "client");
+    assert.equal(
+      await readFile(join(client, "README.md"), "utf8"),
+      "Private qualification repository\n",
+    );
+    await writeFile(join(client, "approved.txt"), "Run-owned change\n");
+    await git(["add", "approved.txt"], token, { cwd: client });
+    await git(
+      [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "-m",
+        "Approved fixture change",
+      ],
+      token,
+      { cwd: client },
+    );
+    const sha = (await git(["rev-parse", "HEAD"], token, { cwd: client })).stdout.trim();
+    const reader = await issue({
+      metadata: "read",
+      contents: "read",
+      issues: "read",
+      pull_requests: "read",
+      checks: "read",
+      statuses: "read",
+    });
+    assert.equal(reader.status, 201);
+    const beforeB = fixture.gitAttemptIndices().length;
+    await git(["clone", fixture.cloneUrl, "read-only"], reader.body.token);
+    const indexB = usedIndex(beforeB);
+    assert.notEqual(indexA, indexB);
+    const observedProbe = fixture.observeRestartTraffic(indexA, indexB);
+    const beforeProbe = fixture.snapshot();
+    const beforeProbeAttempts = fixture.gitAttemptIndices().length;
+    assert.equal(await fixture.probeIssuedGit(indexB), 200);
+    assert.equal(usedIndex(beforeProbeAttempts), indexB);
+    assert.deepEqual(observedProbe(), [
+      "git auth B",
+      "upload-advertise HTTP 200",
+      "verifier probe",
+    ]);
+    assert.equal(
+      fixture.snapshot().endpoints["upload-advertise:200"],
+      beforeProbe.endpoints["upload-advertise:200"] + 1,
+    );
+    assert.equal(fixture.snapshot().issued, beforeProbe.issued);
+    const beforeUnknown = fixture.snapshot();
+    await assert.rejects(fixture.probeIssuedGit(0), /unknown issued Git index/);
+    assert.deepEqual(fixture.snapshot(), beforeUnknown);
+    assert.notEqual(
+      (
+        await git(["push", "origin", `HEAD:${fixture.approvalRef}`], reader.body.token, {
+          cwd: client,
+          allowFailure: true,
+        })
+      ).code,
+      0,
+    );
+
+    // Exercise receive-pack itself, not just URL filtering. Mixed updates must
+    // fail atomically, so an allowed branch cannot hide a protected branch update.
+    for (const refs of [
+      ["HEAD:refs/heads/main"],
+      [`HEAD:${fixture.approvalRef}-other`],
+      [`HEAD:${fixture.approvalRef}`, "HEAD:refs/heads/main"],
+    ]) {
+      const denied = await git(["push", "origin", ...refs], token, {
+        cwd: client,
+        allowFailure: true,
+      });
+      assert.notEqual(denied.code, 0);
+      assert.match(denied.stderr, /ref denied/);
+      assert.deepEqual(await fixture.readRefs(), { "refs/heads/main": fixture.initialSha });
+    }
+    assert.notEqual(
+      (
+        await git(["clone", `${fixture.origin}/${fixture.repository}-other.git`, "other"], token, {
+          allowFailure: true,
+        })
+      ).code,
+      0,
+    );
+    await git(["push", "origin", `HEAD:${fixture.approvalRef}`], token, { cwd: client });
+
+    // The witness owns a new object store and reads the bare repository directly.
+    // It cannot accept client/broker-reported success as evidence of a pushed commit.
+    const witness = await fixture.witnessCommit();
+    assert.equal(witness.sha, sha);
+    assert.equal(witness.refs[fixture.approvalRef], sha);
+    assert.equal(witness.refs["refs/heads/main"], fixture.initialSha);
+    assert.match(witness.commit, /Approved fixture change/);
+    assert.match(witness.tree, /\tapproved.txt\n/);
+    const draftPermissions = { metadata: "read", contents: "write", pull_requests: "write" };
+    const draftToken = await issue(draftPermissions);
+    assert.equal(draftToken.status, 201);
+    const draft = (token, afterHeaders) =>
+      api(
+        fixture,
+        "POST",
+        "/repos/" + fixture.repository + "/pulls",
+        "Bearer " + token,
+        {
+          title: "Review qualification",
+          body: "Native push independently inspected",
+          draft: true,
+          base: "main",
+          head: "qualification/approved",
+          maintainer_can_modify: false,
+        },
+        { afterHeaders },
+      );
+    assert.equal((await draft(token)).status, 403, "Git-only token must not create a draft");
+    assert.equal(await fixture.observePullRequest(), null);
+    // Revoke after the origin receives the headers, but before it can create the draft.
+    const interrupted = await issue(draftPermissions);
+    const authorization = "Bearer " + interrupted.body.token;
+    const before = fixture.snapshot().pullCreateRequests;
+    const withdrawn = await draft(interrupted.body.token, async () => {
+      const deadline = AbortSignal.timeout(5000);
+      while (fixture.snapshot().pullCreateRequests === before) {
+        deadline.throwIfAborted();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      assert.equal(
+        (await api(fixture, "DELETE", "/installation/token", authorization)).status,
+        204,
+      );
+    });
+    assert.equal(withdrawn.status, 403, "revoked draft authority cannot commit a pending request");
+    assert.equal(await fixture.observePullRequest(), null);
+    const { status, body: pull } = await draft(draftToken.body.token);
+    assert.equal(status, 201, "separately scoped draft creation accepted at controlled provider");
+    assert.equal(pull.head.sha, sha);
+    assert.equal(pull.head.repo.full_name, fixture.repository);
+    assert.equal(pull.base.sha, fixture.initialSha);
+    assert.deepEqual(await fixture.observePullRequest(), pull);
+    assert.equal(fixture.snapshot().endpoints["pull-create:201"], 1);
+    await git(["clone", "--branch", "qualification/approved", fixture.cloneUrl, "reader"], token);
+    assert.equal(
+      await readFile(join(directory, "reader", "approved.txt"), "utf8"),
+      "Run-owned change\n",
+    );
+
+    // Compare-and-delete must preserve a concurrently changed ref on mismatch.
+    await assert.rejects(fixture.deleteApprovalRef(fixture.initialSha), {
+      message: /^command failed/,
+    });
+    assert.equal((await fixture.readRefs())[fixture.approvalRef], sha);
+    await fixture.deleteApprovalRef(sha);
+    assert.deepEqual(await fixture.readRefs(), { "refs/heads/main": fixture.initialSha });
+    // An issuer refusal leaves this separate credential valid. Other tokens must still retire
+    // normally below; closing the fixture destroys this synthetic issuer without replaying DELETE.
+    const retained = await issue();
+    assert.equal(retained.status, 201);
+    const beforeRetained = fixture.gitAttemptIndices().length;
+    await git(["ls-remote", fixture.cloneUrl, "refs/heads/main"], retained.body.token);
+    const retainedIndex = usedIndex(beforeRetained);
+    fixture.refuseTokenRetirement(retainedIndex);
+    const observedRetirement = fixture.observeRestartTraffic(indexA, indexB);
+    assert.equal(
+      (await api(fixture, "DELETE", "/installation/token", "Bearer invalid")).status,
+      401,
+    );
+    assert.equal(fixture.snapshot().targetedRetirementRefusals, 0);
+    assert.equal(
+      (await api(fixture, "DELETE", "/installation/token", "Bearer " + retained.body.token)).status,
+      503,
+    );
+    assert.equal(fixture.snapshot().targetedRetirementRefusals, 1);
+    assert.deepEqual(observedRetirement(), [
+      "retirement auth other",
+      "revoke HTTP 401",
+      "revoke HTTP 503",
+    ]);
+    assert.equal(await fixture.probeIssuedGit(retainedIndex), 200);
+    assert.equal(
+      fixture.snapshot().tokens.find(({ index }) => index === retainedIndex).revoked,
+      false,
+    );
+    assert.equal(await fixture.probeIssuedGit(indexB), 200);
+
+    const observedWithdrawal = fixture.observeRestartTraffic(indexA, indexB);
+    // Qualify the exact installed withdrawal oracle on a real Git protocol-v2 connection.
+    // Hold authenticated discovery, revoke the synthetic token, release discovery. The native
+    // client must see its authenticated POST refused, never infer a denial from a timeout.
+    fixture.holdNextDiscovery();
+    const command = withdrawDuringFetchCommand(".", 401);
+    const envAuth = {
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_1: "http.extraHeader",
+      GIT_CONFIG_VALUE_1:
+        "Authorization: Basic " + Buffer.from("x-access-token:" + token).toString("base64"),
+    };
+    const held = run("sh", ["-c", command], {
+      cwd: client,
+      env: { ...env, ...envAuth },
+      allowFailure: true,
+    }).then(
+      (result) => ({ result }),
+      (error) => ({ error }),
+    );
+    await waitUntil("a real authenticated discovery", () => fixture.discoveryHeld(), 5000);
+    assert.deepEqual(observedWithdrawal(), ["git auth A", "upload-advertise HTTP 200"]);
+    assert.equal(
+      (await api(fixture, "DELETE", "/installation/token", `Bearer ${token}`)).status,
+      204,
+    );
+    fixture.releaseDiscovery();
+    const { result } = await held;
+    assert.equal(result?.code, 0, "the withdrawn active-session oracle must pass");
+    assert.equal(
+      fixture.snapshot().endpoints["upload-pack:401"],
+      1,
+      "fixture observed the second authenticated POST",
+    );
+    assert.deepEqual(observedWithdrawal(), [
+      "git auth A",
+      "retirement auth A",
+      "revoke HTTP 204",
+      "upload-advertise HTTP 200",
+      "upload-pack HTTP 401",
+    ]);
+    const fresh = fetchAfterWithdrawalCommand(".", 401);
+    const beforeFresh = fixture.snapshot().requests;
+    const refused = await run("sh", ["-c", fresh], {
+      cwd: client,
+      env: { ...env, ...envAuth },
+      allowFailure: true,
+    });
+    assert.equal(refused.code, 0, "new authenticated Git process sees the explicit refusal");
+    assert.ok(fixture.snapshot().requests > beforeFresh);
+    const uncredentialed = await run("sh", ["-c", fresh], { cwd: client, env, allowFailure: true });
+    assert.notEqual(uncredentialed.code, 0, "anonymous refusal must fail the withdrawal oracle");
+    assert.notEqual(
+      (await git(["clone", fixture.cloneUrl, "revoked"], token, { allowFailure: true })).code,
+      0,
+    );
+    assert.notEqual(
+      (
+        await git(["push", "origin", `HEAD:${fixture.approvalRef}`], token, {
+          cwd: client,
+          allowFailure: true,
+        })
+      ).code,
+      0,
+    );
+    assert.deepEqual(await fixture.readRefs(), { "refs/heads/main": fixture.initialSha });
+    assert.equal(
+      (await api(fixture, "DELETE", "/installation/token", `Bearer ${token}`)).status,
+      401,
+    );
+    assert.equal(await fixture.probeIssuedGit(indexA), 401);
+    assert.equal(await fixture.probeIssuedGit(indexB), 200);
+
+    const snapshot = fixture.snapshot();
+    assert.equal(snapshot.issued, 6);
+    assert.ok(snapshot.endpoints["upload-pack:200"] >= 2);
+    assert.ok(snapshot.endpoints["receive-pack:200"] >= 4);
+    assert.ok(snapshot.endpoints["other:404"] >= 1);
+    assert.equal(JSON.stringify(snapshot).includes(token), false);
+    assert.equal(JSON.stringify(snapshot).includes(jwt), false);
+    // Invalid protocol data reaches the Git backend only with valid credentials.
+    const observedRpc = fixture.observeRestartTraffic(indexA, indexB);
+    const invalidRpc = (credential) =>
+      api(
+        fixture,
+        "POST",
+        `/${fixture.repository}.git/git-upload-pack`,
+        `Bearer ${credential}`,
+        "not a Git packet",
+        { contentType: "application/x-git-upload-pack-request" },
+      );
+    assert.equal((await invalidRpc("invalid")).status, 401);
+    assert.equal((await invalidRpc(reader.body.token)).status, 502);
+    assert.deepEqual(observedRpc(), [
+      "git auth B",
+      "git auth other",
+      "upload-pack HTTP 401",
+      "upload-pack HTTP 502",
+    ]);
+    await fixture.close();
+    await assert.rejects(fixture.probeIssuedGit(indexB), /origin closed/);
+    await fixture.close();
+    await assert.rejects(api(fixture, "POST", issuePath, jwt, {}), { code: "ECONNREFUSED" });
+  },
+);
+
+registerSkipperPrivateGitReplacementCases(api);
+
+test(
+  "private origin accepts caller TLS and an explicit bridge listener",
+  { timeout: 30000 },
+  async (t) => {
+    const owner = await startSkipperPrivateGitOrigin();
+    t.after(() => owner.close());
+    const bridge = await startSkipperPrivateGitOrigin({
+      host: "0.0.0.0",
+      advertisedHost: "localhost",
+      tls: owner.tls,
+      repository: "fixture/bridge",
+      approvalRef: "refs/heads/bridge",
+    });
+    t.after(() => bridge.close());
+    assert.match(bridge.origin, /^https:\/\/localhost:\d+$/);
+    assert.equal(bridge.repository, "fixture/bridge");
+    const issued = await api(
+      bridge,
+      "POST",
+      `/app/installations/${bridge.installationId}/access_tokens`,
+      `Bearer ${bridge.createAppJwt()}`,
+      { repository_ids: [73], permissions: { metadata: "read", contents: "write" } },
+    );
+    assert.equal(issued.status, 201);
+    const before = bridge.snapshot();
+    const bearer = "Bearer " + issued.body.token;
+    const revoke = () => api(bridge, "DELETE", "/installation/token", bearer);
+    assert.equal((await revoke()).status, 204);
+    assertOnlyTokenRetirement(before, bridge.snapshot());
+    assert.equal((await revoke()).status, 401);
+    assert.throws(() => assertOnlyTokenRetirement(before, bridge.snapshot()), {
+      code: "ERR_ASSERTION",
+    });
+  },
+);
+
+test(
+  "private origin serves a gzip-encoded upload-pack negotiation (more than 20 refs)",
+  { timeout: 60000 },
+  async (t) => {
+    // git remote-curl gzips every upload-pack request body over 1024 bytes, which a clone of a
+    // repository with more than about 20 refs reaches. git http-backend inflates such a body only
+    // when the CGI environment carries HTTP_CONTENT_ENCODING.
+    const fixture = await startSkipperPrivateGitOrigin({ seedRefs: 40 });
+    t.after(() => fixture.close());
+    assert.equal(Object.keys(await fixture.readRefs()).length, 41);
+    const directory = await temporaryDirectory(t, "private-git-gzip-");
+    const caFile = join(directory, "ca.pem");
+    await writeFile(caFile, fixture.tls.ca);
+    const issued = await api(
+      fixture,
+      "POST",
+      `/app/installations/${fixture.installationId}/access_tokens`,
+      `Bearer ${fixture.createAppJwt()}`,
+      {
+        repository_ids: [Number(fixture.repositoryId)],
+        permissions: { metadata: "read", contents: "write" },
+      },
+    );
+    assert.equal(issued.status, 201);
+    const env = cleanEnvironment({
+      HOME: directory,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_SSL_CAINFO: caFile,
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.extraHeader",
+      GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${issued.body.token}`).toString("base64")}`,
+    });
+    await run("git", ["clone", fixture.cloneUrl, "many-refs"], { cwd: directory, env });
+    const cloned = await run("git", ["-C", join(directory, "many-refs"), "ls-remote", "origin"], {
+      cwd: directory,
+      env,
+    });
+    assert.equal(cloned.stdout.trim().split("\n").length, 42);
+    const endpoints = fixture.snapshot().endpoints;
+    assert.equal(endpoints["upload-pack:502"], undefined);
+    assert.ok(endpoints["upload-pack:200"] >= 1);
+  },
+);
+
+// These are the ordinary function-tool envelopes from Codex 0.164.0's
+// ExecCommandToolOutput::response_text (core/src/tools/context.rs), not the
+// separate JSON envelope used by code-mode tools. These adapter checks do not
+// execute native tools.
+function nativeToolOutput({ session, exit, output = "", tokenCount = 12 }) {
+  return [
+    "Chunk ID: abc123",
+    "Wall time: 0.2500 seconds",
+    ...(exit === undefined ? [] : ["Process exited with code " + exit]),
+    ...(session === undefined ? [] : ["Process running with session ID " + session]),
+    ...(tokenCount === null ? [] : ["Original token count: " + tokenCount]),
+    "Output:",
+    output,
+  ].join("\n");
+}
+
+async function controlledModel(t, cmd = "set -eu; printf 'private git task'") {
+  const directory = await temporaryDirectory(t, "skipper-model-");
+  const path = join(directory, "command.json");
+  const command = {
+    cmd,
+    id: "skipper-test",
+    expiresAt: Date.now() + 170_000,
+  };
+  await writeFile(path, JSON.stringify(command));
+  let respond = createSkipperPreparedComputeEvents(path);
+  const observations = [];
+  const input = [{ type: "message", role: "user", content: command.id }];
+  const next = () =>
+    respond({
+      model: "test",
+      request: JSON.stringify({ input }),
+      answerEvents: (_model, text) => text,
+      emit: (event) => observations.push(event),
+    });
+  const result = (call, output, delta = false) => {
+    if (delta) {
+      input.length = 0;
+    }
+    input.push(call, { type: "function_call_output", call_id: call.call_id, output });
+    return next();
+  };
+  const restart = () => {
+    respond = createSkipperPreparedComputeEvents(path);
+  };
+  return { path, command, observations, next, result, restart };
+}
+
+function toolCall(events) {
+  return events.find((event) => event.type === "response.output_item.done").item;
+}
+
+test("the installed Skipper model preserves the exit status of its Git command", async (t) => {
+  const cwd = await temporaryDirectory(t, "skipper-model-git-");
+  const env = cleanEnvironment({ HOME: cwd });
+  const commit =
+    "git -C work -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet --allow-empty -m fixture";
+  const command = commit + " && git -C work rev-parse HEAD";
+  async function execute() {
+    const model = await controlledModel(t, command);
+    const call = toolCall(model.next());
+    const { code, stdout, stderr } = await run("sh", ["-c", JSON.parse(call.arguments).cmd], {
+      cwd,
+      env,
+      allowFailure: true,
+    });
+    const answer = model.result(call, nativeToolOutput({ exit: code, output: stdout + stderr }));
+    return { code, stdout, answer };
+  }
+
+  const missing = await execute();
+  assert.equal(missing.code, 128);
+  assert.equal(missing.stdout, "");
+  assert.equal(missing.answer, "SKIPPER_INCOMPLETE_skipper-test");
+
+  await run("git", ["init", "--quiet", "work"], { cwd, env });
+  const success = await execute();
+  const head = await run("git", ["-C", "work", "rev-parse", "--verify", "HEAD^{commit}"], {
+    cwd,
+    env,
+  });
+  assert.equal(success.code, 0);
+  assert.match(head.stdout.trim(), /^[0-9a-f]{40}$/);
+  assert.equal(success.stdout, head.stdout + "SKIPPER_COMPUTE_DONE_skipper-test\n");
+  assert.equal(success.answer, "SKIPPER_COMPUTE_DONE_skipper-test");
+});
+
+test("the installed Skipper model waits for the same native session without replaying its command", async (t) => {
+  const model = await controlledModel(t);
+  const initial = toolCall(model.next());
+  assert.equal(initial.name, "exec_command");
+  assert.equal(JSON.parse(initial.arguments).yield_time_ms, 30_000);
+  // Held discovery can outlive exec_command's first yield. Poll the returned
+  // process, even if earlier output already contains part of the success marker.
+  const first = toolCall(
+    model.result(initial, nativeToolOutput({ session: 42, output: "SKIPPER_COMPUTE_" })),
+  );
+  assert.equal(first.name, "write_stdin");
+  assert.equal(first.call_id, model.command.id + "-wait-1");
+  assert.equal(model.observations.at(-1).exitCode, null);
+  assert.equal(model.observations.at(-1).status, "running");
+  assert.equal(model.observations.at(-1).sessionPresent, true);
+  assert.deepEqual(JSON.parse(first.arguments), {
+    session_id: 42,
+    chars: "",
+    yield_time_ms: 30_000,
+  });
+  // Reconstruct from replayed full history after callback state is lost.
+  model.restart();
+  // A process may have exited while its output still drains. The session ID
+  // remains authoritative until Codex reports that collection has finished.
+  const second = toolCall(
+    model.result(first, nativeToolOutput({ session: 42, exit: 0, output: "DONE_" })),
+  );
+  assert.equal(second.name, "write_stdin");
+  assert.equal(second.call_id, model.command.id + "-wait-2");
+  assert.equal(model.observations.at(-1).exitCode, 0);
+  assert.equal(model.observations.at(-1).sessionPresent, true);
+  // The same full history must not append either result again.
+  assert.equal(toolCall(model.next()).call_id, second.call_id);
+  assert.deepEqual(JSON.parse(second.arguments), {
+    session_id: 42,
+    chars: "",
+    yield_time_ms: 30_000,
+  });
+  assert.equal(
+    model.result(
+      second,
+      nativeToolOutput({ exit: 0, output: "skipper-test\n", tokenCount: null }),
+      true,
+    ),
+    "SKIPPER_COMPUTE_DONE_skipper-test",
+  );
+  assert.equal(
+    model.observations.filter((event) => event.event === "skipper-native-request").length,
+    1,
+  );
+  assert.equal(model.observations.at(-1).status, "completed");
+  assert.equal(model.observations.at(-1).exitCode, 0);
+});
+
+test("the installed Skipper model requires terminal success and keeps failure diagnostics content-free", async (t) => {
+  const completed = await controlledModel(t);
+  assert.equal(
+    completed.result(
+      toolCall(completed.next()),
+      nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test\n" }),
+    ),
+    "SKIPPER_COMPUTE_DONE_skipper-test",
+  );
+  for (const output of [
+    nativeToolOutput({
+      exit: 1,
+      output: "SKIPPER_COMPUTE_DONE_skipper-test\nprivate-error-canary",
+    }),
+    nativeToolOutput({
+      exit: 0,
+      output: "Process running with session ID 99\nprivate-error-canary",
+    }),
+    "private-error-canary",
+  ]) {
+    const model = await controlledModel(t);
+    const initial = toolCall(model.next());
+    assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
+    assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);
+    assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
+    assert.equal(
+      model.observations.some((event) => event.event === "skipper-native-poll"),
+      false,
+    );
+  }
+});
+
+test("the installed Skipper model rejects a changed native session and stops polling at its chat deadline", async (t) => {
+  const model = await controlledModel(t);
+  const initial = toolCall(model.next());
+  const poll = toolCall(model.result(initial, nativeToolOutput({ session: 42 })));
+  assert.equal(
+    model.result(poll, nativeToolOutput({ session: 43 })),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(model.observations.at(-1).status, "unrecognized");
+
+  // Replay the mixed-session history with a terminal result after losing callback state.
+  model.restart();
+  const beforeReplay = model.observations.length;
+  assert.equal(
+    model.result(
+      { ...poll, call_id: model.command.id + "-wait-2" },
+      nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" }),
+    ),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(model.observations.length, beforeReplay + 1);
+  assert.equal(model.observations[beforeReplay].modelFixtureSelectedTerminalSuccess, undefined);
+  assert.partialDeepStrictEqual(model.observations[beforeReplay], {
+    event: "skipper-native-result",
+    id: model.command.id,
+    status: "unrecognized",
+  });
+
+  const expired = await controlledModel(t);
+  const exec = toolCall(expired.next());
+  await writeFile(expired.path, JSON.stringify({ ...expired.command, expiresAt: Date.now() - 1 }));
+  assert.equal(
+    expired.result(exec, nativeToolOutput({ session: 42 })),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(expired.observations.at(-1).status, "deadline");
+  assert.equal(
+    expired.observations.some((event) => event.event === "skipper-native-poll"),
+    false,
+  );
+});
+
+test("the installed Skipper model rejects orphan or out-of-order native results", async (t) => {
+  for (const session of [42, undefined]) {
+    const orphan = await controlledModel(t);
+    const exec = toolCall(orphan.next());
+    const poll = toolCall(orphan.result(exec, nativeToolOutput({ session: 42 })));
+    orphan.restart();
+    assert.equal(
+      orphan.result(
+        poll,
+        nativeToolOutput({ session, exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" }),
+        true,
+      ),
+      "SKIPPER_INCOMPLETE_skipper-test",
+    );
+    assert.equal(orphan.observations.at(-1).status, "unrecognized");
+  }
+  const reordered = await controlledModel(t);
+  const exec = toolCall(reordered.next());
+  const poll = toolCall(reordered.result(exec, nativeToolOutput({ session: 42 })));
+  assert.equal(
+    reordered.result(
+      { ...poll, call_id: reordered.command.id + "-wait-2" },
+      nativeToolOutput({ session: 42 }),
+    ),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+});
+
+test("the installed Skipper model reserves the native poll minimum and rejects late success", async (t) => {
+  for (const remaining of [1_000, -1]) {
+    const model = await controlledModel(t);
+    const exec = toolCall(model.next());
+    await writeFile(
+      model.path,
+      JSON.stringify({ ...model.command, expiresAt: Date.now() + remaining }),
+    );
+    assert.equal(
+      model.result(exec, nativeToolOutput({ session: 42 })),
+      "SKIPPER_INCOMPLETE_skipper-test",
+    );
+    assert.equal(model.observations.at(-1).status, "deadline");
+  }
+  const late = await controlledModel(t);
+  const exec = toolCall(late.next());
+  const poll = toolCall(late.result(exec, nativeToolOutput({ session: 42 })));
+  await writeFile(late.path, JSON.stringify({ ...late.command, expiresAt: Date.now() - 1 }));
+  assert.equal(
+    late.result(poll, nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" })),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(late.observations.at(-1).status, "deadline");
+});

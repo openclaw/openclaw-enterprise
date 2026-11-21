@@ -1,0 +1,107 @@
+{
+  "headers": {
+    "x-openai-internal-codex-responses-lite": "true"
+  },
+  "request": {
+    "client_metadata": {
+      "root_turn_id": "fixture",
+      "session_id": "fixture",
+      "thread_id": "fixture",
+      "turn_id": "fixture",
+      "x-codex-installation-id": "fixture",
+      "x-codex-turn-metadata": "{\"installation_id\":\"fixture\",\"session_id\":\"fixture\",\"thread_id\":\"fixture\",\"agent_name\":\"fixture\",\"turn_id\":\"fixture\",\"window_id\":\"fixture\",\"window_number\":1,\"context_window_id\":\"fixture\",\"request_kind\":\"turn\",\"history_initialization\":\"fixture\",\"root_turn_id\":\"fixture\",\"thread_source\":\"fixture\",\"turn_trigger\":\"fixture\",\"sandbox\":\"seccomp\",\"sandbox_mode\":\"read-only\",\"auto_review_enabled\":true,\"node_repl_auto_review_required\":true,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1,\"analytics_enabled\":true,\"model\":\"fixture-model\",\"reasoning_effort\":\"low\"}",
+      "x-codex-window-id": "fixture"
+    },
+    "include": ["reasoning.encrypted_content"],
+    "input": [
+      {
+        "id": "msg_fixture_0",
+        "role": "developer",
+        "tools": [
+          {
+            "description": "Local tool namespace.",
+            "name": "fixture_namespace_0",
+            "tools": [
+              {
+                "description": "Local tool.",
+                "format": {
+                  "definition": "start: /[a-z]+/",
+                  "syntax": "lark",
+                  "type": "grammar"
+                },
+                "name": "fixture_tool_0_0",
+                "type": "custom"
+              }
+            ],
+            "type": "namespace"
+          },
+          {
+            "description": "Local tool namespace.",
+            "name": "fixture_namespace_1",
+            "tools": [
+              {
+                "description": "Local tool.",
+                "name": "fixture_tool_1_0",
+                "parameters": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "message": {
+                      "description": "Local tool parameter.",
+                      "encrypted": true,
+                      "type": "string"
+                    },
+                    "target": {
+                      "description": "Local tool parameter.",
+                      "type": "string"
+                    }
+                  },
+                  "required": ["target", "message"],
+                  "type": "object"
+                },
+                "strict": false,
+                "type": "function"
+              }
+            ],
+            "type": "namespace"
+          }
+        ],
+        "type": "additional_tools"
+      },
+      {
+        "content": [
+          {
+            "text": "Synthetic input for protocol compatibility.",
+            "type": "input_text"
+          }
+        ],
+        "id": "msg_fixture_1",
+        "role": "developer",
+        "type": "message"
+      },
+      {
+        "content": [
+          {
+            "text": "Synthetic input for protocol compatibility.",
+            "type": "input_text"
+          }
+        ],
+        "id": "msg_fixture_6",
+        "role": "user",
+        "type": "message"
+      }
+    ],
+    "model": "fixture-model",
+    "parallel_tool_calls": false,
+    "prompt_cache_key": "fixture-cache",
+    "reasoning": {
+      "context": "all_turns",
+      "effort": "low"
+    },
+    "store": false,
+    "stream": true,
+    "text": {
+      "verbosity": "low"
+    },
+    "tool_choice": "auto"
+  }
+}

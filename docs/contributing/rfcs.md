@@ -5,7 +5,7 @@ the team needs to understand. An RFC explains the problem, the proposed decision
 and its consequences so that people can give useful feedback while work proceeds.
 Start with the [RFC template](rfc-template.md) and adapt it to the change.
 [RFCs and implementation plans](specifications.md) owns file placement,
-numbering, status, and when to create a separate delivery plan.
+naming, status, and when to create a separate delivery plan.
 
 Ordinary bug fixes, small features, and polish do not need an RFC. A large diff
 alone does not make a change architectural. Reuse or update an existing RFC when
@@ -21,7 +21,7 @@ for review and merge.
    solves the problem, and what is out of scope. Show what existing owners or
    mechanisms can be reused before introducing another component.
 3. **Ask for human feedback early.** Open the RFC for review and link the code
-   or planned implementation. Code and RFC revisions can proceed in parallel;
+   or planned implementation. Code and RFC versions can proceed in parallel;
    waiting for an RFC response is not a prerequisite to starting implementation.
 4. **Revise both as you learn.** Incorporate material feedback and implementation
    discoveries. Keep decisions, diagrams, and interfaces consistent with the
@@ -55,6 +55,15 @@ Cover the details that matter to this decision:
 - **Security and failure:** state relevant authority, trust and credential
   boundaries, defaults, denial behavior, and consequential failure or recovery.
   Explain what survives an uncertain outcome and who can act next.
+- **Interface changes:** keep the template's [Interface changes](rfc-template.md#interface-changes)
+  section and its API, IAM, database entity, and Driver contract subsections.
+  State “No changes” for each unchanged category.
+- **Simplifications:** use the template's [Simplifications](rfc-template.md#simplifications)
+  section to assess a radically simpler proposal and any simplifications to
+  existing OpenClaw Enterprise infrastructure.
+- **Acceptance criteria:** use the template's [Acceptance Criteria](rfc-template.md#acceptance-criteria)
+  section to define observable outcomes and end-to-end verification before
+  implementation begins.
 - **Delivery and evidence:** identify the smallest connected result, genuine
   dependencies, and checks for success and material failure. Distinguish
   source review, integrated behavior, installed runtime, and live-service proof

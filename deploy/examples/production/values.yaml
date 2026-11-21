@@ -7,25 +7,19 @@ images:
 
 auth:
   baseUrl: https://console.oce.example.internal
-  # GitHub sign-in is a later helm upgrade, never the first install; it requires
-  # agentNativeAdmin.enabled: false. See the "Enable GitHub browser sign-in" guide.
-  # recoveryUserId: <recovery administrator user ID>
-  # github:
-  #   enabled: true
-  #   secretName: occ-github-login
-  #   egressCidrs: []  # empty allows HTTPS to any non-link-local address; or api.github.com/meta ranges
+  # Enable OIDC in a later upgrade; see docs/guides/deploy/oidc-sign-in.md.
+  # Set recoveryUserId to the existing recovery administrator's user ID.
 
 # Route wildcard DNS/TLS to OCC; the shared parent must contain only trusted OCE ingress hosts.
 # See docs/guides/deploy/native-admin.md before installing.
 agentNativeAdmin:
   enabled: true
   domain: agents.oce.example.internal
-  sharedCookieDomain: oce.example.internal
 
 bootstrap:
   adminEmail: admin@example.invalid
-  password:
-    claimName: occ-bootstrap-admin-password
+  credentials:
+    secretName: occ-bootstrap-credentials
 
 database:
   caSecretName: occ-rds-ca
@@ -36,12 +30,10 @@ database:
     - 10.45.0.13/32
 
 api:
-  # For Slack directory lookup, set the approved proxy independently of the
-  # gateway proxy in installation.yaml, or enable slackProxy below.
-  # See docs/guides/integrations/slack.md.
-  # channelDirectoryProxyUrl: http://198.51.100.25:3128
   # Optional; see model discovery in docs/reference/console/create-and-deploy.md.
   modelDiscoveryCidrs: []
+  # Optional MCP plugin discovery HTTPS hosts; see docs/guides/topics/plugins-configure.md.
+  pluginDiscoveryCidrs: []
   # Optional: trust client-address headers from ingress-nginx, an AWS ALB, or a
   # generic proxy. See docs/reference/settings/production.md.
   # trustedProxy:
@@ -61,7 +53,7 @@ controlPlane:
   nodeSelector:
     oce-role: control
 
-# Required by dedicated Harness storage; install Envoy Gateway and cert-manager,
+# Enabled by default and required by dedicated Harness storage. Install Envoy Gateway and cert-manager,
 # and create this service-key Secret before deployment. See workspace-routing.md.
 gatewayRouting:
   enabled: true
@@ -70,23 +62,26 @@ gatewayRouting:
 
 # Opt in only after provisioning Namespace IDs and the referenced immutable registry,
 # protected service configuration, App key, TLS certificate and separate public CA.
-# The matching Installation must select repo and its Compute peer.
+# The matching Installation selects repository.nativeSender, preparedGitHub and its Compute peer.
 repositoryCredentials:
   enabled: false
   # image: registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
   # backendId: github-primary
   # registryConfigMapName: occ-repository-registry-v1
   # serviceConfigSecretName: occ-repository-service-config
+  # authority: prepared-git
+  # preparedCustodySecretName: occ-repository-custody
   # appKeySecretName: occ-repository-app-key
   # tlsSecretName: occ-repository-tls
   # publicCaSecretName: occ-repository-public-ca
   # serviceName: git
   # upstreamCidrs: [198.51.100.0/24]
 
-# Optional chart-managed CONNECT proxy for Slack directory lookup and future
-# gateway channel traffic. Public HTTPS egress excludes private/reserved ranges.
-slackProxy:
+# Optional dedicated Envoy egress fleet. Set matching runtime.channelEgress
+# fields in installation.yaml and supply the actual Pod, Service and node CIDRs.
+channelEgress:
   enabled: false
+  excludedCidrs: []
 
 # Metrics listeners are enabled privately. Set both selectors to admit your scraper.
 metrics:

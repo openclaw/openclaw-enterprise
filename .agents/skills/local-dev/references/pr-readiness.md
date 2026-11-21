@@ -15,6 +15,8 @@ owns author, review, and merge permissions.
       required real integration proof for new platform functionality. Record
       commands, tested revision, failures, skips, and limitations. For prose-only
       changes, check formatting, links, and documentation; do not run runtime tests.
+- [ ] **Integration registration:** Follow [Add integration tests](../SKILL.md#add-integration-tests)
+      for QA matrix coverage and automatic PR selection.
 - [ ] **Image versions:** If a default image version, digest, source pin, bundled
       runtime version, image recipe, or version gate changes, complete
       [image version verification](./image-version-verification.md) before merge.

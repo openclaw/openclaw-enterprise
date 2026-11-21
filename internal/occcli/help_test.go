@@ -54,6 +54,36 @@ func TestHelpAndCompletionIgnoreInvalidConnectionOptions(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "OCC timeout must be a positive integer") {
 		t.Fatalf("installation get error = %v, want the timeout error", err)
 	}
+	// Zero is refused too, before the client is built.
+	t.Setenv("OCC_TIMEOUT_SECONDS", "0")
+	_, _, err = runHelp(t, "installation", "get", "--url", "http://127.0.0.1:9", "--service-key-file", "unused")
+	if err == nil || err.Error() != "OCC timeout must be a positive integer number of seconds" {
+		t.Fatalf("installation get with OCC_TIMEOUT_SECONDS=0 error = %v, want the timeout error", err)
+	}
+}
+
+func TestAgentPolicyGroupRejectsUnknownCommands(t *testing.T) {
+	t.Setenv("OCC_TIMEOUT_SECONDS", "soon")
+	for _, args := range [][]string{{"agent", "policy", "nosuch"}, {"agent", "policy", "gett"}} {
+		out, errOut, err := runHelp(t, args...)
+		want := `unknown command "` + args[2] + `" for "occ agent policy"`
+		// "gett" also gets a suggestion; "nosuch" keeps the exact text.
+		if err == nil || !strings.HasPrefix(err.Error(), want) || (args[2] == "nosuch" && err.Error() != want) {
+			t.Fatalf("occ %v error = %v, want %q", args, err, want)
+		}
+		if out != "" || errOut != "" {
+			t.Fatalf("occ %v stdout = %q, stderr = %q, want nothing", args, out, errOut)
+		}
+	}
+	// The group only prints help, so an invalid timeout must not block it.
+	out, _, err := runHelp(t, "agent", "policy")
+	if err != nil || !strings.Contains(out, "Available Commands:") {
+		t.Fatalf("occ agent policy = %q, %v; want help and no error", out, err)
+	}
+	out, _, err = runHelp(t, "agent", "policy", "get", "--help")
+	if err != nil || !strings.Contains(out, "occ agent policy get AGENT_ID") {
+		t.Fatalf("occ agent policy get --help = %q, %v", out, err)
+	}
 }
 
 func TestAgentLogsHelpNamesTheOutputFormatsItAccepts(t *testing.T) {
@@ -68,5 +98,26 @@ func TestAgentLogsHelpNamesTheOutputFormatsItAccepts(t *testing.T) {
 	out, _, err = runHelp(t, "agent", "list", "--help")
 	if err != nil || !strings.Contains(out, `Output format: table, json, or yaml (default "table")`) {
 		t.Fatalf("agent list help = %q, %v", out, err)
+	}
+}
+
+// An update may name gatewayManagedMode instead of configurationId, and changing it needs a grant
+// the other fields do not (finding 2691).
+func TestAgentUpdateHelpNamesGatewayManagedModeAndItsGrant(t *testing.T) {
+	out, _, err := runHelp(t, "agent", "update", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := strings.Join(strings.Fields(out), " ")
+	for _, want := range []string{
+		"Each update names configurationId or gatewayManagedMode (or both)",
+		"Changing gatewayManagedMode needs Installation administer.",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("agent update help does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(flat, "required in every update") {
+		t.Fatalf("agent update help still requires configurationId in every update:\n%s", out)
 	}
 }

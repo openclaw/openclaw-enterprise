@@ -1,0 +1,1145 @@
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import test from "node:test";
+import {
+  InstalledDriver,
+  OpenClawController,
+  ResourceStateConflictError,
+} from "../../packages/occ/src/index.ts";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
+import { registerSandboxPolicyWorkerRecovery } from "./postgres-agent-sandbox-policy-worker-recovery-cases.ts";
+
+async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
+  const grant = {
+    id: "python-demo",
+    binary: "/usr/bin/python3.11",
+    host: "example.org",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const providerRefusalGrant = {
+    ...grant,
+    id: "wide-ports",
+    host: "ports.example.org",
+    ports: [{ from: 1, to: 2048 }],
+  };
+  // The real Driver validates and freezes policy; this case proves HTTP/IAM/PostgreSQL admission,
+  // while the OpenShell runtime lane proves enforcement and loaded-version application.
+  const sandboxConfiguration = {
+    integrationMode: "legacy",
+    gateway: {},
+    kubernetes: {
+      serviceAccount: { mode: "gatewayConfigured" },
+      sandboxDataMount: {
+        subPath: "workspace",
+        mountPath: "/sandbox/enterprise",
+        readOnly: false,
+      },
+    },
+    policy: {
+      process: { runAsUser: "1000", runAsGroup: "1000" },
+      networkPolicies: [
+        {
+          name: "python-default",
+          binaries: [{ path: grant.binary }],
+          endpoints: [{ host: "example.com", ports: [443], tls: "skip" }],
+        },
+      ],
+    },
+  };
+  const sandboxDriver = new OpenShellSandboxDriver(sandboxConfiguration, {
+    id: "policy-openshell",
+    implementation: "openshell",
+    backend: {
+      id: "openshell",
+      drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
+      client: new OpenShellGateway(
+        { serviceName: "openshell-gateway" },
+        { gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()) },
+      ),
+    },
+  });
+  let definition = OpenShellSandboxDriver;
+  if (laxDriver) {
+    // A package Driver may declare a looser contribution and skip its own recheck. OCC still
+    // owns the stored grant shape and the ceiling, so its shared rules must hold regardless.
+    sandboxDriver.admitNetworkPolicy = (additions, version, defaults) => ({
+      driverId: sandboxDriver.id,
+      implementation: sandboxDriver.implementation,
+      version,
+      defaults: defaults ?? {},
+      additions,
+    });
+    definition = {
+      configurationSchema: OpenShellSandboxDriver.configurationSchema,
+      validateConfiguration: (input) => OpenShellSandboxDriver.validateConfiguration(input),
+      configurationContributions: [
+        {
+          scope: "agent",
+          key: "sandbox-network-policy",
+          configurationSchema: { type: "object", properties: { additions: { type: "array" } } },
+          validateConfiguration: () => [],
+        },
+      ],
+    };
+  }
+  const fixture = await createPostgresAgentApp(t, {
+    label: "sandbox-policy",
+    authSecret: "sandbox-policy-postgres-session-secret-32-characters",
+    sandboxDriver,
+    controllerOptions: {
+      sandboxNetworkPolicyCeiling: [grant, providerRefusalGrant],
+      recordOperations,
+      driverConfigurations: [
+        {
+          capability: "sandbox",
+          driverId: sandboxDriver.id,
+          implementation: sandboxDriver.implementation,
+          definition,
+        },
+      ],
+    },
+  });
+  return { ...fixture, grant, providerRefusalGrant, sandboxDriver, sandboxConfiguration };
+}
+
+test(
+  "policy admission cannot acquire grants from a Driver snapshot",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t);
+    const {
+      controller,
+      state,
+      pool,
+      inject,
+      deployAgent,
+      grant,
+      sandboxDriver,
+      sandboxConfiguration,
+    } = fixture;
+    const second = { ...grant, id: "second", host: "second.example.org" };
+    const cases = [
+      { name: "empty", ceiling: [], input: [], allowed: true },
+      { name: "within ceiling", ceiling: [grant], input: [grant], allowed: true },
+      { name: "explicit over ceiling", ceiling: [], input: [grant], code: "OUTSIDE_CEILING" },
+      { name: "Driver adds over ceiling", ceiling: [], input: [], replacement: [grant] },
+      { name: "Driver adds within ceiling", ceiling: [grant], input: [], replacement: [grant] },
+      { name: "Driver removes grants", ceiling: [grant], input: [grant], replacement: [] },
+      {
+        name: "Driver reorders grants",
+        ceiling: [grant, second],
+        input: [grant, second],
+        replacement: [second, grant],
+      },
+      ...[
+        "driverId",
+        "implementation",
+        "version",
+        "null defaults",
+        "array defaults",
+        "missing defaults",
+        "mutate input",
+      ].map((fault) => ({ name: `Driver ${fault}`, ceiling: [grant], input: [grant], fault })),
+      {
+        name: "Driver later mutation",
+        ceiling: [grant],
+        input: [grant],
+        fault: "later mutation",
+        allowed: true,
+      },
+      {
+        name: "Driver accessor snapshot",
+        ceiling: [grant],
+        input: [grant],
+        fault: "accessor",
+        allowed: true,
+      },
+      { name: "protected empty", ceiling: [], input: [], protected: true, allowed: true },
+      {
+        name: "protected Driver adds",
+        ceiling: [],
+        input: [],
+        replacement: [grant],
+        protected: true,
+      },
+      { name: "protected caller adds", ceiling: [grant], input: [grant], protected: true },
+    ];
+    for (const scenario of cases) {
+      await t.test(scenario.name, async () => {
+        // Deploy with the authentic Driver before introducing the faulty admission response.
+        const { namespace, agent } = await deployAgent(`Integrity ${scenario.name}`);
+        const restarted = new OpenClawController(controller.installation, {
+          namespaceLifecycleBindings: [
+            sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
+          ],
+          state,
+          recordOperations: true,
+          sandboxNetworkPolicyCeiling: scenario.ceiling,
+          driverConfigurations: [
+            {
+              capability: "sandbox",
+              driverId: sandboxDriver.id,
+              implementation: sandboxDriver.implementation,
+              definition: OpenShellSandboxDriver,
+            },
+          ],
+        });
+        for (const capability of ["iam", "configuration", "compute", "secret"]) {
+          const driver = controller.selectedDriver(capability);
+          restarted.registerDriver(driver);
+          restarted.selectDriver(capability, driver.id);
+        }
+        if (scenario.protected) {
+          const proxyConfiguration = { middlewareName: "integrity", authorityScope: "execution" };
+          const proxy = new OpenShellLegacyEgressProxyDriver(proxyConfiguration, {
+            id: sandboxDriver.id,
+            sandbox: sandboxDriver,
+            backend: {
+              id: "openshell",
+              drivers: { sandbox: sandboxDriver.id, credential_proxy: sandboxDriver.id },
+              client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
+            },
+          });
+          restarted.installDriver(
+            new InstalledDriver(
+              {
+                id: sandboxDriver.id,
+                implementation: "openshell",
+                configuration: { sandbox: sandboxConfiguration, proxy: proxyConfiguration },
+              },
+              {
+                capabilities: { sandbox: sandboxDriver, credential_proxy: proxy },
+                namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+                  controller.selectedDriver("compute"),
+                  sandboxDriver,
+                ).hooks,
+              },
+            ),
+            ["sandbox", "credential_proxy"],
+          );
+        } else {
+          restarted.registerDriver(sandboxDriver);
+          restarted.selectDriver("sandbox", sandboxDriver.id);
+        }
+        const app = fixture.createApp(restarted);
+        const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+        const enabled = await inject("PATCH", `${path}/editing`, { enabled: true }, app);
+        assert.equal(enabled.statusCode, 200, enabled.body);
+        const policy = () =>
+          state.read((view) => view.sandboxPolicies.find(namespace.id, agent.id));
+        const revisions = () =>
+          state.read((view) => view.revisions.listRevisions(namespace.id, agent.id));
+        const jobs = async () =>
+          (
+            await pool.query(
+              "SELECT * FROM occ.controller_work WHERE namespace_id=$1 ORDER BY idempotency_key",
+              [namespace.id],
+            )
+          ).rows;
+        const before = await policy();
+        const beforeRevisions = await revisions();
+        const beforeJobs = await jobs();
+        const admit = sandboxDriver.admitNetworkPolicy;
+        let admissions = 0;
+        let snapshotReads = 0;
+        sandboxDriver.admitNetworkPolicy = function (...args) {
+          admissions++;
+          if (scenario.fault === "mutate input") {
+            args[0][0].host = "unapproved.example.org";
+          }
+          const snapshot = structuredClone(admit.apply(this, args));
+          if (scenario.fault === "driverId") {
+            snapshot.driverId = "wrong-driver";
+          }
+          if (scenario.fault === "implementation") {
+            snapshot.implementation = "wrong-implementation";
+          }
+          if (scenario.fault === "version") {
+            snapshot.version++;
+          }
+          if (scenario.fault === "null defaults") {
+            snapshot.defaults = null;
+          }
+          if (scenario.fault === "array defaults") {
+            snapshot.defaults = [];
+          }
+          if (scenario.fault === "missing defaults") {
+            delete snapshot.defaults;
+          }
+          if (scenario.fault === "later mutation") {
+            queueMicrotask(() => {
+              snapshot.additions[0].host = "unapproved.example.org";
+              snapshot.additions[0].ports[0].to = 444;
+            });
+          }
+          if (scenario.fault === "accessor") {
+            let reads = 0;
+            Object.defineProperty(snapshot, "additions", {
+              enumerable: true,
+              get() {
+                snapshotReads++;
+                return ++reads === 1 ? scenario.input : [second];
+              },
+            });
+          }
+          // Keep authentic admission, then perturb only the selected snapshot field.
+          return scenario.replacement === undefined
+            ? snapshot
+            : { ...snapshot, additions: scenario.replacement };
+        };
+        try {
+          if (scenario.name === "within ceiling") {
+            let getterReads = 0;
+            const raw = {
+              ...grant,
+              get host() {
+                getterReads++;
+                return grant.host;
+              },
+            };
+            // HTTP serialization would consume the getter before OCC can reject it.
+            await assert.rejects(
+              restarted.updateAgentSandboxPolicy(
+                fixture.principal.id,
+                namespace.id,
+                agent.id,
+                "networking",
+                before.version,
+                [raw],
+              ),
+              (error) => {
+                assert.ok(error instanceof ResourceStateConflictError);
+                assert.ok(error.details?.some(({ code }) => code === "INVALID_TYPE"));
+                return true;
+              },
+            );
+            assert.equal(getterReads, 0);
+            assert.equal(admissions, 0);
+            assert.deepEqual(await policy(), before);
+            assert.deepEqual(await revisions(), beforeRevisions);
+            assert.deepEqual(await jobs(), beforeJobs);
+          }
+          const body = { expectedVersion: before.version, additions: scenario.input };
+          const preview = await inject("POST", `${path}/validate`, body, app);
+          assert.deepEqual(await policy(), before, "preview must never write policy");
+          // Exercise save as well before asserting either refusal: old source persisted
+          // Driver-added grants even where protected preview had already refused them.
+          const save = await inject("PUT", path, body, app);
+          if (scenario.allowed) {
+            assert.equal(preview.statusCode, 200, preview.body);
+            assert.equal(preview.json().data.success, true, preview.body);
+            assert.deepEqual(preview.json().data.data.additions, scenario.input);
+            assert.equal(save.statusCode, 200, save.body);
+            assert.deepEqual((await policy()).additions, scenario.input);
+            assert.equal((await policy()).version, before.version + 1);
+          } else {
+            assert.deepEqual(await policy(), before, "refusal must not persist any policy change");
+            assert.equal(save.statusCode, 409, save.body);
+            if (scenario.protected && scenario.input.length > 0) {
+              assert.equal(preview.statusCode, 409, preview.body);
+            } else {
+              assert.equal(preview.statusCode, 200, preview.body);
+              assert.equal(preview.json().data.success, false, preview.body);
+              assert.ok(
+                preview
+                  .json()
+                  .data.error.details.some(
+                    ({ code }) => code === (scenario.code ?? "INVALID_VALUE"),
+                  ),
+              );
+            }
+            if (scenario.code === "OUTSIDE_CEILING") {
+              assert.equal(admissions, 0, "OCC must refuse the caller before Driver admission");
+            } else if (scenario.replacement !== undefined || scenario.fault !== undefined) {
+              assert.equal(
+                admissions,
+                2,
+                "both preview and save must inspect the faulty Driver result",
+              );
+            }
+          }
+          if (scenario.fault === "accessor") {
+            assert.equal(snapshotReads, 2);
+          }
+          if (scenario.fault !== undefined) {
+            assert.equal(admissions, 2);
+          }
+          assert.deepEqual(await revisions(), beforeRevisions);
+          assert.deepEqual(await jobs(), beforeJobs);
+        } finally {
+          sandboxDriver.admitNetworkPolicy = admit;
+        }
+      });
+    }
+  },
+);
+
+test(
+  "deployment cannot acquire grants from an empty Driver request",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t);
+    const { controller, state, pool, inject, deployAgent, grant, sandboxDriver } = fixture;
+    for (const scenario of [
+      { name: "saved empty", allowed: true },
+      { name: "simulated missing-row read", absent: true, allowed: true },
+      { name: "Driver adds to saved empty", injectGrant: true },
+      { name: "Driver adds under simulated missing-row read", absent: true, injectGrant: true },
+      { name: "Driver returns wrong version", wrongVersion: true },
+      { name: "Driver throws private error", producerError: "error" },
+      { name: "Driver throws null", producerError: "null" },
+      {
+        name: "registered external Sandbox without policy support",
+        noAdmission: true,
+        allowed: true,
+      },
+    ]) {
+      await t.test(scenario.name, async () => {
+        const { namespace, agent } = await deployAgent(`Deployment integrity ${scenario.name}`);
+        let missingRowReads = 0;
+        // Agent creation persists a policy row; occ_app intentionally cannot DELETE it.
+        // Simulate only this exact Agent's legacy missing-row observation. All revision,
+        // operation and other state calls still use the real PostgreSQL transaction.
+        const withMissingRowRead = (view) =>
+          Object.create(view, {
+            sandboxPolicies: {
+              value: Object.create(view.sandboxPolicies, {
+                find: {
+                  value: async (namespaceId, agentId) => {
+                    const actual = await view.sandboxPolicies.find(namespaceId, agentId);
+                    if (namespaceId === namespace.id && agentId === agent.id) {
+                      assert.ok(actual, "the real PostgreSQL policy row must remain present");
+                      assert.deepEqual(actual.additions, []);
+                      missingRowReads++;
+                      return undefined;
+                    }
+                    return actual;
+                  },
+                },
+              }),
+            },
+          });
+        const observedState = scenario.absent
+          ? {
+              read: (work) => state.read((view) => work(withMissingRowRead(view))),
+              transact: (work) => state.transact((unit) => work(withMissingRowRead(unit))),
+            }
+          : state;
+        const restarted = new OpenClawController(controller.installation, {
+          namespaceLifecycleBindings: [
+            sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
+          ],
+          state: observedState,
+          recordOperations: true,
+          sandboxNetworkPolicyCeiling: [],
+          driverConfigurations: [
+            {
+              capability: "sandbox",
+              driverId: sandboxDriver.id,
+              implementation: sandboxDriver.implementation,
+              definition: OpenShellSandboxDriver,
+            },
+          ],
+        });
+        const admit = sandboxDriver.admitNetworkPolicy;
+        let admissions = 0;
+        let expectedDefaults;
+        // Keep the authentic selected Driver's identity/capability contract. Only alter
+        // returned additions for faulty-admission cases, before the HTTP request.
+        sandboxDriver.admitNetworkPolicy = function (...args) {
+          admissions++;
+          assert.deepEqual(args[0], []);
+          assert.equal(args[1], 1, "empty policy and simulated missing-row fallback use version 1");
+          if (scenario.producerError === "error") {
+            throw new Error("PRIVATE_PRODUCER_DETAIL");
+          }
+          if (scenario.producerError === "null") {
+            throw null;
+          }
+          const snapshot = admit.apply(this, args);
+          expectedDefaults = snapshot.defaults;
+          if (scenario.wrongVersion) {
+            return { ...snapshot, version: snapshot.version + 1 };
+          }
+          return scenario.injectGrant ? { ...snapshot, additions: [grant] } : snapshot;
+        };
+        try {
+          for (const capability of ["iam", "configuration", "compute", "secret"]) {
+            const driver = controller.selectedDriver(capability);
+            restarted.registerDriver(driver);
+            restarted.selectDriver(capability, driver.id);
+          }
+          if (scenario.noAdmission) {
+            // Use the existing external package's genuine Sandbox capability, with its
+            // real factory validation. Neither optional policy member is implemented.
+            const external =
+              await import("../fixtures/driver-packages/protected-execution-driver/index.ts");
+            const registration = external.createDriver({
+              id: "deployment-no-policy",
+              implementation: "deployment-no-policy-fixture",
+              configuration: {
+                endpoint: "https://127.0.0.1:443",
+                ca: "unused-admission-fixture-ca",
+              },
+            });
+            t.after(() => registration.close?.());
+            const driver = registration.capabilities.sandbox;
+            assert.ok(driver);
+            assert.equal(driver.networkPolicy, undefined);
+            assert.equal(driver.admitNetworkPolicy, undefined);
+            restarted.registerDriver(driver);
+            restarted.selectDriver("sandbox", driver.id);
+            assert.equal(restarted.selectedDriver("sandbox"), driver);
+          } else {
+            restarted.registerDriver(sandboxDriver);
+            restarted.selectDriver("sandbox", sandboxDriver.id);
+            assert.equal(restarted.selectedDriver("sandbox"), sandboxDriver);
+          }
+          const app = fixture.createApp(restarted);
+          const policy = () =>
+            state.read((view) => view.sandboxPolicies.find(namespace.id, agent.id));
+          const revisions = () =>
+            state.read((view) => view.revisions.listRevisions(namespace.id, agent.id));
+          const jobs = async () =>
+            (
+              await pool.query(
+                "SELECT * FROM occ.controller_work WHERE namespace_id=$1 ORDER BY idempotency_key",
+                [namespace.id],
+              )
+            ).rows;
+          const beforePolicy = await policy();
+          assert.ok(
+            beforePolicy,
+            "actual PostgreSQL row exists, including simulated missing-row cases",
+          );
+          assert.deepEqual(beforePolicy.additions, []);
+          const beforeRevisions = await revisions();
+          const beforeJobs = await jobs();
+          const response = await inject(
+            "POST",
+            `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+            undefined,
+            app,
+          );
+          assert.equal(response.body.includes("PRIVATE_PRODUCER_DETAIL"), false);
+          const afterRevisions = await revisions();
+          const afterJobs = await jobs();
+          assert.deepEqual(
+            await policy(),
+            beforePolicy,
+            "deployment must not rewrite the saved policy",
+          );
+          if (scenario.allowed) {
+            assert.equal(response.statusCode, 202, response.body);
+            const added = afterRevisions.filter(
+              ({ id }) => !beforeRevisions.some((row) => row.id === id),
+            );
+            assert.equal(added.length, 1, "the HTTP request must persist a real revision");
+            assert.equal(added[0].id, response.json().data.id);
+            assert.equal(added[0].executionAdmission.mode, "unprotected");
+            if (scenario.noAdmission) {
+              assert.equal(added[0].sandboxDriverId, "deployment-no-policy");
+              assert.equal(added[0].sandboxPolicy, undefined);
+            } else {
+              assert.deepEqual(added[0].sandboxPolicy.additions, []);
+              assert.deepEqual(added[0].sandboxPolicy.defaults, expectedDefaults);
+            }
+            assert.ok(
+              afterJobs.length > beforeJobs.length,
+              "successful deployment must queue reconciliation",
+            );
+          } else {
+            assert.deepEqual(
+              afterRevisions,
+              beforeRevisions,
+              "refusal must not write any revision",
+            );
+            assert.deepEqual(afterJobs, beforeJobs, "refusal must not queue work");
+            assert.equal(response.statusCode, 409, response.body);
+            assert.equal(
+              response.json().error.message,
+              "The Sandbox Driver cannot enforce the complete requested policy.",
+            );
+            assert.deepEqual(response.json().error.details, [
+              {
+                path: "",
+                code: "INVALID_VALUE",
+                message: "The selected Driver could not validate the configuration.",
+              },
+            ]);
+            assert.ok(
+              !response.body.includes(grant.host),
+              "diagnostics must not echo Driver grants",
+            );
+          }
+          assert.equal(admissions, scenario.noAdmission ? 0 : 1);
+          assert.equal(missingRowReads > 0, scenario.absent === true);
+        } finally {
+          sandboxDriver.admitNetworkPolicy = admit;
+        }
+      });
+    }
+  },
+);
+
+test(
+  "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
+  requiresPostgres,
+  async (t) => {
+    const { pool, state, inject, deployAgent, grant, providerRefusalGrant } =
+      await createPolicyApp(t);
+    const { namespace, agent, revision } = await deployAgent("Sandbox policy");
+    const base = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+    const read = await inject("GET", base);
+    assert.equal(read.statusCode, 200, read.body);
+    const original = read.json().data.policy;
+    // A facet is mandatory; unsupported facets cannot read or mutate the network policy.
+    assert.equal((await inject("GET", base.replace("/networking", ""))).statusCode, 404);
+    for (const facet of ["filesystem", "process"]) {
+      const unsupported = base.replace("/networking", `/${facet}`);
+      assert.equal((await inject("GET", unsupported)).statusCode, 409);
+      assert.equal(
+        (await inject("PUT", unsupported, { expectedVersion: 1, additions: [grant] })).statusCode,
+        409,
+      );
+    }
+
+    assert.equal(read.json().data.editingEnabled, false);
+    assert.deepEqual(original.additions, []);
+    assert.deepEqual(revision.sandboxPolicy.additions, []);
+    assert.deepEqual(read.json().data.defaults, revision.sandboxPolicy.defaults);
+
+    // The general Agent endpoint cannot bypass the separately administered editing flag.
+    const bypass = await inject("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
+      sandboxPolicyEditing: true,
+    });
+    assert.equal(bypass.statusCode, 400, bypass.body);
+
+    const disabled = await inject("PUT", base, { expectedVersion: 1, additions: [grant] });
+    assert.equal(disabled.statusCode, 409, disabled.body);
+    const enabled = await inject("PATCH", `${base}/editing`, { enabled: true });
+    assert.equal(enabled.statusCode, 200, enabled.body);
+    // Discovery returns owner URLs and schema only, with exact-resource authorization.
+    const discoveryPath = `/namespaces/${namespace.id}/agents/${agent.id}/driver-configurations`;
+    const discovery = await inject("GET", discoveryPath);
+    assert.equal(discovery.statusCode, 200, discovery.body);
+    const descriptor = discovery.json().data.configurations[0];
+    assert.equal(descriptor.driverId, "policy-openshell");
+    assert.equal(descriptor.key, "sandbox-network-policy");
+    assert.equal(descriptor.actions.validate.href, `${base}/validate`);
+    assert.equal(descriptor.actions.save.available, true);
+    assert.deepEqual((await inject("GET", base)).json().data.configuration, descriptor);
+    const installationDiscovery = await inject("GET", "/installation/driver-configurations");
+    assert.equal(installationDiscovery.statusCode, 200, installationDiscovery.body);
+    assert.equal(installationDiscovery.json().data.configurations[0].key, "startup");
+    assert.deepEqual(installationDiscovery.json().data.configurations[0].actions, {});
+    assert.equal(
+      Object.hasOwn(installationDiscovery.json().data.configurations[0], "configuration"),
+      false,
+    );
+    const beforePreview = await pool.query(
+      "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+      [namespace.id],
+    );
+    const invalid = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [{ ...grant, ports: [{ from: 70000, to: "bad" }], host: "bad..host" }],
+    });
+    assert.equal(invalid.statusCode, 200, invalid.body);
+    assert.equal(invalid.json().data.success, false);
+    assert.ok(
+      invalid.json().data.error.details.some(({ path }) => path === "/additions/0/ports/0/from"),
+    );
+    assert.ok(
+      invalid.json().data.error.details.some(({ path }) => path === "/additions/0/ports/0/to"),
+    );
+    const invalidEnvelope = await inject("POST", `${base}/validate`, {
+      expectedVersion: "wrong",
+      additions: [],
+    });
+    assert.equal(invalidEnvelope.statusCode, 400, invalidEnvelope.body);
+    const providerRefusal = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [providerRefusalGrant],
+    });
+    assert.equal(providerRefusal.statusCode, 200, providerRefusal.body);
+    assert.equal(providerRefusal.json().data.success, false);
+    assert.equal(providerRefusal.json().data.error.details[0].path, "/additions");
+    const preview = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [grant],
+    });
+    assert.equal(preview.statusCode, 200, preview.body);
+    assert.deepEqual(preview.json().data, { success: true, data: { additions: [grant] } });
+    const range = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [{ ...grant, ports: [{ from: 444, to: 443 }] }],
+    });
+    assert.equal(range.json().data.error.details[0].code, "INVALID_RANGE");
+    assert.equal((await inject("GET", base)).json().data.policy.version, 1);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+          [namespace.id],
+        )
+      ).rows,
+      beforePreview.rows,
+    );
+
+    const broad = await inject("PUT", base, {
+      expectedVersion: 1,
+      additions: [{ ...grant, host: "*.example.org" }],
+    });
+    assert.equal(broad.statusCode, 409, broad.body);
+    const wrongBinary = await inject("PUT", base, {
+      expectedVersion: 1,
+      additions: [{ ...grant, binary: "/usr/bin/python3" }],
+    });
+    assert.equal(wrongBinary.statusCode, 409, wrongBinary.body);
+    const wrongPort = await inject("PUT", base, {
+      expectedVersion: 1,
+      additions: [{ ...grant, ports: [{ from: 443, to: 444 }] }],
+    });
+    assert.equal(wrongPort.statusCode, 409, wrongPort.body);
+
+    const changed = await inject("PUT", base, { expectedVersion: 1, additions: [grant] });
+    assert.equal(changed.statusCode, 200, changed.body);
+    assert.equal(changed.json().data.version, 2);
+    assert.deepEqual(changed.json().data.additions, [grant]);
+    const stale = await inject("PUT", base, { expectedVersion: 1, additions: [] });
+    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(
+      (await inject("POST", `${base}/validate`, { expectedVersion: 1, additions: [grant] }))
+        .statusCode,
+      409,
+    );
+    assert.deepEqual(
+      (await state.read((view) => view.revisions.findRevision(namespace.id, agent.id, revision.id)))
+        .sandboxPolicy.additions,
+      [],
+      "saving a policy must preserve immutable deployment evidence",
+    );
+
+    // Disabling edits preserves approved grants; explicit redeployment consumes the desired policy.
+    const off = await inject("PATCH", `${base}/editing`, { enabled: false });
+    assert.equal(off.statusCode, 200, off.body);
+    assert.deepEqual((await inject("GET", base)).json().data.policy.additions, [grant]);
+    assert.equal(
+      (await inject("PUT", base, { expectedVersion: 2, additions: [] })).statusCode,
+      409,
+    );
+    const deployed = await inject("POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`);
+    assert.equal(deployed.statusCode, 202, deployed.body);
+    const saved = await state.read((view) =>
+      view.revisions.findRevision(namespace.id, agent.id, deployed.json().data.id),
+    );
+    assert.deepEqual(saved.sandboxPolicy.additions, [grant]);
+    assert.equal(saved.sandboxPolicy.version, 2);
+    assert.deepEqual(saved.sandboxPolicy.defaults, revision.sandboxPolicy.defaults);
+
+    // Database ownership and document constraints protect persistence even outside HTTP admission.
+    await assert.rejects(
+      pool.query(
+        "UPDATE occ.sandbox_policies SET document = jsonb_set(document,'{agentId}',to_jsonb($2::text)) WHERE id = $1",
+        [original.id, `agt_${randomUUID()}`],
+      ),
+      { code: "23514" },
+    );
+    await assert.rejects(
+      pool.query(
+        "UPDATE occ.sandbox_policies SET document = jsonb_set(document,'{additions}', $2::jsonb) WHERE id = $1",
+        [original.id, JSON.stringify([{ ...grant, ports: [{ from: 444, to: 443 }] }])],
+      ),
+      { code: "23514" },
+    );
+    await inject("PATCH", `${base}/editing`, { enabled: true });
+    // Agent update authority cannot substitute for the independent policy-resource check.
+    const restriction = `restriction-${randomUUID()}`;
+    await pool.query(
+      "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'update','sandbox_policy',$3,'deny')",
+      [restriction, namespace.id, original.id],
+    );
+    assert.equal(
+      (await inject("POST", `${base}/validate`, { expectedVersion: 2, additions: [grant] }))
+        .statusCode,
+      403,
+    );
+    const withoutEdit = (await inject("GET", discoveryPath)).json().data.configurations[0];
+    assert.equal(withoutEdit.actions.save.available, false);
+    // Owner read denial filters discovery without weakening the policy read endpoint.
+    const readRestriction = `restriction-${randomUUID()}`;
+    await pool.query(
+      "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'read','sandbox_policy',$3,'deny')",
+      [readRestriction, namespace.id, original.id],
+    );
+    assert.deepEqual((await inject("GET", discoveryPath)).json().data.configurations, []);
+    assert.equal((await inject("GET", base)).statusCode, 403);
+    const refused = await inject("PUT", base, { expectedVersion: 2, additions: [grant] });
+    assert.equal(refused.statusCode, 403, refused.body);
+    const denial = await pool.query(
+      "SELECT actor_id FROM occ.audit_events WHERE kind = 'authorization_denial' AND details#>>'{__occAuditMetadata,authorization,resource,id}' = $1",
+      [original.id],
+    );
+    assert.ok(denial.rowCount > 0, "the exact-resource authorization denial must be attributable");
+
+    const other = await deployAgent("Independent policy authority");
+    const otherBase = `/namespaces/${other.namespace.id}/agents/${other.agent.id}/sandbox-policy/networking`;
+    const crossNamespace = await inject(
+      "GET",
+      `/namespaces/${namespace.id}/agents/${other.agent.id}/sandbox-policy/networking`,
+    );
+    assert.equal(crossNamespace.statusCode, 404, crossNamespace.body);
+    assert.equal(
+      (await inject("PATCH", `${otherBase}/editing`, { enabled: true })).statusCode,
+      200,
+    );
+    // Policy-resource update permission alone cannot replace exact-Agent manage_policy.
+    await pool.query(
+      "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'manage_policy','agent',$3,'deny')",
+      [`restriction-${randomUUID()}`, other.namespace.id, other.agent.id],
+    );
+    const agentRefused = await inject("PUT", otherBase, { expectedVersion: 1, additions: [grant] });
+    assert.equal(agentRefused.statusCode, 403, agentRefused.body);
+    assert.deepEqual((await inject("GET", otherBase)).json().data.policy.additions, []);
+  },
+);
+
+test(
+  "live apply saves edits and enqueues their exact snapshot atomically",
+  requiresPostgres,
+  async (t) => {
+    const { state, pool, inject, deployAgent, grant, principal } = await createPolicyApp(t, true);
+    for (const { name, additions, incompatibleDefaults } of [
+      { name: "add a grant", additions: [grant] },
+      { name: "clear saved grants", additions: [] },
+      {
+        name: "roll back edits refused by frozen defaults",
+        additions: [],
+        incompatibleDefaults: true,
+      },
+    ]) {
+      await t.test(name, async () => {
+        const { namespace, agent, revision } = await deployAgent("Atomic policy application");
+        const targetRevision = await state.transact(async (unit) => {
+          await unit.namespaces.lockNamespace(namespace.id);
+          // Model a persisted revision whose frozen rule name the current OpenShell Driver reserves.
+          const target = incompatibleDefaults
+            ? await unit.revisions.createRevision({
+                ...revision,
+                id: `rev_${randomUUID()}`,
+                revision: revision.revision + 1,
+                sandboxPolicy: {
+                  ...revision.sandboxPolicy,
+                  defaults: {
+                    "oce-agent-legacy": revision.sandboxPolicy.defaults["python-default"],
+                  },
+                },
+              })
+            : revision;
+          const active = await unit.agents.compareAndSetActiveRevision(
+            namespace.id,
+            agent.id,
+            undefined,
+            target.id,
+          );
+          assert.equal(active?.activeRevisionId, target.id);
+          return target;
+        });
+        const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+        const enabled = await inject("PATCH", `${path}/editing`, { enabled: true });
+        assert.equal(enabled.statusCode, 200, enabled.body);
+        if (additions.length === 0) {
+          const saved = await inject("PUT", path, { expectedVersion: 1, additions: [grant] });
+          assert.equal(saved.statusCode, 200, saved.body);
+        }
+        const readPolicy = () =>
+          state.read((view) => view.sandboxPolicies.find(namespace.id, agent.id));
+        const before = await readPolicy();
+        const work = () =>
+          pool.query(
+            "SELECT state, actor_id FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND agent_target='sandbox_policy'",
+            [namespace.id, agent.id],
+          );
+        const audits = () =>
+          pool.query(
+            "SELECT id FROM occ.audit_events WHERE kind='mutation' AND outcome='success' AND resource_id=$1 ORDER BY id",
+            [before.id],
+          );
+        const auditBefore = (await audits()).rows;
+        if (incompatibleDefaults) {
+          const body = { expectedVersion: before.version, additions };
+          const refused = await inject("POST", `${path}/apply`, {
+            ...body,
+            revisionId: targetRevision.id,
+          });
+          assert.equal(refused.statusCode, 409, refused.body);
+          assert.equal(
+            refused.json().error.message,
+            "The Sandbox Driver cannot enforce the complete requested policy.",
+          );
+          assert.deepEqual(await readPolicy(), before);
+          assert.deepEqual((await work()).rows, []);
+          assert.deepEqual((await audits()).rows, auditBefore);
+          // The same edit commits through ordinary save, which admits against current defaults.
+          const saved = await inject("PUT", path, body);
+          assert.equal(saved.statusCode, 200, saved.body);
+          assert.equal(saved.json().data.version, before.version + 1);
+          assert.deepEqual(saved.json().data.additions, additions);
+          return;
+        }
+        for (const target of [
+          { expectedVersion: before.version, revisionId: `rev_${randomUUID()}` },
+          { expectedVersion: before.version + 1, revisionId: revision.id },
+        ]) {
+          const refused = await inject("POST", `${path}/apply`, { ...target, additions });
+          assert.equal(refused.statusCode, 409, refused.body);
+          assert.deepEqual(await readPolicy(), before);
+          assert.deepEqual((await work()).rows, []);
+          assert.deepEqual((await audits()).rows, auditBefore);
+        }
+        const accepted = await inject("POST", `${path}/apply`, {
+          expectedVersion: before.version,
+          revisionId: revision.id,
+          additions,
+        });
+        assert.equal(accepted.statusCode, 202, accepted.body);
+        const returned = accepted.json().data;
+        const version = before.version + 1;
+        assert.equal(returned.version, version);
+        assert.deepEqual(returned.additions, additions);
+        assert.equal(returned.application.state, "pending");
+        assert.equal(returned.application.revisionId, revision.id);
+        assert.equal(returned.application.policyVersion, version);
+        assert.equal(returned.application.requestedBy, principal.id);
+        const stored = await readPolicy();
+        assert.equal(stored.application.id, returned.application.id);
+        assert.equal(stored.version, version);
+        assert.deepEqual(stored.additions, additions);
+        assert.deepEqual(stored.application.snapshot, {
+          ...revision.sandboxPolicy,
+          version,
+          additions,
+        });
+        assert.deepEqual((await work()).rows, [{ state: "queued", actor_id: principal.id }]);
+      });
+    }
+  },
+);
+
+registerSandboxPolicyWorkerRecovery(createPolicyApp);
+
+test(
+  "a looser Driver contribution cannot widen the shared grant rules or the ceiling",
+  requiresPostgres,
+  async (t) => {
+    const { inject, deployAgent, grant } = await createPolicyApp(t, false, { laxDriver: true });
+    const { namespace, agent } = await deployAgent("Lax policy Driver");
+    const base = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+    assert.equal((await inject("PATCH", `${base}/editing`, { enabled: true })).statusCode, 200);
+    // The shared rules refuse an empty port list before ceiling coverage is considered.
+    const empty = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [{ ...grant, host: "outside.example.net", ports: [] }],
+    });
+    assert.equal(empty.statusCode, 200, empty.body);
+    assert.deepEqual(empty.json().data.error.details, [
+      {
+        path: "/additions/0/ports",
+        code: "INVALID_VALUE",
+        message: "Configuration does not satisfy minItems.",
+      },
+    ]);
+    // A reversed range on a delegated executable and host is refused, not stored.
+    const reversed = await inject("PUT", base, {
+      expectedVersion: 1,
+      additions: [{ ...grant, ports: [{ from: 65535, to: 1 }] }],
+    });
+    assert.equal(reversed.statusCode, 409, reversed.body);
+    assert.deepEqual(reversed.json().error.details, [
+      {
+        path: "/additions/0/ports/0/to",
+        code: "INVALID_RANGE",
+        message: "The end port must be at least the start port.",
+      },
+    ]);
+    const saved = (await inject("GET", base)).json().data.policy;
+    assert.equal(saved.version, 1);
+    assert.deepEqual(saved.additions, []);
+  },
+);
+
+test(
+  "restarted controller rechecks a reduced ceiling before saving, applying, or deploying",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t);
+    const { state, controller, pool, inject, deployAgent, grant, sandboxDriver } = fixture;
+    const { namespace, agent, revision } = await deployAgent("Ceiling restart");
+    // The fixture activates a real admitted revision; this test proves HTTP admission, not provider effects.
+    await state.transact(async (unit) => {
+      await unit.namespaces.lockNamespace(namespace.id);
+      await unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id);
+    });
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+    assert.equal((await inject("PATCH", `${path}/editing`, { enabled: true })).statusCode, 200);
+    const preview = await inject("POST", `${path}/validate`, {
+      expectedVersion: 1,
+      additions: [grant],
+    });
+    assert.equal(preview.json().data.success, true);
+    assert.equal(
+      (await inject("PUT", path, { expectedVersion: 1, additions: [grant] })).statusCode,
+      200,
+    );
+    const previous = (await inject("GET", path)).json().data.policy;
+    const jobs = await pool.query(
+      "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+      [namespace.id],
+    );
+    // Startup is the owner of the ceiling. A new controller uses the same database and real IAM,
+    // with a smaller operator delegation; no mutable test hook changes the running controller.
+    const restarted = new OpenClawController(controller.installation, {
+      namespaceLifecycleBindings: [
+        sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
+      ],
+      state,
+      recordOperations: false,
+      sandboxNetworkPolicyCeiling: [],
+      driverConfigurations: [
+        {
+          capability: "sandbox",
+          driverId: sandboxDriver.id,
+          implementation: sandboxDriver.implementation,
+          definition: OpenShellSandboxDriver,
+        },
+      ],
+    });
+    for (const capability of ["iam", "configuration", "compute", "secret", "sandbox"]) {
+      const driver = controller.selectedDriver(capability);
+      restarted.registerDriver(driver);
+      restarted.selectDriver(capability, driver.id);
+    }
+    const app = fixture.createApp(restarted);
+    const revisions = await state.read((view) =>
+      view.revisions.listRevisions(namespace.id, agent.id),
+    );
+    for (const [method, url, body] of [
+      ["PUT", path, { expectedVersion: 2, additions: [grant] }],
+      ["POST", `${path}/apply`, { expectedVersion: 2, revisionId: revision.id }],
+      ["POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`, undefined],
+    ]) {
+      const refused = await inject(method, url, body, app);
+      assert.equal(refused.statusCode, 409, refused.body);
+      assert.equal(
+        refused.json().error.message,
+        "The requested network policy exceeds the Installation delegation ceiling.",
+      );
+      assert.deepEqual(refused.json().error.details, [
+        {
+          path: "/additions/0",
+          code: "OUTSIDE_CEILING",
+          message: GRANT_EXCEEDS_CEILING,
+        },
+      ]);
+    }
+    assert.deepEqual(
+      await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
+      revisions,
+    );
+    assert.deepEqual((await inject("GET", path)).json().data.policy, previous);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+          [namespace.id],
+        )
+      ).rows,
+      jobs.rows,
+    );
+    // Finding 2151: a deployer without SandboxPolicy read gets the read refusal. The ceiling's
+    // named 409 would tell them that saved additions exist.
+    await pool.query(
+      "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'read','sandbox_policy',$3,'deny')",
+      [`restriction-${randomUUID()}`, namespace.id, previous.id],
+    );
+    const unreadable = await inject(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+      undefined,
+      app,
+    );
+    assert.equal(unreadable.statusCode, 403, unreadable.body);
+    assert.equal(Object.hasOwn(unreadable.json().error, "details"), false, unreadable.body);
+    assert.deepEqual(
+      await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
+      revisions,
+    );
+    // Finding 2874: live application with update but not read gets the read refusal, not the
+    // ceiling's 409 naming the saved additions, and requests nothing.
+    const unreadableApply = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 2, revisionId: revision.id },
+      app,
+    );
+    assert.equal(unreadableApply.statusCode, 403, unreadableApply.body);
+    assert.equal(Object.hasOwn(unreadableApply.json().error, "details"), false);
+    // The refusal names the grant the API contract and the CLI list for apply.
+    assert.equal(
+      unreadableApply.json().error.message,
+      callerDenied("SandboxPolicy read", `SandboxPolicy ${previous.id}`),
+    );
+    const unreadableEdits = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 2, revisionId: revision.id, additions: [] },
+      app,
+    );
+    assert.equal(unreadableEdits.statusCode, 403, unreadableEdits.body);
+    assert.equal(unreadableEdits.json().error.message, unreadableApply.json().error.message);
+    assert.equal(Object.hasOwn(unreadableEdits.json().error, "details"), false);
+    assert.equal(Object.hasOwn(unreadableEdits.json(), "data"), false);
+    assert.deepEqual(
+      await state.read((view) => view.sandboxPolicies.find(namespace.id, agent.id)),
+      previous,
+    );
+    // Update alone still saves. Apply returns the saved policy, so read is required even when
+    // the saved version has no additions to admit.
+    const emptied = await inject("PUT", path, { expectedVersion: 2, additions: [] }, app);
+    assert.equal(emptied.statusCode, 200, emptied.body);
+    const emptyApply = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 3, revisionId: revision.id },
+      app,
+    );
+    assert.equal(emptyApply.statusCode, 403, emptyApply.body);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT document->'application' AS application FROM occ.sandbox_policies WHERE id=$1",
+          [previous.id],
+        )
+      ).rows,
+      [{ application: null }],
+    );
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+          [namespace.id],
+        )
+      ).rows,
+      jobs.rows,
+    );
+  },
+);

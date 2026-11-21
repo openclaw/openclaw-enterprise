@@ -60,7 +60,7 @@ authentication nor gateway admission grants an OpenClaw permission.
 | ----------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
 | Authentication                      | External identity provider    | Authenticate human and automation identities and own the resulting identity evidence.                     |
 | Identity verification and admission | OAG                           | Verify external identity evidence and admit the exact Installation and, when required, Namespace.         |
-| OpenClaw resources                  | OCC                           | Own Agents, revisions, native ServiceAccounts, Channels, IAM resources, and Namespace containment.        |
+| OpenClaw resources                  | OCC                           | Own Agents, Agent revisions, native ServiceAccounts, Channels, IAM resources, and Namespace containment.  |
 | Platform Restrictions               | OCC                           | Own Installation and Namespace guardrails and require each relevant selected Driver to enforce them.      |
 | Agent runtime routing               | OCC-managed Agent gateway     | Route only its owning Agent's traffic within the exact Namespace; multiple Agents have separate gateways. |
 | Native authorization                | `OCCIAMDriver`                | Evaluate OpenClaw roles, bindings, permissions, and applicable Restrictions.                              |
@@ -102,9 +102,9 @@ bindings only in its Namespace or on exact resources within that Namespace.
 An Agent's `WorkloadIdentity` can receive bindings only for its own Namespace
 or exact resources within that Namespace.
 
-OCC creates and owns each Agent's `WorkloadIdentity`. Every admitted revision
+OCC creates and owns each Agent's `WorkloadIdentity`. Every saved version
 and Agent workload for that Agent uses the same identity, but only the Agent
-workload bound to its single active revision can act. An Agent workload does not
+workload bound to its single selected version can act. An Agent workload does not
 yet support inheriting its creator's identity or Role, assuming a human session,
 or using the deploying user's credentials or provider sessions. It cannot select
 another Agent's identity.
@@ -114,9 +114,9 @@ Each Agent has one `WorkloadIdentity` backed by a dedicated Kubernetes
 pod-bound `ServiceAccount` token. OCC verifies the selected data-plane target's
 trusted issuer, that the token is valid for OCC, and that it belongs to the
 exact backing Kubernetes namespace, `ServiceAccount`, and active workload
-associated with the Agent's `WorkloadIdentity` and active `AgentRevision`.
+associated with the Agent's `WorkloadIdentity` and selected `AgentRevision`.
 For each runtime operation, OCC checks the workload's current roles,
-permissions, and applicable Restrictions. A candidate, retired revision,
+permissions, and applicable Restrictions. A candidate, retired version,
 revoked permission, or incorrectly scoped workload cannot authorize a runtime
 or secret-broker operation.
 
@@ -125,8 +125,7 @@ or secret-broker operation.
 The dedicated gateway and Harness cross an explicit trust and connectivity
 boundary even when their selected runtime targets share a cluster. Each peer
 must verify its exact Agent-owned counterpart and the admitted route binding;
-runtime traffic is permitted only for the exact Namespace, Agent, and active
-revision. A reachable endpoint, shared cluster, or matching namespace name is
+runtime traffic is permitted only for the exact Namespace, Agent, and selected version. A reachable endpoint, shared cluster, or matching namespace name is
 not identity evidence. Missing or mismatched peer identity, ownership, route
 binding, or permitted connectivity leaves routing disabled.
 

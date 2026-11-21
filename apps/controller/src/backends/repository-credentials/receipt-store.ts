@@ -1,13 +1,15 @@
 import type {
   RepositoryBrokerReceipt,
   RepositorySessionAttempt,
+  RepositorySessionRepository,
   PlatformStateStore,
 } from "@openclaw-enterprise/occ";
-import type {
-  RepositoryCredentialBoundSessionInput,
-  SessionStatus,
-} from "../../drivers/repo/credentials/service-contracts.ts";
-import { sameBinding } from "../../drivers/repo/credentials/sessions.ts";
+import {
+  hasUnsettledCleanupCounts,
+  type RepositoryCredentialBoundSessionInput,
+  type SessionStatus,
+} from "../../drivers/repo/access/service-contracts.ts";
+import { sameBinding } from "../../drivers/repo/access/grant-identity.ts";
 
 /** Only the worker owns State; the detached broker receives this narrow journal. */
 export class RepositoryReceiptStore {
@@ -22,28 +24,33 @@ export class RepositoryReceiptStore {
     this.owner = owner;
   }
 
-  private matches(
-    attempt: Readonly<RepositorySessionAttempt>,
+  private async lockAcceptedAttempt(
+    repositorySessions: RepositorySessionRepository,
+    admissionId: string,
     input: RepositoryCredentialBoundSessionInput,
-  ): boolean {
-    const { binding, driver } = attempt.cleanupContext;
-    return (
-      attempt.brokerProtocol === 1 &&
+  ): Promise<Readonly<RepositorySessionAttempt>> {
+    const attempt = await repositorySessions.lockAttempt(admissionId);
+    if (!attempt) {
+      throw new Error("RECEIPT_UNAVAILABLE");
+    }
+    const { binding } = attempt.cleanupContext;
+    if (
+      attempt.brokerProtocol === (input.preparedOnly === true ? 3 : 1) &&
       attempt.namespaceId === input.namespaceId &&
       attempt.repositoryRef === input.repositoryRef &&
       attempt.durationSeconds === input.durationSeconds &&
       attempt.deadlineWallMs === input.deadlineWallMs &&
       binding.profile === input.profile &&
-      binding.backendId === this.owner.backendId &&
-      driver.id === this.owner.driverId &&
-      driver.implementation === this.owner.implementation &&
+      this.ownsCurrentAttempt(attempt) &&
       sameBinding(binding.grant, input.expectedBinding)
-    );
+    ) {
+      return attempt;
+    }
+    throw new Error("RECEIPT_UNAVAILABLE");
   }
 
-  private eligible(attempt: Readonly<RepositorySessionAttempt>): boolean {
+  private ownsCurrentAttempt(attempt: Readonly<RepositorySessionAttempt>): boolean {
     return (
-      attempt.brokerProtocol === 1 &&
       attempt.phase !== "invalidated" &&
       attempt.cleanupContext.binding.backendId === this.owner.backendId &&
       attempt.cleanupContext.driver.id === this.owner.driverId &&
@@ -56,7 +63,8 @@ export class RepositoryReceiptStore {
     receipt: Readonly<RepositoryBrokerReceipt>,
   ): SessionStatus {
     if (
-      !this.eligible(attempt) ||
+      ![1, 3].includes(attempt.brokerProtocol) ||
+      !this.ownsCurrentAttempt(attempt) ||
       receipt.state !== "disposed" ||
       receipt.sessionId === undefined ||
       receipt.deadlineWallMs === undefined ||
@@ -90,10 +98,7 @@ export class RepositoryReceiptStore {
     recoverOnly: boolean,
   ) {
     return this.state.transact(async (unit) => {
-      const attempt = await unit.repositorySessions.lockAttempt(admissionId);
-      if (!attempt || !this.matches(attempt, input) || attempt.phase === "invalidated") {
-        throw new Error("RECEIPT_UNAVAILABLE");
-      }
+      const attempt = await this.lockAcceptedAttempt(unit.repositorySessions, admissionId, input);
       const current = await unit.repositorySessions.findBrokerReceipt(admissionId);
       if (current?.state === "disposed") {
         return { kind: "disposed" as const, status: this.terminal(attempt, current) };
@@ -111,7 +116,7 @@ export class RepositoryReceiptStore {
         await unit.repositorySessions.createBrokerReceipt({ admissionId, state: "fenced" });
         return { kind: "missing" as const };
       }
-      if (attempt.phase !== "opening") {
+      if (attempt.phase !== "opening" || input.preparedOnly !== true) {
         throw new Error("RECEIPT_UNAVAILABLE");
       }
       await unit.repositorySessions.createBrokerReceipt({
@@ -119,7 +124,18 @@ export class RepositoryReceiptStore {
         state: "reserved",
         generation,
       });
-      return { kind: "reserved" as const };
+      const revision = await unit.revisions.findRevision(
+        attempt.namespaceId,
+        attempt.agentId,
+        attempt.revisionId,
+      );
+      if (!revision?.repositoryCredentials) {
+        throw new Error("RECEIPT_UNAVAILABLE");
+      }
+      // Distinct wire result: an old broker cannot silently treat a standing grant as finite.
+      return revision.repositoryCredentials.standingApprovalId === undefined
+        ? { kind: "reserved" as const }
+        : { kind: "standing-reserved" as const };
     });
   }
 
@@ -130,11 +146,8 @@ export class RepositoryReceiptStore {
     status: SessionStatus,
   ) {
     await this.state.transact(async (unit) => {
-      const attempt = await unit.repositorySessions.lockAttempt(admissionId);
+      await this.lockAcceptedAttempt(unit.repositorySessions, admissionId, input);
       if (
-        !attempt ||
-        !this.matches(attempt, input) ||
-        !this.eligible(attempt) ||
         status.state !== "OPEN" ||
         !sameBinding(status.binding, input.expectedBinding) ||
         status.deadlineWallMs > input.deadlineWallMs
@@ -171,10 +184,7 @@ export class RepositoryReceiptStore {
     generation: string,
   ) {
     await this.state.transact(async (unit) => {
-      const attempt = await unit.repositorySessions.lockAttempt(admissionId);
-      if (!attempt || !this.matches(attempt, input) || !this.eligible(attempt)) {
-        throw new Error("RECEIPT_UNAVAILABLE");
-      }
+      await this.lockAcceptedAttempt(unit.repositorySessions, admissionId, input);
       const current = await unit.repositorySessions.findBrokerReceipt(admissionId);
       if (current?.state === "fenced" && current.generation === generation) {
         return;
@@ -193,16 +203,10 @@ export class RepositoryReceiptStore {
     status: SessionStatus,
   ) {
     await this.state.transact(async (unit) => {
-      const attempt = await unit.repositorySessions.lockAttempt(admissionId);
+      await this.lockAcceptedAttempt(unit.repositorySessions, admissionId, input);
       if (
-        !attempt ||
-        !this.matches(attempt, input) ||
-        !this.eligible(attempt) ||
         status.state !== "DISPOSED" ||
-        status.activeUses !== 0 ||
-        status.cleanup.active !== 0 ||
-        status.cleanup.pending !== 0 ||
-        status.cleanup.uncertain !== 0 ||
+        hasUnsettledCleanupCounts(status) ||
         status.cleanup.auxiliaryPending ||
         !sameBinding(status.binding, input.expectedBinding)
       ) {

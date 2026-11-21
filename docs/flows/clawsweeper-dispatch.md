@@ -63,7 +63,7 @@ fail the job before that step.
 `.github/workflows/clawsweeper-dispatch.yml:202`, `.github/workflows/clawsweeper-dispatch.yml:339`
 
 For issues and pull requests, the workflow builds a request with the item identity
-and available source revision information. For command comments it sends the
+and available source commit information. For command comments it sends the
 repository, item, comment, and event identity; it includes a status comment ID
 only if one was created. Proof-nudge comments are ignored. ClawSweeper owns
 subsequent command interpretation and review; the dispatch response is not proof
@@ -81,7 +81,10 @@ the [merged policy owner](https://github.com/openclaw/clawsweeper/pull/1726).
 
 Use this repository's [checked-in dispatcher](../../.github/workflows/clawsweeper-dispatch.yml) as the installation source of truth. [Upstream synchronization](https://github.com/openclaw/clawsweeper/pull/1720) is merged; follow its [GitHub App setup instructions](https://github.com/openclaw/clawsweeper/blob/main/docs/target-dispatcher.md#target-repository-dispatcher), but do not copy the upstream workflow template. Keep one dispatcher.
 
-Install the `clawsweeper` App on this repository and confirm its installation on `openclaw/clawsweeper`. Grant the [token permissions](#entry-points), then add the App private key as this repository's `CLAWSWEEPER_APP_PRIVATE_KEY` Actions secret.
+Install the ClawSweeper App on this repository and `openclaw/clawsweeper`. Set
+repository secret `CLAWSWEEPER_APP_PRIVATE_KEY`. Dispatch tokens need contents
+write on ClawSweeper; acknowledgement tokens need issues write and pull-request
+read here.
 
 After the first eligible issue, pull request, or command event following merge, inspect **ClawSweeper Dispatch** for admission, token creation, and successful dispatch. Check the matching ClawSweeper receiver run and final outcome. An acknowledgement alone does not prove delivery or completion.
 

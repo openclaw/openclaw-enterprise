@@ -5,7 +5,7 @@ import type {
   PluginToolCatalogEntry,
 } from "@openclaw-enterprise/contracts";
 import { PluginDiscoveryError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, readCappedBody } from "@openclaw-enterprise/utils";
 
 const CATALOG_URL = "https://chatgpt.com/backend-api/ps/";
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -18,56 +18,6 @@ const PLUGIN_SETUP = {
   label: "OCE plugin setup",
   url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
 };
-
-function oauthIdentity(value: string): {
-  accessToken: string;
-  accountId: string;
-  isFedramp: boolean;
-} {
-  try {
-    const wrapper = asRecord(JSON.parse(value));
-    const auth = asRecord(wrapper?.auth);
-    const tokens = asRecord(auth?.tokens);
-    if (
-      wrapper?.version !== 1 ||
-      wrapper.provider !== "codex" ||
-      wrapper.state !== "ready" ||
-      auth?.auth_mode !== "chatgpt" ||
-      !isNonEmptyString(tokens?.access_token) ||
-      tokens.access_token.length > 16384 ||
-      /[\s\p{Cc}]/u.test(tokens.access_token) ||
-      !isNonEmptyString(tokens.account_id) ||
-      tokens.account_id.length > 256 ||
-      /[\s\p{Cc}]/u.test(tokens.account_id) ||
-      !isNonEmptyString(tokens.id_token)
-    ) {
-      throw new Error();
-    }
-    const segments = tokens.id_token.split(".");
-    if (segments.length !== 3) {
-      throw new Error();
-    }
-    // This is native login state supplied by the server, never browser-provided identity.
-    const claims = asRecord(JSON.parse(Buffer.from(segments[1]!, "base64url").toString("utf8")));
-    const identity = asRecord(claims?.["https://api.openai.com/auth"]);
-    if (
-      !claims ||
-      (identity?.chatgpt_account_id !== undefined &&
-        identity.chatgpt_account_id !== tokens.account_id) ||
-      (identity?.chatgpt_account_is_fedramp !== undefined &&
-        typeof identity.chatgpt_account_is_fedramp !== "boolean")
-    ) {
-      throw new Error();
-    }
-    return {
-      accessToken: tokens.access_token,
-      accountId: tokens.account_id,
-      isFedramp: identity?.chatgpt_account_is_fedramp === true,
-    };
-  } catch {
-    throw new PluginDiscoveryError("credentials_rejected");
-  }
-}
 
 function invalid(): never {
   throw new PluginDiscoveryError("invalid_response");
@@ -100,34 +50,14 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
     await response.body?.cancel().catch(() => {});
     invalid();
   }
-  const reader = response.body?.getReader();
-  if (!reader) {
+  const contents = await readCappedBody(response.body, MAX_RESPONSE_BYTES);
+  if (contents === undefined) {
     invalid();
   }
-  const chunks: Uint8Array[] = [];
-  let size = 0;
   try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
-      }
-      size += chunk.value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) {
-        invalid();
-      }
-      chunks.push(chunk.value);
-    }
-    try {
-      return record(JSON.parse(Buffer.concat(chunks, size).toString("utf8")));
-    } catch {
-      invalid();
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => {});
-    throw error;
-  } finally {
-    reader.releaseLock();
+    return record(JSON.parse(contents.toString("utf8")));
+  } catch {
+    invalid();
   }
 }
 
@@ -137,9 +67,15 @@ async function withCredential<T>(
   run: (request: (path: string, body?: unknown) => Promise<Record<string, unknown>>) => Promise<T>,
 ): Promise<T> {
   if (
-    (input.accessToken === undefined) === (input.credential === undefined) ||
-    (input.accessToken !== undefined &&
-      (!input.accessToken.startsWith("at-") || /[\s\p{Cc}]/u.test(input.accessToken)))
+    !isNonEmptyString(input.accessToken) ||
+    input.accessToken.length > 16384 ||
+    /[\s\p{Cc}]/u.test(input.accessToken) ||
+    (input.accountId === undefined
+      ? !input.accessToken.startsWith("at-")
+      : !isNonEmptyString(input.accountId) ||
+        input.accountId.length > 256 ||
+        /[\s\p{Cc}]/u.test(input.accountId)) ||
+    (input.isFedramp !== undefined && typeof input.isFedramp !== "boolean")
   ) {
     throw new PluginDiscoveryError("credentials_rejected");
   }
@@ -149,8 +85,11 @@ async function withCredential<T>(
     let accessToken: string;
     let accountId: string;
     let isFedramp: boolean;
-    if (input.credential !== undefined) {
-      ({ accessToken, accountId, isFedramp } = oauthIdentity(input.credential.value));
+    if (input.accountId !== undefined) {
+      // Account metadata accompanies the warm token from the trusted Credential Gateway.
+      accessToken = input.accessToken;
+      accountId = input.accountId;
+      isFedramp = input.isFedramp === true;
     } else {
       accessToken = input.accessToken!;
       // Account authority comes from the PAT issuer, never a browser-provided account ID.
@@ -190,7 +129,7 @@ async function withCredential<T>(
         }),
       ),
     );
-    // The opaque OAuth wrapper differs from the bearer value an upstream response could echo.
+    // Provider results must never echo the warm bearer credential into Console responses.
     if (JSON.stringify(result)?.includes(JSON.stringify(accessToken).slice(1, -1))) {
       invalid();
     }
@@ -216,6 +155,7 @@ function publicHttpsUrl(value: unknown): string | undefined {
 function catalogEntry(value: unknown): PluginCatalogEntry {
   const plugin = record(value);
   const release = record(plugin.release);
+  const { requires_local_executor: requiresLocalExecutor = false } = release;
   const slug = text(plugin.name, 200);
   if (plugin.scope !== "GLOBAL" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(slug)) {
     invalid();
@@ -237,11 +177,11 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
     switch (plugin.disabled_reason) {
       case "disabled_by_admin":
         unavailableReason =
-          "Disabled by a ChatGPT workspace administrator. Ask an administrator to enable access for the user or service account behind this token.";
+          "Disabled by a ChatGPT workspace administrator. Ask one to enable access for the user or service account behind this token.";
         break;
       case "plan_not_eligible":
         unavailableReason =
-          "This workspace's plan is not eligible for this plugin. Ask a workspace administrator to review plan availability.";
+          "This workspace's plan is not eligible for this plugin. Ask a ChatGPT workspace administrator to review plan availability.";
         break;
       case "required_app_unavailable":
         unavailableReason =
@@ -251,7 +191,7 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
         unavailableReason =
           "Unavailable for this account. Ask a ChatGPT workspace administrator to review plugin access; the service did not provide a recognized reason.";
     }
-  } else if (release.requires_local_executor !== false && skills.length === 0) {
+  } else if (requiresLocalExecutor !== false && skills.length === 0) {
     // Skills use the native runtime; details must still check other local components.
     unavailableReason =
       "This plugin requires local components that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.";
@@ -300,8 +240,16 @@ export async function discoverHostedPlugins(
     if (nextCursor !== null && nextCursor === input.cursor) {
       invalid();
     }
+    const plugins = array(response.plugins, PAGE_SIZE).map(catalogEntry);
+    const seenIds = new Set<string>();
+    for (const plugin of plugins) {
+      if (seenIds.has(plugin.id)) {
+        invalid();
+      }
+      seenIds.add(plugin.id);
+    }
     return {
-      plugins: array(response.plugins, PAGE_SIZE).map(catalogEntry),
+      plugins,
       nextCursor,
       setup: {
         message:
@@ -339,12 +287,12 @@ export async function getHostedPlugin(
             ([name, app]) => [name, text(record(app).id, 256)] as const,
           );
     // Native Codex retains the first declaration per app before matching app/MCP alternatives.
-    const seenApps = new Set<string>();
+    const appIds = new Set<string>();
     const declarations = rawDeclarations.filter(([, id]) => {
-      if (seenApps.has(id)) {
+      if (appIds.has(id)) {
         return false;
       }
-      seenApps.add(id);
+      appIds.add(id);
       return true;
     });
     if (
@@ -362,11 +310,10 @@ export async function getHostedPlugin(
         unavailableHelp: PLUGIN_SETUP,
       };
     }
-    const appIds = declarations.map(([, id]) => id);
-    if (appIds.length > 100) {
+    if (appIds.size > 100) {
       invalid();
     }
-    if (appIds.length === 0) {
+    if (appIds.size === 0) {
       if (entry.available !== false && array(release.skills, 1000).length > 0) {
         return { ...entry, tools: [] };
       }
@@ -379,17 +326,17 @@ export async function getHostedPlugin(
             unavailableHelp: PLUGIN_SETUP,
           };
     }
-    const responseApps = await request("apps/batch", { app_ids: appIds, include_tools: true });
+    const responseApps = await request("apps/batch", { app_ids: [...appIds], include_tools: true });
     const apps = new Map<string, Record<string, unknown>>();
     for (const raw of array(responseApps.apps, 100)) {
       const app = record(raw);
       const id = text(app.id, 256);
-      if (!appIds.includes(id) || apps.has(id)) {
+      if (!appIds.has(id) || apps.has(id)) {
         invalid();
       }
       apps.set(id, app);
     }
-    if (apps.size !== new Set(appIds).size || [...apps.values()].some((app) => app.tools == null)) {
+    if (apps.size !== appIds.size || [...apps.values()].some((app) => app.tools == null)) {
       return entry;
     }
     const tools = new Map<string, PluginToolCatalogEntry>();
@@ -416,7 +363,7 @@ export async function getHostedPlugin(
           ...(!appAvailable
             ? { unavailableReason: "The app providing this tool is unavailable for this account." }
             : !enabled
-              ? { unavailableReason: "This tool is disabled by the administrator." }
+              ? { unavailableReason: "This tool is disabled by a ChatGPT workspace administrator." }
               : {}),
           writes: !readOnly,
         });

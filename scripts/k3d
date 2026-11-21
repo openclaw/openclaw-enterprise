@@ -2,13 +2,14 @@
 set -euo pipefail
 umask 077
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
-cd "$repo_root"
+script_dir="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(CDPATH="" cd "$script_dir/.." && pwd)"
+CDPATH="" cd "$repo_root"
 
 usage() {
   cat <<'EOF'
 usage: ./scripts/k3d [demo|test|info|reset|down|help] [--harness codex|openclaw]
+                     [--base-url URL] [--model-id ID]
        ./scripts/k3d get <field>
        ./scripts/k3d copy <field>
 
@@ -37,11 +38,18 @@ The helper detects a running Podman API socket or Docker daemon. Set
 OCC_K3D_CONTAINER_ENGINE=podman or docker to select one explicitly.
 --harness defaults to codex. Select openclaw for the dedicated native worker
 test or browser demo through OpenShell.
-The openclaw choice prepares the OpenShell lane and builds ../openclaw by
-default; override it with the absolute OCC_K3D_OPENCLAW_SOURCE path.
+The openclaw choice prepares the OpenShell lane with the pinned runtime image.
 demo prompts for OPENAI_API_KEY when it is not already set. test requires the
 variable explicitly; reset does not require it.
 OCC_TEST_OPENAI_MODEL defaults to gpt-4o-mini.
+
+Model options for both Harnesses (including the default demo command):
+  --base-url URL  HTTPS Responses endpoint ending in /v1; overrides
+                  OCC_TEST_CODEX_OPENAI_BASE_URL for Codex or
+                  OCC_TEST_OPENSHELL_MODEL_BASE_URL for OpenClaw.
+  --model-id ID   Native model ID, including any namespace; overrides
+                  OCC_TEST_OPENAI_MODEL. Do not add an OCE provider prefix.
+Model credentials still come only from OPENAI_API_KEY.
 EOF
 }
 
@@ -141,6 +149,8 @@ select_engine() {
 
 harness="codex"
 harness_explicit="false"
+base_url=""
+model_id=""
 positional=()
 positional_count=0
 while [ "$#" -gt 0 ]; do
@@ -156,6 +166,28 @@ while [ "$#" -gt 0 ]; do
       harness_explicit="true"
       shift
       ;;
+    --base-url)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] ||
+        fail "--base-url requires a nonempty URL"
+      base_url="$2"
+      shift 2
+      ;;
+    --base-url=*)
+      base_url="${1#--base-url=}"
+      [ -n "$base_url" ] || fail "--base-url requires a nonempty URL"
+      shift
+      ;;
+    --model-id)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] ||
+        fail "--model-id requires a nonempty native model ID"
+      model_id="$2"
+      shift 2
+      ;;
+    --model-id=*)
+      model_id="${1#--model-id=}"
+      [ -n "$model_id" ] || fail "--model-id requires a nonempty native model ID"
+      shift
+      ;;
     *)
       positional+=("$1")
       positional_count=$((positional_count + 1))
@@ -168,6 +200,8 @@ case "$harness" in
   *) fail "--harness must be codex or openclaw" ;;
 esac
 if [ "$harness" = "openclaw" ]; then
+  export OCC_TEST_OPENSHELL_HARNESS=openclaw
+  export OCC_K3D_HARNESS=openclaw
   prepared_lane="openshell"
   integration_file="tests/integration/sandbox-driver-openshell-k3d-real.test.mjs"
 else
@@ -213,6 +247,27 @@ case "${1:-demo}" in
     ;;
 esac
 
+if [ -n "$base_url$model_id" ]; then
+  { [ "$action" = demo ] || [ "$action" = test ]; } ||
+    fail "--base-url and --model-id are supported only for demo and test"
+fi
+
+# Retain an inherited native destination when resource preparation reloads its env.
+if [ "$harness" = openclaw ]; then
+  base_url="${base_url:-${OCC_TEST_OPENSHELL_MODEL_BASE_URL:-}}"
+fi
+
+apply_model_options() {
+  # Add the outer provider so normalization preserves namespaced native IDs.
+  if [ "$harness" = openclaw ]; then
+    [ -z "$base_url" ] || export OCC_TEST_OPENSHELL_MODEL_BASE_URL="$base_url"
+    [ -z "$model_id" ] || export OCC_TEST_OPENAI_MODEL="openai/$model_id"
+  else
+    [ -z "$base_url" ] || export OCC_TEST_CODEX_OPENAI_BASE_URL="$base_url"
+    [ -z "$model_id" ] || export OCC_TEST_OPENAI_MODEL="codex/$model_id"
+  fi
+}
+
 [ "$action" != demo ] || prompt_openai_api_key
 
 for command in node k3d kubectl; do
@@ -221,7 +276,7 @@ done
 select_engine
 
 if [ "$harness" = "openclaw" ] && { [ "$action" = "demo" ] || [ "$action" = "test" ]; }; then
-  info "WARNING: Dedicated native OpenClaw is experimental. The current OpenClaw release image does not include native worker-inference support, so this workflow builds ../openclaw from source."
+  info "WARNING: Dedicated native OpenClaw is experimental."
 fi
 
 k3d_bin="$(command -v k3d)"
@@ -230,6 +285,16 @@ export OCC_DOCKER_BIN="$container_bin"
 export OPENCLAW_CI_K3D_BIN="$k3d_bin"
 export OCC_KUBECTL_BIN="$kubectl_bin"
 export OCC_TEST_OPENAI_MODEL="${OCC_TEST_OPENAI_MODEL:-gpt-4o-mini}"
+apply_model_options
+if [ "$harness" = openclaw ] && { [ "$action" = demo ] || [ "$action" = test ]; }; then
+  node -e '
+    const endpoint = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+    if (endpoint && !URL.parse(endpoint)) {
+      console.error("The OpenShell model endpoint must be a valid absolute URL.");
+      process.exit(1);
+    }
+  '
+fi
 
 # This local workflow always builds the current checkout. Do not let selectors
 # exported by an earlier test turn its generated localhost references into
@@ -311,6 +376,8 @@ load_environment() {
       fail "prepared environment contains an invalid assignment"
     export "${environment_record?}"
   done < "$env_file"
+  # Prepared environment records must not override explicit invocation options.
+  apply_model_options
 }
 
 load_state_lane() {
@@ -318,6 +385,16 @@ load_state_lane() {
     const { readFileSync } = require("node:fs");
     process.stdout.write(JSON.parse(readFileSync(process.argv[1], "utf8")).lane ?? "");
   ' "$state_file" 2>/dev/null || fail "prepared state is unreadable; run './scripts/k3d down'"
+}
+
+# Earlier preparation recorded a checkout commit for a native image the Gateway rejects.
+# The state file keeps it across reset, which deletes the exported environment.
+checkout_built_state() {
+  node -e '
+    const { readFileSync } = require("node:fs");
+    const state = JSON.parse(readFileSync(process.argv[1], "utf8"));
+    process.exit(state.env?.OCC_K3D_OPENCLAW_COMMIT ? 0 : 1);
+  ' "$state_file" 2>/dev/null
 }
 
 validate_prepared_environment() {
@@ -605,7 +682,7 @@ if [ "$action" = "down" ]; then
     exit 0
   fi
   info "Removing the owned cluster, images, and PostgreSQL resources."
-  node scripts/ci/cleanup.mjs --state "$state_file"
+  node scripts/ci/cleanup.ts --state "$state_file"
   rm -f "$env_file" "$ready_file" "$reset_file"
   echo "$engine_label-backed k3d environment removed."
   exit 0
@@ -622,6 +699,13 @@ if [ "$action" = "reset" ]; then
   load_environment
   rm -f "$ready_file"
   info "Removing test namespaces from the owned k3d cluster."
+  namespace_inventory="$(
+    "$kubectl_bin" \
+      --kubeconfig "$OCC_TEST_KUBERNETES_KUBECONFIG" \
+      --context "$OCC_TEST_KUBERNETES_CONTEXT" \
+      get namespaces \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+  )"
   while IFS= read -r namespace; do
     case "$namespace" in
       oce-production-* | oce-openshell-* | oce-ns-* | oce-??????????????? | oce-???????????????-gateway | openclaw-ci-seccomp-*)
@@ -634,15 +718,9 @@ if [ "$action" = "reset" ]; then
           --timeout=120s
         ;;
     esac
-  done < <(
-    "$kubectl_bin" \
-      --kubeconfig "$OCC_TEST_KUBERNETES_KUBECONFIG" \
-      --context "$OCC_TEST_KUBERNETES_CONTEXT" \
-      get namespaces \
-      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
-  )
+  done <<< "$namespace_inventory"
   info "Replacing the isolated Kubernetes test database."
-  node scripts/ci/reset-k3d-model.mjs --state "$state_file"
+  node scripts/ci/reset-k3d-model.ts --state "$state_file"
   rm -f "$env_file" "$ready_file"
   touch "$reset_file"
   echo "$engine_label-backed k3d test state reset; cluster and images preserved."
@@ -650,17 +728,6 @@ if [ "$action" = "reset" ]; then
 fi
 
 [ -n "${OPENAI_API_KEY:-}" ] || fail "OPENAI_API_KEY is required for the real model turn"
-
-openclaw_source_commit=""
-if [ "$harness" = "openclaw" ]; then
-  openclaw_source="${OCC_K3D_OPENCLAW_SOURCE:-$repo_root/../openclaw}"
-  [ -f "$openclaw_source/Dockerfile" ] ||
-    fail "OCC_K3D_OPENCLAW_SOURCE must select an OpenClaw source checkout"
-  openclaw_source_commit="$(git -C "$openclaw_source" rev-parse HEAD)" ||
-    fail "OpenClaw source revision is unavailable"
-  export OCC_K3D_OPENCLAW_SOURCE="$openclaw_source"
-  export OCC_K3D_OPENCLAW_COMMIT="$openclaw_source_commit"
-fi
 
 NODE_BASE_IMAGE="$(sed -n 's/^ARG NODE_BASE_IMAGE=//p' deploy/runtime/Dockerfile | head -1)"
 NODE_RUNTIME_BASE_IMAGE="$(sed -n 's/^ARG NODE_RUNTIME_BASE_IMAGE=//p' deploy/runtime/Dockerfile | head -1)"
@@ -670,6 +737,20 @@ export NODE_RUNTIME_BASE_IMAGE
 [ -n "$NODE_RUNTIME_BASE_IMAGE" ] ||
   fail "deploy/runtime/Dockerfile does not declare NODE_RUNTIME_BASE_IMAGE"
 
+if [ -f "$state_file" ] && checkout_built_state; then
+  fail "prepared native OpenClaw image predates the pinned runtime; run './scripts/k3d down --harness $harness' before retrying"
+fi
+
+# These subprocesses prepare resources only. The direct model tests below retain
+# the selected destination; they do not use the CI runner's file env projection.
+prepare_resources() {
+  if [ "$harness" = openclaw ]; then
+    OCC_TEST_OPENSHELL_MODEL_BASE_URL= node scripts/ci/prepare.ts "$@"
+  else
+    node scripts/ci/prepare.ts "$@"
+  fi
+}
+
 if [ ! -f "$state_file" ]; then
   info "Preparing a disposable k3d cluster, PostgreSQL database, and runtime images."
   for base_image in "$NODE_BASE_IMAGE" "$NODE_RUNTIME_BASE_IMAGE"; do
@@ -677,12 +758,13 @@ if [ ! -f "$state_file" ]; then
       "$container_bin" pull "$base_image"
     fi
   done
-  node scripts/ci/prepare.mjs \
+  prepare_resources \
     --lane "$prepared_lane" \
+    --selected-file "$integration_file" \
     --state "$state_file" \
     --github-env "$env_file"
   info "Creating and migrating the isolated Kubernetes test database."
-  node scripts/ci/prepare.mjs \
+  prepare_resources \
     --lane "$prepared_lane" \
     --file "$integration_file" \
     --state "$state_file" \
@@ -691,7 +773,7 @@ if [ ! -f "$state_file" ]; then
 elif [ -f "$reset_file" ] && [ ! -f "$ready_file" ]; then
   info "Creating and migrating a fresh isolated Kubernetes test database."
   : > "$env_file"
-  node scripts/ci/prepare.mjs \
+  prepare_resources \
     --lane "$prepared_lane" \
     --file "$integration_file" \
     --state "$state_file" \
@@ -709,10 +791,6 @@ fi
 validate_prepared_environment
 load_environment
 
-if [ -n "$openclaw_source_commit" ] && [ "${OCC_K3D_OPENCLAW_COMMIT:-}" != "$openclaw_source_commit" ]; then
-  fail "prepared native OpenClaw image belongs to another source revision; run './scripts/k3d down --harness openclaw'"
-fi
-
 [ -n "${OCC_TEST_PRODUCTION_CONTROLLER_IMAGE:-}" ] ||
   fail "prepared state predates the in-cluster OCC API; run './scripts/k3d down' before retrying"
 
@@ -723,9 +801,9 @@ if [ "$action" = "demo" ]; then
   export OCC_K3D_HARNESS="$harness"
   if [ "$harness" = "openclaw" ]; then
     info "Starting the dedicated native OpenClaw Control UI demo through OpenShell."
-    export OCC_TEST_OPENSHELL_HARNESS=openclaw
     if ! node \
-      --test \
+      --test --test-concurrency=1 \
+      tests/integration/openshell-gateway-tool-policy-real.test.ts \
       tests/integration/sandbox-driver-openshell-k3d-real.test.mjs; then
       rm -f "$demo_file"
       exit 1
@@ -741,9 +819,9 @@ fi
 
 if [ "$harness" = "openclaw" ]; then
   info "Running the dedicated native OpenClaw integration through OpenShell."
-  export OCC_TEST_OPENSHELL_HARNESS=openclaw
   node \
-    --test \
+    --test --test-concurrency=1 \
+    tests/integration/openshell-gateway-tool-policy-real.test.ts \
     tests/integration/sandbox-driver-openshell-k3d-real.test.mjs
   echo "Dedicated native OpenClaw with OpenShell integration passed."
 else

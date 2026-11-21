@@ -11,6 +11,9 @@
   --muted: var(--oc-text-muted, #999);
   --line: var(--oc-border-subtle, #2b2b2b);
   --brand: var(--oc-accent-primary, #e87960);
+  --verified-ink: #93d3a7;
+  --verified-line: #345443;
+  --verified-bg: #14231a;
   font-family: system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -24,6 +27,9 @@
   --muted: #676767;
   --line: #dedbd5;
   --brand: #b7472f;
+  --verified-ink: #24643d;
+  --verified-line: #b9d9c2;
+  --verified-bg: #edf7ef;
 }
 * {
   box-sizing: border-box;
@@ -56,7 +62,7 @@ button {
   border-radius: 7px;
   padding: 8px 12px;
 }
-header {
+body > header {
   position: sticky;
   top: 0;
   z-index: 10;
@@ -288,6 +294,46 @@ kbd {
   letter-spacing: -0.4px;
   margin-top: 44px;
   color: var(--ink);
+}
+.human-verification {
+  margin: -10px 0 28px;
+}
+.human-verification summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid var(--verified-line);
+  border-radius: 999px;
+  background: var(--verified-bg);
+  color: var(--verified-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  list-style: none;
+  cursor: pointer;
+}
+.human-verification summary::-webkit-details-marker {
+  display: none;
+}
+.human-verification summary:hover,
+.human-verification[open] summary {
+  border-color: var(--verified-ink);
+}
+.verification-info {
+  font-size: 16px;
+}
+.doc .human-verification p {
+  max-width: 30rem;
+  margin: 10px 0 0;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 14px;
+  line-height: 1.6;
 }
 .doc h3 {
   font-size: 19px;
@@ -772,6 +818,9 @@ dialog::backdrop {
   .doc h1 {
     font-size: 30px;
   }
+  .human-verification summary {
+    min-height: 44px;
+  }
   .doc h2 {
     font-size: 23px;
   }
@@ -843,4 +892,31 @@ dialog::backdrop {
   display: block;
   height: auto;
   margin: auto;
+}
+
+/* The OpenAPI explorer owns its endpoint navigation within the article. */
+.layout:has(#occ-api-explorer) {
+  grid-template-columns: 230px minmax(0, 1fr);
+}
+.layout:has(#occ-api-explorer) > .toc {
+  display: none;
+}
+.doc:has(#occ-api-explorer) {
+  max-width: none;
+  min-width: 0;
+}
+#occ-api-explorer {
+  margin: 2rem -1rem 0;
+  min-height: 70vh;
+}
+@media (max-width: 900px) {
+  .layout:has(#occ-api-explorer) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Set fonts before Scalar mounts to avoid its default remote font request. */
+:root {
+  --scalar-font: system-ui, sans-serif;
+  --scalar-font-code: ui-monospace, monospace;
 }

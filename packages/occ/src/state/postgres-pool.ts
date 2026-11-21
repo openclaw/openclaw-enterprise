@@ -1,5 +1,7 @@
+import { isIP } from "node:net";
+import { checkServerIdentity, type PeerCertificate } from "node:tls";
 import pg from "pg";
-import { parseIntoClientConfig } from "pg-connection-string";
+import { parse, parseIntoClientConfig } from "pg-connection-string";
 
 /** Shared connection authentication for the API, worker, bootstrap, and migrator. */
 export async function createPostgresPool(
@@ -38,8 +40,15 @@ async function constructPostgresPool(
   databaseUrl: string,
   { authMode = process.env.OCC_DATABASE_AUTH ?? "password", ...limits }: PostgresPoolOptions,
 ): Promise<pg.Pool> {
+  // Undefined caller fields are unspecified; retain the URL, environment and
+  // pg defaults for those settings.
+  for (const key of Object.keys(limits) as (keyof typeof limits)[]) {
+    if (limits[key] === undefined) {
+      delete limits[key];
+    }
+  }
   if (authMode === "password") {
-    return new pg.Pool({ connectionString: databaseUrl, ...limits });
+    return new pg.Pool(verifyIpHostIdentity({ connectionString: databaseUrl, ...limits }, limits));
   }
   if (authMode !== "azure-workload-identity") {
     throw new Error("Unsupported OCC_DATABASE_AUTH mode.");
@@ -68,16 +77,130 @@ async function constructPostgresPool(
 
   const { WorkloadIdentityCredential } = await import("@azure/identity");
   const credential = new WorkloadIdentityCredential();
-  return new pg.Pool({
-    ...connection,
-    ...limits,
-    ssl: {
-      ...(typeof connection.ssl === "object" ? connection.ssl : {}),
-      rejectUnauthorized: true,
-    },
-    // pg calls this for each new connection; the SDK owns token caching and
-    // renewal. Never fall back to an operator identity or a fixed access token.
-    password: async () =>
-      (await credential.getToken("https://ossrdbms-aad.database.windows.net/.default")).token,
-  });
+  return new pg.Pool(
+    verifyIpHostIdentity({
+      ...connection,
+      ...limits,
+      ssl: {
+        ...(typeof connection.ssl === "object" ? connection.ssl : {}),
+        rejectUnauthorized: true,
+      },
+      // pg calls this for each new connection; the SDK owns token caching and
+      // renewal. Never fall back to an operator identity or a fixed access token.
+      password: async () =>
+        (await credential.getToken("https://ossrdbms-aad.database.windows.net/.default")).token,
+    }),
+  );
+}
+
+/** Consume pg's URL once, then apply only the caller's defined options. */
+function resolveExplicitClientOptions(
+  config: pg.ClientConfig,
+  limits: Omit<PostgresPoolOptions, "authMode">,
+): pg.ClientConfig {
+  const { connectionString, ...explicit } = config;
+  if (connectionString === undefined) {
+    return { ...explicit, ...limits };
+  }
+  // Parse at connection time to retain pg's TLS-file reads. A consumed
+  // connectionString, including a nested query parameter, must not be reparsed.
+  const parsed = parse(connectionString) as unknown as pg.ClientConfig;
+  delete parsed.connectionString;
+  return { ...explicit, ...parsed, ...limits };
+}
+
+/**
+ * pg sends a TLS servername only for DNS hosts. For an IP literal it sends none,
+ * and Node then checks the certificate against "localhost": any database-CA-signed
+ * DNS:localhost certificate would pass verify-full for every IP host. Bind the
+ * identity check to the effective IP instead, so an iPAddress SAN must match, as
+ * libpq requires. DNS hosts, Unix sockets, plaintext and explicitly unverified
+ * modes do not need this identity check.
+ */
+function verifyIpHostIdentity(
+  config: pg.PoolConfig,
+  limits: Omit<PostgresPoolOptions, "authMode"> = {},
+): pg.PoolConfig {
+  // max belongs to pg-pool and already takes precedence there.
+  const hasClientOptions = Object.keys(limits).some((key) => key !== "max");
+  let address: string | undefined;
+  try {
+    address = verifiedIpAddress(config);
+    if (address === undefined && !hasClientOptions) {
+      return config;
+    }
+  } catch {
+    // An unreadable sslrootcert or similar: pg raises the same error on connect.
+    // Decide per connection instead, so a file that appears later is still checked.
+  }
+  if (address !== undefined) {
+    // Refuse at construction what every connection would refuse.
+    bindIpIdentity(config, address);
+  }
+  // pg-pool builds every connection through this class. Deciding per connection
+  // keeps pg's per-connection reads of sslrootcert/sslcert/sslkey files.
+  class IpHostClient extends pg.Client {
+    constructor(clientConfig: pg.ClientConfig = config) {
+      const resolved = hasClientOptions
+        ? resolveExplicitClientOptions(clientConfig, limits)
+        : clientConfig;
+      const address = verifiedIpAddress(resolved);
+      super(address === undefined ? resolved : bindIpIdentity(resolved, address));
+    }
+  }
+  return { ...config, Client: IpHostClient };
+}
+
+/** The effective host when pg would verify an IP literal against "localhost". */
+function verifiedIpAddress(config: pg.ClientConfig): string | undefined {
+  const { host, ssl } = resolvedParameters(config);
+  const address = typeof host === "string" ? host.replace(/^\[(.*)\]$/, "$1") : "";
+  if (!ssl || isIP(address) === 0) {
+    return undefined;
+  }
+  if (ssl !== true && (ssl.rejectUnauthorized === false || ssl.checkServerIdentity !== undefined)) {
+    // no-verify, or libpq-compatible require/verify-ca, which skip the identity check.
+    return undefined;
+  }
+  return address;
+}
+
+function bindIpIdentity(config: pg.ClientConfig, address: string): pg.ClientConfig {
+  let base = config;
+  if (config.connectionString !== undefined) {
+    // pg reparses connectionString over explicit fields, which would drop the
+    // check below. Inline the URL with the same parser and precedence instead.
+    const { connectionString, ...explicit } = config;
+    const parsed = parse(connectionString) as unknown as pg.ClientConfig;
+    if (parsed.connectionString !== undefined) {
+      throw new Error("A PostgreSQL URL with an IP host does not allow nested connection strings.");
+    }
+    base = { ...explicit, ...parsed };
+  }
+  const { ssl } = resolvedParameters(base);
+  if (!ssl) {
+    return base;
+  }
+  const options = ssl === true ? {} : ssl;
+  const verified: Exclude<pg.ClientConfig["ssl"], boolean | undefined> = { ...options };
+  // pg hides a client key from enumeration; carry it over explicitly.
+  if ("key" in options) {
+    verified.key = options.key;
+  }
+  verified.checkServerIdentity = (_servername: string, certificate: PeerCertificate) =>
+    checkServerIdentity(address, certificate);
+  return { ...base, ssl: verified };
+}
+
+/** pg's own resolution: URL, host= override, PGHOST/PGSSLMODE and defaults. */
+function resolvedParameters(config: pg.ClientConfig): {
+  host?: unknown;
+  ssl?: pg.ClientConfig["ssl"];
+} {
+  // Construction parses and reads TLS files but does not connect.
+  return (
+    new pg.Client(config) as unknown as {
+      connectionParameters: { host?: unknown; ssl?: pg.ClientConfig["ssl"] };
+    }
+  ).connectionParameters;
 }

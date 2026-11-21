@@ -27,21 +27,37 @@ func validateClusterName(name string) error {
 }
 
 type developmentState struct {
-	Version           int    `json:"version"`
-	Repository        string `json:"repository"`
-	ComputeDriver     string `json:"computeDriver"`
-	SandboxDriver     string `json:"sandboxDriver"`
-	DeploymentMode    string `json:"deploymentMode,omitempty"`
-	PlatformNamespace string `json:"platformNamespace,omitempty"`
-	APIPort           int    `json:"apiPort,omitzero"`
-	BrowserPort       int    `json:"browserPort,omitzero"`
-	ContainerEngine   string `json:"containerEngine"`
-	ComposeProject    string `json:"composeProject"`
-	Cluster           string `json:"cluster"`
-	DockerHost        string `json:"dockerHost"`
-	KeyPath           string `json:"keyPath"`
-	KeyOwned          bool   `json:"keyOwned"`
-	directory         string
+	Version                     int    `json:"version"`
+	Repository                  string `json:"repository"`
+	ComputeDriver               string `json:"computeDriver"`
+	SandboxDriver               string `json:"sandboxDriver"`
+	DeploymentMode              string `json:"deploymentMode,omitempty"`
+	PlatformNamespace           string `json:"platformNamespace,omitempty"`
+	APIPort                     int    `json:"apiPort,omitzero"`
+	BrowserPort                 int    `json:"browserPort,omitzero"`
+	BrowserOrigin               string `json:"browserOrigin,omitempty"`
+	NativeAdminDomain           string `json:"nativeAdminDomain,omitempty"`
+	ContainerEngine             string `json:"containerEngine"`
+	ComposeProject              string `json:"composeProject"`
+	Cluster                     string `json:"cluster"`
+	DockerHost                  string `json:"dockerHost"`
+	KeyPath                     string `json:"keyPath"`
+	InstallationID              string `json:"installationId,omitempty"`
+	KeyOwned                    bool   `json:"keyOwned"`
+	SignIn                      string `json:"signIn,omitempty"`
+	ProtectedEgress             bool   `json:"protectedEgress,omitempty"`
+	DatabaseName                string `json:"databaseName,omitempty"`
+	OpenShellHostGatewayIP      string `json:"openShellHostGatewayIP,omitempty"`
+	SandboxNetworkPolicies      []any  `json:"sandboxNetworkPolicies,omitempty"`
+	SandboxNetworkPolicyCeiling []any  `json:"sandboxNetworkPolicyCeiling,omitempty"`
+	// ImageRegistryContainer and ImageRegistryNetwork record a development
+	// image registry attached to the cluster network, from just before the
+	// connect until the disconnect, so occ dev down can detach it after a start
+	// killed before its own detach ran.
+	ImageRegistryContainer string             `json:"imageRegistryContainer,omitempty"`
+	ImageRegistryNetwork   string             `json:"imageRegistryNetwork,omitempty"`
+	OpenShellImageTag      *openShellImageTag `json:"openShellImageTag,omitempty"`
+	directory              string
 }
 
 func (s *developmentState) composeCommand() []string {
@@ -73,19 +89,10 @@ func exclusiveWrite(path string, data []byte, mode os.FileMode) (result error) {
 	return closeErr
 }
 func stateDirectory(raw, repository string, existing bool) (string, error) {
-	if raw == "" {
-		// System temporary directories may contain aliases, such as /var on macOS.
-		// Resolve the helper-selected default once; explicit paths remain canonical.
-		temporary, err := filepath.EvalSymlinks(os.TempDir())
-		if err != nil {
-			return "", err
-		}
-		raw = filepath.Join(temporary, "openclaw-development")
+	path, err := stateDirectoryPath(raw)
+	if err != nil {
+		return "", err
 	}
-	if !filepath.IsAbs(raw) {
-		return "", fmt.Errorf("state directory must be absolute")
-	}
-	path := filepath.Clean(raw)
 	home, _ := os.UserHomeDir()
 	if path == "/" || path == "/tmp" || path == filepath.Clean(os.TempDir()) || path == repository || path == home {
 		return "", fmt.Errorf("refusing unsafe state directory: %s", path)
@@ -108,6 +115,40 @@ func stateDirectory(raw, repository string, existing bool) (string, error) {
 	}
 	return path, nil
 }
+
+// stateDirectoryPath returns the selected state directory, or the default
+// under the system temporary directory, without checking what is there.
+func stateDirectoryPath(raw string) (string, error) {
+	if raw == "" {
+		// System temporary directories may contain aliases, such as /var on macOS.
+		// Resolve the helper-selected default once; explicit paths remain canonical.
+		temporary, err := filepath.EvalSymlinks(os.TempDir())
+		if err != nil {
+			return "", err
+		}
+		raw = filepath.Join(temporary, "openclaw-development")
+	}
+	if !filepath.IsAbs(raw) {
+		return "", fmt.Errorf("state directory must be absolute")
+	}
+	return filepath.Clean(raw), nil
+}
+
+// recordedStateDirectory reports whether the selected development state
+// directory exists. Only a definite absence reports false; any other failure
+// to inspect it is an error that names the directory.
+func recordedStateDirectory(raw string) (string, bool, error) {
+	path, err := stateDirectoryPath(raw)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return path, false, nil
+	} else if err != nil {
+		return path, false, fmt.Errorf("cannot inspect development state directory %s: %w", path, err)
+	}
+	return path, true, nil
+}
 func validateKeyOutput(path string) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return fmt.Errorf("key output must be an absent absolute canonical path")
@@ -123,6 +164,34 @@ func validateKeyOutput(path string) error {
 		return fmt.Errorf("key output parent must not contain symlinks")
 	}
 	return privateOwned(parent, true)
+}
+
+// rewriteState replaces state.json with the current state. The new file is
+// renamed over the old one, so an interrupted write keeps the previous record.
+func rewriteState(s *developmentState) (result error) {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(s.directory, ".state-*.json")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if result != nil {
+			os.Remove(file.Name())
+		}
+	}()
+	// CreateTemp applies umask; recovery must still read the replacement.
+	if err := file.Chmod(0600); err != nil {
+		return errors.Join(err, file.Close())
+	}
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), filepath.Join(s.directory, "state.json"))
 }
 func readState(directory string) (*developmentState, error) {
 	for _, name := range []string{".openclaw-development", "state.json"} {
@@ -159,6 +228,23 @@ func readState(directory string) (*developmentState, error) {
 		}
 	default:
 		return nil, fmt.Errorf("unsupported development state")
+	}
+	switch state.SignIn {
+	case "":
+	case developmentSignInKeycloak:
+		// Only the routing-enabled Kubernetes-only profile publishes Keycloak.
+		if state.DeploymentMode != "k3d" || state.SandboxDriver != "none" || state.BrowserPort == 0 {
+			return nil, fmt.Errorf("unsupported development state")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported development state")
+	}
+	if (state.ImageRegistryContainer != "" || state.ImageRegistryNetwork != "") &&
+		(!registryContainerName.MatchString(state.ImageRegistryContainer) || state.ImageRegistryNetwork != developmentImageRegistryNetwork(&state)) {
+		return nil, fmt.Errorf("unsupported development state")
+	}
+	if !validOpenShellImageTag(state.OpenShellImageTag, state.Cluster) {
+		return nil, fmt.Errorf("unsupported OpenShell image custody")
 	}
 	if state.KeyOwned && state.KeyPath != filepath.Join(directory, "initial-admin-service-key.json") {
 		return nil, fmt.Errorf("helper-owned key must be inside the state directory")

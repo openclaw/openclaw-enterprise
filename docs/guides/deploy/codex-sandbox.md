@@ -1,14 +1,14 @@
 # Enable Codex sandbox execution on Kubernetes
 
 Use a reviewed node-local seccomp profile when the container runtime's
-`RuntimeDefault` profile blocks Codex's bubblewrap sandbox. Keep the Agent's
-`workspace-write` sandbox enabled. The Kubernetes Compute Driver's existing
+`RuntimeDefault` profile blocks Codex's bubblewrap sandbox. This default procedure
+keeps the Agent's `workspace-write` sandbox enabled. The Kubernetes Compute Driver's existing
 `runtime.codexSeccompProfile` setting selects the profile for the dedicated Codex
 container; [security](../../reference/security.md#pod-and-container-hardening) defines
 the remaining containment requirements.
 
 This guide covers syscall containment. Codex network proxy policy is a separate
-boundary. Repository-bound Codex consumers use stock Codex `0.163.0-alpha.2` with
+boundary. Repository-bound Codex consumers use stock Codex `0.164.0` with
 `allow_local_binding = true`, `mode = "full"`, and the exact broker hostname
 allowed. These settings permit local binding, disable Codex's additional
 private-address guard, and allow every HTTP method at otherwise allowed
@@ -25,6 +25,27 @@ production runtime digest before enabling it for Agents. The disposable
 [local Kubernetes launcher](local-kubernetes-development.md#start-the-profile)
 separately prepares and verifies a profile inside its own k3d node.
 
+## Explicit container-only development verification
+
+For an authorized disposable development run with Sandbox Driver `none`, set
+`OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE=danger-full-access` before `occ dev up`.
+The default is `workspace-write`. This selector changes startup verification;
+it does not change Agent or Preset configuration.
+
+The launcher reports workspace-write sandbox proof as not applicable and not
+performed. It installs no custom seccomp profile and does not verify the container
+boundary at startup. The real Agent workflow must verify its Pod security,
+NetworkPolicies and effective native turn policy.
+
+Configure each intended Codex Agent explicitly with
+`plugins.entries.codex.config.appServer.sandbox: danger-full-access` and disable
+that Agent's inner Codex network proxy profile, which otherwise selects a workspace
+permission profile. Keep Kubernetes NetworkPolicies in force. Retain its
+approval policy and reviewer. Verify the authenticated runtime's effective grant
+before model execution: managed requirements can refuse this mode. The container
+is the containment boundary for this run. Do not describe it as workspace-write
+proof. Standard presets and host security policy remain unchanged.
+
 ## Identify the restriction
 
 The message `bwrap: No permissions to create a new namespace` does not identify
@@ -34,11 +55,18 @@ and container security context. Check the host's user-namespace support and any
 AppArmor or SELinux restrictions separately. Successful execution through
 `require_escalated` establishes neither sandbox compatibility nor containment.
 
+On disposable k3d, a failed probe on a Ready Pod emits an
+`OCE_CODEX_SECCOMP_PROBE_FAILURE` record before cleanup. Use the Pod and container
+IDs, node, image digest, and timestamps to correlate authorized host evidence.
+`profileVerification: "passed"` means the effective OCI profile matched the
+installed profile. The sandbox probe still failed. The record reports the
+Pod's security settings and omits raw command output and runtime inspection.
+
 An EKS investigation on Amazon Linux 2023, kernel `6.12.103`, containerd `2.2.7`,
 and Codex `0.156.0` found that the effective profile defaulted to
 `SCMP_ACT_ERRNO`. Its `clone` mask excluded namespace flags, and it omitted
-`unshare`, `mount`, and `pivot_root` allowances. A bounded host probe as UID 1000
-with no-new-privileges could create a user namespace. This isolated the
+`unshare`, `mount`, and `pivot_root` allowances. A host probe for user-namespace creation, run as UID 1000
+with no-new-privileges, could create a user namespace. This isolated the
 container syscall policy as the blocker without changing host sysctls.
 
 Do not infer the same cause on another node image. Stop if the captured policy
@@ -49,8 +77,8 @@ or host probe contradicts that diagnosis.
 On each distinct eligible node configuration, create a disposable probe Pod
 using your approved runtime digest, `RuntimeDefault`, UID/GID 1000, dropped
 capabilities, `allowPrivilegeEscalation: false`, and a read-only root filesystem.
-Give it bounded writable workspace, home, and temporary volumes without Agent
-credentials or persistent data. Keep the default kubeconfig unchanged.
+Set size limits for its writable workspace, home, and temporary volumes. Do not
+include Agent credentials or persistent data. Keep the default kubeconfig unchanged.
 
 Through your authorized host-management channel, capture only the running
 probe container's effective seccomp policy. On a containerd node with `crictl`
@@ -71,9 +99,9 @@ containerd or Docker profile from the internet.
 From the OCE repository root, generate the compatibility artifact offline:
 
 ```sh
-node scripts/generate-codex-seccomp.mjs \
+node scripts/generate-codex-seccomp.ts \
   --baseline runtime-default.json \
-  --codex-version 0.163.0-alpha.2 \
+  --codex-version 0.164.0 \
   --out codex-bwrap.json
 ```
 
@@ -90,11 +118,10 @@ architectures. Admission by the generator is not runtime proof. Inspect the
 delta and repeat live verification for your selected runtime and node versions.
 Do not substitute an arbitrary profile or `Unconfined` policy.
 
-The pinned runtime and automatic preparation use Codex `0.163.0-alpha.2`. Its reviewed
+The pinned runtime and automatic preparation use Codex `0.164.0`. Its reviewed
 default sandbox uses the same syscall rules; the optional inherited PID namespace
 mode is outside this profile's scope. Profile generation does not upgrade the
-deployed image. A profile generated for `0.163.0-alpha.1` has the same content
-and digest, so it stays valid without regeneration or renaming.
+deployed image.
 
 ## Install on eligible nodes
 
@@ -104,7 +131,7 @@ versioned, content-addressed name, for example:
 
 ```sh
 PROFILE_SHA256=$(jq -r .profileSha256 codex-bwrap.json.provenance.json)
-PROFILE_RELATIVE="openclaw/codex-0.163.0-alpha.2-${PROFILE_SHA256}.json"
+PROFILE_RELATIVE="openclaw/codex-0.164.0-${PROFILE_SHA256}.json"
 sha256sum codex-bwrap.json
 ```
 
@@ -128,7 +155,7 @@ drivers:
   compute:
     configuration:
       runtime:
-        codexSeccompProfile: openclaw/codex-0.163.0-alpha.2-<profile-sha256>.json
+        codexSeccompProfile: openclaw/codex-0.164.0-<profile-sha256>.json
 ```
 
 Replace the placeholder with the approved hash and preserve the other runtime

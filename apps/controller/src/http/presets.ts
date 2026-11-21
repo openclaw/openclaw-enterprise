@@ -16,14 +16,31 @@ export const presetHandlers = {
   },
   async listPresets({ controller, context, request, reply, namespaceId }) {
     const presets = await controller.listPresets(context.actorId, namespaceId);
-    reply.send({ data: presets, meta: { requestId: request.id } });
+    reply.send({
+      data: presets.map(({ id, namespaceId, name, createdAt }) => ({
+        id,
+        namespaceId,
+        name,
+        createdAt,
+      })),
+      meta: { requestId: request.id },
+    });
   },
-  async getPreset({ controller, context, request, reply, params, namespaceId }) {
+  async getPreset({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    setAuditReadTarget,
+  }) {
     const preset = await controller.getPreset(
       context.actorId,
       namespaceId,
       params.presetId as string,
     );
+    setAuditReadTarget({ kind: "preset", id: preset.id, namespaceId: preset.namespaceId });
     reply.send({ data: preset, meta: { requestId: request.id } });
   },
   async updatePreset({

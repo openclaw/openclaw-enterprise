@@ -43,11 +43,15 @@ def container(pod, name):
 
 def check_image(pod, name, image):
     specification, status = container(pod, name)
-    require(specification.get("image") == image["image"])
+    # Callers supply only the validated component or fixed broker name.
+    # Report the check, never the evidence or a caught exception.
+    if specification.get("image") != image["image"]:
+        sys.exit(f"{name}: Pod declared image reference does not match qualified image")
     match = re.search(r"sha256:[a-f0-9]{64}$", status.get("imageID", ""))
-    require(match is not None and match.group(0) in {
+    if not (match is not None and match.group(0) in {
         image["rootDigest"], image["manifestDigest"], image["configDigest"]
-    })
+    }):
+        sys.exit(f"{name}: running CRI image ID does not match any qualified OCI root/manifest/config digest")
     return {"containerId": status["containerID"], "imageId": status["imageID"],
             "restartCount": status["restartCount"]}
 

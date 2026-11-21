@@ -7,7 +7,8 @@ import test from "node:test";
 import {
   createKubernetesClient,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
+import { readTwoClusterInputs } from "../helpers/kubernetes-two-cluster-inputs.ts";
 
 const execute = promisify(execFile);
 const configurationFile = process.env.OCC_TEST_TWO_CLUSTER_CONFIG;
@@ -18,16 +19,8 @@ test(
   async (t) => {
     // The selected fixture is a complete Helm-installed OCE, with separate API
     // and worker credentials. Neither the controller nor its Drivers are mocked.
-    const configuration = JSON.parse(await readFile(configurationFile, "utf8"));
-    const origin = new URL(configuration.apiUrl);
-    assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(origin.hostname));
-    assert.ok(["http:", "https:"].includes(origin.protocol));
-    assert.equal(origin.username + origin.password + origin.search + origin.hash, "");
-    const authMethod = configuration.harnessAuthMethod ?? "api_key";
-    assert.ok(["api_key", "codex_pat"].includes(authMethod), "Unsupported harnessAuthMethod.");
-    const modelEnvironment = authMethod === "codex_pat" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
-    const modelCredential = process.env[modelEnvironment];
-    assert.ok(modelCredential, `The selected real-runtime case requires ${modelEnvironment}.`);
+    const { configuration, origin, authMethod, modelEnvironment, modelCredential } =
+      await readTwoClusterInputs(configurationFile, process.env);
     const key = JSON.parse(await readFile(configuration.serviceKeyFile, "utf8")).data.key;
     assert.equal(typeof key, "string");
     const planes = {};
@@ -498,7 +491,11 @@ test(
     try {
       stopped = true;
       await docker("stop", "--time", "10", executionContainerId);
-      await assert.rejects(dp.kubectl("get", "namespace", "kube-system", "--request-timeout=5s"));
+      // kubectl could not reach the API server (not an API-level refusal such as Forbidden).
+      await assert.rejects(dp.kubectl("get", "namespace", "kube-system", "--request-timeout=5s"), {
+        code: 1,
+        stderr: /Unable to connect to the server|The connection to the server \S+ was refused/,
+      });
       await api("DELETE", agentPath);
       await cp.waitFor("worker observes unavailable DP during deletion", async () => {
         const output = await cp.kubectl(

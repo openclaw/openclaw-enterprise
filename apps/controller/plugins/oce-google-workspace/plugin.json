@@ -1,0 +1,17 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "oce-google-workspace",
+  "version": "1.0.0",
+  "description": "Install the pinned gog Google Workspace CLI on a dedicated OpenClaw worker using Kubernetes Compute.",
+  "author": { "name": "OpenClaw Enterprise" },
+  "repository": "https://github.com/openclaw/openclaw-enterprise",
+  "license": "MIT",
+  "extensions": {
+    "ai.openclaw.oce": {
+      "id": "occ-plugin:google",
+      "displayName": "Google Workspace",
+      "policyScope": "enablement_only",
+      "release": "./ai.openclaw.oce/release.json"
+    }
+  }
+}

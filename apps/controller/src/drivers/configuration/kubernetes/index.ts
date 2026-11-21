@@ -1,4 +1,9 @@
 import {
+  ConfigurationValidationError as SharedConfigurationValidationError,
+  type ErrorDetail,
+} from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
+import {
   asRecord,
   isNonEmptyString,
   numericErrorStatus,
@@ -10,12 +15,24 @@ import type {
   Configuration,
   ConfigurationDriver,
   ConfigurationReference,
+  ConfigurationValidationOptions,
   JSONSchema,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
-import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
-import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
-import { DependencyUnavailableError, ResourceConflictError } from "@openclaw-enterprise/occ";
+import {
+  ConfigurationOwnershipError,
+  ConfigurationValidationError,
+} from "../../../configuration-errors.ts";
+import { validateModelCredentialReferences } from "../model-auth.ts";
+import {
+  type PreprovisionedKubernetesNamespace,
+  resolveKubernetesControlNamespace,
+} from "../../compute/kubernetes/index.ts";
+import {
+  ConfigurationSizeError,
+  DependencyUnavailableError,
+  ResourceConflictError,
+} from "@openclaw-enterprise/occ";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
@@ -29,12 +46,12 @@ export interface KubernetesConfigurationDriverOptions {
 }
 
 interface KubernetesConfigurationDriverSelection {
+  readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
   readonly id?: string;
   readonly implementation?: string;
 }
 
-export { ConfigurationValidationError } from "../model-auth.ts";
-export class ConfigurationOwnershipError extends Error {}
+export { ConfigurationOwnershipError, ConfigurationValidationError };
 export class ConfigurationConflictError extends ResourceConflictError {}
 export class ConfigurationBackendUnavailableError extends DependencyUnavailableError {}
 
@@ -93,16 +110,22 @@ function checkConfiguration(configuration: Configuration, stored: boolean): void
   checkValues(configuration.values, stored);
 }
 
-function checkValues(document: OpenClawConfigurationDocument, stored: boolean): void {
+function checkValues(
+  document: OpenClawConfigurationDocument,
+  stored: boolean,
+  options?: ConfigurationValidationOptions,
+): void {
   const values = asRecord(document);
   if (values === undefined) {
     throw new ConfigurationValidationError("Configuration values must be a JSON object.");
   }
-  validateModelCredentialReferences(document, { stored });
+  validateModelCredentialReferences(document, { ...options, stored });
+  checkSize(values);
+}
+
+function checkSize(values: Readonly<Record<string, unknown>>): void {
   if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
-    throw new ConfigurationValidationError(
-      "Configuration exceeds the Kubernetes ConfigMap size limit.",
-    );
+    throw new ConfigurationSizeError(MAX_CONFIGMAP_BYTES);
   }
 }
 
@@ -125,25 +148,33 @@ export function kubernetesConfigurationName(configurationId: string): string {
 export class KubernetesConfigurationDriver implements ConfigurationDriver {
   static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
-  static validateConfiguration(configuration: unknown): void {
-    const value = asRecord(configuration);
-    if (value === undefined) {
-      throw new ConfigurationValidationError("Kubernetes configuration options are required.");
-    }
-    if ("clients" in value || Object.keys(value).some((key) => key !== "authentication")) {
-      throw new ConfigurationValidationError(
-        "Injected clients and unknown Kubernetes configuration options are not supported.",
+  static validateConfiguration(
+    configuration: Readonly<KubernetesConfigurationDriverOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateKubernetesAuthentication(
+        configuration.authentication,
+        (message) => new ConfigurationValidationError(message),
       );
+
+      return [];
+    } catch (error) {
+      return error instanceof SharedConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
     }
-    validateKubernetesAuthentication(
-      value.authentication,
-      (message) => new ConfigurationValidationError(message),
-    );
   }
 
   readonly id: string;
   readonly capability = "configuration" as const;
   readonly implementation: string;
+  private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly options: KubernetesConfigurationDriverOptions;
   private client: Promise<CoreV1Api> | undefined;
 
@@ -151,7 +182,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
     options: KubernetesConfigurationDriverOptions,
     selection: KubernetesConfigurationDriverSelection = {},
   ) {
-    KubernetesConfigurationDriver.validateConfiguration(options);
+    options = requireConfiguration(KubernetesConfigurationDriver, options);
     this.id = requiredString(selection.id ?? "config-kubernetes", "Configuration Driver ID");
     this.implementation = selection.implementation ?? IMPLEMENTATION;
     if (this.implementation !== IMPLEMENTATION) {
@@ -159,6 +190,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
         "Unsupported Kubernetes configuration implementation.",
       );
     }
+    this.preprovisionedNamespace = selection.preprovisionedNamespace;
     this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
   }
 
@@ -166,8 +198,19 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
     checkConfiguration(configuration, false);
   }
 
-  async validateValues(document: OpenClawConfigurationDocument): Promise<void> {
-    checkValues(document, false);
+  async validateValues(
+    document: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): Promise<void> {
+    checkValues(document, false, options);
+  }
+
+  async validateSize(document: OpenClawConfigurationDocument): Promise<void> {
+    // Values that are not an object are left to validate, which refuses them.
+    const values = asRecord(document);
+    if (values !== undefined) {
+      checkSize(values);
+    }
   }
 
   async create(configuration: Configuration): Promise<Configuration> {
@@ -446,7 +489,9 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
 
   private async controlNamespace(client: CoreV1Api, namespaceId: string): Promise<string> {
     const { name } = await this.request(
-      () => resolveKubernetesControlNamespace(client, namespaceId),
+      () =>
+        this.preprovisionedNamespace?.read(client, namespaceId) ??
+        resolveKubernetesControlNamespace(client, namespaceId),
       "namespace verification",
     );
     return name;
@@ -469,6 +514,10 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
         timedOut: () =>
           new ConfigurationBackendUnavailableError(
             `The Kubernetes ConfigMap ${action} outcome is unknown after timeout.`,
+          ),
+        deadlineElapsed: () =>
+          new ConfigurationBackendUnavailableError(
+            `The Kubernetes ConfigMap ${action} was not sent: the request ran out of time.`,
           ),
         failed: (error) => error,
       },

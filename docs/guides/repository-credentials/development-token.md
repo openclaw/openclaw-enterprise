@@ -14,7 +14,9 @@ session directory.
 
 ## Choose a repository and token
 
-Use a scratch repository. A fine-grained token limited to that repository
+Use a disposable repository. Avoid a token with `workflow` scope: the gateway
+checks ref names only, so a leaked `git-write` bearer could push a workflow file
+that runs with the repository's secrets. A fine-grained token limited to that repository
 (Contents read and write, Metadata read) bounds the damage if a session bearer
 leaks, and is the only class that may enable read-only GraphQL. The host `gh` token
 (`gho_`) works for clone, push and REST; GraphQL stays refused. Find the
@@ -26,7 +28,8 @@ gh api repos/OWNER/scratch-repo --jq .id
 
 ## Prepare inputs
 
-Build the emitted artifacts and both images as described in
+From the repository root, run `pnpm install --frozen-lockfile`. Then build the
+emitted artifacts and both images as described in
 [Run the repository credential service](standalone-service.md#container-images).
 Then create a private input directory owned by the UID the service runs as. Using
 your own UID avoids `sudo`:
@@ -99,5 +102,5 @@ shred -u "$INPUTS/token"
 ```
 
 `operator status` shows the session DISPOSED with no pending cleanup soon after
-close. Delete test branches from the host, and revoke a fine-grained token you
-created for the test.
+close. Closing the session does not revoke the token. Delete test branches from the
+host, and revoke a fine-grained token you created for the test.

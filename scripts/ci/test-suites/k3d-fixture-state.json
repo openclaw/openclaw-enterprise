@@ -11,21 +11,18 @@
   "prepare": {
     "postgres": true,
     "k3d": true,
-    "requiresPreparedStateForFile": true
+    "requiresPreparedStateForFile": true,
+    "selfProvisionedFiles": ["tests/integration/production-preflight-cleanup-k3d.test.ts"]
   },
   "fileConcurrency": 2,
   "parallelFiles": [
-    "tests/integration/postgres-platform-state-kubernetes.test.mjs",
-    "tests/integration/production-network-access.test.mjs",
-    "tests/integration/kubernetes-compute-provisioning-real.test.mjs"
+    "tests/integration/postgres-platform-state-kubernetes.test.ts",
+    "tests/integration/kubernetes-compute-provisioning-real.test.mjs",
+    "tests/integration/production-install-retained-job-k3d.test.ts"
   ],
   "files": [
     {
-      "path": "tests/integration/production-network-access.test.mjs",
-      "expectedTests": ["production Helm policies enforce workload network access levels"]
-    },
-    {
-      "path": "tests/integration/postgres-platform-state-kubernetes.test.mjs",
+      "path": "tests/integration/postgres-platform-state-kubernetes.test.ts",
       "expectedTests": [
         "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
         "real OCC creates concurrent Namespace Agents and durably associates revisions with their owner",
@@ -38,6 +35,21 @@
       "expectedTests": [
         "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
         "provisioning API retains the first deployment outcome with real Kubernetes fixture storage"
+      ]
+    },
+    {
+      "path": "tests/integration/production-install-retained-job-k3d.test.ts",
+      "expectedTests": [
+        "Helm install preserves the initialization Job when release history is absent"
+      ]
+    },
+    {
+      "path": "tests/integration/production-preflight-cleanup-k3d.test.ts",
+      "env": {
+        "OCC_TEST_PRODUCTION_OBSERVABILITY": "1"
+      },
+      "expectedTests": [
+        "interrupted preflight recovery respects real Kubernetes identity and consumer lifetime"
       ]
     }
   ]

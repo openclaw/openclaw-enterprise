@@ -26,6 +26,7 @@ func TestDevelopmentNamespaceLengthPreflight(t *testing.T) {
 				t.Setenv("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-proof")
 				t.Setenv("OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "")
 				t.Setenv("OCC_DEVELOPMENT_REPOSITORY_IMAGE", "")
+				t.Setenv(developmentImageRegistrySetting, "")
 				t.Setenv("OCC_DEVELOPMENT_CONTROLLER_IMAGE", "")
 				t.Setenv("OCC_KUBERNETES_RUNTIME_IMAGE", "")
 				t.Setenv("OPENCLAW_DEV_PORT", "3000")

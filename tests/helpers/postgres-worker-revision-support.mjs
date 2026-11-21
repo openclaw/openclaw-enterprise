@@ -1,50 +1,169 @@
+import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
-import { waitFor } from "./wait-for.mjs";
+import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
+import { RepositoryReceiptStore } from "../../apps/controller/src/backends/repository-credentials/receipt-store.ts";
+import {
+  advanceCleanupRetries,
+  advanceRevisionQueue,
+  completedPasses,
+  completion,
+  deferWork,
+  expireStoppedClaims,
+  expireWorkLease,
+  makeQueuedWorkDue,
+  makeWorkDue,
+  nextMaintenancePass,
+  settleRevisionMaintenance,
+  waitForRevisionPass,
+  waitForWorkPass,
+  waitForWorkStateDue,
+} from "./postgres-worker-revision-queue.ts";
 
-// Helpers shared by the postgres-worker-agent-revision*.test.mjs files.
+/**
+ * @import { Pool } from "pg"
+ * @import { AgentRevision, NativeRepositorySender, OpenRepositorySessionInput, RepositoryCredentialSessionStatus, RepositoryPolicyDriver, RepositoryRevisionState } from "../../packages/contracts/src/index.ts"
+ * @import { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts"
+ * @import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts"
+ * @typedef {Omit<RepositoryPolicyDriver & NativeRepositorySender, "implementation" | "maintenanceIntervalMs" | "resolve" | "status"> & {
+ *   implementation: string,
+ *   maintenanceIntervalMs: number,
+ *   status(sessionId: string, signal?: AbortSignal): ReturnType<NativeRepositorySender["status"]>,
+ *   resolve(input?: Parameters<RepositoryPolicyDriver["resolve"]>[0]): ReturnType<RepositoryPolicyDriver["resolve"]>,
+ *   bindReceiptState(state: PostgresPlatformState): void,
+ *   checkAdmissionReady(signal: AbortSignal): Promise<void>
+ * }} RepositoryWorkerDriver
+ * @typedef {{ operation: "open", input: OpenRepositorySessionInput, signal: AbortSignal }
+ *   | { operation: "recover", input: OpenRepositorySessionInput, signal: AbortSignal }
+ *   | { operation: "status", sessionId: string }
+ *   | { operation: "close", sessionId: string }} RepositoryCall
+ * @typedef {{ -readonly [Key in keyof RepositoryRevisionState]: RepositoryRevisionState[Key] }} FixtureRepositoryRevision
+ */
 
-// The worker emits worker.completed after its queue transaction commits, so another
-// connection can see the committed Work state first. Wait for the event instead of
-// reading the event list once.
-export function completion(events, description, predicate) {
-  return waitFor(description, async () => events.find(predicate));
+// Helpers shared by the PostgreSQL worker integration tests.
+
+export {
+  advanceCleanupRetries,
+  advanceRevisionQueue,
+  completedPasses,
+  completion,
+  deferWork,
+  expireStoppedClaims,
+  expireWorkLease,
+  makeQueuedWorkDue,
+  makeWorkDue,
+  nextMaintenancePass,
+  settleRevisionMaintenance,
+  waitForRevisionPass,
+  waitForWorkPass,
+  waitForWorkStateDue,
+};
+
+// A `transformDrivers` for fixture.start whose IAM Driver throws a plain Error while
+// `unavailable()` is true, as an IAM outage does. The worker retries that pass.
+/**
+ * @param {() => boolean} unavailable
+ * @returns {(drivers: InstallationRuntimeDrivers) => InstallationRuntimeDrivers}
+ */
+export function withUnavailableIAM(unavailable) {
+  return (drivers) => {
+    const createIAMDriver = drivers.createIAMDriver;
+    return {
+      ...drivers,
+      createIAMDriver(state) {
+        const iam = createIAMDriver(state);
+        return {
+          id: iam.id,
+          implementation: iam.implementation,
+          capability: iam.capability,
+          lookupIdentity: iam.lookupIdentity.bind(iam),
+          async authorize(request) {
+            if (unavailable()) {
+              throw new Error("IAM is temporarily unavailable");
+            }
+            return iam.authorize(request);
+          },
+        };
+      },
+    };
+  };
 }
 
-// Model the next cleanup interval without waiting an hour for the boundary
-// Driver. Change only this revision's queued due times; claims remain real.
-export async function advanceCleanupRetries(fixture, revision) {
-  await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp()
-     WHERE state = 'queued' AND idempotency_key LIKE $1`,
-    [`agent_revision:${revision.id}:repository_cleanup:%`],
-  );
-}
-
-// This boundary Driver supplies protocol observations. The real worker, native
-// IAM, State, and PostgreSQL queue own every lifecycle decision asserted below;
-// these cases do not qualify the concrete credential service or Compute runtime.
-export function repositoryBoundary({ count = 1, deadlineWallMs = Date.now() + 120_000 } = {}) {
+// This boundary Driver supplies synthetic sessions backed by the actual receipt
+// owner. The real worker, IAM, State, and PostgreSQL queue own the lifecycle
+// decisions; these cases do not qualify the concrete credential service or Compute.
+export function repositoryBoundary({
+  count = 1,
+  backendId = "repository-provider",
+  deadlineWallMs = Date.now() + 120_000,
+} = {}) {
   const bindings = Array.from({ length: count }, (_, index) => ({
     repositoryRef: `repository-${index}-${randomUUID()}`,
     profile: "read",
-    backendId: "repository-provider",
+    backendId,
     grant: {
       providerInstanceId: "repository-provider-instance",
       repositoryId: `repository-${index}`,
       grantId: `grant-${index}`,
     },
   }));
+  /** @type {Map<string, RepositoryCredentialSessionStatus>} */
   const admissions = new Map();
+  /** @type {Map<string, RepositoryCredentialSessionStatus>} */
   const sessions = new Map();
+  /** @type {Map<string, { admissionId: string, input: Parameters<RepositoryReceiptStore["bind"]>[1] }>} */
+  const ownership = new Map();
+  /** @type {RepositoryCall[]} */
   const calls = [];
+  const generation = randomUUID();
+  /** @type {RepositoryReceiptStore} */
+  let receipts;
+  /** @param {string} sessionId */
+  const dispose = async (sessionId) => {
+    const session = sessions.get(sessionId);
+    const owned = ownership.get(sessionId);
+    if (session === undefined || owned === undefined) {
+      return undefined;
+    }
+    if (session.state === "DISPOSED") {
+      return session;
+    }
+    /** @type {RepositoryCredentialSessionStatus} */
+    const disposed = { ...session, state: "DISPOSED" };
+    await receipts.dispose(owned.admissionId, owned.input, generation, {
+      ...disposed,
+      activeUses: 0,
+      cleanup: {
+        active: 0,
+        pending: 0,
+        uncertain: 0,
+        auxiliaryPending: false,
+        revoked: 0,
+        expired: 0,
+      },
+    });
+    sessions.set(sessionId, disposed);
+    admissions.set(owned.admissionId, disposed);
+    return disposed;
+  };
+  /** @type {RepositoryWorkerDriver} */
   const driver = {
     id: "repository-worker-boundary",
     implementation: "repository-worker-boundary",
     capability: "repo",
     maintenanceIntervalMs: 3_600_000,
+    durableBrokerReceipts: true,
+    bindReceiptState(state) {
+      receipts = new RepositoryReceiptStore(state, {
+        driverId: driver.id,
+        implementation: driver.implementation,
+        backendId,
+      });
+    },
+    async checkAdmissionReady() {
+      assert.ok(receipts, "repository boundary requires its fixture's receipt state");
+    },
     async listOptions() {
-      return { options: [], descriptionsPending: false };
+      return { options: [] };
     },
     resolve() {
       return { bindings, sessionDurationSeconds: 60 };
@@ -55,17 +174,36 @@ export function repositoryBoundary({ count = 1, deadlineWallMs = Date.now() + 12
       if (existing !== undefined) {
         return { kind: "recovered", status: existing };
       }
-      if (input.recoverOnly) {
+      const bound = {
+        namespaceId: input.namespaceId,
+        repositoryRef: input.binding.repositoryRef,
+        profile: input.binding.profile,
+        expectedBinding: input.binding.grant,
+        durationSeconds: input.durationSeconds,
+        deadlineWallMs: input.deadlineWallMs,
+        preparedOnly: input.preparedOnly,
+      };
+      const admission = await receipts.admission(
+        input.admissionId,
+        bound,
+        generation,
+        input.recoverOnly === true,
+      );
+      if (admission.kind === "missing") {
         return { kind: "missing" };
       }
+      assert.equal(admission.kind, "reserved");
+      /** @type {RepositoryCredentialSessionStatus} */
       const session = {
         sessionId: `session_${randomUUID()}`,
         state: "OPEN",
         deadlineWallMs: Math.min(Date.now() + input.durationSeconds * 1000, input.deadlineWallMs),
         binding: input.binding.grant,
       };
+      await receipts.bind(input.admissionId, bound, generation, session);
       admissions.set(input.admissionId, session);
       sessions.set(session.sessionId, session);
+      ownership.set(session.sessionId, { admissionId: input.admissionId, input: bound });
       return {
         kind: "created",
         session,
@@ -89,31 +227,22 @@ export function repositoryBoundary({ count = 1, deadlineWallMs = Date.now() + 12
     },
     async close(sessionId) {
       calls.push({ operation: "close", sessionId });
-      const session = sessions.get(sessionId);
-      if (session === undefined) {
-        return undefined;
-      }
-      const disposed = { ...session, state: "DISPOSED" };
-      sessions.set(sessionId, disposed);
-      for (const [admissionId, admitted] of admissions) {
-        if (admitted.sessionId === sessionId) {
-          admissions.set(admissionId, disposed);
-        }
-      }
-      return disposed;
+      return dispose(sessionId);
     },
   };
-  return {
-    driver,
-    calls,
-    snapshot: {
-      driver: { id: driver.id, implementation: driver.implementation },
-      deadlineWallMs,
-      bindings,
-    },
+  /** @type {FixtureRepositoryRevision} */
+  const snapshot = {
+    driver: { id: driver.id, implementation: driver.implementation },
+    deadlineWallMs,
+    bindings,
   };
+  return { driver, dispose, calls, snapshot };
 }
 
+/**
+ * @param {{ state: PostgresPlatformState }} fixture
+ * @param {Pick<AgentRevision, "namespaceId" | "agentId" | "id">} revision
+ */
 export function repositoryAttempts(fixture, revision) {
   return fixture.state.read((view) =>
     view.repositorySessions.listRevisionAttempts({
@@ -125,6 +254,10 @@ export function repositoryAttempts(fixture, revision) {
 }
 
 // Offboards an operator: it keeps its identity but loses every access binding.
+/**
+ * @param {{ observerPool: Pick<Pool, "query"> }} fixture
+ * @param {string} subjectId
+ */
 export function removeAccessBindings(fixture, subjectId) {
   return fixture.observerPool.query(
     `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,

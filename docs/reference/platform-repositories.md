@@ -1,9 +1,8 @@
 # Platform repository transactions
 
 The memory and PostgreSQL implementations of `PlatformStateStore` bind every
-repository handle to one `read` or `transact` callback. The controller uses this
-boundary for resource mutations and audit records; the worker shares it with
-its durable work queue.
+repository handle to one `read` or `transact` callback. The controller can save a resource change, record its audit event, and queue
+the corresponding operation for the worker in one transaction.
 
 ## Caller contract
 
@@ -30,6 +29,8 @@ same borrowed client. Only the state owner begins, commits, rolls back, and
 releases that client. Accepted operations finish before release, and escaped
 queue or query handles cannot access it afterward. An uncertain commit outcome
 continues to suppress unsafe controller compensation.
+
+The `authenticationStates` repository stores [browser OAuth connection attempts](../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../flows/credential-source-refresh.md#device-authorization-and-configuration) in one PostgreSQL table. It creates typed states, consumes a matching browser attempt once, updates device progress by version, and settles expired attempts. Human sign-in attempts remain under the separate human-authentication owner.
 
 These are persistence boundaries; they do not authorize a resource operation.
 The controller and worker still enforce the caller's exact resource authority.

@@ -28,13 +28,15 @@ export KUBECONFIG_FILE="$OCC_EXAMPLE_DIRECTORY/kubeconfig"
 export CONTEXT="k3d-$CLUSTER"
 ```
 
-Build and import the images:
+In the same Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments),
+then build and import the images:
 
 ```bash
 docker build --target runtime \
-  --build-arg NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
+  --build-arg NODE_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a \
   -t "localhost/$CLUSTER/controller:local" .
 docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" \
   -t "localhost/$CLUSTER/runtime:local" .
 k3d image import "localhost/$CLUSTER/controller:local" \
   "localhost/$CLUSTER/runtime:local" -c "$CLUSTER"
@@ -62,7 +64,7 @@ Populate private YAML copies with those references:
 
 ```bash
 umask 077
-cp deploy/examples/production/{values,installation,bootstrap-pvc}.yaml "$OCC_EXAMPLE_DIRECTORY/"
+cp deploy/examples/production/{values,installation}.yaml "$OCC_EXAMPLE_DIRECTORY/"
 yq -i '.images.controller = strenv(CONTROLLER_IMAGE)' "$OCC_EXAMPLE_DIRECTORY/values.yaml"
 yq -i '.drivers.compute.configuration.images.gateway = strenv(RUNTIME_IMAGE) |
   .drivers.compute.configuration.images.agent = strenv(RUNTIME_IMAGE)' "$OCC_EXAMPLE_DIRECTORY/installation.yaml"
@@ -73,7 +75,10 @@ These references work in this cluster and retain `requireImmutableDigest: true`.
 Use the generated directory in place of `/secure/occ` in the production commands;
 keep its image values and kubeconfig instead of copying the templates again.
 Set the remaining database, HTTPS, network, and storage inputs for your trial
-(k3d's default StorageClass is `local-path`). The images alone do not configure
+(k3d's default StorageClass is `local-path`). Before Helm installation, prepare
+[private routing](workspace-routing.md#requirements), including its controllers,
+CRDs, GatewayClass, service-key Secret, and matching Installation settings.
+The images alone do not configure
 those dependencies or prove an Agent model turn. When finished with the trial,
 run `KUBECONFIG="$KUBECONFIG_FILE" k3d cluster delete "$CLUSTER"`.
 
@@ -85,16 +90,16 @@ For missing DNS, denied connections, or unready Kubernetes Agents after a
 checkout update, inspect the [ordinary network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
 on the affected Pod and its workload template, plus all matching NetworkPolicies.
 The upgrade restarts nothing: running Pods keep their templates and grants until
-Compute next prepares a revision of their Agent. To move an Agent onto the
-profile, rebuild the controller and deploy a new revision. Preparing it
+Compute next prepares a version of their Agent. To move an Agent onto the
+profile, rebuild the controller and deploy a new version. Preparing it
 re-renders that Agent's grants with the profile, and its new templates carry the
 label. A Gateway from an earlier template, embedded or dedicated, keeps serving
-until activation replaces it. Re-preparing an active revision, for
+until activation replaces it. Re-preparing a selected version, for
 example during repository-credential maintenance, rolls its Pods once onto
 profiled templates. Namespace-wide `allow-dns`,
 `allow-gateway-ingress` and `allow-node-gateway` are narrowed only in namespaces
 provisioned after the upgrade; an earlier namespace keeps its previous selectors
-until it is recreated. OpenShell Sandboxes need a redeployed revision.
+until it is recreated. OpenShell Sandboxes need a redeployed version.
 Restarting a Pod from an old template retains the missing label; assigning the
 profile to arbitrary Pods grants access and is not a repair.
 
@@ -107,9 +112,11 @@ startup, including macOS machine connections. See the
 [cleanup flow](../../flows/docker-compose-development.md#3-clean-up-docker-or-podman-compose)
 for how the host connection and worker socket are handled.
 
-This preserves PostgreSQL, Configuration, and bootstrap-key volumes. Use
-`--volumes` only to delete the local Installation. First account for any Agent
-containers and tenant networks owned by Docker Compute.
+Compose keeps PostgreSQL and Configuration volumes unless you
+pass `--volumes` to delete the local Installation. Account for Agent containers
+and their Namespace networks before deleting the database. Docker Compute owns
+those networks. The private bootstrap input files and CLI service-key file are outside these
+volumes. Retain or remove them according to your credential-retention policy.
 
 A Kubernetes profile's `Cleanup` command instead deletes its k3d cluster,
 database, Agents, and volumes; see [stop and clean up](local-kubernetes-development.md#stop-and-clean-up).

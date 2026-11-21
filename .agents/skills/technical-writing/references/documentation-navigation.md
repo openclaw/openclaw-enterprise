@@ -14,20 +14,22 @@ one coherent question or helps complete one task. Organize around reader intent,
 not the code tree. Keep the starting path first and ongoing work separate from
 first-time setup.
 
-| Section         | What belongs there                                                                                                           |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Getting Started | Orientation, concepts, setup, and the first successful use.                                                                  |
-| Topics          | Product concepts, feature behavior, configuration, and feature troubleshooting that do not belong to a named implementation. |
-| Integrations    | Named Drivers, Providers, or channels; their setup, support limits, and comparisons.                                         |
-| Operate         | Production installation and ongoing work: monitoring, platform troubleshooting, credentials, upgrades, and recovery.         |
-| Reference       | Exact CLI and HTTP API contracts: commands, flags, requests, responses, and errors.                                          |
-| Contribute      | Work on the platform itself: Design, Local Development, Repository Layout, and Documentation.                                |
+| Section          | What belongs there                                                                                                           |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Getting Started  | Orientation, concepts, setup, and the first successful use.                                                                  |
+| Topics           | Product concepts, feature behavior, configuration, and feature troubleshooting that do not belong to a named implementation. |
+| Integrations     | Named Drivers, Providers, or channels; their setup, support limits, and comparisons.                                         |
+| Deploy & Operate | Production installation and ongoing work: monitoring, platform troubleshooting, credentials, upgrades, and recovery.         |
+| Reference        | Exact CLI and HTTP API contracts: commands, flags, requests, responses, and errors.                                          |
+| Testing & CI     | Test setup, scenarios, automated test workflows, and verification evidence.                                                  |
+| Contribute       | Work on the platform itself: Design, Local Development, Repository Layout, and Documentation.                                |
 
 The first page in each menu should orient readers to the whole section, not
 drop them into one category. Put prerequisites before the steps that need them;
 for example, local platform setup precedes deploying a first Agent. Keep existing
 audiences clear: the first five menus serve product users and operators, while
-Contribute serves people changing the platform.
+Testing & CI and Contribute serve people changing the platform. Publication and
+preview workflows belong in Contribute; Testing & CI owns test workflows.
 
 Give each subject one owning page and link to it from other useful locations.
 For example, explain Sandbox in Topics; keep OpenShell setup in Integrations

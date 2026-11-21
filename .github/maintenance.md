@@ -1,7 +1,8 @@
 # Repository maintenance proposal
 
 This is a proposed settings checklist for `openclaw/openclaw-enterprise`, not a
-record of applied controls. Merging this document changes no GitHub setting,
+record of applied controls. See [CI configuration](../docs/testing/ci.md#ci-configuration)
+for current workflow settings. Merging this document changes no GitHub setting,
 registry permission, subscription, or release authorization. A repository or
 organization administrator must review and explicitly apply each setting.
 
@@ -14,7 +15,10 @@ existing control or enable a paid feature without approval.
 In **Settings > Actions > General**:
 
 - Select the read-only default for `GITHUB_TOKEN` workflow permissions.
-- Disable **Allow GitHub Actions to create and approve pull requests**.
+- Enable **Allow GitHub Actions to create and approve pull requests** for the
+  [contributor refresh workflow](workflows/contributors.yml). It opens a README
+  update for review; it does not approve or merge PRs. Keep write permissions scoped
+  to that job.
 - Keep fork workflow access, write tokens, and secrets disabled unless an
   explicitly reviewed use case requires them.
 - Review the actions allowlist against the actual workflow dependencies before
@@ -53,19 +57,9 @@ approval is intended. Protect CODEOWNERS itself.
 
 ### Required CI context
 
-[PR #23](https://github.com/openclaw/openclaw-enterprise/pull/23) defines the
-aggregate job **`CI Required`** in the **`CI`** workflow. The reviewed source is
-[`ci.yml` at `f00e5992db67b417ac6f4136dabd5e6585f4b8a2`](https://github.com/openclaw/openclaw-enterprise/blob/f00e5992db67b417ac6f4136dabd5e6585f4b8a2/.github/workflows/ci.yml).
-It aggregates Suite Audit and the five unprivileged test lanes, including their
-result artifacts.
-
-Do not require this context until its producer is merged, enabled, and has
-reported successfully on a real candidate. Select the observed `CI Required`
-check from GitHub Actions in the ruleset rather than guessing a display prefix
-or copying `openclaw/ci-gate` from another repository. Confirm skipped or failed
-required lanes fail the aggregate. Recheck the context if PR #23 changes before
-merge. Its protected full-integration workflow is separate; a PR-safe pass is
-not proof that credentialed model suites ran.
+Use the current [CI configuration and lane selection](../docs/testing/ci.md).
+The proposal above does not establish live branch protection. Verify the
+required check's producer and current repository rules before changing them.
 
 ## Private container publication
 

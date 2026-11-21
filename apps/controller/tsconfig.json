@@ -7,6 +7,7 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
+    { "path": "./src/console" },
     { "path": "../../packages/utils" },
     { "path": "../../packages/contracts" },
     { "path": "../../packages/occ" },

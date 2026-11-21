@@ -5,38 +5,24 @@ import {
   observeNodeSetup,
 } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 
-const COMMANDS = [
-  "file.fetch",
-  "file.stat",
-  "file.write",
-  "file.create",
-  "dir.list",
-  "workspace.memory",
-  "workspace.skills",
-];
-
-// A Gateway whose setup completes on the `pairedAt`-th status read and whose
-// node reports connected from the `connectedAt`-th describe.
-function gateway({ pairedAt = Infinity, connectedAt = 1, completion } = {}) {
+// Protocol responses exercise the observation adapter, not native pairing or delivery.
+function gateway({ pairedAt = Infinity, completion, uncertain = false } = {}) {
   const calls = [];
-  let statusReads = 0;
-  let describes = 0;
   const request = async (method, params) => {
     calls.push(method);
-    if (method === "device.pair.setupStatus") {
-      statusReads++;
-      if (statusReads < pairedAt) {
-        return { setupId: params.setupId };
-      }
-      return {
-        completion: completion ?? { setupId: params.setupId, access: "node", deviceId: "node-1" },
-      };
+    // A receipt must reach its owner before any fallible node lookup or probe.
+    assert.equal(method, "device.pair.setupStatus");
+    if (calls.length < pairedAt) {
+      return {};
     }
-    if (method === "node.describe") {
-      describes++;
-      return { nodeId: params.nodeId, connected: describes >= connectedAt, commands: COMMANDS };
-    }
-    throw new Error(`unexpected ${method}`);
+    return {
+      [uncertain ? "deliveryUncertain" : "completion"]: completion ?? {
+        setupId: params.setupId,
+        access: "node",
+        deviceId: "node-1",
+        ts: 1,
+      },
+    };
   };
   return { request, calls };
 }
@@ -47,25 +33,85 @@ test("a setup observation without a wait reads the Gateway once", async () => {
   assert.deepEqual(calls, ["device.pair.setupStatus"]);
 });
 
-test("a waiting setup observation returns as soon as the node pairs and connects", async () => {
-  const { request, calls } = gateway({ pairedAt: 3, connectedAt: 2 });
-  const started = Date.now();
-  assert.deepEqual(await observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000), 5_000), {
-    deviceId: "node-1",
-    connected: true,
-  });
-  // Two unpaired reads, the pairing, one describe before the node connects, then one after.
-  assert.deepEqual(calls, [
-    "device.pair.setupStatus",
-    "device.pair.setupStatus",
-    "device.pair.setupStatus",
-    "node.describe",
-    "node.describe",
-  ]);
-  assert.ok(Date.now() - started < 5_000, "it does not wait out its budget");
+test("setup observation rejects malformed receipts without treating them as absent", async (t) => {
+  const receipt = { setupId: "setup-1", access: "node", deviceId: "node-1", ts: 1 };
+  const malformed = [
+    ["array", []],
+    ["string", "broken"],
+    ["null", null],
+    ["number", 1],
+    ["boolean", true],
+  ];
+  for (const { name, status, invalid, expected } of [
+    { name: "absent receipts", status: {}, expected: undefined },
+    ...[
+      { completion: receipt },
+      { deliveryUncertain: receipt },
+      // The schema permits both: confirmed completion keeps precedence.
+      { completion: receipt, deliveryUncertain: { ...receipt, deviceId: "node-2" } },
+    ].map((status) => ({
+      name: Object.keys(status).join(" and "),
+      status,
+      expected: {
+        deviceId: "node-1",
+        delivery: Object.hasOwn(status, "completion") ? "confirmed" : "uncertain",
+      },
+    })),
+    ...["completion", "deliveryUncertain"].flatMap((field) => [
+      ...malformed.map(([shape, value]) => ({
+        name: `${field} is ${shape}`,
+        status: { [field]: value },
+        invalid: true,
+      })),
+      {
+        name: `malformed ${field} alongside a valid receipt`,
+        status: { completion: receipt, deliveryUncertain: receipt, [field]: [] },
+        invalid: true,
+      },
+    ]),
+  ]) {
+    await t.test(name, async () => {
+      const calls = [];
+      const request = async (method) => {
+        calls.push(method);
+        assert.equal(method, "device.pair.setupStatus");
+        return status;
+      };
+      // Only a genuinely absent receipt permits the caller to replace expired
+      // setup. Malformed evidence must stop before node lookup or renewal.
+      if (invalid) {
+        await assert.rejects(
+          observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000)),
+          /invalid node setup completion/,
+        );
+      } else {
+        assert.deepEqual(
+          await observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000)),
+          expected,
+        );
+      }
+      assert.deepEqual(calls, ["device.pair.setupStatus"]);
+    });
+  }
 });
 
-test("a waiting setup observation returns the last reading when its time is up", async () => {
+test("a waiting setup observation returns either receipt before any node lookup", async () => {
+  for (const uncertain of [false, true]) {
+    const { request, calls } = gateway({ pairedAt: 3, uncertain });
+    const started = Date.now();
+    assert.deepEqual(
+      await observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000), 5_000),
+      {
+        deviceId: "node-1",
+        delivery: uncertain ? "uncertain" : "confirmed",
+      },
+    );
+    assert.deepEqual(calls, Array(3).fill("device.pair.setupStatus"));
+    assert.ok(Date.now() - started < 5_000, "it does not wait out its budget");
+  }
+});
+
+test("a waiting setup observation returns absent when its time is up", async () => {
   const unpaired = gateway();
   const started = Date.now();
   assert.equal(
@@ -74,28 +120,20 @@ test("a waiting setup observation returns the last reading when its time is up",
   );
   const elapsed = Date.now() - started;
   assert.ok(elapsed >= 600 - NODE_SETUP_POLL_MS && elapsed < 600 + NODE_SETUP_POLL_MS * 4);
-  // A node that paired but never connected is reported with its device, as before.
-  const disconnected = gateway({ pairedAt: 1, connectedAt: Infinity });
-  assert.deepEqual(
-    await observeNodeSetup(disconnected.request, "setup-1", AbortSignal.timeout(5_000), 600),
-    { deviceId: "node-1", connected: false },
-  );
-  // The completion is read once; only presence is re-read.
-  assert.equal(
-    disconnected.calls.filter((method) => method === "device.pair.setupStatus").length,
-    1,
-  );
 });
 
 test("waiting does not relax setup completion validation", async () => {
-  const { request } = gateway({
-    pairedAt: 2,
-    completion: { setupId: "another-setup", access: "node", deviceId: "node-1" },
-  });
-  await assert.rejects(
-    observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000), 5_000),
-    /invalid node setup completion/,
-  );
+  for (const completion of [
+    { setupId: "another-setup", access: "node", deviceId: "node-1", ts: 1 },
+    { setupId: "setup-1", access: "node", deviceId: "bad/id", ts: 1 },
+  ]) {
+    const { request, calls } = gateway({ pairedAt: 2, completion });
+    await assert.rejects(
+      observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000), 5_000),
+      /invalid node setup completion/,
+    );
+    assert.equal(calls.includes("node.describe"), false);
+  }
 });
 
 test("a waiting setup observation stops when its owner aborts", async () => {
@@ -127,30 +165,20 @@ test("a waiting setup observation ends early once other work is waiting", async 
   assert.equal(asked, 3);
   assert.equal(unpaired.calls.length, 3, "one reading before each question");
   assert.ok(Date.now() - started < 5_000 - NODE_SETUP_POLL_MS, "it does not wait out its budget");
-  // Work already waiting: one reading, and a paired device is still reported.
-  const disconnected = gateway({ pairedAt: 1, connectedAt: Infinity });
-  assert.deepEqual(
-    await observeNodeSetup(
-      disconnected.request,
-      "setup-1",
-      AbortSignal.timeout(5_000),
-      5_000,
-      async () => true,
-    ),
-    { deviceId: "node-1", connected: false },
-  );
-  assert.deepEqual(disconnected.calls, ["device.pair.setupStatus", "node.describe"]);
-  // A connected node returns without asking; validation is unchanged.
-  const connected = gateway({ pairedAt: 1 });
-  assert.deepEqual(
-    await observeNodeSetup(connected.request, "setup-1", AbortSignal.timeout(5_000), 5_000, () =>
-      assert.fail("not asked once the node is connected"),
-    ),
-    { deviceId: "node-1", connected: true },
-  );
+  // Either receipt must reach the owner before another wait or fallible lookup.
+  for (const uncertain of [false, true]) {
+    const observed = gateway({ pairedAt: 1, uncertain });
+    assert.deepEqual(
+      await observeNodeSetup(observed.request, "setup-1", AbortSignal.timeout(5_000), 5_000, () =>
+        assert.fail("a consumed receipt must return before yielding to other work"),
+      ),
+      { deviceId: "node-1", delivery: uncertain ? "uncertain" : "confirmed" },
+    );
+    assert.deepEqual(observed.calls, ["device.pair.setupStatus"]);
+  }
   const invalid = gateway({
     pairedAt: 1,
-    completion: { setupId: "another-setup", access: "node", deviceId: "node-1" },
+    completion: { setupId: "another-setup", access: "node", deviceId: "node-1", ts: 1 },
   });
   await assert.rejects(
     observeNodeSetup(

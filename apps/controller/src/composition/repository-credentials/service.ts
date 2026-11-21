@@ -1,7 +1,7 @@
-import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
-import type { CredentialService } from "../../drivers/repo/credentials/service-contracts.ts";
+import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
+import type { CredentialService } from "../../drivers/repo/access/service-contracts.ts";
 import type { LoadedConfiguration } from "./contracts.ts";
-import type { BoundListeners } from "../../drivers/repo/credentials/server.ts";
+import type { BoundListeners } from "../../drivers/repo/access/server.ts";
 
 export interface RunningService {
   readonly service: CredentialService;
@@ -19,7 +19,7 @@ export async function startCredentialService(
   options: StartOptions = {},
 ): Promise<RunningService> {
   const [{ createSystemClock }, { loadConfiguration }] = await Promise.all([
-    import("../../drivers/repo/credentials/clock.ts"),
+    import("../../drivers/repo/access/clock.ts"),
     import("./config.ts"),
   ]);
   const clock = createSystemClock();
@@ -35,23 +35,40 @@ export async function runService(
   clock: Clock,
 ): Promise<RunningService> {
   const [{ createCredentialService }, { startListeners }] = await Promise.all([
-    import("../../drivers/repo/credentials/service.ts"),
-    import("../../drivers/repo/credentials/server.ts"),
+    import("../../drivers/repo/access/service.ts"),
+    import("../../drivers/repo/access/server.ts"),
   ]);
-  const service = createCredentialService({
-    config: loaded.config,
-    factory: loaded.factory,
-    clock,
-    ...(loaded.providerQueue === undefined ? {} : { providerQueue: loaded.providerQueue }),
-  });
+  const constructSession =
+    "createPrepared" in loaded.factory
+      ? (
+          await import("../../drivers/repo/access/session-construction.ts")
+        ).preparedSessionConstructor(loaded.factory)
+      : (
+          await import("../../drivers/repo/access/development-session.ts")
+        ).developmentSessionConstructor({
+          config: loaded.config,
+          factory: loaded.factory,
+          clock,
+        });
+  const service = createCredentialService(
+    {
+      config: loaded.config,
+      factory: loaded.factory,
+      clock,
+    },
+    constructSession,
+  );
   let listeners: BoundListeners;
   try {
-    listeners = await startListeners({ ...loaded, service, clock });
+    // One JSON line per refused request (finding 2411), next to this process's other events.
+    listeners = await startListeners({
+      ...loaded,
+      service,
+      clock,
+      log: (record) => process.stderr.write(`${JSON.stringify(record)}\n`),
+    });
   } catch {
-    await Promise.all([
-      service.shutdown(loaded.config.limits.shutdownGraceMs),
-      loaded.repositoryDescriptions?.shutdown(loaded.config.limits.shutdownGraceMs),
-    ]);
+    await service.shutdown(loaded.config.limits.shutdownGraceMs);
     loaded.close();
     throw new Error("startup-failed");
   }
@@ -64,17 +81,7 @@ export async function runService(
     listeners.stopAdmission();
     const grace = loaded.config.limits.shutdownGraceMs;
     // Wall-time process guard is independent of provider callbacks and injected clocks.
-    const pending = Promise.all([
-      service.shutdown(grace),
-      loaded.repositoryDescriptions?.shutdown(grace),
-    ]).then(([summary, descriptions]) => ({
-      closedSessions: summary.closedSessions + (descriptions?.closedSessions ?? 0),
-      disposedSessions: summary.disposedSessions + (descriptions?.disposedSessions ?? 0),
-      pendingActions: summary.pendingActions + (descriptions?.pendingActions ?? 0),
-      pendingCredentials: summary.pendingCredentials + (descriptions?.pendingCredentials ?? 0),
-      pendingAuxiliary: summary.pendingAuxiliary + (descriptions?.pendingAuxiliary ?? 0),
-      graceExpired: summary.graceExpired || (descriptions?.graceExpired ?? false),
-    }));
+    const pending = service.shutdown(grace);
     const forceExit = () => {
       process.stderr.write(
         `${JSON.stringify({ event: "shutdown", graceExpired: true, unresolved: true })}\n`,

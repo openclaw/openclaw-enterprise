@@ -6,14 +6,21 @@ set -eu
 repository_root="$(git rev-parse --show-toplevel)"
 cd "$repository_root"
 
-prettier_binary="$repository_root/node_modules/prettier/bin/prettier.cjs"
-if [ ! -f "$prettier_binary" ]; then
-  printf '%s\n' 'The installed Prettier executable is unavailable; refusing to push.' >&2
+if ! bun_binary="$(command -v bun)"; then
+  printf '%s\n' 'Bun is unavailable; install the version in .bun-version before pushing.' >&2
   exit 1
 fi
 
-exec node "$prettier_binary" --check \
-  '{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}' \
+expected_bun_version="$(cat .bun-version)"
+actual_bun_version="$("$bun_binary" --version)"
+if [ "$actual_bun_version" != "$expected_bun_version" ]; then
+  printf 'Bun %s is required by .bun-version; found %s. Refusing to push.\n' \
+    "$expected_bun_version" "$actual_bun_version" >&2
+  exit 1
+fi
+
+exec "$bun_binary" fmt --no-script --check \
+  '{apps,packages,scripts,tests}/**/*.{ts,mts,mjs,cjs,json,html,css}' \
   '*.{ts,mjs,cjs,json,yaml,yml,md}' \
   'docs/**/*.md' \
   '!docs/reference/api.md' \

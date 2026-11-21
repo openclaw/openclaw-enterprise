@@ -14,32 +14,18 @@ import (
 func TestBootstrapAuthorizationStopsWithStartupContext(t *testing.T) {
 	for _, controlPlane := range []string{"compose", "kubernetes"} {
 		t.Run(controlPlane, func(t *testing.T) {
-			key := filepath.Join(t.TempDir(), "bootstrap.json")
-			if err := os.WriteFile(key, []byte(`{"data":{"key":"synthetic-bootstrap-key"},"meta":{"installationId":"ins_00000000-0000-4000-8000-000000000001"}}`), 0600); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv("OCC_TEST_BOOTSTRAP_KEY", key)
-			// Only the pre-request key-copy plumbing is a fixture. The production
-			// bootstrap reader and HTTP client consume real files and a live socket;
-			// the server never emits a successful OCC response or authorizes a key.
-			fakeProfileCommands(t, map[string]string{
-				"docker": `
-"compose "*) echo bootstrap-fixture ;;
-"cp bootstrap-fixture:/var/lib/openclaw/bootstrap/initial-admin-service-key.json "*) cp "$OCC_TEST_BOOTSTRAP_KEY" "$3" ;;
-`,
-				"kubectl": `
-"apply -f "*|*"wait --for=condition=Ready "*|*"delete pod bootstrap-key-reader "*) ;;
-*"initial-admin-service-key.json"*) cat "$OCC_TEST_BOOTSTRAP_KEY" ;;
-*"initial-admin-password"*) printf '%s' synthetic-bootstrap-password ;;
-`,
-			})
 			state := &developmentState{
 				Repository: t.TempDir(), ComposeProject: "bootstrap-fixture",
-				PlatformNamespace: "bootstrap-fixture", directory: t.TempDir(),
+				PlatformNamespace: "bootstrap-fixture", directory: privateBootstrapDirectory(t),
 			}
 			state.KeyPath = filepath.Join(state.directory, "exported-key.json")
 			r := newRunner(Options{Repository: state.Repository})
 			r.engine = "docker"
+			if err := r.prepareBootstrapCredentials(state); err != nil {
+				t.Fatal(err)
+			}
+			// Real local credential files and HTTP transport; the server deliberately
+			// never authorizes the key or emits a successful OCC response.
 			started, disconnected := make(chan struct{}), make(chan struct{})
 			server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
 				if request.Method != http.MethodGet || request.URL.Path != "/installation" {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json/v2"
-	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -276,8 +275,9 @@ func (p *developmentNetworkProbe) check(ctx context.Context, namespace, pod, mod
 func (r *runner) verifyDevelopmentNetworkPolicy(ctx context.Context, state *developmentState, image, targetNamespace, envoyNamespace string, actual bool, timeout time.Duration) (result error) {
 	p := &developmentNetworkProbe{runner: r, state: state, id: strings.ToLower(rand.Text()[:12]), image: image}
 	defer func() {
+		result = startupError("network-verification", result)
 		if err := p.cleanup(); err != nil {
-			result = errors.Join(result, fmt.Errorf("network probe cleanup failed: %w", err))
+			result = joinStartupCleanup(result, startupError("network-cleanup", fmt.Errorf("network probe cleanup failed: %w", err)))
 		}
 	}()
 	otherNamespace := "occ-netcheck-other-" + p.id
@@ -419,4 +419,24 @@ func (r *runner) developmentGatewayNamespace(ctx context.Context, namespaceID st
 		return "", fmt.Errorf("expected one owned development gateway Namespace")
 	}
 	return list.Items[0].Metadata.Name, nil
+}
+
+func (r *runner) developmentNodePodCIDR(ctx context.Context, nodeName string, maxPrefixBits int) (netip.Prefix, error) {
+	nodeData, err := r.output(ctx, "kubectl", "get", "node", nodeName, "-o", "json")
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	var node struct {
+		Spec struct {
+			PodCIDR string `json:"podCIDR"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(nodeData, &node); err != nil {
+		return netip.Prefix{}, fmt.Errorf("invalid k3d node information")
+	}
+	prefix, err := netip.ParsePrefix(node.Spec.PodCIDR)
+	if err != nil || !prefix.Addr().Is4() || prefix.Bits() < 16 || prefix.Bits() > maxPrefixBits || prefix != prefix.Masked() {
+		return netip.Prefix{}, fmt.Errorf("k3d node must have a canonical bounded IPv4 Pod CIDR")
+	}
+	return prefix, nil
 }

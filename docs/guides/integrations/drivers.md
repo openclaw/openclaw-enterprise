@@ -7,7 +7,7 @@ cannot choose their own Drivers.
 Start with [Kubernetes Compute](../../reference/drivers/kubernetes-compute.md)
 and the [Kubernetes Secret Driver](../../reference/drivers/kubernetes-secret.md)
 for a new Installation. They support the Agent model-credential paths
-documented in [Deploy your first Agent](../first-agent.md). Use the
+documented in [Deploy and verify Agents](../deploy/production-agents.md). Use the
 [Drivers quickstart](../../reference/drivers/selection.md#choose-a-bundled-driver)
 to find the required settings.
 
@@ -20,7 +20,7 @@ to find the required settings.
 | [SSH Compute](../../reference/drivers/ssh-compute.md)                                   | Run embedded OpenClaw on operator-managed Linux/systemd hosts, using model credentials supplied on the host. | No dedicated Codex or OCC-managed model credentials.                                                                                                    |
 | [Docker/Podman Compute](../../reference/drivers/docker-compute.md)                      | Run the local Compose control plane for development.                                                         | Current Agent authentication cannot deploy new Agents with this Driver. Use Kubernetes for local Agent deployment.                                      |
 | [OpenShell Sandbox](../../reference/drivers/openshell-sandbox.md)                       | Review the dedicated Codex integration and its required upstream capabilities.                               | Stock OpenShell cannot provide the required credentials or workload identity; production Agent deployment is unsupported.                               |
-| [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md) | Keep the dedicated Codex OpenAI API key outside the OpenShell Harness.                                       | Required with the OpenShell Sandbox; supports only the `openai` source type, with no update or rotation.                                                |
+| [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md) | Keep model and tool credentials outside the OpenShell Harness.                                               | Supports static `openai`, `codex-pat` and `bearer-token` sources. Update the source and redeploy to use a replacement Secret.                           |
 
 The [Compute comparison](../../reference/drivers/compute-matrix.md) distinguishes
 individual implementation capabilities from an Agent deployment that can

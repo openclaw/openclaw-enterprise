@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -15,6 +16,42 @@ const (
 	developmentGatewayAPIKeyMount = "/run/openclaw-development/gateway-api-key"
 	developmentGatewayCAMount     = "/run/openclaw-development/gateway-ca.crt"
 )
+
+// PostgreSQL reads this public script as a different UID. Snapshot only the
+// default read-only bind; custom sources and writable mounts remain unchanged.
+func prepareComposeBootstrapSQL(rendered any, state *developmentState) error {
+	config, _ := rendered.(map[string]any)
+	services, _ := config["services"].(map[string]any)
+	postgres, _ := services["postgres"].(map[string]any)
+	volumes, _ := postgres["volumes"].([]any)
+	defaultSource := filepath.Join(state.Repository, "migrations", "init-local.sql")
+	for _, raw := range volumes {
+		volume, _ := raw.(map[string]any)
+		if volume["type"] != "bind" || volume["target"] != "/docker-entrypoint-initdb.d/00-occ-roles.sql" || volume["read_only"] != true {
+			continue
+		}
+		source, _ := volume["source"].(string)
+		if source != defaultSource {
+			// Compose may render a symlinked checkout's physical working directory.
+			// Resolve only the repository, never an arbitrary custom bind source.
+			repository, err := filepath.EvalSymlinks(state.Repository)
+			if err != nil || source != filepath.Join(repository, "migrations", "init-local.sql") {
+				continue
+			}
+		}
+		data, err := os.ReadFile(source)
+		if err != nil {
+			return fmt.Errorf("read Compose bootstrap SQL: %w", err)
+		}
+		copy := filepath.Join(state.directory, "init-local.sql")
+		if err := exclusiveWrite(copy, data, 0644); err != nil {
+			return fmt.Errorf("prepare Compose bootstrap SQL: %w", err)
+		}
+		volume["source"] = copy
+		return nil
+	}
+	return nil
+}
 
 // k3d needs an explicit gateway when joining a Compose-owned Docker network.
 // Resolve it from the rendered subnet so Compose overrides keep their meaning.
@@ -87,6 +124,42 @@ func addComposeGatewayRouting(rendered any, state *developmentState) error {
 	return nil
 }
 
+func validateComposeNativeAdmin(rendered any, state *developmentState) error {
+	config, _ := rendered.(map[string]any)
+	services, _ := config["services"].(map[string]any)
+	controller, _ := services["controller"].(map[string]any)
+	proxy, _ := services["browser-proxy"].(map[string]any)
+	if controller == nil || proxy == nil {
+		return fmt.Errorf("Compose native admin requires controller and browser-proxy services")
+	}
+	environment, _ := controller["environment"].(map[string]any)
+	_, agentDomain, _ := developmentBrowserHosts(state.Cluster)
+	expected := map[string]string{
+		"OCC_AUTH_BASE_URL":              state.BrowserOrigin,
+		"OCC_AGENT_NATIVE_ADMIN_ENABLED": "true",
+		"OCC_AGENT_NATIVE_ADMIN_DOMAIN":  agentDomain,
+		"OCC_GATEWAY_API_KEY_PATH":       developmentGatewayAPIKeyMount,
+		"NODE_EXTRA_CA_CERTS":            developmentGatewayCAMount,
+	}
+	for key, value := range expected {
+		if composeValue(environment[key]) != value {
+			return fmt.Errorf("Compose controller must set %s to the development native admin value", key)
+		}
+	}
+	ports, _ := proxy["ports"].([]any)
+	if len(ports) != 1 {
+		return fmt.Errorf("Compose browser proxy must publish exactly one port")
+	}
+	host, published, target, protocol, err := parsePublication(ports[0])
+	if err != nil {
+		return err
+	}
+	if host != "127.0.0.1" || published != strconv.Itoa(state.BrowserPort) || target != "8443" || protocol != "tcp" {
+		return fmt.Errorf("Compose browser proxy must publish the selected HTTPS port only on 127.0.0.1")
+	}
+	return nil
+}
+
 type composeService struct {
 	Ports       []any          `json:"ports"`
 	Environment map[string]any `json:"environment"`
@@ -107,7 +180,10 @@ func AnalyzeCompose(data []byte, profile string) ([]string, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("could not read resolved Compose configuration: %w", err)
 	}
-	for _, name := range []string{"controller", "postgres"} {
+	for _, name := range []string{"controller", "postgres", "browser-proxy"} {
+		if name == "browser-proxy" && config.Services[name] == nil {
+			continue
+		}
 		if config.Services[name] == nil {
 			return nil, fmt.Errorf("Compose configuration does not define the %s service", name)
 		}
@@ -116,7 +192,10 @@ func AnalyzeCompose(data []byte, profile string) ([]string, error) {
 		}
 	}
 	apiURL := ""
-	for _, service := range []struct{ name, label string }{{"postgres", "PostgreSQL"}, {"controller", "controller"}} {
+	for _, service := range []struct{ name, label string }{{"postgres", "PostgreSQL"}, {"controller", "controller"}, {"browser-proxy", "browser-proxy"}} {
+		if config.Services[service.name] == nil {
+			continue
+		}
 		for _, raw := range config.Services[service.name].Ports {
 			host, published, target, protocol, err := parsePublication(raw)
 			if err != nil {

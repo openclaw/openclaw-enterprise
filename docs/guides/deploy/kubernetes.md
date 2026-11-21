@@ -1,8 +1,23 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy on standard Kubernetes
 
 Prepare an existing Kubernetes cluster for OpenClaw Enterprise (OCE), then run
-[the shared Helm installation](production-installation.md). For AWS managed
-Kubernetes, use the [Amazon EKS guide](eks.md).
+[the custom Helm installation](production-installation.md). To install with
+OpenShell and use the shared first-Agent session, follow
+[Kubernetes setup](kubernetes-setup.md) or the [Amazon EKS guide](eks-openshell-setup.md).
+
+For cloud infrastructure, choose an independent target from the
+[`oce-terraform` reference](https://github.com/freeqaz-openai/oce-terraform).
+The AWS EKS target has a [dedicated OCE handoff](production-installation-preparation.md#use-a-terraform-managed-eks-cluster).
+The Google Cloud GKE and Azure AKS targets are previews covered by mocked Terraform
+plans; live cluster deployment and OCE installation remain unverified. Each target
+provides `terraform output -json oce_placement` with the node selectors and Gateway
+StorageClass fields for the OCE installation profile. Review that output against
+the selected cluster before using it.
 
 ## Prepare the cluster
 
@@ -46,11 +61,43 @@ Provide these cluster services before installing OCC:
 | Requirement               | Operator preparation                                                                                               |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Private gateway state     | An explicit block-backed filesystem StorageClass supporting `10Gi` RWO claims and reliable SQLite locking.         |
-| Bootstrap output          | A fresh `1Gi` RWO claim using a protected StorageClass; prepare it during shared installation.                     |
+| Bootstrap credentials     | An existing Secret containing the administrator password and service key; create it before Helm installation.      |
 | Dedicated Agent workspace | A default StorageClass supporting `40Gi` RWO claims. Embedded Agents do not need this Harness claim.               |
 | PostgreSQL                | An external database with separate application and migrator roles and verified TLS.                                |
 | Container registry        | Push access for the image builder and pull access from every eligible node, including tenant workloads.            |
 | Operator access           | An approved HTTPS origin and access path matching `auth.baseUrl`; the chart does not create public TLS or Ingress. |
+
+An Envoy Gateway ingress for the console origin answers a path with an encoded
+slash (`%2F`) itself: by default it redirects with `307` to the decoded path, so
+the API never sees the request. The API refuses such an ID with `400` and names
+the parameter. To give callers that answer, attach a ClientTrafficPolicy to the
+ingress Gateway, or to its OCE listener with `sectionName`:
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: occ-keep-escaped-slashes
+  namespace: <ingress-gateway-namespace>
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: <ingress-gateway>
+  path:
+    escapedSlashesAction: KeepUnchanged
+```
+
+Envoy still resolves `.` and `..` segments and merges slashes. Envoy and the
+API router both keep `%2F` inside one path segment, so a route match cannot
+differ between them. If a ClientTrafficPolicy already targets that Gateway or
+listener, add `path` to it.
+
+Keep the console route's request timeout at 15 seconds or more; Envoy Gateway's
+default is 15 seconds. Configuration and Secret create, update and delete send no
+Kubernetes call later than 12 seconds after the API starts the request, so on a slow
+cluster they fail with `503` instead of saving after the ingress answered `504`. The
+database commit is not bounded by them.
 
 Follow the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 when choosing disks. A NetworkPolicy object alone is not proof of enforcement:
@@ -61,17 +108,14 @@ addresses and ports as observed from controller Pods. These become the shared
 installation's network settings; do not substitute whole cluster or VPC ranges.
 See [networking and isolation](../../reference/drivers/kubernetes-compute/networking-and-isolation.md).
 
-On OpenShift, select the actual DNS backend namespace and Pod labels; the
-[Helm DNS grants](../../reference/settings/production.md#required-production-controller-environment)
-permit both Service and backend ports. Verify UDP and TCP DNS resolution from
-the initialization, API, worker, and enabled supporting workloads, plus denied
-traffic to a Pod outside the configured DNS selectors.
+For OpenShift DNS selectors and translated API ports, complete the
+[OpenShift setup](openshift.md) before installation.
 
 ## Configure the protected copies and install
 
 Continue with [production installation](production-installation.md), retaining
-this shell's context. At its **Configure the Installation** step, edit the copied
-examples for your cluster:
+this shell's context. At its **Configure the Installation** step, set these values
+in the profile input and rerender, or edit the copied manual examples:
 
 - Set `controlPlane.nodeSelector` and
   `drivers.compute.configuration.runtime.gatewayNodeSelector` to the trusted

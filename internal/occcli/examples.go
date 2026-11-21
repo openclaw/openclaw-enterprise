@@ -1,8 +1,8 @@
 package occcli
 
-// Help examples for the create commands that read a JSON document. Each shows
-// the smallest body the API accepts; TestCreateCommandsShowAJSONExample keeps
-// every body parseable.
+// Help examples for the create and update commands that read a JSON document.
+// Each shows the smallest body the API accepts;
+// TestCreateCommandsShowAJSONExample keeps every body parseable.
 
 const iamRoleCreateExample = `  cat > role.json <<'JSON'
   {"name": "Read Agents", "permissions": [{"action": "read", "resourceKind": "agent"}]}
@@ -32,12 +32,16 @@ JSON
   For a complete example, see
   https://docs-enterprise.openclaw.org/guides/deploy/production-agents/`
 
-const secretCreateExample = `  (umask 077; tr -d '\n' < /path/to/key | jq -Rs '{name: "openai-model-key", value: .}' > secret.json)
-  occ secret create --file secret.json
-  rm secret.json
+const secretCreateExample = `  (
+    umask 077
+    secret_file=$(mktemp -- "${TMPDIR:-/tmp}/occ-secret.XXXXXX") || exit
+    trap 'rm -f -- "$secret_file"' EXIT
+    jq -Rs '{name: "openai-model-key", value: gsub("\n"; "")}' < /path/to/key > "$secret_file" &&
+      occ secret create --file "$secret_file"
+  )
 
-  The body is {"name": "<name>", "value": "<secret value>"}. Keep the value off the
-  command line and delete the file after use.`
+  The body is {"name": "<name>", "value": "<secret value>"}. The example keeps
+  the value off the command line and removes the temporary file on exit.`
 
 const agentCreateExample = `  cat > agent.json <<'JSON'
   {"name": "example-agent", "configurationId": "<configuration-id>", "executionMode": "embedded"}
@@ -69,3 +73,30 @@ const serviceKeyCreateExample = `  occ service-key create --namespace <namespace
   Pass --namespace for a Namespace ServicePrincipal; for an Installation one, omit
   it and unset OCC_NAMESPACE. You must already hold every grant of the ServicePrincipal. The key file is
   the only copy of the key: hand it over privately and revoke it when unused.`
+
+const configurationUpdateExample = `  cat > configuration.json <<'JSON'
+  {"values": {"agents": {"defaults": {"model": "<provider>/<model>"}}},
+   "expectedGeneration": 1}
+JSON
+  occ configuration update <configuration-id> --file configuration.json
+
+  values replaces the whole native document, so send all of it (start from
+  occ configuration get <configuration-id> -o json). expectedGeneration is
+  optional: the generation you last read. Omitted secretBindings keep the saved
+  bindings; send "secretBindings": {} to clear them. See
+  https://docs-enterprise.openclaw.org/reference/configuration/`
+
+const agentUpdateExample = `  cat > agent.json <<'JSON'
+  {"configurationId": "<configuration-id>",
+   "harnessAuth": {"method": "api_key",
+     "source": {"kind": "secret", "namespaceId": "<namespace-id>", "id": "<secret-id>"}}}
+JSON
+  occ agent update <agent-id> --file agent.json
+
+  Each update names configurationId or gatewayManagedMode (or both); send
+  configurationId also when you change only harnessAuth: copy it from
+  occ agent get <agent-id>. Changing gatewayManagedMode needs Installation
+  administer. Omitted harnessAuth, executionMode, backendId, plugins and
+  gatewayManagedMode keep their saved values; "harnessAuth": null clears the
+  binding. The update changes the draft only; deploy to use it. See
+  https://docs-enterprise.openclaw.org/reference/agents/`

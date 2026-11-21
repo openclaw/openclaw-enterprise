@@ -32,11 +32,11 @@ subject to its upstream preconditions. See
    and removes only OCC-owned infrastructure inside a discovered,
    operator-owned existing namespace in the tenant data plane. Cleanup preserves
    shared control-plane infrastructure and resources outside the exact owner.
-2. Revision-scoped `prepareRevision` creates or reuses the exact Agent's
+2. For each Agent revision, `prepareRevision` creates or reuses the exact Agent's
    configured gateway and realizes the topology pinned in its immutable
-   revision: one embedded OpenClaw process or a separate, nonserving dedicated
+   version: one embedded OpenClaw process or a separate, nonserving dedicated
    Harness, following [topology placement](workloads.md#openclaw-gateways).
-   `retireRevision` stops only that revision's owned runtime while preserving its
+   `retireRevision` stops only that version's owned runtime while preserving its
    Agent's gateway and any resources required by the replacement. Agent deletion
    removes its own gateway and Harness resources across the selected targets.
 
@@ -52,26 +52,25 @@ each operation while preserving the platform Namespace and Agent boundary.
 Physical target coordinates, runtime endpoints, and transport credentials are
 Driver-owned observations or materializations, not platform resources or
 persisted `AgentRevision` fields. OCC owns the Namespace, gateway lifecycle,
-Agent, immutable revision, workload identity, route bindings, authorization
+Agent, Agent revision, workload identity, route bindings, authorization
 decisions, and desired state. The driver consumes that admitted intent and
 reports readiness or failure without changing platform ownership.
 
 The bundled `KubernetesComputeDriver` and reviewed installed implementations can
 be selected in development and production. Gateway reconciliation occurs
-during its owner's deployment and revision replacement; gateway removal occurs
+during its owner's deployment and version replacement; gateway removal occurs
 when that Agent or its Namespace is deleted. Agent workload preparation cannot
-mutate another Agent's gateway or workload or expose the previously active
-revision's credentials. Kubernetes independently owns scheduling and the
+mutate another Agent's gateway or workload or expose the previously selected version's credentials. Kubernetes independently owns scheduling and the
 infrastructure lifecycle when the bundled Driver is selected.
 
 The driver cannot target an unselected location or another platform Namespace,
 adopt another tenant's resources, change an Agent's configuration, rewrite its
-revision, select another identity, authorize a platform operation, or grant
+version, select another identity, authorize a platform operation, or grant
 permissions. Gateway provisioning failure keeps the exact Agent deployment
 unready without changing Namespace readiness. Agent workload provisioning failure leaves sibling Agents
 and their gateways untouched and restores or fails closed for the previous
 active Agent workload. Readiness, activation, rollback, and cleanup account for
-both targets; partial failure cannot authorize traffic to an inactive revision
+both targets; partial failure cannot authorize traffic to an inactive version
 or orphan resources by treating success in one target as overall success.
 OCC does not select a fallback target or compute implementation.
 
@@ -79,14 +78,14 @@ OCC does not select a fallback target or compute implementation.
 
 `SandboxDriver` enforces the exact `SandboxPolicy` admitted for one
 `AgentRevision`. Installation configuration selects one implementation.
-Before creating a candidate revision, OCC verifies that the selected Driver
+Before creating a candidate version, OCC verifies that the selected Driver
 supports the complete policy; unsupported, unavailable, or ambiguous
 enforcement rejects deployment.
 
 After candidate Agent workload provisioning, the Driver establishes and verifies
 containment before the Harness executes Agent turns. The enforcement matches the exact
-revision, Namespace, `WorkloadIdentity`, admitted policy, and applicable
-Restrictions. OCC activates the revision only after that containment is
+version, Namespace, `WorkloadIdentity`, admitted policy, and applicable
+Restrictions. OCC activates the version only after that containment is
 ready. `SandboxDriver` does not provision workloads, own resources, select
 another identity, grant permissions, or replace an Agent's gateway.
 
@@ -103,17 +102,17 @@ execution Driver receives admitted intent only after OCC verifies that
 authorization. A Driver reports its decision, readiness, or operational result
 without acquiring platform-resource ownership or permission to select itself.
 
-| Driver contract           | Responsibility                                                                                                                                                                                                            |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `IAMDriver`               | Evaluate the exact platform action and resource using its selected native or external authority. `OCCIAMDriver` evaluates OCC-owned roles and bindings.                                                                   |
-| `ServiceAccountDriver`    | Create upstream service accounts and separately issue their credentials after exact OCC authorization; privately own Backend bindings and credential lifecycle while the provider retains its independent authority.      |
-| `InferenceDriver`         | Perform authorized inference against an admitted external-provider model or local model source without exposing provider credentials, secret values, or reusable model credentials to Agent workloads.                    |
-| `ComputeDriver`           | Ensure Namespace infrastructure, store authorized account credentials, and reconcile each Agent's gateway and Harness in their selected runtime targets with exact Namespace, Agent, and revision ownership.              |
-| `SandboxDriver`           | Enforce and verify the complete admitted containment policy before an Agent workload can execute Agent turns.                                                                                                             |
-| `SecretDriver`            | Store Namespace-owned secret material and validate safe delivery references. KubernetesSecretDriver is the default.                                                                                                       |
-| `CredentialGatewayDriver` | Hold registered credential sources outside Agent workloads and issue per-revision attachments that only its paired `SandboxDriver` can apply. The OpenShell implementation shares one Backend with the OpenShell Sandbox. |
-| `CredentialRefreshDriver` | Mint and re-mint the tokens of refresh-type credential sources from their issuers before expiry, holding the refresh material with the paired `CredentialGatewayDriver` on one Backend.                                   |
-| `ChannelDriver`           | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                                   |
+| Driver contract           | Responsibility                                                                                                                                                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `IAMDriver`               | Evaluate the exact platform action and resource using its selected native or external authority. `OCCIAMDriver` evaluates OCC-owned roles and bindings.                                                                              |
+| `ServiceAccountDriver`    | Create upstream service accounts and separately issue their credentials after exact OCC authorization; privately own Backend bindings and credential lifecycle while the provider retains its independent authority.                 |
+| `InferenceDriver`         | Perform authorized inference against an admitted external-provider model or local model source without exposing provider credentials, secret values, or reusable model credentials to Agent workloads.                               |
+| `ComputeDriver`           | Ensure Namespace infrastructure, store authorized account credentials, and reconcile each Agent's gateway and Harness in their selected runtime targets with matching Namespace, Agent, and Agent revision IDs.                      |
+| `SandboxDriver`           | Enforce and verify the complete admitted containment policy before an Agent workload can execute Agent turns.                                                                                                                        |
+| `SecretDriver`            | Store Namespace-owned secret material and validate safe delivery references. KubernetesSecretDriver is the default.                                                                                                                  |
+| `CredentialGatewayDriver` | Hold registered credential sources outside Agent workloads and issue attachments for each Agent revision that only its paired `SandboxDriver` can apply. The OpenShell implementation shares one Backend with the OpenShell Sandbox. |
+| `CredentialRefreshDriver` | Mint and re-mint the tokens of refresh-type credential sources from their issuers before expiry, holding the refresh material with the paired `CredentialGatewayDriver` on one Backend.                                              |
+| `ChannelDriver`           | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                                              |
 
 One implementation may satisfy multiple Driver contracts, but OCC selects each
 role explicitly. Authority for one role does not grant another role, resource
@@ -122,7 +121,7 @@ before side effects; an effectful Driver handling a caller request runs only
 after OAG admits that caller and OCC authorizes the exact operation.
 `ComputeDriver` ensures backing Namespace infrastructure through an
 independently authorized Namespace lifecycle operation, then creates each
-Agent-owned gateway through that Agent's admitted revision operation. Each
+Agent-owned gateway from the saved Agent revision for that deployment. Each
 relevant Driver enforces applicable platform Restrictions, and unsupported or
 unverifiable enforcement fails closed.
 
@@ -146,8 +145,8 @@ identifier privately for exact deletion and future rotation or reconciliation;
 the public account contains only a generic credential kind and opaque
 same-Namespace Secret reference. API-side Compute creates the account-owned
 canonical Secret. Worker-side Compute materializes the admitted token and
-workspace into a revision-owned runtime Secret for the exact dedicated Codex
-workload; see [Secret delivery](safeguards.md#secret-access). Operations through a Backend fail closed when provider
+workspace into a runtime Secret used only by the dedicated Codex workload
+for that Agent revision; see [Secret delivery](safeguards.md#secret-access). Operations through a Backend fail closed when provider
 authority, the exact private binding, tenant-local Secret authority, or
 compatible dedicated execution is unavailable. OAuth refresh and automated
 rotation remain deferred.
@@ -162,7 +161,7 @@ credential. Agent workloads cannot bypass OCC, their selected
 
 Each `AgentRevision` pins the selected compute and sandbox implementations.
 Installing or upgrading a Driver cannot replace either implementation for an
-existing revision. OCC rejects removal while an active or candidate revision
+existing version. OCC rejects removal while a selected or candidate version
 depends on it. A changed runtime selection applies only to a later authorized
 deployment. Current authorization, provider authority, and secret access remain
 subject to immediate revocation.

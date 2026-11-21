@@ -120,6 +120,15 @@ export function compareRuntimeLogTime(left: string, right: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** Whether every line has a valid frontier time and the times never go backward. */
+function orderedTimedLines(lines: readonly { readonly time: string | null }[]): boolean {
+  return lines.every(
+    (line, index) =>
+      validRuntimeLogFrontierTime(line.time) &&
+      (index === 0 || compareRuntimeLogTime(line.time, lines[index - 1]!.time!) >= 0),
+  );
+}
+
 function validChunk(value: unknown, source: RuntimeLogSourceId): AgentRuntimeLogChunk {
   const chunk = value as AgentRuntimeLogChunk;
   if (
@@ -414,14 +423,17 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
           : undefined));
   // Whether this read skipped the frontier's delivered lines by position.
   let positional = false;
+  // Whether de-duplication withheld a frontier line it could not prove delivered.
+  let frontierAmbiguous = false;
+  // Delivered occurrences per frontier hash that this read has not matched yet.
+  const frontierHashes = new Map<string, number>();
   if (dedupResume !== undefined && !replacedDuringRead) {
     const lastTime = dedupResume.lastTime!;
     // The hashes cover every line delivered at `lastTime` only while the count fits.
     const fullHistory = dedupResumeCount === dedupResume.lastHashes.length;
     const complete = dedupResume.frontierComplete === true && fullHistory;
-    const remaining = new Map<string, number>();
     for (const hash of dedupResume.lastHashes) {
-      remaining.set(hash, (remaining.get(hash) ?? 0) + 1);
+      frontierHashes.set(hash, (frontierHashes.get(hash) ?? 0) + 1);
     }
     // The overlap re-reads the last delivered line unless the tail dropped it. The
     // Driver applies the tail before its byte cut, so a cut page may hold fewer than
@@ -457,11 +469,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
         // A matching checkpoint retains positional proof from the original
         // window across growth and subsequent cuts, without inferring it anew.
         (checkpointValid && checkpoint.basePositional === true)) &&
-      timed.every(
-        (line, index) =>
-          validRuntimeLogFrontierTime(line.time) &&
-          (index === 0 || compareRuntimeLogTime(line.time, timed[index - 1]!.time!) >= 0),
-      ) &&
+      orderedTimedLines(timed) &&
       dedupResume.lastHashes.every(
         (hash, index) =>
           codec.lineHash(group[dedupResumeCount - dedupResume.lastHashes.length + index]!.raw) ===
@@ -483,19 +491,36 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       // Equal text at the frontier can be a new occurrence. Consume only the
       // occurrences delivered before this poll, including repeated hashes.
       const hash = codec.lineHash(line.raw);
-      const count = remaining.get(hash) ?? 0;
+      const count = frontierHashes.get(hash) ?? 0;
       if (count === 0) {
         // An incomplete tail or full cursor may have omitted earlier copies, and a
         // full history forgot earlier delivered text. Neither can establish a new
         // occurrence until time advances.
-        return complete || (fullHistory && !remaining.has(hash));
+        const fresh = complete || (fullHistory && !frontierHashes.has(hash));
+        frontierAmbiguous ||= !fresh;
+        return fresh;
       }
-      remaining.set(hash, count - 1);
+      frontierHashes.set(hash, count - 1);
       return false;
     });
   }
+  // Recovery from delivered progress loses nothing when the changed window still
+  // starts before the delivered frontier and holds its delivered lines (a clock
+  // step back can order new lines before it): its ordered timed lines then hold
+  // every later line, and de-duplication proved each withheld frontier line
+  // delivered. Full or cut windows still report the closing checkpoint's gap below.
+  const recoveredFrontier =
+    recoverDelivered &&
+    dedupResume !== undefined &&
+    !frontierAmbiguous &&
+    (positional ||
+      (frontierHashes.size > 0 && [...frontierHashes.values()].every((count) => count === 0))) &&
+    completeLines.length > 0 &&
+    orderedTimedLines(completeLines) &&
+    compareRuntimeLogTime(completeLines[0]!.time!, dedupResume.lastTime!) < 0;
   if (
     checkpointLost &&
+    !recoveredFrontier &&
     !leading.some((record) => record.type === "gap" && record.reason === "window_exceeded")
   ) {
     leading.push(runtimeLogGap("window_exceeded", observedStream, earliest));
@@ -569,11 +594,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
           (!chunk.truncated || untimedPrefix) &&
           (eligible.some(({ line }) => line.time === null) || lines.length === 0)));
     const prefix = completeLines.slice(0, prefixEnd);
-    const ordered = prefix.every(
-      (line, index) =>
-        validRuntimeLogFrontierTime(line.time) &&
-        (index === 0 || compareRuntimeLogTime(line.time, prefix[index - 1]!.time!) >= 0),
-    );
+    const ordered = orderedTimedLines(prefix);
     // Uncertain chronology also applies when BEGIN is first observed in this page.
     // Without this guard, an older/null-time END could close it before any signed
     // context exists, leaving a false closed state that later polls cannot repair.
@@ -617,18 +638,38 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       pemAfterTime = null;
     }
     const truncated = chunk.truncated || pageCut;
+    const last = [...delivered].reverse().find((line) => line.time !== null);
+    const leadingWindowGap = leading.some(
+      (record) => record.type === "gap" && record.reason === "window_exceeded",
+    );
+    // Closing a full checkpoint cannot establish that identical tail rolling
+    // retained every occurrence; preserve its gap on the final delivered page.
+    const checkpointGap =
+      !skipStalled &&
+      (retainCheckpoint || checkpoint !== undefined) &&
+      (completeLines.length >= query.tailLines || chunk.truncated) &&
+      !leadingWindowGap;
+    // Frontier lines withheld above because de-duplication could not prove them
+    // delivered can never be read once this page moves the frontier past their
+    // time: they may have been new. Date that possible loss at the old frontier.
+    // A continuation page whose cursor already moved past it reported it already.
+    const frontierDropped =
+      frontierAmbiguous &&
+      !skipStalled &&
+      !leadingWindowGap &&
+      !checkpointGap &&
+      last !== undefined &&
+      progressResume?.lastTime != null &&
+      compareRuntimeLogTime(progressResume.lastTime, dedupResume!.lastTime!) === 0 &&
+      compareRuntimeLogTime(last.time!, dedupResume!.lastTime!) > 0;
     const records = [
       // The skip's own gap replaces a window_exceeded gap dated at the same cut line.
       ...(skipStalled
         ? leading.filter((record) => record.type !== "gap" || record.reason !== "window_exceeded")
         : leading),
-      // Closing a full checkpoint cannot establish that identical tail rolling
-      // retained every occurrence; preserve its gap on the final delivered page.
-      ...(!skipStalled &&
-      (retainCheckpoint || checkpoint !== undefined) &&
-      (completeLines.length >= query.tailLines || chunk.truncated) &&
-      !leading.some((record) => record.type === "gap" && record.reason === "window_exceeded")
-        ? [runtimeLogGap("window_exceeded", observedStream, earliest)]
+      ...(checkpointGap ? [runtimeLogGap("window_exceeded", observedStream, earliest)] : []),
+      ...(frontierDropped
+        ? [runtimeLogGap("window_exceeded", observedStream, dedupResume!.lastTime)]
         : []),
       ...sanitized.records,
       ...(skipStalled
@@ -644,7 +685,6 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
             ]
           : []),
     ];
-    const last = [...delivered].reverse().find((line) => line.time !== null);
     const kept = progressResume !== undefined && !replacedDuringRead && !skipStalled;
     let lastTime = kept ? progressResume.lastTime : null;
     let lastHashes = kept ? [...progressResume.lastHashes] : [];

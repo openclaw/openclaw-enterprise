@@ -1,5 +1,5 @@
 {
-  "count": 8,
+  "count": 9,
   "fixtures": [
     {
       "file": "gateway-wrapper-probe-failed.kubelet.txt",
@@ -62,6 +62,15 @@
       "source": "sandbox",
       "provenance": "upstream-derived",
       "origin": "OpenShell 496ebba: messages from docs/observability/logging.mdx and crates/openshell-ocsf/src/format/shorthand.rs tests, SandboxLogLine envelope as built by crates/openshell-supervisor-process/src/log_push.rs (OCSF lines carry an empty field map) and crates/openshell-server/src/tracing_bus.rs (source gateway); no OpenShell runs in the local k3d",
+      "scrubbed": "sandbox name and id are fixed placeholders"
+    },
+    {
+      "file": "sandbox-openshell-placeholder-denials.json",
+      "golden": "sandbox-openshell-placeholder-denials.golden.json",
+      "replay": "openshell-sandbox",
+      "source": "sandbox",
+      "provenance": "captured",
+      "origin": "Sandbox log of a Dedicated Codex Agent under OpenShell 0.1.5 (bdb956f2) with policy DNS, read through the OCE runtime log API, 2026-10-26: python3.11 dials a second and third port of a host that has a rule on one port, before and after a policy apply, then curl dials a host with no rule; each record's message, time, level and target rebuilt into the Driver's SandboxLogLine envelope (OCSF lines carry an empty field map); the Codex model traffic around them dropped",
       "scrubbed": "sandbox name and id are fixed placeholders"
     },
     {

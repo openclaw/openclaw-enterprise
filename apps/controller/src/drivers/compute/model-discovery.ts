@@ -1,5 +1,5 @@
 import { ModelDiscoveryError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, readCappedBody } from "@openclaw-enterprise/utils";
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_MODELS = 10_000;
@@ -17,41 +17,21 @@ async function readDiscoveryResponse(response: Response): Promise<Record<string,
     await response.body?.cancel().catch(() => {});
     throw new ModelDiscoveryError("invalid_response");
   }
-  const reader = response.body?.getReader();
-  if (reader === undefined) {
+  const contents = await readCappedBody(response.body, MAX_RESPONSE_BYTES);
+  if (contents === undefined) {
     throw new ModelDiscoveryError("invalid_response");
   }
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
+  let decoded: unknown;
   try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
-      }
-      bytes += chunk.value.byteLength;
-      if (bytes > MAX_RESPONSE_BYTES) {
-        throw new ModelDiscoveryError("invalid_response");
-      }
-      chunks.push(chunk.value);
-    }
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
-    } catch {
-      throw new ModelDiscoveryError("invalid_response");
-    }
-    const page = asRecord(decoded);
-    if (page === undefined) {
-      throw new ModelDiscoveryError("invalid_response");
-    }
-    return page;
-  } catch (error) {
-    await reader.cancel().catch(() => {});
-    throw error;
-  } finally {
-    reader.releaseLock();
+    decoded = JSON.parse(contents.toString("utf8"));
+  } catch {
+    throw new ModelDiscoveryError("invalid_response");
   }
+  const page = asRecord(decoded);
+  if (page === undefined) {
+    throw new ModelDiscoveryError("invalid_response");
+  }
+  return page;
 }
 
 /** Native credential discovery; caller credentials never become stored platform state. */
@@ -112,19 +92,30 @@ export async function discoverHarnessModels(input: {
       const page = await readDiscoveryResponse(
         await fetch(url.href, { headers, signal, redirect: "error" }),
       );
-      const entries = pat ? page.models : page.data;
-      if (!Array.isArray(entries) || entries.length > MAX_MODELS) {
+      const pageEntries = pat ? page.models : page.data;
+      if (!Array.isArray(pageEntries) || pageEntries.length > MAX_MODELS) {
         throw new ModelDiscoveryError("invalid_response");
       }
+      let entries: readonly unknown[] = pageEntries;
       if (pat) {
-        entries.sort((left, right) => {
-          const a = asRecord(left)?.priority;
-          const b = asRecord(right)?.priority;
-          if (typeof a !== "number" || typeof b !== "number") {
+        // The operator catalog command lists visibility "list" and does not read
+        // priority. A hidden row, or a listed row without a number, is not an
+        // invalid catalog. Numeric priorities still order the picker.
+        const listed: Record<string, unknown>[] = [];
+        for (const item of entries) {
+          const entry = asRecord(item);
+          if (entry === undefined) {
             throw new ModelDiscoveryError("invalid_response");
           }
-          return a - b;
-        });
+          if (entry.visibility !== "list") {
+            continue;
+          }
+          listed.push(entry);
+        }
+        if (listed.every((entry) => typeof entry.priority === "number")) {
+          listed.sort((left, right) => Number(left.priority) - Number(right.priority));
+        }
+        entries = listed;
       }
       for (const item of entries) {
         const entry = asRecord(item);
