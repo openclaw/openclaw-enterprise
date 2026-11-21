@@ -186,7 +186,7 @@ For dedicated Codex with a Credential Gateway, use
 [credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
 It must also be listed in `credentialSources`.
 
-Replacement involving staged managed credentials is unsupported. OCC rejects competing deployments during a pending first staged launch; both return `409` before queuing work. After a selected launch fails, complete Stop before retrying.
+Replacement involving staged managed credentials returns `409` before queuing work. After a selected launch fails, complete Stop before retrying.
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor

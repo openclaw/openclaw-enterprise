@@ -73,6 +73,7 @@ import type {
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialProxyDriver,
+  DeploymentPolicy,
   Installation,
   InstallationDeploymentInventory,
   Namespace,
@@ -92,10 +93,7 @@ import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createAgentQueries, type ActiveAgentRevisionSelection } from "./agent-queries.ts";
 import { createDeploymentChannelChecks } from "./deployment-channels.ts";
 import { createAgentDeploymentOperations } from "./agent-deployment-requests.ts";
-import type {
-  CredentialDeploymentCapabilities,
-  ModelCredentialPreset,
-} from "./agent-deployment-admission.ts";
+import type { ModelCredentialPreset } from "./agent-deployment-admission.ts";
 import type { DeployAgentInput } from "./deployment-authorization.ts";
 import { createAgentDraftOperations } from "./agent-drafts.ts";
 import {
@@ -116,7 +114,6 @@ import {
   NotImplementedError,
   ResourceStateConflictError,
   ScopeViolationError,
-  PostgresCommitOutcomeUnknownError,
 } from "./errors.ts";
 import { createAgentCredentialWithdrawal } from "./agent-credential-withdrawal.ts";
 import { createAgentTermination } from "./agent-termination.ts";
@@ -188,11 +185,12 @@ export interface ControllerOptions {
     readonly configuration: Readonly<Record<string, unknown>>;
     readonly harness: RevisionHarnessDescriptor;
   }) => ModelCredentialPreset | undefined;
-  /** Qualification of the selected enforcing Sandbox and delivery Proxy; absent means unsupported. */
-  readonly credentialDeploymentCapabilities?: (input: {
+  /** Composition reviews the selected implementations for this first managed-model policy. */
+  readonly supportsModelCredentialDeployment?: (input: {
     readonly sandbox: SandboxDriver;
     readonly proxy: CredentialProxyDriver;
-  }) => CredentialDeploymentCapabilities | undefined;
+    readonly policy: DeploymentPolicy;
+  }) => boolean;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
@@ -594,10 +592,8 @@ function createCredentialServices({
         selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
         clock: resourceValues.now,
         timestamp: resourceValues.timestamp,
-        nextSourceId,
         tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
         driverOperation: (operation) => driverOperation(operation, "TokenService"),
-        isCommitOutcomeUnknown: (error) => error instanceof PostgresCommitOutcomeUnknownError,
         connectionTokenIssuer,
         preparedIssuer,
       },
@@ -1114,7 +1110,7 @@ export function createControllerComposition(
     driverOperation,
     modelPolicyAgent,
     modelCredentialPreset: options.modelCredentialPreset,
-    credentialDeploymentCapabilities: options.credentialDeploymentCapabilities,
+    supportsModelCredentialDeployment: options.supportsModelCredentialDeployment,
     sandboxNetworkPolicyCeiling,
     ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),

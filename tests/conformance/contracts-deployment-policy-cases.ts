@@ -67,7 +67,7 @@ function policyRefusals(policy: DeploymentPolicy, context: DeploymentPolicyValid
 }
 
 export function registerDeploymentPolicyCases(): void {
-  test("staged source snapshots stay bound to the registered TokenService instance", () => {
+  test("staged source snapshots stay bound to the selected TokenService instance", () => {
     const source = {
       id: "cs_work",
       namespaceId: "ns_example",
@@ -79,7 +79,6 @@ export function registerDeploymentPolicyCases(): void {
       createdAt: "2026-11-20T00:00:00Z",
       ownerCapability: "token_service",
       tokenServiceInstanceId: "instance-a",
-      registration: {},
     } as const satisfies CredentialSource;
     const snapshot = {
       sourceId: source.id,

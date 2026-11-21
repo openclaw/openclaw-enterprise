@@ -1,9 +1,10 @@
-import type {
-  Agent,
-  AgentRevision,
-  CredentialWithdrawal,
-  CredentialWithdrawalStatus,
-  Namespace,
+import {
+  revisionCredentialSourceSnapshot,
+  type Agent,
+  type AgentRevision,
+  type CredentialWithdrawal,
+  type CredentialWithdrawalStatus,
+  type Namespace,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
@@ -152,6 +153,15 @@ export function createAgentCredentialWithdrawal(dependencies: WithdrawalDependen
         );
       }
       const revision = await activeCredentialSourceRevision(state, agent, input);
+      // TODO: Allow staged withdrawal when exact delivery revocation and retry are supported.
+      if (
+        revisionCredentialSourceSnapshot(revision, input.credentialSourceId)
+          ?.tokenServiceInstanceId !== undefined
+      ) {
+        throw new ResourceStateConflictError(
+          "Withdrawal of a staged TokenService credential source is not supported. Complete Agent Stop to retire the revision.",
+        );
+      }
       const withdrawal = await requestRevisionCredentialWithdrawal(
         state,
         principalId,

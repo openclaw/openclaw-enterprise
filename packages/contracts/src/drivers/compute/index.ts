@@ -9,7 +9,6 @@ import type {
   CredentialDeploymentConfiguration,
   CredentialProjection,
 } from "../../credential-deployment.ts";
-import type { HarnessStartupRef } from "../sandbox/deployment.ts";
 import type {
   CredentialPolicyWithdrawalOptions,
   EgressInstallation,
@@ -63,11 +62,6 @@ export interface ComputeRevisionContext {
     expected: CredentialDeploymentConfiguration,
     signal: AbortSignal,
   ) => Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
-  /** Reauthorize this exact acknowledged held startup immediately before Compute signs release. */
-  readonly verifyCredentialDeploymentRelease?: (
-    startup: HarnessStartupRef,
-    signal: AbortSignal,
-  ) => Promise<void>;
   /** An active provider's maintenance pass may update its existing Harness only. */
   readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
@@ -146,7 +140,7 @@ export interface ComputeReadiness extends Scope {
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
-  /** Only v8: credentials, effective network policy, and projections are ready while startup remains held. */
+  /** Only v8: credentials, effective network policy, and launch inputs are ready before Harness startup. */
   readonly preparedForCredentialActivation?: true;
   /** Only v6: select this execution for material while its launcher and user work remain held. */
   readonly heldForRepositoryGitMaterial?: true;

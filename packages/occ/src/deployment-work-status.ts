@@ -390,8 +390,6 @@ function deploymentErrorMessage(code: string, agentId: string): string {
       return "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness. Use credential sources instead of Secret bindings, or ask an Installation administrator for a Sandbox Driver that supports them, then deploy again.";
     case "SANDBOX_HARNESS_UNSUPPORTED":
       return "The Sandbox Driver does not support this revision's Harness settings, such as plugins, network policy additions or ServiceAccount credentials. Change them, or ask an Installation administrator for a Driver that supports them, then deploy again.";
-    case "STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED":
-      return "Replacement involving a staged managed-credential revision is not supported. Keep the active revision, or stop it before deploying again.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
       return "The Sandbox gateway refused the controller's identity, or the Workspace is gone, so cleanup is unconfirmed. Check the identity's token file and Workspace role and the gateway's signing-key refresh, then deploy, stop, delete or withdraw again.";
     case "SANDBOX_POD_LABELS_NOT_PERMITTED":

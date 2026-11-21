@@ -98,7 +98,7 @@ Harness removal; Sandbox cleanup follows the [provisioning lifecycle](#sandbox-p
 Stop retains Agent-owned PersistentVolumeClaims and runtime credential Secrets;
 retirement removes resources for that Agent revision. Repeated stop
 observes exact ownership and converges when the runtime objects are already
-absent.
+absent. For a staged revision, stop removes the bound Credential Proxy deployment after the Harness stops and retains the target record until removal succeeds.
 
 ### Plugin startup status
 
@@ -170,9 +170,9 @@ labels used by the active Service selector, plus all supplied Harness
 requirement labels, and reports `Ready=True`. Zero candidates, multiple live
 candidates (including one Ready and one unready), or a single unready candidate
 leave preparation at `ready: false`. For a staged credential revision, Compute
-can report `preparedForCredentialActivation` while the exact startup remains held.
-Worker selects the revision and reauthorizes the source before activation releases
-that startup. Compute publishes the Agent route after the Harness is serving and
+can report `preparedForCredentialActivation` after preparing an idle target and fresh launch inputs.
+Worker selects the revision and authorizes the source before activation starts
+the Harness. Compute publishes the Agent route after the Harness is serving and
 the node is ready. Staged managed-credential replacement is unsupported. Other
 unready revisions cannot activate. Pods with a valid
 deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or

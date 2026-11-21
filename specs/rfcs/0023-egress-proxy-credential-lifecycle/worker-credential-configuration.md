@@ -29,7 +29,7 @@ readonly verifyCredentialDeploymentRelease?: (
 ) => Promise<void>;
 ```
 
-The existing [HarnessStartupRef](../../../packages/contracts/src/drivers/sandbox/deployment.ts) includes the Namespace, Agent, revision, Sandbox incarnation, configuration ID, process instance, and startup ID. The release callback returns no credential or grant.
+The historical [HarnessStartupRef](https://github.com/openclaw/openclaw-enterprise/blob/840e8ac0044e0d803f7975632ce4d58e3c9f9006/packages/contracts/src/drivers/sandbox/deployment.ts) included the Namespace, Agent, revision, Sandbox incarnation, configuration ID, process instance, and startup ID. The release callback returned no credential or grant. The fresh-start amendment below supersedes this interface.
 
 The worker captures the admitted revision, current claim, selected TokenService instance, proxy, bindings, and injection policies. When Compute supplies the staged target and configuration ID, the worker verifies its claim, current source authority, the target's Namespace and Agent ownership, and its live association with the admitted revision and configuration before source resolution. It calls `configureDeployment` with a resolver authorized for each binding's source. Before calling a resolver or attaching material, the scoped proxy verifies the actual Sandbox incarnation against that bound context. The proxy alone calls the resolver and retains credential material and any private delivery version. The callback returns only the contract's nonsecret projections.
 

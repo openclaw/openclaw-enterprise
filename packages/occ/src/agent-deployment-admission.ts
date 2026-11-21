@@ -4,8 +4,9 @@ import {
   assertExecutionReleaseAllowed,
   inferenceKeyDestination,
   isSourceProviderPresetId,
+  modelProviderRequestApproved,
+  sandboxNetworkGrantsWithinCeiling,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
-  validateDeploymentPolicy,
   type Agent,
   type AgentRevision,
   type AuditEvent,
@@ -13,7 +14,6 @@ import {
   type ComputeDriver,
   type Configuration,
   type ConfigurationDriver,
-  type CredentialInjectionCapabilities,
   type CredentialProxyDriver,
   type CredentialSource,
   type DeploymentCredentialBinding,
@@ -26,7 +26,6 @@ import {
   type LoggingLevel,
   type Namespace,
   type ModelProviderSettings,
-  type NetworkPolicyCapabilities,
   type OpenClawConfigurationDocument,
   type PluginDriver,
   type PluginRevisionState,
@@ -124,21 +123,14 @@ export interface ModelCredentialPreset {
   >["projection"];
 }
 
-/** Only the selected enforcing implementations can attest to their process and policy support. */
-export interface CredentialDeploymentCapabilities {
-  readonly binary: string;
-  readonly sandbox: NetworkPolicyCapabilities;
-  readonly proxy: CredentialInjectionCapabilities;
-}
-
 interface PreparedModelCredentialDeployment {
   readonly source: Readonly<
     CredentialSource & { ownerCapability: "token_service"; tokenServiceInstanceId: string }
   >;
   readonly preset: ModelCredentialPreset;
-  readonly capabilities: CredentialDeploymentCapabilities;
   readonly owner: InstalledDriver;
   readonly proxy: CredentialProxyDriver;
+  readonly sandbox: SandboxDriver;
 }
 
 export interface DeploymentAdmissionDependencies {
@@ -210,11 +202,12 @@ export interface DeploymentAdmissionDependencies {
         readonly harness: RevisionHarnessDescriptor;
       }) => ModelCredentialPreset | undefined)
     | undefined;
-  readonly credentialDeploymentCapabilities:
+  readonly supportsModelCredentialDeployment:
     | ((input: {
         readonly sandbox: SandboxDriver;
         readonly proxy: CredentialProxyDriver;
-      }) => CredentialDeploymentCapabilities | undefined)
+        readonly policy: DeploymentPolicy;
+      }) => boolean)
     | undefined;
   readonly workRecorder: Pick<ControllerWorkRecorder, "record">;
 }
@@ -260,43 +253,47 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         "The selected model has no matching approved source preset and explicit inference route.",
       );
     }
-    if (sandbox === undefined || dependencies.credentialDeploymentCapabilities === undefined) {
+    if (sandbox === undefined || dependencies.supportsModelCredentialDeployment === undefined) {
       throw new ResourceStateConflictError(
         "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
       );
     }
     let owner: InstalledDriver | undefined;
     let proxy: CredentialProxyDriver | undefined;
-    let capabilities: CredentialDeploymentCapabilities | undefined;
     try {
       owner = dependencies.selectedCredentialDeliveryOwner();
       proxy = owner.require("credential_proxy_delivery");
-      if (owner.require("sandbox") === sandbox) {
-        capabilities = dependencies.credentialDeploymentCapabilities({ sandbox, proxy });
+      if (owner.require("sandbox") !== sandbox) {
+        owner = undefined;
       }
     } catch {
-      capabilities = undefined;
+      owner = undefined;
     }
-    if (
-      owner === undefined ||
-      proxy === undefined ||
-      capabilities === undefined ||
-      !capabilities.binary.startsWith("/")
-    ) {
+    if (owner === undefined || proxy === undefined) {
       throw new ResourceStateConflictError(
         "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
       );
     }
-    return { source, preset, capabilities, owner, proxy };
+    return { source, preset, owner, proxy, sandbox };
   }
 
   function admitModelCredentialPolicy(
-    { source, preset, capabilities, owner, proxy }: PreparedModelCredentialDeployment,
+    { source, preset, owner, proxy, sandbox }: PreparedModelCredentialDeployment,
     networkGrants: readonly SandboxNetworkGrant[],
   ): NonNullable<AgentRevision["credentialDeployment"]> {
     const destination = inferenceKeyDestination(preset.provider.baseUrl, preset.provider.protocol);
+    const grants = networkGrants.filter(
+      (grant) =>
+        grant.host === destination.host &&
+        grant.ports.some(({ from, to }) => from <= destination.port && destination.port <= to),
+    );
+    if (grants.length !== 1) {
+      throw new ResourceStateConflictError(
+        "The staged model credential needs one exact, unambiguous network grant for its approved inference route.",
+      );
+    }
     const request: DeploymentRequestMatch = {
-      binary: capabilities.binary,
+      binary: grants[0]!.binary,
       host: destination.host,
       ports: [{ from: destination.port, to: destination.port }],
       requestPolicy: { type: "http", method: destination.method, path: destination.path },
@@ -314,26 +311,23 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       bindings: [binding],
       injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
     };
-    const details = validateDeploymentPolicy(deployment, {
-      ceiling: dependencies.sandboxNetworkPolicyCeiling,
-      sandbox: capabilities.sandbox,
-      proxy: capabilities.proxy,
-      targetMayHoldPlaceholders: true,
-      authorityForBinding: (identity) =>
-        identity.bindingRef === binding.bindingRef &&
-        isDeepStrictEqual(identity.sourceRef, binding.sourceRef) &&
-        isDeepStrictEqual(identity.consumer, binding.consumer)
-          ? {
-              destinations: preset.template.destinations,
-              allowedRequests: [request],
-              projection: preset.projection,
-            }
-          : undefined,
-    });
-    if (details.length) {
+    let supported: boolean;
+    try {
+      supported =
+        modelProviderRequestApproved(preset.provider, preset.template) &&
+        sandboxNetworkGrantsWithinCeiling(
+          deployment.networkAccessPolicy.allowed,
+          dependencies.sandboxNetworkPolicyCeiling,
+        ) &&
+        sandboxNetworkGrantsWithinCeiling([request], deployment.networkAccessPolicy.allowed) &&
+        dependencies.supportsModelCredentialDeployment?.({ sandbox, proxy, policy: deployment }) ===
+          true;
+    } catch {
+      supported = false;
+    }
+    if (!supported) {
       throw new ResourceStateConflictError(
         "The staged model credential and network policy cannot be enforced.",
-        details,
       );
     }
     return immutableCopy({ ...deployment, driver: owner.ref, proxyDriverId: proxy.id });
@@ -595,24 +589,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         throw new ResourceStateConflictError(
           "Replacing an active staged managed-credential revision is not supported. Complete Stop before deploying again.",
         );
-      }
-      const newest = (await state.revisions.listRevisionMetadata(namespace.id, lockedAgent.id)).at(
-        -1,
-      );
-      if (newest !== undefined) {
-        const work = await state.operations.findWork(`agent_revision:${newest.id}:reconcile`);
-        if (work?.state === "queued" || work?.state === "claimed") {
-          const pendingRevision = await state.revisions.findRevision(
-            namespace.id,
-            lockedAgent.id,
-            newest.id,
-          );
-          if (pendingRevision?.executionAdmission.version === 8) {
-            throw new ResourceStateConflictError(
-              "A staged managed-credential deployment is still pending. Wait for it to finish before deploying another revision.",
-            );
-          }
-        }
       }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();

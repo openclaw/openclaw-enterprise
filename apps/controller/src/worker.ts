@@ -41,7 +41,6 @@ import type {
   CredentialSourceSnapshot,
   CredentialDeploymentConfiguration,
   CredentialProjection,
-  HarnessStartupRef,
   ResolvedCredential,
   AuditEvent,
   AuthorizationDecision,
@@ -236,7 +235,6 @@ type Outcome = "success" | "pending" | "retry" | "permanent";
 const REVISION_READINESS_RECHECK_MS = 500;
 const REVISION_READINESS_RECHECK_MAX_MS = 5_000;
 const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
-const STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED = "STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED";
 
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
@@ -1302,9 +1300,7 @@ export class ControllerWorker {
     return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
   }
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
-  private readonly tokenServiceDrivers:
-    Pick<InstallationRuntimeDrivers, "installation" | "secretDriver"> | undefined;
-  private readonly resolveCredentialDeploymentContext: InstallationRuntimeDrivers["resolveCredentialDeploymentContext"];
+  private readonly tokenServiceDrivers: InstallationRuntimeDrivers | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1459,7 +1455,6 @@ export class ControllerWorker {
     this.credentialDeliveryRegistration = drivers?.credentialDeliveryRegistration;
     this.preparedTokens = drivers?.tokenService;
     this.tokenServiceDrivers = drivers;
-    this.resolveCredentialDeploymentContext = drivers?.resolveCredentialDeploymentContext;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ??
       this.credentialDeliveryRegistration?.require("sandbox") ??
@@ -1650,7 +1645,7 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
-    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers);
+    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers, this.state);
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {
@@ -2428,33 +2423,10 @@ export class ControllerWorker {
     }
     await this.recheckRevokedCredentialSources(claim, revision);
     if (revision.credentialDeployment !== undefined) {
-      let configured: CredentialDeploymentConfiguration | undefined;
       prepared = {
         ...prepared,
-        configureCredentialDeployment: async (expected, signal) => {
-          const result = await this.configureCredentialDeployment(
-            claim,
-            revision,
-            expected,
-            signal,
-          );
-          configured = structuredClone(expected);
-          return result;
-        },
-        verifyCredentialDeploymentRelease: async (startup, signal) => {
-          if (
-            !configured ||
-            !isDeepStrictEqual(configured, {
-              targetRef: startup.targetRef,
-              configurationId: startup.configurationId,
-            })
-          ) {
-            throw new DependencyUnavailableError(
-              "The staged target was not configured by this claim.",
-            );
-          }
-          await this.verifyCredentialDeploymentRelease(claim, revision, startup, signal);
-        },
+        configureCredentialDeployment: (expected, signal) =>
+          this.configureCredentialDeployment(claim, revision, expected, signal),
       };
     }
     this.preparedThisPass = revision.id;
@@ -4236,10 +4208,7 @@ export class ControllerWorker {
       for (const revision of revisions) {
         if (revision.id !== activeRevisionId) {
           const deployment = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
-          if (
-            deployment?.state !== "failed_permanent" ||
-            deployment.reasonCode === STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED
-          ) {
+          if (deployment?.state !== "failed_permanent") {
             continue;
           }
         }
@@ -4717,18 +4686,6 @@ export class ControllerWorker {
         });
         return;
       }
-      if (
-        isCandidateDeployment(claim) &&
-        agent.activeRevisionId !== undefined &&
-        agent.activeRevisionId !== revision.id &&
-        (revision.executionAdmission.version === 8 || previous?.executionAdmission.version === 8)
-      ) {
-        await this.finalizeRevision(claim, {
-          outcome: "permanent",
-          code: STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED,
-        });
-        return;
-      }
       const repositoryWithdrawal =
         revision.repositoryCredentials !== undefined &&
         agent.activeRevisionId === revision.id &&
@@ -5105,18 +5062,6 @@ export class ControllerWorker {
               }
               await this.stagedRevision("activateRevision", revision, context);
             });
-          }
-          if (revision.executionAdmission.version === 8) {
-            const confirmed = (await this.prepareRevision(claim, revision, context)).observation;
-            if (!confirmed.ready) {
-              await this.finalizeActiveRevision(
-                claim,
-                revision,
-                revisionPendingCode(confirmed),
-                runtimeFailureFromObservation(confirmed),
-              );
-              return;
-            }
           }
           await this.assertRepositoryGitMaterial(claim, revision);
           await this.retireEarlierRevisions(claim, revision);
@@ -5784,11 +5729,6 @@ export class ControllerWorker {
         await this.assertRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       }
-      if (revision.credentialDeployment !== undefined) {
-        await this.withClaimHeartbeat(claim, (signal) =>
-          this.authorizedCredentialDeployment(claim, revision, signal),
-        );
-      }
       const agent = await this.state.read((view) =>
         view.agents.findAgent(revision.namespaceId, revision.agentId),
       );
@@ -5960,8 +5900,6 @@ export class ControllerWorker {
       policy.proxyDriverId !== this.credentialDeploymentProxy?.id ||
       !isDeepStrictEqual(policy.driver, this.credentialDeliveryRegistration?.ref) ||
       revision.sandboxDriverId !== this.sandbox?.id ||
-      !this.resolveCredentialDeploymentContext ||
-      !this.sandbox?.credentialDeployment ||
       !this.provisioningController
     ) {
       throw new DependencyUnavailableError(
@@ -6027,8 +5965,7 @@ export class ControllerWorker {
         source.type !== "static" ||
         binding.consumer.kind !== "model" ||
         !isSourceProviderPresetId(source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]) ||
-        source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== binding.consumer.providerId ||
-        !source.registration
+        source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== binding.consumer.providerId
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
       }
@@ -6038,7 +5975,7 @@ export class ControllerWorker {
     return { namespace, owner, instanceId, sources, policy };
   }
 
-  private async currentCredentialDeployment(
+  private async configureCredentialDeployment(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     expected: CredentialDeploymentConfiguration,
@@ -6055,37 +5992,16 @@ export class ControllerWorker {
     ) {
       throw new DependencyUnavailableError("The staged target does not match this revision.");
     }
-    const authority = await this.authorizedCredentialDeployment(claim, revision, signal);
-    const context = await this.resolveCredentialDeploymentContext!(
-      authority.namespace,
-      revision,
-      signal,
-    );
-    const sandbox = this.sandbox!.credentialDeployment!(context);
-    const status = await sandbox.getHarnessProcessStatus(expected, signal);
-    if (
-      status.state !== "held" ||
-      !isDeepStrictEqual(status.startup.targetRef, target) ||
-      status.startup.configurationId !== expected.configurationId
-    ) {
-      throw new DependencyUnavailableError("The exact staged Sandbox startup is not held.");
-    }
-    signal.throwIfAborted();
-    return { ...authority, context, sandbox, status };
-  }
-
-  private async configureCredentialDeployment(
-    claim: ClaimedWork,
-    revision: Readonly<AgentRevision>,
-    expected: CredentialDeploymentConfiguration,
-    signal: AbortSignal,
-  ) {
-    const current = await this.currentCredentialDeployment(claim, revision, expected, signal);
+    const current = await this.authorizedCredentialDeployment(claim, revision, signal);
     const proxy = this.credentialDeploymentProxy;
     if (proxy === undefined) {
       throw new DependencyUnavailableError(
         "The selected Credential Proxy cannot configure a staged target.",
       );
+    }
+    const namespace = await this.compute.resolveSandboxNamespace?.(current.namespace);
+    if (namespace === undefined || namespace.id !== revision.namespaceId) {
+      throw new DependencyUnavailableError("The staged Sandbox placement is unavailable.");
     }
     const resolved = new Map<string, Promise<ResolvedCredential>>();
     let open = true;
@@ -6098,7 +6014,7 @@ export class ControllerWorker {
     try {
       const result = await proxy.configureDeployment(
         {
-          namespace: current.context.namespace,
+          namespace,
           revision,
           signal,
         } satisfies CredentialDeploymentContext,
@@ -6109,34 +6025,28 @@ export class ControllerWorker {
             binding,
             resolveCredential: async () => {
               requireOpen();
-              const fresh = await this.currentCredentialDeployment(
-                claim,
-                revision,
-                expected,
-                signal,
-              );
-              requireOpen();
-              const source = fresh.sources.get(binding.sourceRef.id);
-              if (!source || source.ownerCapability !== "token_service" || !source.registration) {
+              const source = current.sources.get(binding.sourceRef.id);
+              if (
+                !source ||
+                source.ownerCapability !== "token_service" ||
+                source.tokenServiceInstanceId !== current.instanceId
+              ) {
                 throw new DependencyUnavailableError(
                   "The authorized staged source is unavailable.",
                 );
               }
               let value = resolved.get(binding.sourceRef.id);
               if (!value) {
-                value = fresh.owner.resolveCredential(
+                value = current.owner.resolveCredential(
                   {
                     sourceRef: binding.sourceRef,
-                    tokenServiceInstanceId: fresh.instanceId,
-                    registration: source.registration,
+                    tokenServiceInstanceId: current.instanceId,
                   },
                   signal,
                 );
                 resolved.set(binding.sourceRef.id, value);
               }
               const credential = await value;
-              requireOpen();
-              await this.currentCredentialDeployment(claim, revision, expected, signal);
               requireOpen();
               return credential;
             },
@@ -6182,23 +6092,6 @@ export class ControllerWorker {
     } finally {
       open = false;
       resolved.clear();
-    }
-  }
-
-  private async verifyCredentialDeploymentRelease(
-    claim: ClaimedWork,
-    revision: Readonly<AgentRevision>,
-    startup: HarnessStartupRef,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const current = await this.currentCredentialDeployment(claim, revision, startup, signal);
-    if (
-      current.status.projections !== "installed" ||
-      !isDeepStrictEqual(current.status.startup, startup)
-    ) {
-      throw new DependencyUnavailableError(
-        "The exact held startup has not acknowledged its projections.",
-      );
     }
   }
 
@@ -6293,7 +6186,11 @@ export class ControllerWorker {
         if (withdrawal) {
           return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
         }
-        if (!source || source.ownerCapability !== "token_service" || !source.registration) {
+        if (
+          !source ||
+          source.ownerCapability !== "token_service" ||
+          source.tokenServiceInstanceId !== auth.tokenServiceInstanceId
+        ) {
           return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
         }
         harnessAuth = auth;
@@ -6356,7 +6253,7 @@ export class ControllerWorker {
           withdrawal ||
           !source ||
           source.ownerCapability !== "token_service" ||
-          !source.registration
+          source.tokenServiceInstanceId !== snapshot.tokenServiceInstanceId
         ) {
           return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
         }
@@ -6873,8 +6770,7 @@ export class ControllerWorker {
       !expired &&
       resolved.cleanupFailedPreparation !== true &&
       resolved.refusedCandidateStopped !== true &&
-      resolved.rejectedExecutionWithdrawal !== "withdrawn" &&
-      resolved.code !== STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED
+      resolved.rejectedExecutionWithdrawal !== "withdrawn"
     ) {
       await this.stopRefusedCandidate(claim, resolved.code);
     }
@@ -6887,10 +6783,7 @@ export class ControllerWorker {
     // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
     let activeRevisionChanged = false;
     let committedOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
-    if (
-      committedOutcome === "permanent" &&
-      resolved.code !== STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED
-    ) {
+    if (committedOutcome === "permanent") {
       failureLogFields = {
         ...failureLogFields,
         ...(await this.finishYieldedPredecessorStops(claim, "wait")),
@@ -7030,8 +6923,7 @@ export class ControllerWorker {
     if (
       committedOutcome === "permanent" &&
       !activeRevisionChanged &&
-      isCandidateDeployment(claim) &&
-      resolved.code !== STAGED_CREDENTIAL_REPLACEMENT_UNSUPPORTED
+      isCandidateDeployment(claim)
     ) {
       try {
         await this.scheduleFailedCandidateExposureWithdrawal(claim);
@@ -7074,22 +6966,6 @@ export class ControllerWorker {
             }
             await this.stagedRevision("activateRevision", activatedRevision, resolved.context);
           });
-        }
-        if (activated.executionAdmission.version === 8) {
-          if (resolved.context === undefined) {
-            throw new Error("The staged activation context is unavailable.");
-          }
-          const confirmed = (await this.prepareRevision(claim, activated, resolved.context))
-            .observation;
-          if (!confirmed.ready) {
-            await this.finalizeActiveRevision(
-              claim,
-              activated,
-              revisionPendingCode(confirmed),
-              runtimeFailureFromObservation(confirmed),
-            );
-            return;
-          }
         }
         await this.assertRepositoryGitMaterial(claim, activated);
         await this.retireEarlierRevisions(claim, activated);
