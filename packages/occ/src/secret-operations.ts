@@ -256,13 +256,6 @@ export function createSecretOperations(
     });
   }
 
-  async function listSecretsOperateDenied(
-    principalId: string,
-    namespaceId: string,
-  ): Promise<readonly string[]> {
-    return (await secretsOperateDenied(principalId, namespaceId, new Set())).readable;
-  }
-
   async function secretsOperateDenied(
     principalId: string,
     namespaceId: string,
@@ -489,7 +482,6 @@ export function createSecretOperations(
     createSecret,
     readSecret,
     listSecrets,
-    listSecretsOperateDenied,
     secretsOperateDenied,
     updateSecret,
     deleteSecret,

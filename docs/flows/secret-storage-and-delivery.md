@@ -76,9 +76,9 @@ graph TD
 
 [createSecret](../../packages/occ/src/secret-operations.ts) validates
 nonempty UTF-8 input of at most 65,536 bytes. OCC checks Secret `create` before
-and after locking the ready Namespace. This operation can run before Agent creation.
-OCC selects the Installation SecretDriver and generates the backend identity.
-The value stays in request and Driver memory.
+and after locking the Namespace, which must be ready. This can run before Agent
+creation. OCC generates the Secret ID and the selected Driver supplies its backend
+reference. The value stays in request and Driver memory.
 
 ### 2. Store material and commit safe identity
 

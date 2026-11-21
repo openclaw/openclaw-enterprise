@@ -6532,7 +6532,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly string[]> {
-    return this.secretOperations.listSecretsOperateDenied(principalId, namespaceId);
+    return (await this.secretsOperateDenied(principalId, namespaceId, new Set())).readable;
   }
 
   /**
