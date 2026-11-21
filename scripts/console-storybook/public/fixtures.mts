@@ -43,6 +43,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
     navigationAgentHistory?: true;
+    navigationAgentLookupMismatch?: true;
     namespaceStatus?: string;
     sessionUser?: unknown;
     extraSecrets?: readonly { id: string; name: string }[];
@@ -184,6 +185,7 @@ function installationScenario(
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
+const lookupSiblingNamespaceId = "ns_00000000-0000-4000-8000-000000000003";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
 const secretRef = (id: string): SecretReference => ({ kind: "secret", namespaceId, id });
 const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_demo_model") };
@@ -231,6 +233,8 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       email: "operator@example.com",
     },
   };
+  const navigationAgentLookup =
+    scenario.navigationAgentHistory || scenario.navigationAgentLookupMismatch;
   const namespaces: { id: string; name: string; status: string; createdAt: string }[] =
     scenario.emptyNamespaces
       ? []
@@ -243,11 +247,19 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           },
           {
             id: "ns_00000000-0000-4000-8000-000000000002",
-            name: scenario.navigationAgentHistory ? "A history default" : "Research",
-            status: scenario.navigationAgentHistory ? "ready" : "provisioning",
+            name: navigationAgentLookup ? "A history default" : "Research",
+            status: navigationAgentLookup ? "ready" : "provisioning",
             createdAt,
           },
         ];
+  if (scenario.navigationAgentLookupMismatch) {
+    namespaces.push({
+      id: lookupSiblingNamespaceId,
+      name: "C sibling",
+      status: "ready",
+      createdAt,
+    });
+  }
   const namespaceDeletionReads = new Map<string, number>();
   let namespaceDeleteRetryStatusFailed = false;
   const backends = scenario.emptyBackends
@@ -405,6 +417,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
   });
   let delayHistoryLookup = scenario.navigationAgentHistory === true;
+  let misrouteLookup = scenario.navigationAgentLookupMismatch === true;
   const templates = createConnectionTemplateFixture(
     scenario.oauthCatalog,
     createdAt,
@@ -597,6 +610,19 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     const match = path.match(/^\/namespaces\/([^/]+)\/(.*)$/);
     if (match) {
       const [, ns, resource = ""] = match;
+      if (
+        scenario.navigationAgentLookupMismatch &&
+        ns === lookupSiblingNamespaceId &&
+        method === "GET" &&
+        resource === "agents/agt_00000000-0000-4000-8000-000000000001"
+      ) {
+        if (!misrouteLookup) {
+          return error(404, "NOT_FOUND");
+        }
+        misrouteLookup = false;
+        // The sibling returns the holder’s Agent once, with its original Namespace ID.
+        return response(lifecycle.seedAgent());
+      }
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
           return response({

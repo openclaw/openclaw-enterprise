@@ -1120,6 +1120,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         action(),
       ]);
       assert.equal(response.status(), status, "GET " + path);
+      return response;
     }
     return { fixture, selected, other, page, requests, expectAgentRead };
   }
@@ -1294,6 +1295,92 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         assert.equal(page.url(), detailUrl(fixture, other.id, agent.id).href);
       }
     }
+  });
+
+  test("A secondary Agent response for a different Namespace leaves the link unscoped", async (t) => {
+    const { fixture, selected, other, page, requests, expectAgentRead } = await agentLinkFixture(t);
+    const wrong = await fixture.createNamespace("M history wrong", { ready: true });
+    const agentName = "Misrouted Agent";
+    const agent = await fixture.createAgent(other.id, agentName, nativeValues("misrouted"));
+    const unscoped = new URL(`/console/agents/${agent.id}`, fixture.origin);
+    const selectedPath = `/namespaces/${selected.id}/agents/${agent.id}`;
+    const holderPath = `/namespaces/${other.id}/agents/${agent.id}`;
+    const wrongPath = `/namespaces/${wrong.id}/agents/${agent.id}`;
+    const holderUrl = fixture.origin + holderPath;
+    const wrongUrl = fixture.origin + wrongPath;
+
+    // Make the holder's probe a settled 404, leaving the mismatched reply as the
+    // only reason discovery is incomplete.
+    await page.route(holderUrl, async (route) => {
+      const missingUrl = fixture.origin + selectedPath;
+      const response = await route.fetch({ url: missingUrl, maxRedirects: 0, maxRetries: 0 });
+      assert.equal(response.url(), missingUrl);
+      assert.equal(response.status(), 404);
+      await route.fulfill({ response });
+    });
+    let holderBody: Buffer | undefined;
+    await page.route(wrongUrl, async (route) => {
+      if (holderBody) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch({ url: holderUrl, maxRedirects: 0, maxRetries: 0 });
+      assert.equal(response.url(), holderUrl);
+      assert.equal(response.status(), 200);
+      const data = responseData(await response.json());
+      assert.equal(data.id, agent.id);
+      assert.equal(data.namespaceId, other.id);
+      assert.equal(data.configurationId, agent.configurationId);
+      assert.equal(data.name, agentName);
+      holderBody = await response.body();
+      await route.fulfill({ response, body: holderBody });
+    });
+    const replay = await expectAgentRead(wrongPath, 200, () =>
+      expectAgentRead(holderPath, 404, () =>
+        expectAgentRead(selectedPath, 404, () => login(page, fixture, unscoped)),
+      ),
+    );
+    assert.ok(holderBody);
+    assert.deepEqual(await replay.body(), holderBody);
+
+    const incomplete = page.getByRole("heading", {
+      name: "Agent not in this Namespace",
+      exact: true,
+    });
+    const unavailable = page.getByRole("heading", { name: "Resource unavailable", exact: true });
+    await incomplete.or(unavailable).first().waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), unscoped.href, "A mismatched probe must leave the Agent URL unscoped");
+    await incomplete.waitFor();
+    await page.getByText("not in the A history default Namespace", { exact: false }).waitFor();
+    const selector = page.locator("#namespace-selector");
+    assert.equal(await selector.inputValue(), selected.id);
+    assert.equal(await page.getByText(agentName, { exact: true }).count(), 0);
+    assert.equal(pathRequests(requests, "GET", wrongPath).length, 1);
+    assert.equal(pathRequests(requests, "GET", holderPath).length, 1);
+    const probePaths = [selectedPath, holderPath, wrongPath];
+    const followupReads = requests.filter(
+      ({ method, path }) =>
+        method === "GET" &&
+        (probePaths.some((probePath) => path.startsWith(probePath + "/")) ||
+          path.includes(`/configurations/${agent.configurationId}`)),
+    );
+    assert.deepEqual(followupReads, []);
+    await page.getByRole("button", { name: "Switch Namespace", exact: true }).click();
+    assert.equal(
+      await selector.evaluate((node) => node === node.ownerDocument.activeElement),
+      true,
+    );
+
+    await page.unroute(holderUrl);
+    await page.unroute(wrongUrl);
+    await expectAgentRead(holderPath, 200, () =>
+      expectAgentRead(wrongPath, 404, () =>
+        expectAgentRead(selectedPath, 404, () => page.reload()),
+      ),
+    );
+    await page.getByRole("heading", { name: agentName, exact: true }).first().waitFor();
+    assert.equal(page.url(), detailUrl(fixture, other.id, agent.id).href);
   });
 
   test("Agent link without a Namespace says when no readable Namespace has the Agent", async (t) => {

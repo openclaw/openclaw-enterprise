@@ -92,6 +92,13 @@ when the delayed response arrives. Back opens the historical version in
 **Z history holder** with **Deployment** selected; Forward returns to the list.
 The fixture simulates API responses.
 
+In **Recover from a mismatched Agent lookup**, the fixture simulates an unavailable
+holder probe and a reply from that holder returned for another Namespace. Confirm
+**Agent not in this Namespace**, an unscoped URL, and that **Switch Namespace**
+focuses the selector. Use the Console **Refresh** once to open the requested
+historical version in the holder Namespace with **Deployment** selected. Browser
+reload resets the fixture.
+
 **Return Backend access denied** checks Installation-wide denial.
 **Return access denied** and **Return session expired** must remove retained
 private content on response. These fixtures prove presentation only; the
