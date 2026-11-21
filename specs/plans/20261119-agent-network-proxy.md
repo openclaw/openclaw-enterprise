@@ -5,7 +5,7 @@ rfc: ../rfcs/20261119-agent-network-proxy.md
 # Implementation plan: Agent Gateway channel upstream proxy
 
 - **ID:** RFC-20261119-agent-network-proxy
-- **Delivery status:** Planned
+- **Delivery status:** In progress
 - **Owner:** OCE Core and Kubernetes Compute
 - **Authority:** [Proposed RFC](../rfcs/20261119-agent-network-proxy.md), submitted in [PR #6842](https://github.com/openclaw/openclaw-enterprise/pull/6842)
 - **Source baseline:** `c25e2879e580e67cb787eb87327ea3ac03845093`
@@ -138,19 +138,22 @@ and a real Gateway channel connection. Extend
 [channel egress integration](../../tests/integration/channel-egress-kubernetes-real.test.ts)
 through the real caller; register new cases in CI.
 
-| Required outcome           | Real check                                                                                                                             | Result  |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| AC-1 routing and admission | Agent deploy with and without proxy; observe Gateway, Envoy, proxy, and destination; unsupported Compute refusal                       | Not run |
-| AC-2 compatibility         | Current shipped OpenClaw, HTTP/HTTPS authenticated proxy, private CA and bad certificate, streaming and WebSocket, SOCKS/PAC refusal   | Not run |
-| AC-3 isolation             | Two Agents, distinct bindings and proxies, forbidden channel authority, direct egress, neighboring private address and metadata denial | Not run |
-| AC-4 lifecycle             | Edit, clear, deploy, retry, retire, tunnel drain, capacity, outage and authentication failure without fallback                         | Not run |
-| AC-5 scope                 | OCC Slack validation/directory route, unchanged Harness and internal transport, no-channel Agent without extra grant                   | Not run |
-| AC-6 Secrets and UI        | Caller and Agent-principal denial; public reads, inspection, logs and audit; rebuilt Storybook screenshots and walkthrough             | Not run |
+| Required outcome           | Evidence and remaining check                                                                                                                                                   | Result  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| AC-1 routing and admission | Normal no-channel Agent admission, deployment, outage recovery, and model turn passed at `bc396a31`; channel-enabled direct/proxied route remains unverified.                  | Partial |
+| AC-2 compatibility         | Pinned HTTP/HTTPS, Basic, private-CA, bad-TLS, streaming and WebSocket qualification passed; published-runtime normal-Agent HTTPS and certificate-failure paths remain.        | Partial |
+| AC-3 isolation             | Real fixture and pinned Envoy CIDR, excluded-IP, and alternate-numeric denial proofs passed; two live Agents with distinct proxies remain.                                     | Partial |
+| AC-4 lifecycle             | Revision persistence and real-cluster drain/reuse and delayed-write fencing passed; controlled 407 propagation passed; live retry, outage, and authentication recovery remain. | Partial |
+| AC-5 scope                 | No-channel no-grant and model turn passed; post-selection OCC credential/directory and dedicated Harness containment remain.                                                   | Partial |
+| AC-6 Secrets and UI        | Secret denial, redaction, inspection/log qualification, and rebuilt Console media passed; integrated channel-enabled Gateway/audit/inspection containment remains.             | Partial |
 
 ## Qualification and delivery record
 
-- The RFC is Proposed. Submission does not establish acceptance or permission
-  to merge. No implementation PR exists.
+- The RFC is Proposed and retains its human-review/manual-merge hold.
+  [Implementation PR #6856](https://github.com/openclaw/openclaw-enterprise/pull/6856)
+  is open; its reviewed routing fix is at `e66d1168`, with CI harness corrections
+  at `fb8dc2a8`. Submission and implementation do not establish acceptance or
+  permission to merge.
 - Main pins OpenClaw source `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`.
   The exact submitted RFC records the earlier pin `82b682c…`; qualification
   must use the current shipped source and immutable runtime images.
@@ -233,17 +236,25 @@ through the real caller; register new cases in CI.
   current main's OpenClaw pin declares proxyline 0.4.1. Select a published
   immutable runtime pair that matches the intended compatibility target before
   claiming shipped-runtime qualification. A local build is not publication.
-- The authorized live Slack QA inputs are unavailable on this DevBox:
+- Live Slack QA selects these scoped inputs:
   `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`,
   `OCC_TEST_SLACK_SENDER_BOT_TOKEN`, and `OCC_TEST_SLACK_CHANNEL_ID`.
-  No local credential set is configured. The [Slack test guide](../../docs/testing/slack.md#slack)
-  requires an authorized non-DM channel and distinct sender bot. Without those
-  inputs, the live Slack Agent QA journey cannot run. The controlled provider
-  does not satisfy that acceptance requirement.
+  A dedicated QA app, distinct driver, and non-DM channel passed read-only
+  identity, membership, and history checks. The supported fixture lease,
+  explicit authorization for test posts, and a usable dedicated sandbox host
+  remain pending. No real Socket Mode connection or message was started. The
+  controlled provider does not satisfy live Slack acceptance.
+
+- Main-only publication of a source-matching immutable runtime is being
+  qualified separately. Gateway and Harness use the same OCE runtime digest;
+  local verification images do not establish publication of the PR revision.
 
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-21 14:26: Record implementation PR, partial AC evidence, live fixture
+  constraints, and publication boundary (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298 - 61ad9f42bcf90c723711443c3f616c7dc185d189).
 
 - 2026-11-21 UTC: Create the implementation plan from main `c25e2879` and
   record the standalone Envoy probe.
