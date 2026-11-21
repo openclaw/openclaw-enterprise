@@ -101,6 +101,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     emptyNamespaces?: boolean;
     emptyBackends?: boolean;
     namespaceName?: string;
+    navigationAgentHistory?: true;
     namespaceStatus?: NamespaceStatus;
     namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
     candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
@@ -398,6 +399,31 @@ const authoredScenarios = {
       "Use Tab to focus Namespaces, then Enter. After loading, its heading has focus and the next Tab reaches Refresh. Back and Forward focus the destination heading while retaining loaded content.",
       "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
+    ],
+  } satisfies LocalScenario,
+  navigationAgentHistory: {
+    group: "Pages/Navigation",
+    name: "Return to an interrupted Agent link",
+    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?revision=rev_00000000-0000-4000-8000-000000000006&tab=deployment",
+    namespaceName: "Z history holder",
+    navigationAgentHistory: true,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000002/agents/agt_00000000-0000-4000-8000-000000000001",
+        status: 404,
+        code: "NOT_FOUND",
+      },
+    ],
+    description:
+      "A shared Agent link has no Namespace. Leave while the Console looks in another Namespace, then use Back to reopen the linked version and Deployment tab. API responses are simulated.",
+    steps: [
+      "Wait for Looking for this Agent in your other Namespaces. Before the lookup finishes, choose ← Agents.",
+      "Wait for the delayed read to finish. The Agents list stays open.",
+      "Use browser Back. Research assistant opens in Z history holder with version 6 and Deployment selected. Check This version’s deployment record.",
+      "Use Forward. The same Agents list returns. Reset story to repeat.",
     ],
   } satisfies LocalScenario,
   navigationSlowRecheck: {

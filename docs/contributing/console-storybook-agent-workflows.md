@@ -86,6 +86,12 @@ In **Return to loaded pages**, Tab to Namespaces and press Enter: its heading
 receives focus, then Tab reaches Refresh. Check retained editors through
 Back/Forward, Refresh, refocus, and Namespace switches.
 
+In **Return to an interrupted Agent link**, choose **← Agents** while the
+Console looks for the linked Agent in another Namespace. The list stays open
+when the delayed response arrives. Back opens the historical version in
+**Z history holder** with **Deployment** selected; Forward returns to the list.
+The fixture simulates API responses.
+
 **Return Backend access denied** checks Installation-wide denial.
 **Return access denied** and **Return session expired** must remove retained
 private content on response. These fixtures prove presentation only; the
