@@ -88,7 +88,7 @@ support with `assertAvailable`. Admission can then combine repository Git with
 independently admitted routes. Reduction can remove Git while preserving the exact
 recipient and other bindings. It does not convert v5 online authorization or v6
 observed hooks to exact dispatch. Existing v3–v6 admissions keep their semantics.
-The [admission source](../../../packages/occ/src/index.ts) and
+The [admission source](../../../packages/occ/src/deployment-revision.ts) and
 [version checks](../../../packages/contracts/src/drivers/credential-proxy/index.ts) implement
 this support; they do not qualify stock OpenShell or any installed deployment.
 

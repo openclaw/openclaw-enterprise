@@ -51,12 +51,15 @@ Configuration response status. This is simulated UI proof, not an IAM grant test
 
 Open **Pages / Agent detail / Recover a Configuration read on tab return** in its
 own tab. Choose **Edit Configuration**, make an unsaved edit, and select some
-text in the editor. Scroll until the page header is out of view, then switch to
-another browser tab and return. The fixture holds the automatic retry after a
-simulated 503. After about one second, confirm **Still checking…** appears at the
-bottom of the viewport while the draft is hidden. When the retry completes,
-verify that the unsaved draft, editor focus, text selection, and scroll position
-return and the message disappears. Repeat at a 390 px viewport width.
+text in the editor. Scroll until the page header is out of view. Switch to
+another browser tab, then return. The fixture delays the retry after a simulated
+503. When **Still checking…** appears at the bottom of the viewport and the draft
+is hidden, switch away again. Let the retry finish with the preview tab hidden.
+Return to the preview and wait for the next access check to succeed. Confirm
+the message disappears and the same editor regains focus with the unsaved draft,
+selection, and scroll position intact. Type without clicking the editor to
+verify that only the selected text changes. Reset the story and repeat at a
+390 px viewport width.
 
 Repeat with **Pages / Agent detail / Retry an unavailable Configuration on tab
 return**. Both reads return 503. The Agent header and the warning remain

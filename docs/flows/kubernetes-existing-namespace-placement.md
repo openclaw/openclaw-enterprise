@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-11-07
-last_updated_session: authoring-run/0e565cf9-f7ee-4e08-8c3f-e680ea2b0b94
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -19,7 +19,7 @@ in place when their tenant markers and OpenClaw manager label are exact.
 
 - Trigger: `POST /namespaces` with optional `existingNamespace`, subsequent
   worker provisioning or deletion, and Configuration CRUD.
-- `packages/occ/src/index.ts:OpenClawController.createNamespace`
+- `packages/occ/src/namespace-operations.ts:createNamespace`
 - `apps/controller/src/worker.ts:ControllerWorker.authorize`
 - `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.ensureNamespace`
 - Assumptions: the operator exclusively dedicates an existing, `Active`
@@ -55,7 +55,7 @@ graph TD
 
 ### 1. Authorize and persist explicit external selection
 
-`packages/occ/src/index.ts:OpenClawController.createNamespace`
+`packages/occ/src/namespace-operations.ts:createNamespace`
 
 `internal/occcli/cli.go:namespaceCommand` checks whether the caller supplied
 `--existing-namespace` before creating its HTTP client. An explicitly supplied
@@ -215,6 +215,7 @@ complete-deletion lifecycle.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-07 22:02: Trace the startup quota precision prerequisite before namespace placement. (authoring-run/0e565cf9-f7ee-4e08-8c3f-e680ea2b0b94 - 9b23338c49448b9fc56d637a53bd0d71ec3be76b)
 
 - 2026-11-06 17:40: Trace admitted empty NetworkPolicy rule lists in both operator-owned checks. (authoring-run/22fe6796-3f06-49bf-bb59-d9ac13bb66f7 - eb1ea7a5a6bf1bc706a41e00246cb795ed8dd703)

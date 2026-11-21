@@ -5,10 +5,7 @@ import {
   type AgentRevision,
   type RepositoryRevisionState,
 } from "../../packages/contracts/src/index.ts";
-import type {
-  PlatformUnitOfWork,
-  PlatformStateStore,
-} from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork, PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.ts";
 import {
   assertCreatedRevision,

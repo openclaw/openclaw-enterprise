@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-20
+updated: 2026-11-21
 last_updated_session: 01a1ec21-b384-7472-887f-945ae0ab16fc
 ---
 
@@ -14,8 +14,8 @@ OpenClaw Control Plane (OCC) authorizes CredentialSource operations and records 
 
 - Trigger: CredentialSource create, update, or delete; Agent binding and deployment; or Agent source withdrawal.
 - Source: `apps/controller/src/http/credential-sources.ts:createCredentialSource`
-- Source: `packages/occ/src/index.ts:createCredentialSource`
-- Source: `packages/occ/src/index.ts:withdrawAgentCredentialSource`
+- Source: `packages/occ/src/credential-source-operations.ts:createCredentialSource`
+- Source: `packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`
 - Context: a ready Namespace, selected owner Driver, and grants for the exact source operation.
 
 ## Flow
@@ -41,29 +41,29 @@ The dashed edge marks missing readiness and enforcement qualification. The solid
 
 ### 1. Register a source
 
-`packages/occ/src/index.ts:createCredentialSource`
+`packages/occ/src/credential-source-operations.ts:createCredentialSource`
 
 OCC authorizes `credential_source:create`, locks the ready Namespace, and checks that the selected owner offers the requested source type before it reads a Secret or writes to a Driver. Invalid fields return `400`; an unoffered type returns `409`. Each Secret must belong to the Namespace, and the caller needs `secret:operate`. For a legacy Gateway source, OCC reads the Secret to copy its value to `CredentialGatewayDriver`. For a protected static source, OCC first checks that its selected provider is compatible and registered once, then verifies the credential format and its authoritative version without retaining the value. See the [source reference](../reference/credential-sources.md) for inputs and the [protected flow](credential-source-egress.md#1-admit-source-and-install-the-revision-plan) for admission details.
 
-`packages/occ/src/index.ts:abandonCredentialRegistration`, `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
+`packages/occ/src/credential-source-operations.ts:abandonCredentialRegistration`, `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
 Registration and deletion reject inherited controller transactions before effects, so their intermediate states can commit independently. For legacy Gateway sources, OCC commits `registering` before calling the Driver. The bundled OpenShell Driver checks Provider ownership and creates the source-owned Provider and profile; Refresh alone receives refresh material. Success commits `ready` and audit together. A failed or uncertain external write triggers cleanup through the original owner. If cleanup cannot confirm removal, the record stays `deleting`; if DELETE wins the race, POST compensates without taking over DELETE's issuer withdrawal. Protected Proxy sources instead complete [protected admission](credential-source-egress.md) without a Gateway registration write; migration requires an unbound source.
 
 ### 2. Update a source
 
-`packages/occ/src/index.ts:updateCredentialSource`
+`packages/occ/src/credential-source-operations.ts:updateCredentialSource`
 
 OCC authorizes `credential_source:update`, locks a ready source, and validates replacement Secret references. Device-authorized sources refuse PATCH before Secret reads. For legacy Gateway sources, the external write precedes the commit of references and audit; a failed commit can leave OpenShell newer until the request is repeated. OpenShell updates reach subsequently started processes. A protected static source must be unbound before it can be updated; OCC then repeats Proxy admission and commits replacement references without a Gateway update. A bound TokenService source cannot change while delivery update notification and retry are unsupported; OCC refuses the update before changing owner material. Refresh rotation follows the [refresh flow](credential-source-refresh.md#4-update-and-rotation).
 
 ### 3. Bind and admit an Agent revision
 
-`packages/occ/src/index.ts:authorizeHarnessAuthSource`
+`packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`
 
 OCC checks `credential_source:operate` for existing bindings without requiring a lookup, so a caller can remove an obsolete binding. New bindings require a ready same-Namespace source and its recorded owner. An Agent draft can select a ready TokenService source for model authentication. PostgreSQL records Agent/source references and prevents deletion while referenced.
 
-`packages/occ/src/index.ts:deployAgent`, `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`, `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable`
 
-OCC rechecks the caller's and Agent's source grants, requires a Sandbox and an offered owner type, then freezes source ID, type, owner Driver, and Harness login mode in the Agent revision. A selected Proxy cannot replace a withdrawn Gateway type or change an existing source's owner. For a standalone TokenService source, OCC locks the source, checks its instance and `provider_preset`, matches `openai/<model>`, and derives separate network and injection policies from saved Sandbox grants. It requires delivery and Sandbox capabilities from the same installed Driver and rechecks selection before commit. A qualified v8 revision freezes the policy, delivery ID, registration, source instance, and Sandbox ID. State requires one model source and binding, disallows repository delivery, and requires network coverage for valid injection requests; PostgreSQL holds ordered Namespace, Agent, and source locks through commit. Unqualified deployments return `409` without queued work.
+OCC rechecks the caller's and Agent's source grants, requires a Sandbox and an offered owner type, then freezes source ID, type, owner Driver, and Harness login mode in the Agent revision. A selected Proxy cannot replace a withdrawn Gateway type or change an existing source's owner. Under the source lock, OCC matches the TokenService instance and `provider_preset` to `openai/<model>`. Network grants and injection policy remain separate; delivery and Sandbox must share an installed Driver. v8 freezes that registration, delivery ID, policy, Sandbox ID, and source instance. State permits one model source and binding, rejects repository delivery, and requires network-covered injection; PostgreSQL holds ordered Namespace, Agent, and source locks through commit. Unqualified admission returns `409` without work.
 
 ### 4. Resolve the source at dispatch
 
@@ -77,13 +77,13 @@ The worker rechecks actor and Agent grants, selected Driver identity, live sourc
 
 The staged native Proxy accepts a trusted admitted binding, exact target, and source-bound resolver. It rejects a mismatched target before resolving material. First use transfers material into an OpenShell Provider delivery copy and attaches it with a Sandbox resource-version precondition; compatible reuse does not resolve or repair material. The OpenShell Gateway API client validates the receipt and returned Sandbox, and the Proxy checks Provider identity/version and final membership before returning a runtime placeholder projection.
 
-When OCC TokenService is selected, composition registers `credential_proxy_delivery` on the selected Sandbox owner. Worker and Compute use that exact selection for deployment, configuration, status, and cleanup. The worker rechecks source identity, permission, withdrawal, and the held target before giving the Driver a source-bound resolver, then repeats the release checks after configuration. Status fails closed because current source-version authority and exact native executable enforcement remain unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)). The native RPC rejects malformed receipts and sanitizes errors; legacy serving keeps its separate Attach operation.
+For OCC TokenService, composition registers `credential_proxy_delivery` on the selected Sandbox owner. Worker and Compute use that registration for delivery and cleanup. Worker checks source authority, withdrawal, and the held target before supplying a source-bound resolver, then repeats release checks after configuration. Status fails closed because current source-version authority and exact native executable enforcement remain unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)). The native RPC rejects malformed receipts and sanitizes errors; legacy serving keeps its separate Attach operation.
 
 Compute records dispatch, then the provider's exact Sandbox ID, on the revision's release-key Secret. Retries observe that target without redeploying or reprovisioning. Pending startup stays unready; uncertainty or identity mismatch fails closed. Enrolled retries complete exposure withdrawal.
 
 ### 5. Withdraw or delete a source
 
-`packages/occ/src/index.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `packages/occ/src/index.ts:deleteCredentialSource`
+`packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
 Withdrawal requires `agent:operate` and queues version-scoped work without deploying a revision. The worker rechecks each requester's grant. For legacy Gateway delivery, Compute detaches the OpenShell Provider and confirms its receipt; protected Proxy sources instead reduce the approved policy. Denied requesters require replay. Unconfirmed revocation retries, and replay or maintenance recovers pending work. Deploy and repair never restore withdrawn access, including after a late Sandbox create.
 
@@ -109,7 +109,9 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 ## Changelog
 
 - 2026-11-20 23:19: Record staged provision dispatch and observe the saved target on every retry. (01a1ec21-b384-7472-887f-945ae0ab16fc - 63d179f67)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 18:49: Document enrolled retry target identity and v8 State admission. (01a1ec21-b384-7472-887f-945ae0ab16fc - c272bc823)
+- 2026-11-20 16:33: Point Harness binding and snapshot checks to their source module. (authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1 - 56b116735a3a38a48eff35bf36152d3032b1d7d3)
 - 2026-11-20 10:13: Name the serving protected source owner as the legacy egress Driver. (01a1f7ec-0d9e-7803-96c3-eb88548e3788 - b02e93892)
 - 2026-11-20 09:05: Connect staged Agent callers to the selected native delivery Driver and distinguish readiness qualification. (01a1ec21-b384-7472-887f-945ae0ab16fc)
 - 2026-11-20 08:10: Clarify serving and internal custody, registration checks, dispatch, and deletion retry behavior. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 6c7aeed58)
