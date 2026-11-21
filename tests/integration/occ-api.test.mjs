@@ -11,6 +11,9 @@ import { runBackendAssociations, runBackendIdCharacterRule } from "./occ-api-bac
 import {
   registerAuthorizationDecisionCases,
   registerBootstrapAuthorizationEvidenceCase,
+  prepareAuditMutations,
+  verifyBootstrapRecovery,
+  verifyDependencyFailure,
   registerDeploymentAuthorizationEvidenceCase,
 } from "./occ-api-authorization-evidence-cases.ts";
 import {
@@ -27,6 +30,8 @@ import {
 } from "./occ-api-plugin-policy-cases.ts";
 import {
   runBodylessRoutes,
+  runAgentDeletionMutationBoundary,
+  prepareNamespaceLifecycle,
   runNamespaceIsolation,
   runResourceRoutes,
 } from "./occ-api-resource-route-cases.ts";
@@ -971,91 +976,11 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
 });
 
 test("Agent deletion closes every synchronous mutation boundary before teardown", async () => {
-  const controller = await configuredController({ recordOperations: true });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "deletion-race");
-  const agent = await createAgent(controller, namespace.id, "deletion-race-agent");
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
-  await bindHarnessKey(controller.fixture, namespace.id, agent);
-  const deployed = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(deployed.status, 202);
-
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const deletion = await controller.request("DELETE", agentPath);
-  assert.equal(deletion.status, 202);
-  assert.equal(deletion.data.status, "deleting");
-  assert.equal(deletion.data.desiredRuntimeState, "stopped");
-
-  // Repeated deletion must reuse the existing teardown through the memory work lookup.
-  const repeatedDeletion = await controller.request("DELETE", agentPath);
-  assert.equal(repeatedDeletion.status, 202);
-  assert.equal(repeatedDeletion.data.status, "deleting");
-  await controller.fixture.platformState.read(async (view) => {
-    const key = `agent:${agent.id}:reconcile:deleted`;
-    const work = await view.operations.findWork(key);
-    assert.ok(work);
-    assert.equal(work.idempotencyKey, key);
-    assert.equal(work.agentId, agent.id);
-    assert.equal(work.namespaceId, namespace.id);
-    assert.equal(work.actorId, controller.fixture.principal.id);
-    assert.equal(work.agentTarget, "deleted");
-    assert.equal(await view.operations.findWork(`${key}:undefined`), undefined);
-    const teardowns = (await view.operations.list()).filter(
-      (operation) =>
-        operation.kind === "agent" &&
-        operation.resourceId === agent.id &&
-        operation.namespaceId === namespace.id &&
-        operation.action === "reconcile" &&
-        operation.target === "deleted",
-    );
-    assert.equal(teardowns.length, 1);
+  await runAgentDeletionMutationBoundary({
+    configuredController,
+    AgentDeletingError,
+    deletingMessage: AGENT_DELETING,
   });
-
-  for (const mutation of [
-    () =>
-      controller.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
-        body: { configurationId: agent.configurationId },
-      }),
-    () => controller.request("POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`),
-  ]) {
-    const rejected = await mutation();
-    assertApiError(rejected, 409, "AGENT_DELETING");
-    assert.equal(rejected.body.error.message, AGENT_DELETING);
-  }
-
-  // Credential provisioning and workspace routing are intentionally absent
-  // from this API fixture, so prove their admission barriers directly before
-  // either unavailable dependency is consulted.
-  await assert.rejects(
-    controller.fixture.controller.provisionAgentRuntimeCredentials(
-      controller.fixture.principal.id,
-      namespace.id,
-      agent.id,
-      {},
-    ),
-    AgentDeletingError,
-  );
-  await assert.rejects(
-    controller.fixture.controller.getOperableActiveAgentRevision(
-      controller.fixture.principal.id,
-      namespace.id,
-      agent.id,
-    ),
-    AgentDeletingError,
-  );
-
-  const revisions = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
-  );
-  assert.equal(revisions.data.length, 1, "no mutation may admit work after deletion starts");
 });
 
 test("Agent Backend API preserves nullable drafts and immutable revision associations", async () => {
@@ -1507,53 +1432,8 @@ test("OCC isolates Namespace ownership and filters collections by exact IAM gran
   }));
 
 test("two Namespaces become independently ready and deletion tombstones only its exact target", async () => {
-  const controller = await configuredController();
-  const { fixture } = controller;
-  await bootstrap(controller, "Lifecycle installation");
-  const namespaceA = await createNamespace(controller, "lifecycle-a");
-  const namespaceB = await createNamespace(controller, "lifecycle-b");
-
-  const originalConfiguration = await createConfiguration(controller, namespaceA.id, {
-    model: "original",
-  });
-  const agentA = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceA.id}/agents`, {
-    body: { name: "lifecycle-agent-a", configurationId: originalConfiguration.id },
-  });
-  assert.equal(agentA.status, 201);
-  assert.equal(agentA.data.configurationId, originalConfiguration.id);
-  const firstConfiguration = await createConfiguration(controller, namespaceA.id, {
-    model: "first",
-    temperature: "0",
-  });
-  const replacedReference = await injectedRequest(
-    fixture.app,
-    "PATCH",
-    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}`,
-    { body: { configurationId: firstConfiguration.id } },
-  );
-  assert.equal(replacedReference.status, 200);
-  assert.equal(replacedReference.data.configurationId, firstConfiguration.id);
-  assert.deepEqual(fixture.computeCalls.ensureNamespace, []);
-  const unavailable = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/deploy`,
-  );
-  assertApiError(unavailable, 409, "NAMESPACE_NOT_READY");
-
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceA.id, "ready");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceB.id, "ready");
-  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.id, namespaceB.id]);
-
-  await bindHarnessKey(fixture, namespaceA.id, {
-    ...agentA.data,
-    configurationId: firstConfiguration.id,
-  });
-  const readyDeployment = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/deploy`,
-  );
+  const lifecycle = await prepareNamespaceLifecycle(configuredController);
+  const { agentA, firstConfiguration, readyDeployment } = lifecycle;
   assert.equal(readyDeployment.status, 202);
   assert.match(readyDeployment.data.id, identifier("rev"));
   assert.deepEqual(Object.keys(readyDeployment.data).sort(), [
@@ -1579,46 +1459,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
     readyDeployment.data.configuration,
     admittedConfiguration(servedAs({ model: "first", temperature: "0" }, agentA.data.name), "info"),
   );
-  assert.deepEqual(readyDeployment.data.harness, {
-    id: "openclaw",
-    version: "1.0.0",
-    mode: "embedded",
-    overrides: {},
-    configuration: {},
-  });
-  assert.deepEqual(readyDeployment.data.compute, {
-    id: "compute-integration",
-    implementation: "deterministic-test",
-  });
-  assert.equal(readyDeployment.data.revision, 1);
-  assert.equal(Object.hasOwn(readyDeployment.data, "servicePrincipalId"), false);
-
-  const secondConfiguration = await createConfiguration(controller, namespaceA.id, {
-    model: "second",
-    temperature: "1",
-  });
-  const nextReference = await injectedRequest(
-    fixture.app,
-    "PATCH",
-    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}`,
-    { body: { configurationId: secondConfiguration.id } },
-  );
-  assert.equal(nextReference.status, 200);
-  const historical = await injectedRequest(
-    fixture.app,
-    "GET",
-    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/revisions/${readyDeployment.data.id}`,
-  );
-  assert.equal(historical.status, 200);
-  assert.deepEqual(historical.data, readyDeployment.data);
-
-  const nextDeployment = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/deploy`,
-  );
-  assert.equal(nextDeployment.status, 202);
-  assert.equal(nextDeployment.data.revision, 2);
+  const nextDeployment = await lifecycle.admitSecondRevision();
   assert.deepEqual(
     nextDeployment.data.configuration,
     admittedConfiguration(
@@ -1626,92 +1467,12 @@ test("two Namespaces become independently ready and deletion tombstones only its
       "info",
     ),
   );
-  const admittedRevisions = await injectedRequest(
-    fixture.app,
-    "GET",
-    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/revisions`,
-  );
-  // The list returns summaries, newest first, on one page.
-  const summary = (revision) => ({
-    id: revision.id,
-    namespaceId: revision.namespaceId,
-    agentId: revision.agentId,
-    revision: revision.revision,
-    backendId: revision.backendId,
-    configurationId: revision.configurationId,
-    configurationGeneration: revision.configurationGeneration,
-    harness: revision.harness,
-    createdAt: revision.createdAt,
-    // This in-memory API records no deployment work.
-    deploymentStatus: null,
-    deploymentErrorCode: null,
-  });
-  assert.deepEqual(admittedRevisions.data, [
-    summary(nextDeployment.data),
-    summary(readyDeployment.data),
-  ]);
-  assert.equal(admittedRevisions.body.meta.nextCursor, null);
-  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.id, namespaceB.id]);
-
-  const deleting = await injectedRequest(fixture.app, "DELETE", `/namespaces/${namespaceB.id}`);
-  assert.equal(deleting.status, 202);
-  assert.equal(deleting.data.status, "deleting");
-  const rejectedChild = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespaceB.id}/agents`,
-    { body: { name: "too-late", configurationId: firstConfiguration.id } },
-  );
-  assert.equal(rejectedChild.status, 409);
-
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceB.id, "deleted");
-  assert.deepEqual(fixture.computeCalls.deleteNamespace, [namespaceB.id]);
-  const absent = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceB.id}`);
-  assert.equal(absent.status, 404);
-  const listed = await injectedRequest(fixture.app, "GET", "/namespaces");
-  assert.deepEqual(
-    listed.data.map(({ name }) => name),
-    [BOOTSTRAP_DEFAULT_NAMESPACE_NAME, "lifecycle-a"],
-  );
-  const stillReady = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceA.id}`);
-  assert.equal(stillReady.data.status, "ready");
-  // The tombstone keeps its name: a new Namespace cannot reuse it, and the 409 says the name
-  // belongs to a deleted Namespace rather than one the caller could find in the list.
-  const reused = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "lifecycle-b" },
-  });
-  assertApiError(reused, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    reused.body.error.message,
-    "This name belongs to a deleted Namespace and cannot be reused. Choose a different name.",
-  );
+  await lifecycle.verifyTombstone(nextDeployment);
 });
 
 test("bootstrap, mutations, and denials emit attributable private audit events", async () => {
-  const controller = await configuredController();
-  const { fixture } = controller;
-  const originalIAMDriverId = fixture.iamDriver.id;
-  await bootstrap(controller, "Audited installation");
-  const namespace = await createNamespace(controller, "audited-namespace");
-  const agent = await createAgent(controller, namespace.id, "audited-agent");
-
-  // Beginning deletion is an audited mutation in its own right: it is the
-  // record that attributes the teardown to the principal who requested it,
-  // and it must exist before any resource is destroyed.
-  const deletion = await injectedRequest(
-    fixture.app,
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(deletion.status, 202);
-  assert.equal(deletion.data.status, "deleting");
-
-  const expectedAuditEvents = fixture.auditSink.events.length;
-  const unauthenticated = await injectedRequest(fixture.app, "GET", "/installation", {
-    identity: false,
-  });
-  assert.equal(unauthenticated.status, 401);
-  assert.equal(fixture.auditSink.events.length, expectedAuditEvents);
+  const audit = await prepareAuditMutations(configuredController);
+  const { fixture, originalIAMDriverId, namespace, agent } = audit;
 
   const permissions = fixture.state.roles[0].permissions;
   const namespaceCreate = permissions.findIndex(
@@ -1725,121 +1486,13 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
     (entry) => entry.action === "delete" && entry.resourceKind === "agent",
   );
   permissions.splice(agentDelete, 1);
-  const denialApp = fixture.createApp();
-  const unauthorized = await injectedRequest(denialApp, "POST", "/namespaces", {
-    body: { name: "never-log-this-request-body" },
-  });
-  assert.equal(unauthorized.status, 403);
-
-  const deletionDenied = await injectedRequest(
-    denialApp,
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(deletionDenied.status, 403);
+  await audit.verifyDeniedRequests(namespace, agent);
 
   const mutationEvents = fixture.auditSink.events.filter((event) =>
     ["bootstrap", "mutation"].includes(event.kind),
   );
   assert.equal(mutationEvents.length, 5);
-  assert.deepEqual(
-    mutationEvents.map((event) => [event.kind, event.resource.kind]),
-    [
-      ["bootstrap", "installation"],
-      ["mutation", "namespace"],
-      ["mutation", "configuration"],
-      ["mutation", "agent"],
-      ["mutation", "agent"],
-    ],
-  );
-  for (const event of mutationEvents) {
-    assert.equal(event.outcome, "success");
-    assert.equal(event.installationId, fixture.installationId);
-    assert.equal(event.actorId, fixture.principal.id);
-    assert.equal(event.actor.principalId, fixture.principal.id);
-    assert.equal(event.actor.issuer, fixture.principal.issuer);
-    assert.equal(event.actor.subject, fixture.principal.subject);
-    assert.match(event.requestId, identifier("req"));
-    assert.equal(typeof event.admissionDecisionId, "string");
-    assert.equal(event.source, "occ");
-    assert.equal(event.iamDriverId, originalIAMDriverId);
-  }
-  assert.deepEqual(
-    mutationEvents.map((event) => event.authorization),
-    [
-      {
-        principalId: fixture.principal.id,
-        action: "administer",
-        resource: {
-          kind: "installation",
-          id: fixture.installationId,
-        },
-      },
-      {
-        principalId: fixture.principal.id,
-        action: "create",
-        resource: {
-          kind: "namespace",
-          id: fixture.installationId,
-        },
-      },
-      {
-        principalId: fixture.principal.id,
-        action: "create",
-        resource: {
-          kind: "configuration",
-          id: namespace.id,
-          namespaceId: namespace.id,
-        },
-      },
-      {
-        principalId: fixture.principal.id,
-        action: "create",
-        resource: {
-          kind: "agent",
-          id: namespace.id,
-          namespaceId: namespace.id,
-        },
-      },
-      {
-        principalId: fixture.principal.id,
-        action: "delete",
-        resource: {
-          kind: "agent",
-          id: agent.id,
-          namespaceId: namespace.id,
-        },
-      },
-    ],
-  );
-
-  // Both refusals are audited, so a denied destructive request leaves evidence
-  // naming the principal who attempted it.
-  const authorizationDenials = fixture.auditSink.events.filter(
-    (event) => event.kind === "authorization_denial",
-  );
-  assert.equal(authorizationDenials.length, 2);
-  for (const denial of authorizationDenials) {
-    assert.equal(denial.outcome, "denied");
-    assert.equal(denial.actor.principalId, fixture.principal.id);
-    assert.equal(denial.installationId, fixture.installationId);
-    assert.equal(denial.reasonCode, "AUTHORIZATION_DENIED");
-  }
-  assert.deepEqual(
-    authorizationDenials.map((denial) => [
-      denial.authorization.action,
-      denial.authorization.resource.kind,
-    ]),
-    [
-      ["create", "namespace"],
-      ["delete", "agent"],
-    ],
-  );
-  assert.equal(authorizationDenials[1].authorization.resource.id, agent.id);
-
-  const recorded = JSON.stringify(fixture.auditSink.events);
-  assert.equal(recorded.includes(fixture.session.cookie), false);
-  assert.equal(recorded.includes("never-log-this-request-body"), false);
+  audit.verifyAttributableAudit(originalIAMDriverId, namespace, agent, mutationEvents);
 });
 
 registerAuthorizationDecisionCases(configuredController);
@@ -1865,62 +1518,16 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
   } finally {
     bootstrapFailure.auditSink.append = originalBootstrapAppend;
   }
-  assert.equal(failedBootstrap.status, 503);
-  assert.equal(failedBootstrap.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.deepEqual(bootstrapFailure.auditSink.events, []);
-
-  const absentInstallation = await injectedRequest(bootstrapFailure.app, "GET", "/installation");
-  assert.equal(absentInstallation.status, 404);
-
-  const recoveredBootstrap = await injectedRequest(
-    bootstrapFailure.app,
-    "POST",
-    "/installation/bootstrap",
-    { body: { name: "recovered installation" } },
-  );
-  assert.equal(recoveredBootstrap.status, 201);
+  await verifyBootstrapRecovery(bootstrapFailure, failedBootstrap);
 
   const fixture = await createInjectedFixture();
-  const bootstrapResult = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Failure-injection installation" },
-  });
-  assert.equal(bootstrapResult.status, 201);
-
-  const originalAppend = fixture.auditSink.append;
-  fixture.auditSink.append = async () => {
-    throw new Error("sk-audit-provider-credential-123456789");
-  };
-  let failedMutation;
-  try {
-    failedMutation = await injectedRequest(fixture.app, "POST", "/namespaces", {
-      body: { name: "must-never-become-visible" },
-    });
-  } finally {
-    fixture.auditSink.append = originalAppend;
-  }
-  assert.equal(failedMutation.status, 503);
-  assert.equal(failedMutation.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.equal(JSON.stringify(failedMutation.body).includes("sk-audit-provider"), false);
+  await verifyDependencyFailure(fixture, "audit");
 
   const unchanged = await injectedRequest(fixture.app, "GET", "/namespaces");
   assertOnlyDefaultNamespace(unchanged);
   assert.equal(fixture.auditSink.events.length, 1);
 
-  const originalAuthorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async () => {
-    throw new Error("sk-iam-provider-credential-123456789");
-  };
-  let unavailable;
-  try {
-    unavailable = await injectedRequest(fixture.app, "POST", "/namespaces", {
-      body: { name: "must-never-be-authorized" },
-    });
-  } finally {
-    fixture.iamDriver.authorize = originalAuthorize;
-  }
-  assert.equal(unavailable.status, 503);
-  assert.equal(unavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.equal(JSON.stringify(unavailable.body).includes("sk-iam-provider"), false);
+  await verifyDependencyFailure(fixture, "iam");
 
   const stillUnchanged = await injectedRequest(fixture.app, "GET", "/namespaces");
   assertOnlyDefaultNamespace(stillUnchanged);
