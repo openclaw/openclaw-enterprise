@@ -246,6 +246,15 @@ export class PersistedStateInvalidError extends DependencyUnavailableError {}
  */
 export abstract class SecretDriverOwnershipError extends DependencyUnavailableError {}
 
+export class NetworkProxySecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own the Network proxy credential Secret. Select a Secret stored through the current driver.",
+    );
+    this.name = "NetworkProxySecretDriverError";
+  }
+}
+
 /**
  * A Configuration Secret binding the selected Secret Driver cannot serve. Only a Configuration
  * write can replace the binding, so the fixed message says so.

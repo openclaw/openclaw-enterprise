@@ -5850,6 +5850,10 @@ export class ControllerWorker {
       return secretBindings.result;
     }
     const refs = uniqueSecretRefs(secretBindings.bindings);
+    const proxySecretId = revision.networkProxy?.credentialSecretId;
+    if (proxySecretId !== undefined && !refs.some((ref) => ref.id === proxySecretId)) {
+      refs.push({ kind: "secret", namespaceId: revision.namespaceId, id: proxySecretId });
+    }
     const auth = revision.harnessAuth;
     if (isSecretHarnessAuth(auth)) {
       if (auth.source?.kind !== "secret" || auth.source.namespaceId !== revision.namespaceId) {

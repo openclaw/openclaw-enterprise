@@ -7,6 +7,7 @@ import {
   isServiceAccountHarnessAuth,
   validPluginDriverIdentity,
   type Agent,
+  type AgentNetworkProxy,
   type AuditEvent,
   type BackendRef,
   type CredentialSourceType,
@@ -20,6 +21,7 @@ import {
   type SecretBindings,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
+import { admitNetworkProxy, requestNetworkProxy } from "./agent-network-proxy.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
@@ -181,6 +183,8 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
     const gatewayManagedMode = normalizeGatewayManagedMode(input.gatewayManagedMode, true);
+    const networkProxy =
+      input.networkProxy === undefined ? undefined : requestNetworkProxy(input.networkProxy);
     const backendId = dependencies.backendId(input.backendId);
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
@@ -189,6 +193,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       input.workspaceDefaultsId,
     );
     const compute = runtimeCredentials.runtimeCredentialComputeDriver("provision");
+    await admitNetworkProxy(compute, networkProxy, executionMode, originalConfiguration.values);
     const configurationDriver = settings.selectedDriver();
     if (
       compute.validateAgentProvisioning === undefined ||
@@ -236,6 +241,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       harnessAuth,
       executionMode,
       gatewayManagedMode,
+      ...(networkProxy === undefined ? {} : { networkProxy }),
       ...(plugins === undefined ? {} : { plugins }),
       ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(input.repositoryBindings === undefined
@@ -377,6 +383,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         namespace.id,
         configurationInput.secretBindings,
         harnessAuth,
+        networkProxy,
       );
       if (
         harnessAuth.method === "credential_source" &&
@@ -458,6 +465,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
             harnessAuth,
             executionMode,
             gatewayManagedMode,
+            ...(networkProxy === undefined ? {} : { networkProxy }),
             ...(backendId === undefined ? {} : { backendId }),
             ...(plugins === undefined ? {} : { plugins }),
             ...(driver && plugins && Object.keys(plugins).length
@@ -730,6 +738,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     }
     const acceptedDrivers = asRecord(record.plan.drivers);
     const compute = runtimeCredentials.runtimeCredentialComputeDriver("provision");
+    await admitNetworkProxy(compute, plan.networkProxy, plan.executionMode, plan.configuration.values);
     const configurationDriver = settings.selectedDriver();
     if (
       acceptedDrivers?.compute !== compute.id ||
@@ -758,6 +767,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       namespaceId,
       plan.configuration.secretBindings,
       plan.harnessAuth,
+      plan.networkProxy,
     );
     const binding = plan.harnessAuth;
     if (binding === null || binding.method === "runtime") {
@@ -969,6 +979,9 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     if (isSecretHarnessAuth(auth)) {
       ids.push(auth.source.id);
     }
+    if (plan.networkProxy?.credentialSecretId !== undefined) {
+      ids.push(plan.networkProxy.credentialSecretId);
+    }
     for (const id of ids) {
       if ((await state.secrets.findSecret(namespaceId, id)) === undefined) {
         throw new ResourceStateConflictError(
@@ -1000,9 +1013,17 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     namespaceId: string,
     bindings: SecretBindings | undefined,
     harnessAuth: HarnessAuthBinding | null,
+    networkProxy: AgentNetworkProxy | undefined,
   ): Promise<void> {
     for (const binding of Object.values(bindings ?? {})) {
       await authorizeProvisioningSecretSource(state, principalId, namespaceId, binding.source);
+    }
+    if (networkProxy?.credentialSecretId !== undefined) {
+      await authorizeProvisioningSecretSource(state, principalId, namespaceId, {
+        kind: "secret",
+        namespaceId,
+        id: networkProxy.credentialSecretId,
+      });
     }
     if (isSecretHarnessAuth(harnessAuth)) {
       await authorizeProvisioningSecretSource(state, principalId, namespaceId, harnessAuth.source);

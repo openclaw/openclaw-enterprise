@@ -1,5 +1,6 @@
 import type { Static } from "typebox";
 
+import type { AgentNetworkProxy } from "./agent-network-proxy.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { DeploymentPolicy } from "./deployment-policy.ts";
 import type {
@@ -14,6 +15,8 @@ import type {
 } from "./drivers/credential-proxy/index.ts";
 
 export type { NetworkDestinationRule } from "./network-destination.ts";
+export type { AgentNetworkProxy } from "./agent-network-proxy.ts";
+export { normalizeAgentNetworkProxy } from "./agent-network-proxy.ts";
 export {
   NetworkDestinationRuleSchema,
   normalizeNetworkDestinationRules,
@@ -1121,6 +1124,8 @@ export type AgentDesiredRuntimeState = "running" | "stopped";
  */
 export type AgentStatus = "active" | "deleting";
 export interface Agent extends Scope {
+  /** Upstream proxy for Gateway channel traffic on future deployments. */
+  readonly networkProxy?: AgentNetworkProxy;
   /** Installation provider selected for future deployments. */
   readonly modelProviderId?: string;
   readonly sandboxPolicyEditing?: boolean;
@@ -1155,6 +1160,7 @@ export interface ConfigurationReadError {
     | "pluginApprovers"
     | "repositoryBindings"
     | "repositoryAccess"
+    | "networkProxy"
     | "harnessAuth"
     | "credentialSources"
     | "secretBindings"
@@ -1169,6 +1175,7 @@ export type AgentMetadata = Omit<
   | "pluginApprovers"
   | "repositoryBindings"
   | "repositoryAccess"
+  | "networkProxy"
   | "harnessAuth"
   | "credentialSources"
 >;
@@ -1213,6 +1220,8 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
 }
 
 export interface AgentRevision extends Scope {
+  /** Gateway channel proxy selection saved for this deployment. */
+  readonly networkProxy?: AgentNetworkProxy;
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
   /** Immutable staged credential and network authority for this revision's selected Proxy. */
@@ -1241,6 +1250,8 @@ export interface AgentRevision extends Scope {
     readonly admission?: string;
     /** Optional private runtime inputs; separate from authority admission for older readers. */
     readonly runtimeInputs?: string;
+    /** Private Compute-owned admission for this revision's Gateway channel proxy. */
+    readonly networkProxyAdmission?: string;
   };
   readonly sandboxDriverId?: string;
   readonly sandboxPolicy?: SandboxPolicySnapshot;
@@ -1304,6 +1315,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     ...(revision.sandboxPolicy === undefined
       ? {}
       : { sandboxPolicy: immutableCopy(revision.sandboxPolicy) }),
+    ...(revision.networkProxy === undefined
+      ? {}
+      : { networkProxy: immutableCopy(revision.networkProxy) }),
     ...(revision.secretBindings === undefined
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),

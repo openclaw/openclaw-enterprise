@@ -9,6 +9,7 @@ import {
   normalizeInitialWorkspaceFiles,
   normalizeWorkspaceDefaultsId,
   type Agent,
+  type AgentNetworkProxy,
   type AgentCredentialSourceBinding,
   type BackendRef,
   type Configuration,
@@ -24,6 +25,7 @@ import {
   type RepositoryBindingRequest,
   type ResourceRef,
   type SecretBindings,
+  type SecretDriver,
   type ComputeDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -56,7 +58,10 @@ import {
   ResourceStateConflictError,
   ScopeViolationError,
   ConfigurationHarnessError,
+  NetworkProxySecretDriverError,
+  type SecretDriverOwnershipError,
 } from "./errors.ts";
+import { admitNetworkProxy, authorizeNetworkProxySecret, requestNetworkProxy } from "./agent-network-proxy.ts";
 import {
   harnessAuthBinding,
   plannedHarnessAuth,
@@ -142,6 +147,10 @@ interface AgentDraftDependencies {
   ) => Promise<Readonly<Configuration>>;
   readonly installationId: string;
   readonly selectedCompute: () => ComputeDriver | undefined;
+  readonly ownedSecretDriver: (
+    id: string,
+    failure: () => SecretDriverOwnershipError,
+  ) => SecretDriver;
   readonly refuseRepositoryNetworkOverlap: (
     principalId: string,
     policy: Awaited<ReturnType<PlatformReadView["sandboxPolicies"]["find"]>>,
@@ -162,6 +171,7 @@ export interface CreateAgentInput {
   readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode?: HarnessExecutionMode;
   readonly gatewayManagedMode?: boolean;
+  readonly networkProxy?: AgentNetworkProxy;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
@@ -185,6 +195,7 @@ export interface ValidateAgentCreateInput {
   readonly initialWorkspaceFiles?: InitialWorkspaceFiles;
   readonly executionMode?: HarnessExecutionMode;
   readonly gatewayManagedMode?: boolean;
+  readonly networkProxy?: AgentNetworkProxy;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
   /**
@@ -205,6 +216,7 @@ export interface UpdateAgentInput {
   readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode?: HarnessExecutionMode;
   readonly gatewayManagedMode?: boolean;
+  readonly networkProxy?: AgentNetworkProxy | null;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers | null;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
@@ -344,6 +356,8 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     }
     const harnessAuth = harnessAuthBinding(input.harnessAuth ?? null);
     const credentialSources = parseAgentCredentialSources(input.credentialSources);
+    const networkProxy =
+      input.networkProxy === undefined ? undefined : requestNetworkProxy(input.networkProxy);
     const executionMode = input.executionMode ?? "embedded";
     if (!validExecutionMode(executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
@@ -404,6 +418,14 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         namespace.id,
         storedSecretBindings(existingConfiguration.secretBindings),
       );
+      await authorizeNetworkProxySecret(
+        state,
+        dependencies.authority,
+        dependencies.ownedSecretDriver,
+        principalId,
+        namespace.id,
+        networkProxy,
+      );
       const configuration =
         configurationPreparation === undefined
           ? existingConfiguration
@@ -416,6 +438,12 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
               configurationPreparation,
             );
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
+      await admitNetworkProxy(
+        dependencies.selectedCompute(),
+        networkProxy,
+        executionMode,
+        (await savedConfiguration()).values,
+      );
       const driver = await dependencies.validateAgentPlugins(
         plugins,
         pluginApprovers,
@@ -450,6 +478,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
           : { credentialSources }),
         executionMode,
         gatewayManagedMode,
+        ...(networkProxy === undefined ? {} : { networkProxy }),
         ...(plugins === undefined ? {} : { plugins }),
         ...(driver && plugins && Object.keys(plugins).length
           ? { pluginDriver: pluginOwner(driver) }
@@ -502,6 +531,8 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     const harnessAuth = plannedHarnessAuth(input.harnessAuth ?? null);
+    const networkProxy =
+      input.networkProxy === undefined ? undefined : requestNetworkProxy(input.networkProxy);
     namespaceIdentity(input.namespaceId);
     await dependencies.authority.authorize(principalId, "create", {
       kind: "agent",
@@ -522,6 +553,21 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         throw new ScopeViolationError("The Configuration kind must identify an Agent.");
       }
       const values = freezeConfigurationValues(input.configuration.values);
+      await admitNetworkProxy(dependencies.selectedCompute(), networkProxy, executionMode, values);
+      if (networkProxy?.credentialSecretId !== undefined) {
+        await dependencies.authority.authorize(principalId, "operate", {
+          kind: "secret",
+          namespaceId: namespace.id,
+          id: networkProxy.credentialSecretId,
+        });
+        const secret = await state.secrets.findSecret(namespace.id, networkProxy.credentialSecretId);
+        if (!secret) {
+          throw new ScopeViolationError(
+            "The Network proxy Secret does not belong to the exact Namespace.",
+          );
+        }
+        dependencies.ownedSecretDriver(secret.driverId, () => new NetworkProxySecretDriverError());
+      }
       const secretBindings =
         input.configuration.secretBindings === undefined
           ? undefined
@@ -586,14 +632,20 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     if (input.configurationId !== undefined && !isNonEmptyString(input.configurationId)) {
       throw new ScopeViolationError("The exact Agent Configuration identity is missing.");
     }
-    if (input.configurationId === undefined && input.gatewayManagedMode === undefined) {
+    if (
+      input.configurationId === undefined &&
+      input.gatewayManagedMode === undefined &&
+      input.networkProxy === undefined
+    ) {
       throw new ScopeViolationError(
-        "An Agent update must name a Configuration or Gateway managed mode.",
+        "An Agent update must name a Configuration, Gateway managed mode, or Network proxy.",
       );
     }
     const requestedAuth =
       input.harnessAuth === undefined ? undefined : harnessAuthBinding(input.harnessAuth);
     const requestedSources = parseAgentCredentialSources(input.credentialSources);
+    const requestedProxy =
+      input.networkProxy == null ? input.networkProxy : requestNetworkProxy(input.networkProxy);
     if (input.executionMode !== undefined && !validExecutionMode(input.executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
@@ -640,6 +692,23 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       await dependencies.guardAgentProvisioning(state, namespace.id, agent.id);
       await dependencies.guardProvisioningConfiguration(state, namespace.id, configurationId);
       const previousAuth = harnessAuthBinding(agent.harnessAuth);
+      if (agent.networkProxy?.credentialSecretId !== undefined) {
+        await dependencies.authority.authorize(principalId, "operate", {
+          kind: "secret",
+          namespaceId: namespace.id,
+          id: agent.networkProxy.credentialSecretId,
+        });
+      }
+      if (requestedProxy != null) {
+        await authorizeNetworkProxySecret(
+          state,
+          dependencies.authority,
+          dependencies.ownedSecretDriver,
+          principalId,
+          namespace.id,
+          requestedProxy,
+        );
+      }
       // Every update needs the caller's grant on each source the Agent binds now, but not a
       // usable record: after a Secret Driver or Credential Gateway change, an update must still
       // be able to replace or drop what the new driver does not own. Only what the update
@@ -707,6 +776,13 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       const secretBindings = storedSecretBindings(configuration.secretBindings);
       await dependencies.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
+      const selectedProxy = requestedProxy === undefined ? agent.networkProxy : requestedProxy;
+      await admitNetworkProxy(
+        dependencies.selectedCompute(),
+        selectedProxy ?? undefined,
+        input.executionMode ?? agent.executionMode,
+        (await savedConfiguration()).values,
+      );
       const selections = plugins ?? agent.plugins;
       const driver = await dependencies.validateAgentPlugins(
         selections,
@@ -796,6 +872,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
           : driver && Object.keys(plugins).length
             ? pluginOwner(driver, agent)
             : null,
+        requestedProxy,
       );
       if (!updated) {
         throw new ResourceStateConflictError("The Agent Configuration changed during its update.");

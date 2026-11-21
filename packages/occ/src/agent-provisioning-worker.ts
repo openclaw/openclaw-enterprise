@@ -6,6 +6,7 @@ import {
   validPluginDriverIdentity,
   type Agent,
   type AgentRevision,
+  type AgentNetworkProxy,
   type BackendRef,
   type ComputeDriver,
   type Configuration,
@@ -1208,6 +1209,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
             : {}),
           executionMode: plan.executionMode,
           gatewayManagedMode: plan.gatewayManagedMode,
+          ...(plan.networkProxy === undefined ? {} : { networkProxy: plan.networkProxy }),
           ...options,
           ...(validPluginDriverIdentity(planRecord.pluginDriver)
             ? { pluginDriver: planRecord.pluginDriver }
@@ -1240,6 +1242,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
           ? {}
           : { secretBindings: plan.configuration.secretBindings }),
         harnessAuth: plan.harnessAuth,
+        ...(plan.networkProxy === undefined ? {} : { networkProxy: plan.networkProxy }),
       });
       await dependencies.ensureAgentOperateGrants(state, namespace.id, agent, grantSources);
       return commitProvisioningCheckpoint(state, claim, {
@@ -1387,6 +1390,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     input: {
       readonly secretBindings?: SecretBindings;
       readonly harnessAuth: HarnessAuthBinding | null;
+      readonly networkProxy?: AgentNetworkProxy;
     },
   ): Promise<readonly (SecretReference | CredentialSourceReference)[]> {
     const ids = new Set<string>();
@@ -1395,6 +1399,9 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     }
     if (isSecretHarnessAuth(input.harnessAuth)) {
       ids.add(input.harnessAuth.source.id);
+    }
+    if (input.networkProxy?.credentialSecretId !== undefined) {
+      ids.add(input.networkProxy.credentialSecretId);
     }
     const sources: (SecretReference | CredentialSourceReference)[] = [];
     for (const id of ids) {
