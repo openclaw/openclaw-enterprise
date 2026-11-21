@@ -295,7 +295,7 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 ## Related
 
-- [OAuth connection templates](connection-templates.md)
+- [Connection templates](connection-templates.md)
 - [Protected credential request flow](../flows/credential-source-egress.md)
 - [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md)
 - [CredentialGatewayDriver contract](drivers/credential-gateway.md)

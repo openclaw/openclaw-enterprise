@@ -1,3 +1,5 @@
+import { validRequestPath } from "./request-path.ts";
+
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
 export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
 export function isOAuthScopeToken(value: unknown): value is string {
@@ -87,7 +89,7 @@ export interface ConnectionTemplate {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
-  readonly current: Readonly<OAuthConnectionTemplateVersion>;
+  readonly current: Readonly<ConnectionTemplateVersion>;
   readonly createdAt: string;
 }
 
@@ -251,6 +253,7 @@ export function normalizeStaticKeyDestinations(
       if (
         !isApprovedDestinationHost(host) ||
         !validEndpoint(port, path) ||
+        !validRequestPath(path, true) ||
         !staticKeyHttpMethodPattern.test(method)
       ) {
         throw new ConnectionTemplateValidationError(
@@ -267,7 +270,22 @@ export function normalizeStaticKeyDestinations(
 }
 
 /** The in-memory repository mirrors the persisted version's nonempty, canonical destination set. */
-export function validateConnectionTemplateDestinations(values: ConnectionTemplateValues): void {
+export function validateConnectionTemplateDestinations(values: ConnectionTemplateSettings): void {
+  if (values.mode === "static_bearer") {
+    const canonical = normalizeStaticKeyDestinations(values.destinations);
+    if (
+      values.destinations.length !== canonical.length ||
+      values.destinations.some(
+        (row, index) => compareStaticDestination(row, canonical[index]!) !== 0,
+      )
+    ) {
+      throw new ConnectionTemplateValidationError(
+        "destinations",
+        "The saved static destinations must be canonical.",
+      );
+    }
+    return;
+  }
   const canonical = normalizeConnectionDestinations(values.destinations);
   if (
     !sameDestinations(values.destinations, canonical) ||

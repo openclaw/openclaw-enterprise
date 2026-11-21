@@ -1470,6 +1470,7 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preStaticConnectionTemplates"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1746,6 +1747,7 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preStaticConnectionTemplates"],
     ]);
     for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
@@ -2054,6 +2056,7 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preStaticConnectionTemplates"],
     ])) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2143,6 +2146,25 @@ test(
       assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
     }
     await assertCredentialSchemaPrivileges(restored.app);
+
+    // An archive from the preceding completed schema must upgrade and remain recognizable.
+    const previous = await historyDatabase(context, fixture, "previous", { prefix: 85 });
+    const upgraded = await restoreHistoryArchive(
+      context,
+      fixture,
+      await dumpHistoryArchive(fixture, previous),
+    );
+    assert.deepEqual(await runHistoryCommand(upgraded, "production"), {
+      ok: true,
+      history: "preStaticConnectionTemplates",
+    });
+    context.diagnostic(
+      `Upgraded restored prefix 85: ${catalogDigest(await migrationCatalog(upgraded.migrator))}`,
+    );
+    assert.deepEqual(await runHistoryCommand(upgraded, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
 
     // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
     const catalogRefusal = /catalog objects or effective grants differ/;
@@ -2244,6 +2266,7 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preStaticConnectionTemplates"],
     ])) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
