@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
@@ -10,6 +10,7 @@ author: kevinlin-openai
 - **Created:** 2026-11-21
 - **Last updated:** 2026-11-21
 - **RFC PR:** [#6850](https://github.com/openclaw/openclaw-enterprise/pull/6850)
+- **Implementation plan:** [Admission and scheduling](../plans/20261121-agent-automations.md)
 - **Related:** [Native administration](../../docs/reference/agent-native-admin.md), [Gateway managed mode](../../docs/reference/agents/gateway-managed-mode.md), [runtime pin](../../deploy/runtime/openclaw-source.json)
 
 ## Summary
@@ -128,7 +129,7 @@ The six typed routes reuse native scheduling and storage. PATCH handles pause an
 
 ## Delivery and verification
 
-Qualify upstream authority and history support, implement the OCC routes and Driver mode, and verify the acceptance criteria on the packaged runtime. This RFC is based on source review. The proposed routes and integrated acceptance checks have not been implemented or run.
+Qualify upstream authority and history support, implement the OCC routes and Driver mode, and verify the acceptance criteria on the packaged runtime. The [implementation plan](../plans/20261121-agent-automations.md) tracks partial admission and refusal paths. Successful dispatch and the integrated native acceptance checks remain unimplemented and unrun.
 
 ## Unresolved questions
 

@@ -1,8 +1,10 @@
 # Agent native admin UI
 
-Native browser access defaults to disabled. OCC proxies HTTP/WebSocket
+Browser access defaults off. OCC proxies HTTP/WebSocket
 chat or administration using OCE sessions and exact-Agent permissions.
 [Gateway managed mode](#gateway-managed-mode) limits administration.
+
+Automations [unavailable](agent-automations.md).
 
 ## Host-only session exchange
 

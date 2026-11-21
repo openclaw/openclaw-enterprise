@@ -18,6 +18,7 @@ import {
 } from "../helpers/refusal-text.mjs";
 import {
   adminPrincipal,
+  issueServiceKeyForNativeAgent,
   injectJson,
   nativeAuthority,
   nativeDomain,
@@ -30,6 +31,143 @@ import {
   type NativeAdminFixture,
   type RegisterNativeAdminCases,
 } from "./native-admin-access-fixture.ts";
+
+export const registerAgentAutomationAdmissionCase: RegisterNativeAdminCases = (
+  test,
+  {
+    createNativeAdminFixture,
+    createReadOnlySession,
+    createAgentPermissionSession,
+    createExactAgentAdministerSession,
+  },
+) => {
+  test("Agent automation admission refuses unqualified runtimes without native dispatch", async (t) => {
+    const auditSink = new InMemoryAuditSink();
+    const context = await createNativeAdminFixture(t, { auditSink });
+    const { fixture, namespace, agent } = context;
+    const base = `/namespaces/${namespace.id}/agents/${agent.id}/automations`;
+    const body = {
+      name: "Daily report",
+      enabled: true,
+      schedule: { kind: "every", everyMs: 60_000 },
+      prompt: "Private automation prompt must never enter audit evidence",
+    };
+    const ownOperator = await createAgentPermissionSession(
+      context,
+      "automation-operator",
+      {
+        agent: ["operate"],
+      },
+      { kind: "agent", id: agent.id },
+    );
+    // The real HTTP app, session admission and Native IAM run here. The upstream is only
+    // a tripwire: this case proves refusal, never native scheduling or authority enforcement.
+    const requests = [
+      { method: "POST", path: base, body },
+      { method: "GET", path: `${base}?offset=0&limit=100` },
+      { method: "GET", path: `${base}/job-1` },
+      {
+        method: "PATCH",
+        path: `${base}/job-1`,
+        body: { enabled: false, expectedConfigRevision: "observed" },
+      },
+      { method: "DELETE", path: `${base}/job-1?expectedConfigRevision=observed` },
+      { method: "GET", path: `${base}/job-1/runs?offset=0&limit=50` },
+    ] as const;
+    const administrator = await createExactAgentAdministerSession(context, "automation-admin");
+    for (const session of [context.session, ownOperator, administrator]) {
+      for (const request of requests) {
+        const response = await fixture.request(request.method, request.path, {
+          session,
+          ...("body" in request ? { body: request.body } : {}),
+        });
+        const result = fixture.fixtureResponse(response, 503, ErrorResponse, request.method);
+        assert.equal(result.error.code, "AUTOMATIONS_UNQUALIFIED");
+      }
+    }
+    const outsider = await createReadOnlySession(context, "automation-reader");
+    for (const request of requests) {
+      const denied = await fixture.request(request.method, request.path, {
+        session: outsider,
+        ...("body" in request ? { body: request.body } : {}),
+      });
+      assert.equal(denied.status, 403);
+    }
+    // Authority must be checked on the exact Agent, including deletion with a revision.
+    const wrongAgent = await fixture.request(
+      "DELETE",
+      `${base.replace(agent.id, `agt_${randomUUID()}`)}/job-1?expectedConfigRevision=observed`,
+      { session: ownOperator },
+    );
+    assert.equal(wrongAgent.status, 403);
+    const foreignNamespace = await fixture.request(
+      "GET",
+      base.replace(namespace.id, `ns_${randomUUID()}`),
+      { session: ownOperator },
+    );
+    assert.equal(foreignNamespace.status, 403);
+
+    for (const request of requests.filter((entry) => entry.method !== "GET")) {
+      const denied = await fixture.request(request.method, request.path, {
+        session: context.session,
+        headers: { origin: "https://other.example.test", "sec-fetch-site": "cross-site" },
+        ...("body" in request ? { body: request.body } : {}),
+      });
+      assert.equal(denied.status, 403);
+    }
+    const serviceKey = await issueServiceKeyForNativeAgent(context);
+    const serviceDenied = await fixture.request("GET", base, {
+      session: null,
+      headers: { "x-api-key": serviceKey.key },
+    });
+    assert.equal(serviceDenied.status, 403);
+    for (const forged of [
+      { ...body, creatorId: "another-human" },
+      { ...body, toolsAllow: ["*"] },
+      { ...body, agentId: "other-agent" },
+    ]) {
+      assert.equal((await fixture.request("POST", base, { body: forged })).status, 400);
+    }
+    assert.equal(
+      (
+        await fixture.request("PATCH", `${base}/job-1`, {
+          body: { expectedConfigRevision: "observed" },
+        })
+      ).status,
+      400,
+    );
+    assert.equal((await fixture.request("DELETE", `${base}/job-1`)).status, 400);
+    assert.equal((await fixture.request("GET", `${base}?limit=101`)).status, 400);
+    assert.equal(
+      (
+        await fixture.request("GET", base, {
+          headers: { "x-openclaw-scopes": "operator.admin" },
+        })
+      ).status,
+      400,
+    );
+    const stopped = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+    );
+    assert.equal(stopped.status, 202);
+    const unavailable = await fixture.request("GET", base, { session: ownOperator });
+    assert.equal(
+      fixture.fixtureResponse(unavailable, 503, ErrorResponse, "stopped Agent").error.code,
+      "DEPENDENCY_UNAVAILABLE",
+    );
+    assert.equal(
+      context.upstream.requests.length,
+      0,
+      "unqualified automation requests never reach the Gateway",
+    );
+    const automationEvents = auditSink.events.filter((event) =>
+      event.action.startsWith("openclaw.agents.automations."),
+    );
+    assert.ok(automationEvents.some((event) => event.outcome === "denied"));
+    assert.equal(JSON.stringify(automationEvents).includes(body.prompt), false);
+  });
+};
 
 export const activatedDocumentNavigationHeaders = {
   accept: "text/html,application/xhtml+xml",

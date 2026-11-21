@@ -116,6 +116,17 @@ export function documentApiExamples<T>(document: T): T {
         const isError = Number(status) >= 400;
         let failure = lookupFailure(status);
         let errorExampleKey: string | undefined;
+        if (
+          status === "503" &&
+          Array.isArray(operation.tags) &&
+          operation.tags.includes("Agent automations")
+        ) {
+          failure = [
+            "AUTOMATIONS_UNQUALIFIED",
+            "The runtime automation authority and retained-history contract is not qualified.",
+          ];
+          errorExampleKey = "AUTOMATIONS_UNQUALIFIED";
+        }
         if (status === "429") {
           const code = Object.hasOwn(rateLimitCodes, name) ? rateLimitCodes[name] : undefined;
           if (!code) {

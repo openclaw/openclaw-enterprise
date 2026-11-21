@@ -329,6 +329,7 @@ const permissionScopeQualifiers: Record<string, string> = {
   native_chat: " (chat access)",
   native_admin_alternative: " (full native administration, instead of `operate`)",
   read_logs_alternative: " (instead of `read_logs`)",
+  automation_admin_alternative: " (instead of `operate`; automation dispatch remains unavailable)",
   provisioning_work: " (once created)",
   gateway_managed_mode_disabled: " (when `gatewayManagedMode` is `false`)",
   gateway_managed_mode_changed: " (when the request changes `gatewayManagedMode`)",

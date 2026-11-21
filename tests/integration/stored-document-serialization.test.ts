@@ -90,6 +90,7 @@ const passthrough = cachedResponseSerializers()(structuredClone(schemas), undefi
 function compileSerializers(operationId: StoredDocumentOperation) {
   const route = occApiRoutes.find((candidate) => candidate.operationId === operationId);
   assert.ok(route?.method === "GET", `${operationId} is a GET route`);
+  assert.ok(200 in route.schema.response, `${operationId} declares a successful response`);
   const response = route.schema.response[200];
   assert.ok(response, `${operationId} has a 200 response schema`);
   const input = { method: route.method, url: route.path, httpStatus: "200" };

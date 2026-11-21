@@ -1652,6 +1652,13 @@ export {
 } from "./api/agent-credential-push.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
+export {
+  AgentAutomationParams,
+  AgentAutomationPageQuery,
+  CreateAgentAutomationBody,
+  UpdateAgentAutomationBody,
+  DeleteAgentAutomationQuery,
+} from "./api/agent-automations.ts";
 
 export {
   normalizeHarnessAuthBinding,

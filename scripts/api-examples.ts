@@ -315,6 +315,9 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  automationId: "daily-report",
+  expectedConfigRevision: "observed-native-revision",
+  offset: "0",
   modelProviderId: modelProvider.id,
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
@@ -365,6 +368,13 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  createAgentAutomation: {
+    name: "Daily report",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 9 * * *", tz: "America/Los_Angeles" },
+    prompt: "Generate the daily report",
+  },
+  updateAgentAutomation: { enabled: false, expectedConfigRevision: "observed-native-revision" },
   chatWithAgent: {
     messages: [{ role: "user", content: "Reply with a short greeting." }],
     stream: false,

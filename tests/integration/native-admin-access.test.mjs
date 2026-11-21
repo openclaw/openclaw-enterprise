@@ -51,6 +51,7 @@ import {
 } from "./native-admin-shared-session-cases.ts";
 import {
   continueNativeAdminProxyCase,
+  registerAgentAutomationAdmissionCase,
   registerNativeAdminAvailabilityCases,
   registerNativeAdminCopiedLinkCase,
   registerNativeAdminDeniedBackCase,
@@ -705,6 +706,7 @@ export const nativeAdminCaseDependencies = {
   trustLocalUpstreamCertificate,
 };
 registerNativeAdminAvailabilityCases(test, nativeAdminCaseDependencies);
+registerAgentAutomationAdmissionCase(test, nativeAdminCaseDependencies);
 
 registerNativeAdminSharedCookieCases(test, nativeAdminCaseDependencies);
 

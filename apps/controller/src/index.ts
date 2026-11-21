@@ -1,4 +1,8 @@
 import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
+import {
+  createAgentAutomationHandlers,
+  isAgentAutomationOperation,
+} from "./http/agent-automations.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import { createAgentAuditReader } from "./http/agent-audit.ts";
 import swagger from "@fastify/swagger";
@@ -265,6 +269,7 @@ interface RequiredPermission {
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
+    | "automation_admin_alternative"
     | "bound_credential_source"
     | "unless_consent_owner"
     | "saved_sandbox_policy_additions";
@@ -576,6 +581,17 @@ function operationTarget(
 }
 
 function requiredPermissions(operation: OccApiRoute): readonly RequiredPermission[] {
+  if (isAgentAutomationOperation(operation)) {
+    return [
+      { action: "operate", resourceKind: "agent", scope: "requested" },
+      {
+        action: "administer",
+        resourceKind: "agent",
+        scope: "requested",
+        condition: "automation_admin_alternative",
+      },
+    ];
+  }
   if (operation.operationId === "recoverAgentFirstDeployment") {
     return [
       { action: "deploy", resourceKind: "agent", scope: "requested" },
@@ -1066,6 +1082,9 @@ function permissionDescription(
   permissions: readonly RequiredPermission[],
   operation?: OccApiRoute,
 ): string {
+  if (operation !== undefined && isAgentAutomationOperation(operation)) {
+    return "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.";
+  }
   if (operation?.operationId === "listAgentAuditEvents") {
     return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.";
   }
@@ -1917,6 +1936,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   const connectionRedirectUri =
     connectionOrigin && `${connectionOrigin}${CONNECTION_CALLBACK_PATH}`;
   const handlers: ResourceHandlers = {
+    ...createAgentAutomationHandlers({
+      installationId,
+      publicOrigin,
+      nativeAdmin: options.nativeAdmin,
+      requireCsrf: requireWorkspaceFileCsrf,
+    }),
     ...namespaceConnectionHandlers(connectionRedirectUri),
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
@@ -2019,6 +2044,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function admit(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     if (
+      isAgentAutomationOperation(operation) &&
+      request.headers[OCC_SERVICE_KEY_HEADER] !== undefined
+    ) {
+      throw failure(403, "FORBIDDEN", "Agent automations require a human controller session.");
+    }
+    if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
         operation.operationId === "bootstrapInstallation" ||
@@ -2036,6 +2067,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "stopAgent" &&
       operation.operationId !== "listAgentRevisions" &&
       operation.operationId !== "listAgentAuditEvents" &&
+      operation.operationId !== "listAgentAutomations" &&
+      operation.operationId !== "listAgentAutomationRuns" &&
+      operation.operationId !== "deleteAgentAutomation" &&
       operation.operationId !== "recoverAgentFirstDeployment" &&
       operation !== connectionCallbackOperation
     ) {
@@ -4694,7 +4728,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         tags: [...operation.tags],
         "x-openclaw-permissions": permissions,
         ...(operation.operationId === "bootstrapInstallation" ||
-        operation.operationId === "listAgentAuditEvents"
+        operation.operationId === "listAgentAuditEvents" ||
+        isAgentAutomationOperation(operation)
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;

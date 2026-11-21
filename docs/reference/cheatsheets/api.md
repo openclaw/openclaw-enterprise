@@ -24,6 +24,7 @@
 - [Service account credentials](#service-account-credentials)
 - [Backends](#backends)
 - [Connections](#connections)
+- [Agent automations](#agent-automations)
 - [Credential sources](#credential-sources)
 - [Presets](#presets)
 
@@ -230,6 +231,15 @@
 - [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template.
 - [`deleteOAuthClient`](../api.md#delete-oauthclientsoauthclientid): Delete an unused OAuth client.
 - [`disconnectNamespaceConnection`](../api.md#delete-namespacesnamespaceidconnectionscredentialsourceid): Disconnect a saved account and retire its OAuth grant.
+
+### Agent automations
+
+- [`listAgentAutomationRuns`](../api.md#get-namespacesnamespaceidagentsagentidautomationsautomationidruns): Request Agent automation history (runtime qualification pending).
+- [`listAgentAutomations`](../api.md#get-namespacesnamespaceidagentsagentidautomations): Request Agent automation inventory (runtime qualification pending).
+- [`getAgentAutomation`](../api.md#get-namespacesnamespaceidagentsagentidautomationsautomationid): Request an Agent automation (runtime qualification pending).
+- [`createAgentAutomation`](../api.md#post-namespacesnamespaceidagentsagentidautomations): Request an Agent automation (runtime qualification pending).
+- [`updateAgentAutomation`](../api.md#patch-namespacesnamespaceidagentsagentidautomationsautomationid): Request an Agent automation edit (runtime qualification pending).
+- [`deleteAgentAutomation`](../api.md#delete-namespacesnamespaceidagentsagentidautomationsautomationid): Request Agent automation deletion (runtime qualification pending).
 
 ### Credential sources
 

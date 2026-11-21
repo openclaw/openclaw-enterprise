@@ -65,7 +65,7 @@ the paths.
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `error` | `object` | Yes | — |
-| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
+| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "AUTOMATIONS_UNQUALIFIED" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
 | `error.details` | `array<object>` | No | max items: 32 |
 | `error.details[].code` | `"REQUIRED" or "UNKNOWN_FIELD" or "INVALID_TYPE" or "INVALID_FORMAT" or "INVALID_VALUE" or "TOO_LONG" or "TOO_DEEP" or "INVALID_RANGE" or "OUTSIDE_CEILING"` | Yes | — |
 | `error.details[].message` | `string` | No | max length: 512 |
@@ -99,6 +99,7 @@ the paths.
 | [Presets](#presets) | 5 operations |
 | [Secrets](#secrets) | 5 operations |
 | [Service accounts](#service-accounts) | 6 operations |
+| [Agent automations](#agent-automations) | 6 operations |
 
 ## Operations
 
@@ -13691,6 +13692,283 @@ Example response
   }
 }
 ```
+
+<span id="agent-automations"></span>
+
+### Agent automations
+
+| Operation | Summary |
+| --- | --- |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations`](#get-namespacesnamespaceidagentsagentidautomations) | Request Agent automation inventory (runtime qualification pending) |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/automations`](#post-namespacesnamespaceidagentsagentidautomations) | Request an Agent automation (runtime qualification pending) |
+| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#delete-namespacesnamespaceidagentsagentidautomationsautomationid) | Request Agent automation deletion (runtime qualification pending) |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#get-namespacesnamespaceidagentsagentidautomationsautomationid) | Request an Agent automation (runtime qualification pending) |
+| [`PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#patch-namespacesnamespaceidagentsagentidautomationsautomationid) | Request an Agent automation edit (runtime qualification pending) |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`](#get-namespacesnamespaceidagentsagentidautomationsautomationidruns) | Request Agent automation history (runtime qualification pending) |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations`
+
+<span id="get-namespacesnamespaceidagentsagentidautomations"></span>
+
+Request Agent automation inventory (runtime qualification pending)
+
+**Operation ID:** `listAgentAutomations`
+
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `offset` | query | `string` | No | pattern: `^(0\|[1-9][0-9]{0,8})$` | "0" |
+| `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | The runtime automation authority and retained-history contract is not qualified. |
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/automations`
+
+<span id="post-namespacesnamespaceidagentsagentidautomations"></span>
+
+Request an Agent automation (runtime qualification pending)
+
+**Operation ID:** `createAgentAutomation`
+
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | Yes | — |
+| `name` | `string` | Yes | min length: 1; max length: 200 |
+| `prompt` | `string` | Yes | min length: 1; max length: 16384 |
+| `schedule` | `object or object or object` | Yes | — |
+
+Example request
+```json
+{
+  "enabled": true,
+  "name": "Daily report",
+  "prompt": "Generate the daily report",
+  "schedule": {
+    "expr": "0 9 * * *",
+    "kind": "cron",
+    "tz": "America/Los_Angeles"
+  }
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | The runtime automation authority and retained-history contract is not qualified. |
+
+#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
+
+<span id="delete-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
+
+Request Agent automation deletion (runtime qualification pending)
+
+**Operation ID:** `deleteAgentAutomation`
+
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `expectedConfigRevision` | query | `string` | Yes | min length: 1; max length: 128 | "observed-native-revision" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` | "daily-report" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | The runtime automation authority and retained-history contract is not qualified. |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
+
+<span id="get-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
+
+Request an Agent automation (runtime qualification pending)
+
+**Operation ID:** `getAgentAutomation`
+
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` | "daily-report" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | The runtime automation authority and retained-history contract is not qualified. |
+
+#### `PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
+
+<span id="patch-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
+
+Request an Agent automation edit (runtime qualification pending)
+
+**Operation ID:** `updateAgentAutomation`
+
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` | "daily-report" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | No | — |
+| `expectedConfigRevision` | `string` | Yes | min length: 1; max length: 128 |
+| `name` | `string` | No | min length: 1; max length: 200 |
+| `prompt` | `string` | No | min length: 1; max length: 16384 |
+| `schedule` | `object or object or object` | No | — |
+
+Example request
+```json
+{
+  "enabled": false,
+  "expectedConfigRevision": "observed-native-revision"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | The runtime automation authority and retained-history contract is not qualified. |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`
+
+<span id="get-namespacesnamespaceidagentsagentidautomationsautomationidruns"></span>
+
+Request Agent automation history (runtime qualification pending)
+
+**Operation ID:** `listAgentAutomationRuns`
+
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `offset` | query | `string` | No | pattern: `^(0\|[1-9][0-9]{0,8})$` | "0" |
+| `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` | "daily-report" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | The runtime automation authority and retained-history contract is not qualified. |
 
 ## Shared schemas
 

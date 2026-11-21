@@ -411,7 +411,13 @@ export interface ComputeDriver extends Driver {
     input: {
       readonly installationId: string;
       readonly principalId: string;
-      readonly mode: "admin" | "chat";
+      /**
+       * Automation is a distinct delegation, limited to cron.add/list/get/update/remove/runs.
+       * It requires authenticated creator/Agent scope, execution authority and retained-history
+       * admission. Never substitute admin, chat, or a broader cron scope. Unqualified runtimes
+       * must return undefined before resolving credentials.
+       */
+      readonly mode: "admin" | "chat" | "automation";
     },
     signal: AbortSignal,
   ): Promise<

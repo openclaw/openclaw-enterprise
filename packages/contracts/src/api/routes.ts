@@ -23,6 +23,13 @@ import {
 import { Type } from "typebox";
 import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
 import {
+  AgentAutomationParams,
+  AgentAutomationPageQuery,
+  CreateAgentAutomationBody,
+  UpdateAgentAutomationBody,
+  DeleteAgentAutomationQuery,
+} from "./agent-automations.ts";
+import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
   StartNamespaceConnectionBody,
@@ -199,6 +206,97 @@ const chatErrors = Object.fromEntries(
 );
 
 export const occApiRoutes = [
+  // These admission paths remain unavailable until the native authority contract is qualified.
+  {
+    operationId: "createAgentAutomation",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations",
+    action: "openclaw.agents.automations.create",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Request an Agent automation (runtime qualification pending)",
+    tags: ["Agent automations"],
+    schema: {
+      params: AgentParams,
+      querystring: EmptyQuery,
+      body: CreateAgentAutomationBody,
+      response: createErrors,
+    },
+  },
+  {
+    operationId: "listAgentAutomations",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations",
+    action: "openclaw.agents.automations.list",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Request Agent automation inventory (runtime qualification pending)",
+    tags: ["Agent automations"],
+    schema: { params: AgentParams, querystring: AgentAutomationPageQuery, response: readErrors },
+  },
+  {
+    operationId: "getAgentAutomation",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId",
+    action: "openclaw.agents.automations.read",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Request an Agent automation (runtime qualification pending)",
+    tags: ["Agent automations"],
+    schema: { params: AgentAutomationParams, querystring: EmptyQuery, response: mutationErrors },
+  },
+  {
+    operationId: "updateAgentAutomation",
+    method: "PATCH",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId",
+    action: "openclaw.agents.automations.update",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Request an Agent automation edit (runtime qualification pending)",
+    tags: ["Agent automations"],
+    schema: {
+      params: AgentAutomationParams,
+      querystring: EmptyQuery,
+      body: UpdateAgentAutomationBody,
+      response: createErrors,
+    },
+  },
+  {
+    operationId: "deleteAgentAutomation",
+    method: "DELETE",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId",
+    action: "openclaw.agents.automations.delete",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Request Agent automation deletion (runtime qualification pending)",
+    tags: ["Agent automations"],
+    schema: {
+      params: AgentAutomationParams,
+      querystring: DeleteAgentAutomationQuery,
+      response: mutationErrors,
+    },
+  },
+  {
+    operationId: "listAgentAutomationRuns",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/automations/:automationId/runs",
+    action: "openclaw.agents.automations.runs.list",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Request Agent automation history (runtime qualification pending)",
+    tags: ["Agent automations"],
+    schema: {
+      params: AgentAutomationParams,
+      querystring: AgentAutomationPageQuery,
+      response: readErrors,
+    },
+  },
   {
     operationId: "chatWithAgent",
     method: "POST",

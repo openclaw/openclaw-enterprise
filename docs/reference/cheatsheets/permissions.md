@@ -87,6 +87,10 @@ operation was not authorized.`
 
 ## Additional checks
 
+- [Automation HTTP admission](../agent-automations.md) requires a human session
+  and exact-Agent `operate` or `administer`. Neither grants native scheduling:
+  all six operations refuse dispatch until the native contract is qualified.
+
 - [Native browser access](../agent-native-admin.md#native-authority-and-drift)
   delegates `operator.sessions.write` for exact-Agent `operate`, or
   `operator.admin` for `administer`, under the person's native profile. Native
