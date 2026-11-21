@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-19
-last_updated_session: authoring-run/0cdd91e7-47ea-4661-a124-c23fd4479805
+updated: 2026-11-20
+last_updated_session: authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa
 ---
 
 # Agent Plugin Deployment Flow
@@ -69,32 +69,28 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a
-Harness, Agent `create`, and caller `operate` on stored sources. Wrong Namespace:
-`400`; missing Secret: `404`; unavailable explicit CredentialSource: `409`.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires
+a Harness, Agent `create`, and stored-source `operate`. Cross-Namespace references
+return `400`, missing Secrets `404`, and unavailable explicit CredentialSources `409`.
 
-Saved discovery requires a dedicated Agent and caller `read`/`update`. Bound sources
-require caller and Agent `operate`; explicit sources require caller `operate`.
-Missing or unready bound sources return `404`. Hosted catalogs require credentials;
-curated catalogs do not.
+Saved discovery requires a dedicated Agent and caller `read` and `update`.
+The caller needs `operate` on explicit sources. Bound sources require caller
+and Agent `operate` and return `404` if absent or unready. Only hosted catalogs require credentials.
 
-The OpenShell Backend reads metadata and exports through operator mTLS. External
-Gateways retain optional `withSourceToken`. OCC checks source/Gateway ownership,
-then rechecks authority, attachment and catalog before dispatch. Cancellation
-discards late credentials; refresh stays with its owner.
+`packages/occ/src/plugin-discovery.ts:createPluginDiscovery`
 
-`packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
+OpenShell reads metadata and exports through operator mTLS. External Gateways
+can implement `withSourceToken`. OCC checks Gateway ownership, then rechecks
+authority, attachment, and catalog before dispatch. Saved discovery rechecks after
+dispatch. Managed MCP uses the Secret Driver and checks before and after `tools/list`.
+`driverPolicy.toolNames` pins upstream names. Cancellation discards late credentials.
 
-Managed MCP uses Secret Driver, rechecking before `tools/list`.
-`driverPolicy.toolNames` pins upstream names across runtimes.
-
-Closing cancels; account changes clear results; Harness changes clear selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-bound size/time, reject redirects and credential echoes, and return safe metadata
-with `Cache-Control: no-store`.
+Closing cancels discovery. Account changes clear results. Harness changes
+clear selections and approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
+bound size and time, reject redirects and token echoes, and set `Cache-Control: no-store`.
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
-`requires_local_executor`; explicit `true` without skills remains unavailable.
-Details reject unmatched MCP/scheduled tasks. Optional stdio
-`NativeCodexPluginCatalogReader` rejects invalid `plugin/list` results and stops its child.
+`requires_local_executor`. Explicit `true` without skills disables the entry.
+Details reject unmatched MCP or scheduled tasks.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -387,6 +383,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:13: Trace the Plugin discovery module. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
 
 - 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)
 
