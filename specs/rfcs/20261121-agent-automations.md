@@ -4,7 +4,7 @@ implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
-# Proposal: Schedule Agent automations through OCC
+# Proposal: Schedule model-only Agent automations through OCC
 
 - **ID:** RFC-20261121-agent-automations
 - **Created:** 2026-11-21
@@ -13,241 +13,189 @@ author: kevinlin-openai
 - **Implementation plan:** [Broker implementation](../plans/20261121-agent-automations.md)
 - **Related:** [Native administration](../../docs/reference/agent-native-admin.md), [Gateway managed mode](../../docs/reference/agents/gateway-managed-mode.md), [runtime pin](../../deploy/runtime/openclaw-source.json)
 
-## Summary
+## Decision and scope
 
-OpenClaw Control Plane (OCC) brokers six HTTP operations for Agent automations.
-OCC authorizes the human, retains ownership records, and calls the selected
-Agent's private Gateway with platform-owned administrative transport. OpenClaw
-owns job definitions, scheduling, execution and run history. Scheduled turns use
-the deployed Agent's service authority, constrained by its approved tools and
-runtime policy. Human creator identity governs management and disclosure in OCC;
-it does not supply personal credentials to a scheduled turn.
+OpenClaw Control Plane (OCC) brokers six HTTP operations for **model-only** Agent
+automations. OCC owns human authorization, creator records and attributable audit.
+OpenClaw owns job definitions, scheduling, model execution and run history.
 
-OCE manages all automations in this supported workflow. Native edits, importing
-native jobs, and reconciliation with another automation manager are out of scope.
-This replaces the earlier proposal for a new upstream human automation delegation.
-No upstream changes are required by this broker design.
+Every OCC-created scheduled Agent turn has explicit `payload.toolsAllow: []`.
+OCC reasserts that empty list on relevant updates. There is no caller-selected
+tool field, wildcard, alias, default or automatic tool grant. The scheduled model
+must receive no callable tools: no code, shell, file, delegation/subagent,
+messaging, dynamic, app or MCP tools. GitHub reports and connector actions are
+not part of this feature.
 
-## Motivation
+This requirement concerns model-initiated tool calls. Scheduler activity, model
+requests, runtime/bootstrap processing, history persistence and configured failure
+alerts are outside the no-tools claim. Ordinary Agent chat, native administration,
+and their existing tools and approval policies remain unchanged.
 
-OCE clients need scheduling and history operations with exact-Agent authorization
-and attributable audit. Existing native cron APIs already schedule and retain
-jobs. OCC can apply its own human authorization boundary without exposing native
-administrative credentials or depending on a new native scope.
+## Trust boundary
 
-Source review through upstream `b8b06c4824f381e6a53ace20d3f8b1f9b5de509a`
-confirmed existing [cron methods](https://github.com/openclaw/openclaw/blob/b8b06c4824f381e6a53ace20d3f8b1f9b5de509a/src/gateway/methods/core-descriptors.ts#L301-L326),
-[native revision checks](https://github.com/openclaw/openclaw/blob/b8b06c4824f381e6a53ace20d3f8b1f9b5de509a/src/gateway/server-methods/cron.ts),
-and [operator history after deletion](https://github.com/openclaw/openclaw/blob/b8b06c4824f381e6a53ace20d3f8b1f9b5de509a/src/gateway/server-methods/cron-runs.ts#L94-L108).
-Source availability does not establish packaged-runtime qualification.
+The guarantee applies to OCC-managed writes while trusted writers leave those
+jobs unchanged. Ordinary chat and native administrators are trusted and can
+alter native jobs outside OCC. This is **not** a tamper-resistant sole-writer
+guarantee. There is no native-edit prevention, import, ownership adoption or
+background reconciliation service. Unregistered native jobs remain outside OCC
+inventory and management.
 
-## Goals
+OCC authorizes its callers; it does not claim that the administrative native
+transport is a non-owner Agent identity. The private Gateway credential never
+reaches an HTTP caller. A scheduled model request uses the selected Agent's
+runtime authentication, not the human creator's controller-session credentials.
 
-- Create a scheduled Agent turn once, periodically, or with a cron expression.
-- List, inspect, edit, pause, resume and delete managed jobs, and read run history.
-- Enforce human creator ownership and exact-Agent administration in OCC.
-- Use approved Agent tools under mandatory runtime, sandbox and tool restrictions.
-- Preserve managed job identity and ownership across supported Gateway replacement.
-- Report uncertain native mutations without retry or false success.
+<a id="unresolved-execution-authority"></a>
 
-## Non-goals
+## Why the tool-bearing design was narrowed
 
-Native edits or imports, another automation manager, immediate execution,
-caller-selected native Agent IDs, result-delivery recipients, commands, scripts,
-event triggers, templates, service-principal API access, Console controls and CLI
-commands are out of scope. Personal creator credentials are not scheduled authority.
+At the pinned `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`, direct administrative
+cron creation produces trusted operator authority. Native
+[execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
+and [sender projection](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context-registry.ts#L176)
+do not establish a non-owner caller. Approved
+[`sessions` actions](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/agents/tools/sessions-tool.ts#L193)
+can therefore have controls that explicit non-owner callers lack. Target
+visibility still applies; cross-session effects have not been demonstrated.
+OCE's [managed policy](../../apps/controller/src/drivers/compute/gateway-tool-policy.ts)
+forbids Gateway administration tools, so Gateway restart was not demonstrated as
+reachable in deployed OCE.
 
-## Proposal
+A finite nonempty allowlist does not repair actor/action authority and
+[disables Codex's native shell/file surface](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/extensions/codex/src/app-server/dynamic-tool-build.ts#L523).
+The selected alternative is an explicit empty list, not a partial deny list or
+a global restriction on ordinary Agent chat. No upstream changes are authorized.
+Source support for an empty list is not production runtime qualification.
 
-### Human authorization and native transport
+## Goals and non-goals
 
-A human session with exact-Agent `operate` can create an automation. The same
-permission admits management and history for that creator's records. Exact-Agent
-`administer` admits management of all OCE-owned records for the Agent, but does not
-substitute for `operate` on creation. Filter creator ownership before public
-pagination, totals or disclosure. Denied foreign ownership is indistinguishable
-from an absent record at the requested path.
+Support one-shot, interval and cron schedules; native normalization; CRUD,
+pause/resume and retained run history; exact-Agent authorization; and explicit
+uncertainty without duplicate dispatch.
 
-OCC resolves the selected running Agent revision and verifies its Compute Driver
-ID and implementation. Native access must be enabled for the Installation and
-Agent. Disabled, stopped, unsupported and unavailable Agents are refused.
-Replacement states that prevent safe access stop admission.
+Immediate execution, result-delivery recipients, commands, scripts, event
+triggers, scheduled tools/connectors, service-principal HTTP access, Console
+controls and CLI commands are out of scope. Native edits outside OCC remain
+trusted activity outside this feature's guarantee.
 
-The Compute Driver supplies the private endpoint for that revision through its
-existing transport contract. Controller composition resolves the platform-owned
-Gateway credential. Neither comes from an HTTP caller. The broker authenticates
-as a native operator and exposes only `cron.add`, `cron.list`, `cron.get`,
-`cron.update`, `cron.remove` and `cron.runs` through typed handlers. This six-method
-ceiling belongs to OCC; it is not a narrow native permission. Ordinary browser
-chat and native browser administration retain their existing delegation scopes.
-
-OCC must not forward caller headers, native scopes, ownership fields, native
-Agent IDs, tool grants or arbitrary RPC methods. The broker verifies the native
-operator grant and required method support before dispatch. Unsupported transport
-or protocol returns an unavailable error, without a credential or identity fallback.
-
-```mermaid
-flowchart LR
-  H["Human with Agent permission"] -.->|"Six typed HTTP operations"| O["OCC authorization and broker"]
-  O -.->|"Reserve and read ownership; append audit"| P["OCC PostgreSQL"]
-  O -.->|"Private native operator calls"| G["Agent-owned Gateway"]
-  G -->|"Schedule, execute and retain history"| S["Native scheduler and state"]
-  S -->|"Approved Agent service authority"| A["Selected Agent Harness"]
-```
-
-### Ownership records
-
-Before sending `cron.add`, OCC generates a new native job ID and durably reserves
-it with the Installation's exact Namespace, Agent, authenticated human creator,
-server-selected native Agent ID and creation time. IDs are never reused. A record
-contains no prompt, tool credential or duplicate native job definition.
-
-Only records created by OCC authorize API access. The broker neither adopts nor
-returns unregistered native jobs. This is a lookup rule, not a native-edit
-reconciliation mechanism. Public list totals count authorized records with live
-native jobs. Native inventory reads must use a consistent snapshot; a changed
-snapshot requires the caller to restart the scan.
-
-Ownership survives explicit deletion and native one-shot deletion. A reserved
-record also survives a lost create reply: inventory can discover the native job
-if creation committed. A reservation alone is not evidence that a job exists.
-Agent deletion removes its ownership records with the Agent's existing lifecycle.
-The supported sole-manager assumption ensures each native job ID continues to
-refer to the exact OCE Agent and creator recorded at reservation.
-
-### Job and execution contract
-
-POST requires `name`, `enabled`, `schedule` and `prompt`:
-
-```json
-{
-  "name": "Daily report",
-  "enabled": true,
-  "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "America/Los_Angeles"},
-  "prompt": "Generate the daily report"
-}
-```
-
-Schedules are `at` with an RFC3339 timestamp, `every` with a positive integer
-`everyMs`, or `cron` with an expression and IANA time zone. OCC validates the
-request envelope. OpenClaw validates and normalizes scheduling semantics,
-including interval anchors and cron staggering. Responses preserve those native
-fields and the effective next execution time.
-
-The broker selects the native Agent from the admitted runtime, then maps `prompt`
-to an `agentTurn` with `sessionTarget: "isolated"`, `wakeMode: "now"` and
-`delivery: {mode: "none"}`. Execution uses the Agent's configured service
-credentials and approved tool policy. It must not gain broader runtime, sandbox,
-native Harness, Gateway dynamic-tool or app/MCP access because OCC uses an
-administrative transport. Qualify that boundary on each supported Harness.
-A native tool selection is not evidence of a human creator's personal grant.
-
-Job responses contain `id`, `configRevision`, `name`, `enabled`, normalized
-`schedule`, `prompt`, `nextRunAtMs` and `lastRunStatus`. Lists omit prompts and
-return `total`, `nextOffset` and `snapshotRevision` with bounded `offset` and
-`limit`. Requests cannot change a job's creator or native Agent. Unsupported job
-shapes are refused after ownership authorization; an authorized administrator can
-remove a registered unsupported job with its observed native revision.
-
-Run history returns paged `runId`, start and finish times, execution `status`,
-whole-run `completionStatus`, `deliveryStatus`, summary and error when present.
-After a job disappears, OCC authorizes its retained ownership record and reads
-that ID's native operator history through the exact Agent's private Gateway.
-History retention remains native. Missing ownership fails closed; a native ID
-or history response cannot establish human ownership by itself.
-
-### State, concurrency and failure
-
-Native job state remains on the Agent-owned Gateway volume. OCC ownership is
-PostgreSQL state. There is no distributed transaction between those stores.
-The ownership reservation commits before create dispatch; successful mutation
-audit follows the native acknowledgement. A lost reply, revision change after
-dispatch, malformed mutation acknowledgement, or failed audit append after a
-native commit returns `503 UNKNOWN_OUTCOME`. Do not retry or replay automatically.
-The caller refreshes inventory or the affected job before deciding what to do.
-
-PATCH reads the full authorized job, checks the expected revision from that same
-read, validates eligibility, and passes the revision to native atomic update.
-DELETE also uses the expected native revision. Native concurrent conflicts return
-409. These checks also protect concurrent OCC requests; native edits remain out
-of scope. Interrupted external tool effects have no general exactly-once guarantee.
-
-## Interface changes
-
-### APIs
+## Authorization and interface
 
 All paths start with `/namespaces/{namespaceId}/agents/{agentId}/automations`.
+Public automation IDs are UUIDs; they are distinct from native job IDs.
 
-| Method and path | Native method | Result |
+| Method and path | Request | Result |
 | --- | --- | --- |
-| POST collection | `cron.add` | 201 and created job |
-| GET collection | `cron.list` | 200 and authorized summaries |
-| GET `/{id}` | `cron.get` | 200 and supported job |
-| PATCH `/{id}` | `cron.update` | 200 and updated job |
-| DELETE `/{id}` | `cron.remove` | 204 |
-| GET `/{id}/runs` | `cron.runs` | 200 and authorized history, including after deletion |
+| POST collection | `name`, `enabled`, `schedule`, `prompt` | 201 and normalized job, after qualification |
+| GET collection | Optional `offset`, `limit` | 200 and authorized summaries |
+| GET `/{id}` | No query | 200 and supported job |
+| PATCH `/{id}` | Expected revision and editable fields | 200 and updated job |
+| DELETE `/{id}` | `expectedConfigRevision` query | 204 |
+| GET `/{id}/runs` | Optional `offset`, `limit` | 200 and authorized native history |
 
-Mutations require existing session CSRF and Origin checks before dispatch.
-PATCH accepts one or more editable fields plus `expectedConfigRevision`. DELETE
-requires that revision in its query. Use OCC envelopes: 400 for invalid input,
-403 for denied human or Agent authority, 404 for absent or hidden job ownership,
-409 for revision conflict or unsupported job shape, and distinct 503 codes for
-unavailability and indeterminate mutations.
+Creation requires a human session and exact-Agent `operate`; `administer` alone
+does not substitute. Management and history require creator `operate` or
+exact-Agent `administer`. Reuse these IAM actions and the Agent resource kind.
+Service keys are refused. Mutations retain existing CSRF and Origin checks.
 
-### IAM
+Authorize before native access or resource disclosure. Foreign and absent
+ownership records return indistinguishable 404 responses. Filter by the final
+authority decision before public pagination, totals and snapshot hashes; losing
+administration must not expose a previously loaded all-creator view. Malformed
+UUIDs are 400 input errors, not database errors.
 
-Reuse exact-Agent `operate` and `administer`. No new action or resource kind.
-Audit successful mutations, denials and uncertain outcomes with Principal,
-Namespace, Agent, selected revision, operation, job ID when known and outcome.
-Include only metadata established before a denial. Exclude prompts, transcripts,
-credentials and native payloads.
+Bodies are closed. Clients cannot select native Agent IDs, creators, tool grants,
+RPC methods, native scopes, credentials or delivery targets. PATCH can edit the
+name, prompt, schedule and enabled state. Stale native revisions return 409.
 
-### Database entities
+## Native contract and ownership
 
-Add an Agent-owned automation ownership registry with immutable job ID, Namespace,
-Agent, human creator, native Agent ID and creation time. Enforce identity and
-Agent ownership in database constraints. Retain records after job deletion;
-remove them with Agent deletion. Do not duplicate native scheduling or history.
+Resolve the selected running Agent revision through its existing Compute Driver
+and private endpoint. Verify runtime provenance, native access, administrative
+transport, required methods and an unambiguous server-selected native Agent.
+Typed native calls are limited to `cron.add`, `cron.list`, `cron.get`,
+`cron.update`, `cron.remove` and `cron.runs`; this ceiling belongs to OCC, not to
+the underlying native credential.
 
-### Driver contracts
+Creation maps to `sessionTarget: "isolated"`, `wakeMode: "now"`, an `agentTurn`
+payload with the requested prompt and **explicit empty** `toolsAllow`, and
+`delivery.mode: "none"`. Never omit the cap or substitute a wildcard/default.
+Relevant native updates must preserve/reassert `[]`; an unqualified or unsupported
+shape must not be activated as model-only work.
 
-Use existing Compute endpoint resolution and controller-owned Gateway transport.
-The prior reserved `automation` browser-delegation mode is unnecessary and can be
-removed. No upstream scope or new native identity is introduced.
+Before native create, reserve a public OCC UUID with its exact Namespace, Agent,
+human creator, selected native Agent and creation time. Commit reservation and
+admission audit atomically. Supply `occ-automation:<OCC UUID>` as the native
+declaration key and create disabled. OpenClaw allocates the native ID. Bind it
+durably once before a separate update enables the job if requested.
 
-## Simplifications
+Creator/target fields are immutable; a native ID cannot be rebound or shared by
+two records for one Agent. Store no prompt, credential, duplicate definition or
+second scheduler. Agent deletion removes its ownership rows. Native job deletion
+retains them so the same creator/admin boundary authorizes history afterward.
+Native history expiry still applies, and a deleted job that never ran returns 404.
 
-OCC is the sole automation manager. There is no native-edit synchronization,
-import, ownership adoption, second scheduler or duplicate run-history store.
-PATCH handles pause and resume. Native browser access remains a separate feature;
-editing automations there is outside this workflow's supported assumptions.
+A lost create reply can leave a disabled job. Read recovery matches the reserved
+declaration key and fills a missing binding once, with audit; it neither replays
+create nor automatically enables the job. If transport proves no send, or native
+rejects create and inventory confirms absence, conditionally discard only the
+original creator's unbound reservation with audit in the same transaction.
+Concurrent binding and failed audit must prevent deletion. Admission evidence
+survives cleanup.
 
-## Acceptance Criteria
+## Concurrency, failures and audit
 
-- **AC1. Scheduling:** create each schedule type through OCC, preserve native
-  normalization, and observe a scheduled approved-tool turn in the selected Harness.
-- **AC2. Lifecycle:** edit, pause, resume and delete. Reject stale revisions.
-  A successful one-shot disappears while its creator can still read retained history.
-- **AC3. Authority:** deny administer-only creation, unauthorized callers,
-  foreign creators, wrong Agents or Namespaces, forged authority, service keys
-  and cross-origin mutations. Prove approved and denied tools under service
-  authority, including policy reduction, dedicated Harness and app/MCP restrictions.
-- **AC4. Recovery:** preserve identity, paused state and ownership across Gateway
-  replacement and Agent revision changes. Exercise lost replies, concurrent OCC
-  edits and failed post-commit audit without duplicate dispatch.
-- **AC5. Persistence and audit:** verify PostgreSQL ownership constraints,
-  reservation-before-dispatch, authorization after job deletion, Agent cleanup,
-  attributable mutation/denial/unknown evidence and exclusion of sensitive content.
+PATCH uses the same full native read for eligibility and revision comparison,
+then sends that revision to native atomic update. DELETE also uses a revision
+precondition. A concurrent edit cannot silently overwrite the winner. Inventory
+reads require a consistent native snapshot and expose only authorized summaries.
 
-## Delivery and verification
+Recheck session, authority and selected revision around dispatch and before
+returning a result. A sent mutation with a lost/malformed reply, changed revision
+or failed post-commit audit returns `503 UNKNOWN_OUTCOME`. Keep the ownership
+record and return its `Location` when known. Do not automatically replay. A
+missing live job does not prove it never ran; consult retained history.
 
-The existing branch implements admission and refusal only. Submit this revised
-broker decision, implement ownership and native dispatch, then qualify the
-packaged runtime through the real Agent workflow. Local fixture success does not
-prove native scheduling, model execution or tool restrictions.
+Use ordinary 400/403/404/409 errors for invalid input, denied authority, hidden or
+missing records, and conflicts. Unsupported or unqualified execution remains a
+503 refusal. Stopped or unavailable runtimes do not admit native access.
 
-## Unresolved questions
+Audit admission, successful mutations, binding/recovery, definite-create cleanup,
+denials and uncertain outcomes with Principal, Namespace, Agent, selected
+revision, operation and known public/native IDs. Exclude prompts, transcripts,
+credentials and native payloads. Preserve metadata established before a denial.
 
-Product owners may later add result delivery, immediate execution or service
-principal access. Revoking a human's OCE `operate` grant removes management access;
-existing jobs continue under Agent service policy unless explicitly disabled.
+## Qualification and acceptance
+
+Qualification uses the actual packaged embedded OpenClaw and dedicated Codex
+Harnesses. Fixed `[]` in source or a native CRUD fixture is insufficient. No
+mocked model/tool outcome, invented endpoint or test-only qualification bypass
+can satisfy these criteria.
+
+- **AC1 — Model-only execution:** create all schedule forms through OCC and retain
+  native normalization. Each packaged Harness completes a real model-only
+  one-shot, deletes it natively, and exposes its retained history through OCC.
+- **AC2 — Lifecycle and persistence:** edit, pause, resume and delete with native
+  CAS. Preserve public/native identity, creator ownership, paused state, the empty
+  cap and available history across supported revision/Gateway replacement.
+- **AC3 — No tools and authorization:** reject client-selected tool fields and
+  prove the scheduled model has no shell/file, code, dynamic, subagent/delegation,
+  messaging, app or MCP tools. Use genuine runtime evidence and independent
+  absence-of-effect checks, not the model's claim alone. Agent policy changes
+  must not widen an existing managed job's empty cap. Preserve creator/admin
+  separation, administer-only create refusal, CSRF/Origin, service-key refusal,
+  demotion safety and UUID validation. Ordinary chat/native administration remain
+  outside the restriction.
+- **AC4 — Recovery:** prove lost replies, native CAS races, post-commit audit and
+  revision failures without duplicate dispatch. Distinguish native/container proof
+  from PostgreSQL-backed production placement and model proof.
+- **AC5 — Durable audit and cleanup:** prove PostgreSQL ownership constraints,
+  reservation/binding audit atomicity, safe failed-create cleanup with concurrent
+  binding, post-deletion authorization, and Agent deletion with sibling retention.
+
+## Delivery status
+
+The previous tool-bearing route remains gated. The model-only implementation and
+its runtime qualification must replace it before activation is completed. The
+[plan](../plans/20261121-agent-automations.md) records exact tested commits, results,
+missing credentials and remaining proof. No implementation PR or release-readiness
+claim is authorized until the requested outcome is ready.
