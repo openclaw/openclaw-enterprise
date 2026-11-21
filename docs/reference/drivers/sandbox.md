@@ -351,5 +351,5 @@ inputs as Sandbox startup fields.
 ## Related
 
 - [Kubernetes ComputeDriver](kubernetes-compute.md) and [Compute Sandbox coordination](compute.md#sandboxdriver-coordination)
-- [OCC deployment admission](../../../packages/occ/src/index.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
+- [OCC deployment admission](../../../packages/occ/src/agent-deployment-admission.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 - [OpenShell verification guide](../../testing/openshell.md)

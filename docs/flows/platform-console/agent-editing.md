@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-06
-last_updated_session: authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Console Agent editing and runtime requests
@@ -13,9 +13,9 @@ Related flows: [parent](../platform-console.md),
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads the exact Agent and composes the detail actions.
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads Agent detail and actions.
 - `apps/controller/src/console/agents/credentials.mts:createChannelSecretsPanel` saves channel Secret bindings.
-- `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a version after first-deployment credential setup.
+- `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment` admits first deployment after setup.
 - Actions require exact-resource permission.
 
 ## Flow
@@ -212,7 +212,7 @@ selection; redeployment applies it. See
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies Namespace,
 bindings and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
 `GET /namespaces/:namespaceId/secrets` requires Namespace read.
-`packages/occ/src/index.ts:listSecrets` filters exact Secret read without the Secret Driver.
+`packages/occ/src/secret-operations.ts:listSecrets` filters exact Secret read without the Secret Driver.
 `agents/secret-picker.mjs:createSecretReferenceField` filters names and IDs. Arrows
 navigate, Enter stages a reference, Escape restores, and Cancel discards.
 Typing stages nothing.
@@ -356,6 +356,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
 
 - 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
