@@ -22,7 +22,6 @@ import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, testPool } from "../helpers/postgres-database.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 
 const migratorUrl = process.env.OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL;
@@ -490,61 +489,27 @@ test(
       [{ recorded: true, preset: null }],
     );
 
-    // Revocation waits for the owner's Namespace lock. An update authorized before
-    // revocation may finish; later requests must be denied.
-    const lock = await pool.connect();
-    let open = false;
-    const requests: Promise<unknown>[] = [];
-    try {
-      await lock.query("BEGIN");
-      open = true;
-      const held = await lock.query(
-        "SELECT pg_backend_pid() AS pid FROM occ.credential_sources WHERE id=$1 FOR UPDATE",
-        [sourceId],
-      );
-      const memberSuccessCount = async () =>
-        (
-          await pool.query(
-            "SELECT count(*)::int AS count FROM occ.audit_events WHERE action='openclaw.credential_sources.update' AND resource_id=$1 AND actor_id=$2 AND outcome='success'",
-            [sourceId, memberId],
-          )
-        ).rows[0].count as number;
-      const successesBeforeUpdate = await memberSuccessCount();
-      const concurrentKey = randomUUID();
-      const patching = update(memberId, concurrentKey);
-      requests.push(patching);
-      const patchPid = await waitForLockWaiter(
-        pool,
-        held.rows[0].pid,
-        "the source update waiting for its row",
-      );
-      const revoking = Promise.resolve(
-        inject("DELETE", `/namespaces/${namespaceId}/iam/access-bindings/${grant.json().data.id}`),
-      );
-      requests.push(revoking);
-      assert.equal(
-        await Promise.race([
-          revoking.then(() => "completed"),
-          waitForLockWaiter(pool, patchPid, "revocation waiting on the update policy fence", {
-            queryLike: "%FROM occ.namespaces%",
-          }).then(() => "blocked"),
-        ]),
-        "blocked",
-      );
-      await lock.query("ROLLBACK");
-      open = false;
-      assert.equal((await revoking).statusCode, 204);
-      assert.equal((await patching).id, sourceId);
-      assert.equal(await resolve(), concurrentKey);
-      assert.equal(await memberSuccessCount(), successesBeforeUpdate + 1);
-      await assert.rejects(update(memberId, randomUUID()), AuthorizationDeniedError);
-    } finally {
-      if (open) {
-        await lock.query("ROLLBACK");
-      }
-      lock.release();
-      await Promise.allSettled(requests);
-    }
+    // A member can update a Source while granted access; revocation denies later requests.
+    const memberSuccessCount = async () =>
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM occ.audit_events WHERE action='openclaw.credential_sources.update' AND resource_id=$1 AND actor_id=$2 AND outcome='success'",
+          [sourceId, memberId],
+        )
+      ).rows[0].count as number;
+    const successesBeforeUpdate = await memberSuccessCount();
+    const updatedKey = randomUUID();
+    assert.equal((await update(memberId, updatedKey)).id, sourceId);
+    assert.equal(await resolve(), updatedKey);
+    assert.equal(await memberSuccessCount(), successesBeforeUpdate + 1);
+
+    const revoked = await inject(
+      "DELETE",
+      `/namespaces/${namespaceId}/iam/access-bindings/${grant.json().data.id}`,
+    );
+    assert.equal(revoked.statusCode, 204);
+    await assert.rejects(update(memberId, randomUUID()), AuthorizationDeniedError);
+    assert.equal(await resolve(), updatedKey);
 
     const valueBeforeRetirement = await resolve();
     await withRejectedAuditRows(

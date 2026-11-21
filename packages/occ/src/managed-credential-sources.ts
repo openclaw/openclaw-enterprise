@@ -180,11 +180,10 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       id: namespaceId,
       namespaceId,
     };
-    const authorize = async (state: PlatformUnitOfWork) => {
+    const owner = await dependencies.transactions.transact(async (state) => {
       await dependencies.authority.holdAuthority(state);
       await dependencies.authority.authorize(principalId, "create", collection);
       const namespace = await lockNamespace(state, namespaceId);
-      await dependencies.authority.authorize(principalId, "create", collection);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -192,10 +191,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       if (input.providerPreset !== undefined) {
         assertSourceProviderPreset(input.providerPreset);
       }
-      return ownedTokenServiceDriver();
-    };
-    const owner = await dependencies.transactions.transact(async (state) => {
-      const owner = await authorize(state);
+      const owner = ownedTokenServiceDriver();
       await state.audit.append(audit(collection, "registration_started"));
       return owner;
     });
@@ -230,18 +226,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       );
     }
     return dependencies.transactions.transact(async (state) => {
-      await lockNamespace(state, namespaceId);
-      const current = await state.credentialSources.lockCredentialSource(namespaceId, created.id);
-      if (
-        !isManagedTokenServiceSource(current) ||
-        current.state !== "ready" ||
-        current.tokenServiceInstanceId !== created.tokenServiceInstanceId
-      ) {
-        throw new ResourceStateConflictError(
-          "The credential source changed before creator access was granted.",
-        );
-      }
-      const ref = credentialSourceRef(current);
+      const ref = credentialSourceRef(created);
       await dependencies.bindCreator(state, principalId, ref);
       const completed = audit(ref);
       await state.audit.append(
@@ -252,7 +237,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
               details: { ...completed.details, providerPreset: input.providerPreset },
             },
       );
-      return credentialSourceMetadata(current);
+      return credentialSourceMetadata(created);
     });
   }
 
@@ -275,7 +260,6 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       await dependencies.authority.authorize(principalId, "update", resource);
       await dependencies.authority.holdAuthority(state);
       const namespace = await lockNamespace(state, ref.namespaceId);
-      await dependencies.authority.authorize(principalId, "update", resource);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }

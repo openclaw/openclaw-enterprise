@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-21
-last_updated_session: authoring-run/e9a8f5b4-f521-4f22-ab7b-1639413a47a4
+last_updated_session: authoring-run/bcb909b1-f021-43ea-95b6-2a657e3d0ea4
 ---
 
 # Managed static credential source custody flow
@@ -48,7 +48,7 @@ Startup binds the selected TokenService instance to the Secret Driver's Installa
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`, `apps/controller/src/drivers/token-service/occ.ts:createSource`
 
-OCC checks the ready Namespace, collection permission, and approved provider preset. It commits registration intent and releases its locks before calling TokenService. TokenService assigns the Source ID, creates the canonical ready record and private credential in its own operation, commits its PostgreSQL transaction, and returns the Source. OCC commits creator IAM and completion audit separately. An operation admitted before IAM revocation may finish after revocation. The credential never enters public metadata, Namespace Secret references, logs, or audit details.
+OCC checks the ready Namespace, collection permission, and approved provider preset. It commits registration intent and releases its locks before calling TokenService. TokenService assigns the Source ID, creates the canonical ready record and private credential in its own operation, commits its PostgreSQL transaction, and returns the Source. OCC uses the returned Source to commit creator IAM and completion audit separately. An operation admitted before IAM revocation may finish after revocation. The credential never enters public metadata, Namespace Secret references, logs, or audit details.
 
 An uncertain private-store write can leave material without a Source record. A failure after TokenService commits can leave a Source without its creator grant or completion audit. POST reports failure; the committed request intent remains. The private store has no inventory operation.
 
@@ -86,6 +86,8 @@ Run `node --test tests/integration/postgres-staged-agent-credential-binding.test
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 21:26: Finalize creator IAM and audit directly from the returned Source. (authoring-run/bcb909b1-f021-43ea-95b6-2a657e3d0ea4 - 5f52a10691de0b183726bb34698cd82a705f2254)
 
 - 2026-11-21 21:14: Separate TokenService transactions from OCC admission, IAM, policy, and audit. (authoring-run/e9a8f5b4-f521-4f22-ab7b-1639413a47a4 - f7a5c4b60d7902f6d13a41faaf13386931648795)
 
