@@ -13,13 +13,9 @@ Both images build from this repository as their context. They moved here from
 the [agentic base images](https://gitlab.com/redhat/rhel-ai/core/base-images/agentic)
 repository (RHAI-16354), which built them from a pinned commit of this fork.
 
-The runtime keeps Hummingbird's Node.js. `deploy/runtime/Dockerfile` instead
-compiles Node.js from source with `deploy/runtime/node/worker-esm-termination.patch`,
-which keeps a worker terminated during `require(esm)` from aborting the Gateway.
-The Konflux runtime lacks that fix until a Node.js release carries it, and
-records its own Node.js executable in `/usr/local/share/oce-node/provenance.json`
-for the runtime inventory. The runtime provenance (`/opt/oce/runtime/provenance.json`)
-also records the image's network download clients. The Debian image lists apt's
+Both runtimes use a stock Node.js 24 build: Hummingbird's here, Debian's in
+`deploy/runtime/Dockerfile`. The runtime provenance (`/opt/oce/runtime/provenance.json`)
+records the image's network download clients. The Debian image lists apt's
 HTTP methods there; Hummingbird has no apt, so the Konflux runtime records
 `/usr/bin/curl`, `/usr/local/bin/node` and any developer tools that
 `deploy/runtime/additional-download-clients.json` selects, without the apt entries.

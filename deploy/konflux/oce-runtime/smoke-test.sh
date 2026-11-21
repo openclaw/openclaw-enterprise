@@ -70,6 +70,12 @@ assert_ok "windows-security-helper.exe ships next to the sealed dist" run_in "$I
 assert_ok "/app/skills is a real directory" podman run --rm "$IMAGE" \
     bash -c 'test -d /app/skills && test ! -L /app/skills'
 assert_ok "/app/plugin-skills/slack exists" podman run --rm "$IMAGE" test -d /app/plugin-skills/slack
+assert_ok "OpenShell bootstrap is read-only" run_in "$IMAGE" \
+    bash -c 'test "$(stat -c %a /opt/oce/runtime/openshell-bootstrap.cjs)" = 444'
+assert_ok "/opt/oce/managed is root-owned and sticky" run_in "$IMAGE" \
+    bash -c 'test "$(stat -c %U:%G:%a /opt/oce/managed)" = root:root:1777'
+assert_ok "Codex GitHub REST skill is installed" run_in "$IMAGE" \
+    test -f /etc/codex/skills/github-repository-rest/SKILL.md
 assert_ok "provenance matches the OpenClaw label" podman run --rm "$IMAGE" node -e \
     'const p = require("/opt/oce/runtime/provenance.json"); process.exit(p.commit === process.argv[1] ? 0 : 1)' "$OPENCLAW_COMMIT"
 assert_ok "download clients are curl and node, without apt" podman run --rm "$IMAGE" node -e \
