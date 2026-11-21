@@ -31,21 +31,14 @@ export const RegisterTokenServiceSourceBody = Type.Object(
   },
 );
 
-export const UpdateTokenServiceSourceBody = Type.Union(
-  [
-    Type.Object(
-      { config: managedConfig, secret: Type.Optional(material) },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      { config: Type.Optional(managedConfig), secret: material },
-      { additionalProperties: false },
-    ),
-  ],
+export const UpdateTokenServiceSourceBody = Type.Object(
+  { config: Type.Optional(managedConfig), secret: Type.Optional(material) },
   {
     $id: "UpdateTokenServiceSourceBody",
+    minProperties: 1,
+    additionalProperties: false,
     description:
-      "Staged managed static update contract. Supply configuration, a credential value, or both. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC must dispatch by the persisted Source owner; omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Send these changes in separate operations; repeating the current preset with replacement material is allowed.",
+      "Supply at least one of config or secret. Omitted fields retain their values. Change or remove provider_preset separately from credential replacement; otherwise the update returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.",
   },
 );
 
