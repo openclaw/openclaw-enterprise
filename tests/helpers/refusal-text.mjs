@@ -510,6 +510,10 @@ export const BROKER_HOST_DENIED = brokerProxyRefusal(
 export const COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED =
   "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
 export const PROVISIONING_NOT_COMPLETED = "Agent provisioning could not complete.";
+// The provisioning API's replay refusal: a request ID resubmitted with a changed plan
+// (apps/controller/src/console/agents/list.mts, packages/occ/src/agent-provisioning-requests.ts).
+export const PROVISIONING_DIFFERENT_PLAN =
+  "The Agent provisioning request ID has a different plan.";
 // An Installation without repository access. Only an Installation administrator can set it up,
 // so only one gets the setup guide link; anyone else is told whom to ask (finding D754).
 export const REPOSITORY_ACCESS_NOT_CONFIGURED =

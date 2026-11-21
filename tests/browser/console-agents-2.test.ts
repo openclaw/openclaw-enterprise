@@ -86,8 +86,10 @@ import {
   NAMESPACE_NOT_READY,
   RESOURCE_CONFLICT,
   POD_QUOTA_FULL,
+  PROVISIONING_DIFFERENT_PLAN,
   PROVISIONING_NOT_COMPLETED,
 } from "../helpers/refusal-text.mjs";
+
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
@@ -921,6 +923,297 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   await page
     .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
     .waitFor();
+});
+
+test("Create answers a different-plan replay refusal with a fresh request ID", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Different plan replay", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
+  const updatedAt = new Date().toISOString();
+  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+  const conflictMeta = { requestId: "req_00000000-0000-4000-8000-000000000409" };
+  const jobUrl = (work: number) => `/namespaces/${namespace.id}/agents/provision/work_${work}`;
+  const requestIds: string[] = [];
+  // The first submit admits a request whose job then fails. The refused retry leaves the
+  // admitted identity for a resend, and the operator's edits change the plan under that ID:
+  // the API refuses the replay as a different plan, and Create must answer with a fresh
+  // request ID instead of replaying the refused one.
+  let refuseReplay = false;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route) => {
+    const { requestId }: ProvisionAgentBody = route.request().postDataJSON();
+    if (!requestIds.includes(requestId)) {
+      requestIds.push(requestId);
+    }
+    if (refuseReplay && requestIds.length === 1) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "RESOURCE_CONFLICT", message: PROVISIONING_DIFFERENT_PLAN },
+          meta: conflictMeta,
+        }),
+      });
+      return;
+    }
+    const slot = requestIds.indexOf(requestId) + 1;
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          provisioning: {
+            requestId,
+            workId: `work_${slot}`,
+            status: "queued",
+            phase: "accepted",
+            attemptCount: 0,
+            updatedAt,
+            url: jobUrl(slot),
+          },
+        },
+        meta,
+      }),
+    });
+  });
+  const routeJob = async (route: Route) => {
+    const work = Number(new URL(route.request().url()).pathname.split("/")[5]?.split("_")[1]);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data:
+          work === 1
+            ? {
+                requestId: requestIds[0],
+                workId: "work_1",
+                status: "failed",
+                phase: "accepted",
+                attemptCount: 1,
+                updatedAt,
+                url: jobUrl(1),
+                error: {
+                  code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+                  message: PROVISIONING_NOT_COMPLETED,
+                },
+              }
+            : {
+                requestId: requestIds.at(-1),
+                workId: "work_2",
+                status: "succeeded",
+                phase: "handoff",
+                attemptCount: 1,
+                updatedAt,
+                url: jobUrl(2),
+                agentId: "agt_00000000-0000-4000-8000-00000000c0d2",
+                revisionId: "rev_00000000-0000-4000-8000-00000000c0d2",
+              },
+        meta,
+      }),
+    });
+  };
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_*`, routeJob);
+  // A finished or taken-over job cannot be retried, so the form keeps the admitted identity
+  // for a Create Agent resend — the resend this test then refuses as a different plan.
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_1/retry`, (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "RESOURCE_CONFLICT",
+          message: "Provisioning cannot retry after cancellation or deployment handoff.",
+        },
+        meta: conflictMeta,
+      }),
+    }),
+  );
+
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Different plan");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-different-plan");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await runProvisioningPolls(page, () => create.click(), jobUrl(1), 1);
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
+  const retry = page.getByRole("button", { name: "Retry provisioning request" });
+  await retry.click();
+  await page.getByText("Select Create Agent to resend the same request ID").waitFor();
+  // The edited plan makes the replay of the admitted ID a different plan; the refusal unlocks
+  // the form, and the next submit must carry a fresh request ID.
+  refuseReplay = true;
+  await create.click();
+  await page
+    .getByText(
+      "The Agent provisioning request ID has a different plan. Request ID: req_00000000-0000-4000-8000-000000000409",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(requestIds.length, 1);
+  assert.equal(await retry.isVisible(), false);
+  await waitForEnabled(page.getByLabel("Agent name"));
+  // The fresh request ID admits a new job, which succeeds and opens the Agent.
+  await runProvisioningPolls(page, () => create.click(), jobUrl(2), 1);
+  assert.equal(requestIds.length, 2);
+  assert.notEqual(requestIds[1], requestIds[0]);
+  await page.waitForURL(/\/agents\/agt_00000000-0000-4000-8000-00000000c0d2\?/);
+});
+
+// A channel binding names a Secret the channel editor selected, not the model credential, so a
+// deleted-resource refusal naming it must drop that binding from the Configuration the form
+// resubmits — the same recovery the model Secret case already has (PR #5036 review).
+test("Create drops a channel Secret binding the API reports deleted", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deleted channel binding", { ready: true });
+  const slackSecret = await fixture.createSecret(
+    namespace.id,
+    "Existing Slack app token",
+    "never-visible-existing-slack-app-token",
+  );
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
+  const updatedAt = new Date().toISOString();
+  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+  const conflictMeta = { requestId: "req_00000000-0000-4000-8000-000000000409" };
+  const jobUrl = (work: number) => `/namespaces/${namespace.id}/agents/provision/work_${work}`;
+  const requestIds: string[] = [];
+  const bodies: ProvisionAgentBody[] = [];
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route) => {
+    const body: ProvisionAgentBody = route.request().postDataJSON();
+    bodies.push(body);
+    const { requestId } = body;
+    if (!requestIds.includes(requestId)) {
+      requestIds.push(requestId);
+    }
+    const slot = requestIds.indexOf(requestId) + 1;
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          provisioning: {
+            requestId,
+            workId: `work_${slot}`,
+            status: "queued",
+            phase: "accepted",
+            attemptCount: 0,
+            updatedAt,
+            url: jobUrl(slot),
+          },
+        },
+        meta,
+      }),
+    });
+  });
+  const routeJob = async (route: Route) => {
+    const work = Number(new URL(route.request().url()).pathname.split("/")[5]?.split("_")[1]);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data:
+          work === 1
+            ? {
+                requestId: requestIds[0],
+                workId: "work_1",
+                status: "failed",
+                phase: "accepted",
+                attemptCount: 1,
+                updatedAt,
+                url: jobUrl(1),
+                error: {
+                  code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+                  message: PROVISIONING_NOT_COMPLETED,
+                },
+              }
+            : {
+                requestId: requestIds.at(-1),
+                workId: "work_2",
+                status: "succeeded",
+                phase: "handoff",
+                attemptCount: 1,
+                updatedAt,
+                url: jobUrl(2),
+                agentId: "agt_00000000-0000-4000-8000-00000000c0d3",
+                revisionId: "rev_00000000-0000-4000-8000-00000000c0d3",
+              },
+        meta,
+      }),
+    });
+  };
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_*`, routeJob);
+  // The retry is refused naming the channel Secret as deleted: the request is unrecoverable,
+  // so the form unlocks with a fresh request ID and must not resubmit the deleted binding.
+  const deletedSlackSecret =
+    `Secret ${slackSecret.id}, which this provisioning request uses, was deleted.` +
+    " Submit a new Agent provisioning request.";
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_1/retry`, (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "RESOURCE_CONFLICT", message: deletedSlackSecret },
+        meta: conflictMeta,
+      }),
+    }),
+  );
+
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Deleted channel binding");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-value");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  // Stage the Slack app token binding the form will resubmit with its Configuration.
+  await page.getByRole("button", { name: "Configure Slack" }).click();
+  const channelDialog = page.getByRole("dialog", { name: /^(Configure|Edit) Slack$/ });
+  // The default direct-message policy requires allowed senders; disabled keeps the drawer valid.
+  await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
+  await selectSecret(channelDialog, "Slack app token", slackSecret);
+  await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
+  await channelDialog.waitFor({ state: "hidden" });
+  const create = page.getByRole("button", { name: "Create Agent" });
+  const retry = page.getByRole("button", { name: "Retry provisioning request" });
+  await runProvisioningPolls(page, () => create.click(), jobUrl(1), 1);
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
+  const firstPlan = bodies[0]?.configuration as
+    { secretBindings?: Record<string, { source: { id: string } }> } | undefined;
+  assert.equal(firstPlan?.secretBindings?.SLACK_APP_TOKEN?.source.id, slackSecret.id);
+  await retry.click();
+  await page
+    .getByText(
+      `${deletedSlackSecret} Replace the deleted resource, then select Create Agent to submit a new request. Request ID: req_00000000-0000-4000-8000-000000000409`,
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await retry.isVisible(), false);
+  await waitForEnabled(page.getByLabel("Agent name"));
+  // The dropped binding no longer shows in the channel editor the operator reopens.
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  assert.equal(await channelDialog.getByLabel("Slack app token").inputValue(), "");
+  await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
+  await channelDialog.waitFor({ state: "hidden" });
+  // The replacement request carries a fresh request ID and no deleted Secret binding.
+  await runProvisioningPolls(page, () => create.click(), jobUrl(2), 1);
+  assert.equal(requestIds.length, 2);
+  assert.notEqual(requestIds[1], requestIds[0]);
+  const replacementPlan = bodies.at(-1)?.configuration as
+    { secretBindings?: Record<string, { source: { id: string } }> } | undefined;
+  assert.notEqual(replacementPlan?.secretBindings?.SLACK_APP_TOKEN?.source.id, slackSecret.id);
+  assert.equal(replacementPlan?.secretBindings?.SLACK_APP_TOKEN, undefined);
+  await page.waitForURL(/\/agents\/agt_00000000-0000-4000-8000-00000000c0d3\?/);
 });
 
 // Neutral deployment guidance is not an error, so neither its text nor its block's stripe takes the

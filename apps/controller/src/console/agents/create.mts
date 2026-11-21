@@ -4198,6 +4198,26 @@ function renderAgentForm(
             ) {
               savedCredentialSource = undefined;
             }
+            // Channel settings bind their own Secrets into the Configuration the request
+            // resubmits, so a deleted one is dropped the same way: the filtered record
+            // leaves the unlocked form no missing ID to send again, and the re-rendered
+            // editor shows the binding gone for the operator to replace. The pickers that
+            // read the bindings follow the filtered record.
+            if (
+              deleted?.[1] === "Secret" &&
+              Object.values(configurationSecretBindings).some(
+                (channelBinding) => channelBinding.source.id === deleted[2],
+              )
+            ) {
+              configurationSecretBindings = Object.fromEntries(
+                Object.entries(configurationSecretBindings).filter(
+                  ([, channelBinding]) => channelBinding.source.id !== deleted[2],
+                ),
+              );
+              directorySecret.refresh();
+              defaultApprovers.refreshDirectory();
+              renderChannelEditor();
+            }
           }
         }
         admittedAttempt = requestAdmitted && attempt.statusUrl ? attempt : undefined;
