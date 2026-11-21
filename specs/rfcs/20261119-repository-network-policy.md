@@ -8,7 +8,7 @@ author: freeqaz-openai
 
 - **ID:** RFC-20261119-repository-network-policy
 - **Created:** 2026-11-19
-- **Last updated:** 2026-11-20
+- **Last updated:** 2026-11-21
 - **RFC PR:** [#6531](https://github.com/openclaw/openclaw-enterprise/pull/6531), originally submitted under RFC-0017.
 - **Related:** [Agent egress](0017-agent-egress-0x/index.md), [Driver configuration](0022-driver-configuration-contributions.md), [repository credentials](../../docs/reference/repository-credentials.md).
 
@@ -28,7 +28,7 @@ The current [SandboxPolicy](../../docs/reference/sandbox-policies.md) grants acc
 
 - **G1. Enforce Git grants for every client through native OpenShell rules.** A push to A or a request to C stops before the origin receives HTTP; allowed Git operations work without a per-request OCE authorization callback.
 - **G2. Bind access to the deployed Agent revision.** An Admin can withdraw grants and verify retirement of the old Sandbox without affecting a peer.
-- **G3. Support issue reads and pull requests through REST.** A bundled skill uses explicitly authorized routes. Git-only grants stay API-denied across upgrades.
+- **G3. Support issue reads, issue creation and pull requests through REST.** A bundled skill uses explicitly authorized routes. Git-only grants stay API-denied across upgrades.
 
 ## Non-goals
 
@@ -112,7 +112,7 @@ sequenceDiagram
 
 ### What can the Agent do on GitHub?
 
-The Agent can **list and read issues** and **open pull requests** through GitHub’s REST API. Each operation requires both the Agent’s repository grant and the corresponding GitHub permission. For example, suppose the Namespace enables issue reads and PR creation for A and B. The Admin gives this Agent read access to A, write access to B, and no access to C.
+Under v1, the Agent can **list and read issues** and **open pull requests** through GitHub’s REST API. Each operation requires both the Agent’s repository grant and the corresponding GitHub permission. For example, suppose the Namespace enables issue reads and PR creation for A and B. The Admin gives this Agent read access to A, write access to B, and no access to C.
 
 | Agent action                          | A (read) | B (write) | C (no grant) |
 | ------------------------------------- | -------- | --------- | ------------ |
@@ -120,12 +120,15 @@ The Agent can **list and read issues** and **open pull requests** through GitHub
 | List issues or read one issue         | Yes      | Yes       | No           |
 | Push a branch                         | No       | Yes       | No           |
 | Open a PR (draft or ready for review) | No       | Yes       | No           |
+| Create an issue (v2 only)             | No       | Yes       | No           |
 
-**Enabling API access.** The operator sets [`scopedRest: "v1"`](https://github.com/openclaw/openclaw-enterprise/pull/6716) on each participating `github-repository` Namespace registration, rebinds the credential and redeploys the Agent. Issue reads require at least **Issues: read**. Opening a PR requires **Pull requests: write**. For a repository with a scoped Git grant, leaving REST disabled permits only the granted Git operations. Issue writes, PR merges and GraphQL are outside this grant.
+**Enabling API access.** The operator sets [`scopedRest: "v1"`](https://github.com/openclaw/openclaw-enterprise/pull/6716) on each participating `github-repository` Namespace registration, rebinds the credential and redeploys the Agent. Issue reads require at least **Issues: read**. Opening a PR requires **Pull requests: write**. For a repository with a scoped Git grant, leaving REST disabled permits only the granted Git operations. Issue writes are denied under v1. PR merges and GraphQL remain outside both versions.
 
-**Why PR creation needs a body check.** For this pilot we propose letting an Agent open a fresh PR between branches in B while keeping C inaccessible and issues read-only. GitHub’s [create endpoint](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request) accepts a fork head or converts an issue on the same POST with the same permission. OpenShell can restrict the destination to B. Only the body identifies the source and any issue to convert.
+**Follow-up after v1.** Issue creation requires `scopedRest: "v2"` on that repository’s Namespace registration, network Write for that repository, and existing, independently approved **Issues: write** token permission. Rebind and redeploy without broadening authority. OpenShell filters `POST /repos/{owner}/{repo}/issues`. Before credential use, the trusted hook requires JSON: a nonblank string `title`, optional string `body`, and no unknown fields. PR checks remain independent.
 
-OpenShell admits `GET /issues`, `GET /issues/{number}` and `POST /pulls` under the authorized repository on `api.github.com`. Recheck redirects. For the PR POST, the [Worker-hosted Credential Proxy hook](https://github.com/openclaw/openclaw-enterprise/blob/1d2f37d8af5c01178e9092ec1e7d7849bce/apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts#L2394-L2451) runs the [Repo Driver’s body check](https://github.com/openclaw/openclaw-enterprise/blob/1d2f37d8af5c01178e9092ec1e7d7849bce/apps/controller/src/drivers/repo/github/access/routes/request-selection.ts#L213-L300) before credential injection. Require unqualified head and base branches. Reject `head_repo` and `issue`. Refuse PR creation if the validator is unavailable. Scope the hook to PR creation. If the adapter cannot isolate it, leave PR creation disabled on native delivery.
+**Why PR creation needs a body check.** For v1 we propose letting an Agent open a fresh PR between branches in B while keeping C inaccessible and issues read-only. GitHub’s [create endpoint](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request) accepts a fork head or converts an issue on the same POST with the same permission. OpenShell can restrict the destination to B. Only the body identifies the source and any issue to convert.
+
+Under v1, OpenShell admits `GET /issues`, `GET /issues/{number}` and `POST /pulls` under the authorized repository on `api.github.com`. Recheck redirects. For the PR POST, the [Worker-hosted Credential Proxy hook](https://github.com/openclaw/openclaw-enterprise/blob/1d2f37d8af5c01178e9092ec1e7d7849bce/apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts#L2394-L2451) runs the [Repo Driver’s body check](https://github.com/openclaw/openclaw-enterprise/blob/1d2f37d8af5c01178e9092ec1e7d7849bce/apps/controller/src/drivers/repo/github/access/routes/request-selection.ts#L213-L300) before credential injection. Require unqualified head and base branches. Reject `head_repo` and `issue`. Refuse PR creation if the validator is unavailable. Scope the v1 hook to PR creation. If the adapter cannot isolate it, leave PR creation disabled on native delivery.
 
 Codex discovers the [bundled skill](https://github.com/openclaw/openclaw-enterprise/pull/6658) automatically. It teaches stock `gh api` and grants no access. Use a JSON file with `--input` for writes, and verify the remote result before retrying. Draft-only grants retain their ref-constrained client.
 
@@ -134,7 +137,7 @@ Codex discovers the [bundled skill](https://github.com/openclaw/openclaw-enterpr
 | Delivery path                                                                                                        | Startup nonce | OCE check on a request                                    |
 | -------------------------------------------------------------------------------------------------------------------- | ------------- | --------------------------------------------------------- |
 | Proposed native Git, with optional issue reads                                                                       | None          | None. OpenShell enforces the bound routes.                |
-| Proposed native Git with PR creation                                                                                 | None          | PR POST body only. Git and issue reads stay local.        |
+| Proposed native Git with PR or v2 issue creation                                                                     | None          | POST body only. Git and issue reads stay local.           |
 | Existing protected `git-write`                                                                                       | Required      | Exact ref and optional `git-and-draft-pr` restrictions.   |
 | Existing protected `github-repository`, including [#6716](https://github.com/openclaw/openclaw-enterprise/pull/6716) | Required      | Worker checks each permitted request against the binding. |
 | Existing `github-installation` preview                                                                               | Required      | Worker hook in the single-Sandbox workspace.              |
@@ -169,7 +172,7 @@ Under `/namespaces/{namespaceId}/agents/{agentId}`, extend the existing [routes]
 
 ### Driver contracts
 
-- [Repo](../../packages/contracts/src/drivers/repo/index.ts) resolves each canonical repository and approves its access level. [Compute](../../packages/contracts/src/drivers/compute/index.ts) admits a placement that can enforce the frozen grants.
+- [Repo](../../packages/contracts/src/drivers/repo/index.ts) resolves each canonical repository, approves its access level and supports explicit `scopedRest: "v2"` registration. [Compute](../../packages/contracts/src/drivers/compute/index.ts) admits a placement that can enforce the frozen grants.
 - [Sandbox](../../docs/reference/drivers/sandbox.md#optional-network-policy-operations) compiles repository routes, sets explicit Provider bindings and verifies the active policy. [Credential Proxy](../../docs/reference/drivers/credential-proxy.md) provisions and rotates the attached endpointless Provider. Its profile contributes zero network allowances.
 
 ## Simplifications
@@ -185,11 +188,12 @@ Use a disposable installed OpenShell environment, an authorized Admin and regula
 - **AC-3 (G1, G3).** In Git-only mode, calibrate observation with permitted traffic. Require direct REST and GraphQL denials with zero upstream HTTP. Exercise direct TLS/IP, matcher variants, mixed services, aliases and redirects. Any unauthorized forwarding or credential disclosure blocks release.
 - **AC-4 (G2).** At save and deploy, reject an unregistered App-covered path and write above the Namespace or selected credential ceiling. Before release and after rotation, verify zero Provider endpoints, exact Sandbox bindings and the active generation. Refuse missing or invalid credentials, unexpected source changes, wrong bindings, broader sibling allows, opaque TLS and stale or unverifiable policy. Repeat AC-1 after rotation with no startup nonce or Git callback. For protected delivery that requires a probe, verify it reaches the hook under the final rules with zero origin requests. Refuse replay, stale proof and wrong recipients. Verify existing ref and draft restrictions.
 - **AC-5 (G2).** Independently admit a peer in a separate workspace and verify its permitted operations after the first Agent’s downgrade. Preserve singleton preview admission and verify retirement before workspace reuse. Shared placement requires separate proof of recipient isolation.
-- **AC-6 (G3).** Through the bundled skill’s documented clients, read A’s issue list and detail, create one normal PR in B and independently verify its number, repository, head, base and draft status. Verify draft-only access with the existing ref-constrained client. Deny A creation, all C access, fork heads, issue conversion, issue writes and GraphQL before forwarding. Verify that the trusted hook enforces body restrictions for direct clients and refuses creation when unavailable. Verify redirects and continued API denial after a Git-only upgrade or without REST authorization. On a revision with both grants, disable the REST hook and repeat the native Git allow/deny checks. Git and issue reads must succeed without OCE callbacks while PR creation is refused.
+- **AC-6 (G3, v1).** Through the bundled skill’s documented clients, read A’s issue list and detail, create one normal PR in B and independently verify its number, repository, head, base and draft status. Verify draft-only access with the existing ref-constrained client. Deny A creation, all C access, fork heads, issue conversion, issue writes and GraphQL before forwarding. Verify that the trusted hook enforces body restrictions for direct clients and refuses creation when unavailable. Verify redirects and continued API denial after a Git-only upgrade or without REST authorization. On a revision with both grants, disable the REST hook and repeat the native Git allow/deny checks. Git and issue reads must succeed without OCE callbacks while PR creation is refused.
+- **AC-7 (G3, after v1 release).** Create B’s issue with stock `gh api`; independently read stored number, title and body. Deny A/C and downgraded B before the origin; v1 still denies creation. Reject invalid bodies and unknown fields from direct clients; fail closed without the validator.
 
 ## Delivery and verification
 
-Develop Git and REST in parallel. Require installed AC-1–AC-5 for native Git and AC-6 for REST. Keep existing Agents on their current credential delivery until equivalent protections pass. Controlled-origin runs provide partial evidence:
+Develop Git and REST in parallel. Require installed AC-1–AC-5 for native Git, AC-6 for REST v1 and AC-7 for the v2 follow-up. Keep existing Agents on their current credential delivery until equivalent protections pass. Controlled-origin runs provide partial evidence:
 
 - [#6588](https://github.com/openclaw/openclaw-enterprise/pull/6588) verified native Git and downgrade on stock OpenShell 0.1.8 with a directly attached Provider that supplied endpoint rules. The endpointless design needs an installed run with explicit Sandbox bindings.
 - [#6764 at `c94ba932`](https://github.com/openclaw/openclaw-enterprise/pull/6764) passed 46/46 on k3d. It exercised saved-Agent Git, downgrade, retirement, a separate peer and selected REST operations. Allowed requests still used the [legacy Worker authorization callback](https://github.com/openclaw/openclaw-enterprise/blob/c94ba932c5ea7f9be4669fcaafe6ce47ee8fdf82/apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts#L212-L217), and the peer used a distinct credential. This is workflow evidence, not acceptance of native network-only Git or the same-credential permissive control.
