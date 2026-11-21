@@ -1,6 +1,7 @@
 import type {
   AccessBinding,
   Agent,
+  IAMPolicyReadRepository,
   ResourceKind,
   Restriction,
 } from "@openclaw-enterprise/contracts";
@@ -32,7 +33,7 @@ function removedAccessBinding(binding: Readonly<AccessBinding>): RemovedAccessBi
  * removes them, so callers record the list in that deletion's audit event.
  */
 export async function accessBindingsTargeting(
-  state: Pick<PlatformReadView, "iamPolicy">,
+  state: { readonly iamPolicy: Pick<IAMPolicyReadRepository, "listAccessBindings"> },
   namespaceId: string,
   resourceKind: ResourceKind,
   resourceId: string,
