@@ -25,6 +25,8 @@ import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { createPresetOperations } from "./preset-operations.ts";
 import { exactNamespace, namespaceIdentity } from "./resource-scope.ts";
 
+export const BOOTSTRAP_DEFAULT_NAMESPACE_NAME = "default";
+
 export interface CreateNamespaceInput {
   readonly name: string;
   readonly existingNamespace?: string;

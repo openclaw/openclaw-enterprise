@@ -1,15 +1,15 @@
 ---
 created: 2026-08-28
-updated: 2026-11-19
-last_updated_session: authoring-run/49c681f2-4814-4313-b061-284d2b23891c
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Controller Worker Flow
 
 ## Overview
 
-The worker claims PostgreSQL work, rechecks authorization, and calls Compute.
-It saves Namespace, Agent stop/deletion, and revision results under its claim.
+The worker claims PostgreSQL work, rechecks authorization, calls Compute, and
+saves Namespace, Agent stop/deletion, and revision results under its claim.
 See the [controller reference](../reference/controller.md) and
 [deployment guide](../guides/deploy.md).
 
@@ -83,12 +83,12 @@ follow finalization independently of logging.
 ### 2. Save the admission decision and queue the operation
 
 `apps/controller/src/http/agents.ts:createAgentHandlers`,
-`packages/occ/src/index.ts:OpenClawController`,
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
 `operations.append` checks ownership, then calls `PostgresWorkQueue.enqueue`.
-When audit is enabled, the resource change, work, and `controller_work.queued`
-record commit together. The record links the request ID to the work ID.
+With audit enabled, the resource change, work, and `controller_work.queued`
+commit together. The event links request and work IDs.
 
 Agent deployment keeps the validated `deploy` request and decision with the
 saved version; the API's audit event uses that decision's IAM Driver, principal,
@@ -424,6 +424,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-19 14:03: Trace stopped revision cleanup in the accompanying change. (authoring-run/49c681f2-4814-4313-b061-284d2b23891c - 4bfefb4bf60b43dfb2e6fcc010be60270474e726)
 - 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 - 2026-11-14 10:00: Hint tenant access on delete. (fix-4929)

@@ -18,6 +18,7 @@ import {
   codexRunsPrimaryModel,
   requireFallbackProviders,
   resolveConfiguredHarnessId,
+  type ModelPolicyAgent,
 } from "./configured-harness.ts";
 import {
   ComputeGatewaySettingError,
@@ -268,6 +269,49 @@ export function admitsOpenClawExecutionMode(
   }
 }
 
+/**
+ * The Agent a model policy refusal offers runtimes for: a dedicated Agent cannot run OpenClaw
+ * where the Installation does not list dedicated OpenClaw (openClawExecutionModes), so its
+ * refusals offer codex alone where Codex runs the model (finding 3036). With the deploy route's
+ * `resolveHarness`, an embedded Agent cannot run Codex where the Installation approves the Codex
+ * Harness only for dedicated execution (resolveAgentHarness refuses it), so its refusals offer
+ * openclaw alone, or name the next step on a codex/<model> model (finding 3037). Callers without
+ * that resolver (Agent provisioning, which Kubernetes Compute admits only for dedicated Agents,
+ * and saved-Agent plugin discovery) keep every offer. Read only to word a refusal: an
+ * unavailable Sandbox Driver keeps every offer too, and admission refuses it later.
+ */
+export function createModelPolicyAgent(
+  sandboxDriver: () => SandboxDriver | undefined,
+  nativeWorkers: NativeWorkerSupportSource | undefined,
+) {
+  return function modelPolicyAgent(
+    executionMode: HarnessExecutionMode,
+    resolveHarness?: HarnessResolver,
+  ): ModelPolicyAgent {
+    return {
+      codexRuns: () =>
+        executionMode !== "embedded" ||
+        resolveHarness?.("codex", "embedded")?.id === "codex" ||
+        resolveHarness?.("codex", "dedicated")?.id !== "codex",
+      openclawRuns: () => {
+        if (executionMode !== "dedicated") {
+          return true;
+        }
+        let sandbox: SandboxDriver | undefined;
+        try {
+          sandbox = sandboxDriver();
+        } catch (error) {
+          if (error instanceof DependencyUnavailableError) {
+            return true;
+          }
+          throw error;
+        }
+        return admitsOpenClawExecutionMode(sandbox, executionMode, nativeWorkers) === true;
+      },
+    };
+  };
+}
+
 export function agentRuntimeConfiguration(
   values: Readonly<OpenClawConfigurationDocument>,
   harness: RevisionHarnessDescriptor,
@@ -364,3 +408,6 @@ export function createSavedAgentTopologyValidator(dependencies: AgentHarnessTopo
 
   return validateSavedAgentTopology;
 }
+
+export const GATEWAY_MANAGED_MODE_UNSUPPORTED =
+  "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";

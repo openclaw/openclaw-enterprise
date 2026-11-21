@@ -13,6 +13,8 @@ import {
   type ConfigurationResult,
   type DriverConfigurationDescriptor,
   type ErrorDetail,
+  type ExecutionAdmission,
+  type RevisionHarnessDescriptor,
   type ResourceRef,
   type SandboxDriver,
   type SandboxFacet,
@@ -23,6 +25,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type { DriverConfigurationRegistry } from "./configuration-registry.ts";
+import type { createCredentialEgressAdmission } from "./credential-egress-admission.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -42,13 +45,14 @@ interface SandboxPolicyDependencies {
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<
     ControllerAuthority,
-    "authorize" | "authorizationDecision" | "authorizationAuthority" | "holdAuthority"
+    "authorize" | "authorizationDecision" | "holdAuthority" | "authorizationAuthority"
   >;
-  readonly protectedExecutionApplies: (
-    state: PlatformReadView,
-    agent: Readonly<Agent>,
-    revision: Readonly<AgentRevision> | undefined,
-  ) => Promise<boolean>;
+  readonly egressAdmission: Pick<
+    ReturnType<typeof createCredentialEgressAdmission>,
+    "ordinaryModelBinding"
+  >;
+  readonly hasCredentialProxy: () => boolean;
+  readonly allowsOrdinaryCredentialGateway: () => boolean;
   readonly record: (
     state: PlatformUnitOfWork,
     operation: Parameters<PlatformUnitOfWork["operations"]["append"]>[0],
@@ -85,7 +89,7 @@ export function unprotectedPolicyRevision(revision: Readonly<AgentRevision> | un
   }
 }
 
-export function checkedSandboxPolicySnapshot(
+function checkedSandboxPolicySnapshot(
   driver: SandboxDriver,
   additions: readonly SandboxNetworkGrant[],
   version: number,
@@ -141,7 +145,7 @@ export function checkedSandboxPolicySnapshot(
   }
 }
 
-export function checkedProtectedCodexArtifactPolicy(
+function checkedProtectedCodexArtifactPolicy(
   driver: SandboxDriver | undefined,
   version: number,
 ): SandboxPolicySnapshot {
@@ -198,6 +202,26 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     } catch {
       throw new DependencyUnavailableError("The selected Sandbox Driver is unavailable.");
     }
+  }
+
+  async function protectedExecutionApplies(
+    state: PlatformReadView,
+    agent: Readonly<Agent>,
+    activeRevision: Readonly<AgentRevision> | undefined,
+  ): Promise<boolean> {
+    if (activeRevision !== undefined && !unprotectedPolicyRevision(activeRevision)) {
+      return true;
+    }
+    if (!dependencies.hasCredentialProxy()) {
+      return false;
+    }
+    if (
+      !dependencies.allowsOrdinaryCredentialGateway() ||
+      (agent.repositoryBindings?.length ?? 0) > 0
+    ) {
+      return true;
+    }
+    return !(await dependencies.egressAdmission.ordinaryModelBinding(state, agent));
   }
 
   async function authorizePolicyEdit(principalId: string, namespaceId: string, agentId: string) {
@@ -325,7 +349,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             agent.activeRevisionId === undefined
               ? undefined
               : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
-          if (await dependencies.protectedExecutionApplies(state, agent, active)) {
+          if (await protectedExecutionApplies(state, agent, active)) {
             throw new ProtectedExecutionNetworkPolicyError("save");
           }
         }
@@ -405,8 +429,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         ),
         editingEnabled: agent.sandboxPolicyEditing === true,
         protectedExecution:
-          revision === null ||
-          (await dependencies.protectedExecutionApplies(state, agent, revision)),
+          revision === null || (await protectedExecutionApplies(state, agent, revision)),
         capability: sandboxDriver()?.networkPolicy ?? null,
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
@@ -626,10 +649,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
           agent,
           previous.repositoryNetworkPolicy !== undefined,
         );
-        if (
-          active === null ||
-          (await dependencies.protectedExecutionApplies(state, agent, active))
-        ) {
+        if (active === null || (await protectedExecutionApplies(state, agent, active))) {
           throw new ProtectedExecutionNetworkPolicyError(
             repositoryNetworkPolicy === undefined ? "save" : "saveRepository",
           );
@@ -664,26 +684,6 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       }
       return updated;
     });
-  }
-
-  async function deploymentSandboxPolicy(
-    state: PlatformReadView,
-    principalId: string,
-    namespaceId: string,
-    agentId: string,
-  ): Promise<Readonly<SandboxPolicy> | undefined> {
-    const policy = await state.sandboxPolicies.find(namespaceId, agentId);
-    if (policy?.repositoryNetworkPolicy !== undefined) {
-      await authorize(principalId, "read", {
-        kind: "sandbox_policy",
-        id: policy.id,
-        namespaceId,
-      });
-      throw new ResourceStateConflictError(
-        "This Installation cannot enforce the saved repository network policy. Deploy with an Installation that supports it.",
-      );
-    }
-    return policy;
   }
 
   async function applyAgentSandboxPolicy(
@@ -910,16 +910,95 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     });
   }
 
+  async function admitDeploymentSnapshot(
+    policy: Readonly<SandboxPolicy> | undefined,
+    principalId: string,
+    agent: Pick<Agent, "id" | "namespaceId">,
+    revisionHarness: Pick<RevisionHarnessDescriptor, "id" | "mode">,
+    sandbox: SandboxDriver | undefined,
+    executionAdmission: ExecutionAdmission,
+    repositoryCredentials: boolean,
+  ): Promise<SandboxPolicySnapshot | undefined> {
+    const policyScope = { repositoryCredentials };
+    // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
+    // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
+    // execution. The caller learns of saved additions only with SandboxPolicy read access.
+    // Finding 2151: every refusal below that names saved additions (protected execution, the
+    // ceiling, the Driver) comes after SandboxPolicy read, so a deployer without it learns nothing.
+    const protectedExecution = executionAdmission.mode === "protected";
+    if (policy !== undefined && policy.additions.length > 0) {
+      await dependencies.authority.authorize(principalId, "read", {
+        kind: "sandbox_policy",
+        id: policy.id,
+        namespaceId: agent.namespaceId,
+      });
+      if (protectedExecution) {
+        throw new ProtectedExecutionNetworkPolicyError("deploy");
+      }
+    }
+    let sandboxPolicy: SandboxPolicySnapshot | undefined;
+    if (protectedExecution) {
+      if (
+        revisionHarness.id === "codex" &&
+        revisionHarness.mode === "dedicated" &&
+        repositoryCredentials
+      ) {
+        sandboxPolicy = checkedProtectedCodexArtifactPolicy(sandbox, policy?.version ?? 1);
+      }
+    } else if ((policy?.additions.length ?? 0) > 0) {
+      sandboxPolicy = admitAgentNetworkPolicy(
+        policy!.additions,
+        policy!.version,
+        undefined,
+        policyScope,
+      );
+    } else if (sandbox?.admitNetworkPolicy !== undefined) {
+      sandboxPolicy = checkedSandboxPolicySnapshot(
+        sandbox,
+        [],
+        policy?.version ?? 1,
+        undefined,
+        policyScope,
+      );
+    }
+    if ((policy?.additions.length ?? 0) > 0 && sandboxPolicy === undefined) {
+      throw new ResourceStateConflictError(
+        "The selected Sandbox Driver cannot enforce this Agent's network policy.",
+      );
+    }
+    return sandboxPolicy;
+  }
+
   return {
     sandboxDriver,
     validateAgentSandboxPolicy,
     getAgentSandboxPolicy,
     setAgentSandboxPolicyEditing,
     updateAgentSandboxPolicy,
-    deploymentSandboxPolicy,
     applyAgentSandboxPolicy,
     readAgentSandboxRecommendations,
-    admitAgentNetworkPolicy,
     refuseRepositoryNetworkOverlap,
+    admitDeploymentSnapshot,
   };
+}
+
+export async function deploymentSandboxPolicy(
+  state: Pick<PlatformReadView, "sandboxPolicies">,
+  authority: Pick<ControllerAuthority, "authorize">,
+  principalId: string,
+  namespaceId: string,
+  agentId: string,
+): Promise<Readonly<SandboxPolicy> | undefined> {
+  const policy = await state.sandboxPolicies.find(namespaceId, agentId);
+  if (policy?.repositoryNetworkPolicy !== undefined) {
+    await authority.authorize(principalId, "read", {
+      kind: "sandbox_policy",
+      id: policy.id,
+      namespaceId,
+    });
+    throw new ResourceStateConflictError(
+      "This Installation cannot enforce the saved repository network policy. Deploy with an Installation that supports it.",
+    );
+  }
+  return policy;
 }

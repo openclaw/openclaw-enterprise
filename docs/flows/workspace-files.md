@@ -1,22 +1,21 @@
 ---
 created: 2026-08-31
-updated: "2026-11-20"
-last_updated_session: "authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Agent Workspace Files Flow
 
 ## Overview
 
-OCC privately stages authenticated creation inputs: `AGENTS.md`, `SOUL.md`,
-`IDENTITY.md`, and `USER.md`. Compute prepares storage; the execution provider
-initializes it before activation.
+OCC stages authenticated files privately: `AGENTS.md`, `SOUL.md`, `IDENTITY.md`,
+and `USER.md`. Compute prepares storage. The execution provider initializes it
+before activation.
 
-File operations authorize the exact active Agent through its Compute-resolved
-private Envoy endpoint.
+File operations authorize the exact active Agent through its
+private Compute-resolved Envoy endpoint.
 
-See [Harness workspace initialization](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation)
-for dedicated Codex and OpenClaw.
+See [dedicated Codex and OpenClaw workspace initialization](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 
 See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
 
@@ -25,11 +24,11 @@ See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for
 - `apps/controller/src/index.ts:createFastifyApp` accepts initial contents through
   `POST /namespaces/:namespaceId/agents` and handles live `GET` and
   `PUT /namespaces/:namespaceId/agents/:agentId/workspace/files/:name`.
-- `packages/occ/src/agent-drafts.ts:createAgent` authorizes creation and saves private
-  setup. `packages/occ/src/index.ts:deployAgentWithAuthorization` rechecks setup before each
-  revision, even after completion.
+- `packages/occ/src/agent-drafts.ts:createAgent` authorizes and saves private setup.
+  `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment` rechecks even completed
+  setup before each revision.
 
-Live access requires the Agent's private HTTPRoute and native gateway. Configure
+Live access requires a private HTTPRoute and native gateway. Configure
 Envoy Gateway, trust, and network restrictions through
 [deployment](../guides/deploy/workspace-routing.md#agent-workspace-files); the
 [routing contract](../reference/gateway-routing.md) covers credentials, hostnames,
@@ -373,6 +372,7 @@ replays it. Cleanup closes the native client.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 
 - 2026-11-11 23:39: Preserve safe initializer error codes and earlier setup errors. (authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19 - 707390bb16f132b70addcf3079a81bf493387712)

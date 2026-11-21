@@ -36,7 +36,7 @@ export const staticAnalysisLimits = [
 
 const production = "apps/controller/src/composition/production.ts";
 const installation = "apps/controller/src/composition/egress-authority.ts";
-const controller = "packages/occ/src/index.ts";
+const controller = "packages/occ/src/controller.ts";
 const proxy = "packages/occ/src/credential-proxy.ts";
 const exchange = "packages/contracts/src/credential-proxy-exchange.ts";
 const listener = "apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
