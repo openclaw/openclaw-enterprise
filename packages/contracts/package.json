@@ -29,7 +29,7 @@
   "dependencies": {
     "@openclaw-enterprise/utils": "workspace:*",
     "ts-pattern": "5.9.2",
-    "typebox": "1.4.6"
+    "typebox": "1.4.7"
   },
   "scripts": {
     "build": "tsc --build tsconfig.json --pretty false",

@@ -13,10 +13,10 @@
     "build": "pnpm typecheck && node prepare-assets.ts && storybook build --output-dir dist/site --disable-telemetry"
   },
   "devDependencies": {
-    "@storybook/html-vite": "10.6.0",
+    "@storybook/html-vite": "10.6.7",
     "@types/node": "24.19.2",
-    "storybook": "10.6.2",
+    "storybook": "10.6.7",
     "typescript": "7.0.2",
-    "vite": "7.3.7"
+    "vite": "7.3.8"
   }
 }
