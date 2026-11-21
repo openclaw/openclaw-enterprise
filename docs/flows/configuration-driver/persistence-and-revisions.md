@@ -117,10 +117,10 @@ prerequisites.
 
 ### 5. Resolve the Agent reference and save the deployment configuration
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 `createAgent` and `updateAgent` in
-[OCC](../../../packages/occ/src/index.ts) separately authorize and verify the
+[OCC](../../../packages/occ/src/agent-drafts.ts) separately authorize and verify the
 Agent's exact same-Namespace `configurationId` and ensure its Configuration kind
 is `"agent"`. They also run deployment's checks of the Agent against that
 Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-save)):
@@ -233,11 +233,11 @@ graph TD
   F -->|yes| G["Commit revision 1,<br/>receipt digest, and work"]
 ```
 
-`packages/occ/src/index.ts:OpenClawController.deployAgentFirst` and
-`OpenClawController.recoverAgentFirstDeployment` capture the Namespace, Agent, key, Configuration ID, and
+`packages/occ/src/agent-deployment-requests.ts:deployAgentFirst` and
+`recoverAgentFirstDeployment` capture the Namespace, Agent, key, Configuration ID, and
 generation on entry. They use those values for the digest and each permission check.
 The first admission read checks exact receipt authority through
-`authorizeFirstDeploymentReceipt`, then reads
+`deployment-authorization.ts:authorizeFirstDeploymentReceipt`, then reads
 the receipt, matching draft metadata, and history in one snapshot. PostgreSQL uses
 REPEATABLE READ. On a receipt miss, an Agent without `active` lifecycle status
 returns `409 AGENT_DELETING` before channel preparation. A changed Agent binding
@@ -266,7 +266,7 @@ cannot match. A match remains recoverable after Agent deletion starts.
 On a locked miss, admission checks `active` lifecycle status before propagating a
 saved preparation error; deletion returns `409 AGENT_DELETING`. It then checks stopped desired state, empty history, binding,
 generation, and equality with the validated Configuration. It rechecks Secret and
-other ordinary admission permissions. `assertPreparedDeploymentDrivers` checks the
+other ordinary admission permissions. `deployment-channels.ts:assertPreparedDeploymentDrivers` checks the
 actual selected Configuration and Channel instances after locking and immediately
 before revision insertion: database locks do not freeze process-local selections.
 Any drift refuses admission and queues no work.

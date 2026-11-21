@@ -364,3 +364,6 @@ export function createSavedAgentTopologyValidator(dependencies: AgentHarnessTopo
 
   return validateSavedAgentTopology;
 }
+
+export const GATEWAY_MANAGED_MODE_UNSUPPORTED =
+  "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
