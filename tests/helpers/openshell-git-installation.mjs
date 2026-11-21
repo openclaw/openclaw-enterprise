@@ -1875,7 +1875,7 @@ async function installGitCallbackObserver({
       ]),
     );
     const ready = slices.items.flatMap((slice) =>
-      slice.endpoints
+      (slice.endpoints ?? [])
         .filter(({ conditions }) => conditions?.ready === true)
         .map(({ targetRef }) => ({ targetRef, ports: slice.ports })),
     );

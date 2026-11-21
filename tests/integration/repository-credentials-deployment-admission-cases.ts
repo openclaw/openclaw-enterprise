@@ -939,7 +939,16 @@ interface ProtectedPolicyDeploymentFixtures {
   ): Promise<Readonly<SandboxPolicy>>;
 }
 
-export function selectedRepositoryRegistry(contents: "read" | "write", nativeGit?: "v1") {
+export function selectedRepositoryRegistry(
+  contents: "read" | "write",
+  {
+    nativeGit,
+    overrides = {},
+  }: {
+    nativeGit?: "v1" | undefined;
+    overrides?: Readonly<Record<string, "read" | "write">>;
+  } = {},
+) {
   return (registry: GitHubRepositoryRegistry): GitHubRepositoryRegistry => ({
     ...registry,
     repositories: registry.repositories.map((repo) => ({
@@ -947,7 +956,7 @@ export function selectedRepositoryRegistry(contents: "read" | "write", nativeGit
       namespaces: repo.namespaces.map(({ namespaceId }) => ({
         namespaceId,
         profiles: ["github-repository"],
-        permissions: { contents, metadata: "read" },
+        permissions: { contents: overrides[repo.repositoryRef] ?? contents, metadata: "read" },
         ...(nativeGit && { nativeGit }),
       })),
     })),
@@ -958,20 +967,35 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
   protectedOpenShellComposition,
   seedRepositoryPolicy,
 }: ProtectedPolicyDeploymentFixtures): void {
-  async function scopedFixture(t: TestContext, nativeGit?: "v1") {
+  async function scopedFixture(
+    t: TestContext,
+    {
+      nativeGit,
+      bindings: configuredBindings,
+      ceiling,
+      configureRegistry = selectedRepositoryRegistry("read", { nativeGit }),
+    }: {
+      nativeGit?: "v1";
+      bindings?: readonly RepositoryBindingSelection[];
+      ceiling?: readonly RepositoryNetworkGrant[];
+      configureRegistry?: (registry: GitHubRepositoryRegistry) => GitHubRepositoryRegistry;
+    } = {},
+  ) {
     const selected = { repository: "example/selected", access: "read" } as const;
     const writeGrant = { ...selected, access: "write" } as const;
     const unselected = { repository: "example/project", access: "read" } as const;
     const foreign = { repository: "example/foreign-project", access: "read" } as const;
-    const bindings = [{ repositoryRef: "selected", profile: "github-repository" }] as const;
+    const bindings = configuredBindings ?? [
+      { repositoryRef: "selected", profile: "github-repository" },
+    ];
     const f = await protectedOpenShellComposition(t, {
       harness: "codex",
       bindings,
       installedProfile: "repository",
       gatewayVersion: "0.1.8",
       credentialGateway: true,
-      repositoryNetworkPolicyCeiling: [writeGrant, unselected, foreign],
-      configureRegistry: selectedRepositoryRegistry("read", nativeGit),
+      repositoryNetworkPolicyCeiling: ceiling ?? [writeGrant, unselected, foreign],
+      configureRegistry,
       inspected: nativeGit === "v1",
     });
     const fixtureCompute = f.controller.selectedDriver("compute");
@@ -1037,7 +1061,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
   }
 
   test("an unpinned Compute cannot offer repository policy editing", async (t) => {
-    const { f, createSelectedAgent } = await scopedFixture(t, "v1");
+    const { f, createSelectedAgent } = await scopedFixture(t, { nativeGit: "v1" });
     const unqualified = await createSelectedAgent();
     const path = `${f.collection}/${unqualified.id}/sandbox-policy/networking`;
     assert.equal((await f.request("PATCH", path + "/editing", { enabled: true })).status, 200);
@@ -1051,7 +1075,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
 
   test("a pinned unmanaged Gateway refuses the repository policy hint and first saves", async (t) => {
     selectFixtureRelease(t);
-    const { f, selected, createSelectedAgent } = await scopedFixture(t, "v1");
+    const { f, selected, createSelectedAgent } = await scopedFixture(t, { nativeGit: "v1" });
     const agent = await createSelectedAgent(false);
     const path = `${f.collection}/${agent.id}/sandbox-policy/networking`;
     assert.equal((await f.request("PATCH", path + "/editing", { enabled: true })).status, 200);
@@ -1081,7 +1105,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
 
   test("a saved repository grant selects native Git for its deployment only", async (t) => {
     selectFixtureRelease(t);
-    const { f, selected, createSelectedAgent } = await scopedFixture(t, "v1");
+    const { f, selected, createSelectedAgent } = await scopedFixture(t, { nativeGit: "v1" });
 
     for (const grants of [undefined, [], [selected]]) {
       const agent = await createSelectedAgent();
@@ -1134,13 +1158,11 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     }
   });
 
-  test("Deploy requires scoped Driver admission before preparing runtime credentials", async (t) => {
-    const { f, selected, writeGrant, unselected, fixtureCompute, sandbox, createSelectedAgent } =
-      await scopedFixture(t);
-    Object.assign(sandbox, {
-      admitRepositoryNetworkPolicy: undefined,
-      validateProtectedRepositoryNetworkPolicy: undefined,
-    });
+  function stubAdmissionCompute(
+    t: TestContext,
+    fixtureCompute: ComputeDriver,
+    selected: RepositoryNetworkGrant,
+  ) {
     const validate = t.mock.fn<
       NonNullable<ComputeDriver["validateProtectedRepositoryNetworkPolicy"]>
     >((revision) => {
@@ -1161,6 +1183,129 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       getAgentRuntimeCredentialStatus: credentialStatus,
       provisionAgentRuntimeCredentials: provisioned,
     });
+    return { validate, credentialStatus, provisioned };
+  }
+
+  const read = { repository: "example/selected", access: "read" } as const;
+  const write = { ...read, access: "write" } as const;
+  const other = { repository: "example/project", access: "write" } as const;
+  for (const scenario of [
+    {
+      name: "a selected git-read binding cannot use its git-write sibling",
+      profile: "git-read",
+      configure: (registry: GitHubRepositoryRegistry) => registry,
+      ceiling: [write],
+      selectedGrants: undefined,
+      requested: write,
+      refusal: /Credential Proxy cannot deliver this repository's Git access level/,
+    },
+    {
+      name: "a selected read credential cannot use a Namespace-approved write on another repository",
+      profile: "github-repository",
+      configure: selectedRepositoryRegistry("read", { overrides: { project: "write" } }),
+      ceiling: [read, other],
+      selectedGrants: [read],
+      requested: other,
+      refusal: /exceeds the Agent's selected Git credential/,
+    },
+    {
+      name: "a selected write credential cannot exceed a read-only delegation ceiling",
+      profile: "github-repository",
+      configure: selectedRepositoryRegistry("write"),
+      ceiling: [read],
+      selectedGrants: [write],
+      requested: write,
+      refusal: /exceeds the Installation repository network policy delegation limit/,
+    },
+  ] as const) {
+    test(scenario.name, async (t) => {
+      const bindings = [{ repositoryRef: "selected", profile: scenario.profile }];
+      const { f, fixtureCompute, sandbox, createSelectedAgent } = await scopedFixture(t, {
+        bindings,
+        ceiling: scenario.ceiling,
+        configureRegistry: scenario.configure,
+      });
+      const { credentialStatus, provisioned } = stubAdmissionCompute(t, fixtureCompute, read);
+      fixtureCompute.validateProtectedRepositoryNetworkPolicy = () => {};
+      fixtureCompute.admitsProtectedRepositoryNetworkPolicySave = () => true;
+      sandbox.admitRepositoryNetworkPolicy = (_policy, network) => network.defaults;
+      sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+      const repo = f.controller.selectedDriver("repo") as GitHubRepositoryPolicy;
+      const namespaceId = f.namespace.id;
+      const resolve = (profile: string) =>
+        repo.resolveBindings({ namespaceId, bindings: [{ repositoryRef: "selected", profile }] });
+      assert.deepEqual(
+        resolve(scenario.profile).selectedRepositoryNetworkGrants,
+        scenario.selectedGrants,
+      );
+      assert.equal(
+        repo.repositoryNetworkPolicyAllows({ namespaceId, grant: scenario.requested }),
+        true,
+      );
+      if (scenario.profile === "git-read") {
+        assert.equal(resolve("git-write").bindings[0]?.profile, "git-write");
+      }
+      const agent = await createSelectedAgent();
+      const base = `${f.collection}/${agent.id}`;
+      const path = `${base}/sandbox-policy/networking`;
+      assert.equal((await f.request("PATCH", `${path}/editing`, { enabled: true })).status, 200);
+      const view = async () =>
+        checkedEnvelope(await f.request("GET", path), SandboxPolicyViewResponse, 200).data;
+      const put = (version: number, grant: RepositoryNetworkGrant) =>
+        f.request("PUT", path, {
+          expectedVersion: version,
+          additions: [],
+          repositoryNetworkPolicy: [grant],
+        });
+      const before = await view();
+      assert.deepEqual(before.repositoryNetworkPolicyCeiling, scenario.ceiling);
+      checkedEnvelope(await put(before.policy.version, scenario.requested), ErrorResponse, 409);
+      if (scenario.profile === "git-read") {
+        // Fixed Git profiles cannot issue a selected-repository Proxy credential, even for read.
+        checkedEnvelope(await put(before.policy.version, read), ErrorResponse, 409);
+      }
+      assert.deepEqual((await view()).policy, before.policy);
+      const saved = await seedRepositoryPolicy(f, agent, [scenario.requested]);
+      const deploy = () => f.request("POST", `${base}/deploy`);
+      assert.match(
+        checkedEnvelope(await deploy(), ErrorResponse, 409).error.message,
+        scenario.refusal,
+      );
+      assert.equal(credentialStatus.mock.callCount(), 0);
+      assert.equal(provisioned.mock.callCount(), 0);
+      assert.deepEqual((await f.request("GET", `${base}/revisions`)).data, []);
+      if (scenario.profile === "github-repository") {
+        const allowed = checkedEnvelope(await put(saved.version, read), SandboxPolicyResponse, 200);
+        assert.deepEqual(allowed.data.repositoryNetworkPolicy, [read]);
+        const { data: admitted } = checkedEnvelope(await deploy(), AgentRevisionResponse, 202);
+        const revision = await f.state.read((view) =>
+          view.revisions.findRevision(namespaceId, agent.id, admitted.id),
+        );
+        assert.deepEqual(revision?.sandboxPolicy?.repositoryNetworkPolicy?.grants, [read]);
+        assert.deepEqual(
+          revision?.repositoryCredentials?.bindings.map(({ repositoryRef, profile }) => ({
+            repositoryRef,
+            profile,
+          })),
+          bindings,
+        );
+        assert.equal(credentialStatus.mock.callCount(), 1);
+      }
+    });
+  }
+
+  test("Deploy requires scoped Driver admission before preparing runtime credentials", async (t) => {
+    const { f, selected, writeGrant, unselected, fixtureCompute, sandbox, createSelectedAgent } =
+      await scopedFixture(t);
+    Object.assign(sandbox, {
+      admitRepositoryNetworkPolicy: undefined,
+      validateProtectedRepositoryNetworkPolicy: undefined,
+    });
+    const { validate, credentialStatus, provisioned } = stubAdmissionCompute(
+      t,
+      fixtureCompute,
+      selected,
+    );
     const agent = await createSelectedAgent();
     const path = `${f.collection}/${agent.id}`;
     const deploy = () => f.request("POST", `${path}/deploy`);
@@ -1262,7 +1407,8 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       );
       assert.deepEqual(await readPolicy(), previous);
     });
-    // Simulate a wider Namespace delegation without widening the selected token.
+    // Exercise the portable Repo contract. GitHub requires github-repository to be the sole
+    // profile for a repository in a Namespace, so a different same-repository scope is synthetic.
     // GET must advertise first-save support for read; PUT must still reject write.
     const approve = repo.repositoryNetworkPolicyAllows;
     repo.repositoryNetworkPolicyAllows = (input) =>

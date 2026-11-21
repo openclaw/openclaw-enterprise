@@ -36,6 +36,10 @@ import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import {
+  compileOpenShellBoundGitRule,
+  openShellGitNetworkDefaults,
+} from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import {
@@ -65,6 +69,7 @@ import type {
   OpenShellGitExpiry,
   OpenShellGitRouteStore,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
+import { protocol } from "./postgres-transaction-protocol-fixture.ts";
 
 // These are fixture-to-production port assertions, not alternative runtime implementations.
 type Fixture = ReturnType<typeof bootstrappingOpenShellGitRuntimeFixture>;
@@ -3631,6 +3636,155 @@ test("native issue reads intersect the selected permissions, registry opt-in and
     await apiRules({ permissions: { issues: "read" }, optedRepository: "example/outside" }),
     [],
   );
+});
+
+test("a persisted v8 Git-only binding cannot inherit issue network access", async () => {
+  const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
+  const namespace = {
+    namespaceId,
+    profiles: ["github-repository"],
+    nativeGit: "v1",
+    permissions: { metadata: "read", contents: "write", issues: "read" },
+  } as const;
+  const registration = { ...registry.repositories[0]!, namespaces: [namespace] };
+  const { installationAccess: _installationAccess, ...registryInput } = registry;
+  const gitOnly = validateGitHubRepositoryRegistry({
+    ...registryInput,
+    repositories: [registration],
+  });
+  const enabled = validateGitHubRepositoryRegistry({
+    ...registryInput,
+    repositories: [{ ...registration, namespaces: [{ ...namespace, scopedRest: "v1" }] }],
+  });
+  const execution = {
+    installationId: "ins_00000000-0000-4000-8000-000000000003",
+    namespaceId,
+    agentId: "agt_00000000-0000-4000-8000-000000000004",
+    revisionId: "rev_00000000-0000-4000-8000-000000000005",
+    executionId: "compat-execution",
+    servicePrincipalId: "compat-principal",
+  };
+  const driver = { id: "openshell", implementation: "openshell", configurationId: "a".repeat(64) };
+  // The predecessor's registry produced this grant with Issues permission and
+  // no REST opt-in. Keep its identity independent of the current resolver.
+  const repositoryCredentials = {
+    driver: { id: "github-primary", implementation: "github" },
+    deadlineWallMs: Date.parse("2026-11-20T00:10:00.000Z"),
+    bindings: [
+      {
+        repositoryRef: "application",
+        profile: "github-repository",
+        backendId: "github-primary",
+        grant: {
+          providerInstanceId: "github-com-primary",
+          repositoryId: "34567",
+          grantId: "sha256:7a2763a5b61132eaf79fc3a21fab5e85332ccf4a379adbb87d632b41fd1c7114",
+        },
+      },
+    ],
+  };
+  const saved = JSON.stringify({
+    configuration_id: "cfg_00000000-0000-4000-8000-000000000006",
+    configuration_kind: "agent",
+    configuration_generation: 1,
+    draft_spec: {},
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
+    compute: {
+      id: "compute",
+      implementation: "kubernetes",
+      admission: `driver-state:v1:${"b".repeat(64)}`,
+      runtimeInputs: "fixture-runtime-inputs:v1",
+    },
+    harness_auth: {
+      method: "api_key",
+      source: { kind: "secret", id: "sec_00000000-0000-4000-8000-000000000002", namespaceId },
+      secretDriverId: "fixture-secret",
+      protectedExecutionVersion: 8,
+    },
+    execution_admission: { version: 8, mode: "protected", repositoryNetworkPolicyVersion: 1 },
+    sandbox_driver_id: driver.id,
+    sandbox_policy: {
+      driverId: driver.id,
+      implementation: driver.implementation,
+      version: 1,
+      defaults: {},
+      additions: [],
+      repositoryNetworkPolicy: {
+        version: 1,
+        grants: [{ repository: "example/application", access: "read" }],
+        identity: '{"version":1,"grants":[{"repository":"example/application","access":"read"}]}',
+      },
+    },
+    egress_plan: {
+      id: "compat-plan",
+      generation: 1,
+      execution,
+      driver,
+      sandboxDriverId: driver.id,
+      egressDriverId: driver.id,
+      routes: [],
+      repositoryGitAuthorization: "network-policy",
+      repositoryGit: repositoryCredentials,
+    },
+    repository_credentials: repositoryCredentials,
+  });
+  // Replay one serialized result row through the production State reader.
+  const { state } = protocol({
+    query(statement) {
+      assert.match(statement, /FROM occ\.agent_revisions AS r/);
+      return {
+        rowCount: 1,
+        rows: [
+          {
+            id: execution.revisionId,
+            agent_id: execution.agentId,
+            namespace_id: namespaceId,
+            revision_number: 1,
+            backend_id: null,
+            admitted_at: "2026-11-20T00:00:00.000Z",
+            gateway_managed_mode: true,
+            service_principal_id: execution.servicePrincipalId,
+            admitted_spec: saved,
+          },
+        ],
+      };
+    },
+  });
+  const revision = await state.read((view) =>
+    view.revisions.findRevision(namespaceId, execution.agentId, execution.revisionId),
+  );
+  assert.ok(revision?.sandboxPolicy?.repositoryNetworkPolicy);
+  assert.deepEqual(revision.repositoryCredentials, repositoryCredentials);
+  assert.deepEqual(revision.executionAdmission, { version: 8, mode: "protected" });
+
+  const { delivery } = createGitHubRepositoryDeliveryResolver(gitOnly)(revision);
+  assert.ok("scope" in delivery && delivery.scope === "github-repository");
+  assert.equal(delivery.permissions.issues, "read");
+  assert.equal(Object.hasOwn(delivery, "scopedRest"), false);
+  const rule = compileOpenShellBoundGitRule(
+    revision.sandboxPolicy.repositoryNetworkPolicy.grants,
+    "oce-github-installation-" + "a".repeat(32),
+    openShellGitNetworkDefaults(delivery).binaries,
+    delivery.scopedRest,
+  );
+  assert.equal(rule.endpoints.length, 1);
+  const [endpoint] = rule.endpoints;
+  assert.ok(endpoint && "rules" in endpoint);
+  assert.equal(endpoint.host, "github.com");
+  assert.equal(endpoint.path, "/example/application.git/**");
+  assert.deepEqual(endpoint.rules, [
+    {
+      allow: {
+        method: "GET",
+        path: "/example/application.git/info/refs",
+        query: { service: { glob: "git-upload-pack" } },
+      },
+    },
+    { allow: { method: "POST", path: "/example/application.git/git-upload-pack" } },
+  ]);
+  assert.throws(() => createGitHubRepositoryDeliveryResolver(enabled)(revision), {
+    message: "selected-repository-grant-changed",
+  });
 });
 
 test("native issue policy survives Sandbox creation and independent Credential Proxy readback", async (t) => {

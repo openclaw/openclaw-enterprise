@@ -46,6 +46,11 @@ Deployment also requires a saved [repository policy](../sandbox-policies.md#repo
 and a Compute Driver that admits the placement. Omitting the policy retains
 online authorization. Existing ref, draft and standing grants retain their own profiles.
 
+Before enabling `nativeGit: "v1"`, finish replacing incompatible Workers. An old
+Worker can consume a scoped deployment job attempt before refusing its marked
+revision. The repository policy reference covers recovery and the restriction on
+adopting previously deployed legacy Agents.
+
 OpenShell matches discovery and upload-pack for each read grant. Write also
 permits receive-pack. The Sandbox binds each repository path to a credential
 held by the Gateway. By default, this selection grants Git only.
