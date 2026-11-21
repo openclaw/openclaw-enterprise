@@ -2900,11 +2900,9 @@ export class ControllerWorker {
       }
       const prepared = await observePrepared(revision, broker.sessions);
       signal.throwIfAborted();
-      if (prepared === "disposed") {
-        // Withdrawal proves credential disposal. Workload readiness stays with Compute.
-        return "withdrawn";
+      if (prepared !== "disposed") {
+        return prepared === "pending" ? "pending" : "retire-runtime";
       }
-      return prepared === "pending" ? "pending" : "retire-runtime";
     } catch (error) {
       if (signal.aborted || error instanceof WorkClaimLostError) {
         throw error;
@@ -2912,6 +2910,18 @@ export class ControllerWorker {
       // The fenced claim can retry receipt reads. The final transaction still
       // rechecks the removal, revision owner and required model credential.
       return unrecoverableRead(error) ? "retire-runtime" : "pending";
+    }
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+    try {
+      const runtime = await this.compute.observeRevision?.(revision, deadline);
+      deadline.throwIfAborted();
+      return runtime?.state === "running" ? "withdrawn" : "pending";
+    } catch (error) {
+      if (signal.aborted || error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // An unavailable status read leaves the fenced claim pending.
+      return "pending";
     }
   }
 

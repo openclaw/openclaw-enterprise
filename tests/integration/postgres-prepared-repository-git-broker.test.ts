@@ -350,6 +350,7 @@ for (const outcome of [
   "settled",
   "unconfirmed revocation",
   "runtime observation is unavailable",
+  "runtime remains unready",
   "custody read recovers",
   "unexpected custody family",
   "settled draft-capable transport",
@@ -384,11 +385,13 @@ for (const outcome of [
       const lostDraftReply = outcome === "draft provider reply lost";
       const draftMustRetire = lostDraftReply || outcome === "unsettled draft receipt";
       const transientRuntime = outcome === "runtime observation is unavailable";
+      const persistentRuntime = outcome === "runtime remains unready";
       const modelBindingRevokedAfterCustody =
         outcome === "model account binding revoked after custody read";
       const draftTransport =
         outcome === "settled draft-capable transport" ||
         transientRuntime ||
+        persistentRuntime ||
         draftMustRetire ||
         outcome === "unissued draft-capable transport";
       const withoutFamily = outcome === "unissued draft-capable transport";
@@ -1038,6 +1041,34 @@ for (const outcome of [
         assert.equal(runtimeObservations, 0);
         await prepared.maintain();
       }
+      if (transientRuntime || persistentRuntime) {
+        const beforeGit = origin.traffic();
+        const beforeProvider = provider.trace.length;
+        for (const status of [
+          persistentRuntime ? "unknown" : "timeout",
+          "unknown",
+          "unknown",
+        ] as const) {
+          runtimeStatus = status;
+          assert.equal((await runCleanupPass()).code, "REPOSITORY_CLEANUP_PENDING");
+          assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+          assert.deepEqual(stops, []);
+        }
+        assert.equal(runtimeObservations, 3);
+        assert.equal(
+          await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+          401,
+        );
+        assert.equal(await draft(), 401);
+        assert.deepEqual(origin.traffic(), beforeGit);
+        assert.equal(provider.trace.length, beforeProvider);
+        assert.equal(preparations, preparationsBeforeRemoval);
+        if (persistentRuntime) {
+          assert.equal((await readWork()).state, "queued");
+          return;
+        }
+        runtimeStatus = "running";
+      }
       const cleanup = runCleanupPass();
       if (outcome === "model account final read recovers") {
         // Settled custody is insufficient when the locked authority read fails.
@@ -1108,18 +1139,26 @@ for (const outcome of [
           ? (["timeout", "unknown", "running"] as const)
           : (["running"] as const)) {
           runtimeStatus = status;
+          const beforeMaintenance = statuses.length;
           const due = await f.advanceMaintenance(candidate);
           assert.equal(due.rowCount, 1);
           const observed = await waitFor(
             "ordinary maintenance to supervise the same revision without Git",
-            async () => statuses.find(({ workId }) => workId === due.rows[0]?.idempotency_key),
+            async () =>
+              statuses
+                .slice(beforeMaintenance)
+                .find(({ workId }) => workId === due.rows[0]?.idempotency_key),
             10_000,
           );
-          assert.equal(observed.code, "REPOSITORY_ACCESS_WITHDRAWN");
+          assert.equal(
+            observed.code,
+            status === "running" ? "REPOSITORY_ACCESS_WITHDRAWN" : "REPOSITORY_CLEANUP_PENDING",
+          );
           assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
           assert.deepEqual(stops, []);
         }
         if (transientRuntime) {
+          assert.equal(runtimeObservations, 7);
           assert.equal(
             await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
             401,
@@ -1144,7 +1183,6 @@ for (const outcome of [
         "withdrawal does not prepare or deliver another credential",
       );
       assert.equal(preparations, preparationsBeforeRemoval);
-      assert.equal(runtimeObservations, 0, "withdrawal never queries runtime availability");
     },
   );
 }

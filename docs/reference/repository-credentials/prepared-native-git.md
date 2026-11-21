@@ -126,10 +126,10 @@ an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
 
 The Worker records withdrawal once the broker confirms session disposal, the
-original grant proves the native transport, token custody and draft outcomes
-are confirmed, and the same active revision still has model authority.
-Kubernetes continues to report Gateway and Harness readiness. The withdrawal
-result records credential disposal.
+original grant proves the native transport, and token custody and draft outcomes
+are confirmed. It verifies readiness of the same Gateway and Harness, connectivity
+of the bound workspace node, and current model authority for the active revision.
+An unconfirmed runtime observation keeps withdrawal pending while the fence holds.
 The committed removal blocks new Git requests while settlement is pending.
 The Worker queues retirement for missing grant or draft settlement proof,
 incompatible stored admission, or confirmed loss of model authority.
