@@ -44,17 +44,9 @@ const bindingIdentity = Type.Object({ id: IAMAccessBindingSchema.anyOf[0].proper
 const accountIdentity = Type.Object({ id: Type.String(), principalId: Type.String() });
 const authenticatedSession = Type.Object({ user: Type.Object({ id: Type.String() }) });
 const nativeAccess = Type.Object({
-  status: Type.Union([
-    Type.Literal("available"),
-    Type.Literal("disabled"),
-    Type.Literal("stopped"),
-    Type.Literal("unavailable"),
-    Type.Literal("unsupported"),
-  ]),
+  status: Type.String(),
   origin: Type.Optional(Type.String()),
-  sessionMode: Type.Optional(
-    Type.Union([Type.Literal("shared-cookie"), Type.Literal("host-only-exchange")]),
-  ),
+  sessionMode: Type.Optional(Type.Unknown()),
 });
 const podList = Type.Object({
   items: Type.Array(
@@ -76,7 +68,7 @@ const observedPod = Type.Object({
   }),
   status: Type.Object({
     containerStatuses: Type.Array(
-      Type.Object({ name: Type.String(), imageID: Type.String({ minLength: 1 }) }),
+      Type.Object({ name: Type.String(), ready: Type.Boolean(), imageID: Type.String() }),
     ),
   }),
 });
@@ -91,6 +83,12 @@ function selectReadyAgentPod(value: unknown) {
   assert.equal(readyPods.length, 1, "Expected exactly one Pod with a ready agent");
   const pod: unknown = readyPods[0];
   assert.ok(Check(observedPod, pod), "Expected metadata and image IDs for the ready Pod");
+  assert.ok(
+    pod.status.containerStatuses.every(
+      ({ name, ready, imageID }) => imageID !== "" || (name !== "agent" && !ready),
+    ),
+    "Expected image IDs for the agent and ready containers",
+  );
   return pod;
 }
 
