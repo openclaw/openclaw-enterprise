@@ -11,7 +11,11 @@ import {
   type RepositoryNetworkGrant,
   type SandboxPolicySnapshot,
 } from "../../packages/contracts/src/index.ts";
-import { PostgresWorkQueue, type OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  isRepositoryRuntimeRetirementWork,
+  PostgresWorkQueue,
+  type OpenClawController,
+} from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { registerRevisionSnapshotCase } from "./postgres-worker-agent-revision-refusal-cases.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
@@ -1071,13 +1075,16 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         const resume = Promise.withResolvers<void>();
         let blocked = false;
         const calls: string[] = [];
+        const stoppedRevisions: string[] = [];
+        let callsAtRefusal: string[] | undefined;
+        let retirementWorkId: string | undefined;
         const afterCommit = boundary === "activation after commit";
         const expected = untouched
           ? []
           : repository || boundary === "preparation"
             ? ["bind"]
             : ["bind", "prepare"];
-        await fixture.start({
+        const compute: ComputeDriver = {
           ...(repository
             ? repositoryCompute(fixture.compute, options.sandboxDriverId)
             : fixture.compute),
@@ -1107,6 +1114,35 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           async activateRevision() {
             calls.push("activate");
           },
+          async stopRevision(revision) {
+            await fixture.compute.stopRevision(revision);
+            stoppedRevisions.push(revision.id);
+          },
+        };
+        await fixture.start(compute, {
+          emit: ({ event, workId, revisionId, outcome, code }) => {
+            if (event !== "worker.completed" || revisionId !== candidate.id) {
+              return;
+            }
+            if (
+              workId === candidate.idempotencyKey &&
+              outcome === "permanent" &&
+              code === "AUTHORIZATION_DENIED"
+            ) {
+              callsAtRefusal = [...calls];
+            }
+            if (
+              typeof workId === "string" &&
+              outcome === "success" &&
+              isRepositoryRuntimeRetirementWork({
+                idempotencyKey: workId,
+                agentId: owner.id,
+                revisionId,
+              })
+            ) {
+              retirementWorkId = workId;
+            }
+          },
         });
         try {
           await waitUntil(`validation before ${boundary}`, () => blocked);
@@ -1124,15 +1160,26 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           resume.resolve();
         }
         const result = await settledRevision(fixture, candidate);
-        assert.deepEqual(calls, expected);
         assert.equal(result.reasonCode, "AUTHORIZATION_DENIED");
+        // The denied deployment and its retirement are separate jobs. Retirement can bind
+        // Compute before the test observes the deployment's terminal row.
+        assert.deepEqual(
+          await waitFor("candidate refusal completion", () => callsAtRefusal),
+          expected,
+        );
+        if (repository) {
+          const idempotencyKey = await waitFor(
+            "candidate retirement completion",
+            () => retirementWorkId,
+          );
+          await fixture.work({ id: candidate.id, idempotencyKey }, "succeeded");
+          assert.deepEqual(stoppedRevisions, [candidate.id]);
+          assert.deepEqual(repository.calls, []);
+        }
         assert.equal(
           (await fixture.currentAgent(owner))?.activeRevisionId,
           afterCommit ? candidate.id : previous.id,
         );
-        if (repository) {
-          assert.deepEqual(repository.calls, []);
-        }
         const queue = new PostgresWorkQueue(fixture.observerPool);
         const attempt = await queue.findWorkAttempt(candidate.idempotencyKey);
         const denied = await fixture.observerPool.query<{ authorization: unknown }>(
