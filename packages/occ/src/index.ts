@@ -2258,7 +2258,7 @@ export class OpenClawController {
       principalId,
       namespaceId,
       agentId,
-      input,
+      this.runtimeCredentialsInput(input),
     );
   }
 
@@ -8540,6 +8540,20 @@ export class OpenClawController {
       throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
     }
     this.ownedSecretDriver(secret.driverId, () => new ProvisioningSecretDriverError());
+  }
+
+  private runtimeCredentialsInput(
+    input: AgentRuntimeCredentialsInput,
+  ): AgentRuntimeCredentialsInput {
+    const candidate = asRecord(input);
+    if (candidate === undefined) {
+      throw new ScopeViolationError("Agent runtime credentials must be a JSON object.");
+    }
+    const keys = Object.keys(candidate);
+    if (keys.length !== 0) {
+      throw new ScopeViolationError("Agent runtime credentials contain unsupported fields.");
+    }
+    return Object.freeze({});
   }
 
   private runtimeCredentialStatus(

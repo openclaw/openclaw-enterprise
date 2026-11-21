@@ -5,7 +5,7 @@ import type {
   ComputeDriver,
   Namespace,
 } from "@openclaw-enterprise/contracts";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -28,20 +28,6 @@ interface RuntimeCredentialDependencies {
     agentId: string,
   ) => Promise<void>;
   readonly selectCompute: () => ComputeDriver;
-}
-
-function runtimeCredentialsInput(
-  input: AgentRuntimeCredentialsInput,
-): AgentRuntimeCredentialsInput {
-  const candidate = asRecord(input);
-  if (candidate === undefined) {
-    throw new ScopeViolationError("Agent runtime credentials must be a JSON object.");
-  }
-  const keys = Object.keys(candidate);
-  if (keys.length !== 0) {
-    throw new ScopeViolationError("Agent runtime credentials contain unsupported fields.");
-  }
-  return Object.freeze({});
 }
 
 export function runtimeCredentialStatus(
@@ -109,9 +95,8 @@ export class AgentRuntimeCredentials {
     principalId: string,
     namespaceId: string,
     agentId: string,
-    input: AgentRuntimeCredentialsInput,
+    credentials: AgentRuntimeCredentialsInput,
   ): Promise<Readonly<AgentRuntimeCredentialStatus>> {
-    const credentials = runtimeCredentialsInput(input);
     if (!isNonEmptyString(namespaceId)) {
       throw new ScopeViolationError("The exact Namespace identity is missing.");
     }
