@@ -43,6 +43,8 @@ The [public-egress proposal](public-egress.md) would let new protected
 installations reach public TCP destinations while keeping credentials outside
 the Agent. Shipping this default requires a qualified OpenShell pair.
 
+[Sandbox domain access](live-download-grants.md) proposes allowing or denying domains for one running Agent from the Console.
+
 The separate [worker-restart preflight proposal](../0033-repository-worker-restart-preflight.md)
 asks the selected repository owner to report restart risk before maintenance.
 It does not replace the existing post-replacement terminal-result amendment.
