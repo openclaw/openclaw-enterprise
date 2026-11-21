@@ -687,17 +687,19 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   const rawImage = (ref) => command("docker", ["buildx", "imagetools", "inspect", "--raw", ref]);
   const descriptor = stockSupervisorManifest(await rawImage(parent), indexDigest, selectedPlatform);
   const child = `${parent.split("@")[0]}@${descriptor.digest}`;
-  const inspected = JSON.parse(
-    await command("docker", ["image", "inspect", "--platform", selectedPlatform, parent]),
-  );
-  assert.ok(
-    Array.isArray(inspected) && inspected.length === 1,
-    "stock image inspection is invalid",
-  );
+  /** @param {string[]} flags */
+  const inspectLocal = async (flags) => {
+    const inspected = JSON.parse(await command("docker", ["image", "inspect", ...flags, parent]));
+    assert.ok(
+      Array.isArray(inspected) && inspected.length === 1,
+      "stock image inspection is invalid",
+    );
+    return inspected[0];
+  };
   const configDigest = await stockSupervisorConfig(
     descriptor,
     await rawImage(child),
-    inspected[0],
+    inspectLocal,
     selectedPlatform,
   );
   const manifestBytes = await command("docker", [

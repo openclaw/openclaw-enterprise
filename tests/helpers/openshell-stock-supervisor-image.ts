@@ -57,7 +57,9 @@ export function stockSupervisorManifest(indexRaw: string, indexDigest: string, p
 export async function stockSupervisorConfig(
   descriptor: { mediaType: string; digest: string },
   manifestRaw: string,
-  inspected: Parameters<typeof imageConfigDigest>[0] & { Os?: string; Architecture?: string },
+  inspectLocal: (
+    flags: string[],
+  ) => Promise<Parameters<typeof imageConfigDigest>[0] & { Os?: string; Architecture?: string }>,
   platform: string,
 ): Promise<string> {
   const { value: manifest, bytes } = verifiedJson(manifestRaw, descriptor.digest);
@@ -65,6 +67,10 @@ export async function stockSupervisorConfig(
     throw new Error("stock Supervisor manifest media type differs from its descriptor");
   }
   const config = manifest.config as Record<string, unknown> | undefined;
+  let inspected = await inspectLocal([]);
+  if (indexTypes.has(inspected.Descriptor?.mediaType ?? "")) {
+    inspected = await inspectLocal(["--platform", platform]);
+  }
   if (typeof config?.digest !== "string" || !digestPattern.test(config.digest)) {
     throw new Error("stock Supervisor manifest has no config digest");
   }
