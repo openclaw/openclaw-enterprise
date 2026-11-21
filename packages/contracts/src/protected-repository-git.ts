@@ -115,11 +115,15 @@ export interface ProtectedRepositoryGitAuthority extends RepositoryGitAuthority<
   readonly online: RepositoryGitAuthority<RepositoryGitOnlineAllow>;
   /** Separately selected, only for a v6 admission on the bundled observed route. */
   readonly observedHook?: GitHubInstallationAuthority<RepositoryGitOnlineAllow>;
-  /** v8 only installs material at the verified recipient. */
-  readonly networkPolicy?: Pick<
-    NonNullable<RepositoryGitAuthority<RepositoryGitOnlineAllow>["githubRepository"]>,
-    "readMaterial"
-  >;
+  /** v8 installs material at the verified recipient and authorizes scoped REST requests. */
+  readonly networkPolicy?: {
+    readonly readMaterial: NonNullable<
+      RepositoryGitAuthority<RepositoryGitOnlineAllow>["githubRepository"]
+    >["readMaterial"];
+    readonly authorizeRest?: NonNullable<
+      RepositoryGitAuthority<RepositoryGitOnlineAllow>["githubRepository"]
+    >["authorize"];
+  };
   readonly recipients: {
     /** Re-observe this exact released recipient. An unresolved installation is not adopted. */
     observe(installation: EgressInstallation): Promise<Route | undefined>;

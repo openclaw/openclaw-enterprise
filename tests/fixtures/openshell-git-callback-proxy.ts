@@ -15,9 +15,14 @@ import {
 const middleware = "/openshell.middleware.v1.SupervisorMiddleware/";
 const setup = new Set([middleware + "Describe", middleware + "ValidateConfig"]);
 
-export function assertGitCallbackEndpoint(services: unknown, endpoint: string) {
+export function assertGitCallbackEndpoint(services: unknown, endpoint: string, filtered = false) {
   assert.ok(Array.isArray(services), "Require installed Supervisor middleware readback");
-  const git = services.filter((service) => service?.name === "oce-prepared-git");
+  const name = filtered ? "oce-prepared-git-rest-writes" : "oce-prepared-git";
+  const git = services.filter((service) => service?.name === name);
+  if (filtered) {
+    assert.deepEqual(git[0]?.bindings, [4]);
+    assert.deepEqual(git[0]?.http_request_methods, ["POST"]);
+  }
   assert.ok(
     git.length === 1 &&
       git[0].audience === "oce-prepared-git" &&
@@ -28,7 +33,7 @@ export function assertGitCallbackEndpoint(services: unknown, endpoint: string) {
   );
 }
 
-type Action = "read" | "disable";
+type Action = "read" | "disable" | "resume";
 type Counter = { generation: string; attempts: number; disabled: boolean };
 
 export async function inspectObserver(action: Action, port = 8447): Promise<Counter> {
@@ -86,15 +91,24 @@ export function gitCallbackObserver(options: {
 }) {
   const { key, cert, ca, upstreamName, upstreamPort = 8445 } = options;
   const state: Counter = { generation: randomUUID(), attempts: 0, disabled: false };
+  let calibrated = false;
   // Inspection reads the live counter in the same event loop as the HTTP/2 listener.
   const control = createServer((request, response) => {
-    if (request.method !== "POST" || !["/read", "/disable"].includes(request.url ?? "")) {
+    if (
+      request.method !== "POST" ||
+      !["/read", "/disable", "/resume"].includes(request.url ?? "")
+    ) {
       response.writeHead(404).end();
       return;
     }
-    if (request.url === "/disable" && !state.disabled) {
+    if (request.url === "/disable") {
       state.disabled = true;
-      state.attempts = 0;
+      if (!calibrated) {
+        state.attempts = 0;
+        calibrated = true;
+      }
+    } else if (request.url === "/resume") {
+      state.disabled = false;
     }
     response.writeHead(200, {
       "content-type": "application/json",

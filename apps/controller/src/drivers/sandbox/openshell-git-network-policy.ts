@@ -1,4 +1,8 @@
 import {
+  repositoryGitRestOperations,
+  type RepositoryGitRestAuthority,
+} from "../repo/access/delivery.ts";
+import {
   openShellProfileEndpoint,
   type OpenShellProviderProfileEndpoint,
 } from "./openshell-gateway-client.ts";
@@ -136,21 +140,23 @@ function repositoryNetworkEndpoint({ repository, access }: RepositoryNetworkGran
   });
 }
 
-export interface OpenShellScopedRestGrant {
-  readonly repository: string;
-  readonly readIssues: boolean;
-}
+export type OpenShellScopedRestGrant = RepositoryGitRestAuthority[number];
 
 function scopedApiEndpoints(
   policy: readonly RepositoryNetworkGrant[],
   permissions: readonly OpenShellScopedRestGrant[] | undefined,
 ): readonly OpenShellProviderProfileEndpoint[] {
   const endpoints: OpenShellProviderProfileEndpoint[] = [];
-  for (const { repository } of policy) {
+  for (const { repository, createPullRequests, readIssues } of repositoryGitRestOperations(
+    policy,
+    permissions,
+  )) {
     const rules = [];
-    const rest = permissions?.find((grant) => grant.repository === repository);
-    if (rest?.readIssues === true) {
-      const path = `/repos/${repository}/issues`;
+    if (createPullRequests) {
+      rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
+    }
+    const path = `/repos/${repository}/issues`;
+    if (readIssues) {
       rules.push({ allow: { method: "GET", path } });
       // OpenShell matches globs. An unbounded * also admits /issues/comments and /issues/events.
       // Enumerate positive decimal issue-number paths up to 19 digits.

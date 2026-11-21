@@ -91,10 +91,10 @@ Sandbox verifies enrollment against the Agent-owned setup binding and returns im
 policy in `SandboxResourceRef.proxyWiring`. Credential Proxy compares artifact and auxiliary
 rules with the complete loaded policy.
 
-[`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts) intersects native Git grants with
-[opted-in issue reads](../reference/repository-credentials/access-levels.md#native-git-delivery),
-adding only issue-list and positive-decimal detail GETs bound to the credential-only
-Provider. Stock Supervisor enforces locally without Worker authorization.
+[`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts) binds grants to the credential-only Provider.
+OpenShell enforces Git and issue reads locally. [Pull creation](../reference/repository-credentials/access-levels.md#pull-request-creation)
+requires Worker validation through a verified POST filter before credential injection.
+
 For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an

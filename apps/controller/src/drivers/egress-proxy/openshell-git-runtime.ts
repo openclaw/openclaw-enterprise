@@ -1,3 +1,9 @@
+import {
+  nativeRestMode,
+  onlineRequestImplementation,
+  openShellGitMiddleware,
+  restWriteRegistration,
+} from "./openshell-git-middleware.ts";
 import type { InspectedWorkspaceNodeRoute } from "../sandbox/openshell-workspace-node-policy.ts";
 import { openShellGitNetworkDefaults } from "../sandbox/openshell-git-network-policy.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -29,9 +35,11 @@ import {
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
-import type {
-  RepositoryGitDeliveryResolver,
-  RepositoryGitDeliveryBinding,
+import {
+  repositoryGitRestOperations,
+  type ScopedRepositoryRestWrites,
+  type RepositoryGitDeliveryResolver,
+  type RepositoryGitDeliveryBinding,
 } from "../repo/access/delivery.ts";
 import {
   subtractExpiredOpenShellGit,
@@ -146,10 +154,25 @@ export function protectedOpenShellGitOwner(
               : authority.online;
       return route?.revisionId === revisionId ? owner?.readMaterial(route, signal) : undefined;
     },
-    authorizeOnlineRequest: async (request, installed, signal) => {
+    authorizeOnlineRequest: async (request, installed, signal, networkPolicyRest) => {
       const { route } = installed;
       if (!route) {
         return { kind: "denied", reason: "unavailable" };
+      }
+      if (networkPolicyRest) {
+        if (
+          !("scope" in request) ||
+          request.scope !== "github-repository" ||
+          request.operation !== "github-rest"
+        ) {
+          return { kind: "denied", reason: "unavailable" };
+        }
+        return (
+          authority.networkPolicy?.authorizeRest?.(request, { ...installed, route }, signal) ?? {
+            kind: "denied",
+            reason: "unavailable",
+          }
+        );
       }
       if ("scope" in request && request.scope === "github-repository") {
         return (
@@ -225,6 +248,29 @@ export function openShellGitRouteReadiness(
 type OpenShellGitScope = RepositoryGitDeliveryBinding & {
   readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
 };
+
+function scopedRestWrites(
+  { delivery, repositoryNetworkPolicy }: OpenShellGitScope,
+  repositories: ProtectedGitHubRepositoryMaterial["repositories"],
+): ScopedRepositoryRestWrites {
+  const pullRequestRepositories: string[] = [];
+  if (repositoryNetworkPolicy === undefined || !("scope" in delivery)) {
+    return { pullRequestRepositories };
+  }
+  const selected = new Set(repositories.map(({ repository }) => repository));
+  for (const operation of repositoryGitRestOperations(
+    repositoryNetworkPolicy,
+    delivery.scopedRest,
+  )) {
+    if (!selected.has(operation.repository)) {
+      continue;
+    }
+    if (operation.createPullRequests && delivery.permissions.pull_requests === "write") {
+      pullRequestRepositories.push(operation.repository);
+    }
+  }
+  return { pullRequestRepositories };
+}
 
 interface Entry extends OpenShellGitObservationEntry {
   readonly preview: ObservedHookPreview;
@@ -763,10 +809,11 @@ export class OpenShellGitRuntime {
           });
           throw new Error("OpenShell Git requires a new revision after worker restart.");
         }
+        const gateway = await read(() => this.gateway(client, workspace, signal), signal);
         const provider = gitProvider(
           client,
           workspace,
-          await read(() => this.gateway(client, workspace, signal), signal),
+          gateway.workspaceId,
           sandbox,
           revision.id,
           scope,
@@ -777,6 +824,14 @@ export class OpenShellGitRuntime {
           retainedSandbox ? true : undefined,
           workspaceRoute,
         );
+        if (
+          !gateway.validatorRegistered &&
+          nativeRestMode(provider.boundNetworkRule()) === "write"
+        ) {
+          throw new Error(
+            "OpenShell native REST writes require the registered OCE POST validator.",
+          );
+        }
         const bindingId = admittedExecutionId;
         const route = {
           revisionId: revision.id,
@@ -876,11 +931,6 @@ export class OpenShellGitRuntime {
       throw new OpenShellGitRouteBlockedError("repository_expired");
     }
     const scopedRest = "scopedRest" in scope.delivery ? scope.delivery.scopedRest : undefined;
-    const issueReads = scopedRest?.some(
-      ({ repository, readIssues }) =>
-        readIssues &&
-        scope.repositoryNetworkPolicy?.some((grant) => grant.repository === repository),
-    );
     return {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
@@ -930,37 +980,40 @@ export class OpenShellGitRuntime {
         this.configuration.registrationName,
         entry.bindingId,
         entry.preview.native,
-        issueReads,
+        entry.preview.native ? nativeRestMode(entry.provider.boundNetworkRule()) : undefined,
       ),
     };
   }
 
   /** The gateway this route runs through: the middleware is registered and the workspace
-   * has an identity. Answers the workspace id. */
-  private async gateway(
-    client: OpenShellGatewayClient,
-    workspace: string,
-    signal: AbortSignal,
-  ): Promise<string> {
+   * has an identity. GetSandboxConfig proves the required method filter later. */
+  private async gateway(client: OpenShellGatewayClient, workspace: string, signal: AbortSignal) {
     const info = await client.getGatewayInfo?.(signal);
-    if (
-      !Array.isArray(info?.extensions) ||
-      !info.extensions.some((value) => {
-        const extension = value as Record<string, unknown>;
+    const registered = (name: string, expectedImplementation?: string) =>
+      Array.isArray(info?.extensions) &&
+      info.extensions.some((value) => {
+        const extension = asRecord(value);
         return (
-          extension.configured_name === this.configuration.registrationName &&
+          extension?.configured_name === name &&
           [4, "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE"].includes(extension.kind as string | number) &&
-          extension.protocol_major === 1
+          extension.protocol_major === 1 &&
+          (!expectedImplementation || extension.implementation_name === expectedImplementation)
         );
-      })
-    ) {
+      });
+    if (!registered(this.configuration.registrationName)) {
       throw new Error("OpenShell Git middleware is not registered with the selected gateway.");
     }
     const ws = await client.getWorkspace(workspace, signal);
     if (!ws?.id) {
       throw new Error("OpenShell Git workspace identity is unavailable.");
     }
-    return ws.id;
+    return {
+      workspaceId: ws.id,
+      validatorRegistered: registered(
+        restWriteRegistration(this.configuration.registrationName),
+        `oce/${onlineRequestImplementation}`,
+      ),
+    };
   }
 
   /** The route as this worker now holds it, written when it differs from the last write.
@@ -1420,6 +1473,7 @@ export class OpenShellGitRuntime {
       registration: this.configuration.registrationName,
       audience: this.configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
+      bindingId: entry.revision.egressPlan?.execution.executionId,
       boundGitRule: entry.preview.native ? entry.provider.boundNetworkRule() : undefined,
       modelProvider: entry.continuity.model,
       runtimeProvider: entry.continuity.runtime,
@@ -2325,7 +2379,7 @@ export class OpenShellGitRuntime {
         reason = "route_pending";
         break;
       }
-      if (entry.preview.native) {
+      if (entry.preview.native && nativeRestMode(entry.provider.boundNetworkRule()) !== "write") {
         reason = "route_pending";
         break;
       }
@@ -2401,7 +2455,7 @@ export class OpenShellGitRuntime {
         }
         return {
           sandboxId: identity.sandboxId,
-
+          ...(entry.preview.native && { nativeGit: true as const }),
           bindingId: identity.bindingId,
           workspace: identity.workspace,
           executionId: entry.revision.id,
@@ -2412,7 +2466,16 @@ export class OpenShellGitRuntime {
             ? {
                 installationId: material.installationId,
                 ...(material.scope === "github-repository"
-                  ? { scope: material.scope, repositories: material.repositories }
+                  ? {
+                      scope: material.scope,
+                      repositories: material.repositories,
+                      ...(entry.authorization.repositoryNetworkPolicy !== undefined && {
+                        scopedRestWrites: scopedRestWrites(
+                          entry.authorization,
+                          material.repositories,
+                        ),
+                      }),
+                    }
                   : { scope: material.scope }),
               }
             : {
@@ -2651,31 +2714,6 @@ export function openShellRepositoryAccess(
       // The supervisor reload closes the node connection. Allow the Gateway to see the disconnect.
       const installed = git.materialInstalledAt(id);
       return installed === undefined ? undefined : installed + 2_000;
-    },
-  };
-}
-
-/** One policy definition, compared again by the Credential Proxy at Compute release. */
-export function openShellGitMiddleware(
-  registrationName: string,
-  bindingId: string,
-  native = false,
-  issueReads = false,
-) {
-  return {
-    "oce-prepared-git": {
-      name: "oce-prepared-git",
-      middleware: registrationName,
-      config: { fields: { binding_id: { stringValue: bindingId } } },
-      on_error: "fail_closed",
-      order: 2147483647,
-      // Recipient verification pins the registered service. Select no admitted GitHub host
-      // on native delivery: stock selects by host, so a PR hook would also capture issue reads.
-      endpoints: {
-        include: native
-          ? [issueReads ? "deny-egress.invalid" : "api.github.com"]
-          : ["github.com", "api.github.com"],
-      },
     },
   };
 }

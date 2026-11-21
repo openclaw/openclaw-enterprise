@@ -112,6 +112,11 @@ test(
     }
     assert.deepEqual(received, [evaluate, base + "Describe", base + "ValidateConfig"]);
     assert.deepEqual(await read(), counted);
+    assert.deepEqual(await inspectObserver("resume", counterPort), { ...counted, disabled: false });
+    assert.equal(await request(evaluate), "3");
+    assert.deepEqual(await disable(), { ...counted, attempts: 4 });
+    assert.equal(await request(evaluate), "14");
+    assert.deepEqual(await read(), { ...counted, attempts: 5 });
     await close(control);
     await assert.rejects(read, { name: "TypeError", message: "fetch failed" });
   },
