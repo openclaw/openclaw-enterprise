@@ -39,6 +39,13 @@ export class AutomationGatewayError extends Error {
     this.code = code;
   }
 }
+/** Only the transport can establish that a create did not commit. */
+export class AutomationCreateNotCommittedError extends Error {
+  constructor(cause: unknown) {
+    super("The native automation create did not commit.", { cause });
+    this.name = "AutomationCreateNotCommittedError";
+  }
+}
 type OwnedAutomation = Pick<AgentAutomationOwnership, "id" | "nativeAgentId" | "nativeJobId">;
 export type BoundAutomation = OwnedAutomation & { readonly nativeJobId: string };
 export interface NativeAutomationInventoryEntry {
@@ -177,6 +184,7 @@ export function createNativeAgentAutomationsAccess(
         method: Method,
         params: Record<string, unknown>,
         mutation = false,
+        onSent?: () => void,
       ): Promise<unknown> {
         if (closed || signal.aborted || Date.now() >= deadline.getTime()) {
           throw new AutomationGatewayError("unavailable");
@@ -189,6 +197,7 @@ export function createNativeAgentAutomationsAccess(
             timeoutMs: Math.max(1, deadline.getTime() - Date.now()),
             onSent: () => {
               sent = true;
+              onSent?.();
             },
           });
         } catch (error) {
@@ -351,8 +360,10 @@ export function createNativeAgentAutomationsAccess(
           return entries[0]!.nativeJobId;
         },
         async create(id, input) {
-          const result = asRecord(
-            await request(
+          let sent = false;
+          let response: unknown;
+          try {
+            response = await request(
               "cron.add",
               {
                 declarationKey: declarationPrefix + id,
@@ -366,8 +377,35 @@ export function createNativeAgentAutomationsAccess(
                 delivery: { mode: "none" },
               },
               true,
-            ),
-          );
+              () => {
+                sent = true;
+              },
+            );
+          } catch (error) {
+            let rejectedWithoutJob = false;
+            if (error instanceof AutomationGatewayError && error.code === "invalid") {
+              // A generic INVALID_REQUEST can also wrap a late native error. Confirm
+              // the disabled job is absent before discarding its recovery identity.
+              try {
+                rejectedWithoutJob =
+                  (await inventory([{ id, nativeAgentId, nativeJobId: null }])).entries.length ===
+                  0;
+              } catch {
+                throw new AutomationGatewayError("unknown");
+              }
+              if (!rejectedWithoutJob) {
+                throw new AutomationGatewayError("unknown");
+              }
+            }
+            if (
+              rejectedWithoutJob ||
+              (!sent && !(error instanceof AutomationGatewayError && error.code === "unknown"))
+            ) {
+              throw new AutomationCreateNotCommittedError(error);
+            }
+            throw error;
+          }
+          const result = asRecord(response);
           const native = asRecord(result?.job);
           if (result?.created !== true || typeof native?.id !== "string" || !native.id) {
             throw new AutomationGatewayError("unknown");

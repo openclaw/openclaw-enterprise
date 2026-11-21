@@ -1761,6 +1761,19 @@ function repositories(
   };
 
   const agentAutomations: AgentAutomationRepository = {
+    async discardUnbound(namespaceId, agentId, id, creatorPrincipalId) {
+      const record = snapshot.agentAutomations.get(id);
+      if (
+        !record ||
+        record.namespaceId !== namespaceId ||
+        record.agentId !== agentId ||
+        record.creatorPrincipalId !== creatorPrincipalId ||
+        record.nativeJobId !== null
+      ) {
+        return false;
+      }
+      return snapshot.agentAutomations.delete(id);
+    },
     async find(namespaceId, agentId, id) {
       const record = snapshot.agentAutomations.get(id);
       return record?.namespaceId === namespaceId && record.agentId === agentId

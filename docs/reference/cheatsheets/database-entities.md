@@ -78,7 +78,7 @@ See [per-Agent policies](../sandbox-policies.md).
 
 ### `agent_automations`
 
-Retains immutable creator and native-job ownership for the [automation broker](../agent-automations.md), including after job deletion. Rows end with Agent deletion.
+Retains creator and native-job ownership for the [automation broker](../agent-automations.md), including after job deletion. Rows end with Agent deletion; a proven failed create can discard its unbound reservation atomically with audit.
 
 - `id`
 - `namespace_id`

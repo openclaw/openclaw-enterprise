@@ -13,6 +13,13 @@ export interface AgentAutomationReadRepository {
   ): Promise<readonly Readonly<AgentAutomationOwnership>[]>;
 }
 export interface AgentAutomationRepository extends AgentAutomationReadRepository {
+  /** Remove only an unbound reservation for its original creator after proven non-commit. */
+  discardUnbound(
+    namespaceId: string,
+    agentId: string,
+    id: string,
+    creatorPrincipalId: string,
+  ): Promise<boolean>;
   create(
     record: Omit<AgentAutomationOwnership, "nativeJobId">,
   ): Promise<Readonly<AgentAutomationOwnership>>;

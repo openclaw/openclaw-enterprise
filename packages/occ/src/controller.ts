@@ -417,6 +417,14 @@ export class OpenClawController {
     return this.composition.agentAutomations.bind(principalId, input, audit);
   }
 
+  async discardUnboundAgentAutomation(
+    principalId: string,
+    input: Pick<BindAgentAutomationInput, "namespaceId" | "agentId" | "id">,
+    audit: (record: Readonly<AgentAutomationOwnership>) => AuditEvent,
+  ) {
+    return this.composition.agentAutomations.discardUnbound(principalId, input, audit);
+  }
+
   async listAgentAutomationOwnership(principalId: string, namespaceId: string, agentId: string) {
     return this.composition.agentAutomations.list(principalId, namespaceId, agentId);
   }

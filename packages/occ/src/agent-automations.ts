@@ -49,6 +49,34 @@ export function createAgentAutomations(deps: {
     return false;
   }
   return {
+    async discardUnbound(
+      principalId: string,
+      input: Pick<BindAgentAutomationInput, "namespaceId" | "agentId" | "id">,
+      audit: (record: Readonly<AgentAutomationOwnership>) => AuditEvent,
+    ) {
+      // This is completion of an already-authorized create, including after revocation.
+      // It cannot remove a bound job or another creator's reservation.
+      return deps.transactions.transact(async (state) => {
+        const record = await state.agentAutomations.find(
+          input.namespaceId,
+          input.agentId,
+          input.id,
+        );
+        if (!record || record.creatorPrincipalId !== principalId || record.nativeJobId !== null) {
+          return false;
+        }
+        const discarded = await state.agentAutomations.discardUnbound(
+          input.namespaceId,
+          input.agentId,
+          input.id,
+          principalId,
+        );
+        if (discarded) {
+          await state.audit.append(audit(record));
+        }
+        return discarded;
+      });
+    },
     async reserve(
       principalId: string,
       input: ReserveAgentAutomationInput,

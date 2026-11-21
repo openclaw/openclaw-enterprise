@@ -377,7 +377,8 @@ test(
                 JSON.parse(records[0]!.slice("OCC_AUTOMATION_PROTOCOL_PROOF ".length)),
                 {
                   automationProtocol: true,
-                  nativeCreates: 6,
+                  nativeCreates: 9,
+                  rejectedCreates: 3,
                   concurrentNativeCas: true,
                   physicalGatewayReplacement: true,
                   pausedJobRetained: true,

@@ -28,6 +28,13 @@ function fromRow(row: Row): Readonly<AgentAutomationOwnership> {
 
 export function postgresAgentAutomations(client: PostgresQueryClient): AgentAutomationRepository {
   return {
+    async discardUnbound(namespaceId, agentId, id, creatorPrincipalId) {
+      const result = await client.query(
+        "SELECT occ.discard_unbound_agent_automation($1,$2,$3,$4) AS discarded",
+        [namespaceId, agentId, id, creatorPrincipalId],
+      );
+      return (result.rows[0] as { discarded: boolean } | undefined)?.discarded === true;
+    },
     async find(namespaceId, agentId, id) {
       const result = await client.query(
         "SELECT * FROM occ.agent_automations WHERE namespace_id=$1 AND agent_id=$2 AND id=$3",

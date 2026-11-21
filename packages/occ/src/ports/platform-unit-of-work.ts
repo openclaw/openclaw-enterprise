@@ -69,6 +69,7 @@ export function bindPlatformUnitOfWork(
       "list",
       "create",
       "bind",
+      "discardUnbound",
     ]),
     preparedTokenProof: bindRepository(repositories.preparedTokenProof, lifetime, ["current"]),
     egressSendReceipts: bindRepository(repositories.egressSendReceipts, lifetime, [

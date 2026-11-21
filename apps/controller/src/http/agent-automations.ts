@@ -17,6 +17,7 @@ import {
 } from "../gateway/native-admin.ts";
 import {
   AutomationGatewayError,
+  AutomationCreateNotCommittedError,
   type AgentAutomationsAccess,
   type BoundAutomation,
   type AgentAutomationGatewaySession,
@@ -169,7 +170,7 @@ export function createAgentAutomationHandlers(options: {
       }
     }
     function audit(
-      outcome: "admitted" | "bound" | "success" | "unknown",
+      outcome: "admitted" | "bound" | "success" | "unknown" | "discarded",
       ownership = record,
       action: "operate" | "administer" = create || selection.mode !== "admin"
         ? "operate"
@@ -193,7 +194,7 @@ export function createAgentAutomationHandlers(options: {
           resource: { kind: "agent", id: agentId, namespaceId },
         },
         action: `${context.operation.action}.${outcome}`,
-        outcome: outcome === "unknown" ? "failure" : "success",
+        outcome: outcome === "unknown" || outcome === "discarded" ? "failure" : "success",
         requestId: request.id,
         admissionDecisionId: context.admissionDecisionId,
         details: {
@@ -336,7 +337,21 @@ export function createAgentAutomationHandlers(options: {
         }
         reply.code(create ? 201 : 200).send({ data: result, meta: { requestId: request.id } });
       }
-    } catch (error) {
+    } catch (caught) {
+      let error = caught;
+      if (create && !committed && record && error instanceof AutomationCreateNotCommittedError) {
+        try {
+          await controller.discardUnboundAgentAutomation(
+            context.actorId,
+            { namespaceId, agentId, id: record.id },
+            (discarded) => audit("discarded", discarded),
+          );
+        } catch (cleanupError) {
+          options.logAuditFailure(request, cleanupError);
+          throw dependencyUnavailable();
+        }
+        error = error.cause;
+      }
       if (committed || (error instanceof AutomationGatewayError && error.code === "unknown")) {
         if (record) {
           reply.header("location", location(record.id));

@@ -119,6 +119,13 @@ It attempts indeterminate audit, logs audit failure without native payloads, and
 never retries the mutation. `Location` carries the public recovery path when known.
 Ordinary request-audit hooks still record route outcomes.
 
+`AutomationCreateNotCommittedError` identifies a create that was not sent, or a
+native rejection followed by confirmed absence from inventory. The controller
+removes only that creator's unbound reservation and appends discarded audit in
+one transaction. PostgreSQL's conditional deletion cannot remove a concurrently
+bound native ID. Failed cleanup audit rolls back deletion. Other sent or uncertain
+outcomes retain ownership for recovery.
+
 ## Debugging and Verification
 
 With the supported toolchain and installed dependencies:

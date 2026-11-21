@@ -284,6 +284,24 @@ try {
     schedule: { kind: "every", everyMs: 60_000 },
     prompt: "This job must not execute during protocol proof.",
   };
+  // These pass OCC's envelope schema but are rejected by the real scheduler.
+  // Rejected requests must not accumulate invisible ownership reservations.
+  for (const schedule of [
+    { kind: "cron", expr: "not a cron expression", tz: "UTC" },
+    { kind: "cron", expr: "0 9 * * *", tz: "Invalid/Zone" },
+    { kind: "cron", expr: "not a cron expression", tz: "UTC" },
+  ]) {
+    const before = nativeCreates;
+    const rejected = await request("POST", base, { body: { ...input, schedule } });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(nativeCreates, before + 1, "the actual scheduler must reject the request");
+    assert.deepEqual(
+      await f.controller.listAgentAutomationOwnership(f.principal.id, namespace.id, agent.id),
+      [],
+      "a definite native rejection must discard its unbound reservation",
+    );
+  }
+  assert.equal(auditSink.events.filter((event) => event.action.endsWith(".discarded")).length, 3);
   const created = await request("POST", base, { body: input });
   assert.equal(created.status, 201, JSON.stringify({ response: created.body, nativeErrors }));
   const job = created.data as AgentAutomationData;
@@ -544,6 +562,7 @@ process.stdout.write(
     JSON.stringify({
       automationProtocol: true,
       nativeCreates,
+      rejectedCreates: 3,
       concurrentNativeCas: true,
       physicalGatewayReplacement: true,
       pausedJobRetained: true,

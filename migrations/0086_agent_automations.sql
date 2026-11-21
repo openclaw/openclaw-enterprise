@@ -46,3 +46,17 @@ GRANT SELECT ON occ.agent_automations TO occ_app;
 GRANT INSERT (id,namespace_id,agent_id,creator_principal_id,native_agent_id,created_at) ON occ.agent_automations TO occ_app;
 --> statement-breakpoint
 GRANT UPDATE (native_job_id) ON occ.agent_automations TO occ_app;
+--> statement-breakpoint
+CREATE FUNCTION occ.discard_unbound_agent_automation(text,text,uuid,text) RETURNS boolean
+LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  WITH discarded AS (
+    DELETE FROM occ.agent_automations
+    WHERE namespace_id = $1 AND agent_id = $2 AND id = $3
+      AND creator_principal_id = $4 AND native_job_id IS NULL
+    RETURNING id
+  ) SELECT EXISTS (SELECT 1 FROM discarded)
+$$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION occ.discard_unbound_agent_automation(text,text,uuid,text) FROM PUBLIC;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION occ.discard_unbound_agent_automation(text,text,uuid,text) TO occ_app;

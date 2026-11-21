@@ -75,6 +75,12 @@ recover a disabled native job and fill the missing ID binding. This writes only
 OCC bookkeeping and audit; it never replays create or activates the job. A create
 that fails after native creation can therefore leave a disabled job to inspect.
 
+If transport proves create was not sent, or native rejects create and a subsequent
+inventory confirms no job exists, OCC conditionally removes the unbound reservation
+and records that outcome in the same transaction. Admission audit remains. Cleanup
+cannot remove another creator's reservation or a bound native identity. Lost replies,
+failed absence checks and other uncertain outcomes retain the recovery record.
+
 Ownership records survive native one-shot deletion and explicit deletion, so OCC
 can authorize history afterward. Native history retention still applies; an
 expired history or a deleted job that never ran returns 404. Agent
