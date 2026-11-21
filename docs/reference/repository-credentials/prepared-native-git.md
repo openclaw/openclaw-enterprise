@@ -125,13 +125,14 @@ that remains running, confirm a new authenticated fetch is denied and chat still
 an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
 
-The Worker keeps the same Agent revision running when the broker confirms session
-disposal, the original prepared grant proves the native transport, and token
-custody and any draft PR receipts have settled. The Gateway and Harness must
-be ready with current model authority.
+The Worker records withdrawal once the broker confirms session disposal, the
+original grant proves the native transport, token custody and draft outcomes
+are confirmed, and the same active revision still has model authority.
+Kubernetes continues to report Gateway and Harness readiness. The withdrawal
+result records credential disposal.
 The committed removal blocks new Git requests while settlement is pending.
 The Worker queues retirement for missing grant or draft settlement proof,
-incompatible stored admission, or an inference runtime it cannot verify.
+incompatible stored admission, or confirmed loss of model authority.
 
 ## Read broker refusals
 

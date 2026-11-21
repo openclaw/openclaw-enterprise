@@ -349,7 +349,7 @@ function nativeBrokerStatus(
 for (const outcome of [
   "settled",
   "unconfirmed revocation",
-  "inference unavailable",
+  "runtime observation is unavailable",
   "custody read recovers",
   "unexpected custody family",
   "settled draft-capable transport",
@@ -361,7 +361,7 @@ for (const outcome of [
   "model account binding revoked",
   "model account lookup fault cannot mask lost actor authority",
   "model account Backend missing",
-  "model account binding revoked during observation",
+  "model account binding revoked after custody read",
   "model account final IAM fault with revoked binding",
   "model account final read recovers",
   "model Secret unavailable",
@@ -383,8 +383,12 @@ for (const outcome of [
       const f = await setupNativeWithdrawal(t, { backends: [...modelBackends, gitBackend] });
       const lostDraftReply = outcome === "draft provider reply lost";
       const draftMustRetire = lostDraftReply || outcome === "unsettled draft receipt";
+      const transientRuntime = outcome === "runtime observation is unavailable";
+      const modelBindingRevokedAfterCustody =
+        outcome === "model account binding revoked after custody read";
       const draftTransport =
         outcome === "settled draft-capable transport" ||
+        transientRuntime ||
         draftMustRetire ||
         outcome === "unissued draft-capable transport";
       const withoutFamily = outcome === "unissued draft-capable transport";
@@ -498,7 +502,9 @@ for (const outcome of [
       });
       const deliveries: Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>[] = [];
       const stops: string[] = [];
+      let preparations = 0;
       let runtimeObservations = 0;
+      let runtimeStatus: "running" | "unknown" | "timeout" = "running";
       let failFinalModelRead = false;
       let failedFinalModelReads = 0;
       let failFinalIamRead = false;
@@ -533,33 +539,24 @@ for (const outcome of [
           assert.equal(sandboxDriverId, undefined);
         },
         async prepareRevision(revision, context) {
+          preparations++;
           const delivery = context?.repositoryCredentials?.find((value) => value.kind === "new");
           if (delivery) {
             deliveries.push(delivery);
           }
           return f.compute.prepareRevision(revision, context);
         },
-        // An unsupported native Compute still uses the ordinary terminal disposition. The ready
-        // observation is controlled here so this case exercises real PostgreSQL and broker custody.
+        // The native removal must use its prepared custodian.
         async retireExpiredRepositoryAccess() {
           return "retire-runtime";
         },
         async observeRevision(revision) {
           assert.equal(revision.id, candidate.id);
           runtimeObservations++;
-          if (
-            outcome === "model account binding revoked during observation" ||
-            outcome === "model account final IAM fault with revoked binding"
-          ) {
-            // Commit the revocation after the preliminary model checks and before a
-            // healthy runtime observation can allow this exact revision to stay.
-            await revokeModelBinding();
-            failFinalIamRead = outcome === "model account final IAM fault with revoked binding";
+          if (runtimeStatus === "timeout") {
+            throw new DOMException("Controlled Kubernetes status read timeout", "TimeoutError");
           }
-          if (outcome === "model account final read recovers" && runtimeObservations === 1) {
-            failFinalModelRead = true;
-          }
-          return { state: outcome === "inference unavailable" ? "unknown" : "running" };
+          return { state: runtimeStatus };
         },
         async stopRevision(revision) {
           stops.push(revision.id);
@@ -651,7 +648,21 @@ for (const outcome of [
                 code: "08006",
               });
             }
-            return observeNativeRepositoryWithdrawal(revision, sessions);
+            const result = await observeNativeRepositoryWithdrawal(revision, sessions);
+            if (result === "disposed") {
+              if (
+                modelBindingRevokedAfterCustody ||
+                outcome === "model account final IAM fault with revoked binding"
+              ) {
+                // Commit model revocation after custody observation and before the locked decision.
+                await revokeModelBinding();
+                failFinalIamRead = outcome === "model account final IAM fault with revoked binding";
+              }
+              if (outcome === "model account final read recovers" && failedFinalModelReads === 0) {
+                failFinalModelRead = true;
+              }
+            }
+            return result;
           },
           emit: (event) => {
             if (event.event === "worker.completed") {
@@ -741,6 +752,7 @@ for (const outcome of [
         assert.equal(await draft(), lostDraftReply ? 409 : 201);
         assert.equal(provider.pulls.size, 1);
       }
+      const preparationsBeforeRemoval = preparations;
       const removed = await f.controller.updateAgent(f.actor.id, {
         namespaceId: owner.namespaceId,
         agentId: owner.id,
@@ -902,7 +914,7 @@ for (const outcome of [
       }
       if (
         outcome.startsWith("model ") &&
-        outcome !== "model account binding revoked during observation" &&
+        !modelBindingRevokedAfterCustody &&
         outcome !== "model account final IAM fault with revoked binding" &&
         outcome !== "model account final read recovers"
       ) {
@@ -1028,10 +1040,10 @@ for (const outcome of [
       }
       const cleanup = runCleanupPass();
       if (outcome === "model account final read recovers") {
-        // A successful observation is insufficient when the locked authority read fails.
+        // Settled custody is insufficient when the locked authority read fails.
         // The lease must permit a safe retry without minting a credential or stopping the Agent.
         await waitFor(
-          "the locked model read to fail after runtime observation",
+          "the locked model read to fail after the custody observation",
           async () => (failedFinalModelReads === 1 ? true : undefined),
           4_000,
         );
@@ -1056,10 +1068,9 @@ for (const outcome of [
         );
       }
       if (
-        outcome === "inference unavailable" ||
         outcome === "unexpected custody family" ||
         draftMustRetire ||
-        outcome === "model account binding revoked during observation" ||
+        modelBindingRevokedAfterCustody ||
         outcome === "model account final IAM fault with revoked binding"
       ) {
         assert.equal(completion.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
@@ -1084,34 +1095,39 @@ for (const outcome of [
         assert.deepEqual(stops, []);
       }
       assert.equal(
-        runtimeObservations,
-        outcome === "unconfirmed revocation" ||
-          outcome === "unexpected custody family" ||
-          draftMustRetire
-          ? 0
-          : outcome === "model account final read recovers"
-            ? 2
-            : 1,
-      );
-      assert.equal(
         subject.github.trace.filter(
           ({ method, target }) => method === "DELETE" && target === "/installation/token",
         ).length,
         1,
         "cleanup observation cannot replay provider revocation",
       );
-      if (outcome === "settled") {
-        const due = await f.advanceMaintenance(candidate);
-        assert.equal(due.rowCount, 1);
-        const observed = await waitFor(
-          "ordinary maintenance to supervise the same revision without Git",
-          async () => statuses.find(({ workId }) => workId === due.rows[0]?.idempotency_key),
-          10_000,
-        );
-        assert.equal(observed.code, "REPOSITORY_ACCESS_WITHDRAWN");
-        assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
-        assert.equal(runtimeObservations, 2);
-        assert.deepEqual(stops, []);
+      if (outcome === "settled" || transientRuntime) {
+        const gitAtWithdrawal = origin.traffic();
+        const providerAtWithdrawal = provider.trace.length;
+        for (const status of transientRuntime
+          ? (["timeout", "unknown", "running"] as const)
+          : (["running"] as const)) {
+          runtimeStatus = status;
+          const due = await f.advanceMaintenance(candidate);
+          assert.equal(due.rowCount, 1);
+          const observed = await waitFor(
+            "ordinary maintenance to supervise the same revision without Git",
+            async () => statuses.find(({ workId }) => workId === due.rows[0]?.idempotency_key),
+            10_000,
+          );
+          assert.equal(observed.code, "REPOSITORY_ACCESS_WITHDRAWN");
+          assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+          assert.deepEqual(stops, []);
+        }
+        if (transientRuntime) {
+          assert.equal(
+            await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+            401,
+          );
+          assert.equal(await draft(), 401);
+          assert.deepEqual(origin.traffic(), gitAtWithdrawal);
+          assert.equal(provider.trace.length, providerAtWithdrawal);
+        }
       } else if (outcome === "unconfirmed revocation") {
         await prepared.maintain();
         assert.equal(
@@ -1127,6 +1143,8 @@ for (const outcome of [
         1,
         "withdrawal does not prepare or deliver another credential",
       );
+      assert.equal(preparations, preparationsBeforeRemoval);
+      assert.equal(runtimeObservations, 0, "withdrawal never queries runtime availability");
     },
   );
 }

@@ -47,10 +47,11 @@ graph TD
   Cleanup -->|Resolved| Disposed["Session disposed"]
   Cleanup -->|Unresolved| Pending["Pending records within session capacity"]
   Disposed -->|Finite native removal| NativeCustody["Check settled prepared Git custody"]
-  NativeCustody -->|Confirmed| NativeRuntime["Observe the same Gateway and Harness"]
+  NativeCustody -->|Confirmed| NativeAuthority["Recheck model authority"]
   NativeCustody -->|Settlement outstanding| NativeWithdrawalPending["Defer Git withdrawal"]
-  NativeRuntime -->|Ready| NativeKeep["Resume Agent supervision"]
-  NativeRuntime -->|Unsafe| NativeStop["Queue runtime retirement"]
+  NativeAuthority -->|Current| NativeKeep["Record withdrawal"]
+  NativeAuthority -->|Unconfirmed| NativeWithdrawalPending
+  NativeAuthority -->|Lost| NativeStop["Queue runtime retirement"]
   NativeCustody -->|Unsafe| NativeStop
 ```
 
@@ -306,9 +307,9 @@ the claim and matches the receipt under the attempt lock. Committed receipts sup
 missing session IDs. An unconfirmed locked read stays pending. An initial lookup
 without a terminal receipt uses the original sender.
 
-PostgreSQL fences finite native removal. The Worker matches disposed sessions to original
-native grants and settled token and draft custody. Kubernetes verifies the existing Gateway, Harness
-and workspace node. The Worker rechecks model authority before retaining the revision.
+PostgreSQL fences finite native removal. The Worker checks the original broker sessions,
+token custody, draft receipts, and model authority. Kubernetes readiness probes continue
+to report workload health.
 
 Only committed observations survive restart. The original issuer owns unresolved
 custody. Unpublished failures count against `pendingAuxiliary` until disposed.

@@ -6909,17 +6909,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sandbox = this.sandboxDriverForRevision(revision);
     if (!sandbox?.observeHarness) {
-      if (
-        this.preparedRepositoryIngress &&
-        this.sandboxDriver === undefined &&
-        revision.sandboxDriverId === undefined &&
-        revision.executionAdmission.mode === "unprotected" &&
-        revision.repositoryCredentials !== undefined &&
-        revision.harness.id === "codex" &&
-        revision.harness.mode === "dedicated"
-      ) {
-        return withComputeAbortSignal(signal, () => this.observePreparedNativeRuntime(revision));
-      }
       return { state: "unknown" };
     }
     return withComputeAbortSignal(signal, async () => {
@@ -6935,103 +6924,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       return sandbox.observeHarness!({ ...context, revision });
     });
-  }
-
-  /** Observe the already-running Compute-owned Gateway and Harness without reenrolling either. */
-  private async observePreparedNativeRuntime(
-    revision: Readonly<AgentRevision>,
-  ): Promise<SandboxHarnessObservation> {
-    const namespace = await this.ownedRepositoryNamespace(revision);
-    const enrollment = this.nodeEnrollment;
-    const endpoint = this.getGatewayEndpoint(revision);
-    if (!namespace || !enrollment || !endpoint) {
-      return { state: "unknown" };
-    }
-    const gatewayNamespace = await this.requireGatewayNamespace(revision, namespace);
-    const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
-    const gatewayOwner = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    const consumer = this.repositoryConsumer(revision);
-    const [gateway, harness, node] = await Promise.all([
-      this.getOwned("Deployment", gatewayName, gatewayNamespace, gatewayOwner),
-      this.getOwned("Deployment", consumer.name, namespace, consumer.owner),
-      this.getOwned(
-        "Secret",
-        this.workspaceNodeName(revision),
-        namespace,
-        this.workspaceNodeOwnership(revision),
-      ),
-    ]);
-    if (
-      !gateway ||
-      !harness ||
-      gateway.metadata.deletionTimestamp !== undefined ||
-      harness.metadata.deletionTimestamp !== undefined ||
-      gateway.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id ||
-      gateway.metadata.annotations?.[AGENT_REVISION_ANNOTATION] !== String(revision.revision) ||
-      !this.deploymentReady(harness) ||
-      !this.deploymentRolledOut(harness)
-    ) {
-      return { state: "unknown" };
-    }
-    const device = recordedWorkspaceNodeDeviceId(node?.data?.deviceId);
-    if (
-      !device ||
-      node?.metadata.deletionTimestamp !== undefined ||
-      node?.data?.[WORKSPACE_NODE_ENROLLED_REVISION_KEY] !==
-        Buffer.from(revision.id).toString("base64") ||
-      node?.data?.[WORKSPACE_NODE_RECEIPT_DEVICE_KEY] !== undefined ||
-      !(await this.gatewayReady(gatewayOwner, gatewayName, gatewayNamespace))
-    ) {
-      return { state: "unknown" };
-    }
-    const observe = async () => {
-      const [gateway, harness] = await Promise.all([
-        this.privateStatusReadback(revision, namespace, "gateway", RUNTIME_STATUS_PATH, {
-          requireReady: true,
-        }),
-        this.privateStatusReadback(revision, namespace, "agent", RUNTIME_STATUS_PATH, {
-          requireReady: true,
-        }),
-      ]);
-      if (!gateway?.containerId || !harness?.containerId) {
-        return undefined;
-      }
-      // The status endpoint reports held failures, while the kubelet's Ready
-      // conditions prove both serving processes passed their readiness probes.
-      const gatewayFailure = this.cachedRuntimeFailureEvidence(
-        gateway.status,
-        revision,
-        "gateway",
-        gateway.podUid,
-      );
-      const harnessFailure = this.cachedRuntimeFailureEvidence(
-        harness.status,
-        revision,
-        "agent",
-        harness.podUid,
-      );
-      const status = asRecord(gateway.status);
-      return gatewayFailure === undefined &&
-        harnessFailure === undefined &&
-        status?.workspaceNodeId === device &&
-        status.workspaceNodeFailure === undefined
-        ? { gateway, harness }
-        : undefined;
-    };
-    const initial = await observe();
-    if (!initial || !(await enrollment.isConnected(endpoint, device, this.operationSignal()))) {
-      return { state: "unknown" };
-    }
-    // Neither a replacement nor a changed status on the same container can
-    // satisfy the connection observation.
-    const current = await observe();
-    const sameContainer = (before: PrivateStatusReadback, after: PrivateStatusReadback) =>
-      after.podUid === before.podUid && after.containerId === before.containerId;
-    return current &&
-      sameContainer(initial.gateway, current.gateway) &&
-      sameContainer(initial.harness, current.harness)
-      ? { state: "running" }
-      : { state: "unknown" };
   }
 
   /** Resolve the same selected Sandbox and exact owned Namespace for observation or withdrawal. */
@@ -11547,7 +11439,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     namespace: KubernetesNamespaceAddress,
     container: "agent" | "gateway",
     path: PrivateStatusPath,
-    { requireReady = false } = {},
   ): Promise<PrivateStatusReadback | undefined> {
     // A provider-fenced Harness admits only its Gateway's transport (the status proxy
     // policy selects ordinary Pods, and the provider's own fence denies the API server),
@@ -11583,17 +11474,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (podStatus?.phase !== "Running" || !isNonEmptyString(podStatus.podIP)) {
       return undefined;
     }
-    const ready = (status: KubernetesRecord | undefined): boolean =>
-      status?.phase === "Running" &&
-      findContainerStatus(status.containerStatuses, container)?.ready === true &&
-      Array.isArray(status.conditions) &&
-      status.conditions.some((condition: unknown) => {
-        const value = asRecord(condition);
-        return value?.type === "Ready" && value.status === "True";
-      });
-    if (requireReady && !ready(podStatus)) {
-      return undefined;
-    }
     const containerId = this.podContainerId(pod, container);
     const clients = await this.clients(namespace.plane);
     const response = await readPrivateStatusProxy(
@@ -11616,8 +11496,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       latestMetadata?.name !== podName ||
       latestMetadata.uid !== podUid ||
       latestMetadata.deletionTimestamp !== undefined ||
-      latestContainerId !== containerId ||
-      (requireReady && !ready(asRecord(latestPods[0]?.status)))
+      latestContainerId !== containerId
     ) {
       return undefined;
     }
