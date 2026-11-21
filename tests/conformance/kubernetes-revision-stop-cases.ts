@@ -1003,7 +1003,7 @@ type HarnessAnswer = "setup" | "serving" | "failed" | "error";
  * through a fake gateway: a Harness that is still setting up exposes nothing, so the gateway
  * answers its readiness read "unavailable" and its status path 502.
  */
-function startingOpenShellHarnessStop() {
+function startingOpenShellHarnessStop(harnessId: "codex" | "openclaw" = "codex") {
   let answers: HarnessAnswer[] = [];
   const events: string[] = [];
   const sandbox = openShellDriver({
@@ -1026,6 +1026,12 @@ function startingOpenShellHarnessStop() {
       }
       return answer === "serving" ? "serving" : "unavailable";
     },
+    async serviceWebSocketHandshake(_url, bearer) {
+      assert.equal(bearer, "test-transport");
+      // A dedicated OpenClaw worker whose Agent Gateway is gone never completes the handshake.
+      events.push("status setup");
+      return false;
+    },
     async getServiceDocument() {
       return events.at(-1) === "status failed"
         ? { status: 200, json: { runtimeFailure: { code: "RUNTIME_STARTUP_FAILED" } } }
@@ -1043,10 +1049,11 @@ function startingOpenShellHarnessStop() {
     }),
     { sandboxDriver: sandbox },
   );
-  const revision = routedRevision(driver, {
+  const admitted = routedRevision(driver, {
     id: "revision-starting-harness-stop",
     sandboxDriverId: sandbox.id,
   });
+  const revision = { ...admitted, harness: { ...admitted.harness, id: harnessId } };
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   // The Agent transport token is read from its owned Secret, as Compute stores it.
   type OwnedManifests = {
@@ -1165,6 +1172,14 @@ export async function checkStartingHarnessStopBound() {
   } finally {
     mock.timers.reset();
   }
+}
+
+export async function checkNativeHarnessStopsAtOnce() {
+  const { run, stop } = startingOpenShellHarnessStop("openclaw");
+  // A dedicated OpenClaw worker serves once its node enrolls with the Agent Gateway, which the
+  // stop has already deleted, so its status cannot leave starting: the stop does not read it.
+  assert.deepEqual(await run([], () => stop(true)), ["cleanup"]);
+  assert.deepEqual(await run([]), ["cleanup"]);
 }
 
 export async function checkOtherHarnessStopsDoNotWait() {

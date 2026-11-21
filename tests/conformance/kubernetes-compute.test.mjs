@@ -275,6 +275,7 @@ import {
   checkFailedHarnessStopEndsWait,
   checkForeignWorkloadPodRefusal,
   checkGatewayDrainYield,
+  checkNativeHarnessStopsAtOnce,
   checkOtherHarnessStopsDoNotWait,
   checkProviderStopTermination,
   checkRefusedCandidateStopOrder,
@@ -7388,6 +7389,11 @@ test(
 test(
   "deleting an Agent and stopping a refused candidate do not wait for a starting Harness",
   checkOtherHarnessStopsDoNotWait,
+);
+
+test(
+  "an ordinary stop deletes a dedicated OpenClaw worker's Sandbox without waiting for its Harness",
+  checkNativeHarnessStopsAtOnce,
 );
 
 test("stop and retirement end credential-source access through Sandbox cleanup", async () => {

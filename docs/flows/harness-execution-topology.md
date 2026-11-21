@@ -286,8 +286,8 @@ probe state use node state and Sandbox-grantable `TMPDIR`.
 group-writable persistent ancestors without weakening permission checks.
 
 On stop or retirement, the Sandbox Driver cleans up after Compute stops an ordinary
-Harness, or removes a provider-owned Harness; an Agent stop or replacement waits up to 2
-minutes, yielding, while an OpenShell Harness reports `starting`. Missing Deployments do not
+Harness, or removes a provider-owned Harness; a stop or replacement waits up to 2
+minutes, yielding, while an OpenShell Codex Harness reports `starting`. Missing Deployments do not
 skip cleanup; failures retry. Retirement retains both owned claims after Gateway
 removal and checks its ownership before deletion. Successors keep
 their Gateway Deployment, identity, Service and policies.

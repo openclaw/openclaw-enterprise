@@ -155,7 +155,7 @@ holder stops cleanly, the Gateway restarts after its next 5-minute check;
 otherwise use the same procedure, which stops the Agent first.
 
 A dedicated Harness Pod killed during Doctor or native setup (node failure, or
-an OpenShell Sandbox still starting when OCE's 2-minute stop wait ends) can leave
+an OpenShell Sandbox stopped while still starting) can leave
 its workspace node state locked. Later versions fail with
 `RUNTIME_STATE_LOCK_UNVERIFIED`; until OCE deletes their Pods, `occ agent logs
 AGENT_ID --source agent` shows `The Harness cannot start: …` with the holder. For

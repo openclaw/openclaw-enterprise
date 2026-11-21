@@ -214,12 +214,15 @@ export class SandboxHarnessRuntime<Workload> {
    * for a newer one) therefore lets a starting Harness finish first, as the Harness Deployment of
    * Kubernetes Compute does. The wait yields like the Gateway drain, and ends when the Harness
    * reports another state, when the read fails, or at the bound, counted from the first
-   * `starting` read. Other stops, an Agent deletion included, do not wait.
+   * `starting` read. Other stops, an Agent deletion included, do not wait. Only a Codex Harness
+   * waits: a dedicated OpenClaw worker serves once its node enrolls with the Agent Gateway, which
+   * the stop has already deleted, so its status could not leave `starting` before the bound.
    */
   private async awaitHarnessStartup(context: HarnessContext): Promise<void> {
     const sandbox = this.sandbox;
     if (
       !isGatewayDrainStop() ||
+      context.revision.harness.id !== "codex" ||
       sandbox.workspaceStorage === "provider" ||
       !(sandbox instanceof OpenShellSandboxDriver)
     ) {
