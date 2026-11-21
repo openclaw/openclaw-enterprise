@@ -1,3 +1,6 @@
+import type { AgentRevision } from "@openclaw-enterprise/contracts";
+import type { DeploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
+
 export type ControllerWorkState = "queued" | "claimed" | "succeeded" | "failed_permanent";
 
 export type ControllerWorkKind = "lifecycle" | "provisioning";
@@ -46,4 +49,59 @@ export interface ClaimedWork extends ControllerWork {
    * shift the age by their skew.
    */
   readonly ageMs: number;
+}
+
+export type ControllerWorkLookup = Pick<ReadonlyMap<string, Readonly<ControllerWork>>, "get">;
+
+export type DeploymentStatus = "queued" | "running" | "succeeded" | "failed";
+
+export interface DeploymentStatusError {
+  readonly code: string;
+  readonly message: string;
+  readonly data?: Readonly<Record<string, unknown>>;
+}
+
+export interface DeploymentStatusResult {
+  readonly deploymentId: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly status: DeploymentStatus;
+  readonly error: DeploymentStatusError | null;
+  readonly repositoryAccess?: DeploymentRepositoryAccessStatus;
+  readonly warnings: readonly PluginDeploymentWarning[];
+  readonly progress: {
+    readonly lastAttempt: {
+      readonly at: string;
+      readonly code: string;
+      readonly message: string;
+    } | null;
+    readonly nextAttemptAt: string | null;
+  } | null;
+  readonly cleanup: {
+    readonly status: DeploymentStatus;
+    readonly nextAttemptAt: string | null;
+  } | null;
+}
+
+export interface ControllerWorkAttempt {
+  readonly at: Date;
+  readonly code: string;
+  /** The refusal a `REFUSED_CANDIDATE_STOP_PENDING` deferral waits to publish. */
+  readonly refusal?: string;
+}
+
+export interface PluginDeploymentWarning {
+  readonly code: "PLUGIN_INSTALL_FAILED" | "PLUGIN_AUTH_REQUIRED";
+  readonly pluginId: string;
+}
+
+export function workMatchesRevision(
+  work: ControllerWork,
+  revision: Pick<AgentRevision, "id" | "namespaceId" | "agentId">,
+): boolean {
+  return (
+    work.namespaceId === revision.namespaceId &&
+    work.agentId === revision.agentId &&
+    work.revisionId === revision.id
+  );
 }
