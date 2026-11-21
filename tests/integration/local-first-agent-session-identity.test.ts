@@ -16,6 +16,33 @@ const placementFromDescription = runInNewContext(
 const session = { key: "agent:main:identity-proof", sessionId: "owned-session" };
 const ownedPlacement = { state: "active", environmentId: "owned-environment" };
 
+test("native model failure reports only the bounded Credential Proxy refusal", () => {
+  const project = (stage: string, audit: object) => {
+    const diagnostic = nativeFirstAgentProofDiagnostic(stage, {
+      credentialProxyAudit: "unsupported-operation",
+      credentialProxyRule: 6,
+      requestId: "private-fixture-request",
+      ...audit,
+    });
+    assert.ok(diagnostic && "worker" in diagnostic);
+    return diagnostic.worker;
+  };
+  assert.deepEqual(project("model-outcome", {}), {
+    credentialProxyAudit: "unsupported-operation",
+    credentialProxyRule: 6,
+  });
+  assert.deepEqual(project("model-outcome", { credentialProxyRule: "private-fixture" }), {
+    credentialProxyAudit: "unsupported-operation",
+  });
+  assert.deepEqual(project("model-outcome", { credentialProxyRule: 256 }), {
+    credentialProxyAudit: "unsupported-operation",
+  });
+  assert.deepEqual(project("model-outcome", { credentialProxyAudit: "ambiguous" }), {
+    credentialProxyAudit: "ambiguous",
+  });
+  assert.deepEqual(project("model-history", {}), {});
+});
+
 test("native placement capture rejects foreign or missing identity before reading placement", () => {
   for (const sessionId of ["foreign-session", undefined]) {
     for (const initial of [undefined, ownedPlacement]) {
@@ -89,6 +116,63 @@ test("native placement capture preserves owned failure and later fresh diagnosti
     if (refresh === "foreign") {
       assert.equal(worker.terminalReason, "bundle-http-403");
     }
+  }
+});
+
+test("native journal lookup requires a fresh unchanged placement for the acknowledged session", async () => {
+  const placement = { ...ownedPlacement, activeOwnerEpoch: 6, generation: 8 };
+  const acknowledged = { runId: "acknowledged-run", status: "started" };
+  for (const [observedSessionId, observedPlacement, acknowledgement] of [
+    [session.sessionId, placement, acknowledged],
+    ["foreign-session", placement, acknowledged],
+    [session.sessionId, { ...placement, generation: 9 }, acknowledged],
+    [session.sessionId, { ...placement, activeOwnerEpoch: 7 }, acknowledged],
+    [session.sessionId, placement, { ...acknowledged, runId: "foreign-run" }],
+    [session.sessionId, placement, { ...acknowledged, status: "in_flight" }],
+  ] as const) {
+    const worker = await collectNativeWorkerFailure({
+      session,
+      lastPlacement: placement,
+      expectedNodeId: undefined,
+      elapsedMs: 1,
+      runId: "acknowledged-run",
+      outcome: { status: "error" },
+      error: undefined,
+      journalTurn: {
+        acknowledgement,
+        expectedRunId: acknowledged.runId,
+        gatewayBootId: "acknowledging-gateway-boot",
+      },
+      request: async (method: string) => {
+        switch (method) {
+          case "sessions.describe":
+            return { session: { sessionId: observedSessionId, placement: observedPlacement } };
+          case "environments.status":
+            return { id: placement.environmentId };
+          case "node.list":
+            return { nodes: [] };
+          case "chat.history":
+            return { messages: [] };
+          default:
+            throw new Error("Unexpected fixture read");
+        }
+      },
+    });
+    assert.deepEqual(
+      worker.journalBinding,
+      observedSessionId === session.sessionId &&
+        observedPlacement === placement &&
+        acknowledgement === acknowledged
+        ? {
+            gatewayBootId: "acknowledging-gateway-boot",
+            sessionId: session.sessionId,
+            environmentId: placement.environmentId,
+            ownerEpoch: 6,
+            generation: 8,
+            runId: "acknowledged-run",
+          }
+        : undefined,
+    );
   }
 });
 
