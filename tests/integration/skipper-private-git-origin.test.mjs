@@ -814,20 +814,40 @@ test("the installed Skipper model requires terminal success and keeps failure di
     ),
     "SKIPPER_COMPUTE_DONE_skipper-test",
   );
-  for (const output of [
-    nativeToolOutput({
-      exit: 1,
-      output: "SKIPPER_COMPUTE_DONE_skipper-test\nprivate-error-canary",
-    }),
-    nativeToolOutput({
-      exit: 0,
-      output: "Process running with session ID 99\nprivate-error-canary",
-    }),
-    "private-error-canary",
+  const echoed = "`private-error-canary SKIPPER_COMPUTE_DONE_skipper-test`";
+  const denied =
+    "exec_command failed: CreateProcess { message: " +
+    JSON.stringify(
+      "Rejected(" +
+        JSON.stringify(
+          echoed + " rejected: rm -f style commands are not permitted. Use a safer approach",
+        ) +
+        ")",
+    ) +
+    " }";
+  for (const [output, status] of [
+    [
+      nativeToolOutput({
+        exit: 1,
+        output: "SKIPPER_COMPUTE_DONE_skipper-test\nprivate-error-canary",
+      }),
+      "completed",
+    ],
+    [
+      nativeToolOutput({
+        exit: 0,
+        output: "Process running with session ID 99\nprivate-error-canary",
+      }),
+      "completed",
+    ],
+    ["private-error-canary", "unrecognized"],
+    [denied, "tool-denied"],
+    ["private-error-canary " + denied, "unrecognized"],
   ]) {
     const model = await controlledModel(t);
     const initial = toolCall(model.next());
     assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
+    assert.equal(model.observations.at(-1).status, status);
     assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);
     assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
     assert.equal(
