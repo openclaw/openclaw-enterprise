@@ -184,6 +184,28 @@ test(
     assert.equal(saved.status, 200);
     assert.deepEqual(saved.data.networkProxy, { url, credentialSecretId: secretId });
     assert.equal(JSON.stringify(saved).includes(authorization), false);
+
+    // Unsupported proxy protocols and PAC documents must not replace an admitted selection.
+    for (const rejectedUrl of [
+      "socks5://proxy.example:1080",
+      "pac+http://proxy.example/proxy.pac",
+      `${url}/proxy.pac`,
+    ]) {
+      const rejected = await topology.request("PATCH", agentPath, {
+        networkProxy: { url: rejectedUrl },
+      });
+      assert.equal(rejected.status, 400);
+      assert.equal(rejected.error?.code, "INVALID_REQUEST");
+      assert.equal(
+        JSON.stringify(rejected).includes(rejectedUrl),
+        false,
+        "Proxy validation must not echo the submitted URL.",
+      );
+      const unchanged = await topology.request("GET", agentPath);
+      assert.equal(unchanged.status, 200);
+      assert.deepEqual(unchanged.data.networkProxy, { url, credentialSecretId: secretId });
+    }
+
     const previous = await topology.request("GET", `${agentPath}/revisions/${previousRevisionId}`);
     assert.equal(previous.status, 200);
     assert.equal(
