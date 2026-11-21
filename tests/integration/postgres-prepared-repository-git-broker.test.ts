@@ -47,8 +47,15 @@ import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
+import {
+  backendDefinition,
+  createAccessTokenServiceAccount,
+  createBackendWorkerDrivers,
+  poolWithOneBackendBindingReadFault,
+  seedBackendBinding,
+} from "../helpers/postgres-backend-state.mjs";
 import type {
+  BackendDefinition,
   ComputeDriver,
   RepositoryCredentialRuntimeBinding,
 } from "../../packages/contracts/src/index.ts";
@@ -326,6 +333,9 @@ for (const outcome of [
   "inference unavailable",
   "custody read recovers",
   "unexpected custody family",
+  "model account changes",
+  "model account binding revoked",
+  "model Secret unavailable",
 ] as const) {
   test(
     `finite native Git binding removal: ${outcome}`,
@@ -333,16 +343,15 @@ for (const outcome of [
     async (t) => {
       const backendId = "github-fixture";
       const driverId = "repository-credentials";
-      const f = await setupNativeWithdrawal(t, {
-        backends: [
-          {
-            id: backendId,
-            type: "github",
-            configuration: { registryPath: "/unused/controlled-registry.json" },
-            drivers: { repo: driverId },
-          },
-        ],
-      });
+      const modelProvider = outcome.startsWith("model account") ? backendDefinition() : undefined;
+      const modelBackends = modelProvider === undefined ? [] : [modelProvider];
+      const gitBackend: BackendDefinition = {
+        id: backendId,
+        type: "github",
+        configuration: { registryPath: "/unused/controlled-registry.json" },
+        drivers: { repo: driverId },
+      };
+      const f = await setupNativeWithdrawal(t, { backends: [...modelBackends, gitBackend] });
       const clock = createControlledClock();
       const startedWall = clock.wallNow();
       const git = await startRegistryCredentialServiceFixture(t, {
@@ -404,7 +413,21 @@ for (const outcome of [
       t.after(() => prepared.close());
       f.controller.registerDriver(driver);
       f.controller.selectDriver("repo", driver.id);
-      const owner = await f.agent("finite-native-withdrawal", { executionMode: "dedicated" });
+      const modelAccount =
+        modelProvider === undefined
+          ? undefined
+          : await createAccessTokenServiceAccount(f.state, f.namespace.id, "native-model");
+      if (modelAccount !== undefined) {
+        await seedBackendBinding(f.observerPool, modelAccount);
+      }
+      const owner = await f.agent("finite-native-withdrawal", {
+        executionMode: "dedicated",
+        ...(modelAccount &&
+          modelProvider && {
+            serviceAccountId: modelAccount.id,
+            backendId: modelProvider.id,
+          }),
+      });
       const selections = [{ repositoryRef: "repo-a", profile: "git-write" }];
       await f.controller.updateAgent(f.actor.id, {
         namespaceId: f.namespace.id,
@@ -459,8 +482,45 @@ for (const outcome of [
       assert.ok(observeNativeRepositoryWithdrawal);
       let failCustodyRead = false;
       let failedCustodyReads = 0;
-      const configured = createBackendWorkerDrivers(compute, []);
-      const startWorker = async (pool = f.workerPool) => {
+      const configured = createBackendWorkerDrivers(compute, modelBackends);
+      let omitModelSecret = false;
+      let modelSecretMisses = 0;
+      const auth = candidate.harnessAuth;
+      // Active references protect this Secret from deletion. Inject a successful
+      // empty result at its exact storage read to exercise the authoritative miss.
+      const secretReadPool: Parameters<typeof createControllerWorker>[0]["pool"] = {
+        end: () => f.workerPool.end(),
+        query: (sql, values) =>
+          f.workerPool.query(sql, values === undefined ? undefined : [...values]),
+        async connect() {
+          const client = await f.workerPool.connect();
+          return {
+            release: (discard) => client.release(discard),
+            async query(sql, values) {
+              const result = await client.query(
+                sql,
+                values === undefined ? undefined : [...values],
+              );
+              if (
+                omitModelSecret &&
+                "source" in auth &&
+                auth.source.kind === "secret" &&
+                sql.includes("FROM occ.secrets AS s") &&
+                values?.[0] === auth.source.namespaceId &&
+                values[1] === auth.source.id
+              ) {
+                assert.equal(result.rowCount, 1);
+                modelSecretMisses++;
+                return { ...result, rows: [], rowCount: 0 };
+              }
+              return result;
+            },
+          };
+        },
+      };
+      const startWorker = async (
+        pool: Parameters<typeof createControllerWorker>[0]["pool"] = f.workerPool,
+      ) => {
         const worker = createControllerWorker({
           pool,
           pollIntervalMs: 15,
@@ -492,7 +552,9 @@ for (const outcome of [
         await worker.start();
         return worker;
       };
-      let worker = await startWorker();
+      let worker = await startWorker(
+        outcome === "model Secret unavailable" ? secretReadPool : f.workerPool,
+      );
       t.after(() => worker.stop());
       await f.work(candidate, "succeeded");
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
@@ -580,6 +642,81 @@ for (const outcome of [
         configurationId: owner.configurationId,
         repositoryBindings: selections,
       });
+      const runCleanupPass = async () => {
+        const beforeRetry = statuses.length;
+        assert.equal(
+          (
+            await f.observerPool.query(
+              "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE idempotency_key=$1 AND state='queued'",
+              [key],
+            )
+          ).rowCount,
+          1,
+        );
+        return waitFor(
+          "the same finite cleanup claim to publish its outcome",
+          async () => statuses.slice(beforeRetry).find(({ workId }) => workId === key),
+          10_000,
+        );
+      };
+      if (outcome.startsWith("model ")) {
+        // Leave the issuer unconfirmed after the first fenced cleanup pass.
+        if (outcome === "model account changes") {
+          assert.ok(modelAccount);
+          await worker.stop();
+          worker = await startWorker(poolWithOneBackendBindingReadFault(f.createWorkerPool()));
+          const interrupted = await runCleanupPass();
+          assert.equal(interrupted.code, "REPOSITORY_CLEANUP_PENDING");
+          assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+          assert.deepEqual(stops, []);
+          assert.ok(
+            (
+              await f.state.transact((unit) =>
+                unit.serviceAccounts.updateCredential(f.namespace.id, modelAccount.id, {
+                  kind: "access_token",
+                  secretRef: { name: `rotated-model-${randomUUID()}`, key: "token" },
+                }),
+              )
+            )?.credential,
+          );
+        } else if (outcome === "model account binding revoked") {
+          assert.ok(modelAccount);
+          const binding = await f.observerPool.query(
+            "UPDATE occ.service_account_driver_bindings SET external_credential_id=NULL WHERE namespace_id=$1 AND service_account_id=$2",
+            [f.namespace.id, modelAccount.id],
+          );
+          assert.equal(binding.rowCount, 1);
+        } else {
+          omitModelSecret = true;
+        }
+        const retirement = await runCleanupPass();
+        assert.equal(retirement.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor(
+          "terminal work to stop the exact original revision",
+          async () =>
+            (await f.currentAgent(owner))?.activeRevisionId === undefined ? true : undefined,
+          10_000,
+        );
+        assert.deepEqual(stops, [candidate.id]);
+        assert.equal(runtimeObservations, 0);
+        if (outcome === "model Secret unavailable") {
+          assert.equal(modelSecretMisses, 1);
+        }
+        assert.equal(
+          await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+          401,
+        );
+        assert.equal(origin.traffic().requests, initial + 1);
+        assert.equal(subject.github.issuesOfTokens.length, 1);
+        assert.equal(
+          subject.github.trace.filter(
+            ({ method, target }) => method === "DELETE" && target === "/installation/token",
+          ).length,
+          0,
+        );
+        assert.equal(deliveries.length, 1);
+        return;
+      }
       if (outcome === "unconfirmed revocation") {
         subject.github.disconnectAfterMutation("DELETE", "/installation/token");
         await assert.rejects(prepared.maintain(), { message: "provider-unavailable" });
@@ -619,23 +756,6 @@ for (const outcome of [
         );
         assert.equal(extra.rowCount, 1);
       }
-      const runCleanupPass = async () => {
-        const beforeRetry = statuses.length;
-        assert.equal(
-          (
-            await f.observerPool.query(
-              "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE idempotency_key=$1 AND state='queued'",
-              [key],
-            )
-          ).rowCount,
-          1,
-        );
-        return waitFor(
-          "the same finite cleanup claim to publish its outcome",
-          async () => statuses.slice(beforeRetry).find(({ workId }) => workId === key),
-          10_000,
-        );
-      };
       if (outcome === "custody read recovers") {
         failCustodyRead = true;
         const deferred = await runCleanupPass();

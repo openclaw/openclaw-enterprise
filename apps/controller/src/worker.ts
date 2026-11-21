@@ -2738,23 +2738,32 @@ export class ControllerWorker {
       ) {
         return { withdrawal: "pending" };
       }
+      const nativeRemoval =
+        expiry === "removal" && this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision);
       const secrets = await this.resolveRevisionSecretContext(revision);
       if ("result" in secrets) {
-        // Only the independently required Harness source produces this result. Optional
-        // withdrawn sources remain detached and cannot require retirement of a healthy Agent.
+        // These results describe the required Harness source. A rejected State read
+        // still reaches the cleanup retry path.
+        const lostModelSource =
+          secrets.result.code === "CREDENTIAL_WITHDRAWN" ||
+          (nativeRemoval && secrets.result.code === "HARNESS_AUTH_SOURCE_UNAVAILABLE");
         return {
-          withdrawal: secrets.result.code === "CREDENTIAL_WITHDRAWN" ? "retire-runtime" : "pending",
+          withdrawal: lostModelSource ? "retire-runtime" : "pending",
         };
       }
-      if ((await this.resolveRevisionBackend(revision)) !== undefined) {
-        return { withdrawal: "pending" };
+      const backend = await this.resolveRevisionBackend(revision);
+      if (backend !== undefined) {
+        // The read succeeded and this revision no longer has its admitted account
+        // credential or issued Backend binding.
+        const lostModelAccount =
+          nativeRemoval &&
+          (backend.code === "HARNESS_AUTH_SOURCE_CHANGED" ||
+            backend.code === "SERVICE_ACCOUNT_BACKEND_MISMATCH");
+        return { withdrawal: lostModelAccount ? "retire-runtime" : "pending" };
       }
       // Expiry recovery observes the original operation; it must not replay source detaches.
       signal.throwIfAborted();
-      if (
-        expiry === "removal" &&
-        this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision)
-      ) {
+      if (nativeRemoval) {
         return {
           withdrawal: await this.withdrawFiniteNativeRepositoryAccess(revision, signal),
           nativeRemoval: true,
