@@ -119,9 +119,11 @@ function validScopedRestWrites(
     !scope ||
     typeof scope !== "object" ||
     Array.isArray(scope) ||
-    Object.keys(scope).length !== 1 ||
+    Object.keys(scope).length !== 2 ||
     !("pullRequestRepositories" in scope) ||
+    !("issueCreationRepositories" in scope) ||
     !Object.hasOwn(scope, "pullRequestRepositories") ||
+    !Object.hasOwn(scope, "issueCreationRepositories") ||
     !Array.isArray(repositories) ||
     ![...repositories].every((entry) => typeof entry?.repository === "string")
   ) {
@@ -132,7 +134,7 @@ function validScopedRestWrites(
     Array.isArray(list) &&
     new Set(list).size === list.length &&
     [...list].every((repository) => typeof repository === "string" && selected.has(repository));
-  return validList(scope.pullRequestRepositories);
+  return validList(scope.pullRequestRepositories) && validList(scope.issueCreationRepositories);
 }
 
 /**

@@ -220,6 +220,16 @@ function isUnqualifiedBranch(value: unknown): boolean {
   );
 }
 
+function permitsIssueCreation(body: object): boolean {
+  return (
+    "title" in body &&
+    typeof body.title === "string" &&
+    body.title.trim().length > 0 &&
+    (!("body" in body) || typeof body.body === "string") &&
+    Object.keys(body).every((key) => key === "title" || key === "body")
+  );
+}
+
 function permitsSameRepositoryPull(body: object): boolean {
   // head_repo selects a fork and issue converts an existing issue. Only accept creation fields.
   const fields = ["title", "head", "base", "body", "draft", "maintainer_can_modify"];
@@ -295,6 +305,9 @@ function installationApiOperation(
     if (scopedWrite) {
       if (method !== "POST") {
         return;
+      }
+      if (scopedWrite.issueCreationRepositories.some((repo) => path === `/repos/${repo}/issues`)) {
+        return permitsIssueCreation(body) ? "github-rest" : undefined;
       }
       if (
         !scopedWrite.pullRequestRepositories.some((repo) => path === `/repos/${repo}/pulls`) ||

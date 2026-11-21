@@ -147,15 +147,20 @@ function scopedApiEndpoints(
   permissions: readonly OpenShellScopedRestGrant[] | undefined,
 ): readonly OpenShellProviderProfileEndpoint[] {
   const endpoints: OpenShellProviderProfileEndpoint[] = [];
-  for (const { repository, createPullRequests, readIssues } of repositoryGitRestOperations(
-    policy,
-    permissions,
-  )) {
+  for (const {
+    repository,
+    createIssues,
+    createPullRequests,
+    readIssues,
+  } of repositoryGitRestOperations(policy, permissions)) {
     const rules = [];
     if (createPullRequests) {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
     }
     const path = `/repos/${repository}/issues`;
+    if (createIssues) {
+      rules.push({ allow: { method: "POST", path } });
+    }
     if (readIssues) {
       rules.push({ allow: { method: "GET", path } });
       // OpenShell matches globs. An unbounded * also admits /issues/comments and /issues/events.

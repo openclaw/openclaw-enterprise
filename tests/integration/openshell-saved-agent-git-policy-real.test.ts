@@ -30,11 +30,17 @@ const emptyDeployRefusal = {
 };
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
-const restWrites = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST_WRITE;
+const restProfile = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST_WRITE;
 assert.ok(
-  restWrites === undefined || restWrites === "v1",
+  restProfile === undefined ||
+    restProfile === "v1" ||
+    restProfile === "v2" ||
+    restProfile === "v2-issues-read",
   "Unsupported saved Agent REST write profile",
 );
+const readOnlyIssues = restProfile === "v2-issues-read";
+const restWrites = restProfile === "v2-issues-read" ? "v2" : restProfile;
+const canCreateIssues = restWrites === "v2" && !readOnlyIssues;
 const issueReads =
   process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST === "reads" || restWrites !== undefined;
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
@@ -248,7 +254,10 @@ async function exerciseSavedIssueReads(
   assert.ok(token && !token.revoked);
   assert.deepEqual(
     token.permissions,
-    restWrites ? scopedRestWriteFixturePermissions : scopedRestFixturePermissions,
+    restWrites && !readOnlyIssues
+      ? scopedRestWriteFixturePermissions
+      : scopedRestFixturePermissions,
+    "Issued GitHub permissions must match the independent fixture authority",
   );
   assert.ok(Array.isArray(token.repositoryIds));
   assert.deepEqual(
@@ -283,11 +292,12 @@ async function exerciseSavedIssueReads(
           credentialIndex: deployed.credentialIndex,
         },
       ]);
+      const created = network.createdIssue(repository);
       const expected = { number: 42, title: `Fixture issue in ${repository}`, state: "open" };
       assert.ok(
         isDeepStrictEqual(
           JSON.parse(result.stdout.toString("utf8")),
-          route === "issues" ? [expected] : expected,
+          route === "issues" ? (created ? [expected, created] : [expected]) : expected,
         ),
         "Unexpected controlled issue response",
       );
@@ -308,6 +318,7 @@ async function exerciseSavedIssueReads(
 
 const pull = { title: "Saved Agent pull", head: "approved", base: "main" };
 const issue = { title: "Saved Agent issue", body: "From the saved repository policy" };
+const expectedIssue = { number: 43, ...issue, state: "open" };
 const bPulls = "repos/fixture/b/pulls";
 const bIssues = "repos/fixture/b/issues";
 
@@ -403,18 +414,25 @@ async function exerciseSavedRestWrites(
     await deny(`repos/fixture/${repository}/pulls`, pull);
     await deny(`repos/fixture/${repository}/issues`, issue);
   }
-  await deny(bIssues, issue);
+  if (!canCreateIssues) {
+    await deny(bIssues, issue);
+  }
   assert.equal(network.createdIssue("fixture/b"), undefined);
-  assert.equal(await callbacks.read(), count);
+  assert.equal(await callbacks.read(), count, "Forbidden REST writes must precede validation");
 
   // Direct JSON clients can send shapes the bundled CLI never generates.
-  const rejectedBodies = [
-    '{"title":',
-    JSON.stringify({ ...pull, head: "fork:approved" }),
-    JSON.stringify({ issue: 42, head: pull.head, base: pull.base }),
-  ];
-  for (const body of rejectedBodies) {
-    await refuseRawPull(fixture, execute, deployed, body);
+  if (restWrites === "v1") {
+    const rejectedBodies = [
+      '{"title":',
+      JSON.stringify({ ...pull, head: "fork:approved" }),
+      JSON.stringify({ issue: 42, head: pull.head, base: pull.base }),
+    ];
+    for (const body of rejectedBodies) {
+      await refuseRawPull(fixture, execute, deployed, body);
+      assert.equal(await callbacks.read(), ++count);
+    }
+  } else {
+    await deny(bPulls, { ...pull, head: "fork:approved" });
     assert.equal(await callbacks.read(), ++count);
   }
 
@@ -431,14 +449,27 @@ async function exerciseSavedRestWrites(
   assert.equal(created.base.repo.full_name, "fixture/b");
   assert.deepEqual(response, created);
 
+  if (canCreateIssues) {
+    await deny(bIssues, { ...issue, assignee: "foreign" });
+    assert.equal(await callbacks.read(), ++count);
+    assert.equal(network.createdIssue("fixture/b"), undefined);
+    assert.deepEqual(await create(bIssues, issue, "rest-issue-create"), expectedIssue);
+    assert.deepEqual(network.createdIssue("fixture/b"), expectedIssue);
+  }
   assert.equal(await callbacks.disable(), count);
   await exerciseSavedIssueReads(fixture, execute, deployed, count);
   // The host stays the same across the redirect. The new repository path still
   // has to be authorized before any follow-up request can reach the origin.
-  await refuseIssueRedirect(fixture, execute, deployed);
-  assert.equal(await callbacks.read(), count);
+  if (restWrites === "v1") {
+    await refuseIssueRedirect(fixture, execute, deployed);
+    assert.equal(await callbacks.read(), count);
+  }
   await deny(bPulls, pull);
   assert.equal(await callbacks.read(), ++count);
+  if (canCreateIssues) {
+    await deny(bIssues, issue);
+    assert.equal(await callbacks.read(), ++count);
+  }
   return count;
 }
 
@@ -712,7 +743,9 @@ git -C "$local_dir" rev-parse 'refs/heads/${branch}^{commit}'`,
   if (restWrites) {
     let validated: number | undefined;
     await t.test(
-      "Saved Agent validates v1 REST writes and preserves reads during validator outage",
+      readOnlyIssues
+        ? "Saved Agent refuses issue creation with read-only GitHub Issues authority"
+        : `Saved Agent validates ${restWrites} REST writes and preserves reads during validator outage`,
       async () => {
         validated = await exerciseSavedRestWrites(
           fixture,
@@ -732,8 +765,11 @@ git -C "$local_dir" rev-parse 'refs/heads/${branch}^{commit}'`,
   const successor = await replace(originalIndex, expectedCallbacks);
   if (restWrites) {
     await refuseGh(fixture, execute, successor, bPulls, { ...pull, title: "After downgrade" });
-    await refuseGh(fixture, execute, successor, bIssues, issue);
-    assert.equal(network.createdIssue("fixture/b"), undefined);
+    await refuseGh(fixture, execute, successor, bIssues, { ...issue, title: "After downgrade" });
+    assert.deepEqual(
+      network.createdIssue("fixture/b"),
+      canCreateIssues ? expectedIssue : undefined,
+    );
     assert.equal(network.pullRequest("fixture/b")?.head.sha, pushed);
     await verifyCallbackCount();
   }
@@ -844,7 +880,7 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
       const fixture = await createOpenShellGitInstallation(t, {
         nativeGit: true,
         issueReads,
-        ...(restWrites && { restWrites }),
+        ...(restWrites && { restWrites, readOnlyIssues }),
       });
       const { callbacks, gatewayClient, workspace, request } = fixture;
       assert.ok(callbacks);
@@ -1076,6 +1112,9 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
                 rules: [
                   ...(restWrites && access === "write"
                     ? [{ allow: { method: "POST", path: `/repos/${repository}/pulls` } }]
+                    : []),
+                  ...(canCreateIssues && access === "write"
+                    ? [{ allow: { method: "POST", path } }]
                     : []),
                   { allow: { method: "GET", path } },
                   ...Array.from({ length: 19 }, (_, width) => ({

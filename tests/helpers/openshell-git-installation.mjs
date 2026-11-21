@@ -251,7 +251,7 @@ async function certificates(
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, issueReads?: boolean, restWrites?: "v1" }} [options]
+ * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, issueReads?: boolean, restWrites?: "v1" | "v2", readOnlyIssues?: boolean }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
@@ -262,6 +262,7 @@ export function createOpenShellGitInstallation(
     nativeGit = false,
     issueReads = false,
     restWrites,
+    readOnlyIssues = false,
   } = {},
 ) {
   return ownFirstAgentWork(t)(
@@ -272,19 +273,30 @@ export function createOpenShellGitInstallation(
       nativeGit,
       issueReads,
       restWrites,
+      readOnlyIssues,
     }),
   );
 }
 
 async function installOpenShellGit(
   t,
-  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, issueReads, restWrites },
+  {
+    onSetupStep,
+    witnessIssuedGit,
+    allowStandingApprovals,
+    nativeGit,
+    issueReads,
+    restWrites,
+    readOnlyIssues,
+  },
 ) {
   assert.ok(
     !nativeGit || !allowStandingApprovals,
     "Native Git requires the finite selected-repository fixture",
   );
   assert.ok(!restWrites || issueReads);
+  assert.ok(!readOnlyIssues || restWrites === "v2", "The Issues read control requires REST v2");
+  const issueWriteAuthority = Boolean(restWrites) && !readOnlyIssues;
   assert.ok(!issueReads || nativeGit, "Issue reads require the native selected-repository fixture");
   if (nativeGit) {
     assert.equal(process.env.OPENAI_API_KEY, "fixture-only-no-model-call");
@@ -526,7 +538,7 @@ async function installOpenShellGit(
     advertisedHost: originHost,
     witnessIssuedGit: nativeGit || witnessIssuedGit,
     ...(nativeGit && { networkAcl: "issued", repository: "fixture/a" }),
-    scopedRest: restWrites ? "writes" : issueReads,
+    scopedRest: issueWriteAuthority ? "writes" : issueReads,
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
@@ -625,7 +637,7 @@ async function installOpenShellGit(
           namespaceId: space.id,
           profiles: ["github-repository"],
           permissions: optedIn
-            ? restWrites
+            ? issueWriteAuthority
               ? scopedRestWriteFixturePermissions
               : scopedRestFixturePermissions
             : { metadata: "read", contents: "write" },

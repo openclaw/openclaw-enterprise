@@ -254,8 +254,9 @@ function scopedRestWrites(
   repositories: ProtectedGitHubRepositoryMaterial["repositories"],
 ): ScopedRepositoryRestWrites {
   const pullRequestRepositories: string[] = [];
+  const issueCreationRepositories: string[] = [];
   if (repositoryNetworkPolicy === undefined || !("scope" in delivery)) {
-    return { pullRequestRepositories };
+    return { pullRequestRepositories, issueCreationRepositories };
   }
   const selected = new Set(repositories.map(({ repository }) => repository));
   for (const operation of repositoryGitRestOperations(
@@ -268,8 +269,11 @@ function scopedRestWrites(
     if (operation.createPullRequests && delivery.permissions.pull_requests === "write") {
       pullRequestRepositories.push(operation.repository);
     }
+    if (operation.createIssues && delivery.permissions.issues === "write") {
+      issueCreationRepositories.push(operation.repository);
+    }
   }
-  return { pullRequestRepositories };
+  return { pullRequestRepositories, issueCreationRepositories };
 }
 
 interface Entry extends OpenShellGitObservationEntry {

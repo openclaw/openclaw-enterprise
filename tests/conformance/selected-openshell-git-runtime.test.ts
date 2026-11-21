@@ -98,6 +98,7 @@ type ScopedRest = {
   writes?: true;
   permissions: Record<string, string>;
   optedRepository?: string;
+  scopedRest?: "v1" | "v2";
 };
 
 async function selectedV5(
@@ -143,7 +144,7 @@ async function selectedV5(
                 (rest.optedRepository === undefined ||
                   rest.optedRepository === repo.repository) && {
                   ...(rest.writes && { nativeRestWrites: true }),
-                  scopedRest: "v1",
+                  scopedRest: rest.scopedRest ?? "v1",
                 }),
             },
           ],
@@ -3686,6 +3687,24 @@ test("native issue reads intersect the selected permissions, registry opt-in and
     { method: "POST", path: "/repos/example/delivery/pulls" },
   ]);
   assert.deepEqual(
+    await apiRules({ scopedRest: "v2", permissions: { issues: "read" } }, true),
+    issues,
+  );
+  assert.deepEqual(await apiRules({ scopedRest: "v2", permissions: {} }), []);
+  const writable = await apiRules({
+    writes: true,
+    scopedRest: "v2",
+    permissions: { issues: "write" },
+  });
+  assert.deepEqual(
+    writable.filter(({ method }) => method === "GET"),
+    issues,
+  );
+  assert.deepEqual(
+    writable.filter(({ method }) => method !== "GET"),
+    [{ method: "POST", path: "/repos/example/delivery/issues" }],
+  );
+  assert.deepEqual(
     await apiRules(
       { permissions: { issues: "read" }, optedRepository: "example/application" },
       true,
@@ -3935,9 +3954,30 @@ test("native writes require the matching POST-only service and attached selector
   assert.ok(binding?.scope === "github-repository" && binding.nativeGit);
   assert.deepEqual(binding.scopedRestWrites, {
     pullRequestRepositories: ["example/delivery"],
+    issueCreationRepositories: [],
   });
   service.http_request_methods = ["GET"];
   assert.equal(await held.lookup(), undefined);
+});
+
+test("native v2 binds issue creation independently of pull creation after release", async (t) => {
+  const held = await heldGit(t, true, undefined, {
+    scopedRest: "v2",
+    writes: true,
+    permissions: { issues: "write" },
+  });
+  await held.reconcile();
+  await held.f.runtime.releasePreview(
+    held.revision.id,
+    held.startupId,
+    releaseAttempt(async () => true),
+  );
+  const binding = await held.lookup();
+  assert.ok(binding?.scope === "github-repository" && binding.nativeGit);
+  assert.deepEqual(binding.scopedRestWrites, {
+    pullRequestRepositories: [],
+    issueCreationRepositories: ["example/delivery"],
+  });
 });
 
 test("native issue policy survives Sandbox creation and independent Credential Proxy readback", async (t) => {

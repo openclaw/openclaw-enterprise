@@ -116,6 +116,30 @@ If the result is uncertain, inspect the repository before submitting again.
 To withdraw creation, save Read for the repository and redeploy. Verify that
 the old Sandbox retires.
 
+#### Issue creation
+
+With the same POST validator, set `scopedRest: "v2"` and `nativeRestWrites: true`
+on the selected repository's Namespace registration. Issue creation requires
+an existing `issues: "write"` permission in the GitHub App and registry, plus
+a saved Write grant. Rebind and redeploy. Pull creation still requires its
+own `pull_requests: "write"` permission.
+
+Save a nonblank string `title` and an optional string `body` in `issue.json`.
+The validator rejects other fields, including labels, assignees and milestones.
+
+```json
+{ "title": "Investigate a regression", "body": "Steps to reproduce" }
+```
+
+```sh
+gh api --method POST repos/OWNER/REPO/issues --input issue.json
+```
+
+Verify the returned issue number, title and body in GitHub before retrying an
+uncertain creation. To withdraw issue creation while retaining pull creation,
+select v1, rebind and redeploy. To withdraw both, save Read and redeploy.
+Check retirement of the previous Sandbox.
+
 ## Console access levels
 
 | Console choice          | Configuration value | Meaning                                                                       |
