@@ -15,6 +15,7 @@ import {
   ChannelCredentialError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
+  NetworkProxyValidationError,
   ConfigurationSizeError,
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
@@ -863,6 +864,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
           ? [{ path: destination.bindingsPath, code: destination.code }]
           : pointerDetail(destination.bindingsPath, destination.key, destination.code),
     );
+  }
+  if (error instanceof NetworkProxyValidationError) {
+    return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof NativeWorkerSupportError) {
     return failure(400, "INVALID_REQUEST", error.message);
