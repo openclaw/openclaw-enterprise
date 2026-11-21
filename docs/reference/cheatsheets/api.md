@@ -54,6 +54,7 @@
 
 ### Authentication
 
+- [`listAgentAccountDisplayNames`](../api.md#get-namespacesnamespaceidagentsagentidaccessdisplaynames): Read human account display names for direct bindings to one Agent.
 - [`completeGoogleSignIn`](../api.md#get-apiauthprovidersgooglecallback): Complete an enrolled Google sign-in.
 - [`completeOidcSignIn`](../api.md#get-apiauthprovidersoidccallback): Complete an enrolled OIDC sign-in.
 - [`getAuthProviders`](../api.md#get-apiauthproviders): List configured browser sign-in methods.

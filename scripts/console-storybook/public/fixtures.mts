@@ -91,6 +91,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     accessPolicy?: {
       roles: readonly Static<typeof IAMRoleSchema>[];
       bindings: readonly Static<typeof IAMAccessBindingSchema>[];
+      displayNames?: readonly { principalId: string; displayName: string }[];
     };
     signedOut?: boolean;
     pendingOidcAttempt?: boolean;
@@ -851,6 +852,25 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         const saved = lifecycle.lookupAgent(id);
         if (!saved) {
           return error(404);
+        }
+        if (suffix === "/access-display-names" && method === "GET") {
+          return response(
+            (scenario.accessPolicy?.displayNames ?? []).filter(({ principalId }) =>
+              bindings.some(({ response: policy }) => {
+                if (!("subjectKind" in policy) || policy.subjectKind !== "identity") {
+                  return false;
+                }
+                return (
+                  "subjectId" in policy &&
+                  policy.subjectId === principalId &&
+                  "resourceKind" in policy &&
+                  policy.resourceKind === "agent" &&
+                  "resourceId" in policy &&
+                  policy.resourceId === id
+                );
+              }),
+            ),
+          );
         }
         const policyReply = networkPolicy.serve(id, suffix, method, body, url);
         if (policyReply !== undefined) {

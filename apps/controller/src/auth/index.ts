@@ -398,6 +398,11 @@ export interface ControllerAuth {
     userId: string,
     actor: HumanAuthenticationActor,
   ): Promise<HumanAuthenticationAccount>;
+  readAgentAccountNames?(
+    namespaceId: string,
+    agentId: string,
+    actor: HumanAuthenticationActor,
+  ): Promise<readonly { principalId: string; displayName: string }[]>;
   attachGoogle?(
     userId: string,
     subject: string,
@@ -2146,6 +2151,11 @@ export async function createPostgresControllerAuth(
             : { oidcProviderId: humanLogin.oidcProviderId }),
           readAccount: (userId: string, actor: HumanAuthenticationActor) =>
             persistence!.readAccount(userId, actor),
+          readAgentAccountNames: (
+            namespaceId: string,
+            agentId: string,
+            actor: HumanAuthenticationActor,
+          ) => persistence!.readAgentAccountNames(namespaceId, agentId, actor),
           ...(humanLogin.googleProviderId === undefined
             ? {}
             : {

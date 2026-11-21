@@ -85,7 +85,7 @@ the paths.
 
 | Resource | Operations |
 | --- | --- |
-| [Authentication](#authentication) | 23 operations |
+| [Authentication](#authentication) | 24 operations |
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 10 operations |
@@ -131,6 +131,7 @@ the paths.
 | [`GET /api/auth/session`](#get-apiauthsession) | Inspect authentication without revealing session tokens |
 | [`POST /api/auth/sign-in/email`](#post-apiauthsigninemail) | Sign in with email and password |
 | [`POST /api/auth/sign-out`](#post-apiauthsignout) | Sign out of the current session |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/access-display-names`](#get-namespacesnamespaceidagentsagentidaccessdisplaynames) | Read human account display names for direct bindings to one Agent |
 
 #### `POST /api/auth/accounts`
 
@@ -1452,6 +1453,76 @@ Example response
 ```json
 {
   "data": {},
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/access-display-names`
+
+<span id="get-namespacesnamespaceidagentsagentidaccessdisplaynames"></span>
+
+Read human account display names for direct bindings to one Agent
+
+**Operation ID:** `listAgentAccountDisplayNames`
+
+**Permissions:** Requires a current human Installation administrator, the trusted Console origin, and read access to the exact Namespace and Agent. Returns only stored display names keyed by Principal ID for human accounts with direct bindings to that Agent. Names are available with guarded human authentication; missing names are omitted.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+| `read` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].displayName` | `string` | Yes | — |
+| `data[].principalId` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "displayName": "Morgan Chen",
+      "principalId": "principal-administrator"
+    }
+  ],
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }

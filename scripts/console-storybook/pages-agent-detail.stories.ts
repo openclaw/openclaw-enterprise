@@ -265,6 +265,7 @@ export const AuthenticationRequiredFields = { ...story("agentAuthenticationRequi
 export const WorkspaceRequiredFields = { ...story("agentWorkspaceRequiredFields") };
 export const SharingGranted = { ...story("agentSharingGranted") };
 export const DirectGrantRoster = story("agentDirectGrantRoster");
+export const DirectGrantNamesDenied = story("agentDirectGrantNamesDenied");
 export const DirectGrantRoleUnavailable = story("agentDirectGrantRoleUnavailable");
 export const SharingHoldsNavigation = { ...story("agentSharingHoldsNavigation") };
 export const SharingHoldsAfterDelete = { ...story("agentSharingHoldsAfterDelete") };

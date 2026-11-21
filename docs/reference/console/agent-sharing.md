@@ -25,9 +25,18 @@ not grant OCE Configuration, deployment, Secret or Agent stop permissions. The
 ## Direct grants and removal
 
 **Direct Agent grants** groups explicit bindings to this Agent by subject. The
-policy lists contain Principal IDs, not account names. Service Principals,
-groups, and other identities appear separately from human Principals. Expand a
-row to see the full subject ID and each binding's Role, permissions, and ID.
+console shows the OpenClaw Control Plane (OCC) human account display name when
+available, or the full Principal ID otherwise. Two Principals can have the same
+display name and still have separate rows. Expand a row to see the full,
+selectable subject ID and each binding's Role, permissions, and ID. Service
+Principals, groups, and other identities appear separately.
+
+The optional name read requires a current human Installation administrator,
+the trusted Console origin, and read access to the exact Namespace and Agent.
+With guarded human authentication, it returns only stored names for accounts
+whose Principal has a direct binding to this Agent. A name equal to the account
+email is not shown. The Console does not search for people or list accounts.
+A denied or failed name read does not change the grants or the available actions.
 
 For a Principal, **Open Agent UI · administer** means a listed Role grants
 exact-Agent `administer`. Otherwise **Open chat · operate** means a listed Role

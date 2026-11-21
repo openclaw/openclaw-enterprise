@@ -3916,6 +3916,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   font-weight: var(--weight-semibold);
 }
 
+.agent-access-display-name {
+  overflow-wrap: anywhere;
+}
+
 .agent-access-other-title {
   margin: var(--space-4) 0 var(--space-2);
   font-size: var(--text-md);

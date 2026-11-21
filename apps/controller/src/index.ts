@@ -7,6 +7,7 @@ import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
 import {
   API_REQUEST_AUDIT_ACTIONS,
   AgentDeploymentDiagnosticsResponse,
+  AgentParams,
   AgentRuntimeCredentialResponse,
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
@@ -22,6 +23,7 @@ import {
   PushAgentCredentialsResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
+  EmptyQuery,
   isSecretHarnessAuth,
   isServiceAccountHarnessAuth,
   JsonValue,
@@ -3903,6 +3905,90 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         reply
           .header("cache-control", "no-store")
           .send({ data: account, meta: { requestId: request.id } });
+      },
+    );
+
+    const agentAccountNamesOperation = {
+      operationId: "listAgentAccountDisplayNames",
+      method: "GET",
+      path: "/namespaces/:namespaceId/agents/:agentId/access-display-names",
+      action: "openclaw.auth.accounts.agent_display_names.read",
+      iamAction: "administer",
+      resourceKind: "installation",
+      authorizationTarget: "installation",
+      tags: ["Authentication"],
+      summary: "Read human account display names for direct bindings to one Agent",
+      schema: {},
+    } as unknown as OccApiRoute;
+    routes.get<{ Params: { namespaceId: string; agentId: string } }>(
+      agentAccountNamesOperation.path,
+      {
+        schema: {
+          operationId: agentAccountNamesOperation.operationId,
+          summary: agentAccountNamesOperation.summary,
+          description:
+            "Requires a current human Installation administrator, the trusted Console origin, and read access to the exact Namespace and Agent. Returns only stored display names keyed by Principal ID for human accounts with direct bindings to that Agent. Names are available with guarded human authentication; missing names are omitted.",
+          tags: ["Authentication"],
+          security: [{ sessionCookie: [] }],
+          "x-openclaw-permissions": [
+            { action: "administer", resourceKind: "installation", scope: "requested" },
+            { action: "read", resourceKind: "namespace", scope: "requested" },
+            { action: "read", resourceKind: "agent", scope: "requested" },
+          ],
+          params: AgentParams,
+          querystring: EmptyQuery,
+          response: {
+            ...responses({
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["principalId", "displayName"],
+                properties: {
+                  principalId: { type: "string" },
+                  displayName: { type: "string" },
+                },
+              },
+            }),
+            ...resourceErrors(),
+          },
+        } as FastifySchema,
+        onRequest: async (request) => admit(request, agentAccountNamesOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, agentAccountNamesOperation);
+        },
+      },
+      async (request, reply) => {
+        const context = contexts.get(request);
+        if (!context) {
+          throw dependencyUnavailable();
+        }
+        const actor = await humanAccountActor(request, agentAccountNamesOperation, context);
+        const { namespaceId, agentId } = request.params;
+        const activeController = controller;
+        if (!activeController) {
+          throw dependencyUnavailable();
+        }
+        const requireExactRead = async () => {
+          await activeController.getNamespace(context.actorId, namespaceId);
+          await activeController.getAgent(context.actorId, namespaceId, agentId);
+        };
+        if (!options.auth.readAgentAccountNames) {
+          await requireExactRead();
+        }
+        const data = options.auth.readAgentAccountNames
+          ? await options.auth.readAgentAccountNames(namespaceId, agentId, {
+              ...actor,
+              authorize: async (scope) => {
+                await actor.authorize(scope);
+                // The concrete account owner holds current IAM policy and the actor's session
+                // while these exact resource reads and the name projection complete.
+                await requireExactRead();
+              },
+            })
+          : [];
+        reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
       },
     );
 

@@ -147,11 +147,13 @@ export function renderAgentAccess(
     needsRefresh: false,
     roles: [] as PolicyRole[],
     bindings: [] as PolicyBinding[],
+    names: new Map<string, string>(),
     progress: [] as string[],
     error: null as string | null,
     // Set once the API accepts a write in the current change.
     saved: false,
   };
+  let nameRead: AbortController | undefined;
   // Two cards (spec 3.8): sharing, then the direct grants it lists. The region keeps the
   // "Share Agent" name and holds both.
   section.append(
@@ -259,12 +261,7 @@ export function renderAgentAccess(
       );
       return;
     }
-    const direct = state.bindings.filter(
-      (binding) =>
-        binding.namespaceId === namespaceId &&
-        binding.resourceKind === "agent" &&
-        binding.resourceId === agent.id,
-    );
+    const direct = directBindings();
     if (!direct.length) {
       grants.append(element("p", { className: "muted" }, "No direct Agent grants."));
       if (focusedSubject) {
@@ -273,6 +270,15 @@ export function renderAgentAccess(
       return;
     }
     renderRoster(direct, openRows, focusedSubject, blocked);
+  }
+
+  function directBindings() {
+    return state.bindings.filter(
+      (binding) =>
+        binding.namespaceId === namespaceId &&
+        binding.resourceKind === "agent" &&
+        binding.resourceId === agent.id,
+    );
   }
 
   function renderRoster(
@@ -318,11 +324,13 @@ export function renderAgentAccess(
           "span",
           {},
           element("span", { className: "agent-access-subject-kind" }, label),
-          element(
-            "strong",
-            { className: "resource-id" },
-            subjectId.length > 20 ? shortId(subjectId) : subjectId,
-          ),
+          isPrincipal
+            ? principalLabel(subjectId)
+            : element(
+                "strong",
+                { className: "resource-id" },
+                subjectId.length > 20 ? shortId(subjectId) : subjectId,
+              ),
         ),
         ...(isPrincipal
           ? [element("span", { className: "badge" }, directBrowserGrant(entries))]
@@ -356,7 +364,7 @@ export function renderAgentAccess(
         element(
           "p",
           { className: "hint" },
-          "Policy lists contain Principal IDs, not account names.",
+          "Expand a row to see the full Principal ID. If no account name is available, the row shows the ID.",
         ),
         principals,
       );
@@ -369,6 +377,68 @@ export function renderAgentAccess(
     }
     if (focusedSubject) {
       (restoreFocus ?? refresh).focus({ preventScroll: true });
+    }
+  }
+
+  function principalLabel(principalId: string) {
+    const name = state.names.get(principalId);
+    return element(
+      "strong",
+      {
+        className: name === undefined ? "resource-id" : "agent-access-display-name",
+        "data-principal-label": principalId,
+      },
+      name ?? principalId,
+    );
+  }
+
+  async function loadDisplayNames() {
+    const principals = new Set(
+      directBindings()
+        .filter((binding) => subjectLabel(binding) === "Principal")
+        .map((binding) => binding.subjectId),
+    );
+    if (!principals.size || !state.loaded || state.needsRefresh) {
+      return;
+    }
+    const read = new AbortController();
+    nameRead = read;
+    try {
+      // No caller-supplied identities: the server derives the roster from the exact Agent.
+      const response = await context.request(
+        `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agent.id)}/access-display-names`,
+        { signal: read.signal },
+      );
+      if (!context.isCurrent() || read.signal.aborted || !Array.isArray(response)) {
+        return;
+      }
+      for (const entry of response) {
+        const { principalId, displayName } = responseFields(entry);
+        if (
+          typeof principalId === "string" &&
+          principals.has(principalId) &&
+          typeof displayName === "string" &&
+          displayName.trim()
+        ) {
+          state.names.set(principalId, displayName.trim());
+        }
+      }
+      // A late name response updates only the label. Keep disclosure, focus and writes intact.
+      for (const label of grants.querySelectorAll<HTMLElement>("[data-principal-label]")) {
+        const principalId = label.dataset.principalLabel;
+        if (principalId && state.names.has(principalId)) {
+          label.replaceWith(principalLabel(principalId));
+        }
+      }
+    } catch (cause) {
+      if (!read.signal.aborted && context.isCurrent() && requestFailure(cause).status === 401) {
+        context.onExpired();
+      }
+      // Names are optional; denial or failure cannot hide the authorized bindings.
+    } finally {
+      if (nameRead === read) {
+        nameRead = undefined;
+      }
     }
   }
 
@@ -463,6 +533,8 @@ export function renderAgentAccess(
     }
     // Refresh is disabled while it reads, which drops its focus; give it back (finding 1446).
     const refocus = document.activeElement === refresh;
+    nameRead?.abort();
+    state.names.clear();
     state.pending = true;
     state.error = null;
     render();
@@ -504,6 +576,7 @@ export function renderAgentAccess(
         if (refocus && !section.hidden && document.activeElement === document.body) {
           refresh.focus({ preventScroll: true });
         }
+        void loadDisplayNames();
       }
     }
   }
@@ -562,6 +635,8 @@ export function renderAgentAccess(
     if (state.pending || !state.loaded || state.needsRefresh || !context.isCurrent()) {
       return;
     }
+    nameRead?.abort();
+    state.names.clear();
     state.pending = true;
     state.error = null;
     state.progress = [];
@@ -585,6 +660,7 @@ export function renderAgentAccess(
         render();
         // Bring refusals above the form into view while focus is still in this panel or on the page.
         revealStatus(feedback.querySelector("[role=alert]"), section);
+        void loadDisplayNames();
       }
     }
   }

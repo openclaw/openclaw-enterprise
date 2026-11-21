@@ -151,10 +151,11 @@ export function createAgentDetailScenarios({
     permissions: actions.map((action) => ({ action, resourceKind: "agent" as const })),
   }));
   const chatPrincipal = "prn_49a93c18-631e-40ad-99c4-e8443e9c3b6e";
+  const adminPrincipal = "prn_7b422ce0-028e-46b2-aec2-f59a1340ae0c";
   const subjects = [
     [chatPrincipal, 1],
     [chatPrincipal, 2],
-    ["prn_7b422ce0-028e-46b2-aec2-f59a1340ae0c", 3],
+    [adminPrincipal, 3],
     ["prn_05d55728-7dc3-45c0-856c-8f2dc196db1f", 1],
     ["spn_2faa7861-3d15-4e44-8f25-85917c574c9d", 1],
   ] as const;
@@ -594,16 +595,31 @@ export function createAgentDetailScenarios({
         group: "Pages/Agent detail",
         name: "Direct Agent grant roster",
         path: `${draft}&tab=access`,
-        accessPolicy: { roles, bindings },
+        accessPolicy: {
+          roles,
+          bindings,
+          displayNames: [
+            { principalId: chatPrincipal, displayName: "Morgan Chen" },
+            { principalId: adminPrincipal, displayName: "Avery Patel" },
+          ],
+        },
         description:
-          "Inspect existing direct grants without looking up accounts or calculating effective access.",
+          "Inspect direct grants by account display name when available. This is not a directory or an effective-access report.",
         steps: [
-          "Compare the Principal with separate read and operate bindings to the one with administer.",
-          "Open a row to see the full ID, role permissions, and the action for each binding.",
-          "The read-only Principal has no launch label. Account names are not available in the policy response, and the Service Principal is not listed as a person.",
+          "Compare Morgan Chen's chat grant to Avery Patel's administration grant.",
+          "Open Morgan Chen's row to read the complete Principal ID, Role permissions, and each binding.",
+          "The read-only Principal has no account name and falls back to the full ID. The Service Principal is listed separately.",
           "Remove only the Research support binding from the Principal with two bindings. The Open chat label and the Research chat binding remain.",
         ],
         gap: "Simulated policy state and writes; no deployed Agent, account directory, or effective access check.",
+      },
+      agentDirectGrantNamesDenied: {
+        group: "Pages/Agent detail",
+        name: "Direct Agent grant names unavailable",
+        path: `${draft}&tab=access`,
+        accessPolicy: { roles, bindings },
+        rules: [{ suffix: "/access-display-names", status: 403 }],
+        description: "When the name read is refused, the roster stays usable by Principal ID.",
       },
       agentDirectGrantRoleUnavailable: {
         group: "Pages/Agent detail",

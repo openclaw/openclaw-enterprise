@@ -30,8 +30,9 @@ happened to an earlier unanswered request.
 
 ## Remove a direct grant
 
-Under **Direct Agent grants**, expand the row for the Principal ID to see its
-bindings. Find the applicable Role and select **Remove binding** next to it.
+Under **Direct Agent grants**, find the person's account name or Principal ID.
+Expand the row to verify the full Principal ID and see its bindings. Find the
+applicable Role and select **Remove binding** next to it.
 Namespace discovery remains, and other grants, groups
 or Installation administration may still provide access. The console does not
 delete the person, Agent or Roles. People without Installation administration

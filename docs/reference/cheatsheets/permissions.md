@@ -150,6 +150,9 @@ operation was not authorized.`
   also requires `read` on its exact target. [Listing Backends](../api.md#get-backends)
   uses `installation:administer`; Backend and IAM policy objects have no
   separate permission resource kinds.
+- [Reading the display names of directly bound human Principals](../console/agent-sharing.md#direct-grants-and-removal)
+  requires a human session from the trusted Console origin, `installation:administer`,
+  and read access to the exact Namespace and Agent.
 - [Reading the observability destination](../api.md#get-observability) uses
   `installation:administer`. The configured external service enforces its own access.
 

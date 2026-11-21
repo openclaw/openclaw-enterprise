@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-11-21
-last_updated_session: authoring-run/ec2d41b6-97b8-46da-a59f-ec9aed3988c4
+last_updated_session: authoring-run/6d459aff-2bf8-4fc9-93a2-dbee9d95af08
 ---
 
 # Console Agent sharing and removal
@@ -31,6 +31,8 @@ graph TD
   A["Access tab mounts sharing panel"] --> B["Read Namespace Roles and bindings"]
   B -->|policy denied| K["Keep other Agent panels available"]
   B -->|policy read| H["Show current direct grants by subject"]
+  H -->|human Principals listed| N["Read display names for the exact Agent"]
+  N -->|available| L["Update labels by Principal ID"]
   B --> C["Submit share for an existing Principal"]
   C --> D["Reread policy; find or create Namespace read Role"]
   D --> E["Bind Namespace read to the exact Namespace"]
@@ -68,9 +70,18 @@ page reload; otherwise the tab gives way to Configuration with no audited read.
 
 The panel filters the binding list to the current Namespace and exact Agent.
 It groups bindings by subject kind and ID and reads Role permissions from the
-already loaded list. A human Principal row can show a direct browser grant; it
-does not make an admission decision or look up an account name. Expand a row to
-inspect individual Roles and bindings, including those whose Role was not listed.
+already loaded list. A human Principal row can show a direct browser grant;
+it does not make an admission decision. Expand a row to inspect the full
+Principal ID, Roles, and bindings, including bindings whose Role is not listed.
+
+If it lists a human Principal, the panel requests the optional names for the
+exact Agent. The route in `apps/controller/src/index.ts` uses the existing human
+account read guard, then checks read access to that Namespace and Agent.
+`packages/occ/src/state/human-authentication.ts:readAgentAccountNames` holds the
+current actor session and policy during the read. It joins the enrolled account
+and exact bindings by Principal ID and reads only the stored name. The Console
+replaces labels by ID, without reopening rows or delaying writes. If the name
+is absent or the read fails, the Principal ID remains the label.
 
 ### 2. Serialize Role and binding writes
 
@@ -132,6 +143,8 @@ The panel retains discovery grants and explains other possible access sources.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 15:09: Trace the guarded projection of display names for direct Agent bindings. (authoring-run/6d459aff-2bf8-4fc9-93a2-dbee9d95af08 - e3f69552f091c4622fe473e41f65da3ab234d463)
 
 - 2026-11-21 14:43: Document direct grant grouping and the limits of the roster labels. (authoring-run/ec2d41b6-97b8-46da-a59f-ec9aed3988c4 - b0da800df32dc5311524ef462b5c94a3cbe0264e)
 

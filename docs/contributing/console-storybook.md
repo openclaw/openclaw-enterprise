@@ -109,10 +109,12 @@ Stories reach error states through real controls after loading fixture data.
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
 
-In **Pages → Agent detail → Direct Agent grant roster**, expand a Principal with
-two bindings. Remove **Research support** and check that **Research chat** and
-the **Open chat · operate** label remain. The read-only Principal has no direct
-browser grant; the Service Principal is listed separately. **Share an Agent**
+In **Pages → Agent detail → Direct Agent grant roster**, expand **Morgan Chen**
+to see the full Principal ID and both bindings. Remove **Research support** and
+check that **Research chat** and the **Open chat · operate** label remain. The
+read-only Principal uses the ID because no name is available. The Service
+Principal is listed separately. **Direct Agent grant names unavailable** shows
+the ID fallback when the optional name read is refused. **Share an Agent**
 starts with no direct grants, and **Sharing administration denied** hides the
 Access tab after a policy refusal. **Direct Agent grant with an unavailable
 Role** keeps the binding visible while the Role is missing. These stories use
