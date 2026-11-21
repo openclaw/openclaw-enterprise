@@ -29,11 +29,13 @@ on:
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - scripts/*.mjs
+      - scripts/migrate-production.ts
       - scripts/auth-maintain.ts
       - scripts/build-repository-credentials.ts
       - scripts/build-runtime-assets.ts
       - scripts/ci/download-pinned.sh
-      - scripts/ci/prepare.mjs
+      - scripts/ci/prepare.ts
+      - scripts/ci/prepare-inputs.ts
       - scripts/ci/warm-image-cache.ts
       - scripts/ci/prepare-command.ts
       - scripts/ci/image-build-cache.ts
@@ -46,6 +48,7 @@ on:
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
       - scripts/migration-catalog.ts
+      - scripts/migration-history-preflight.ts
       - scripts/production-healthcheck.ts
       - tsconfig.base.json
       - tsconfig.json
@@ -91,10 +94,8 @@ jobs:
       source-sha: ${{ steps.export.outputs.source-sha }}
     # The image lanes' runner, so the cache is written where they read it.
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    # Runtime source builds have 180 min, controller builds 20 min; each
-    # exports for at most 20 min more. Builds run side by side, with 10 min
-    # left for setup and cleanup.
-    timeout-minutes: 210
+    # Each image build and cache export can take 20 min. Builds run side by side.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

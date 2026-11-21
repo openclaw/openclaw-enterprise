@@ -2,6 +2,8 @@ import { bindRepository } from "./repository-factory.ts";
 import type { RepositoryTransactionLifetime } from "./transaction.ts";
 import type { PlatformUnitOfWork } from "../state/platform-state.ts";
 
+export type { PlatformUnitOfWork };
+
 /** The explicit outward projection shares one transaction lifetime. */
 export function bindPlatformUnitOfWork(
   repositories: PlatformUnitOfWork,
@@ -20,6 +22,7 @@ export function bindPlatformUnitOfWork(
       "findInstallation",
       "getInstallation",
       "createInstallation",
+      "selectTokenServiceInstance",
       "holdPrincipalAccount",
       "holdAuthenticationSession",
       "holdIAMConfiguration",
@@ -87,9 +90,13 @@ export function bindPlatformUnitOfWork(
       "requestConnectionRevocation",
       "confirmConnectionRevocation",
       "deleteSavedConnection",
-      "createConnectionSession",
-      "consumeConnectionSession",
-      "takeExpiredConnectionSessions",
+    ]),
+    authenticationStates: bindRepository(repositories.authenticationStates, lifetime, [
+      "findDevice",
+      "create",
+      "replaceDevice",
+      "consumeOAuth",
+      "expire",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
@@ -111,8 +118,11 @@ export function bindPlatformUnitOfWork(
       "createCredentialSource",
       "markCredentialSourceDeleting",
       "markCredentialSourceReady",
+      "setCredentialSourceRegistrationDispatch",
+      "updateCredentialSourceConfig",
       "replaceCredentialSourceSecrets",
       "recordEgressInstallation",
+      "retireEgressInstallation",
       "saveCredentialPolicyReduction",
       "rejectEgressMaterial",
       "admitEgressSource",
@@ -236,6 +246,7 @@ export function bindPlatformUnitOfWork(
       "append",
       "list",
       "findWork",
+      "findWorkByKeys",
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",

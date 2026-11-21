@@ -11,7 +11,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
+import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.ts";
 import { execute, runDocker } from "../helpers/runtime-image-docker.ts";
 import { waitForContainerReady } from "../helpers/runtime-image-gateway-observations.ts";
 import {

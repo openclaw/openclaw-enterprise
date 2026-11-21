@@ -57,9 +57,10 @@ replacement, fence the old writer before allowing another.
 
 A stop deletes the Gateway and waits for its Pod to disappear before stopping the
 Harness, which finishes active work meanwhile; a refused candidate's stop deletes
-both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
-pinned runtime's drain and cleanup. Idle Gateways exit promptly. Forced
-termination can leave native Gateway locks and an owner lease on retained state.
+both at once. Gateways get up to 330 seconds to drain and clean up. If OpenClaw
+exits non-zero, as when stopped during startup, its running container releases
+its locks; force-terminated or killed after that grace, the container leaves
+them and an owner lease, which the next Pod cannot verify.
 
 If the kubelet restarts an embedded Gateway container in the same Pod, OpenClaw
 can recover locks held by the **first container instance**. Before configurable
@@ -81,9 +82,10 @@ Only the Gateway Pod mounts these writable directories:
 | `media`                     | `/home/node/.openclaw/media`                |
 | `worktrees`                 | `/home/node/.openclaw/worktrees`            |
 | `worktree-sources`          | `/home/node/.openclaw/worktree-sources`     |
+| `skill-library`             | `/home/node/.openclaw/skill-library`        |
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
-Linked worktrees and Git metadata in `worktree-sources` persist across Gateway replacement.
+These directories persist across Gateway replacement.
 
 Back up `state/openclaw.sqlite` with its matching `client/credentials.sqlite`.
 Restore both at their original configured paths with private ownership and
@@ -311,12 +313,9 @@ or dedicated Harness receives the selected model credential; a dedicated Gateway
 renders no model Secret and hands the Credential Gateway's attachments to the
 OpenShell Sandbox instead.
 
-If channels are enabled, set `runtime.channels.proxyUrl` to a literal-IP proxy
-URL, or to the Helm-managed proxy Service URL paired with
-`runtime.channels.managedProxy` so Compute limits gateway egress to that proxy's
-Pods by selector. Store the Agent's channel credentials as Namespace Secrets
-referenced by Configuration `secretBindings`; they are available only to the
-dedicated gateway, never to its Codex Harness.
+Enabled channels require [managed channel egress](channel-egress.md). Only the
+Gateway receives its assigned listener URL; Harness transport and model
+credential placement remain separate.
 
 Agent revisions with repository bindings support embedded OpenClaw or dedicated Codex,
 without a Sandbox Driver. Compute delivers each immutable repository-material

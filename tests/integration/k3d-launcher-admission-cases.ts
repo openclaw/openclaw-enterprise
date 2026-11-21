@@ -27,7 +27,7 @@ export function registerNativePreparationCases() {
         execute(
           process.execPath,
           [
-            "scripts/ci/prepare.mjs",
+            "scripts/ci/prepare.ts",
             "--lane",
             "openshell",
             "--file",
@@ -69,7 +69,7 @@ export function registerNativePreparationCases() {
         execute(
           process.execPath,
           [
-            "scripts/ci/prepare.mjs",
+            "scripts/ci/prepare.ts",
             "--lane",
             "openshell",
             ...(helperHarness === "openclaw" ? ["--selected-file", nativeFile] : []),

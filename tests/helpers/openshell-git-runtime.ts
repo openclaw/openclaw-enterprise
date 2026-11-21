@@ -171,7 +171,7 @@ export function openShellGitRuntimeFixture({
     workspace: "team-workspace",
     phase: "SANDBOX_PHASE_READY",
     restartCount: 0,
-    spec: { restart_policy: "SANDBOX_RESTART_POLICY_NEVER" },
+    spec: { restart_policy: "SANDBOX_RESTART_POLICY_ALWAYS" },
   };
   const supervisor = world?.supervisor ?? {
     supervisorSessionId: "session-one",

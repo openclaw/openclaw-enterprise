@@ -7,28 +7,20 @@ import { promisify } from "node:util";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { goToolEnvironment, parseProductionChart, type ChartValues } from "./production-chart.ts";
 import { findResource } from "./production-chart-resource.ts";
+import { productionChartPath, productionValuesTemplateArgs } from "./production-values-template.ts";
 
 const execute = promisify(execFile);
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
 const helm = process.env.OCC_HELM_BIN ?? "helm";
-const chartPath = "deploy/helm/openclaw-enterprise";
 
 export { chartTooling } from "./production-chart.ts";
 
-function templateArguments(overrides: ChartValues, chart = chartPath): string[] {
-  const args = [
-    "template",
-    "oce",
-    chart,
-    "--namespace",
-    "openclaw-system",
-    "--values",
-    "deploy/examples/production/values.yaml",
-  ];
+function templateArguments(overrides: ChartValues, chart = productionChartPath): string[] {
+  const overrideArgs: string[] = [];
   for (const [key, value] of Object.entries(overrides)) {
-    args.push("--set", `${key}=${value}`);
+    overrideArgs.push("--set", `${key}=${value}`);
   }
-  return args;
+  return productionValuesTemplateArgs(chart, overrideArgs);
 }
 
 function renderTemplate(args: string[]) {
@@ -89,7 +81,7 @@ export function trustedProxyNoticeRenderer(directory: string) {
   let copied: Promise<void> | undefined;
   const chart = join(directory, "openclaw-enterprise");
   const copy = async () => {
-    await cp(join(repository, chartPath), chart, { recursive: true });
+    await cp(join(repository, productionChartPath), chart, { recursive: true });
     assert.match(
       await readFile(join(chart, "templates/NOTES.txt"), "utf8"),
       /include "openclaw\.trustedProxy\.notice"/,
@@ -281,6 +273,14 @@ export function assertSecretMount(
   );
   assert.equal(mount.mountPath, expected.mountPath, `${label} mount path`);
   assert.equal(mount.readOnly, true, `${label} mount must be read-only`);
+  assert.ok(
+    mount.subPath === undefined || mount.subPath === "",
+    `${label} directory mount must not set subPath`,
+  );
+  assert.ok(
+    mount.subPathExpr === undefined || mount.subPathExpr === "",
+    `${label} directory mount must not set subPathExpr`,
+  );
   assert.deepEqual(
     containerEnv(container, name).filter(({ name }) => name === expected.variable),
     [{ name: expected.variable, value: `${expected.mountPath}/${expected.itemPath}` }],

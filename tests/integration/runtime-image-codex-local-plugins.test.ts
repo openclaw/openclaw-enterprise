@@ -4,7 +4,7 @@ import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { EgressInstallation } from "../../packages/contracts/src/index.ts";
 import type { FixtureSetup } from "../fixtures/codex-local-plugins/launch.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const names = ["selected", "excluded"];
 const marketplace = '[marketplaces.oce-fixture]\nsource_type = "local"\nsource = "/fixture"\n';

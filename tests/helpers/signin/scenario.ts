@@ -257,6 +257,7 @@ export async function rehearseSignin({
     port: number;
     ca: string | Buffer;
     adminEmail: string;
+    adminPassword: string;
     installationId: string;
     operator: Awaited<ReturnType<typeof operatorExecutor>>;
   };
@@ -403,7 +404,7 @@ export async function rehearseSignin({
       .then((s) => s.trim());
   const userId = await sql(`SELECT id FROM occ."user" WHERE email='${adminEmail}'`);
   assert.match(userId, /^[A-Za-z0-9_-]+$/);
-  const password = (await operator("cat", "/bootstrap/initial-admin-password")).trim();
+  const password = signinSetup.adminPassword;
   assert(password.length >= 12);
   // The fresh bootstrap chart has no configured OIDC endpoints. No OIDC route
   // has been opened on the single private proxy since its first generation.

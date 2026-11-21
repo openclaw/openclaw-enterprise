@@ -21,7 +21,6 @@ import (
 )
 
 const (
-	openShellRuntimeClass           = "openshell-sandbox"
 	openShellGatewayService         = "openshell-gateway"
 	openShellGatewayNamespace       = "openshell-system"
 	openShellOperatorNamespaceLabel = "openshell.ai/openclaw-workspace"
@@ -35,7 +34,6 @@ const (
 	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:0.1.8@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4"
 	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.8@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b"
 	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.8@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1"
-	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
 	// Keep in step with OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST in the OpenShell Sandbox Driver;
 	// TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP compares them.
 	openShellAllowedPodLabelsValue = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
@@ -115,39 +113,6 @@ func (r *runner) validateOpenShellImageRevisions(ctx context.Context, images ope
 	return nil
 }
 
-func openShellAdmissionConfiguration() []byte {
-	return []byte(strings.Join([]string{
-		"apiVersion: apiserver.config.k8s.io/v1",
-		"kind: AdmissionConfiguration",
-		"plugins:",
-		"  - name: PodSecurity",
-		"    configuration:",
-		"      apiVersion: pod-security.admission.config.k8s.io/v1",
-		"      kind: PodSecurityConfiguration",
-		"      defaults:",
-		"        enforce: privileged",
-		"        enforce-version: latest",
-		"        audit: privileged",
-		"        audit-version: latest",
-		"        warn: privileged",
-		"        warn-version: latest",
-		"      exemptions:",
-		"        usernames: []",
-		"        runtimeClasses:",
-		"          - " + openShellRuntimeClass,
-		"        namespaces: []",
-		"",
-	}, "\n"))
-}
-
-func prepareOpenShellAdmission(directory string) (string, error) {
-	path := filepath.Join(directory, "openshell-pod-security-admission.yaml")
-	if err := exclusiveWrite(path, openShellAdmissionConfiguration(), 0600); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
 func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, timeout time.Duration) (_ *openShellDevelopmentAssets, resultErr error) {
 	started := time.Now()
 	operationStarted := started
@@ -195,21 +160,6 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	advance("openshell-agent-sandbox-image")
 	manifest, err = r.preloadAgentSandboxController(ctx, state, root, manifest)
 	if err != nil {
-		return nil, err
-	}
-	advance("openshell-runtime-class")
-	runtimeClass := filepath.Join(root, "runtime-class.yaml")
-	if err := exclusiveWrite(runtimeClass, []byte(strings.Join([]string{
-		"apiVersion: node.k8s.io/v1",
-		"kind: RuntimeClass",
-		"metadata:",
-		"  name: " + openShellRuntimeClass,
-		"handler: runc",
-		"",
-	}, "\n")), 0600); err != nil {
-		return nil, err
-	}
-	if err := r.run(ctx, "kubectl", "apply", "-f", runtimeClass); err != nil {
 		return nil, err
 	}
 	advance("openshell-agent-sandbox-apply")
@@ -478,7 +428,6 @@ func openShellGatewayValues(state *developmentState, assets *openShellDevelopmen
 		"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 		"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=" + openShellOperatorNamespaceLabel + "=" + openShellOperatorNamespaceValue,
 		"--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-		"--set-string=server.defaultRuntimeClassName=" + openShellRuntimeClass,
 		"--set=gateway.image.pullPolicy=Never",
 		"--set=sandboxRuntime.image.pullPolicy=Never",
 		"--set=supervisor.image.pullPolicy=Never",

@@ -17,11 +17,12 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import {
-  OpenShellCredentialProxyDriver,
+  OpenShellLegacyEgressProxyDriver,
   openShellEgressConfiguration,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import * as releaseFixture from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 import * as repositoryFixture from "../fixtures/driver-packages/protected-execution-driver/repository-git.ts";
+import { createExternalProtectedDriver } from "../../apps/controller/src/composition/driver-packages.ts";
 
 const sensitive = "SECRET-DO-NOT-LEAK";
 const releaseConfiguration = {
@@ -109,7 +110,7 @@ const owners: readonly {
   {
     capability: "credential_proxy",
     implementation: "openshell",
-    definition: OpenShellCredentialProxyDriver,
+    definition: OpenShellLegacyEgressProxyDriver,
     valid: {
       middlewareName: "credential-proxy",
       authorityScope: "execution",
@@ -224,6 +225,49 @@ for (const owner of owners) {
   });
 }
 
+test("the external protected factory closes a registration it refuses", async () => {
+  const selection = {
+    id: "external-protected",
+    implementation: "external-release-fixture",
+    configuration: releaseConfiguration,
+    definition: releaseFixture,
+  };
+  const { calls } = releaseFixture;
+  const closed = calls.close;
+  const accepted = await createExternalProtectedDriver(releaseFixture, selection);
+  assert.equal(calls.close, closed, "an accepted registration stays open");
+  await accepted.close();
+  assert.equal(calls.close, closed + 1);
+
+  // A registration missing a capability is closed, and a failing close keeps the refusal.
+  let closes = 0;
+  const partial = (close: () => void) => ({
+    ...releaseFixture,
+    createDriver(options: Parameters<typeof releaseFixture.createDriver>[0]) {
+      const { capabilities } = releaseFixture.createDriver(options);
+      return { capabilities: { sandbox: capabilities.sandbox }, close };
+    },
+  });
+  await assert.rejects(
+    createExternalProtectedDriver(
+      partial(() => void closes++),
+      selection,
+    ),
+    { name: "DriverSelectionError" },
+  );
+  await assert.rejects(
+    createExternalProtectedDriver(
+      partial(() => {
+        closes++;
+        throw new Error("close failed");
+      }),
+      selection,
+    ),
+    { name: "DriverSelectionError" },
+  );
+  assert.equal(closes, 2);
+});
+
 test("OpenShell direct construction and policy rendering still enforce configuration validation", () => {
   for (const options of [
     { middlewareName: " ", authorityScope: "execution" },
@@ -232,7 +276,7 @@ test("OpenShell direct construction and policy rendering still enforce configura
   ]) {
     // Malformed runtime input must fail before selection or route rendering.
     assert.throws(
-      () => Reflect.construct(OpenShellCredentialProxyDriver, [options, undefined]),
+      () => Reflect.construct(OpenShellLegacyEgressProxyDriver, [options, undefined]),
       redactedConfigurationError,
     );
     assert.throws(
@@ -281,7 +325,7 @@ test("OpenShell discovery and policy use the installed configuration after calle
     authorityScope: "execution" as const,
     observedHookPreviewWorkspace: "preview-1",
   };
-  const proxy = new OpenShellCredentialProxyDriver(options, {
+  const proxy = new OpenShellLegacyEgressProxyDriver(options, {
     id: "proxy",
     backend: {
       id: "openshell",

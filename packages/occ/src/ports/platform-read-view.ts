@@ -2,6 +2,8 @@ import { bindRepository } from "./repository-factory.ts";
 import type { RepositoryTransactionLifetime } from "./transaction.ts";
 import type { PlatformReadView } from "../state/platform-state.ts";
 
+export type { PlatformReadView };
+
 /** The explicit outward projection shares one transaction lifetime. */
 export function createPlatformReadView(
   repositories: PlatformReadView,
@@ -12,6 +14,7 @@ export function createPlatformReadView(
     operations: bindRepository(repositories.operations, lifetime, [
       "list",
       "findWork",
+      "findWorkByKeys",
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
@@ -47,6 +50,9 @@ export function createPlatformReadView(
       "findSavedConnection",
       "listNamespaceConnections",
       "listRevokingConnections",
+    ]),
+    authenticationStates: bindRepository(repositories.authenticationStates, lifetime, [
+      "findDevice",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",

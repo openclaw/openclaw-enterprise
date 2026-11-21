@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { registerConfigurationChannelCredentialCases } from "./configuration-channel-credential-cases.ts";
 import { registerConfigurationSizeAdmissionCases } from "./configuration-size-admission-cases.ts";
 import { registerConfigurationCredentialSaveCases } from "./configuration-credential-save-cases.ts";
-import { registerConfigurationStoredCompatibilityCases } from "./configuration-stored-compatibility-cases.ts";
+import {
+  registerConfigurationModelPolicyCases,
+  registerConfigurationStoredCompatibilityCases,
+} from "./configuration-stored-compatibility-cases.ts";
 import { checkConfigurationGatewayTrustedProxyCases } from "./configuration-gateway-trusted-proxy-cases.ts";
 import {
   registerConfigurationCrudCases,
@@ -23,6 +26,7 @@ import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { presetVariableTemplate } from "../helpers/configuration-preset-template.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -35,32 +39,28 @@ import { bindRole } from "../helpers/iam-grants.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
+  unreadablePluginSecretRefusal,
+  appServerUnreadablePluginSecretRefusal,
+  unreadableGatewayPasswordRefusal,
+  invalidSecretProviderDefaultsRefusal,
+} from "../helpers/refusal-credential-diagnostics.ts";
+import {
   catalogRowNoModel,
   catalogRowUnselected,
   referenceFormRefusal,
   dedicatedCodexVariableRefusal,
   unboundPluginSecretRefusal,
-  unreadablePluginSecretRefusal,
-  appServerUnreadablePluginSecretRefusal,
-  unreadableGatewayPasswordRefusal,
-  invalidSecretProviderDefaultsRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,
   unsubstitutedReferenceRefusal,
   codexApiKeyRefusal,
   codexPluginRefusal,
-  codexRuntimeOffProvider,
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
   kubernetesWorkspaceNodePasswordRefusal,
-  keepRuntime,
-  OPENCLAW_ONLY,
   pluginPolicyListRefusal,
   runtimeIdRequired,
-  runtimeIdUnsupported,
-  runtimePoliciesConflict,
-  selectableModelOffProvider,
   unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -69,7 +69,7 @@ import {
   openClawSandboxRefusal,
   withSetting,
 } from "../helpers/admitted-configuration.mjs";
-import { storedConfigurationProblem } from "../../apps/controller/src/console/stored-configuration-rules.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -313,11 +313,22 @@ async function request(
   };
 }
 
-async function createSavedConfiguration(context, values) {
+async function createAgentConfiguration(context, values, label) {
   const created = await request(context.app, "POST", context.collection, {
     body: { kind: "agent", values },
   });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(
+    created.status,
+    201,
+    label === undefined
+      ? JSON.stringify(created.body)
+      : `${label}: ${JSON.stringify(created.body)}`,
+  );
+  return created;
+}
+
+async function createSavedConfiguration(context, values) {
+  const created = await createAgentConfiguration(context, values);
   return { created, item: `${context.collection}/${created.body.data.id}` };
 }
 
@@ -584,10 +595,7 @@ async function refusedOnSave(context, values, message, { item, preset = true, se
 
 // Configuration create stores `values` as sent, and a Preset of `presetValues` saves.
 async function acceptedOnSave(context, values, { variables, presetValues = values } = {}) {
-  const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const created = await createAgentConfiguration(context, values);
   assert.deepEqual(created.body.data.values, values);
   const preset = await savePreset(
     context,
@@ -892,10 +900,7 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     }),
     withAgents({ list: [] }),
   ]) {
-    const saved = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values },
-    });
-    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    const saved = await createAgentConfiguration(context, values);
     assert.deepEqual(saved.body.data.values, values);
   }
 });
@@ -965,268 +970,18 @@ test("Configuration save refuses a provider catalog row that no model selection 
   }
 });
 
-test("Configuration save refuses a model policy whose settings conflict, with deployment's text and order", async (t) => {
-  // Finding 3020. Every deployment resolves the Harness from the model policy first and refuses
-  // a document whose settings conflict. Save accepted these, so the draft looked ready until
-  // Deploy answered 400. A draft that still misses a model or a runtime saves (below).
-  const context = await kubernetesRuleFixture(
-    "compute-model-policy-integration",
-    "validateHarnessAuth",
-  );
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
-    name: "Model policy consumer",
-    secretName: "model-policy-key",
-  });
-  const runtime = (model, id = "openclaw") => ({ [model]: { agentRuntime: { id } } });
-  const entryPrimary = setting(
-    "agents.entries.main.model",
-    "must select the same primary model as agents.defaults.model and the other agents.entries",
-  );
-  const catalogRule = catalogRowUnselected("models.providers.openai");
-  const defaultPolicy = 'agents.defaults.models["openai/gpt-4.1"]';
-  const unselectedRow = { providers: { openai: { models: [{ id: "gpt-unselected" }] } } };
-  // Each document sets two values that cannot both hold. Create and update refuse it; a row an
-  // older release stored still reads, and deployment refuses it with the same text unless the row
-  // names another deployment text.
-  for (const [name, values, message, deploy] of [
-    [
-      "an Agent entry's primary that differs from the defaults'",
-      {
-        agents: { defaults: runtimeDefaults, entries: { main: { model: "openai/gpt-4.1-mini" } } },
-      },
-      entryPrimary,
-    ],
-    [
-      "an entry's selectable models on another provider than its primary's",
-      {
-        agents: {
-          defaults: runtimeDefaults,
-          entries: {
-            main: {
-              model: "openai/gpt-4.1",
-              models: { ...runtime("openai/gpt-4.1"), ...runtime("gateway/model-x") },
-            },
-          },
-        },
-      },
-      selectableModelOffProvider('agents.entries.main.models["gateway/model-x"]', "openai"),
-    ],
-    [
-      "the defaults' selectable models on another provider than the primary's",
-      {
-        agents: {
-          defaults: {
-            ...runtimeDefaults,
-            models: { ...runtimeDefaults.models, ...runtime("gateway/model-x") },
-          },
-        },
-      },
-      selectableModelOffProvider('agents.defaults.models["gateway/model-x"]', "openai"),
-    ],
-    [
-      "a selected model policy and a provider policy that name different runtimes",
-      { ...runtimeSelected, models: { providers: { openai: { agentRuntime: { id: "codex" } } } } },
-      runtimePoliciesConflict(
-        defaultPolicy,
-        "openclaw",
-        "models.providers.openai",
-        "codex",
-        keepRuntime("openclaw", "codex"),
-      ),
-    ],
-    // The openai provider takes Codex only with the Codex plugin's WebSocket app server. Save
-    // serves any Agent and offers both steps; this embedded Agent's deploy, where Codex runs only
-    // dedicated, offers only openclaw (finding 3058).
-    [
-      "a Codex runtime on the openai provider",
-      {
-        agents: {
-          defaults: { model: "openai/gpt-4.1", models: runtime("openai/gpt-4.1", "codex") },
-        },
-      },
-      codexRuntimeOffProvider(defaultPolicy),
-      { message: codexRuntimeOffProvider(defaultPolicy, OPENCLAW_ONLY) },
-    ],
-    [
-      "a runtime id that no Harness implements",
-      {
-        agents: { defaults: { model: "openai/gpt-4.1", models: runtime("openai/gpt-4.1", "pi") } },
-      },
-      runtimeIdUnsupported(defaultPolicy),
-    ],
-    [
-      "a provider runtime id that no Harness implements",
-      { ...runtimeSelected, models: { providers: { openai: { agentRuntime: { id: "pi" } } } } },
-      runtimeIdUnsupported("models.providers.openai"),
-    ],
-    // Each policy names one runtime, so no single model conflicts: the primary and its fallback
-    // together select two Harnesses.
-    [
-      "a primary and a fallback whose catalog rows name different runtimes",
-      {
-        agents: {
-          defaults: { model: { primary: "codex/gpt-5", fallbacks: ["codex/gpt-5-mini"] } },
-        },
-        models: {
-          providers: {
-            codex: {
-              models: [
-                { id: "gpt-5", agentRuntime: { id: "openclaw" } },
-                { id: "gpt-5-mini", agentRuntime: { id: "codex" } },
-              ],
-            },
-          },
-        },
-      },
-      "The configured Agent models select conflicting Harness runtimes.",
-    ],
-    // Both rows name the selected model, one by its id and one by its complete ref.
-    [
-      "a catalog that lists the selected model twice",
-      {
-        ...runtimeSelected,
-        models: {
-          providers: { openai: { models: [{ id: "gpt-4.1" }, { id: "openai/gpt-4.1" }] } },
-        },
-      },
-      setting(
-        "models.providers.openai.models",
-        "lists the selected model more than once: keep one entry",
-      ),
-    ],
-    // A draft skips the entry without a model and still checks the entries after it. Deployment
-    // names the missing model first.
-    [
-      "an entry primary that differs from an earlier entry's, after an entry without a model",
-      {
-        agents: {
-          ownership: "explicit",
-          entries: {
-            pending: {},
-            other: { model: "openai/gpt-4.1" },
-            main: { model: "openai/gpt-4.1-mini" },
-          },
-        },
-      },
-      entryPrimary,
-      {
-        message: setting(
-          "agents.entries.pending.model",
-          "is required when agents.defaults.model is unset: set either one",
-        ),
-      },
-    ],
-  ]) {
-    await t.test(`refuses ${name}`, () =>
-      refusedAtSaveAndDeploy(context, agent, values, message, deploy),
-    );
-  }
-
-  // Save checks these rules in deployment's order, so a document that breaks two names the same
-  // one at save and deploy: each entry's rules come before the next entry's, the entries' before
-  // the catalog rule, and the catalog rule before the runtime policies.
-  await t.test("names the entry primary before an unselected catalog row", () =>
-    refusedAtSaveAndDeploy(
-      context,
-      agent,
-      {
-        agents: { defaults: runtimeDefaults, entries: { main: { model: "openai/gpt-4.1-mini" } } },
-        models: unselectedRow,
-      },
-      entryPrimary,
-    ),
-  );
-  await t.test("names an entry primary before a later entry's fallback on another provider", () =>
-    refusedAtSaveAndDeploy(
-      context,
-      agent,
-      {
-        agents: {
-          ownership: "explicit",
-          defaults: runtimeDefaults,
-          entries: {
-            main: { model: "openai/gpt-4.1-mini" },
-            other: { model: { primary: "openai/gpt-4.1", fallbacks: ["gateway/model-x"] } },
-          },
-        },
-      },
-      entryPrimary,
-    ),
-  );
-  await t.test("names an unselected catalog row before conflicting runtime policies", () =>
-    refusedAtSaveAndDeploy(
-      context,
-      agent,
-      {
-        ...runtimeSelected,
-        models: {
-          providers: {
-            openai: { ...unselectedRow.providers.openai, agentRuntime: { id: "codex" } },
-          },
-        },
-      },
-      catalogRule,
-    ),
-  );
-
-  // An incomplete draft saves: no model at all, selectable models before any primary, an entry
-  // without a model while the defaults set none, or a model without the runtime its provider
-  // needs. Deployment still refuses it, naming the setting that is missing (finding 3022).
-  for (const [name, values, deployMessage] of [
-    [
-      "no model",
-      {},
-      setting(
-        "agents.defaults.model",
-        "is required to deploy on Kubernetes: set it, or each agents.entries model, to a model such as openai/gpt-5.1",
-      ),
-    ],
-    [
-      "selectable models with no primary model",
-      { agents: { defaults: { models: runtimeDefaults.models } } },
-      setting(
-        "agents.defaults.models",
-        "needs a primary model: set agents.defaults.model or an agents.entries model",
-      ),
-    ],
-    [
-      "an entry without a model while the defaults set none",
-      { agents: { entries: { main: {} } } },
-      setting(
-        "agents.entries.main.model",
-        "is required when agents.defaults.model is unset: set either one",
-      ),
-    ],
-    [
-      "an openai model without a runtime",
-      { agents: { defaults: { model: "openai/gpt-4.1" } } },
-      runtimeIdRequired(defaultPolicy, "openclaw"),
-    ],
-    // The entry's own models policy lists the model, so deployment names that policy, not the
-    // defaults'.
-    [
-      "an entry model whose own models policy sets no runtime",
-      {
-        agents: {
-          entries: { main: { model: "openai/gpt-4.1", models: { "openai/gpt-4.1": {} } } },
-        },
-      },
-      runtimeIdRequired('agents.entries.main.models["openai/gpt-4.1"]', "openclaw"),
-    ],
-  ]) {
-    await t.test(`saves ${name}`, async () => {
-      const label = JSON.stringify(values);
-      const created = await request(context.app, "POST", context.collection, {
-        body: { kind: "agent", values },
-      });
-      assert.equal(created.status, 201, `${label}: ${JSON.stringify(created.body)}`);
-      await updateSaved(context, agent.item, values, label);
-      const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-      assertRefused(deployed, deployMessage, { label });
-      await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
-    });
-  }
+registerConfigurationModelPolicyCases({
+  runtimeDefaults,
+  runtimeSelected,
+  kubernetesRuleFixture,
+  storedRowAgent,
+  setting,
+  refusedAtSaveAndDeploy,
+  createAgentConfiguration,
+  updateSaved,
+  request,
+  assertRefused,
+  writePastOcc,
 });
 
 test("Configuration save refuses a Gateway tool policy that every OpenClaw topology refuses, with deployment's text", async () => {
@@ -1278,27 +1033,18 @@ test("Configuration save refuses a Gateway tool policy that every OpenClaw topol
   // A Preset save refuses the same text. A tool that waits on a variable without a default is
   // checked when a Configuration is created from the Preset; a default fills it here.
   await refusedOnSave(context, withPolicy({ allow: ["gateway"] }), administrative);
-  const waiting = withPolicy({ allow: ["{{ vars.tool }}"] });
-  const filled = await savePreset(context, {
-    variables: { tool: { type: "string", default: "terminal" } },
-    configuration: { values: waiting },
-  });
+  const toolTemplate = presetVariableTemplate("tool", withPolicy({ allow: ["{{ vars.tool }}"] }));
+  const filled = await savePreset(context, toolTemplate({ type: "string", default: "terminal" }));
   assertRefused(filled, administrative);
-  const deferred = await savePreset(
-    context,
-    { variables: { tool: { type: "string" } }, configuration: { values: waiting } },
-    "Tool-deferred",
-  );
+  const deferred = await savePreset(context, toolTemplate({ type: "string" }), "Tool-deferred");
   assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
   // A variable can also name an action key; that policy waits too.
   const keyed = await savePreset(
     context,
-    {
-      variables: { tool: { type: "string" } },
-      configuration: {
-        values: withPolicy({ allow: ["dashboard"], actions: { "{{ vars.tool }}": ["read"] } }),
-      },
-    },
+    presetVariableTemplate(
+      "tool",
+      withPolicy({ allow: ["dashboard"], actions: { "{{ vars.tool }}": ["read"] } }),
+    )({ type: "string" }),
     "Tool-key-deferred",
   );
   assert.equal(keyed.status, 201, JSON.stringify(keyed.body));
@@ -1364,48 +1110,41 @@ test("Configuration save refuses workspace bootstrap settings native setup refus
     context,
     withDefaults({ skipBootstrap: true, skipOptionalBootstrapFiles: [] }),
   );
-  const waitingFile = withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}"] });
+  const fileTemplate = presetVariableTemplate(
+    "file",
+    withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}"] }),
+  );
   assertRefused(
-    await savePreset(context, {
-      variables: { file: { type: "string", default: "NOPE.md" } },
-      configuration: { values: waitingFile },
-    }),
+    await savePreset(context, fileTemplate({ type: "string", default: "NOPE.md" })),
     optionalFiles,
   );
-  const deferredFile = await savePreset(
-    context,
-    { variables: { file: { type: "string" } }, configuration: { values: waitingFile } },
-    "File-deferred",
-  );
+  const deferredFile = await savePreset(context, fileTemplate({ type: "string" }), "File-deferred");
   assert.equal(deferredFile.status, 201, JSON.stringify(deferredFile.body));
   // Written text around the variable that no accepted name can spell is refused now.
   assertRefused(
     await savePreset(
       context,
-      {
-        variables: { file: { type: "string" } },
-        configuration: {
-          values: withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}.txt"] }),
-        },
-      },
+      presetVariableTemplate(
+        "file",
+        withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}.txt"] }),
+      )({ type: "string" }),
       "File-suffix",
     ),
     optionalFiles,
   );
   // A boolean variable fills skipBootstrap with a boolean; a string variable cannot.
-  const waitingSkip = withDefaults({ skipBootstrap: "{{ vars.skip }}" });
+  const skipTemplate = presetVariableTemplate(
+    "skip",
+    withDefaults({ skipBootstrap: "{{ vars.skip }}" }),
+  );
   const deferredSkip = await savePreset(
     context,
-    { variables: { skip: { type: "boolean" } }, configuration: { values: waitingSkip } },
+    skipTemplate({ type: "boolean" }),
     "Skip-deferred",
   );
   assert.equal(deferredSkip.status, 201, JSON.stringify(deferredSkip.body));
   assertRefused(
-    await savePreset(
-      context,
-      { variables: { skip: { type: "string" } }, configuration: { values: waitingSkip } },
-      "Skip-string",
-    ),
+    await savePreset(context, skipTemplate({ type: "string" }), "Skip-string"),
     skipBootstrap,
   );
 });
@@ -1570,26 +1309,15 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
   });
   // A Preset value that waits on a string variable is checked once filled when its written text
   // can still spell "off"; a default fills it here, and a boolean variable never can.
-  const waiting = withSandbox({ mode: "{{ vars.mode }}" });
+  const modeTemplate = presetVariableTemplate("mode", withSandbox({ mode: "{{ vars.mode }}" }));
   assertRefused(
-    await savePreset(context, {
-      variables: { mode: { type: "string", default: "all" } },
-      configuration: { values: waiting },
-    }),
+    await savePreset(context, modeTemplate({ type: "string", default: "all" })),
     defaultsMode,
   );
-  const deferred = await savePreset(
-    context,
-    { variables: { mode: { type: "string" } }, configuration: { values: waiting } },
-    "Mode-deferred",
-  );
+  const deferred = await savePreset(context, modeTemplate({ type: "string" }), "Mode-deferred");
   assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
   assertRefused(
-    await savePreset(
-      context,
-      { variables: { mode: { type: "boolean" } }, configuration: { values: waiting } },
-      "Mode-boolean",
-    ),
+    await savePreset(context, modeTemplate({ type: "boolean" }), "Mode-boolean"),
     defaultsMode,
   );
   // The exec host follows the same rule, for every Agent and for one Agent's entry.
@@ -1598,25 +1326,25 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
     [withHost(undefined, "{{ vars.host }}"), entryHost],
   ]) {
     assertRefused(
-      await savePreset(context, {
-        variables: { host: { type: "string", default: "sandbox" } },
-        configuration: { values },
-      }),
+      await savePreset(
+        context,
+        presetVariableTemplate("host", values)({ type: "string", default: "sandbox" }),
+      ),
       message,
     );
   }
   const deferredHost = await savePreset(
     context,
-    {
-      variables: { host: { type: "string" } },
-      configuration: { values: withHost("{{ vars.host }}") },
-    },
+    presetVariableTemplate("host", withHost("{{ vars.host }}"))({ type: "string" }),
     "Host-deferred",
   );
   assert.equal(deferredHost.status, 201, JSON.stringify(deferredHost.body));
 });
 
 test("Agent save, deployment and the Console's draft hold name the same first stored-row refusal", async () => {
+  const { storedConfigurationProblem } = await importConsoleModule(
+    "stored-configuration-rules.mjs",
+  );
   // Finding 3093. A row saved before a rule existed, or written past OCC, can fail several
   // stored-row rules. Agent save and deploy admission name the first in their order; the Console
   // holds a draft's Deploy with the module it serves (stored-configuration-rules.mjs), which
@@ -1975,19 +1703,12 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       secrets: { defaults: { env: "${ALIAS:-custom}", file: "${FILE_ALIAS}" } },
     },
   ]) {
-    const saved = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values },
-    });
-    assert.equal(saved.status, 201, JSON.stringify(saved.body));
-    const savedItem = `${context.collection}/${saved.body.data.id}`;
+    const { item: savedItem } = await createSavedConfiguration(context, values);
     assert.equal((await request(context.app, "DELETE", savedItem)).status, 204);
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);
   // A stored Configuration the password rule now refuses still reads and deletes.
-  const unused = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: valid },
-  });
-  assert.equal(unused.status, 201, JSON.stringify(unused.body));
+  const unused = await createAgentConfiguration(context, valid);
   await writePastOcc(
     configurationDriver,
     unused.body.data.id,
@@ -2438,10 +2159,7 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
   );
   // Agent save checks the Configuration it selects: a row stored before the rule is refused.
   const [[storedPlugins, storedRefusal]] = refused;
-  const other = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: valid },
-  });
-  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const other = await createAgentConfiguration(context, valid);
   await writePastOcc(context.configurationDriver, other.body.data.id, withPlugins(storedPlugins));
   assertRefused(
     await agentSave(context, agent, other.body.data.id),
@@ -2452,10 +2170,7 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
     [],
   );
   // An OpenClaw Configuration does not run the codex plugin, so it saves.
-  const openclaw = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: { ...runtimeSelected, plugins: { enabled: false } } },
-  });
-  assert.equal(openclaw.status, 201, JSON.stringify(openclaw.body));
+  await createAgentConfiguration(context, { ...runtimeSelected, plugins: { enabled: false } });
   // Settings the entrypoint starts with save and deploy: the codex plugin's overlay turns a
   // disabled codex entry back on, and an allowlist that names codex in another case keeps it.
   const startable = withPlugins({
@@ -2648,28 +2363,24 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     secretName: "model-provider-key",
   });
   const other = "anthropic/claude-opus-4";
-  const fallback = setting(
-    "agents.defaults.model.fallbacks",
-    "must use the primary model's provider",
-  );
   // A default model setting off the openai provider, and the refusal that names it.
   const offDefaults = (path, settings) => [
-    { agents: { defaults: { ...runtimeDefaults, ...settings } } },
+    withAgents({ defaults: { ...runtimeDefaults, ...settings } }),
     setting(`agents.defaults.${path}`, openaiOnly),
+  ];
+  const [imageValues, imageRefusal] = offDefaults("imageModel", { imageModel: other });
+  const defaultFallback = [
+    withModel({ primary: runtimeDefaults.model, fallbacks: [other] }),
+    setting("agents.defaults.model.fallbacks", "must use the primary model's provider"),
   ];
   const offProvider = [
     offDefaults("subagents.model", { subagents: { model: other } }),
-    offDefaults("imageModel", { imageModel: other }),
+    [imageValues, imageRefusal],
     offDefaults("pdfModel.primary", { pdfModel: { primary: other } }),
     // Finding 1306: OpenClaw's explicit /model allowlist, on the defaults and on an Agent entry.
     offDefaults("modelPolicy.allow", { modelPolicy: { allow: [runtimeDefaults.model, other] } }),
     [
-      {
-        agents: {
-          defaults: runtimeDefaults,
-          entries: { main: { modelPolicy: { allow: ["openai/*", other] } } },
-        },
-      },
+      withAgents({ entries: { main: { modelPolicy: { allow: ["openai/*", other] } } } }),
       setting("agents.entries.main.modelPolicy.allow", openaiOnly),
     ],
     // Finding 1310: OpenClaw reads openrouter:auto and openrouter:free, which have no slash, as
@@ -2704,17 +2415,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
         "must be unset: the Agent's Harness authentication binding serves only openai models",
       ),
     ],
-    [
-      {
-        agents: {
-          defaults: {
-            ...runtimeDefaults,
-            model: { primary: runtimeDefaults.model, fallbacks: [other] },
-          },
-        },
-      },
-      fallback,
-    ],
+    defaultFallback,
   ];
   // One subtest per refusal, so each stands on its own. The console's Save Configuration sends
   // the PATCH; a Preset save refuses the same text.
@@ -2728,16 +2429,11 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
 
   // A row stored before the fallback rule still reads; Agent save and deployment name it.
   await t.test("a stored fallback on another provider", async () => {
-    const entryFallback = {
-      agents: {
-        defaults: runtimeDefaults,
-        entries: {
-          main: { model: { primary: runtimeDefaults.model, fallbacks: [other] } },
-        },
-      },
-    };
+    const entryFallback = withAgents({
+      entries: { main: { model: { primary: runtimeDefaults.model, fallbacks: [other] } } },
+    });
     for (const [values, message] of [
-      [offProvider.at(-1)[0], fallback],
+      defaultFallback,
       [
         entryFallback,
         setting("agents.entries.main.model.fallbacks", "must use the primary model's provider"),
@@ -2856,12 +2552,12 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     ];
     const memberAgentRead = await request(context.app, "GET", agentPath);
     assert.equal(memberAgentRead.status, 403, JSON.stringify(memberAgentRead.body));
-    const refused = await answers(offProvider[1][0], 400);
-    assert.equal(refused.message, offProvider[1][1]);
+    const refused = await answers(imageValues, 400);
+    assert.equal(refused.message, imageRefusal);
     await answers(valid, 200);
     // A zero-grant member gets the uniform 403, whatever the values.
     role.permissions = [];
-    for (const values of [valid, offProvider[1][0]]) {
+    for (const values of [valid, imageValues]) {
       const denied = await answers(values);
       assert.equal(denied.code, "FORBIDDEN");
     }
@@ -2889,26 +2585,28 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     model: "openai/{{ vars.model }}",
     models: { "openai/{{ vars.model }}": { agentRuntime: { id: "openclaw" } } },
   };
+  const withTemplatedDefaults = (settings) =>
+    withAgents({ defaults: { ...templated, ...settings } });
+  const variableFallbackDefaults = () => ({
+    model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
+    models: {
+      ...templated.models,
+      "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
+    },
+  });
   const refused = [
     [
       { agents: { defaults: { ...runtimeDefaults, imageModel: other } } },
       setting("agents.defaults.imageModel", openaiOnly),
     ],
     [
-      {
-        agents: { defaults: { ...templated, subagents: { model: "anthropic/{{ vars.model }}" } } },
-      },
+      withTemplatedDefaults({ subagents: { model: "anthropic/{{ vars.model }}" } }),
       setting("agents.defaults.subagents.model", openaiOnly),
     ],
     [
-      {
-        agents: {
-          defaults: {
-            ...templated,
-            model: { primary: templated.model, fallbacks: ["anthropic/{{ vars.model }}"] },
-          },
-        },
-      },
+      withTemplatedDefaults({
+        model: { primary: templated.model, fallbacks: ["anthropic/{{ vars.model }}"] },
+      }),
       setting("agents.defaults.model.fallbacks", "must use the primary model's provider"),
     ],
     [
@@ -2935,11 +2633,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     ],
     // Finding 1306: an allowlist entry is checked like a selection, a written provider at save.
     [
-      {
-        agents: {
-          defaults: { ...templated, modelPolicy: { allow: ["anthropic/{{ vars.model }}"] } },
-        },
-      },
+      withTemplatedDefaults({ modelPolicy: { allow: ["anthropic/{{ vars.model }}"] } }),
       setting("agents.defaults.modelPolicy.allow", openaiOnly),
     ],
     [
@@ -2950,23 +2644,12 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     ],
     // Finding 1310: an OpenRouter compatibility selector names the openrouter provider.
     [
-      { agents: { defaults: { ...templated, utilityModel: "openrouter:free" } } },
+      withTemplatedDefaults({ utilityModel: "openrouter:free" }),
       setting("agents.defaults.utilityModel", openaiOnly),
     ],
     // A fallback and a policy key whose provider waits on a variable leave the rest checked.
     [
-      {
-        agents: {
-          defaults: {
-            model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
-            models: {
-              ...templated.models,
-              "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
-            },
-            imageModel: other,
-          },
-        },
-      },
+      withAgents({ defaults: { ...variableFallbackDefaults(), imageModel: other } }),
       setting("agents.defaults.imageModel", openaiOnly),
     ],
     // So does an Agent entry whose model's provider waits on one.
@@ -3035,6 +2718,15 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
   // variable saves and is checked once filled; so is a primary whose provider does, which
   // selects no supported provider yet.
   await t.test("accepts a Preset whose provider waits on a variable", async () => {
+    const unresolvedPrimary = withAgents({
+      defaults: {
+        model: "{{ vars.provider }}/{{ vars.model }}",
+        models: {
+          "{{ vars.provider }}/{{ vars.model }}": { agentRuntime: { id: "openclaw" } },
+        },
+        imageModel: other,
+      },
+    });
     const accepted = [
       {
         agents: {
@@ -3052,28 +2744,8 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
           },
         },
       },
-      {
-        agents: {
-          defaults: {
-            model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
-            models: {
-              ...templated.models,
-              "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
-            },
-          },
-        },
-      },
-      {
-        agents: {
-          defaults: {
-            model: "{{ vars.provider }}/{{ vars.model }}",
-            models: {
-              "{{ vars.provider }}/{{ vars.model }}": { agentRuntime: { id: "openclaw" } },
-            },
-            imageModel: other,
-          },
-        },
-      },
+      withAgents({ defaults: variableFallbackDefaults() }),
+      unresolvedPrimary,
       // An Agent entry's fallback, and an apiKey SecretRef whose default env alias, secrets source
       // name or source body waits on a variable.
       {
@@ -3106,7 +2778,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
     }
     // Filled with another provider, the launch's Configuration is refused by name.
-    const launched = await launch({ variables, configuration: { values: accepted[2] } });
+    const launched = await launch({ variables, configuration: { values: unresolvedPrimary } });
     assertRefused(launched, setting("agents.defaults.imageModel", openaiOnly));
   });
 
@@ -3885,10 +3557,9 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     const env = Object.fromEntries(
       Array.from({ length: 12 }, (_, index) => [`X${index}`, `x://h${"${A:-x}".repeat(170)}`]),
     );
-    const one = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values: { skills: { entries: { x: { env: { X0: env.X0 } } } } } },
+    const one = await createAgentConfiguration(context, {
+      skills: { entries: { x: { env: { X0: env.X0 } } } },
     });
-    assert.equal(one.status, 201, JSON.stringify(one.body));
     await request(context.app, "DELETE", `${context.collection}/${one.body.data.id}`);
     const response = await request(context.app, "POST", context.collection, {
       body: { kind: "agent", values: { skills: { entries: { x: { env } } } } },
@@ -4038,10 +3709,9 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
     const accounts = Object.fromEntries(
       Array.from({ length: 7 }, (_, index) => [`a${index}`, { proxy }]),
     );
-    const one = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values: { channels: { telegram: { accounts: { a0: { proxy } } } } } },
+    await createAgentConfiguration(context, {
+      channels: { telegram: { accounts: { a0: { proxy } } } },
     });
-    assert.equal(one.status, 201, JSON.stringify(one.body));
     await refusedOnSave(
       context,
       { channels: { telegram: { accounts } } },
@@ -4066,23 +3736,15 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
       { proxy: { proxyUrl: "http://${HOST:-u:pw@proxy}:3128" } },
       userinfo("/proxy/proxyUrl"),
     );
-    const saved = await request(context.app, "POST", context.collection, {
-      body: {
-        kind: "agent",
-        values: { proxy: { proxyUrl: "http://${HOST:-proxy}:${PORT:-3128}" } },
-      },
+    await createAgentConfiguration(context, {
+      proxy: { proxyUrl: "http://${HOST:-proxy}:${PORT:-3128}" },
     });
-    assert.equal(saved.status, 201, JSON.stringify(saved.body));
   });
   // An escaped `$${NAME:-fallback}` is literal text, and costs no rendering.
   await t.test("accepts a URL of escaped fallbacks", async () => {
-    const escaped = await request(context.app, "POST", context.collection, {
-      body: {
-        kind: "agent",
-        values: { proxy: { proxyUrl: `http://proxy:3128/${"$${A:-x}".repeat(800)}` } },
-      },
+    await createAgentConfiguration(context, {
+      proxy: { proxyUrl: `http://proxy:3128/${"$${A:-x}".repeat(800)}` },
     });
-    assert.equal(escaped.status, 201, JSON.stringify(escaped.body));
   });
 });
 
@@ -4443,10 +4105,7 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     "${MODEL_BASE_URL}/v1",
     "${MODEL_URL:-https://models.example.test}/v1",
   ]) {
-    const response = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values: gateway({ baseUrl: value }) },
-    });
-    assert.equal(response.status, 201, `${value}: ${JSON.stringify(response.body)}`);
+    await createAgentConfiguration(context, gateway({ baseUrl: value }), value);
   }
   const filled = await launch({
     h: "models.example.test",

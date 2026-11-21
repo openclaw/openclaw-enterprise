@@ -6,11 +6,13 @@ import {
   CREDENTIAL_WITHDRAWAL_TARGET,
   type ControllerWork,
   type ControllerWorkKind,
+  type ControllerWorkAttempt,
+  type DeploymentStatus,
+  type DeploymentStatusError,
+  type DeploymentStatusResult,
+  type PluginDeploymentWarning,
 } from "../controller-work.ts";
-import {
-  repositoryExecutionRedeployMessage,
-  type DeploymentRepositoryAccessStatus,
-} from "../deployment-repository-access.ts";
+import { repositoryExecutionRedeployMessage } from "../deployment-repository-access.ts";
 import { SandboxRepositoryRecipientUnverifiedError, ScopeViolationError } from "../errors.ts";
 import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
 
@@ -21,47 +23,16 @@ export type {
   ControllerWork,
   ControllerWorkKind,
   ControllerWorkState,
+  ControllerWorkAttempt,
+  ControllerWorkLookup,
+  DeploymentStatus,
+  DeploymentStatusError,
+  DeploymentStatusResult,
+  PluginDeploymentWarning,
 } from "../controller-work.ts";
 export { WorkClaimLostError } from "../errors.ts";
 
 export type { RuntimeFailureCause, RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
-
-export type DeploymentStatus = "queued" | "running" | "succeeded" | "failed";
-
-export interface DeploymentStatusError {
-  readonly code: string;
-  readonly message: string;
-  readonly data?: Readonly<Record<string, unknown>>;
-}
-
-export interface DeploymentStatusResult {
-  readonly deploymentId: string;
-  readonly namespaceId: string;
-  readonly agentId: string;
-  readonly status: DeploymentStatus;
-  readonly error: DeploymentStatusError | null;
-  readonly repositoryAccess?: DeploymentRepositoryAccessStatus;
-  readonly warnings: readonly PluginDeploymentWarning[];
-  readonly progress: {
-    readonly lastAttempt: {
-      readonly at: string;
-      readonly code: string;
-      readonly message: string;
-    } | null;
-    readonly nextAttemptAt: string | null;
-  } | null;
-  readonly cleanup: {
-    readonly status: DeploymentStatus;
-    readonly nextAttemptAt: string | null;
-  } | null;
-}
-
-export interface ControllerWorkAttempt {
-  readonly at: Date;
-  readonly code: string;
-  /** The refusal a `REFUSED_CANDIDATE_STOP_PENDING` deferral waits to publish. */
-  readonly refusal?: string;
-}
 
 const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
 
@@ -230,11 +201,6 @@ export function deploymentProgressForWork(
           }),
     nextAttemptAt: work.state === "queued" ? work.availableAt.toISOString() : null,
   });
-}
-
-export interface PluginDeploymentWarning {
-  readonly code: "PLUGIN_INSTALL_FAILED" | "PLUGIN_AUTH_REQUIRED";
-  readonly pluginId: string;
 }
 
 const CREDENTIAL_WITHDRAWAL_ACTION = "reconcile";
@@ -555,7 +521,7 @@ export function validateSuccessResultData(data: unknown): SuccessResultData | un
 }
 
 export function deploymentErrorForWork(
-  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData">>,
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData" | "agentId">>,
 ): DeploymentStatusError | null {
   if (work.state !== "failed_permanent" && !completedWithoutActivation(work)) {
     return null;
@@ -567,7 +533,7 @@ export function deploymentErrorForWork(
       : validateFailureData(code, immutableCopy(work.resultData));
   return Object.freeze({
     code,
-    message: deploymentErrorMessage(code),
+    message: deploymentErrorMessage(code, work.agentId ?? "AGENT_ID"),
     ...(data === undefined ? {} : { data }),
   });
 }
@@ -674,7 +640,7 @@ function completedWithoutActivation(
 // that holds the setting (finding 1393). `deployment-failure-steps.ts` records which kind of
 // step each code leads to, so clients choose their actions without parsing this text: keep the
 // two in step.
-function deploymentErrorMessage(code: string): string {
+function deploymentErrorMessage(code: string, agentId: string): string {
   switch (code) {
     case "CONVERGENCE_DEADLINE_EXCEEDED":
       return "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.";
@@ -702,6 +668,10 @@ function deploymentErrorMessage(code: string): string {
       return "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.";
     case "RUNTIME_STARTUP_FAILED":
       return "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.";
+    // The runtime holds unready on check `gateway-state-lock`; its log names the holder. The
+    // record does not say which workload holds, so the text names both log sources.
+    case "RUNTIME_STATE_LOCK_UNVERIFIED":
+      return `Startup check gateway-state-lock failed: the runtime cannot verify that its state lock holder stopped. See it with 'occ agent logs ${agentId} --source gateway' (Harness: --source agent), then follow the troubleshooting guide.`;
     case "EXECUTION_ADMISSION_WITHDRAWN":
       return "This version can no longer run with its admitted access. The controller closed that access and observed the workload stopped. Deploy a new version to use the current installation.";
     case "REVISION_SUPERSEDED":

@@ -15,12 +15,13 @@ import {
   type renderPresetTemplate,
 } from "../../packages/contracts/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { pluginEntryKeyVariantRefusal, pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
 import {
   configIncludeRefusal,
-  pluginEntryKeyVariantRefusal,
-  pluginPolicyListRefusal,
   providerKeyVariantRefusal,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-configuration-runtime.ts";
+
+export { registerConfigurationModelPolicyCases } from "./configuration-model-policy-cases.ts";
 
 interface HttpResponse {
   status: number;

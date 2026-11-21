@@ -23,7 +23,7 @@ The repository-local [spec skill](../../.agents/skills/spec/SKILL.md) supports:
 
 ```text
 $spec rfc <description>
-$spec plan RFC-0001 <description>
+$spec plan RFC-20261119-runtime-trust <description>
 $spec plan <description>
 ```
 
@@ -41,56 +41,63 @@ Use single Markdown files by default:
 specs/
   README.md
   rfcs/
-    0001-runtime-trust.md
+    20261119-runtime-trust.md
   plans/
-    0001-runtime-trust.md
+    20261119-runtime-trust.md
     0042-credential-cleanup.md
 ```
 
-**RFC numbers and task-plan numbers are independent sequences.** Use the full
-identifiers `RFC-0001` and `TASK-0042` in conversation and links. An RFC plan
-reuses its RFC's number and topic; it does not allocate another number. Keep one
-primary plan per RFC, with milestones inside it. Link additional relevant RFCs
-as dependencies. All plans share `specs/plans/`; use the document's ID to
-identify its numbering sequence, not its directory or the presence of an RFC link.
+**New RFCs use `yyyymmdd-title`; task plans keep their numeric sequence.**
+Use the UTC date when you first create the proposal and a lowercase kebab-case
+title starting with a letter, for example `20261119-runtime-trust`. Keep the
+name after submission, including when review continues on another day. The full
+date and title identify the RFC: use `RFC-20261119-runtime-trust` in conversation
+and links, because several RFCs can share a date. Use `TASK-0042` for a task plan.
+
+An RFC's primary plan reuses its full filename stem under `specs/plans/`;
+it does not allocate a task number. Keep one primary plan per RFC, with
+milestones inside it. Link additional relevant RFCs as dependencies. All plans
+share `specs/plans/`; use the document's ID to distinguish an RFC-linked plan
+from an independent task, not the directory or presence of an RFC link.
 
 Update an active plan for work within its scope. For materially different
 follow-up work under the same RFC, allocate a fresh `TASK` ID and link the RFC
 in frontmatter. Keep the completed primary plan intact. If an existing task
 becomes the primary plan for an RFC, retain its `TASK` ID and path instead of
-creating an RFC-numbered duplicate.
+creating a duplicate named after the RFC.
 
 When a plan relates to an RFC, set `rfc` in its YAML frontmatter to a path
-relative to the plan file. For example, in `specs/plans/0001-runtime-trust.md`:
+relative to the plan file. For example, in `specs/plans/20261119-runtime-trust.md`:
 
 ```yaml
 ---
-rfc: ../rfcs/0001-runtime-trust.md
+rfc: ../rfcs/20261119-runtime-trust.md
 ---
 ```
 
-For `specs/plans/0001-runtime-trust/index.md`, the link would be
-`../../rfcs/0001-runtime-trust.md`. If the RFC uses a folder, include its
+For `specs/plans/20261119-runtime-trust/index.md`, the link would be
+`../../rfcs/20261119-runtime-trust.md`. If the RFC uses a folder, include its
 `index.md` in the path. Omit `rfc` when no RFC applies. Keep this relationship
 in the plan's frontmatter and use body links for specific requirements or other
 RFC dependencies; the frontmatter link does not imply acceptance.
 
-RFC entry points use a continuous sequence from `0001`, with unique numeric
-prefixes of at least four digits. Allocate one above the highest RFC number on
-the current base branch. Rejected and superseded RFCs stay in place so their
-numbers remain occupied. Historical RFCs have been renumbered into this sequence;
-see the [old-to-new lookup](#renumbered-rfcs).
+Before submitting or merging, check the current base branch for the full name,
+including both `.md` files and folders. RFCs on the same date use distinct titles.
+If the same name already exists, reuse that RFC when it owns the decision;
+otherwise choose a more specific title. Never overwrite an existing document.
 
-An unmerged proposal does not reserve a gap on the base branch. Before merging,
-recheck its number against the current base and renumber it and its links to the
-next available ID if needed. Never overwrite an existing document.
+Existing numeric RFCs `0001` through `0043` keep their names, IDs, and links.
+The checker retains these exact names; new proposals must use date-based names,
+including unmerged numeric proposals outside that set. Existing linked plans
+keep their names and `rfc` targets. The [old-to-new lookup](#renumbered-rfcs)
+remains a record of earlier renames; this change does not rename historical RFCs.
 
 Task-plan IDs keep their independent sequence. Historical shared numbers through
 **41** remain reserved for task plans. Allocate one above the highest used task
 number, starting at `0042` or higher; check `specs/plans/` and Git history so deleted
 or renamed task plans do not free numbers.
 
-Keep one row per RFC in `specs/README.md`, with its linked number and name in
+Keep one row per RFC in `specs/README.md`, with its linked ID and name in
 the first column, its implementation-status emoji in the second, concise notes
 in the third, and its author in the fourth. Use the index legend to map the
 textual `implementation_status` to an emoji; keep frontmatter values unchanged.
@@ -100,17 +107,17 @@ are not listed in the RFC index. If a standalone task later gains an RFC, retain
 its task ID and path and add the relationship.
 
 When substantial evidence, diagrams, or independently useful milestones need
-companions, use a directory named `<number>-<topic>/` with the main document at
-`index.md` inside it. Move an existing `<number>-<topic>.md` into that directory
+companions, use a directory with the same stem as the document and the main document at
+`index.md` inside it. Move an existing `<stem>.md` into that directory
 when adding companions; do not keep a second top-level document. Keep the same
 ID, update incoming and relative links, and link companions from `index.md` and
 back to it. This applies to RFCs, RFC-linked plans, and standalone task plans:
 
 ```text
-specs/rfcs/0001-runtime-trust/
+specs/rfcs/20261119-runtime-trust/
   index.md
   architecture.svg
-specs/plans/0001-runtime-trust/
+specs/plans/20261119-runtime-trust/
   index.md
   qualification.md
 specs/plans/0042-credential-cleanup/
@@ -194,8 +201,8 @@ authorized scope change is recorded. Acceptance of an RFC is not evidence of
 availability. Use [documentation checks](documentation.md#preview-and-check)
 for document-only changes, without running product tests.
 
-`pnpm docs:check` also checks non-archived specs for continuous RFC numbering from
-`0001`, required statuses and author logins,
+`pnpm docs:check` also checks non-archived specs for valid calendar dates and
+unique full RFC names, the retained numeric names, required statuses and author logins,
 relative `rfc` references to RFC entry points, and local Markdown link targets.
 Run `node scripts/check-specs.mjs` for that check alone. It does not check remote
 URLs or the meaning of a recorded decision. Three preserved
@@ -213,7 +220,7 @@ in the platform design.
 Preserve historical decisions, dates, evidence, recorded statuses, and Manual
 Notes. Keep mixed historical design and implementation records intact, choosing
 their home by primary purpose. Historical plan names, including duplicate numeric
-prefixes and date-based names, remain grandfathered. RFCs use unique numeric IDs; the old-to-new lookup
+prefixes and date-based names, remain grandfathered. Existing numeric RFCs retain their IDs; the old-to-new lookup
 preserves their previous names. Existing linked plans keep their filenames and
 point to the renumbered RFC through `rfc` frontmatter. Documents with companions
 use `index.md` for the main document. Do not infer completion from placement or
@@ -227,34 +234,38 @@ are not required. A future archive reorganization requires a separate change.
 
 ## Renumbered RFCs
 
-The 18 existing RFCs were renumbered from `0001` through `0018`.
-This lookup maps their original paths to the current IDs. New RFCs take the next
-number; unmerged proposals must reconcile their IDs before merging.
+The first 18 RFCs were renumbered from `0001` through `0018`.
+This lookup maps earlier paths to their retained numeric IDs, including later
+collision fixes. New RFCs follow the date-based naming rule above.
 Plan filenames and historical commit links retain their original names.
 
-| Previous RFC path                             | Current RFC                                                              |
-| --------------------------------------------- | ------------------------------------------------------------------------ |
-| `0042-oidc-sign-in.md`                        | [RFC-0001](../../specs/rfcs/0001-oidc-sign-in.md)                        |
-| `21-agent-workload-tags.md`                   | [RFC-0002](../../specs/rfcs/0002-agent-workload-tags.md)                 |
-| `28-gateway-harness-storage-split.md`         | [RFC-0003](../../specs/rfcs/0003-gateway-harness-storage-split.md)       |
-| `28-occ-prometheus-metrics.md`                | [RFC-0004](../../specs/rfcs/0004-occ-prometheus-metrics.md)              |
-| `30-harness-auth-binding.md`                  | [RFC-0005](../../specs/rfcs/0005-harness-auth-binding.md)                |
-| `31-basic-rbac`                               | [RFC-0006](../../specs/rfcs/0006-basic-rbac/index.md)                    |
-| `31-human-federated-sign-in`                  | [RFC-0007](../../specs/rfcs/0007-human-federated-sign-in/index.md)       |
-| `31-repository-credentials`                   | [RFC-0008](../../specs/rfcs/0008-repository-credentials/index.md)        |
-| `35-native-plugin-tool-policy.md`             | [RFC-0009](../../specs/rfcs/0009-native-plugin-tool-policy.md)           |
-| `36-agent-access.md`                          | [RFC-0010](../../specs/rfcs/0010-agent-access.md)                        |
-| `36-coordinated-image-upgrade.md`             | [RFC-0011](../../specs/rfcs/0011-coordinated-image-upgrade.md)           |
-| `36-production-observability.md`              | [RFC-0012](../../specs/rfcs/0012-production-observability.md)            |
-| `37-platform-audit`                           | [RFC-0013](../../specs/rfcs/0013-platform-audit/index.md)                |
-| `37-plugin-policy-enforcement.md`             | [RFC-0014](../../specs/rfcs/0014-plugin-policy-enforcement.md)           |
-| `39-repository-credential-recovery.md`        | [RFC-0015](../../specs/rfcs/0015-repository-credential-recovery.md)      |
-| `39-sandbox-credential-injection.md`          | [RFC-0016](../../specs/rfcs/0016-sandbox-credential-injection/index.md)  |
-| `40-agent-egress-0x`                          | [RFC-0017](../../specs/rfcs/0017-agent-egress-0x/index.md)               |
-| `2026-09-28-installation-profiles-design`     | [RFC-0018](../../specs/rfcs/0018-installation-profiles-design/index.md)  |
-| `0021-driver-configuration-contributions.md`  | [RFC-0022](../../specs/rfcs/0022-driver-configuration-contributions.md)  |
-| `0027-shared-model-provider.md`               | [RFC-0028](../../specs/rfcs/0028-shared-model-provider.md)               |
-| `0031-repository-worker-restart-preflight.md` | [RFC-0033](../../specs/rfcs/0033-repository-worker-restart-preflight.md) |
+| Previous RFC path                             | Current RFC                                                                            |
+| --------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `0042-oidc-sign-in.md`                        | [RFC-0001](../../specs/rfcs/0001-oidc-sign-in.md)                                      |
+| `21-agent-workload-tags.md`                   | [RFC-0002](../../specs/rfcs/0002-agent-workload-tags.md)                               |
+| `28-gateway-harness-storage-split.md`         | [RFC-0003](../../specs/rfcs/0003-gateway-harness-storage-split.md)                     |
+| `28-occ-prometheus-metrics.md`                | [RFC-0004](../../specs/rfcs/0004-occ-prometheus-metrics.md)                            |
+| `30-harness-auth-binding.md`                  | [RFC-0005](../../specs/rfcs/0005-harness-auth-binding.md)                              |
+| `31-basic-rbac`                               | [RFC-0006](../../specs/rfcs/0006-basic-rbac/index.md)                                  |
+| `31-human-federated-sign-in`                  | [RFC-0007](../../specs/rfcs/0007-human-federated-sign-in/index.md)                     |
+| `31-repository-credentials`                   | [RFC-0008](../../specs/rfcs/0008-repository-credentials/index.md)                      |
+| `35-native-plugin-tool-policy.md`             | [RFC-0009](../../specs/rfcs/0009-native-plugin-tool-policy.md)                         |
+| `36-agent-access.md`                          | [RFC-0010](../../specs/rfcs/0010-agent-access.md)                                      |
+| `36-coordinated-image-upgrade.md`             | [RFC-0011](../../specs/rfcs/0011-coordinated-image-upgrade.md)                         |
+| `36-production-observability.md`              | [RFC-0012](../../specs/rfcs/0012-production-observability.md)                          |
+| `37-platform-audit`                           | [RFC-0013](../../specs/rfcs/0013-platform-audit/index.md)                              |
+| `37-plugin-policy-enforcement.md`             | [RFC-0014](../../specs/rfcs/0014-plugin-policy-enforcement.md)                         |
+| `39-repository-credential-recovery.md`        | [RFC-0015](../../specs/rfcs/0015-repository-credential-recovery.md)                    |
+| `39-sandbox-credential-injection.md`          | [RFC-0016](../../specs/rfcs/0016-sandbox-credential-injection/index.md)                |
+| `40-agent-egress-0x`                          | [RFC-0017](../../specs/rfcs/0017-agent-egress-0x/index.md)                             |
+| `2026-09-28-installation-profiles-design`     | [RFC-0018](../../specs/rfcs/0018-installation-profiles-design/index.md)                |
+| `0021-driver-configuration-contributions.md`  | [RFC-0022](../../specs/rfcs/0022-driver-configuration-contributions.md)                |
+| `0027-shared-model-provider.md`               | [RFC-0028](../../specs/rfcs/0028-shared-model-provider.md)                             |
+| `0031-repository-worker-restart-preflight.md` | [RFC-0033](../../specs/rfcs/0033-repository-worker-restart-preflight.md)               |
+| `0040-runtimeclass-agnostic-deployment.md`    | [RFC-0041](../../specs/rfcs/0041-runtimeclass-agnostic-deployment.md)                  |
+| `0043-channel-egress.md`                      | [RFC-20261118-channel-egress](../../specs/rfcs/20261118-channel-egress.md)             |
+| `0035-oidc-native-profiles.md`                | [RFC-20261110-oidc-native-profiles](../../specs/rfcs/20261110-oidc-native-profiles.md) |
+| `0044-oidc-native-profiles.md`                | [RFC-20261110-oidc-native-profiles](../../specs/rfcs/20261110-oidc-native-profiles.md) |
 
 Earlier versions of the Credential Proxy proposal used these provisional paths.
 RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.

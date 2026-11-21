@@ -19,6 +19,7 @@ import {
   requireRecoveryPreflight,
   type CapabilityProbe,
   type PreflightFault,
+  type RecoveryState,
 } from "./production-upgrade-recovery-state.ts";
 import {
   controller,
@@ -91,6 +92,7 @@ export type RecoveryFixtureOptions = {
   preflightPolicy?: boolean;
   certificate?: boolean;
   preflightFault?: PreflightFault | null;
+  failBeforeHelmIntent?: boolean;
   kubernetesNamespaces?: readonly RecoveryNamespace[];
   kubernetesDenied?: boolean;
   executionCluster?: ExecutionCluster | null;
@@ -106,6 +108,7 @@ export type RecoveryFixtureOptions = {
   olderDraftRules?: boolean;
   unavailableDraftResolver?: boolean;
   databaseAnswer?: DatabaseAnswer;
+  migrationSecrets?: boolean;
   afterDeploy?: () => Promise<void>;
   environment?: NodeJS.ProcessEnv;
 };
@@ -149,6 +152,7 @@ type RecoverySeed = {
 > & {
     collectorSecret: Awaited<ReturnType<typeof collectorConfigSecret>>;
     secret: { apiVersion: string; kind: string; metadata: object; data: Record<string, string> };
+    preflight?: RecoveryState;
     recoveryCandidateResources?: readonly object[];
     themeConfigMaps: NonNullable<RecoveryChart["configMaps"]>;
   };
@@ -390,6 +394,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       preflightPolicy = false,
       certificate = false,
       preflightFault = null,
+      failBeforeHelmIntent = false,
       kubernetesNamespaces = [],
       kubernetesDenied = false,
       executionCluster = null,
@@ -405,6 +410,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       olderDraftRules = false,
       unavailableDraftResolver = false,
       databaseAnswer = () => ({ rows: [{ id: "ins_test" }] }),
+      migrationSecrets = false,
       afterDeploy,
       environment = {},
     }: RecoveryFixtureOptions = {},
@@ -416,6 +422,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     let upgradeProcess: ChildProcess | undefined;
     let interrupted = false;
     let database: (FakePostgres & PreflightDatabase) | undefined;
+    let databaseSecretNames: string[] = [];
     const server = await startCommandServer({
       forwardedEnv: [],
       handle: (request) => {
@@ -444,6 +451,22 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       await writeFile(
         join(bin, command),
         commandShim({ ...shimTools, port, clientToken, serverToken, command, forwardedEnv: [] }),
+        { mode: 0o700 },
+      );
+    }
+    if (failBeforeHelmIntent) {
+      // A direct wrapper keeps the caller's descriptors intact. The command
+      // server closes fd 3, which the preflight Python reads.
+      const marker = join(directory, "fail-before-helm-intent");
+      await writeFile(
+        join(bin, "python3"),
+        `#!${shimTools.bash}
+if [[ "$1" == "scripts/upgrade-helm-state.py" && "$2" == "record" && -f ${bashString(marker)} ]]; then
+  rm -f ${bashString(marker)}
+  exit 9
+fi
+exec ${bashString(tools.realPython)} "$@"
+`,
         { mode: 0o700 },
       );
     }
@@ -598,6 +621,10 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       const secretName = databaseValues.secretName ?? "occ-database";
       const appUrlKey = databaseValues.appUrlKey ?? "application-url";
       assert.ok(typeof secretName === "string" && typeof appUrlKey === "string");
+      databaseSecretNames = [secretName];
+      if (typeof databaseValues.caSecretName === "string" && databaseValues.caSecretName) {
+        databaseSecretNames.push(databaseValues.caSecretName);
+      }
       database = {
         ...postgres,
         secretName,
@@ -624,6 +651,27 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       initializationResources,
       preflightPolicy,
       preflightFault,
+      ...(migrationSecrets && {
+        preflight: {
+          pods: {},
+          jobs: {},
+          networkpolicies: {},
+          deleted: [],
+          secrets: Object.fromEntries(
+            databaseSecretNames.map((name) => [
+              name,
+              {
+                metadata: {
+                  name,
+                  namespace: "system",
+                  uid: `migration-secret-${name}`,
+                  resourceVersion: "1",
+                },
+              },
+            ]),
+          ),
+        },
+      }),
       installationName,
       inventoryNamespaces,
       inventoryResponses,
@@ -678,10 +726,6 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     if (candidates) {
       const candidateValues = asRecord(JSON.parse(values));
       assert.ok(candidateValues);
-      candidateValues.api = {
-        ...asRecord(candidateValues.api),
-        channelDirectoryProxyUrl: "http://198.51.100.25:3128",
-      };
       const candidateInstallation = asRecord(JSON.parse(installation));
       const drivers = asRecord(candidateInstallation?.drivers);
       assert.ok(drivers);
@@ -738,6 +782,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
+      KUBERC: "off",
       OCC_URL: "https://occ.example.invalid",
       OCC_SERVICE_KEY_FILE: join(directory, "key"),
     };
@@ -756,7 +801,8 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       runIdentityCheck: async (
         component: "api" | "worker",
         action: "identity-job" | "job" = "identity-job",
-        protocol?: string,
+        // Rewrites the candidate database URL the Pod receives, such as its scheme or port.
+        databaseUrl?: (url: string) => string,
         fixtureFiles?: readonly string[],
       ) => {
         const { stdout } = await execute(
@@ -796,8 +842,8 @@ export function createRecoveryFixture(tools: RecoveryTools) {
         };
         assert.ok(database, "the identity check needs a chart fixture database");
         const connection = { ...database };
-        if (protocol) {
-          connection.url = database.url.replace(/^[^:]+:/, protocol);
+        if (databaseUrl) {
+          connection.url = databaseUrl(database.url);
         }
         const result = await runPreflight(
           directory,

@@ -1,8 +1,8 @@
 diff --git a/docs/cli/gateway/query.md b/docs/cli/gateway/query.md
-index c1f8903..694041b 100644
+index df822cb4f20..7cb46354c1e 100644
 --- a/docs/cli/gateway/query.md
 +++ b/docs/cli/gateway/query.md
-@@ -536,6 +536,38 @@ returns the same details while draining, and each draining observation writes
+@@ -540,6 +540,38 @@ returns the same details while draining, and each draining observation writes
  one `DRAINING` line to the Gateway log. Pending final writes remain protected
  until their persistence owner settles, even after a chat client disconnects.
  
@@ -42,10 +42,10 @@ index c1f8903..694041b 100644
  
  Release a prepared suspension after thaw or when the host operation is
 diff --git a/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js b/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
-index 0dd77a1..a3758eb 100644
+index 16ba157838e..d68a416fb25 100644
 --- a/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
 +++ b/packages/gateway-protocol/src/compiled/protocol.generated/predicates.js
-@@ -1058,7 +1058,7 @@ var External = [
+@@ -1067,7 +1067,7 @@ var External = [
      /(^source$|^app$)/u,
      /(^wsPath$)/u,
      /(^released$)/u,
@@ -54,7 +54,7 @@ index 0dd77a1..a3758eb 100644
      /(^degraded$|^degradedSinceMs$|^reasons$|^intervalMs$|^delayP99Ms$|^delayMaxMs$|^utilization$|^cpuCoreRatio$|^cpuBreakdown$)/u,
      /(^mainThreadCoreRatio$|^workerCoreRatio$|^otherThreadsCoreRatio$|^hostUtilization$|^hostCpuCount$)/u,
      /(^rssBytes$|^heapUsedBytes$|^heapTotalBytes$|^externalBytes$|^arrayBuffersBytes$)/u,
-@@ -1561,7 +1561,7 @@ var External = [
+@@ -1574,7 +1574,7 @@ var External = [
      /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$|^error$)/u,
      /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$)/u,
      /(^startedAt$|^endedAt$|^stopReason$|^yielded$|^timeoutPhase$|^providerStarted$|^aborted$|^toolErrorSummary$|^livenessState$|^replayInvalid$|^phase$|^error$|^fallbackExhaustedFailure$)/u,
@@ -63,7 +63,7 @@ index 0dd77a1..a3758eb 100644
      /(^status$|^reason$|^retryAfterMs$|^activeCount$|^blockers$|^writeCustody$)/u,
      /(^kind$|^count$|^message$)/u,
      /(^phase$|^count$)/u,
-@@ -1572,7 +1572,7 @@ var External = [
+@@ -1585,7 +1585,7 @@ var External = [
      /(^status$|^ownerId$|^phase$|^expiresAtMs$|^retryAfterMs$|^activeCount$|^blockers$|^writeCustody$)/u,
      /(^status$|^ownerId$|^expiresAtMs$|^writeCustody$)/u,
      /(^suspensionId$)/u,
@@ -72,38 +72,38 @@ index 0dd77a1..a3758eb 100644
      /(^pid$|^processInstanceId$)/u,
      /(^type$|^id$|^method$|^params$|^traceparent$|^expectedProfileId$)/u,
      /(^nodeId$)/u,
-@@ -9301,6 +9301,9 @@ var External = [
+@@ -9443,6 +9443,9 @@ var External = [
      (value.processInstanceId === void 0 ||
        !("processInstanceId" in value) ||
        check_63(value.processInstanceId)) &&
 +    (value.deferredStopHandoff === void 0 ||
 +      !("deferredStopHandoff" in value) ||
-+      check_326(value.deferredStopHandoff)) &&
-     check_1360(value.uptimeMs) &&
-     check_1360(value.cpuCount) &&
-     (value.cpuModel === void 0 || !("cpuModel" in value) || check_272(value.cpuModel)) &&
-@@ -18597,7 +18600,10 @@ var External = [
++      check_330(value.deferredStopHandoff)) &&
+     check_1379(value.uptimeMs) &&
+     check_1379(value.cpuCount) &&
+     (value.cpuModel === void 0 || !("cpuModel" in value) || check_276(value.cpuModel)) &&
+@@ -18842,7 +18845,10 @@ var External = [
      (value.terminalPolicy === void 0 ||
        !("terminalPolicy" in value) ||
-       check_2766(value.terminalPolicy)) &&
+       check_2799(value.terminalPolicy)) &&
 -    (value.drain === void 0 || !("drain" in value) || check_181(value.drain)),
 +    (value.drain === void 0 || !("drain" in value) || check_181(value.drain)) &&
 +    (value.completionDeadlineMs === void 0 ||
 +      !("completionDeadlineMs" in value) ||
-+      check_188(value.completionDeadlineMs)),
-   check_2766 = (value) => check_2767(value) || check_2768(value),
-   check_2767 = (value) => typeof value == "string" && value === "preserve",
-   check_2768 = (value) => typeof value == "string" && value === "terminate",
-@@ -18802,6 +18808,7 @@ var External = [
++      check_192(value.completionDeadlineMs)),
+   check_2799 = (value) => check_2800(value) || check_2801(value),
+   check_2800 = (value) => typeof value == "string" && value === "preserve",
+   check_2801 = (value) => typeof value == "string" && value === "terminate",
+@@ -19047,6 +19053,7 @@ var External = [
      ) &&
-     check_557(value.suspensionId) &&
-     (value.commit === void 0 || !("commit" in value) || check_326(value.commit)) &&
-+    (value.deferExit === void 0 || !("deferExit" in value) || check_326(value.deferExit)) &&
-     check_2810(value.target),
-   check_2810 = (value) =>
+     check_561(value.suspensionId) &&
+     (value.commit === void 0 || !("commit" in value) || check_330(value.commit)) &&
++    (value.deferExit === void 0 || !("deferExit" in value) || check_330(value.deferExit)) &&
+     check_2843(value.target),
+   check_2843 = (value) =>
      typeof value == "object" &&
 diff --git a/packages/gateway-protocol/src/gateway-suspend.test.ts b/packages/gateway-protocol/src/gateway-suspend.test.ts
-index 175a725..0ab89da 100644
+index 175a7256a1d..0ab89da0504 100644
 --- a/packages/gateway-protocol/src/gateway-suspend.test.ts
 +++ b/packages/gateway-protocol/src/gateway-suspend.test.ts
 @@ -30,12 +30,18 @@ describe("gateway suspension protocol", () => {
@@ -143,7 +143,7 @@ index 175a725..0ab89da 100644
      const draining = {
        ...drainingResult("terminal-session"),
 diff --git a/packages/gateway-protocol/src/schema/gateway-suspend.ts b/packages/gateway-protocol/src/schema/gateway-suspend.ts
-index e155a68..7d9af47 100644
+index e155a6862a3..7d9af47371c 100644
 --- a/packages/gateway-protocol/src/schema/gateway-suspend.ts
 +++ b/packages/gateway-protocol/src/schema/gateway-suspend.ts
 @@ -48,6 +48,10 @@ export const GatewaySuspendPrepareParamsSchema = closedObject({
@@ -167,7 +167,7 @@ index e155a68..7d9af47 100644
      pid: Type.Integer({ minimum: 1 }),
      processInstanceId: SuspensionTokenSchema,
 diff --git a/packages/gateway-protocol/src/schema/system-info.ts b/packages/gateway-protocol/src/schema/system-info.ts
-index e79d7c2..b66484d 100644
+index e79d7c2004a..b66484df682 100644
 --- a/packages/gateway-protocol/src/schema/system-info.ts
 +++ b/packages/gateway-protocol/src/schema/system-info.ts
 @@ -39,6 +39,8 @@ export const SystemInfoResultSchema = closedObject({
@@ -180,7 +180,7 @@ index e79d7c2..b66484d 100644
    cpuCount: Type.Integer(),
    cpuModel: Type.Optional(Type.String()),
 diff --git a/src/cli/gateway-cli/host-lifecycle.test.ts b/src/cli/gateway-cli/host-lifecycle.test.ts
-index 19b375a..ad36470 100644
+index 19b375a3086..ad364706522 100644
 --- a/src/cli/gateway-cli/host-lifecycle.test.ts
 +++ b/src/cli/gateway-cli/host-lifecycle.test.ts
 @@ -29,12 +29,13 @@ describe("Gateway host lifecycle authority", () => {
@@ -219,7 +219,7 @@ index 19b375a..ad36470 100644
      const commit = vi.fn();
      const host = owner(commit);
 diff --git a/src/cli/gateway-cli/host-lifecycle.ts b/src/cli/gateway-cli/host-lifecycle.ts
-index a672ce6..3d63170 100644
+index a672ce66dbe..3d63170446d 100644
 --- a/src/cli/gateway-cli/host-lifecycle.ts
 +++ b/src/cli/gateway-cli/host-lifecycle.ts
 @@ -19,6 +19,7 @@ export function createGatewayHostLifecycle(params: {
@@ -247,7 +247,7 @@ index a672ce6..3d63170 100644
      if (state === "retired" || !params.isCurrent()) {
        throw new Error(
 diff --git a/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts b/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts
-index 57c9d0a..3b75fb3 100644
+index 0e502e22eb7..25aaf2abe52 100644
 --- a/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts
 +++ b/src/cli/gateway-cli/run-loop-external-handoff.test-support.ts
 @@ -9,6 +9,42 @@ import {
@@ -295,7 +295,7 @@ index 57c9d0a..3b75fb3 100644
      { fails: false, trigger: "commit" },
 diff --git a/src/cli/gateway-cli/run-loop-external-handoff.ts b/src/cli/gateway-cli/run-loop-external-handoff.ts
 new file mode 100644
-index 0000000..14b9215
+index 00000000000..14b92157fb1
 --- /dev/null
 +++ b/src/cli/gateway-cli/run-loop-external-handoff.ts
 @@ -0,0 +1,52 @@
@@ -352,10 +352,10 @@ index 0000000..14b9215
 +  };
 +}
 diff --git a/src/cli/gateway-cli/run-loop.ts b/src/cli/gateway-cli/run-loop.ts
-index ad789e4..5097d19 100644
+index 73564de5032..b544ace49fc 100644
 --- a/src/cli/gateway-cli/run-loop.ts
 +++ b/src/cli/gateway-cli/run-loop.ts
-@@ -23,6 +23,7 @@ import { createGatewayHostLifecycle } from "./host-lifecycle.js";
+@@ -22,6 +22,7 @@ import { createGatewayHostLifecycle } from "./host-lifecycle.js";
  import { installGatewayHostLifeline } from "./host-lifeline.js";
  import { createGatewayRunCleanup } from "./run-loop-cleanup.js";
  import * as loopExit from "./run-loop-exit.js";
@@ -363,7 +363,7 @@ index ad789e4..5097d19 100644
  import {
    isUpdateProcessRestartReason,
    registerGatewayRunInstallationReplacement,
-@@ -86,6 +87,7 @@ export async function runGatewayLoop(params: {
+@@ -68,6 +69,7 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
      restartDecision,
      startupBudget,
    } = initial;
@@ -371,7 +371,7 @@ index ad789e4..5097d19 100644
    let lock = initial.lock;
    const cleanup = createGatewayRunCleanup(
      params.ownsProcessLifecycle,
-@@ -878,14 +880,15 @@ export async function runGatewayLoop(params: {
+@@ -862,14 +864,15 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
      startupFailedWithoutServerHandle = false;
      runAcceptedRequest(request);
    };
@@ -389,7 +389,7 @@ index ad789e4..5097d19 100644
      if (terminalExitCode !== undefined || (hostExitRequested && action !== "stop")) {
        return;
      }
-@@ -1022,7 +1025,7 @@ export async function runGatewayLoop(params: {
+@@ -1006,7 +1009,7 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
        return;
      }
      runAcceptedRequest(acceptedRequest);
@@ -398,7 +398,7 @@ index ad789e4..5097d19 100644
  
    const signals = createGatewayRunSignals({
      lifecycle: eagerLifecycleRuntime,
-@@ -1090,16 +1093,10 @@ export async function runGatewayLoop(params: {
+@@ -1076,16 +1079,10 @@ export async function runGatewayLoop(params: GatewayRunLoopParams): Promise<numb
          break;
        }
        const iterationHost = createGatewayHostLifecycle({
@@ -417,7 +417,7 @@ index ad789e4..5097d19 100644
        hostLifecycle = iterationHost;
        let startupFailedBeforeServerHandle = false;
 diff --git a/src/cli/update-cli/update-command-service-drain.native.test.ts b/src/cli/update-cli/update-command-service-drain.native.test.ts
-index db003d6..357ebe5 100644
+index b7c309b0bc9..37889cbbc7e 100644
 --- a/src/cli/update-cli/update-command-service-drain.native.test.ts
 +++ b/src/cli/update-cli/update-command-service-drain.native.test.ts
 @@ -9,7 +9,7 @@ import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js"
@@ -429,7 +429,7 @@ index db003d6..357ebe5 100644
    consumeGatewaySuspendHandoff,
    getGatewaySuspendStatus,
    prepareGatewaySuspend,
-@@ -299,7 +299,8 @@ beforeEach(() => {
+@@ -300,7 +300,8 @@ beforeEach(() => {
        if (!owner) {
          throw new Error("Fixture host has no process-exit owner");
        }
@@ -439,7 +439,7 @@ index db003d6..357ebe5 100644
          suspensionId: stringParam(request, "suspensionId"),
          owner,
          ...(input.commit === true ? { commit: true } : {}),
-@@ -421,6 +422,48 @@ test.each([0, 1])(
+@@ -422,6 +423,48 @@ test.each([0, 1])(
    },
  );
  
@@ -488,7 +488,7 @@ index db003d6..357ebe5 100644
  test.each(["native inspection", "handoff dispatch"] as const)(
    "refuses protected config drift at %s",
    async (window) => {
-@@ -457,6 +500,7 @@ test.each(["expiry", "resume", "write custody", "boot replacement"] as const)(
+@@ -458,6 +501,7 @@ test.each(["expiry", "resume", "write custody", "boot replacement"] as const)(
          expect(resumeGatewaySuspend(f.suspensionId)).toMatchObject({ ok: true, resumed: true });
        } else if (change === "write custody") {
          f.persistence = 1;
@@ -497,10 +497,10 @@ index db003d6..357ebe5 100644
          f.bootId = "replacement-boot";
        }
 diff --git a/src/cli/update-cli/update-command-service-drain.ts b/src/cli/update-cli/update-command-service-drain.ts
-index 697685a..6277727 100644
+index f6720f7c006..743f431f9ad 100644
 --- a/src/cli/update-cli/update-command-service-drain.ts
 +++ b/src/cli/update-cli/update-command-service-drain.ts
-@@ -77,6 +77,7 @@ export async function withGatewayMaintenanceDrain<T>(
+@@ -80,6 +80,7 @@ export async function withGatewayMaintenanceDrain<T>(
            "gateway.suspend.handoff",
            { suspensionId, target: processTarget, commit: true },
            beforeCommit,
@@ -508,7 +508,7 @@ index 697685a..6277727 100644
          );
          assertResidentCurrent();
          if (
-@@ -176,6 +177,7 @@ export async function withGatewayMaintenanceDrain<T>(
+@@ -179,6 +180,7 @@ export async function withGatewayMaintenanceDrain<T>(
      method: string,
      args?: unknown,
      beforeDispatch?: () => void,
@@ -516,60 +516,36 @@ index 697685a..6277727 100644
    ): Promise<R> => {
      assertResidentCurrent();
      if (params.control) {
-@@ -202,8 +204,7 @@ export async function withGatewayMaintenanceDrain<T>(
+@@ -205,8 +207,7 @@ export async function withGatewayMaintenanceDrain<T>(
        localPortOverride: port,
        ignoreEnvUrlOverride: true,
        tlsFingerprint: target.tlsFingerprint,
--      // The deadline bounds deferral, not the final RPC needed to observe custody.
--      timeoutMs: 10_000,
+-      // Handoff may wait for final writes within the original 30-second drain budget.
+-      timeoutMs: method === "gateway.suspend.handoff" ? 30_000 : 10_000,
 +      timeoutMs,
        onHelloOk: (hello) => {
          observedBootId = hello.server.bootId;
        },
-diff --git a/src/gateway/server-active-work.ts b/src/gateway/server-active-work.ts
-index b12510f..4d9ff7d 100644
---- a/src/gateway/server-active-work.ts
-+++ b/src/gateway/server-active-work.ts
-@@ -2,6 +2,7 @@
- import { getActiveCronJobCount } from "../cron/active-jobs.js";
- import { getSuspensionVisibleCronTaskRunCount } from "../cron/service/active-run-cancellation.js";
- import type { GatewayActiveWorkInspectors } from "../infra/gateway-active-work.js";
-+import { redactSensitiveText } from "../logging/redact.js";
- import {
-   getRpcSourceIdentity,
-   isRpcSourceQueued,
-@@ -44,6 +45,28 @@ export function createGatewayServerActiveWorkInspectors(
-     getTerminalPersistence: () =>
-       entries().filter(([, entry]) => hasTerminalPersistence(entry)).length,
-     getTerminalPersistenceHolders: () => holders(hasTerminalPersistence),
-+    getTerminalPersistenceDiagnostics: () => {
-+      const pending = entries().filter(([, entry]) => hasTerminalPersistence(entry));
-+      const now = Date.now();
-+      let oldestAgeMs: number | null = 0;
-+      for (const [, entry] of pending) {
-+        const observedAt = entry.adapter.projectSessionTerminalObservedAt;
-+        if (observedAt === undefined) {
-+          oldestAgeMs = null;
-+          break;
-+        }
-+        oldestAgeMs = Math.max(oldestAgeMs, now - observedAt);
-+      }
-+      return {
-+        oldestAgeMs,
-+        // Run IDs already correlate Gateway logs; omit session keys and redact before truncation.
-+        runIds: pending.slice(0, 8).map(([runId]) =>
-+          redactSensitiveText(runId, { mode: "tools" })
-+            .replace(/\p{Cc}/gu, " ")
-+            .slice(0, 256),
-+        ),
-+      };
-+    },
-     getTerminalSessions: () => context.terminalSessions?.size ?? 0,
-   };
- }
+diff --git a/src/gateway/server-methods.suspension-admission.test.ts b/src/gateway/server-methods.suspension-admission.test.ts
+index 931f2ed43ef..4e610aeff03 100644
+--- a/src/gateway/server-methods.suspension-admission.test.ts
++++ b/src/gateway/server-methods.suspension-admission.test.ts
+@@ -657,10 +657,11 @@ describe("gateway request suspension admission", () => {
+       ["suspend-proof.write", "operator.write", undefined],
+       ["suspend-proof.read", "operator.read", 1_000],
+       ["agent.identity.get", "operator.read", 60_000],
++      ["system.info", "operator.read", 1_000],
+     ] as const) {
+       const blocked = await reply(method, handler, {
+         scope,
+-        core: method === "agent.identity.get",
++        core: method === "agent.identity.get" || method === "system.info",
+       });
+       expect(handler).not.toHaveBeenCalled();
+       expectRejected(blocked, {
 diff --git a/src/gateway/server-methods/suspend.integration.test.ts b/src/gateway/server-methods/suspend.integration.test.ts
 new file mode 100644
-index 0000000..a15e51d
+index 00000000000..a15e51da4c7
 --- /dev/null
 +++ b/src/gateway/server-methods/suspend.integration.test.ts
 @@ -0,0 +1,194 @@
@@ -768,59 +744,26 @@ index 0000000..a15e51d
 +  },
 +);
 diff --git a/src/gateway/server-methods/suspend.ts b/src/gateway/server-methods/suspend.ts
-index 4a74034..dc95d10 100644
+index 808a24770d2..dc95d1072b1 100644
 --- a/src/gateway/server-methods/suspend.ts
 +++ b/src/gateway/server-methods/suspend.ts
-@@ -8,7 +8,8 @@ import {
+@@ -8,6 +8,7 @@ import {
    validateGatewaySuspendHandoffParams,
  } from "../../../packages/gateway-protocol/src/index.js";
  import {
--  armGatewaySuspendHandoff,
 +  GATEWAY_COMPLETION_MAX_MS,
-+  requestGatewaySuspendHandoff,
+   requestGatewaySuspendHandoff,
    getGatewaySuspendStatus,
    prepareGatewaySuspend,
-   resumeGatewaySuspend,
-@@ -17,6 +18,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
- import { getGatewayProcessInstanceId } from "../process-instance.js";
- import { createGatewayServerActiveWorkInspectors } from "../server-active-work.js";
- import { respondError } from "./response.js";
-+import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
- import type { GatewayRequestContext } from "./shared-types.js";
- import type { GatewayClient, GatewayRequestHandlers, RespondFn } from "./types.js";
- 
-@@ -57,7 +59,8 @@ function respondSuspendStatus(
- }
- 
- export const suspendHandlers: GatewayRequestHandlers = {
--  "gateway.suspend.handoff": ({ respond, params, context, client }) => {
-+  "gateway.suspend.handoff": async (options) => {
-+    const { respond, params, context, client } = options;
-     if (!validateGatewaySuspendHandoffParams(params)) {
-       respond(false, undefined, invalidParams("gateway.suspend.handoff"));
-       return;
-@@ -74,13 +77,18 @@ export const suspendHandlers: GatewayRequestHandlers = {
-       respondError(respond, ErrorCodes.UNAVAILABLE, "gateway host does not own process exit");
-       return;
-     }
--    const result = armGatewaySuspendHandoff({
-+    const result = await requestGatewaySuspendHandoff({
+@@ -80,6 +81,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
        suspensionId: params.suspensionId.trim(),
        owner,
        commit: params.commit,
 +      deferExit: params.deferExit,
-+      assertCurrent: readGatewayRequestMutationAuthority(options).assertCurrent,
+       assertCurrent: readGatewayRequestMutationAuthority(options).assertCurrent,
      });
      if (!result.ok) {
--      respondError(respond, ErrorCodes.UNAVAILABLE, result.error);
-+      context.logGateway.warn(`gateway.suspend.handoff refused: ${result.error.message}`);
-+      respondError(respond, ErrorCodes.UNAVAILABLE, result.error.message, {
-+        details: result.error.details,
-+      });
-       return;
-     }
-     suspendLog.info(
-@@ -93,12 +101,39 @@ export const suspendHandlers: GatewayRequestHandlers = {
+@@ -99,12 +101,39 @@ export const suspendHandlers: GatewayRequestHandlers = {
        respond(false, undefined, invalidParams("gateway.suspend.prepare"));
        return;
      }
@@ -861,7 +804,7 @@ index 4a74034..dc95d10 100644
        resumeScheduling: () => context.cron.resumeScheduling(),
        inspect: createGatewayServerActiveWorkInspectors(context),
 diff --git a/src/gateway/server-methods/system.ts b/src/gateway/server-methods/system.ts
-index 3c3a2f3..8830626 100644
+index 3c3a2f3e2ab..8830626ccd1 100644
 --- a/src/gateway/server-methods/system.ts
 +++ b/src/gateway/server-methods/system.ts
 @@ -175,6 +175,9 @@ async function collectSystemInfo(
@@ -874,168 +817,8 @@ index 3c3a2f3..8830626 100644
      uptimeMs: Math.round(process.uptime() * 1000),
      cpuCount,
      ...(cpuModel ? { cpuModel } : {}),
-diff --git a/src/gateway/server-methods.suspension-admission.test.ts b/src/gateway/server-methods.suspension-admission.test.ts
-index 00d8400..4e610ae 100644
---- a/src/gateway/server-methods.suspension-admission.test.ts
-+++ b/src/gateway/server-methods.suspension-admission.test.ts
-@@ -1,6 +1,7 @@
- import { expectDefined } from "@openclaw/normalization-core";
- import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi, type Mock } from "vitest";
- import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
-+import { createGatewayHostLifecycle } from "../cli/gateway-cli/host-lifecycle.js";
- import {
-   resetGatewaySuspendCoordinatorForLifecycleRestart,
-   resumeGatewaySuspend,
-@@ -9,6 +10,7 @@ import {
-   beginGatewayRestartSignalAdmission,
-   captureGatewayRootWorkAdmissionContinuationScope,
-   getActiveGatewayRootWorkCount,
-+  isGatewayRestartDraining,
-   markGatewayRestartDraining,
-   resetGatewayWorkAdmission,
-   retainGatewayRootWorkAdmissionContinuation,
-@@ -21,6 +23,7 @@ import { getAsyncWorkSignal, trackAsyncWork } from "../shared/async-work-scope.j
- import { createDeferredCore } from "../shared/deferred.js";
- import { createPluginGatewayMethodDescriptor } from "./methods/descriptor.js";
- import { createGatewayMethodRegistry } from "./methods/registry.js";
-+import { getGatewayProcessInstanceId } from "./process-instance.js";
- import { runWithGatewayRequestEnvelope } from "./server-methods.js";
- import { createRequestGate, expectRejected } from "./server-methods.request-gate.test-support.js";
- import { dispatchSuspensionRequest } from "./server-methods.suspension-admission.test-support.js";
-@@ -174,6 +177,118 @@ describe("gateway request suspension admission", () => {
-     },
-   );
- 
-+  it.each(["settles", "leaked", "resumed", "read-only", "revoked"] as const)(
-+    "waits within the original drain budget for late terminal writes: %s",
-+    async (outcome) => {
-+      vi.useFakeTimers();
-+      const log = { warn: vi.fn(), info: vi.fn() };
-+      const { context } = createSuspendContext({ size: 0 }, log);
-+      const host = createGatewayHostLifecycle({
-+        processOwner: { ownsProcessLifecycle: true, supervisor: "external" },
-+        isCurrent: () => true,
-+        isServing: () => true,
-+        acceptStop: () => {},
-+        commitExternalStop: () => markGatewayRestartDraining(),
-+      });
-+      context.hostLifecycle = host.capability;
-+      const prepared = await suspensionRpc(context, "prepare", {
-+        requestId: "late-final-writes",
-+        drain: true,
-+      });
-+      const { suspensionId } = prepared.mock.calls[0]![1] as { suspensionId: string };
-+      expect(prepared).toHaveBeenCalledWith(true, expect.objectContaining({ status: "ready" }));
-+      const writes = await Promise.all(
-+        Array.from({ length: 10 }, (_, index) =>
-+          registerTerminalPersistenceFixture(
-+            `run-${index}\n\u001b${index === 0 ? "password=synthetic-secret" : "x".repeat(300)}`,
-+            {
-+              sessionId: `session-${index}`,
-+              sessionKey: `agent:main:private-session-${index}`,
-+            },
-+          ),
-+        ),
-+      );
-+      for (const [index, write] of writes.entries()) {
-+        write.source.adapter.projectSessionTerminalObservedAt = Date.now() - index * 1_000;
-+      }
-+      await vi.advanceTimersByTimeAsync(6_000);
-+      const clientScopes = [outcome === "read-only" ? "operator.read" : "operator.admin"];
-+      const handoff = dispatch(
-+        "gateway.suspend.handoff",
-+        suspendHandlers["gateway.suspend.handoff"]!,
-+        {
-+          context,
-+          core: true,
-+          clientScopes,
-+          requestParams: {
-+            suspensionId,
-+            commit: true,
-+            target: { pid: process.pid, processInstanceId: getGatewayProcessInstanceId() },
-+          },
-+        },
-+      );
-+      await vi.advanceTimersByTimeAsync(1_000);
-+      expect(isGatewayRestartDraining()).toBe(false);
-+      if (outcome !== "read-only") {
-+        expect(handoff.respond).not.toHaveBeenCalled();
-+      }
-+      if (outcome === "revoked") {
-+        clientScopes.splice(0, 1, "operator.read");
-+      }
-+      if (outcome === "resumed") {
-+        resumeGatewaySuspend(suspensionId);
-+      } else if (outcome === "settles" || outcome === "revoked") {
-+        await Promise.all(writes.map((write) => write.settle()));
-+      }
-+      await vi.advanceTimersByTimeAsync(outcome === "leaked" ? 23_000 : 250);
-+      await handoff.request;
-+      if (outcome === "settles") {
-+        expect(handoff.respond).toHaveBeenCalledWith(
-+          true,
-+          expect.objectContaining({ status: "committed" }),
-+        );
-+        expect(isGatewayRestartDraining()).toBe(true);
-+      } else {
-+        expect(isGatewayRestartDraining()).toBe(false);
-+        expect(handoff.respond).toHaveBeenCalledWith(
-+          false,
-+          undefined,
-+          expect.objectContaining({
-+            code: outcome === "read-only" || outcome === "revoked" ? "FORBIDDEN" : "UNAVAILABLE",
-+          }),
-+        );
-+        if (outcome === "revoked") {
-+          expect(handoff.respond.mock.calls[0]![2].message).toBe(
-+            "Gateway requester authority changed",
-+          );
-+        }
-+        if (outcome === "leaked") {
-+          const error = handoff.respond.mock.calls[0]![2];
-+          expect(error.details).toMatchObject({
-+            terminalPersistence: {
-+              count: 10,
-+              oldestAgeMs: 39_000,
-+              runIds: expect.any(Array),
-+            },
-+          });
-+          expect(error.details.terminalPersistence.runIds).toHaveLength(8);
-+          const diagnostic = JSON.stringify(error);
-+          expect(diagnostic).toContain("run-0");
-+          expect(diagnostic).not.toContain("synthetic-secret");
-+          expect(diagnostic).not.toContain("private-session");
-+          expect(
-+            error.details.terminalPersistence.runIds.every(
-+              (id: string) => id.length <= 256 && !/\p{Cc}/u.test(id),
-+            ),
-+          ).toBe(true);
-+          expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(error.message));
-+        }
-+      }
-+      await Promise.all(writes.map((write) => write.settle()));
-+      await host.retire();
-+    },
-+  );
-+
-   it("refuses a committed service-stop read when close overtakes lazy preparation", async () => {
-     markGatewayRestartDraining("stop (SIGTERM)");
-     using gate = createRequestGate();
-@@ -542,10 +657,11 @@ describe("gateway request suspension admission", () => {
-       ["suspend-proof.write", "operator.write", undefined],
-       ["suspend-proof.read", "operator.read", 1_000],
-       ["agent.identity.get", "operator.read", 60_000],
-+      ["system.info", "operator.read", 1_000],
-     ] as const) {
-       const blocked = await reply(method, handler, {
-         scope,
--        core: method === "agent.identity.get",
-+        core: method === "agent.identity.get" || method === "system.info",
-       });
-       expect(handler).not.toHaveBeenCalled();
-       expectRejected(blocked, {
 diff --git a/src/gateway/server-request-lifecycle.ts b/src/gateway/server-request-lifecycle.ts
-index 05558b9..4b43115 100644
+index 05558b9e50b..4b4311582ab 100644
 --- a/src/gateway/server-request-lifecycle.ts
 +++ b/src/gateway/server-request-lifecycle.ts
 @@ -10,6 +10,7 @@ import {
@@ -1070,10 +853,10 @@ index 05558b9..4b43115 100644
        getGatewayRestartDrainSignal().aborted &&
        getGatewaySuspendAdmissionPhase() === "accepting")
 diff --git a/src/gateway/server-runtime-state-prepare.ts b/src/gateway/server-runtime-state-prepare.ts
-index 6e62c63..e891687 100644
+index 732be36aa48..eebf8315d0d 100644
 --- a/src/gateway/server-runtime-state-prepare.ts
 +++ b/src/gateway/server-runtime-state-prepare.ts
-@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
+@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
  import { loadOrCreateProcessDeviceIdentityAsync } from "../infra/device-identity-async.js";
  import { readDevicePairingNodeSnapshot } from "../infra/device-pairing-store-readonly.js";
  import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
@@ -1081,7 +864,7 @@ index 6e62c63..e891687 100644
  import { loadGatewayTlsServerRuntime } from "../infra/tls/gateway.js";
  import type { createSubsystemLogger } from "../logging/subsystem.js";
  import { runtimeForLogger } from "../logging/subsystem.js";
-@@ -473,7 +474,8 @@ export async function prepareGatewayKernelState(params: {
+@@ -486,7 +487,8 @@ export async function prepareGatewayKernelState(params: {
      startedAt: serverStartedAt,
      getStartupPending: isGatewayStartupPending,
      getStartupPendingReason: () => startupState.pendingReason,
@@ -1089,13 +872,13 @@ index 6e62c63..e891687 100644
 +    getGatewayDraining: () =>
 +      lifecycle.closePreludeStarted || (!isGatewayCompletionWaitActive() && isGatewayDraining()),
    };
-   const getStartup = createStartupChecker(startupCheckerDeps, listAgentDatabaseAdmissionRefusals);
-   const getReadiness = createReadinessChecker({
+   const getStartup = createStartupChecker(
+     { ...startupCheckerDeps, gatewayBootId: bootId },
 diff --git a/src/gateway/test-helpers.e2e.ts b/src/gateway/test-helpers.e2e.ts
-index f54765a..20401ff 100644
+index d86a05ebc86..d878bc354e6 100644
 --- a/src/gateway/test-helpers.e2e.ts
 +++ b/src/gateway/test-helpers.e2e.ts
-@@ -313,6 +313,7 @@ export async function startGatewayWithClient(
+@@ -315,6 +315,7 @@ export async function startGatewayWithClient(
      onEvent?: (evt: { event?: string; payload?: unknown }) => void;
      beforeConnect?: (server: GatewayServer) => void | Promise<void>;
      sidecarStartup?: GatewayServerOptions["sidecarStartup"];
@@ -1103,7 +886,7 @@ index f54765a..20401ff 100644
      hotReloadRecovery?: GatewayServerOptions["hotReloadRecovery"];
      channelAutostartSuppression?: GatewayServerOptions["channelAutostartSuppression"];
      tryRecoverChannelAutostartSuppression?: GatewayServerOptions["tryRecoverChannelAutostartSuppression"];
-@@ -346,6 +347,7 @@ export async function startGatewayWithClient(
+@@ -348,6 +349,7 @@ export async function startGatewayWithClient(
          auth: params.auth ?? { mode: "token", token: params.token },
          controlUiEnabled: false,
          sidecarStartup: params.sidecarStartup,
@@ -1111,20 +894,8 @@ index f54765a..20401ff 100644
          hotReloadRecovery: params.hotReloadRecovery,
          channelAutostartSuppression: params.channelAutostartSuppression,
          tryRecoverChannelAutostartSuppression: params.tryRecoverChannelAutostartSuppression,
-diff --git a/src/infra/gateway-active-work.ts b/src/infra/gateway-active-work.ts
-index e93a88d..0667edc 100644
---- a/src/infra/gateway-active-work.ts
-+++ b/src/infra/gateway-active-work.ts
-@@ -32,6 +32,7 @@ export type GatewayActiveWorkInspectors = Omit<
-   getRootRequestHolders?: () => string[];
-   getChatRunHolders?: () => string[];
-   getTerminalPersistenceHolders?: () => string[];
-+  getTerminalPersistenceDiagnostics?: () => { oldestAgeMs: number | null; runIds: string[] };
- };
- 
- const defaultInspectors = {
 diff --git a/src/infra/gateway-suspend-coordinator.test.ts b/src/infra/gateway-suspend-coordinator.test.ts
-index 4e60ec1..36016cf 100644
+index 4f999deebee..36016cf5eac 100644
 --- a/src/infra/gateway-suspend-coordinator.test.ts
 +++ b/src/infra/gateway-suspend-coordinator.test.ts
 @@ -65,6 +65,51 @@ afterEach(() => {
@@ -1220,18 +991,8 @@ index 4e60ec1..36016cf 100644
    it.each(["expired", "resumed", "write custody", "old host"] as const)(
      "refuses committed shutdown for %s without invoking the host exit owner",
      (reason) => {
-@@ -562,7 +641,8 @@ describe("external restart handoff", () => {
-     expect(tryBeginGatewayRootWorkAdmission()).toBeNull();
-     expect(fixture.consume()).toEqual({
-       ok: false,
--      error: "gateway terminal persistence is still pending",
-+      error:
-+        'gateway terminal persistence is still pending: {"count":1,"oldestAgeMs":null,"runIds":[]}',
-     });
-     expect(fixture.consume()).toEqual({ ok: true, value: false });
-     expect(fixture.arm().ok).toBe(false);
 diff --git a/src/infra/gateway-suspend-coordinator.ts b/src/infra/gateway-suspend-coordinator.ts
-index 4844e10..1d18504 100644
+index 539ce86e450..1d18504c463 100644
 --- a/src/infra/gateway-suspend-coordinator.ts
 +++ b/src/infra/gateway-suspend-coordinator.ts
 @@ -21,6 +21,7 @@ import {
@@ -1370,68 +1131,7 @@ index 4844e10..1d18504 100644
        suspensionId,
        expiresAtMs,
        deadlineAtMs,
-@@ -351,28 +385,79 @@ export function prepareGatewaySuspend(params: {
-   }
- }
- 
--function handoffRefusal(held: HeldGatewaySuspension, owner: GatewaySuspendHandoffOwner) {
-+type HandoffRefusal = {
-+  message: string;
-+  details?: {
-+    terminalPersistence: { count: number; oldestAgeMs: number | null; runIds: string[] };
-+  };
-+};
-+
-+/** Late final writes share the original 30-second drain budget, never its cleanup grace. */
-+export async function requestGatewaySuspendHandoff(
-+  params: Parameters<typeof armGatewaySuspendHandoff>[0] & { assertCurrent: () => void },
-+): Promise<ReturnType<typeof armGatewaySuspendHandoff>> {
-+  params.assertCurrent();
-+  const initial = armGatewaySuspendHandoff(params);
-+  if (initial.ok || !initial.error.details?.terminalPersistence) {
-+    return initial;
-+  }
-+  const held = COORDINATOR_STATE.current;
-+  if (!held?.drain) {
-+    return initial;
-+  }
-+  while (
-+    COORDINATOR_STATE.current === held &&
-+    params.owner.isCurrent() &&
-+    (held.inspect?.getTerminalPersistence?.() ?? 0) > 0
-+  ) {
-+    const remainingMs =
-+      Math.min(held.expiresAtMs - held.nowMs(), held.deadlineAtMs - performance.now()) - 15_000;
-+    if (remainingMs <= 0) {
-+      break;
-+    }
-+    await new Promise<void>((resolve) => {
-+      setTimeout(resolve, Math.min(250, remainingMs));
-+    });
-+  }
-+  params.assertCurrent();
-+  return armGatewaySuspendHandoff(params);
-+}
-+
-+function handoffRefusal(
-+  held: HeldGatewaySuspension,
-+  owner: GatewaySuspendHandoffOwner,
-+): HandoffRefusal | undefined {
-   if (
-     COORDINATOR_STATE.current !== held ||
-     held.nowMs() >= held.expiresAtMs ||
-     performance.now() >= held.deadlineAtMs ||
-     !owner.isCurrent()
-   ) {
--    return "gateway suspension or host iteration changed";
-+    return { message: "gateway suspension or host iteration changed" };
-   }
-   // READY retains this server-owned inspector too: final-chat writes can arrive
-   // after preparation and must never be replaced by the process-only inventory.
-   if (!held.inspect?.getTerminalPersistence) {
--    return "gateway terminal persistence inspection is unavailable";
-+    return { message: "gateway terminal persistence inspection is unavailable" };
-   }
+@@ -409,6 +443,9 @@ function handoffRefusal(
    const snapshot = createGatewayActiveWorkSnapshot(held.inspect, {
      ignoreTerminalSessions: held.terminalPolicy === "terminate",
    });
@@ -1439,60 +1139,37 @@ index 4844e10..1d18504 100644
 +    return { message: "gateway admitted work or delivery is still pending" };
 +  }
    if (snapshot.counts.terminalPersistence > 0) {
--    return "gateway terminal persistence is still pending";
-+    const terminalPersistence = {
-+      count: snapshot.counts.terminalPersistence,
-+      ...(held.inspect.getTerminalPersistenceDiagnostics?.() ?? { oldestAgeMs: null, runIds: [] }),
-+    };
-+    return {
-+      message: `gateway terminal persistence is still pending: ${JSON.stringify(terminalPersistence)}`,
-+      details: { terminalPersistence },
-+    };
-   }
-   if (snapshot.writeCustody.some(({ count }) => count > 0)) {
--    return "gateway write custody is still pending";
-+    return { message: "gateway write custody is still pending" };
-   }
-   return undefined;
- }
-@@ -382,7 +467,8 @@ export function armGatewaySuspendHandoff(params: {
+     const terminalPersistence = {
+       count: snapshot.counts.terminalPersistence,
+@@ -430,6 +467,7 @@ export function armGatewaySuspendHandoff(params: {
    suspensionId: string;
    owner: GatewaySuspendHandoffOwner;
    commit?: true;
--}): Result<GatewaySuspendHandoffResult, string> {
 +  deferExit?: true;
-+}): Result<GatewaySuspendHandoffResult, HandoffRefusal> {
+ }): Result<GatewaySuspendHandoffResult, HandoffRefusal> {
    const committed = params.commit ? getRestartingSuspension() : undefined;
    if (
-     committed?.suspensionId === params.suspensionId &&
-@@ -396,18 +482,22 @@ export function armGatewaySuspendHandoff(params: {
-   }
-   const held = COORDINATOR_STATE.current;
+@@ -446,6 +484,9 @@ export function armGatewaySuspendHandoff(params: {
    if (!held || held.suspensionId !== params.suspensionId) {
--    return resultError("gateway suspension id does not match");
-+    return resultError({ message: "gateway suspension id does not match" });
-+  }
+     return resultError({ message: "gateway suspension id does not match" });
+   }
 +  if (params.deferExit && !params.owner.commitStopFence) {
 +    return resultError({ message: "gateway host does not support externally signalled stop" });
-   }
++  }
    const refusal = handoffRefusal(held, params.owner);
    if (refusal) {
      return resultError(refusal);
-   }
-   if (held.handoff && held.handoff !== params.owner) {
--    return resultError("gateway suspension already belongs to another host iteration");
-+    return resultError({ message: "gateway suspension already belongs to another host iteration" });
+@@ -454,7 +495,8 @@ export function armGatewaySuspendHandoff(params: {
+     return resultError({ message: "gateway suspension already belongs to another host iteration" });
    }
    if (params.commit) {
 -    if (!params.owner.commitStop) {
--      return resultError("gateway host does not support committed suspension stop");
 +    const commitStop = params.deferExit ? params.owner.commitStopFence : params.owner.commitStop;
 +    if (!commitStop) {
-+      return resultError({ message: "gateway host does not support committed suspension stop" });
+       return resultError({ message: "gateway host does not support committed suspension stop" });
      }
      const changed = handoffRefusal(held, params.owner);
-     if (changed) {
-@@ -415,11 +505,11 @@ export function armGatewaySuspendHandoff(params: {
+@@ -463,7 +505,7 @@ export function armGatewaySuspendHandoff(params: {
      }
      held.handoff = params.owner;
      try {
@@ -1501,17 +1178,8 @@ index 4844e10..1d18504 100644
      } catch {
        // The callback may already have committed shutdown. Never reopen admission
        // or turn an unknown stop outcome into permission to replay native effects.
--      return resultError("gateway suspension stop commitment outcome is uncertain");
-+      return resultError({ message: "gateway suspension stop commitment outcome is uncertain" });
-     }
-     const signal = getGatewayRestartDrainSignal();
-     if (
-@@ -428,9 +518,12 @@ export function armGatewaySuspendHandoff(params: {
-       held.shutdown?.signal !== signal ||
-       !isGatewayRestartDraining()
-     ) {
--      return resultError("gateway suspension stop commitment outcome is uncertain");
-+      return resultError({ message: "gateway suspension stop commitment outcome is uncertain" });
+@@ -479,6 +521,9 @@ export function armGatewaySuspendHandoff(params: {
+       return resultError({ message: "gateway suspension stop commitment outcome is uncertain" });
      }
      held.committedStopOwner = params.owner;
 +    if (params.deferExit) {
@@ -1520,7 +1188,7 @@ index 4844e10..1d18504 100644
      return ok({
        status: "committed",
        suspensionId: held.suspensionId,
-@@ -445,13 +538,18 @@ export function armGatewaySuspendHandoff(params: {
+@@ -493,6 +538,11 @@ export function armGatewaySuspendHandoff(params: {
  export function consumeGatewaySuspendHandoff(
    owner: GatewaySuspendHandoffOwner | undefined,
  ): Result<boolean, string> {
@@ -1532,11 +1200,3 @@ index 4844e10..1d18504 100644
    const held = COORDINATOR_STATE.current;
    if (!held || !owner || held.handoff !== owner) {
      return ok(false);
-   }
-   held.handoff = undefined;
-   const refusal = handoffRefusal(held, owner);
--  return refusal ? resultError(refusal) : ok(true);
-+  return refusal ? resultError(refusal.message) : ok(true);
- }
- 
- export function disarmGatewaySuspendHandoff(owner: GatewaySuspendHandoffOwner): void {

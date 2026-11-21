@@ -1,18 +1,17 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-13
-last_updated_session: "authoring-run/91737212-2ec5-4aca-981d-501670320fd5"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/44d201ec-ee79-4633-aebb-a4ae8e9cd904"
 ---
 
 # Namespace IAM Policy Flow
 
 ## Overview
 
-Authenticated callers use the OCC API or CLI to list, read, or create Namespace
-Roles, exact AccessBindings, and ServicePrincipals, and to delete Roles and
-AccessBindings. OCC checks authority and Namespace ownership before the selected
-IAM Driver writes policy. Policy and audit commit in the same State transaction. Phase 6 covers
-configured policy, Group membership, Owner bindings, and deploy-time grants.
+The OCC API and CLI list, read, and create Namespace Roles, exact AccessBindings,
+and ServicePrincipals. Callers can also delete Roles and AccessBindings. OCC
+checks authority and Namespace ownership before the selected IAM Driver writes
+policy. Policy and audit commit in the same State transaction.
 
 ## Entry Points
 
@@ -213,14 +212,21 @@ behavior.
 - **Authority fence.** `performFenced` runs each session request inside
   `controller.withAuthorityFence`. The four Namespace Role and AccessBinding
   mutations, the create paths below, and `deployAgentWithAuthorization` call
-  `holdAuthority` first, which holds the
+  `packages/occ/src/controller-authority.ts:holdAuthority` first. It holds the
   session through COMMIT and takes the IAM configuration lock shared. Each
   create in an existing Namespace and the deploy authorize again after
   `lockNamespace`, which AccessBinding deletes also take. `createNamespace`
   instead authorizes `create` on the Namespace collection at the Installation
   before it creates the Namespace.
   `fenceAgentProvisioning` also takes the IAM configuration lock before
-  `lockNamespace`.
+  `lockNamespace`. The final `completeNamespaceConnection` transaction holds the
+  browser session, then this shared lock before authorizing and granting
+  exact-source access. `updateAgent` takes it at transaction entry for
+  `repositoryStandingApproval`; ordinary edits are unchanged. Startup's
+  `initializeDefaultPresets` takes the same
+  lock before Installation authorization and Namespace locks. A configured
+  permission withdrawal commits before these decisions or after durable
+  authority and success audit commit.
 - **Agent Backend selection.** `createAgent` resolves a supplied Backend ID and
   checks its type only after the second `agent:create` authorization. A caller
   without that grant receives `403` for both configured and unknown valid IDs.
@@ -298,6 +304,8 @@ behavior.
 
 ## Changelog
 
+- 2026-11-20 16:23: Point to the shared authority fence used by OCC transactions. (authoring-run/44d201ec-ee79-4633-aebb-a4ae8e9cd904 - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
+- 2026-11-17 19:20: Order Connection ownership, standing repository approval, and startup Preset ownership against configured-policy changes. (authoring-run/01a1bfc4-452e-7521-a7b2-2e1c44f855df - ecf6a80b605ec64c9d68a150cb07dbda5055d2a8)
 - 2026-11-13 06:59: Condense the Namespace IAM policy flow while retaining authorization and transaction boundaries. (authoring-run/91737212-2ec5-4aca-981d-501670320fd5 - 6192588c3a8fce971689a174fc34ae9deb1c8c80)
 - 2026-11-13 05:56: Authorize Agent creation before configured Backend lookup; preserve creator and catalog permissions, distinguish Namespace creation admission, and cover denial audit and unchanged State. (authoring-run/3e297b79-1580-4c10-ade8-4fa8031618a7 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 - 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)

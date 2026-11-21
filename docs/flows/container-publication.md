@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-14
-last_updated_session: authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e
+updated: "2026-11-19 18:56"
+last_updated_session: "01a1f528-3827-7cb0-9d72-19b91cbb6f69"
 ---
 
 # Container publication flow
@@ -80,15 +80,12 @@ docker build -f deploy/runtime/Dockerfile \
   "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
 ```
 
-`openclaw-bridge-tests` typechecks and tests bridge and CUA assembly inputs.
-Coverage includes native turn settlement, approval discovery after reconnect,
-HTTP rejection and native handoff during late writes. Failure blocks smoke and
-upload. Local builds can run independently.
+`openclaw-bridge-tests` typechecks and runs only the tests that exercise a kept
+carried patch; upstream CI covers the rest. Failure blocks smoke and upload.
 
-The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
-Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for
-smaller or unknown limits. Before smoke, `scripts/ci/setup-tools.sh` installs
-checksum-pinned kubectl, k3d, Helm and yq. See [build settings](../release/configuration.md#build-settings).
+The resource step checks the native architecture, CPU count, and memory.
+Before smoke, `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d,
+Helm and yq. See [build settings](../release/configuration.md#build-settings).
 
 Buildx runs up to two steps at once and caches by image and architecture on
 Blacksmith sticky disks or in GitHub Actions. Standalone `container-check.yml`
@@ -106,22 +103,19 @@ The `openclaw-source` stage verifies and patches the archive. Then
 `scripts/build-runtime-assets.ts inputs` copies preparation manifests and lists
 required bundled plugins, Codex, and Slack for the frozen production install.
 The standalone Codex command uses the plugin's installation. Build stages use full Bookworm; final images use separately
-pinned slim bases. The controller requires Node 24.22.1+ within the 24 series.
-The runtime requires matching Node 24.22.1 Bookworm bases. Its `node-source` stage checks
-the archive and patch digests in `deploy/runtime/node/source.json` before applying the
-worker-termination repair. `node-compiled` builds native Node with full ICU and runs
-the worker regression and adjacent loader tests. Slim Bookworm repeats the tests
-with the copied executable. Missing libraries, ABI changes or regression failures
-stop assembly. The repository-credential service retains its original base.
+pinned slim bases. The controller and runtime require stock Node 24.22.1+
+within the 24 series. The runtime uses the executable from each selected base
+without compiling Node or applying a Node patch. The repository-credential
+service retains its original base.
 Both bases apply updates from mutable Debian repositories, even with pinned image digests.
 Every index refresh uses
 `apt-get update --error-on=any` to stop builds on incomplete downloads.
 
-`deploy/runtime/node/build.sh` records the source, patch, ABI and executable digest.
-The `inventory` command checks its running executable's digest
-before recording `node` in final runtime provenance. Image startup compares that
-record with the checkout and installed executable. Native qualification requires
-packaged Gateway restart tests.
+The `inventory` command records the installed Node executable digest in
+`downloadClients`, with the other native download clients. Native qualification
+requires packaged Gateway shutdown and restart tests. Stock Node 24.22.1 can
+abort the Gateway if worker termination interrupts synchronous ESM loading;
+see the [runtime limits](../../deploy/runtime/README.md#build-a-local-runtime-image).
 
 `deploy/runtime/Dockerfile` and `deploy/runtime/repository-credentials/Dockerfile.client`
 retry pinned GitHub CLI archive and manifest downloads up to six times, including partial
@@ -211,7 +205,7 @@ index and archive without rebuilding, then removes temporary layouts.
 `readArchivePlatforms` verifies exactly one AMD64 and one ARM64 Linux manifest
 with matching configs and digests. Assembly needs no registry access.
 
-`scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports the verified image into
+`scripts/ci/prepare.ts:prepareRuntimeImageSmoke` imports the verified image into
 disposable k3d. It reuses the Images and Packaging lane's Codex seccomp derivation
 and sandbox probes, passing profile and ownership state to Docker tests. Smoke
 cleans up on exit. After command interruption, the workflow attempts cleanup if
@@ -315,6 +309,18 @@ owns package-write access and coordination.
 
 ## Changelog
 
+- 2026-11-19 18:56: Remove the custom Node build and worker-termination patch; use stock Node from the pinned bases. (01a1f528-3827-7cb0-9d72-19b91cbb6f69 - 32662b9d2)
+
+- The source-built Node repair is removed from runtime packaging. (NOT_IN_SPEC)
+
+- 2026-11-19 15:20: Bridge tests cover only kept carried patches.
+
+- 2026-11-19 08:19: Bridge tests no longer check CUA inputs; the node setup bridge carries no computer-use hunks. (authoring-run/fce9aadb-9500-4a97-949d-80408d45b612 - ebafb89344294a28044b07ef5650efa2a4939bbd)
+
+- 2026-11-18 03:26: Point preparation callers to the TypeScript command. (authoring-run/ac86eb9c-8f66-4c1a-b92a-ec70193e5fd5 - f5ac2329754d41a36a6cc47950cd3a95eae1ebfc)
+
+- 2026-11-17 23:51: Bridge tests cover revision-scoped restart resume. (finding 3347)
+
 - 2026-11-14 22:54: Document native ZIP selection. (authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e - e2ca224aa9657568ded513872d2fe6315d8d5301)
 
 - 2026-11-14 15:07: Document optional native tool selection, image verification, and published client identities. (authoring-run/b93b80a6-de4f-4ade-b2de-0a80efedde44 - 1c56c61909b9f480845f4579e2add893207fa759)
@@ -346,11 +352,5 @@ owns package-write access and coordination.
 - 2026-10-26 10:23: Read OpenClaw source metadata from one manifest; validate build arguments and provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
 
 - 2026-10-23 15:28: Require patched Node 24.22.1 bases before controller and runtime preparation (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
-
-- 2026-10-23 16:52: Select the source's CI base for standalone checks and update OpenClaw for Gateway managed mode. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
-
-- 2026-10-16 22:41: Require the native reaper and caller-authority regression checks. (codex/01a13683-3916-7880-b1a6-27175b853600 - fd21b43ce92dbd44f98fce5fef29489b97d6352c)
-
-- 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 
 [Container publication documentation history](container-publication/history.md) preserves the older dated entries.

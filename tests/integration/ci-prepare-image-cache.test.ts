@@ -1047,7 +1047,7 @@ process.exit(73);
     assert.deepEqual(uncovered, []);
     for (const input of [
       ".dockerignore",
-      "scripts/ci/prepare.mjs",
+      "scripts/ci/prepare.ts",
       "scripts/ci/warm-image-cache.ts",
       "scripts/ci/image-build-cache.ts",
       "scripts/ci/fixture-support-images.ts",

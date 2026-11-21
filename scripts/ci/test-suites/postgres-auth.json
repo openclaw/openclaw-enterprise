@@ -101,7 +101,7 @@
     {
       "path": "tests/integration/postgres-auth-accounts.test.ts",
       "expectedTests": [
-        "fresh PostgreSQL development bootstrap writes a usable administrator service key",
+        "fresh PostgreSQL development bootstrap registers the supplied administrator service key",
         "PostgreSQL auth account provisioning is visible to another controller without rebuilding IAM Driver",
         "PostgreSQL auth account audit failure rolls back IAM and Better Auth account state"
       ]
