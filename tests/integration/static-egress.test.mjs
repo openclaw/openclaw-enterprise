@@ -773,6 +773,7 @@ test("response persistence must commit its observation and fence before policy b
   await runStaticEgressResponseCommitCase(t);
 });
 
+/** @param {Partial<import("../../packages/contracts/src/index.ts").AgentRevision>} revision */
 function admissionCases(revision) {
   const withoutPlan = { ...revision };
   delete withoutPlan.egressPlan;
