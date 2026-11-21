@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-11-20"
-last_updated_session: "authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -29,7 +29,7 @@ Credential issuance and provider internals are outside this flow.
   selection.
 - Local installer: `scripts/first-agent.ts:main` uses the bootstrap service key.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
-  [OpenClawController](../../packages/occ/src/index.ts), and
+  [OpenClawController](../../packages/occ/src/controller.ts), and
   [KubernetesSecretDriver](../../apps/controller/src/drivers/secret/kubernetes/index.ts).
 - The console and [OCC CLI](../guides/cli.md#provision-integration-secrets)
   use these HTTP operations for OCC-authorized writes.
@@ -111,7 +111,7 @@ before sending needs no cleanup read.
 
 ### 3. Bind a source, then admit references
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 The Agent response exposes its immutable `servicePrincipalId`. An administrator
 grants that identity `operate` on the exact Secret before deployment. OCC checks
@@ -127,11 +127,11 @@ Configuration. A Configuration create/update whose resulting document contains
 bindings requires `operate` on every selected Secret, including retained bindings
 when PATCH omits `secretBindings`.
 
-[createAgent and updateAgent](../../packages/occ/src/index.ts) require the normal
+[createAgent and updateAgent](../../packages/occ/src/agent-drafts.ts) require the normal
 Agent mutation permission plus `operate` on each exact Secret when selecting a
 Configuration with bindings.
 
-[deployAgent](../../packages/occ/src/index.ts) separately authorizes the deploying
+[deployAgent](../../packages/occ/src/agent-deployment-admission.ts) separately authorizes the deploying
 caller and consuming Agent service principal to `operate` every Secret, then
 checks live backend identity through the API-side driver. Namespace locking
 serializes binding/admission changes against deletion. Admission freezes
@@ -336,6 +336,7 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:35: Point Configuration binding writes to their OCC module. (authoring-run/a6c7283a-ee8f-4603-ad88-67df4c2f9eea - 81cdb33c3d2d2ba64dfd783b0216b5dbcfebe395)
 - 2026-11-20 16:31: Update OCC Secret operation source pointers. (authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c - 8eb97c71e0aa0b84779e19f9bbacc2d37f22fa14)
 - 2026-11-16 14:46: Bind the first-Agent helper to confirmed Installation state and use authenticated IAM operations for exact model credential grants. (authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822 - 6255bbe8fe564e52941b311a7ce8ce8699d1f236)

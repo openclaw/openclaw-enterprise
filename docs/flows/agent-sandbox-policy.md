@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-11-20
-last_updated_session: authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d
+updated: "2026-11-20"
+last_updated_session: "authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc"
 ---
 
 # Agent sandbox policy flow
@@ -122,15 +122,15 @@ cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
 
-`packages/occ/src/index.ts:deployAgent` freezes the Driver's defaults and additions
-into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
-snapshot rather than re-reading changed defaults.
+`packages/occ/src/sandbox-policy.ts:admitDeploymentSnapshot` freezes Driver
+defaults and additions in `AgentRevision.sandboxPolicy`. The OpenShell Driver
+provisions from that snapshot.
 
-`applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
-`update` and `read` before any refusal that names saved additions, then requires
-the exact active revision and supporting Driver. When the caller supplies reviewed additions, the same transaction saves the new
-policy version, records its pending application and enqueues Agent-target work.
-Omitting additions retains the saved policy version. Neither saving nor enqueueing establishes enforcement.
+`applyAgentSandboxPolicy` checks Agent `manage_policy` and SandboxPolicy
+`update` and `read` before disclosing saved additions. It requires the exact
+active revision and a supporting Driver. One transaction saves supplied
+changes, records the pending application and queues work. Omitting additions
+keeps the saved policy version. Provider readback confirms enforcement.
 
 ### 3. Reconcile provider effects
 
@@ -265,6 +265,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 16:58: Point to deployment admission and its request module. (authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc - 48e378422c0f6527682d305cac5ca3992a00c5ad)
 
 - 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
 

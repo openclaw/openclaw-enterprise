@@ -32,27 +32,15 @@
     },
     {
       "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
+      "from": "packages/occ/src/controller-composition.ts",
       "to": "packages/occ/src/state/platform-state.ts",
       "specifier": "./state/platform-state.ts",
       "kind": "import",
       "typeOnly": false,
       "bindings": ["value:InMemoryPlatformState"],
-      "owner": "Repository ports and mutation composition",
-      "reason": "The OCC service selects this in-memory store when no store is supplied.",
-      "removeWhen": "Remove when default store selection moves to composition."
-    },
-    {
-      "rule": "domain-to-implementation",
-      "from": "packages/occ/src/index.ts",
-      "to": "packages/occ/src/state/postgres-state.ts",
-      "specifier": "./state/postgres-state.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:PostgresCommitOutcomeUnknownError"],
-      "owner": "Transaction outcomes",
-      "reason": "The OCC resource service imports the shared commit-outcome-unknown error from the PostgreSQL adapter.",
-      "removeWhen": "Move the single commit-outcome-unknown constructor to neutral transaction errors and update all consumers."
+      "owner": "Controller composition",
+      "reason": "Per-controller composition chooses the in-memory adapter when no store is supplied and reads pending operations from that adapter.",
+      "removeWhen": "Callers supply the default store and own pending-operation inspection."
     },
     {
       "rule": "cross-package-source",

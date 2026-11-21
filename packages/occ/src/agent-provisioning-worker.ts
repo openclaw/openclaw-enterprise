@@ -6,7 +6,6 @@ import {
   validPluginDriverIdentity,
   type Agent,
   type AgentRevision,
-  type AgentRuntimeCredentialStatus,
   type BackendRef,
   type ComputeDriver,
   type Configuration,
@@ -14,19 +13,40 @@ import {
   type CredentialSourceReference,
   type HarnessAuthBinding,
   type Namespace,
-  type ResourceRef,
+  type PluginApprovers,
+  type PluginDesiredSelection,
+  type RepositoryBindingRequest,
   type SecretBindings,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+import type { AgentCredentialAccess } from "./agent-credential-access.ts";
 import type { HarnessResolver } from "./agent-harness-topology.ts";
+import { normalizeAgentPluginApprovers, normalizeAgentPlugins } from "./agent-plugin-validation.ts";
+import {
+  runtimeCredentialOperation,
+  runtimeCredentialStatus,
+  type AgentRuntimeCredentials,
+} from "./agent-runtime-credentials.ts";
+import type { ConfigurationOperations } from "./configuration-operations.ts";
+import type { ControllerTransactions } from "./controller-transactions.ts";
+import {
+  controllerWorkDeploymentStatus,
+  deploymentErrorForWork,
+} from "./deployment-work-status.ts";
+import { driverOperation } from "./driver-operation.ts";
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
+import { normalizedRepositoryAccess } from "./repository-credential-validation.ts";
+import type { createRepositoryPolicyOperations } from "./repository-policy.ts";
+import { lockNamespace } from "./resource-scope.ts";
+import type { createProvisioningRequests } from "./agent-provisioning-requests.ts";
 import {
   normalizeProvisioningWorkspace,
   PROVISIONING_DEPLOYMENT_PENDING,
   parseProvisioningPlan,
 } from "./agent-provisioning.ts";
-import type { ClaimedWork, ControllerWork } from "./controller-work.ts";
+import type { ClaimedWork } from "./controller-work.ts";
 import {
   AGENT_NAME_CONFLICT,
   AgentDeletingError,
@@ -54,6 +74,7 @@ import {
   ServiceAccountBackendBindingError,
   ServiceAccountDriverNotConfiguredError,
   WorkClaimLostError,
+  PostgresCommitOutcomeUnknownError,
 } from "./errors.ts";
 import type {
   AgentProvisioningCheckpoint,
@@ -171,62 +192,28 @@ interface ProvisioningWorkerDependencies {
   readonly now: () => Date;
   readonly timestamp: () => string;
   readonly nextId: (kind: "configuration" | "agent") => string;
-  readonly transactions: {
-    read<T>(read: (state: PlatformReadView) => Promise<T>): Promise<T>;
-    mutate<T>(mutate: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
-    isCommitOutcomeUnknown(error: unknown): boolean;
-  };
-  readonly lockNamespace: (state: PlatformUnitOfWork, id: string) => Promise<Readonly<Namespace>>;
-  readonly authorizeRecord: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    record: Readonly<AgentProvisioningRecord>,
-  ) => Promise<void>;
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    resource: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
-  readonly ensureAgentOperateGrants: (
-    state: PlatformUnitOfWork,
-    namespaceId: string,
-    agent: Readonly<Agent>,
-    sources: readonly (SecretReference | CredentialSourceReference)[],
-  ) => Promise<unknown>;
+  readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
+  readonly authorizeRecord: ReturnType<
+    typeof createProvisioningRequests
+  >["authorizeProvisioningRecord"];
+  readonly bindCreator: IAMPolicyOperations["bindCreator"];
+  readonly ensureAgentOperateGrants: AgentCredentialAccess["ensureAgentOperateGrants"];
   readonly backendId: (ref: BackendRef | undefined) => string | null;
-  readonly savedAgentOptions: (
-    namespaceId: string,
-    plan: Readonly<Record<string, unknown>>,
-  ) => Pick<Agent, "plugins" | "pluginApprovers" | "repositoryBindings" | "repositoryAccess">;
-  readonly configurations: {
-    hasSelection(): boolean;
-    selected(): ConfigurationDriver;
-    run<T>(operation: () => Promise<T>): Promise<T>;
-  };
-  readonly transport: {
-    admit(
-      principalId: string,
-      namespaceId: string,
-      agentId: string,
-    ): Promise<{ namespace: Readonly<Namespace>; agent: Readonly<Agent>; driver: ComputeDriver }>;
-    driver(): ComputeDriver;
-    run<T>(operation: () => Promise<T>): Promise<T>;
-    status(status: AgentRuntimeCredentialStatus): Readonly<AgentRuntimeCredentialStatus>;
-  };
-  readonly deployment: {
-    deploy(
-      principalId: string,
-      input: { namespaceId: string; agentId: string },
-      resolveHarness: HarnessResolver,
-    ): Promise<Readonly<AgentRevision>>;
-    status(
-      work: Readonly<ControllerWork>,
-      now: Date,
-    ): "queued" | "running" | "succeeded" | "failed";
-    error(
-      work: Readonly<ControllerWork>,
-    ): { readonly code: string; readonly message: string } | null;
-  };
+  readonly repository: Pick<
+    ReturnType<typeof createRepositoryPolicyOperations>,
+    "repositoryBindingSelections"
+  >;
+  readonly hasConfigurationDriver: () => boolean;
+  readonly configuration: Pick<ConfigurationOperations, "selectedDriver">;
+  readonly runtimeCredentials: Pick<
+    AgentRuntimeCredentials,
+    "admitAgentRuntimeCredentialProvisioning" | "runtimeCredentialComputeDriver"
+  >;
+  readonly deploy: (
+    principalId: string,
+    input: { namespaceId: string; agentId: string },
+    resolveHarness: HarnessResolver,
+  ) => Promise<Readonly<AgentRevision>>;
 }
 
 function provisioningBefore(
@@ -238,7 +225,7 @@ function provisioningBefore(
 }
 
 export function createProvisioningWorker(dependencies: ProvisioningWorkerDependencies) {
-  const { transactions, configurations, transport, deployment } = dependencies;
+  const { transactions, configuration: configurations, runtimeCredentials } = dependencies;
   const handoffClaim = new AsyncLocalStorage<ClaimedWork>();
 
   async function processAgentProvisioning(
@@ -299,11 +286,12 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
         }
         const effect = { kind: "transport" as const, targetId: record.agentId };
         if (provisioningEffectReceipt(record, effect) === undefined) {
-          const { namespace, agent, driver } = await transport.admit(
-            record.actorId,
-            record.namespaceId,
-            record.agentId,
-          );
+          const { namespace, agent, driver } =
+            await runtimeCredentials.admitAgentRuntimeCredentialProvisioning(
+              record.actorId,
+              record.namespaceId,
+              record.agentId,
+            );
           if (provisioningPendingEffectMatches(record, effect)) {
             await inspectProvisioningTransportEffect(
               claim.idempotencyKey,
@@ -317,7 +305,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
           } else {
             const pendingTransport = await beginProvisioningEffect(claim, effect);
             await runEffect(async () => {
-              const transportResult = await transport.run(() =>
+              const transportResult = await runtimeCredentialOperation(() =>
                 driver.provisionAgentRuntimeCredentials!({ namespace, agent }, {}),
               );
               await settleProvisioningEffect(claim.idempotencyKey, pendingTransport, effect);
@@ -331,7 +319,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
           progress: {},
         });
       }
-      const revision = await transactions.mutate(async (state) => {
+      const revision = await transactions.transact(async (state) => {
         const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
         if (
           current === undefined ||
@@ -345,7 +333,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
         }
         await fenceAgentProvisioning(state, claim);
         const revision = await handoffClaim.run(claim, () =>
-          deployment.deploy(
+          dependencies.deploy(
             current.actorId,
             { namespaceId: current.namespaceId, agentId: current.agentId! },
             resolveHarness,
@@ -375,7 +363,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     if (
       error instanceof WorkClaimLostError ||
       error instanceof AuditAppendUnavailableError ||
-      transactions.isCommitOutcomeUnknown(error)
+      error instanceof PostgresCommitOutcomeUnknownError
     ) {
       throw error;
     }
@@ -434,7 +422,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     // attempt deletes it before writing another, and a refusal deletes it too (finding 1399).
     const unrecorded =
       disposition === "permanent"
-        ? await transactions.mutate(async (state) => {
+        ? await transactions.transact(async (state) => {
             const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
             if (current === undefined) {
               throw new WorkClaimLostError();
@@ -455,7 +443,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       unrecorded === undefined
         ? undefined
         : await deleteUnrecordedProvisioningConfiguration(unrecorded);
-    await transactions.mutate(async (state) => {
+    await transactions.transact(async (state) => {
       const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
       if (current === undefined) {
         throw new WorkClaimLostError();
@@ -517,7 +505,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     if (revisionId === undefined) {
       throw new ScopeViolationError("The initial deployment revision is unavailable.");
     }
-    return transactions.mutate(async (state) => {
+    return transactions.transact(async (state) => {
       const work = await state.operations.findWork(`agent_revision:${revisionId}:reconcile`);
       if (
         work === undefined ||
@@ -527,7 +515,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       ) {
         throw new DependencyUnavailableError("The initial deployment work is unavailable.");
       }
-      const status = deployment.status(work, dependencies.now());
+      const status = controllerWorkDeploymentStatus(work, dependencies.now());
       if (status === "succeeded") {
         await commitProvisioningCheckpoint(state, claim, {
           completedPhase: "handoff",
@@ -537,7 +525,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
         });
         return Object.freeze({ outcome: "succeeded" as const, revisionId });
       }
-      const deploymentError = deployment.error(work);
+      const deploymentError = deploymentErrorForWork(work);
       // Stopping the first rollout is the owner's choice, not a fault to correct.
       const error =
         deploymentError?.code === "REVISION_STOPPED"
@@ -590,7 +578,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     claim: ClaimedWork,
     checkpoint: AgentProvisioningCheckpoint,
   ): Promise<Readonly<AgentProvisioningRecord>> {
-    return transactions.mutate(async (state) => {
+    return transactions.transact(async (state) => {
       await fenceAgentProvisioning(state, claim);
       return commitProvisioningCheckpoint(state, claim, checkpoint);
     });
@@ -639,7 +627,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     // Take it before the Namespace lock: applying the configuration holds it exclusively and
     // then locks each Namespace it writes a configured binding into.
     await state.installations.holdIAMConfiguration("shared");
-    const namespace = await dependencies.lockNamespace(state, record.namespaceId);
+    const namespace = await lockNamespace(state, record.namespaceId);
     if (namespace.status !== "ready") {
       throw new NamespaceNotReadyError();
     }
@@ -664,7 +652,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     claim: ClaimedWork,
     effect: ProvisioningEffectTarget,
   ): Promise<Readonly<AgentProvisioningRecord>> {
-    return transactions.mutate(async (state) => {
+    return transactions.transact(async (state) => {
       await fenceAgentProvisioning(state, claim);
       return state.provisioning.beginEffect(claim, effect);
     });
@@ -692,7 +680,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     ) {
       throw new ResourceConflictError("The Agent provisioning effect receipt is invalid.");
     }
-    return transactions.mutate((state) =>
+    return transactions.transact((state) =>
       state.provisioning.settleEffect(workId, receipt as ProvisioningEffectReceipt),
     );
   }
@@ -747,7 +735,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       );
     }
     return runEffect(async () => {
-      const recovered = await configurations.run(() => driver.inspectExact!(configuration));
+      const recovered = await driverOperation(() => driver.inspectExact!(configuration));
       return recovered === undefined ? undefined : settleProvisioningEffect(workId, record, effect);
     });
   }
@@ -781,7 +769,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       );
     }
     // The fence stamps updated_at on the database clock, the clock that stamped startedAt.
-    const fenced = await transactions.mutate((state) => fenceAgentProvisioning(state, claim));
+    const fenced = await transactions.transact((state) => fenceAgentProvisioning(state, claim));
     if (!provisioningPendingEffectMatches(fenced, effect)) {
       throw new DependencyUnavailableError(
         "The pending Configuration provisioning effect outcome is unknown.",
@@ -796,9 +784,9 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     }
     return runEffect(async () => {
       try {
-        await configurations.run(() => driver.createExact!(configuration));
+        await driverOperation(() => driver.createExact!(configuration));
       } catch (error) {
-        const landed = await configurations.run(() => driver.inspectExact!(configuration));
+        const landed = await driverOperation(() => driver.inspectExact!(configuration));
         if (landed === undefined) {
           throw error;
         }
@@ -827,10 +815,10 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       );
     }
     return runEffect(async () => {
-      const status = await transport.run(() =>
+      const status = await runtimeCredentialOperation(() =>
         driver.getAgentRuntimeCredentialStatus!({ namespace, agent }),
       );
-      if (!transport.status(status).transportConfigured) {
+      if (!runtimeCredentialStatus(status).transportConfigured) {
         throw new DependencyUnavailableError(
           "The pending transport provisioning effect outcome is unknown.",
         );
@@ -879,8 +867,8 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     record: Readonly<AgentProvisioningRecord>,
   ): boolean {
     return (
-      configurations.hasSelection() &&
-      asRecord(record.plan.drivers)?.configuration === configurations.selected().id
+      dependencies.hasConfigurationDriver() &&
+      asRecord(record.plan.drivers)?.configuration === configurations.selectedDriver().id
     );
   }
 
@@ -915,14 +903,14 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
   async function removeUnrecordedProvisioningConfiguration(
     configuration: Configuration,
   ): Promise<void> {
-    const driver = configurations.selected();
+    const driver = configurations.selectedDriver();
     if (driver.inspectExact === undefined) {
       throw new DependencyUnavailableError(
         "The Configuration Driver does not support exact provisioning recovery.",
       );
     }
-    if ((await configurations.run(() => driver.inspectExact!(configuration))) !== undefined) {
-      await configurations.run(() =>
+    if ((await driverOperation(() => driver.inspectExact!(configuration))) !== undefined) {
+      await driverOperation(() =>
         driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
       );
     }
@@ -1019,7 +1007,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     }
     const drivers = asRecord(record.plan.drivers);
     if (pending.kind === "configuration") {
-      const driver = configurations.selected();
+      const driver = configurations.selectedDriver();
       if (drivers?.configuration !== driver.id) {
         return record;
       }
@@ -1035,7 +1023,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
         )) ?? record
       );
     }
-    const driver = transport.driver();
+    const driver = runtimeCredentials.runtimeCredentialComputeDriver("provision");
     if (drivers?.compute !== driver.id) {
       return record;
     }
@@ -1063,6 +1051,30 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     );
   }
 
+  function savedAgentOptions(
+    namespaceId: string,
+    plan: Readonly<Record<string, unknown>>,
+  ): Pick<Agent, "plugins" | "pluginApprovers" | "repositoryBindings" | "repositoryAccess"> {
+    const plugins = normalizeAgentPlugins(
+      plan.plugins as Readonly<Record<string, PluginDesiredSelection>> | undefined,
+    );
+    const pluginApprovers = normalizeAgentPluginApprovers(
+      plan.pluginApprovers as PluginApprovers | undefined,
+    );
+    const repositoryBindings = dependencies.repository.repositoryBindingSelections(
+      namespaceId,
+      plan.repositoryBindings as readonly RepositoryBindingRequest[] | undefined,
+      "saved",
+    );
+    const repositoryAccess = normalizedRepositoryAccess(plan.repositoryAccess, repositoryBindings);
+    return {
+      ...(plugins === undefined ? {} : { plugins }),
+      ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
+      ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
+      ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
+    };
+  }
+
   async function processAgentProvisioningConfiguration(
     claim: ClaimedWork,
     record: Readonly<AgentProvisioningRecord>,
@@ -1077,7 +1089,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       (pending?.kind === "configuration" ? pending.targetId : undefined) ??
       dependencies.nextId("configuration");
     const configuration = provisioningConfiguration(record, configurationId);
-    const driver = configurations.selected();
+    const driver = configurations.selectedDriver();
     if (driver.createExact === undefined || driver.inspectExact === undefined) {
       throw new DependencyUnavailableError(
         "The Configuration Driver does not support exact provisioning recovery.",
@@ -1111,7 +1123,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
         } else {
           const started = await beginProvisioningEffect(claim, effect);
           await runEffect(async () => {
-            const created = await configurations.run(() => driver.createExact!(configuration));
+            const created = await driverOperation(() => driver.createExact!(configuration));
             await settleProvisioningEffect(claim.idempotencyKey, started, effect);
             return created;
           });
@@ -1119,12 +1131,12 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       }
     }
 
-    return transactions.mutate(async (state) => {
+    return transactions.transact(async (state) => {
       const current = await fenceAgentProvisioning(state, claim);
       if (!provisioningBefore(current, "configuration")) {
         return current;
       }
-      const namespace = await dependencies.lockNamespace(state, current.namespaceId);
+      const namespace = await lockNamespace(state, current.namespaceId);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -1142,7 +1154,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
         );
       }
       const backendId = dependencies.backendId(planRecord.backendId as BackendRef | undefined);
-      const options = dependencies.savedAgentOptions(namespace.id, planRecord);
+      const options = savedAgentOptions(namespace.id, planRecord);
       const workspace = normalizeProvisioningWorkspace(
         planRecord.initialWorkspaceFiles,
         planRecord.workspaceDefaultsId,
