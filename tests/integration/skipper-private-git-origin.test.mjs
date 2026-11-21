@@ -452,7 +452,7 @@ test(
     };
     const held = run("sh", ["-c", command], {
       cwd: client,
-      env: { ...env, ...envAuth },
+      env: { ...env, ...envAuth, TMPDIR: join(client, "absent-temp-dir") },
       allowFailure: true,
     }).then(
       (result) => ({ result }),
@@ -511,6 +511,7 @@ test(
       [fresh, [...trace("GET", 401), ...trace("GET", 401)], 0],
       [fresh, [...trace("GET", 200), ...trace("GET", 401)], 43],
       [command, trace("GET", undefined), 41],
+      [command, ["oce-fixture-git-ready-failed"], 57],
       [command, discovery, 42],
       [command, [...discovery, ...trace("POST", 401, false)], 47],
       [command, [...discovery, ...trace("POST", 401)], 0],
@@ -528,6 +529,21 @@ test(
       });
       assert.equal(result.code, code);
     }
+    const marker = ".oce-git-withdrawal-0123456789abcdef";
+    const failedCleanup = await run(
+      "sh",
+      [
+        "-c",
+        "git() { if [ \"$1\" = remote ]; then printf '%s\\n' 'https://fixture.invalid/repo'; return; fi; " +
+          ": > " +
+          marker +
+          "/unexpected; return 128; }\n" +
+          withdrawDuringFetchCommand(".", 401, marker),
+      ],
+      { cwd: client, env, allowFailure: true },
+    );
+    assert.equal(failedCleanup.code, 41, "cleanup must preserve the original Git oracle result");
+    assert.ok((await stat(join(client, marker, "unexpected"))).isFile());
     assert.notEqual(
       (await git(["clone", fixture.cloneUrl, "revoked"], token, { allowFailure: true })).code,
       0,

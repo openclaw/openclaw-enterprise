@@ -161,11 +161,12 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   assertSecretReference(secret);
   assert.ok(hasResourceId(secret), "expected the model Secret ID");
   const values = createHarnessConfiguration("codex", defaultAgentModel);
-  values.agents.defaults.workspace = "/home/node/workspace";
+  const workspaceRoot = "/home/node/workspace";
+  values.agents.defaults.workspace = workspaceRoot;
   Object.assign(values.plugins.entries.codex.config.appServer, {
     approvalPolicy: "never",
     sandbox: "workspace-write",
-    remoteWorkspaceRoot: "/home/node/workspace",
+    remoteWorkspaceRoot: workspaceRoot,
   });
   const config = await create("configurations", { kind: "agent", values });
   assert.ok(hasResourceId(config), "expected the configuration ID");
@@ -292,8 +293,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   );
   assert.ok(
     hc.volumeMounts.some(
-      (m) =>
-        m.mountPath === "/home/node/workspace" && m.name === "openclaw-workspace" && !m.readOnly,
+      (m) => m.mountPath === workspaceRoot && m.name === "openclaw-workspace" && !m.readOnly,
     ),
     "Codex and the Agent container must share the retained workspace for the fixture barrier",
   );
@@ -345,9 +345,8 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     );
     assert.equal(record(await api("GET", agentPath)).activeRevisionId, revision.id);
   };
-  /** @param {string} path @param {"ready" | "release"} operation */
-  async function withdrawalBarrier(path, operation) {
-    assert.match(path, /^\/home\/node\/workspace\/\.oce-git-withdrawal-[a-f0-9]{16}$/);
+  /** @param {string[]} command */
+  async function execWithdrawalProbe(...command) {
     const { name, namespace, uid } = harness.metadata;
     assert.equal((await resource("pod", name, "-n", namespace)).metadata.uid, uid);
     const { stdout } = await kubectlWithTimeout(
@@ -359,9 +358,40 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       "-c",
       "agent",
       "--",
+      ...command,
+    );
+    return stdout;
+  }
+  /** @param {string} dir @param {string} head */
+  async function withdrawalBarrierPath(dir, head) {
+    const match = /^skipper-([a-f0-9]{16})$/.exec(dir);
+    assert.ok(match);
+    assert.match(head, /^[a-f0-9]{40}$/);
+    const checkout = join(workspaceRoot, dir);
+    const actual = await execWithdrawalProbe(
       "sh",
       "-c",
-      'if [ -d "$1/ready" ]; then if [ "$2" = release ]; then : > "$1/release" || exit; fi; printf "ready\\n"; fi',
+      'cd "$1" && test "$(git rev-parse --show-toplevel)" = "$(pwd -P)" && git rev-parse --verify HEAD',
+      "sh",
+      checkout,
+    );
+    assert.equal(
+      actual.trim(),
+      head,
+      "operator must see the checkout that the native command just modified",
+    );
+    return join(checkout, ".oce-git-withdrawal-" + match[1]);
+  }
+  /** @param {string} path @param {"ready" | "release"} operation */
+  async function withdrawalBarrier(path, operation) {
+    assert.match(
+      path,
+      /^\/home\/node\/workspace\/skipper-([a-f0-9]{16})\/\.oce-git-withdrawal-\1$/,
+    );
+    const stdout = await execWithdrawalProbe(
+      "sh",
+      "-c",
+      'if [ -d "$1/ready" ] && [ ! -L "$1/ready" ]; then if [ "$2" = release ]; then : > "$1/release" || exit; fi; printf "ready\\n"; fi',
       "sh",
       path,
       operation,
@@ -559,6 +589,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     sendScript,
     ordinaryChat,
     withdrawalBarrier,
+    withdrawalBarrierPath,
   };
 }
 

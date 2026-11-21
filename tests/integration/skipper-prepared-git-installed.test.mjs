@@ -53,6 +53,7 @@ test(
       ordinaryChat,
       sendScript,
       withdrawalBarrier,
+      withdrawalBarrierPath,
     } = await prepareComputeSkipper(t, input, git.repositoryRef);
     const current = record(await api("GET", agentPath));
     assert.equal(current.activeRevisionId, revision.id);
@@ -164,7 +165,7 @@ test(
     // POST to exercise the broker boundary even for a client that doesn't run its local hook.
     const writePermits = await uses("receive-pack");
     assert.ok(writePermits > 0, "successful push must have gone through prepared authority");
-    await sendScript(
+    const protectedPush = await sendScript(
       [
         ...pre,
         "cd " + dir,
@@ -183,6 +184,7 @@ test(
         "/<= Recv header: HTTP.* 400 / { if (post && basic) denied++ }",
         "/^mixed-push-exit=[1-9][0-9]*$/ { failed++ }",
         "END {exit !(denied == 1 && failed == 1)}'",
+        "git rev-parse --verify HEAD",
       ].join("\n"),
       "installed-push-hook-and-other-repository-deny",
     );
@@ -206,11 +208,15 @@ test(
 
     // Pause the same native Git process after its successful authenticated discovery, before
     // the upload POST. Closing the broker too early would cancel discovery itself.
-    const barrier = "/home/node/workspace/.oce-git-withdrawal-" + git.id;
+    const barrierName = ".oce-git-withdrawal-" + git.id;
+    const [checkoutHead, ...extraHeads] = protectedPush.commitShas;
+    assert.ok(checkoutHead);
+    assert.deepEqual(extraHeads, []);
+    const barrier = await withdrawalBarrierPath(dir, checkoutHead);
     let completed;
     let released = false;
     const outcome = sendScript(
-      withdrawDuringFetchCommand(dir, 401, barrier),
+      withdrawDuringFetchCommand(dir, 401, barrierName),
       "withdraw-during-native-fetch",
     ).then(
       (value) => (completed = { value }),
