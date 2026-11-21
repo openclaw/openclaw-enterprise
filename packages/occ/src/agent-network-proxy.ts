@@ -14,6 +14,7 @@ import {
   ConfigurationHarnessError,
   DependencyUnavailableError,
   NetworkProxySecretDriverError,
+  NetworkProxyValidationError,
   ScopeViolationError,
   type SecretDriverOwnershipError,
 } from "./errors.ts";
@@ -22,10 +23,8 @@ import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 export function requestNetworkProxy(value: unknown): Readonly<AgentNetworkProxy> {
   try {
     return normalizeAgentNetworkProxy(value);
-  } catch (error) {
-    throw new ScopeViolationError(
-      error instanceof Error ? error.message : "Invalid Network proxy selection.",
-    );
+  } catch {
+    throw new NetworkProxyValidationError("selection");
   }
 }
 
@@ -99,8 +98,6 @@ export async function validateNetworkProxyCredential(
     throw new DependencyUnavailableError("The Network proxy credential Secret is unavailable.");
   }
   if (!valid) {
-    throw new ScopeViolationError(
-      "The Network proxy credential Secret must contain a valid Basic authorization value.",
-    );
+    throw new NetworkProxyValidationError("credential");
   }
 }

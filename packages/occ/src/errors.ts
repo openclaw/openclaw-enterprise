@@ -471,6 +471,18 @@ export class ConfigurationHarnessError extends ScopeViolationError {
   }
 }
 
+/** Proxy validation discloses only fixed rules, never submitted values or Secret state. */
+export class NetworkProxyValidationError extends ScopeViolationError {
+  constructor(reason: "selection" | "credential") {
+    super(
+      reason === "selection"
+        ? "Invalid Network proxy selection. Use an HTTP or HTTPS endpoint without credentials and an exact Secret reference."
+        : "The Network proxy credential Secret must contain a valid Basic authorization value.",
+    );
+    this.name = "NetworkProxyValidationError";
+  }
+}
+
 /**
  * An Agent's `harnessAuth` names a credential source its `credentialSources` list does not
  * hold. OCC raises it only after every source authorization, and the rule depends only on
