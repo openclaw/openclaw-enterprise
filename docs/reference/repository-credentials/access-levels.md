@@ -97,11 +97,13 @@ A lost response does not authorize repeating a push or draft creation.
 ## Scoped REST
 
 For protected `github-repository` delivery with a Sandbox repository network policy,
-set `scopedRest: "v1"` on each participating repository's Namespace row in the
-GitHub registry. Rebind and deploy after changing the setting. With the setting
-omitted, the network policy permits Git only. With the network policy omitted,
-the selected credential uses its ordinary API scope. The existing deployment and
-runtime qualification requirements apply.
+set `scopedRest: "v1"` or `"v2"` on each participating repository's Namespace row
+in the GitHub registry. Version v1 permits the reads and pull request creation
+described below. Version v2 adds issue creation; it does not grant general issue
+management. Rebind and deploy after changing the setting. With the setting omitted,
+the network policy permits Git only. With the network policy omitted, the selected
+credential uses its ordinary API scope. The existing deployment and runtime
+qualification requirements apply.
 
 A repository read or write grant and `permissions.issues` of `read` or `write`
 allow listing issues and reading one by number. Substitute the approved
@@ -129,9 +131,29 @@ fields are `body`, `draft` and `maintainer_can_modify`. Set `"draft":true` for a
 draft. Expect HTTP 201 and verify the returned PR in GitHub. If the outcome is
 uncertain, inspect the repository before submitting again.
 
-OpenShell also admits HEAD for the issue GET routes. It denies issue writes,
-other API routes and GraphQL. The policy controls request destinations.
-GitHub can return references to other repositories.
+With v2, a repository write grant and `permissions.issues: "write"` also allow
+`POST /repos/owner/repo/issues`. Use a nonblank string `title` and, optionally, a
+string `body`. Other fields, including labels, assignees and milestones, are
+refused before the request reaches GitHub.
+
+```sh
+gh api --method POST repos/owner/repo/issues \
+  -f title='Investigate a regression' -f body='Steps to reproduce'
+```
+
+The Sandbox supplies the `GITHUB_TOKEN` placeholder; the protected sender keeps
+the real credential outside the Agent. The request validator checks the exact
+repository, method and JSON body, then requires current authorization. If the
+validator or authorization is unavailable, the write fails closed. `gh api` can
+follow redirects; each follow-up request must pass policy and authorization
+again. To stop at the first redirect, use the curl pattern above without
+`--location`. Expect HTTP 201 and verify the created issue in GitHub. If the
+result is uncertain, inspect the repository before submitting again.
+
+OpenShell also admits HEAD for the issue GET routes. Version v1 denies all issue
+writes; v2 admits only the issue creation POST described above. Both versions
+deny issue updates, comments, other API routes and GraphQL. The policy controls
+request destinations. GitHub can return references to other repositories.
 
 ## Supported commands
 
