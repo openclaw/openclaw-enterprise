@@ -1300,8 +1300,7 @@ export class ControllerWorker {
     return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
   }
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
-  private readonly tokenServiceDrivers:
-    Pick<InstallationRuntimeDrivers, "installation" | "secretDriver"> | undefined;
+  private readonly tokenServiceDrivers: InstallationRuntimeDrivers | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1646,7 +1645,7 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
-    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers);
+    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers, this.state);
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {
@@ -5966,8 +5965,7 @@ export class ControllerWorker {
         source.type !== "static" ||
         binding.consumer.kind !== "model" ||
         !isSourceProviderPresetId(source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]) ||
-        source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== binding.consumer.providerId ||
-        !source.registration
+        source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== binding.consumer.providerId
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
       }
@@ -6024,7 +6022,11 @@ export class ControllerWorker {
             resolveCredential: async () => {
               requireOpen();
               const source = current.sources.get(binding.sourceRef.id);
-              if (!source || source.ownerCapability !== "token_service" || !source.registration) {
+              if (
+                !source ||
+                source.ownerCapability !== "token_service" ||
+                source.tokenServiceInstanceId !== current.instanceId
+              ) {
                 throw new DependencyUnavailableError(
                   "The authorized staged source is unavailable.",
                 );
@@ -6035,7 +6037,6 @@ export class ControllerWorker {
                   {
                     sourceRef: binding.sourceRef,
                     tokenServiceInstanceId: current.instanceId,
-                    registration: source.registration,
                   },
                   signal,
                 );
@@ -6181,7 +6182,11 @@ export class ControllerWorker {
         if (withdrawal) {
           return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
         }
-        if (!source || source.ownerCapability !== "token_service" || !source.registration) {
+        if (
+          !source ||
+          source.ownerCapability !== "token_service" ||
+          source.tokenServiceInstanceId !== auth.tokenServiceInstanceId
+        ) {
           return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
         }
         harnessAuth = auth;
@@ -6244,7 +6249,7 @@ export class ControllerWorker {
           withdrawal ||
           !source ||
           source.ownerCapability !== "token_service" ||
-          !source.registration
+          source.tokenServiceInstanceId !== snapshot.tokenServiceInstanceId
         ) {
           return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
         }

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { InstallationSecretStore } from "@openclaw-enterprise/contracts";
-import type { OpenClawController } from "@openclaw-enterprise/occ";
+import type { OpenClawController, PlatformStateStore } from "@openclaw-enterprise/occ";
 
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
 import type { InstallationRuntimeDrivers } from "./installation-config.ts";
@@ -36,7 +36,8 @@ async function credentialStoreIdentity(
 /** Install the selected owner after the private Secret store is available. */
 export async function installTokenServiceDriver(
   controller: OpenClawController,
-  drivers: Pick<InstallationRuntimeDrivers, "installation" | "secretDriver"> | undefined,
+  drivers: InstallationRuntimeDrivers | undefined,
+  state: PlatformStateStore,
 ): Promise<void> {
   const selection = drivers?.installation.drivers.token_service;
   if (!selection || !drivers) {
@@ -57,6 +58,7 @@ export async function installTokenServiceDriver(
     controller.installation.id,
     store,
     instanceId,
+    state,
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);

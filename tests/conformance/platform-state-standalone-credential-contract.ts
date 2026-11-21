@@ -31,20 +31,9 @@ async function readySource(
     secrets: {},
     ownerCapability: "token_service",
     tokenServiceInstanceId,
-    state: "registering",
+    state: "ready",
     createdAt,
   });
-  assert.equal(
-    await transaction.credentialSources.setCredentialSourceRegistrationDispatch(
-      seed.namespace.id,
-      sourceId,
-      createdAt,
-    ),
-    true,
-  );
-  assert.ok(
-    await transaction.credentialSources.markCredentialSourceReady(seed.namespace.id, sourceId, {}),
-  );
   return sourceId;
 }
 

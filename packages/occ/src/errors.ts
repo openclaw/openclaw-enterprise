@@ -430,7 +430,6 @@ export class RecoveryPasswordPolicyError extends ScopeViolationError {
 export class TokenServiceSourceInputError extends ScopeViolationError {}
 
 /** This registration was refused before the TokenService attempted any material write. */
-export class TokenServiceRegistrationRefusedError extends TokenServiceSourceInputError {}
 
 /** A device login's private binding does not match the admitted request scope. */
 export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {

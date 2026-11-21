@@ -29,7 +29,7 @@ readonly verifyCredentialDeploymentRelease?: (
 ) => Promise<void>;
 ```
 
-The existing [HarnessStartupRef](../../../packages/contracts/src/drivers/sandbox/deployment.ts) includes the Namespace, Agent, revision, Sandbox incarnation, configuration ID, process instance, and startup ID. The release callback returns no credential or grant.
+The historical [HarnessStartupRef](https://github.com/openclaw/openclaw-enterprise/blob/840e8ac0044e0d803f7975632ce4d58e3c9f9006/packages/contracts/src/drivers/sandbox/deployment.ts) included the Namespace, Agent, revision, Sandbox incarnation, configuration ID, process instance, and startup ID. The release callback returned no credential or grant. The fresh-start amendment below supersedes this interface.
 
 The worker captures the admitted revision, current claim, selected TokenService instance, proxy, bindings, and injection policies. When Compute supplies the staged target and configuration ID, the worker verifies its claim, current source authority, the target's Namespace and Agent ownership, and its live association with the admitted revision and configuration before source resolution. It calls `configureDeployment` with a resolver authorized for each binding's source. Before calling a resolver or attaching material, the scoped proxy verifies the actual Sandbox incarnation against that bound context. The proxy alone calls the resolver and retains credential material and any private delivery version. The callback returns only the contract's nonsecret projections.
 
@@ -76,7 +76,7 @@ notifyCredentialUpdated?(
 ): Promise<void>;
 ```
 
-`configureDeployment` calls a binding's resolver only for first-use material transfer, never to attach a shared Provider. `getDeploymentStatus` observes without repair, reload, or upstream operations. For the expected configuration, each pushed binding requires a serving copy on this target, and every serving copy must have the expected version. Shared Provider bindings require the current effective policy.
+`configureDeployment` may call each binding's source-bound resolver once while configuring an admitted deployment to obtain the current credential and version and decide whether a pushed delivery copy needs an initial transfer or refresh. A retained pushed Provider must receive the current version before the deployment can become ready. Attaching an already-current shared Provider alone does not require credential resolution. TokenService retains issuer custody; neither credential material nor a duplicate Source version is persisted in Agent state. `getDeploymentStatus` observes without repair, reload, or upstream operations. For the expected configuration, each pushed binding requires a serving copy on this target, and every serving copy must have the expected version. Shared Provider bindings require the current effective policy.
 
 `notifyCredentialUpdated` belongs to source scope and receives no Agent revision. Its resolver is authorized only for the notification's exact source. With no delivery resource, the update succeeds without resolving material or creating a resource. Otherwise, it resolves material only when transfer is needed. A material push requires a version on the resolved material and acknowledges only after every serving copy can use that version. Concurrent updates cannot restore an older version. Move `CredentialUpdateNotification` to the Driver's public types.
 

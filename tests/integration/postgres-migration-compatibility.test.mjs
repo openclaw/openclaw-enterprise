@@ -1470,7 +1470,8 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preStandaloneCredentialDeployment"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preStandaloneCredentialDeployment"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1747,7 +1748,8 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preStandaloneCredentialDeployment"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preStandaloneCredentialDeployment"],
     ]);
     for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
@@ -1865,7 +1867,7 @@ test(
           ).rows[0].allowed,
           true,
         );
-        if (prefix === 85) {
+        if (prefix === 86) {
           // An app-role writer can bypass OCC. A valid broader network allowance must still
           // cover every injected request, and standalone execution cannot add repository delivery.
           const original = (
@@ -1885,9 +1887,9 @@ test(
           await db.app.query(
             `INSERT INTO occ.credential_sources
              (id,namespace_id,name,type,config,owner_capability,token_service_instance_id,
-              registration,registration_dispatched_at,state,created_at)
+              state,created_at)
              VALUES($1,$2,'Model key','static','{"provider_preset":"openai"}',
-                    'token_service',$3,'{}',now(),'ready',now())`,
+                    'token_service',$3,'ready',now())`,
             [sourceId, namespaceId, instanceId],
           );
           await db.app.query(
@@ -2248,7 +2250,8 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preStandaloneCredentialDeployment"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preStandaloneCredentialDeployment"],
     ])) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2439,7 +2442,8 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preStandaloneCredentialDeployment"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preStandaloneCredentialDeployment"],
     ])) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2467,6 +2471,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [85, "ALTER TABLE"],
                 [83, "GRANT"],
                 [82, "CREATE TRIGGER"],
                 [81, "GRANT"],

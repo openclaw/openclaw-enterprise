@@ -1766,11 +1766,10 @@ async function composeInstallationConfiguration(
       ),
       readNodeCa: () => readHarnessNodeCa(environment),
     };
-    const kubernetesCompute = new KubernetesComputeDriver(
+    computeDriver = new KubernetesComputeDriver(
       compute.configuration as unknown as KubernetesComputeDriverOptions,
       selection,
     );
-    computeDriver = kubernetesCompute;
   }
   const sandboxOwner = credentialDeliveryRegistration ?? protectedDriver ?? sandboxDriver;
   const namespaceLifecycleBindings =

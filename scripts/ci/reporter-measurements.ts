@@ -308,6 +308,7 @@ function safeMeasurement(value: unknown): object | undefined {
         "canceled",
         "deadline",
         "controller-image-import",
+        "codex-sandbox-preparation",
         "routing",
         "network-verification",
         "network-cleanup",
