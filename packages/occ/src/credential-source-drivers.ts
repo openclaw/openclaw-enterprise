@@ -17,6 +17,7 @@ import {
   DependencyUnavailableError,
   ResourceConflictError,
   ScopeViolationError,
+  CredentialGatewayNotConfiguredError,
 } from "./errors.ts";
 import type { InstalledDriver } from "./installed-driver.ts";
 
@@ -29,7 +30,9 @@ interface CredentialSourceDriverDependencies {
   readonly selectedDriver: <Capability extends CredentialSourceDriverCapability>(
     capability: Capability,
   ) => DriverByCapability[Capability];
-  readonly hasRefreshDriver: () => boolean;
+  readonly hasSelection: (
+    capability: "credential_gateway" | "credential_proxy" | "credential_refresh",
+  ) => boolean;
   readonly selectedProxyOwner: () => InstalledDriver;
 }
 
@@ -54,6 +57,22 @@ function listCredentialSourceTypes(gateway: CredentialGatewayDriver) {
 
 /** Resolve current Driver selections for a credential source operation. */
 export function createCredentialSourceDrivers(dependencies: CredentialSourceDriverDependencies) {
+  /**
+   * Report Installation availability without looking up a source. Callers first authorize
+   * the exact source action, so this check cannot disclose a source to an unauthorized caller.
+   */
+  function assertCredentialGatewaySelected(): void {
+    if (!dependencies.hasSelection("credential_gateway")) {
+      throw new CredentialGatewayNotConfiguredError();
+    }
+  }
+
+  function assertCredentialSourceOwnerSelected(): void {
+    if (!dependencies.hasSelection("credential_proxy")) {
+      assertCredentialGatewaySelected();
+    }
+  }
+
   /**
    * The selected Credential Gateway Driver when it registered a source the caller has already
    * been granted and looked up; otherwise CredentialSourceDriverError, whose fixed message names
@@ -92,7 +111,7 @@ export function createCredentialSourceDrivers(dependencies: CredentialSourceDriv
     gateway: CredentialGatewayDriver,
     type: string,
   ): Promise<CredentialRefreshDriver | undefined> {
-    if (!dependencies.hasRefreshDriver()) {
+    if (!dependencies.hasSelection("credential_refresh")) {
       return undefined;
     }
     const catalog = await listCredentialSourceTypes(gateway);
@@ -188,6 +207,8 @@ export function createCredentialSourceDrivers(dependencies: CredentialSourceDriv
   }
 
   return {
+    assertCredentialGatewaySelected,
+    assertCredentialSourceOwnerSelected,
     ownedCredentialGatewayDriver,
     credentialGatewayDriver,
     refreshDriverForSource,
