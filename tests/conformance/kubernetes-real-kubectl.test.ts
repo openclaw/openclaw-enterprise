@@ -2005,6 +2005,8 @@ test(
       `
   // The live Slack proof checks both bots before it arranges the topology.
   export async function slackApi(method, token, query) {
+    if (method === "conversations.members") return { members: ["xoxb-gateway", "xoxb-sender"] };
+    if (method === "conversations.history") return { messages: [] };
     return method === "auth.test"
       ? { team_id: "T0", user_id: token }
       : {

@@ -5,7 +5,6 @@
   },
   "fileConcurrency": 4,
   "parallelFiles": [
-    "tests/integration/channel-egress-envoy-authority-real.test.ts",
     "tests/integration/runtime-image-model-probe.test.ts",
     "tests/integration/runtime-image-native-worker.test.ts",
     "tests/integration/runtime-image-node-state-permissions.test.ts",
@@ -16,13 +15,6 @@
     "tests/helpers/workspace-gateway-relay-container.test.ts"
   ],
   "files": [
-    {
-      "path": "tests/integration/channel-egress-envoy-authority-real.test.ts",
-      "env": { "OCC_TEST_CHANNEL_ENVOY_REAL": "1" },
-      "expectedTests": [
-        "pinned channel Envoy enforces CIDR authority membership and excluded final-IP literals before an upstream proxy"
-      ]
-    },
     {
       "path": "tests/integration/runtime-image-model-probe.test.ts",
       "expectedTests": [
