@@ -346,10 +346,8 @@ import {
   ConfigurationHarnessError,
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
-  CredentialProxyAdmissionError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
-  CredentialSourceTypeNotOfferedError,
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalNotFoundError,
   keyedSettingPath,
@@ -465,10 +463,13 @@ import {
   canonicalProvisioningJson,
   normalizeGatewayManagedMode,
   validExecutionMode,
+  parseProvisioningPlan,
+  type AgentProvisioningConfigurationInput,
   type ProvisionAgentInput,
   type ProvisionAgentResult,
 } from "./agent-provisioning.ts";
 
+import type { AgentProvisioningRecord } from "./ports/agent-provisioning.ts";
 import { createProvisioningRequests } from "./agent-provisioning-requests.ts";
 import {
   createProvisioningWorker,
@@ -3063,6 +3064,7 @@ export class OpenClawController {
     nextIdentifier: (kind) => this.nextIdentifier(kind),
     timestamp: () => this.timestamp(),
     registerRollback: (compensate) => this.registerRollback(compensate),
+    provisioningPlan: (record) => this.provisioningPlan(record),
   });
 
   async createSecret(
@@ -8275,6 +8277,15 @@ export class OpenClawController {
       configurationId,
       readOnly,
     );
+  }
+
+  private provisioningPlan(record: Readonly<AgentProvisioningRecord>): {
+    readonly configuration: AgentProvisioningConfigurationInput;
+    readonly harnessAuth: HarnessAuthBinding | null;
+    readonly executionMode: HarnessExecutionMode;
+    readonly gatewayManagedMode: boolean;
+  } {
+    return parseProvisioningPlan(record);
   }
 
   /**
