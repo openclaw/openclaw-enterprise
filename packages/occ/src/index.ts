@@ -1,3 +1,4 @@
+import { bindRepositoryPolicyAuthorization } from "./repository-network-policy.ts";
 import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import {
   reconcileNamespaceLifecycle,
@@ -12385,14 +12386,23 @@ export class OpenClawController {
     repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
+    const target = { kind: "agent", id: agentId, namespaceId } as const;
     const sandboxPolicy = this.agentSandboxPolicyRef(namespaceId, agentId);
-    await this.authorize(principalId, "update", sandboxPolicy);
+    const explicitList = repositoryNetworkPolicy !== undefined;
     return this.mutate(async (state) => {
-      if (
-        repositoryNetworkPolicy !== undefined &&
-        state.sandboxPolicies.supportsRepositoryNetworkPolicy !== true
-      ) {
+      if (explicitList) {
+        await this.holdAuthority(state);
+      }
+      const authority = explicitList
+        ? bindRepositoryPolicyAuthorization(() => this.authorizationAuthority(principalId))
+        : undefined;
+      const [iam, decide] = authority?.inputs ?? [];
+      const authorizeEdit = async () => {
+        await this.authorize(principalId, "manage_policy", target, iam, decide);
+        await this.authorize(principalId, "update", sandboxPolicy, iam, decide);
+      };
+      await authorizeEdit();
+      if (explicitList && state.sandboxPolicies.supportsRepositoryNetworkPolicy !== true) {
         throw new ResourceStateConflictError(
           "Saving a repository network policy requires an Installation version that supports storing Agent repository grants.",
           [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
@@ -12407,6 +12417,9 @@ export class OpenClawController {
         this.requireNetworkPolicyAvailable();
       }
       await this.lockNamespace(state, namespaceId);
+      if (explicitList) {
+        await authorizeEdit();
+      }
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       const previous = await state.sandboxPolicies.find(namespaceId, agentId);
       if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
@@ -12422,7 +12435,7 @@ export class OpenClawController {
         );
       }
       if (clearsRepository) {
-        await this.authorize(principalId, "read", sandboxPolicy);
+        await this.authorize(principalId, "read", sandboxPolicy, iam, decide);
       }
       const withdrawal = clearsRepository && previous.repositoryNetworkPolicy !== undefined;
       if (additions.length > 0 || (repositoryNetworkPolicy !== undefined && !withdrawal)) {
@@ -12447,6 +12460,7 @@ export class OpenClawController {
         : this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
             repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
           }).additions;
+      authority?.assertCurrent();
       const updated = await state.sandboxPolicies.save(
         {
           id: previous.id,
