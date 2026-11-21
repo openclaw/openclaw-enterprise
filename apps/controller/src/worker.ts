@@ -2557,27 +2557,16 @@ export class ControllerWorker {
           (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready" ||
           expiry === "retiring";
         if (!retireRuntime && nativeRemoval === true && agent !== undefined) {
-          retireRuntime = !(await unit.installations.holdPrincipalAccount(claim.actorId));
-          if (!retireRuntime) {
-            const auth = expiryRevision.harnessAuth;
-            if (isServiceAccountHarnessAuth(auth)) {
-              // The Backend's credential and binding writers hold this same account row.
-              await unit.serviceAccounts.lockServiceAccount(
-                expiryRevision.namespaceId,
-                auth.source.id,
-              );
-            }
-            const refusal = await this.validateRetainedModelAuthority(
-              unit,
-              claim,
-              agent,
-              expiryRevision,
-            );
-            if (refusal?.authorization !== undefined) {
-              await this.appendRevisionDenial(unit, claim, refusal);
-            }
-            retireRuntime = refusal !== undefined;
+          const refusal = await this.validateRetainedModelAuthority(
+            claim,
+            agent,
+            expiryRevision,
+            unit,
+          );
+          if (refusal?.authorization !== undefined) {
+            await this.appendRevisionDenial(unit, claim, refusal);
           }
+          retireRuntime = refusal !== undefined;
         }
         if (retireRuntime) {
           // Transfer every outstanding session and the runtime to irrevocable retirement.
@@ -2720,9 +2709,7 @@ export class ControllerWorker {
         expiry === "removal" &&
         this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision)
       ) {
-        const refusal = await this.state.read((view) =>
-          this.validateRetainedModelAuthority(view, claim, agent, revision),
-        );
+        const refusal = await this.validateRetainedModelAuthority(claim, agent, revision);
         signal.throwIfAborted();
         if (refusal !== undefined) {
           return {
@@ -2825,22 +2812,74 @@ export class ControllerWorker {
   }
 
   private async validateRetainedModelAuthority(
-    view: PlatformReadView,
     claim: ClaimedWork,
     agent: Readonly<Agent>,
     revision: Readonly<AgentRevision>,
+    unit?: PlatformUnitOfWork,
   ): Promise<RevisionDispatchResult | undefined> {
-    // Check admitted dependencies using State only. SQL failures propagate so the
-    // claim retries without publishing retention or treating the model as revoked.
-    const backend = await this.resolveRevisionBackend(revision, view);
-    if (backend !== undefined) {
-      return backend;
+    const authorize = async (
+      view: PlatformReadView,
+    ): Promise<RevisionDispatchResult | undefined> => {
+      if (unit !== undefined && !(await unit.installations.holdPrincipalAccount(claim.actorId))) {
+        return { outcome: "permanent", code: "ACTOR_REVOKED" };
+      }
+      return this.authorizeRevision(claim, agent, revision, view);
+    };
+    const resolveModel = async (view: PlatformReadView) => {
+      const auth = revision.harnessAuth;
+      if (unit !== undefined && isServiceAccountHarnessAuth(auth)) {
+        // The credential and binding writers hold this same account row.
+        await unit.serviceAccounts.lockServiceAccount(revision.namespaceId, auth.source.id);
+      }
+      const backend = await this.resolveRevisionBackend(revision, view);
+      if (backend !== undefined) {
+        return backend;
+      }
+      const harness = await this.resolveRevisionHarnessAuth(revision, view);
+      return "result" in harness ? harness.result : undefined;
+    };
+    if (unit === undefined) {
+      // Independent read transactions preserve an authoritative refusal even if the
+      // other query aborts its own PostgreSQL transaction.
+      const [permission, model] = await Promise.allSettled([
+        this.state.read(authorize),
+        this.state.read(resolveModel),
+      ]);
+      const refusal =
+        (permission.status === "fulfilled" ? permission.value : undefined) ??
+        (model.status === "fulfilled" ? model.value : undefined);
+      if (refusal !== undefined) {
+        return refusal;
+      }
+      if (permission.status === "rejected") {
+        throw permission.reason;
+      }
+      if (model.status === "rejected") {
+        throw model.reason;
+      }
+      return undefined;
     }
-    const harness = await this.resolveRevisionHarnessAuth(revision, view);
-    if ("result" in harness) {
-      return harness.result;
+
+    // Keep the existing claim and owner locks while recovering from a failed
+    // authorization statement, so a successful model refusal can still commit.
+    // A broken connection cannot roll back the savepoint and the transaction retries.
+    await this.state.queryInTransaction(unit, "SAVEPOINT retained_model_authorization");
+    const [permission] = await Promise.allSettled([authorize(unit)]);
+    if (permission.status === "rejected") {
+      await this.state.queryInTransaction(
+        unit,
+        "ROLLBACK TO SAVEPOINT retained_model_authorization",
+      );
     }
-    return this.authorizeRevision(claim, agent, revision, view);
+    await this.state.queryInTransaction(unit, "RELEASE SAVEPOINT retained_model_authorization");
+    if (permission.status === "fulfilled" && permission.value !== undefined) {
+      return permission.value;
+    }
+    const model = await resolveModel(unit);
+    if (model === undefined && permission.status === "rejected") {
+      throw permission.reason;
+    }
+    return model;
   }
 
   private async withdrawFiniteNativeRepositoryAccess(

@@ -65,6 +65,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { removeAccessBindings } from "../helpers/postgres-worker-revision-support.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { waitFor } from "../helpers/wait-for.ts";
@@ -341,8 +342,10 @@ for (const outcome of [
   "stored execution admission incompatible",
   "model account changes",
   "model account binding revoked",
+  "model account lookup fault cannot mask lost actor authority",
   "model account Backend missing",
   "model account binding revoked during observation",
+  "model account final IAM fault with revoked binding",
   "model account final read recovers",
   "model Secret unavailable",
 ] as const) {
@@ -483,6 +486,8 @@ for (const outcome of [
       let runtimeObservations = 0;
       let failFinalModelRead = false;
       let failedFinalModelReads = 0;
+      let failFinalIamRead = false;
+      let failedFinalIamReads = 0;
       let checkIncompatibleAdmission = false;
       const incompatibleCompute =
         outcome === "stored execution admission incompatible"
@@ -527,10 +532,14 @@ for (const outcome of [
         async observeRevision(revision) {
           assert.equal(revision.id, candidate.id);
           runtimeObservations++;
-          if (outcome === "model account binding revoked during observation") {
+          if (
+            outcome === "model account binding revoked during observation" ||
+            outcome === "model account final IAM fault with revoked binding"
+          ) {
             // Commit the revocation after the preliminary model checks and before a
             // healthy runtime observation can allow this exact revision to stay.
             await revokeModelBinding();
+            failFinalIamRead = outcome === "model account final IAM fault with revoked binding";
           }
           if (outcome === "model account final read recovers" && runtimeObservations === 1) {
             failFinalModelRead = true;
@@ -562,6 +571,11 @@ for (const outcome of [
           return {
             release: (discard) => client.release(discard),
             async query(sql, values) {
+              if (failFinalIamRead && sql.includes("FROM occ.iam_identities) v")) {
+                failFinalIamRead = false;
+                failedFinalIamReads++;
+                return client.query("SELECT 1 / 0");
+              }
               if (
                 failFinalModelRead &&
                 sql.includes("FROM occ.service_account_driver_bindings AS b") &&
@@ -570,6 +584,10 @@ for (const outcome of [
               ) {
                 failFinalModelRead = false;
                 failedFinalModelReads++;
+                if (outcome === "model account lookup fault cannot mask lost actor authority") {
+                  // Exercise a PostgreSQL statement failure that aborts its read transaction.
+                  return client.query("SELECT 1 / 0");
+                }
                 throw Object.assign(new Error("controlled connection loss reading model binding"), {
                   code: "08006",
                 });
@@ -631,7 +649,10 @@ for (const outcome of [
         return worker;
       };
       let worker = await startWorker(
-        outcome === "model Secret unavailable" || outcome === "model account final read recovers"
+        outcome === "model Secret unavailable" ||
+          outcome === "model account final read recovers" ||
+          outcome === "model account final IAM fault with revoked binding" ||
+          outcome === "model account lookup fault cannot mask lost actor authority"
           ? modelReadPool
           : f.workerPool,
       );
@@ -794,6 +815,7 @@ for (const outcome of [
       if (
         outcome.startsWith("model ") &&
         outcome !== "model account binding revoked during observation" &&
+        outcome !== "model account final IAM fault with revoked binding" &&
         outcome !== "model account final read recovers"
       ) {
         // Leave the issuer unconfirmed after the first fenced cleanup pass.
@@ -817,6 +839,9 @@ for (const outcome of [
           );
         } else if (outcome === "model account binding revoked") {
           await revokeModelBinding();
+        } else if (outcome === "model account lookup fault cannot mask lost actor authority") {
+          await removeAccessBindings(f, f.actor.id);
+          failFinalModelRead = true;
         } else if (outcome === "model account Backend missing") {
           await worker.stop();
           worker = await startWorker(f.createWorkerPool(), createBackendWorkerDrivers(compute, []));
@@ -835,6 +860,9 @@ for (const outcome of [
         assert.equal(runtimeObservations, 0);
         if (outcome === "model Secret unavailable") {
           assert.equal(modelSecretMisses, 1);
+        }
+        if (outcome === "model account lookup fault cannot mask lost actor authority") {
+          assert.equal(failedFinalModelReads, 1);
         }
         assert.equal(
           await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
@@ -924,7 +952,8 @@ for (const outcome of [
       if (
         outcome === "inference unavailable" ||
         outcome === "unexpected custody family" ||
-        outcome === "model account binding revoked during observation"
+        outcome === "model account binding revoked during observation" ||
+        outcome === "model account final IAM fault with revoked binding"
       ) {
         assert.equal(completion.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
         await waitFor(
@@ -934,6 +963,9 @@ for (const outcome of [
           10_000,
         );
         assert.deepEqual(stops, [candidate.id]);
+        if (outcome === "model account final IAM fault with revoked binding") {
+          assert.equal(failedFinalIamReads, 1);
+        }
       } else {
         assert.equal(
           completion.code,
