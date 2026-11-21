@@ -255,11 +255,6 @@ export interface EnqueueWork {
   readonly availableAt?: Date | string;
 }
 
-export interface WorkClaim {
-  readonly idempotencyKey: string;
-  readonly claimToken: string;
-}
-
 export interface WorkResult {
   readonly code?: string;
   readonly resultData?: Readonly<Record<string, unknown>>;

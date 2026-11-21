@@ -1,4 +1,5 @@
-import type { CredentialPolicyReductionState, PredecessorReplacement } from "./platform-state.ts";
+import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type {
   InitialWorkspaceFiles,
   ProtectedEgressSource,
