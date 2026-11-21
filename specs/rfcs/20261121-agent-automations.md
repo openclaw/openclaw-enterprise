@@ -9,6 +9,7 @@ author: kevinlin-openai
 - **ID:** RFC-20261121-agent-automations
 - **Created:** 2026-11-21
 - **Last updated:** 2026-11-21
+- **RFC PR:** [#6850](https://github.com/openclaw/openclaw-enterprise/pull/6850)
 - **Related:** [Native administration](../../docs/reference/agent-native-admin.md), [Gateway managed mode](../../docs/reference/agents/gateway-managed-mode.md), [runtime pin](../../deploy/runtime/openclaw-source.json)
 
 ## Summary
