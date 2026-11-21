@@ -1,4 +1,4 @@
-import { aboutDisclosure, element, setUnavailable } from "../dom.mjs";
+import { element, setUnavailable } from "../dom.mjs";
 import { admitGatewaySecurityDefaults } from "../gateway-security-defaults.mjs";
 
 type ConfigurationDocument = Readonly<Record<string, unknown>>;
@@ -7,11 +7,8 @@ type GatewaySafetySetting = {
   readonly id: string;
   readonly path: readonly string[];
   readonly label: string;
-  // The help shown with the toggle for a deployment of `values`: what each state does and what
-  // it risks.
+  // The help text for a deployment of `values`.
   readonly help: (values: ConfigurationDocument) => string;
-  // Explanation the reader can do without, behind the toggle's "?".
-  readonly more?: string;
   // The locked-down value Strict mode sets.
   readonly strict: boolean;
   // OpenClaw's default when deployment admission leaves the setting unset.
@@ -25,8 +22,7 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     path: ["messages", "queue", "allowCollaborativeSteering"],
     label: "Other participants can steer a running turn",
     help: (values) =>
-      `On: while a turn runs, another Gateway participant in the conversation can add guidance to it. The turn keeps the identity and permissions of the participant who started it, even when the participant steering has fewer. OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users. ${steeringOffHelp(values)}`,
-    more: "Participants are channel users or local operators with distinct Gateway identities.",
+      `On: while a turn runs, another Gateway participant in the conversation can add guidance to it. The turn keeps the identity and permissions of the participant who started it, even when the participant steering has fewer. Participants are channel users or local operators with distinct Gateway identities. OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users. ${steeringOffHelp(values)}`,
     strict: false,
     gatewayDefault: true,
   },
@@ -171,10 +167,7 @@ export function withGatewaySafetyStrict(values: ConfigurationDocument, strict: b
 const STRICT_HELP =
   "Sets every setting below to its locked-down value. Turn it off to return each setting to its default.";
 const INTRO =
-  "These Gateway settings apply to every conversation with this Agent. A change here edits the Configuration JSON: save it, then deploy a new version.";
-// Behind the card's "?".
-const INTRO_MORE =
-  "The defaults let the people who share the Agent work together; Strict mode locks each setting down.";
+  "These Gateway settings apply to every conversation with this Agent. The defaults let the people who share the Agent work together; Strict mode locks each setting down. A change here edits the Configuration JSON: save it, then deploy a new version.";
 const INVALID =
   "The Configuration JSON sets this to a value the Gateway refuses. Correct it in the JSON.";
 
@@ -199,15 +192,7 @@ export function gatewaySafetyControls({
   let current: ConfigurationDocument | undefined;
   let unavailableReason: string | null = null;
   const reason = element("p", { className: "hint", id: "gateway-safety-reason", hidden: true });
-  // A toggle with its help, which says what each state does and risks. `more` is explanation
-  // the reader can do without: it waits behind a "?" beside the label.
-  const toggle = (
-    id: string,
-    label: string,
-    helpText: string,
-    change: (on: boolean) => void,
-    more?: string,
-  ) => {
+  const toggle = (id: string, label: string, helpText: string, change: (on: boolean) => void) => {
     const input = element("input", {
       type: "checkbox",
       id: `gateway-safety-${id}`,
@@ -221,17 +206,12 @@ export function gatewaySafetyControls({
       source,
       help,
     );
-    const about = more
-      ? aboutDisclosure(label, more, { id: `gateway-safety-${id}-more` })
-      : undefined;
-    const name = element("label", { className: "gateway-safety-toggle" }, input, label);
     input.addEventListener("change", () => change(input.checked));
     const node = element(
       "div",
       { className: "gateway-safety-setting" },
-      about ? element("div", { className: "about-heading" }, name, about.button) : name,
+      element("label", { className: "gateway-safety-toggle" }, input, label),
       hint,
-      about?.info ?? null,
     );
     return { input, source, help, hint, node };
   };
@@ -248,31 +228,16 @@ export function gatewaySafetyControls({
   });
   const rows = GATEWAY_SAFETY_SETTINGS.map((setting) => ({
     setting,
-    ...toggle(
-      setting.id,
-      setting.label,
-      setting.help({}),
-      (on) => {
-        stage(withGatewaySafetyValue(current ?? {}, setting, on));
-      },
-      setting.more,
-    ),
+    ...toggle(setting.id, setting.label, setting.help({}), (on) => {
+      stage(withGatewaySafetyValue(current ?? {}, setting, on));
+    }),
   }));
-  const about = aboutDisclosure("Collaboration and safety", INTRO_MORE, {
-    id: "gateway-safety-more",
-  });
   const node = element(
     "section",
     // A card of its own on the Configuration tab; its heading is the card's.
     { className: "agent-card gateway-safety", "aria-labelledby": "gateway-safety-heading" },
-    element(
-      "div",
-      { className: "about-heading" },
-      element("h2", { id: "gateway-safety-heading" }, "Collaboration and safety"),
-      about.button,
-    ),
+    element("h2", { id: "gateway-safety-heading" }, "Collaboration and safety"),
     element("p", { className: "hint" }, INTRO),
-    about.info,
     strict.node,
     element("div", { className: "gateway-safety-settings" }, ...rows.map((row) => row.node)),
     reason,

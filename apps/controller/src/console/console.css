@@ -4279,41 +4279,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     gap: var(--space-4);
   }
 }
-/* A name with a "?" beside it: the help under the name says what the control does and risks,
-   and the "?" opens explanation the reader can do without. */
-.about-heading {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-}
-.about-heading > h2 {
-  margin: 0;
-}
-.about-toggle {
-  flex: none;
-  width: var(--space-5);
-  height: var(--space-5);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  background: none;
-  padding: 0;
-  color: var(--muted);
-  font-size: var(--text-xs);
-  line-height: 1;
-}
-.about-info {
-  max-width: var(--prose-max);
-  margin-block: var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-2);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-  line-height: var(--text-sm--line-height);
-}
-.about-info > p {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
 /* The Settings card ends at its last line, with no band below it. */
 .configuration-document > div > .hint:last-child {
   margin-bottom: 0;
@@ -4326,12 +4291,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .gateway-safety > * {
   max-width: var(--prose-max);
 }
-.gateway-safety > .about-info,
+.gateway-safety > h2,
 .gateway-safety > p {
   margin: 0;
-}
-.gateway-safety-setting > .about-info {
-  margin: var(--space-1) 0 0;
 }
 .gateway-safety-settings {
   display: grid;

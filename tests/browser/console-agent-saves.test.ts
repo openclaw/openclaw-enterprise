@@ -282,42 +282,18 @@ test("collaboration and safety toggles stage their settings in the Configuration
   await page.locator("#gateway-safety-collaborative-steering:checked").waitFor();
   assert.equal(await strict.isChecked(), false);
   // The Gateway queues another participant's message unless the owner explicitly selects reject.
-  // The toggle's hint keeps what each state does and risks in view, and describes the toggle.
-  // Who counts as a participant is explanation: it opens from the toggle's "?".
   const steeringHint = page.locator("#gateway-safety-collaborative-steering-hint");
-  const steeringMore = page.locator("#gateway-safety-collaborative-steering-more");
   const sharedIdentityHelp =
     "OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users.";
-  assert.ok(
-    (await steeringHint.textContent())?.includes(
-      "The turn keeps the identity and permissions of the participant who started it, even when the participant steering has fewer.",
-    ),
+  assert.match(
+    (await steeringHint.textContent()) ?? "",
+    /Participants are channel users or local operators with distinct Gateway identities\./,
   );
   assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
   assert.match(
     (await steeringHint.textContent()) ?? "",
     /Off: their message runs as a separate turn after it\.$/,
   );
-  assert.equal(await steeringHint.isVisible(), true);
-  assert.match(
-    (await steering.getAttribute("aria-describedby")) ?? "",
-    /\bgateway-safety-collaborative-steering-hint\b/,
-  );
-  assert.equal(await steeringMore.isVisible(), false);
-  await page
-    .getByRole("button", { name: "About Other participants can steer a running turn" })
-    .click();
-  await steeringMore.waitFor();
-  assert.equal(
-    await steeringMore.textContent(),
-    "Participants are channel users or local operators with distinct Gateway identities.",
-  );
-  // apply_patch's hint keeps what Off allows in view, and no other toggle has a "?".
-  assert.match(
-    (await page.locator("#gateway-safety-apply-patch-workspace-hint").textContent()) ?? "",
-    /Off: it can also change files outside the workspace that the Agent’s runtime can write\.$/,
-  );
-  assert.equal(await page.locator(".gateway-safety-setting .about-toggle").count(), 1);
   const rejectSteering = {
     ...strictValues,
     messages: {

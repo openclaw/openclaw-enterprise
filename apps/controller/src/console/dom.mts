@@ -140,29 +140,6 @@ export function button(
   return node;
 }
 
-/**
- * A "?" button and the help it shows or hides. Put `button` beside the name the help is about
- * and `info` below it; `more` holds the text.
- */
-export function aboutDisclosure(label: string, text: string, { id }: { id: string }) {
-  const more = element("p", {}, text);
-  const info = element("div", { className: "about-info", id, hidden: true }, more);
-  const toggle = button(
-    "?",
-    () => {
-      info.hidden = !info.hidden;
-      toggle.setAttribute("aria-expanded", String(!info.hidden));
-    },
-    {
-      className: "about-toggle",
-      "aria-label": `About ${label}`,
-      "aria-expanded": "false",
-      "aria-controls": id,
-    },
-  );
-  return { button: toggle, info, more };
-}
-
 export function dismissOnBackdrop(dialog: HTMLDialogElement) {
   let startedOnBackdrop = false;
   const isBackdrop = (event: MouseEvent) => {
