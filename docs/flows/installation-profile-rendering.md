@@ -213,11 +213,12 @@ The Installation output selects Kubernetes Configuration, native IAM,
 Kubernetes Compute, Kubernetes Secrets, Preset seeding, and the profile
 PluginDriver. Compute settings consume the runtime image, DNS peer, trusted
 proxy CIDRs, plugin-status proxy CIDRs, gateway routing identity, runtime
-storage class, node selectors, and transport Secret prefix. The Codex profile
-also consumes the reviewed `runtime.codexSeccompProfile` path. Preflight applies
-the Compute driver's localhost-profile rule and refuses an absolute path, a
-backslash, an empty, `.`, or `..` segment, or a segment named `unconfined`,
-before writing `installation.yaml`. Optional `runtime.modelProvider.baseUrl` gets
+storage class, node selectors, and transport Secret prefix. For Codex, omitting
+`runtime.codexSeccompProfile` uses the Pod's `RuntimeDefault` profile. A supplied
+path adds a node-installation prerequisite and is validated before rendering.
+The renderer refuses blank or absolute paths, backslashes, empty, `.`, or `..`
+segments, and segments named `unconfined` before writing `installation.yaml`.
+Optional `runtime.modelProvider.baseUrl` gets
 Compute's endpoint rule. When optional
 managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
 matching ServiceAccount Driver; otherwise Codex Agents use the existing
@@ -334,6 +335,8 @@ activation, and repository registry creation need separate evidence.
 - 2026-11-16 09:42: Trace the bootstrap credential Secret profile input in the accompanying uncommitted renderer change. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 
 - 2026-11-15 10:07: Align database CA mount preflight with prepared Git mounts. (authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
+
+- 2026-11-14 16:48: Document the optional Codex seccomp path and its node prerequisite. (authoring-run/485a255a-c5ed-4f97-9b48-96738c7f19f4 - 4ecdd59c5a64f217f0b7fafdf7a034e74b890ffc)
 
 - 2026-11-14 12:18: Run the installation profile command directly from its TypeScript source in the accompanying change. (authoring-run/b17203e9-337c-40cf-9a41-0139532525fe - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 

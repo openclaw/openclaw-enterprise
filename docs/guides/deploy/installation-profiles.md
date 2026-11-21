@@ -145,7 +145,9 @@ Optional `controlPlane.clusterPort` sets the Kubernetes API egress port (default
 most 253 characters: the existing GatewayClass that Envoy Gateway serves, the
 Secret that holds the `occ` key, and the database CA Secret.
 
-For the `codex` profile, add the reviewed Codex seccomp profile to the base input:
+The `codex` profile uses the Pod's `RuntimeDefault` seccomp profile by default.
+To use a reviewed `Localhost` profile for the dedicated Codex Agent, add its
+relative path to the base input:
 
 ```json
 {
@@ -366,7 +368,7 @@ the install as ready:
   admin, wildcard DNS and TLS for native admin and the shared cookie parent domain.
 - A default ReadWriteOnce storage class for dedicated Codex workspace claims and
   `runtime.gatewayStorageClassName` for gateway state.
-- For Codex, the configured localhost seccomp profile installed and verified on
+- If you set `runtime.codexSeccompProfile`, install and verify that profile on
   every node selected by `runtime.nodeSelector`.
 - For Slack, [managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md)
   with EnvoyPatchPolicy support. `channels.managedEgress` defaults to true;
