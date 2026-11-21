@@ -9,12 +9,11 @@ import { createRequire } from "node:module";
 import { once } from "node:events";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { AuditEventFactory, InMemoryAuditSink } from "../../../packages/audit/src/index.ts";
+import { InMemoryAuditSink } from "../../../packages/audit/src/index.ts";
 import type {
   AuditEvent,
   AgentAutomationData,
   AgentAutomationCreateInput,
-  AgentAutomationOwnership,
 } from "../../../packages/contracts/src/index.ts";
 import { createAgentAutomationsAccess } from "../../../apps/controller/src/composition/agent-automations.ts";
 import { prepareNativeAdminConfiguration } from "../../../apps/controller/src/gateway/native-admin.ts";
@@ -77,9 +76,11 @@ const scope = {
 const peers = new Set<Peer>();
 const sockets = new websocket.WebSocketServer({ noServer: true });
 const proxy = createServer({ cert: await readFile(certPath), key: await readFile(tlsKeyPath) });
-let nativeCreates = 0;
+let nativeCreateRequests = 0;
 let nativeUpdates = 0;
 let beforeUpdate: undefined | (() => Promise<void>);
+let verifyActivationBinding: undefined | ((nativeJobId: string) => Promise<void>);
+let verifiedActivations = 0;
 let loseCreateReply = false;
 let loseUpdateReply = false;
 let afterUpdate: undefined | (() => Promise<void>);
@@ -96,14 +97,24 @@ proxy.on("upgrade", (request, socket, head) => {
         type?: string;
         method?: string;
         id?: string;
-        params?: { id?: string; enabled?: boolean; patch?: { enabled?: boolean } };
+        params?: {
+          id?: string;
+          enabled?: boolean;
+          payload?: { toolsAllow?: unknown };
+          patch?: { enabled?: boolean; payload?: { toolsAllow?: unknown } };
+        };
       };
       if (frame.type === "req" && frame.method === "cron.add" && frame.id) {
-        nativeCreates++;
+        nativeCreateRequests++;
         assert.equal(
           frame.params?.enabled,
           false,
           "native creation remains disabled until binding",
+        );
+        assert.deepEqual(
+          frame.params?.payload?.toolsAllow,
+          [],
+          "OCC native add must explicitly disable every model tool",
         );
         creating.add(frame.id);
       }
@@ -116,6 +127,11 @@ proxy.on("upgrade", (request, socket, head) => {
       };
       if (frame.method === "cron.update") {
         nativeUpdates++;
+        assert.deepEqual(
+          frame.params?.patch?.payload?.toolsAllow,
+          [],
+          "every OCC native update must reassert the empty tool cap",
+        );
         if (frame.id) {
           updating.add(frame.id);
         }
@@ -123,6 +139,10 @@ proxy.on("upgrade", (request, socket, head) => {
         beforeUpdate = undefined;
         void (async () => {
           await action?.();
+          if (frame.params?.patch?.enabled === true && frame.params.id) {
+            await verifyActivationBinding?.(frame.params.id);
+            verifiedActivations++;
+          }
         })()
           .then(forward)
           .catch(() => {
@@ -311,154 +331,162 @@ try {
       headers: result.response.headers,
     };
   }
-  // Read-only native observation proves the narrow API gate does not disable
-  // ordinary native scheduling. This fixture never qualifies scheduled execution.
-  const connected = Promise.withResolvers<void>();
-  const observer = new GatewayClient({
-    url: endpoint,
-    clientName: "gateway-client",
-    mode: "backend",
-    role: "operator",
-    deviceIdentity: null,
-    scopes: [],
-    edgeAuthHeaders: { "x-api-key": apiKey },
-    onHelloOk: () => connected.resolve(),
-    onConnectError: connected.reject,
-    hostDeps: { logError: () => {}, logDebug: () => {} },
-  });
+  // Native observation reads actual stored caps; it is not a model/tool substitute.
+  // Keep ordinary native scheduling enabled and all enabled jobs far in the future.
+  async function openObserver() {
+    const connected = Promise.withResolvers<void>();
+    const client = new GatewayClient({
+      url: endpoint,
+      clientName: "gateway-client",
+      mode: "backend",
+      role: "operator",
+      deviceIdentity: null,
+      scopes: [],
+      edgeAuthHeaders: { "x-api-key": apiKey },
+      onHelloOk: () => connected.resolve(),
+      onConnectError: connected.reject,
+      hostDeps: { logError: () => {}, logDebug: () => {} },
+    });
+    const timer = setTimeout(
+      () => connected.reject(new Error("Native observer connection timed out")),
+      15_000,
+    );
+    try {
+      client.start();
+      await connected.promise;
+      return client;
+    } catch (error) {
+      client.stop();
+      await client.stopAndWait({ timeoutMs: 1000 });
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  let observer = await openObserver();
   cleanups.push(async () => {
     observer.stop();
     await observer.stopAndWait({ timeoutMs: 1000 });
   });
-  observer.start();
-  await connected.promise;
   assert.equal((await observer.request<{ enabled: boolean }>("cron.status", {})).enabled, true);
+  async function storedModelOnly(id: string) {
+    const { record } = await f.controller.getAgentAutomationOwnership(
+      f.principal.id,
+      namespace.id,
+      agent.id,
+      id,
+    );
+    assert.ok(record.nativeJobId, "native observation requires the durable OCC binding");
+    const stored = await observer.request<{
+      configRevision: string;
+      payload: {
+        kind: string;
+        message: string;
+        toolsAllow?: unknown;
+        toolsAllowIsDefault?: unknown;
+      };
+      sessionTarget: string;
+      wakeMode: string;
+      delivery: { mode: string };
+    }>("cron.get", { id: record.nativeJobId });
+    assert.equal(stored.payload.kind, "agentTurn");
+    assert.deepEqual(stored.payload.toolsAllow, []);
+    assert.ok(
+      stored.payload.toolsAllowIsDefault === undefined ||
+        stored.payload.toolsAllowIsDefault === false,
+    );
+    assert.equal(stored.sessionTarget, "isolated");
+    assert.equal(stored.wakeMode, "now");
+    assert.equal(stored.delivery.mode, "none");
+    return { record, stored };
+  }
+  verifyActivationBinding = async (nativeJobId) => {
+    const records = await f.controller.listAgentAutomationOwnership(
+      f.principal.id,
+      namespace.id,
+      agent.id,
+    );
+    assert.ok(
+      records.some((record) => record.nativeJobId === nativeJobId),
+      "activation requires a committed native ID binding",
+    );
+  };
   const input: AgentAutomationCreateInput = {
-    name: "Retained operator job",
+    name: "Model-only protocol job",
     enabled: false,
     schedule: { kind: "every", everyMs: 86_400_000 },
     prompt: "This job must not execute during protocol proof.",
   };
-  for (const enabled of [false, true]) {
-    const refused = await request("POST", base, { body: { ...input, enabled } });
-    assert.equal(refused.status, 503);
-    assert.equal(refused.body.error.code, "AUTOMATIONS_UNQUALIFIED");
+  // Closed HTTP bodies cannot supply wildcard, alias, default or automatic grants.
+  for (const extra of [
+    { toolsAllow: ["*"] },
+    { toolsAllow: ["group:runtime"] },
+    { payload: { toolsAllow: [] } },
+    { toolsAllowIsDefault: true },
+  ]) {
+    assert.equal((await request("POST", base, { body: { ...input, ...extra } })).status, 400);
   }
-  assert.equal(nativeCreates, 0, "unqualified HTTP create must never reach native dispatch");
-  assert.deepEqual(
-    await f.controller.listAgentAutomationOwnership(f.principal.id, namespace.id, agent.id),
-    [],
-  );
-
-  // Seed retained pre-gate state through real OCC storage and the real native
-  // adapter. This is fixture setup, never a qualification bypass or HTTP-create proof.
-  const legacyRevisionId = revision.id;
-  const legacy = await createAgentAutomationsAccess(compute, keyPath).open({
-    revision,
-    signal: new AbortController().signal,
-    deadline: new Date(Date.now() + 120_000),
-    assertCurrent: async () => {
-      await f.controller.getOperableAgent(f.principal.id, namespace.id, agent.id);
-      const selected = await f.controller.getBrowserAccessibleActiveAgentRevision(
-        f.principal.id,
-        namespace.id,
-        agent.id,
-      );
-      assert.equal(selected.revision.id, legacyRevisionId);
-    },
-  });
-  cleanups.push(() => legacy.close());
-  const factory = new AuditEventFactory();
-  const fixtureAudit = (record: Readonly<AgentAutomationOwnership>) =>
-    factory.create({
-      installationId: f.controller.installation.id,
-      namespaceId: namespace.id,
-      actorId: f.principal.id,
-      kind: "mutation",
-      action: "fixture.automation.retained",
-      resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
-      details: { jobId: record.id },
-    });
-  async function seedLegacy(value: AgentAutomationCreateInput, lost = false) {
-    const record = await f.controller.reserveAgentAutomation(
-      f.principal.id,
-      {
-        namespaceId: namespace.id,
-        agentId: agent.id,
-        revisionId: revision.id,
-        nativeAgentId: legacy.nativeAgentId,
-      },
-      fixtureAudit,
+  assert.equal(nativeCreateRequests, 0);
+  // These are valid OCC envelopes rejected by the actual native scheduler.
+  for (const schedule of [
+    { kind: "cron", expr: "not a cron expression", tz: "UTC" },
+    { kind: "cron", expr: "0 9 * * *", tz: "Invalid/Zone" },
+    { kind: "cron", expr: "not a cron expression", tz: "UTC" },
+  ]) {
+    const before = nativeCreateRequests;
+    const rejected = await request("POST", base, { body: { ...input, schedule } });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(nativeCreateRequests, before + 1);
+    assert.deepEqual(
+      await f.controller.listAgentAutomationOwnership(f.principal.id, namespace.id, agent.id),
+      [],
+      "definite native rejection must discard the unbound reservation",
     );
-    if (lost) {
-      loseCreateReply = true;
-    }
-    const created = await legacy.create(record.id, value);
-    const bound = await f.controller.bindAgentAutomation(
-      f.principal.id,
-      {
-        namespaceId: namespace.id,
-        agentId: agent.id,
-        id: record.id,
-        nativeJobId: created.nativeJobId,
-        requireOperate: true,
-      },
-      fixtureAudit,
-    );
-    if (value.enabled) {
-      // Historical fixture setup only: current OCC routes and its update adapter
-      // refuse activation. This retained fixture uses only far-future schedules.
-      await observer.request("cron.update", {
-        id: bound.nativeJobId,
-        expectedConfigRevision: created.job.configRevision,
-        patch: { enabled: true },
-      });
-    }
-    return legacy.get(bound);
   }
-  const job = await seedLegacy({ ...input, enabled: true });
-  const heldCalls = await runDocker([
-    "exec",
-    nativeContainer,
-    "node",
-    "-e",
-    'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
-  ]);
-  assert.equal(
-    heldCalls.stdout.trim(),
-    "0",
-    "far-future fixture jobs must not run during management proof",
-  );
+  assert.equal(auditSink.events.filter((event) => event.action.endsWith(".discarded")).length, 3);
+  async function create(value: AgentAutomationCreateInput) {
+    const response = await request("POST", base, { body: value });
+    assert.equal(response.status, 201, JSON.stringify(response.body));
+    assert.equal(response.headers.get("location"), `${base}/${response.data.id}`);
+    const job = response.data as AgentAutomationData;
+    assert.equal(job.enabled, value.enabled);
+    await storedModelOnly(job.id);
+    return job;
+  }
+  const job = await create({ ...input, enabled: true });
   for (const schedule of [
     { kind: "at" as const, at: new Date(Date.now() + 3_600_000).toISOString() },
     { kind: "cron" as const, expr: "0 9 * * *", tz: "UTC" },
   ]) {
-    const retained = await seedLegacy({ ...input, schedule });
+    const created = await create({ ...input, schedule });
+    assert.equal(created.schedule.kind, schedule.kind);
     assert.equal(
-      (await request("GET", `${base}/${retained.id}`)).data.configRevision,
-      retained.configRevision,
+      (await request("GET", `${base}/${created.id}`)).data.configRevision,
+      created.configRevision,
     );
   }
-  const retainedEnabled = await seedLegacy({
-    ...input,
-    name: "Retained future job",
-    enabled: true,
-  });
+  const retainedEnabled = await create({ ...input, name: "Retained future job", enabled: true });
   const updatesBeforeRefusal = nativeUpdates;
-  for (const patch of [{ enabled: true }, { name: "Must explicitly pause" }]) {
-    const refused = await request("PATCH", `${base}/${job.id}`, {
-      body: { ...patch, expectedConfigRevision: job.configRevision },
-    });
-    assert.equal(refused.status, 503);
-    assert.equal(refused.body.error.code, "AUTOMATIONS_UNQUALIFIED");
-  }
-  assert.equal(nativeUpdates, updatesBeforeRefusal, "unsafe HTTP updates must not dispatch");
+  assert.equal(
+    (
+      await request("PATCH", `${base}/${job.id}`, {
+        body: { enabled: false, expectedConfigRevision: job.configRevision, toolsAllow: ["*"] },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    nativeUpdates,
+    updatesBeforeRefusal,
+    "client tool policy must be rejected before native mutation",
+  );
 
   assert.equal(job.schedule.kind, "every");
   assert.ok("anchorMs" in job.schedule && Number.isSafeInteger(job.schedule.anchorMs));
   const changed = await request("PATCH", `${base}/${job.id}`, {
     body: {
       name: "Updated through OCC",
+      prompt: "Model-only updated prompt; this future job must not run.",
       enabled: false,
       expectedConfigRevision: job.configRevision,
     },
@@ -466,6 +494,20 @@ try {
   assert.equal(changed.status, 200);
   let current = changed.data as AgentAutomationData;
   assert.notEqual(current.configRevision, job.configRevision);
+  assert.equal((await storedModelOnly(job.id)).stored.payload.message, current.prompt);
+  const resumed = await request("PATCH", `${base}/${job.id}`, {
+    body: { enabled: true, expectedConfigRevision: current.configRevision },
+  });
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.data.enabled, true);
+  await storedModelOnly(job.id);
+  const pausedAgain = await request("PATCH", `${base}/${job.id}`, {
+    body: { enabled: false, expectedConfigRevision: resumed.data.configRevision },
+  });
+  assert.equal(pausedAgain.status, 200);
+  current = pausedAgain.data;
+  await storedModelOnly(job.id);
+
   assert.equal(
     (
       await request("PATCH", `${base}/${job.id}`, {
@@ -602,22 +644,30 @@ try {
   assert.equal(afterDemotion.data.nextOffset, null);
   assert.equal(afterDemotion.data.snapshotRevision, guestList.data.snapshotRevision);
 
-  // A retained pre-gate lost create remains discoverable and can bind once.
+  // Lose a real OCC create reply after native commit. It must remain disabled,
+  // recover through its reservation and never replay or activate during reads.
+  const createsBeforeRecovery = nativeCreateRequests;
   const updatesBeforeRecovery = nativeUpdates;
-  await assert.rejects(seedLegacy({ ...input, name: "Retained lost reply" }, true), {
-    code: "unknown",
+  loseCreateReply = true;
+  const lostCreate = await request("POST", base, {
+    body: { ...input, name: "Lost create reply", enabled: true },
   });
+  assert.equal(lostCreate.status, 503);
+  assert.equal(lostCreate.body.error.code, "UNKNOWN_OUTCOME");
+  assert.equal(nativeCreateRequests, createsBeforeRecovery + 1);
   const recovered = (await request("GET", base)).data.jobs.find(
-    (entry: { name: string }) => entry.name === "Retained lost reply",
+    (entry: { name: string }) => entry.name === "Lost create reply",
   );
   assert.ok(recovered);
   assert.equal(recovered.enabled, false);
+  assert.equal(lostCreate.headers.get("location"), `${base}/${recovered.id}`);
   assert.equal(
     nativeUpdates,
     updatesBeforeRecovery,
     "read recovery must not enable or rewrite jobs",
   );
   assert.equal("prompt" in recovered, false);
+  await storedModelOnly(recovered.id);
 
   const beforeLost = nativeUpdates;
   loseUpdateReply = true;
@@ -681,7 +731,7 @@ try {
     await runDocker(["inspect", "--format", "{{.Id}}", nativeContainer])
   ).stdout.trim();
   const previousRevisionId = revision.id;
-  const createsBeforeReplacement = nativeCreates;
+  const createsBeforeReplacement = nativeCreateRequests;
   const updatesBeforeReplacement = nativeUpdates;
   const callsBeforeReplacement = await runDocker([
     "exec",
@@ -691,6 +741,8 @@ try {
     'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
   ]);
   assert.equal(callsBeforeReplacement.stdout.trim(), "0");
+  observer.stop();
+  await observer.stopAndWait({ timeoutMs: 1000 });
   await runDocker(["stop", "--time", "30", nativeContainer]);
   await runDocker(["rm", "--volumes", nativeContainer]);
   await runDocker(replacementArguments);
@@ -708,6 +760,8 @@ try {
       '() => fetch("http://127.0.0.1:18800/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)',
     timeoutMs: cpuScaledImageTimeoutMs(75_000),
   });
+  observer = await openObserver();
+  assert.equal((await observer.request<{ enabled: boolean }>("cron.status", {})).enabled, true);
   const replacementRevision = await f.deployAgent(namespace.id, agent.id);
   await f.activateRevision(namespace.id, agent.id, replacementRevision.id, revision.id);
   revision = replacementRevision;
@@ -716,21 +770,26 @@ try {
   assert.equal(retained.status, 200, JSON.stringify(retained.body));
   assert.deepEqual(retained.data, current, "paused job and native revision survive replacement");
   assert.equal(retained.data.enabled, false);
+  await storedModelOnly(job.id);
   assert.deepEqual(
     (await f.controller.getAgentAutomationOwnership(f.principal.id, namespace.id, agent.id, job.id))
       .record,
     ownershipBefore.record,
     "creator, public ID and bound native ID survive the physical Gateway replacement",
   );
-  assert.equal(nativeCreates, createsBeforeReplacement, "replacement must not recreate jobs");
+  assert.equal(
+    nativeCreateRequests,
+    createsBeforeReplacement,
+    "replacement must not recreate jobs",
+  );
   assert.equal(
     nativeUpdates,
     updatesBeforeReplacement,
     "replacement must not rewrite or activate jobs",
   );
 
-  // An enabled far-future record survives on disk too. Its explicit atomic
-  // disabling edit must remain available despite the execution qualification gate.
+  // Enabled far-future model-only work survives too; its atomic disabling edit
+  // must preserve the cap without changing ordinary native scheduling.
   const callsAfterReplacement = await runDocker([
     "exec",
     nativeContainer,
@@ -751,6 +810,48 @@ try {
   });
   assert.equal(pausedQueued.status, 200);
   assert.equal(pausedQueued.data.enabled, false);
+  await storedModelOnly(retainedEnabled.id);
+  assert.ok(
+    verifiedActivations >= 3,
+    "creation and resume verified durable binding before activation",
+  );
+
+  // Model one explicitly trusted writer changing this disposable, paused job.
+  // This is outside-contract fixture mutation, not a supported native-edit flow
+  // or a tamper-resistance claim. OCC must not activate/adopt the widened cap.
+  const beforeExternalWrite = await storedModelOnly(job.id);
+  const outside = await observer.request<{
+    configRevision: string;
+    enabled: boolean;
+    payload: { toolsAllow: unknown };
+  }>("cron.update", {
+    id: beforeExternalWrite.record.nativeJobId,
+    expectedConfigRevision: beforeExternalWrite.stored.configRevision,
+    patch: {
+      enabled: false,
+      payload: { kind: "agentTurn", message: current.prompt, toolsAllow: ["*"] },
+    },
+  });
+  assert.equal(outside.enabled, false);
+  assert.deepEqual(outside.payload.toolsAllow, ["*"]);
+  const updatesBeforeUnsupported = nativeUpdates;
+  assert.equal((await request("GET", `${base}/${job.id}`)).status, 409);
+  for (const patch of [{ enabled: true }, { prompt: "Do not adopt a widened cap" }]) {
+    const refused = await request("PATCH", `${base}/${job.id}`, {
+      body: { ...patch, expectedConfigRevision: outside.configRevision },
+    });
+    assert.equal(refused.status, 409);
+  }
+  assert.equal(nativeUpdates, updatesBeforeUnsupported);
+  const unchangedOutside = await observer.request<{ payload: { toolsAllow: unknown } }>(
+    "cron.get",
+    { id: beforeExternalWrite.record.nativeJobId },
+  );
+  assert.deepEqual(
+    unchangedOutside.payload.toolsAllow,
+    ["*"],
+    "OCC does not reconcile trusted writers",
+  );
 
   const all = (await request("GET", base)).data.jobs as AgentAutomationData[];
   assert.equal(all.length, 5);
@@ -790,13 +891,16 @@ process.stdout.write(
   "OCC_AUTOMATION_PROTOCOL_PROOF " +
     JSON.stringify({
       automationProtocol: true,
-      nativeCreates,
-      executionQualified: false,
-      unsafeDispatchBlocked: true,
+      nativeCreateRequests,
+      modelOnlyWrites: true,
+      modelOnlyReadback: true,
+      clientToolPolicyRefused: true,
+      rejectedCreateCleanup: true,
+      bindingBeforeActivation: true,
+      unsupportedCapsRefused: true,
       adminDemotionProtected: true,
       nativeSchedulerUnchanged: true,
       retainedEnabledJobPaused: true,
-      legacyFixtureSetup: true,
       concurrentNativeCas: true,
       physicalGatewayReplacement: true,
       pausedJobRetained: true,

@@ -100,20 +100,6 @@ export function createAgentAutomationHandlers(options: {
       record = access.record;
       ownershipAdminister = access.administer;
     }
-    // TODO: Admit creation and execution only after a stock route establishes
-    // non-owner Agent service authority (Agent automations RFC, AC3). The current
-    // admin RPC stamps operator-schedule authority; tool filters do not replace it.
-    if (
-      create ||
-      (operation === "updateAgentAutomation" &&
-        (body as unknown as AgentAutomationUpdateInput).enabled === true)
-    ) {
-      throw failure(
-        503,
-        "AUTOMATIONS_UNQUALIFIED",
-        "Scheduled execution has no qualified non-owner Agent service authority. Existing automations can be paused or deleted.",
-      );
-    }
     if (
       options.nativeAdmin?.enabled !== true ||
       agent.status !== "active" ||
@@ -299,7 +285,7 @@ export function createAgentAutomationHandlers(options: {
         }
         return { ...record, nativeJobId };
       }
-      const result = await match<AutomationOperation["operationId"]>(operation)
+      const result = await match(operation)
         .with("createAgentAutomation", async () => {
           const input = body as unknown as AgentAutomationCreateInput;
           const created = await session.create(record!.id, input);
@@ -407,13 +393,6 @@ export function createAgentAutomationHandlers(options: {
             failure(409, "RESOURCE_CONFLICT", "The automation has an unsupported configuration."),
           )
           .with("unavailable", () => dependencyUnavailable())
-          .with("unqualified", () =>
-            failure(
-              503,
-              "AUTOMATIONS_UNQUALIFIED",
-              "The edit would leave an unqualified automation enabled. Pause or delete it instead.",
-            ),
-          )
           .with("unknown", () =>
             failure(503, "UNKNOWN_OUTCOME", "The automation mutation outcome is unknown."),
           )

@@ -11,16 +11,17 @@ last_updated_session: "01a1fc52-9d88-7223-b8a1-3c98595d3fbe"
 OCC authorizes a human and managed job ownership, resolves the selected Agent
 runtime, then calls native cron through private administrative transport. OCC
 retains creator records; OpenClaw owns scheduling, execution and run history.
-Creation and enabling are gated because native operator authority does not satisfy
-non-owner Agent service execution. The current flow manages retained jobs only.
+Native writes fix an empty tool cap. This flow describes implementation; the
+plan distinguishes native protocol proof from genuine model-only qualification.
 
 ## Entry Points
 
 - Trigger: one of the six automation collection, item or history HTTP operations.
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`
 - Source: `apps/controller/src/http/agent-automations.ts:createAgentAutomationHandlers`
-- Assumptions: OCE is the sole automation manager; the selected runtime has native
-  access and matches the supported image source. Native edits are out of scope.
+- Assumptions: OCC manages only its registered records; the selected runtime has
+  native access and matches the supported source. Other trusted writers leave the
+  jobs unchanged for the OCC guarantee; their native edits are outside this flow.
 
 ## Flow
 
@@ -30,13 +31,17 @@ graph TD
   B -->|"denied"| E["Return protected-route error and audit"]
   B --> C["Authorize creator or Agent administrator"]
   C -->|"foreign or absent record"| E
-  C --> Q{"Create or explicitly enable?"}
-  Q -->|"yes"| U["Return 503 without dispatch"]
-  Q -->|"no"| D["Select running revision and verify runtime provenance"]
-  D -->|"unavailable"| U
+  C --> D["Select running revision and verify runtime provenance"]
+  D -->|"unavailable"| U["Return 503 without dispatch"]
   D --> G["Connect to private native operator endpoint"]
-  G --> N["Read, safely edit or delete retained job"]
-  N -->|"edit would leave job enabled"| U
+  G --> R{"Create?"}
+  R -->|"yes"| P["Reserve ownership and admission audit"]
+  P --> C0["Create disabled with explicit empty tool cap"]
+  C0 -->|"uncertain reply"| X
+  C0 --> B0["Bind native ID durably"]
+  B0 --> N["Read, edit or enable only a supported model-only job"]
+  R -->|"no"| N
+  N -->|"unsupported shape or stale revision"| E
   N -->|"lost mutation reply"| X["Audit unknown outcome; return 503; do not replay"]
   N --> V["Recheck caller and selected revision"]
   V -->|"changed after mutation"| X
@@ -75,28 +80,26 @@ selection. It owns connection deadlines and closes on disconnect without
 replaying requests. Each RPC rechecks the human session, authorization and
 selected revision through the HTTP handler's `assertCurrent` callback.
 
-### 3. Gate execution and manage retained jobs
+### 3. Reserve and enforce model-only writes
 
 The final runtime selection determines administrative scope. Non-administrative
-lists discard other creators' records even if those records were read under an
-earlier grant. Exact-job requests reject a changed authority mode before dispatch;
-the existing RPC and response checks fence later changes. Route UUID validation
-precedes persistence lookup.
+lists discard other creators' records even if read under an earlier grant.
+Exact-job requests reject a changed mode; RPC and response checks fence later
+changes. Route UUID validation precedes persistence lookup.
 
 `apps/controller/src/http/agent-automations.ts:createAgentAutomationHandlers`
-rejects POST and explicit enabling after human authorization
-and ownership checks. For other edits, the native adapter reads the current job,
-checks the expected revision, and refuses any resulting enabled state. Safe
-edits and DELETE carry that same revision to native atomic mutation.
+reserves ownership with admission audit, creates disabled and binds the returned
+native ID before requested activation. A lost reply preserves the recovery record.
 
-The gate does not alter native cron or other Agent runtime functions. It creates
-no background reconciliation or native-import path.
+`apps/controller/src/gateway/agent-automations-client.ts:createNativeAgentAutomationsAccess`
+fixes `payload.toolsAllow: []` on add and every update, including metadata-only
+edits. Readback must have that exact empty cap, no automatic/default flag, no
+trigger, isolated `agentTurn` execution and no result delivery. Unsupported shapes
+cannot be activated. Eligibility and the expected revision come from one read;
+the native atomic precondition protects the subsequent write.
 
-The deferred create path reserves ownership with admission audit, creates disabled,
-binds the native ID once and requests activation. It is unreachable through the
-current HTTP gate. Its pre-gate regression evidence is recorded separately in the
-[plan](../../specs/plans/20261121-agent-automations.md#verification); it is not current
-supported creation proof.
+No global chat/tool policy, native cron setting, import or reconciliation changes
+participate in this path. Trusted writers outside OCC remain outside its guarantee.
 
 ### 4. Project inventory and history
 
@@ -143,7 +146,9 @@ The native protocol case uses real OpenClaw and a transparent fault proxy, with
 fixture Compute and in-memory OCC state. It checks concurrent native CAS and
 replaces the Gateway container on retained native storage while preserving a
 paused job and its OCC ownership record. It executes no model. The registered
-`agent-automations` QA scenario now proves installed execution refusal. Positive scheduling, tool-policy and history criteria remain unmet.
+`agent-automations` QA scenario owns actual model-only execution, no-tool evidence,
+one-shot history and replacement. Implemented tests do not themselves establish
+those outcomes; missing or failed real proof remains explicit in the plan.
 See the [plan](../../specs/plans/20261121-agent-automations.md#verification) for
 actual results and outstanding proof. Missing model credentials are not mock proof.
 

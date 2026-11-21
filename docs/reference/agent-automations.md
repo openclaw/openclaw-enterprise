@@ -1,26 +1,31 @@
 # Agent automations
 
-The OpenClaw Control Plane (OCC) automation broker retains human ownership and
-manages native jobs. Creation and activation are gated; safe disabling edits,
-deletion, reads and recovery remain available for retained OCE-owned jobs.
-See the [management guide](../guides/agent-automations.md).
+The OpenClaw Control Plane (OCC) automation broker creates and manages model-only
+scheduled Agent turns. OCC owns human authorization and creator records; OpenClaw
+owns scheduling, model execution and retained run history. Use the
+[scheduling guide](../guides/agent-automations.md) for HTTP operations.
 
 ## Execution qualification
 
-The RFC requires non-owner Agent service authority. The pinned direct native
-administrative route instead produces trusted `operator-schedule` authority.
-Tool allowlists do not establish the required actor or action restrictions.
-The [RFC's source-backed limitation](../../specs/rfcs/20261121-agent-automations.md#unresolved-execution-authority)
-records the gap and pending decision. Valid model credentials cannot resolve it.
+OCC fixes native `payload.toolsAllow: []` on add and every update. Clients cannot
+supply a tool policy. The scheduled model must receive no callable shell/file,
+code, dynamic, subagent/delegation, messaging, app or MCP tools. Scheduled GitHub
+reports and connector actions are outside this feature.
 
-POST and explicit activation return `503 AUTOMATIONS_UNQUALIFIED`. PATCH also
-refuses an edit that would leave an existing job enabled, using the same native
-read and revision precondition as the mutation. An atomic disabling edit is allowed.
+This no-tools contract does not cover scheduler, model, runtime/bootstrap or
+history processing, or configured failure alerts. Ordinary chat and native
+administration remain unchanged and trusted. They can alter native jobs outside
+OCC; the guarantee applies to OCC-managed writes while those writers leave the
+jobs unchanged. There is no tamper-resistant sole-writer claim, import or
+background reconciliation.
 
-The gate does not disable Gateway-wide cron, which also serves native Agent
-functions. It is not cancellation of existing work. Pause/delete a retained enabled
-job, or use ordinary Agent stop if a turn is already in flight. There is no native
-import/reconciliation service or caller-controlled qualification override.
+The native adapter admits only isolated Agent turns with explicit empty caps,
+no automatic/default-tool flag, no trigger and no result delivery. It rejects
+unsupported readback before activation or editing. Runtime provenance and native
+CAS still apply. This implementation is under qualification: fixed `[]` and
+native CRUD tests are not proof that both packaged Harnesses expose no model
+tools. See [verification status](#verification-status) and the
+[submitted model-only contract](../../specs/rfcs/20261121-agent-automations.md).
 
 ## Ownership and authority
 
@@ -30,14 +35,13 @@ permission admits reads and mutations of that creator's records. Exact-Agent
 replace `operate` for creation. Service keys are refused. Foreign and absent
 ownership records return the same 404 response.
 
-OCE is the sole automation manager. Native edits, imports and reconciliation with
-other managers are outside the supported workflow. Native jobs without an OCC
-ownership record are not exposed through this API.
+Native edits, imports and reconciliation are outside the supported workflow.
+Native jobs without an OCC ownership record are not exposed through this API.
 
-Scheduled execution under the Agent's service authority remains a requirement,
-not verified behavior of this operator transport. Human creator identity controls
-management access and does not supply personal credentials. Revoking `operate`
-removes that human's management access; it does not delete retained jobs.
+Human creator identity controls management access and does not supply personal
+credentials to inference. Model requests use the selected Agent runtime
+authentication. Revoking `operate` removes management access; existing jobs remain
+until disabled/deleted or the Agent is stopped.
 
 ## Requests and responses
 
@@ -45,7 +49,7 @@ All paths start with `/namespaces/{namespaceId}/agents/{agentId}/automations`.
 
 | Method | Suffix                 | Request                                           | Success                   |
 | ------ | ---------------------- | ------------------------------------------------- | ------------------------- |
-| POST   | Collection             | Required `name`, `enabled`, `schedule`, `prompt`  | 503, unqualified          |
+| POST   | Collection             | Required `name`, `enabled`, `schedule`, `prompt`  | 201, normalized job       |
 | GET    | Collection             | Optional `offset`, `limit`                        | 200, authorized summaries |
 | GET    | `/{automationId}`      | No query                                          | 200, job                  |
 | PATCH  | `/{automationId}`      | Expected revision and at least one editable field | 200, job                  |
@@ -82,9 +86,8 @@ another request's changes blindly.
 
 ## Persistence and history
 
-The deferred create path reserves a new UUID and its creator, exact Namespace,
-Agent and native Agent before native create. The current HTTP gate prevents entry
-to that path. The reservation and admission audit commit together.
+OCC reserves a new UUID and its creator, exact Namespace, Agent and native Agent
+before native create. The reservation and admission audit commit together.
 OpenClaw chooses the native job ID. OCC creates disabled using its unique
 declaration key, binds the returned native ID durably, then enables the job if
 requested. A native ID cannot be rebound or shared by two records for the Agent.
@@ -126,7 +129,8 @@ the six-method surface; the underlying native credential has broader authority
 and never reaches the caller. Browser chat scopes are unchanged.
 
 A stopped, replacing or unavailable runtime returns `503 DEPENDENCY_UNAVAILABLE`.
-Missing transport and unqualified creation or enabling return `503 AUTOMATIONS_UNQUALIFIED`.
+Missing automation transport returns `503 AUTOMATIONS_UNQUALIFIED`. Unsupported
+native job shapes cannot be enabled or edited.
 Invalid requests return 400; human/Agent denials return 403; absent or hidden jobs
 return 404; conflicts and unsupported job shapes return 409.
 
@@ -155,7 +159,8 @@ OCC storage and Compute remain fixtures; this is not PostgreSQL-backed OCC resta
 or production Kubernetes cutover proof.
 
 The `agent-automations` [QA scenario](../testing/ci/qa-advisory.md) exercises the
-regular deployed Agent workflow to verify execution refusal. It does not prove scheduled turns or tool policy. Required positive
-model/tool-policy, one-shot history and production-runtime proof
+regular deployed Agent workflow for model-only one-shots, tool-absence evidence,
+retained history and replacement. Those cases are not qualified merely by being
+implemented. Actual model/tool-policy, one-shot history and production-runtime results
 remain recorded in the [implementation plan](../../specs/plans/20261121-agent-automations.md).
 See the [source-backed flow](../flows/agent-automations.md) for implementation order.

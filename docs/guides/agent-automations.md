@@ -1,9 +1,10 @@
-# Inspect and pause Agent automations
+# Schedule a model-only Agent automation
 
-Creation and activation are unavailable until a native route satisfies the
-[execution-authority requirement](../reference/agent-automations.md#execution-qualification).
-Use the OCC HTTP API to inspect, pause or delete retained OCE-owned jobs. Native
-edits and imports are outside this workflow.
+Use the OCC API for scheduled model text, with no callable tools. Automations do
+not run shell/file actions, code, subagents, messaging, apps, MCP tools or GitHub
+reports. Review the [qualification and trust limits](../reference/agent-automations.md#execution-qualification)
+before using a runtime. Ordinary chat and native administrators remain trusted;
+OCC does not prevent their independent native edits.
 
 ## Prepare
 
@@ -16,13 +17,16 @@ configured public origin for `OCC_URL`; never place the cookie in a shared scrip
 
 ```sh
 AUTOMATIONS="$OCC_URL/namespaces/$NAMESPACE_ID/agents/$AGENT_ID/automations"
-curl --fail-with-body --cookie "$COOKIE" "$AUTOMATIONS?offset=0&limit=50"
+curl --fail-with-body --cookie "$COOKIE" \
+  -H "Origin: $OCC_URL" -H 'Content-Type: application/json' \
+  --data '{"name":"Daily check-in","enabled":true,"schedule":{"kind":"cron","expr":"0 9 * * *","tz":"America/Los_Angeles"},"prompt":"Write a short three-line check-in using only the context already provided. Do not use tools."}' \
+  "$AUTOMATIONS"
 ```
 
-POST returns `503 AUTOMATIONS_UNQUALIFIED` without reserving ownership or
-sending native create. The gate does not cancel work from a retained enabled job.
-Pause/delete it, or use the ordinary Agent stop operation if a turn is in flight.
-Gateway-wide scheduling and other native Agent functions are unchanged.
+Creation requires exact-Agent `operate`; `administer` alone does not substitute.
+A successful response is 201 with the public UUID, native configuration revision
+and normalized schedule. The empty tool cap is server-owned; do not submit tool
+fields. Set `enabled:false` to create paused.
 
 ## Inspect, pause and remove
 
@@ -40,9 +44,10 @@ jq -n --arg revision "$CONFIG_REVISION" \
     --data-binary @- "$AUTOMATIONS/$JOB_ID"
 ```
 
-Enabling is refused. An edit must leave the job disabled; include `enabled:false`
-to pause and edit atomically. An already-paused job can change its name, schedule
-or prompt. A stale revision returns 409; read the job again before editing.
+Set `enabled:true` to resume a supported model-only job. PATCH can change its
+name, prompt or schedule; OCC reasserts the empty tool cap. A stale revision or
+unsupported native shape returns 409. Read the job again before editing; an
+Agent administrator can delete an unsupported managed job.
 
 DELETE `$AUTOMATIONS/$JOB_ID?expectedConfigRevision=$CONFIG_REVISION` with the
 same session and Origin to stop future scheduling and remove the native job.
@@ -61,5 +66,6 @@ that Agent.
 automatically. Keep the response's `Location` path: it identifies the automation
 even if a successful one-shot has already disappeared. Inspect that path or its
 `/runs` history. A recovered create can be disabled because activation did not
-commit. Inspect its current revision; enabling remains unavailable. See the
+commit. Inspect its current revision and history before deciding whether to
+request activation. See the
 [error and persistence contract](../reference/agent-automations.md#runtime-and-failure-boundaries).

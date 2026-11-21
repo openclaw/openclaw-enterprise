@@ -30,7 +30,7 @@ const methods = [
 type Method = (typeof methods)[number];
 type GatewayHello = Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0];
 export type AutomationGatewayErrorCode =
-  "unavailable" | "invalid" | "missing" | "conflict" | "unsupported" | "unknown" | "unqualified";
+  "unavailable" | "invalid" | "missing" | "conflict" | "unsupported" | "unknown";
 export class AutomationGatewayError extends Error {
   readonly code: AutomationGatewayErrorCode;
   constructor(code: AutomationGatewayErrorCode) {
@@ -250,7 +250,11 @@ export function createNativeAgentAutomationsAccess(
         const supported =
           job.sessionTarget === "isolated" &&
           job.wakeMode === "now" &&
+          job.trigger === undefined &&
           payload?.kind === "agentTurn" &&
+          Array.isArray(payload.toolsAllow) &&
+          payload.toolsAllow.length === 0 &&
+          (payload.toolsAllowIsDefault === undefined || payload.toolsAllowIsDefault === false) &&
           delivery?.mode === "none" &&
           Check(AgentAutomationSchema, data);
         const summary = {
@@ -373,7 +377,7 @@ export function createNativeAgentAutomationsAccess(
                 schedule: input.schedule,
                 sessionTarget: "isolated",
                 wakeMode: "now",
-                payload: { kind: "agentTurn", message: input.prompt, toolsAllow: ["*"] },
+                payload: { kind: "agentTurn", message: input.prompt, toolsAllow: [] },
                 delivery: { mode: "none" },
               },
               true,
@@ -424,18 +428,12 @@ export function createNativeAgentAutomationsAccess(
           if (current.configRevision !== input.expectedConfigRevision) {
             throw new AutomationGatewayError("conflict");
           }
-          // TODO: Permit enabled state only when AC3's non-owner service authority
-          // is established. Use this same read and native CAS to prevent races.
-          if (input.enabled ?? current.enabled) {
-            throw new AutomationGatewayError("unqualified");
-          }
           const patch = {
             ...(input.name === undefined ? {} : { name: input.name }),
             ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
             ...(input.schedule === undefined ? {} : { schedule: input.schedule }),
-            ...(input.prompt === undefined
-              ? {}
-              : { payload: { kind: "agentTurn", message: input.prompt } }),
+            // Reassert the model-only cap even when only scheduling or metadata changes.
+            payload: { kind: "agentTurn", message: input.prompt ?? current.prompt, toolsAllow: [] },
           };
           return acknowledgement(
             await request(

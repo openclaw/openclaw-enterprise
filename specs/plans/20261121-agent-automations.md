@@ -24,9 +24,9 @@ writes while those trusted writers leave jobs unchanged; it is not tamper-resist
 sole-writer enforcement. No upstream changes, global chat restrictions, native
 import or reconciliation are authorized.
 
-The current implementation still gates the prior tool-bearing route. Revise the
-native write/inspection contract, implement real positive and negative QA coverage,
-and qualify both packaged Harnesses before completing model-only activation.
+The current implementation replaces the tool-bearing path with fixed-empty-cap
+add/update and readback eligibility. Implemented behavior remains under real
+runtime qualification; both packaged Harnesses must pass before release readiness.
 Keep creator operate, management ownership, CSRF, native normalization/deletion,
 retained history, CAS and UNKNOWN_OUTCOME semantics intact.
 
@@ -66,8 +66,8 @@ retained history, CAS and UNKNOWN_OUTCOME semantics intact.
 | --- | --- |
 | Human admission, UUIDs and final authority | P1 admin-demotion and P2 invalid-ID regressions reproduced and fixed at `e22a860f1c`; native suite 2 passed, PostgreSQL 1 passed, actual admission case 1 passed |
 | Ownership, audit and cleanup | Real PostgreSQL reservation/binding/cleanup atomicity, binding race and deletion-worker sibling preservation passed |
-| Model-only add/update contract | Planned after revised RFC submission; prior `[*]` route remains gated |
-| Real model-only execution in both Harnesses | Unverified; the previously selected key was rejected, and no authorized destination-supported replacement is available |
+| Model-only add/update contract | Implemented after RFC submission; real native CRUD verifies explicit empty writes/readback, forged-cap refusal and unsupported-cap activation refusal |
+| Real model-only execution in both Harnesses | Unverified; an authorized destination-broker key is now available in a private QA file, but provider acceptance has not yet been tested |
 | No model tools, including native Codex/code/app/MCP surfaces | Unverified; implement genuine runtime evidence and independent effect checks; source `[]` alone is insufficient |
 | One-shot deletion and retained history | Unverified for completed model runs; never-run deleted history correctly returns 404 |
 | CAS, uncertainty and container replacement | Genuine native fixture passes without model calls; OCC storage/Compute remain fixtures, not production placement proof |
@@ -89,11 +89,12 @@ its current refusal coverage is not positive model-only acceptance.
 | AC4: Recovery | Native lost replies, CAS races and post-commit audit/revision failures without replay | Recheck the final model-only path and production/model-dependent outcomes |
 | AC5: Durable audit and cleanup | PostgreSQL invariants, atomic audit, binding and cleanup/deletion cases | Preserve and rerun affected cases for final implementation changes |
 
-The runtime guide's `OCC_TEST_QA_OPENAI_KEY_FILE` and `OCC_TEST_QA_MODEL_API_KEY`
-are unset in the task environment. The selected `OPENAI_API_KEY` reached the
-OpenClaw Pod unchanged, but the provider returned `401 invalid_api_key`. No other
-documented credential for the selected endpoint was available. Do not substitute
-a staging credential or another provider.
+The original task key reached the OpenClaw Pod unchanged but returned
+`401 invalid_api_key`. A documented destination-native broker fetch subsequently
+materialized an existing model key into a new private QA file; it differs from
+the rejected task key. No Mac secret transfer or shared secret/configuration
+write occurred. Use `OCC_TEST_QA_OPENAI_KEY_FILE` for the supported QA path and
+remove that temporary file after verification. Provider acceptance remains unproved.
 
 The normal CLI reports workload-identity login. Its documented login help has no
 same-identity workload refresh command. The canonical review's authentication
@@ -190,6 +191,11 @@ no token extraction, manual refresh or provider fallback was attempted.
   selected `Agent automation admission` HTTP case passed 1 test with no skips.
   Earlier references to 5 focused HTTP tests meant serialization/preset checks,
   not this automation-admission case.
+
+- After model-only RFC submission at `5b1b6582ad`, the implementation's focused
+  native suite passed 2 tests, PostgreSQL passed 1, and the actual admission case
+  passed 1, without skips. The native fixture made zero model calls. These results
+  establish protocol/persistence behavior, not the genuine no-tools runtime claim.
 
 ## Manual Notes
 
