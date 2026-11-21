@@ -1889,17 +1889,72 @@ export function createAgentDetailScenarios({
       deploymentBootstrapCleanup: {
         group: "Pages/Agent detail",
         name: "Bootstrap failure with cleanup pending",
-        path: `${candidateVersion}&tab=deployment`,
+        path: `${candidateVersion}&tab=configuration`,
         deployed: true,
         candidateDeploymentStatus: "failed",
         bootstrapFailure: true,
         cleanupStatus: "queued",
         cleanupCompletes: true,
+        rules: [
+          // Match the first queued record. Later reads use the failed bootstrap and its cleanup.
+          {
+            suffix: `/agents/${newerDeployment.agentId}/revisions`,
+            once: true,
+            data: (
+              [
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000007",
+                  revision: 7,
+                  deploymentStatus: "queued",
+                  createdAt: "2026-09-26T22:52:53.000Z",
+                },
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000006",
+                  revision: 6,
+                  configurationGeneration: 1,
+                  createdAt: "2026-09-25T12:00:00.000Z",
+                  deploymentStatus: "succeeded",
+                },
+              ] satisfies AgentRevisionSummaryWire[]
+            ).map((summary) => ({
+              ...summary,
+              harness: {
+                ...summary.harness,
+                configuration: {
+                  modelProvider: {
+                    baseUrl: "https://api.openai.com/v1",
+                    protocol: "openai-responses",
+                    supportsStandaloneWebSearch: false,
+                  },
+                },
+              },
+            })),
+          },
+          {
+            method: "GET",
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            once: true,
+            data: {
+              deploymentId: "rev_00000000-0000-4000-8000-000000000007",
+              namespaceId: newerDeployment.namespaceId,
+              agentId: newerDeployment.agentId,
+              status: "queued",
+              cleanup: null,
+              progress: { lastAttempt: null, nextAttemptAt: "2026-09-26T22:53:01.000Z" },
+              error: null,
+              warnings: [],
+            } satisfies AgentDeploymentStatusWire,
+          },
+        ],
         description:
-          "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
+          "A poll changes the Configuration notice from queued to cleanup pending. The deployment remains failed after cleanup and its recorded evidence stays visible.",
         steps: [
+          "On Configuration, tab to View deployment while the notice says a deployment is queued or in progress.",
+          "Wait for the notice to say Deployment resource cleanup needs attention. Press Enter with focus still on the link to open Deployment for v7.",
           "Read the failing oauth-bootstrap exit status beside the successful init container.",
-          "Wait for revision cleanup to change from pending to completed; the deployment must still show failed.",
+          "After cleanup completes, check that the deployment still shows failed and the evidence remains visible.",
         ],
       },
     } satisfies Record<string, AgentDetailScenario>,
