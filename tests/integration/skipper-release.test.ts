@@ -342,7 +342,9 @@ test("installed Skipper receiver reports failures without exposing response cont
           assert.equal(req.method, "GET");
           assert.equal(req.headers.authorization, undefined);
           assert.equal(req.headers["x-openclaw-session-key"], undefined);
-          if (scenario === "stalled") return;
+          if (scenario === "stalled") {
+            return;
+          }
           res.writeHead(302, { location: "/redirect-target" });
           res.end(canary);
           return;
@@ -361,7 +363,9 @@ test("installed Skipper receiver reports failures without exposing response cont
           return; // Leave headers unsent until the client aborts.
         }
         if (gatewayListener) {
-          if (scenario === "stopped") server.close();
+          if (scenario === "stopped") {
+            server.close();
+          }
           req.socket.destroy();
         } else if (scenario === "redirect") {
           res.writeHead(302, { location: "/redirect-target" });
@@ -789,7 +793,9 @@ test("installed Skipper failure retention preserves known checkpoints and withho
       // The loopback adapter sends the received user message to the installed
       // synthetic model's command fixture. Its tool call is never executed here.
       const server = createServer(async (req, res) => {
-        if (req.url === "/readyz") return req.socket.destroy();
+        if (req.url === "/readyz") {
+          return req.socket.destroy();
+        }
         let body = "";
         for await (const chunk of req) {
           body += chunk;
