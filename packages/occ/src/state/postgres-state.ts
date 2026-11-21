@@ -4322,7 +4322,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         // The database clock stamps admission, as it stamps controller work, so a stop or
         // deletion orders this revision against its own creation without controller clock
         // skew (finding 1195). The caller's createdAt is replaced, not stored.
-        const { networkProxyAdmission, ...storedCompute } = revision.compute ?? {};
+        const compute = asRecord(revision.compute);
+        const { networkProxyAdmission, ...storedCompute } = compute ?? {};
         const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at, first_deployment_digest,
@@ -4341,7 +4342,7 @@ export class PostgresPlatformState implements PlatformStateStore {
               configuration_generation: revision.configurationGeneration,
               draft_spec: revision.configuration,
               harness: revision.harness,
-              compute: revision.compute === undefined ? undefined : storedCompute,
+              compute: compute === undefined ? revision.compute : storedCompute,
               ...(revision.sandboxPolicy === undefined
                 ? {}
                 : { sandbox_policy: revision.sandboxPolicy }),
