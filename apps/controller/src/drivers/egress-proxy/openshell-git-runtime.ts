@@ -28,9 +28,11 @@ import {
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
-import type {
-  RepositoryGitDeliveryResolver,
-  RepositoryGitDeliveryBinding,
+import {
+  repositoryGitRestOperations,
+  type RepositoryGitDeliveryResolver,
+  type RepositoryGitDeliveryBinding,
+  type ScopedRepositoryRestWrites,
 } from "../repo/access/delivery.ts";
 import {
   subtractExpiredOpenShellGit,
@@ -222,21 +224,31 @@ type OpenShellGitScope = RepositoryGitDeliveryBinding & {
   readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
 };
 
-function issueCreationScope({ delivery, repositoryNetworkPolicy }: OpenShellGitScope) {
-  if (!("scope" in delivery) || delivery.permissions.issues !== "write") {
-    return {};
+function scopedRestWrites(
+  { delivery, repositoryNetworkPolicy }: OpenShellGitScope,
+  repositories: ProtectedGitHubRepositoryMaterial["repositories"],
+): ScopedRepositoryRestWrites {
+  const pullRequestRepositories: string[] = [];
+  const issueCreationRepositories: string[] = [];
+  if (repositoryNetworkPolicy === undefined || !("scope" in delivery)) {
+    return { pullRequestRepositories, issueCreationRepositories };
   }
-  const issueCreationRepositories = delivery.scopedRest
-    ?.filter(
-      ({ repository, version, createIssues }) =>
-        version === "v2" &&
-        createIssues === true &&
-        repositoryNetworkPolicy?.some(
-          (grant) => grant.repository === repository && grant.access === "write",
-        ),
-    )
-    .map(({ repository }) => repository);
-  return issueCreationRepositories?.length ? { issueCreationRepositories } : {};
+  const selected = new Set(repositories.map(({ repository }) => repository));
+  for (const operation of repositoryGitRestOperations(
+    repositoryNetworkPolicy,
+    delivery.scopedRest,
+  )) {
+    if (!selected.has(operation.repository)) {
+      continue;
+    }
+    if (operation.createPullRequests && delivery.permissions.pull_requests === "write") {
+      pullRequestRepositories.push(operation.repository);
+    }
+    if (operation.createIssues && delivery.permissions.issues === "write") {
+      issueCreationRepositories.push(operation.repository);
+    }
+  }
+  return { pullRequestRepositories, issueCreationRepositories };
 }
 
 interface Entry extends OpenShellGitObservationEntry {
@@ -2295,9 +2307,11 @@ export class OpenShellGitRuntime {
                   ? {
                       scope: material.scope,
                       repositories: material.repositories,
-                      ...(entry.authorization.repositoryNetworkPolicy && {
-                        sameRepositoryPullRequests: true as const,
-                        ...issueCreationScope(entry.authorization),
+                      ...(entry.authorization.repositoryNetworkPolicy !== undefined && {
+                        scopedRestWrites: scopedRestWrites(
+                          entry.authorization,
+                          material.repositories,
+                        ),
                       }),
                     }
                   : { scope: material.scope }),

@@ -37,6 +37,11 @@ import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import {
+  decideGitHubRequest,
+  validGitHubRequestBinding,
+} from "../../apps/controller/src/drivers/repo/github/access/protected-requests.ts";
+import type { ScopedRepositoryRestWrites } from "../../apps/controller/src/drivers/repo/access/delivery.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import {
   admitRepositoryNetworkPolicy,
@@ -45,6 +50,7 @@ import {
   type EgressInstallation,
   type ProxyPlan,
   type ProxyWiring,
+  type RepositoryNetworkGrant,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -114,12 +120,13 @@ type Acl =
 type SelectedV5Options = {
   modelSourceId?: string;
   storedBindings?: readonly AdmittedRepositoryBinding[];
+  networkGrants?: readonly RepositoryNetworkGrant[] | "omit";
 };
 
 async function selectedV5(
   t: TestContext,
   acl: Acl = false,
-  { modelSourceId, storedBindings }: SelectedV5Options = {},
+  { modelSourceId, storedBindings, networkGrants }: SelectedV5Options = {},
 ) {
   const modelProvider = modelSourceId ? openShellProviderName(modelSourceId) : "openai";
   const repository = registry.repositories[0]!;
@@ -305,10 +312,11 @@ async function selectedV5(
         )
       : f.revision.repositoryCredentials!.bindings);
   const repositoryCredentials = { ...f.revision.repositoryCredentials!, bindings };
-  const grants = [
+  const defaultGrants = [
     { repository: repositories[0]!.repository, access: "read" },
     { repository: repositories[1]!.repository, access: "write" },
   ] as const;
+  const grants = networkGrants === "omit" ? undefined : (networkGrants ?? defaultGrants);
   if (selectedRegistry) {
     f.owner.readOpenShellMaterial = async (_revisionId, _signal, _route, scope) => {
       assert.equal(scope, "github-repository");
@@ -335,7 +343,9 @@ async function selectedV5(
         version: 1,
         defaults: {},
         additions: [],
-        repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
+        ...(grants !== undefined && {
+          repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
+        }),
       },
     }),
     executionAdmission: { version: 5, mode: "protected" },
@@ -718,11 +728,12 @@ async function heldGit(t: TestContext, acl: Acl = false, options?: SelectedV5Opt
   assert.equal(
     await f.runtime.observeHeldPreview(revision.id, startupId, t.signal, async (path, nonce) => {
       activity.probes += 1;
-      if (acl) {
-        assert.equal(path, "/example/application.git/info/refs");
+      const policy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+      if (policy) {
+        assert.equal(path, `/${policy.grants[0]!.repository}.git/info/refs`);
         assert.match(nonce!, /^[a-f0-9]{32}$/);
       } else {
-        assert.ok(path.startsWith(String(aclOrLegacyEndpoint.path).slice(0, -2)));
+        assert.ok(path.startsWith((aclOrLegacyEndpoint.path ?? "/**").slice(0, -2)));
         assert.match(path, /\/oce-observe-request\/[a-f0-9]{32}\.git\/info\/refs$/);
         assert.equal(nonce, undefined);
       }
@@ -1425,24 +1436,151 @@ test("ACL Git releases a stored Git-only revision only after rereading the loade
   ]);
 });
 
-test("released v2 hook binding limits issue creation to the writable repository", async (t) => {
-  const acl = {
-    scopedRest: "v2",
-    permissions: { issues: "write", pull_requests: "write" },
-  } as const;
-  const held = await heldGit(t, acl);
-  await held.reconcile();
-  assert.equal(held.activity.updates, 1);
-  await held.f.runtime.releasePreview(
-    held.revision.id,
-    held.startupId,
-    releaseAttempt(async () => true),
-    t.signal,
-  );
-  const binding = await held.lookup();
-  assert.ok(binding?.scope === "github-repository" && binding.sameRepositoryPullRequests);
-  assert.ok("issueCreationRepositories" in binding);
-  assert.deepEqual(binding.issueCreationRepositories, ["example/delivery"]);
+test("released repository bindings authorize only the REST writes in the frozen grants", async (t) => {
+  const application = "example/application";
+  const delivery = "example/delivery";
+  const outside = "example/outside";
+  const cases: {
+    name: string;
+    permissions: Record<string, string>;
+    pulls: readonly string[];
+    issues: readonly string[];
+    options?: SelectedV5Options;
+    firstOnly?: boolean;
+  }[] = [
+    { name: "issues only", permissions: { issues: "write" }, pulls: [], issues: [delivery] },
+    {
+      name: "read only",
+      permissions: { issues: "read", pull_requests: "read" },
+      pulls: [],
+      issues: [],
+    },
+    { name: "PR write", permissions: { pull_requests: "write" }, pulls: [delivery], issues: [] },
+    {
+      name: "PR write with the writable repository reversed",
+      permissions: { pull_requests: "write" },
+      pulls: [application],
+      issues: [],
+      options: {
+        networkGrants: [
+          { repository: application, access: "write" },
+          { repository: delivery, access: "read" },
+        ],
+      },
+    },
+    {
+      name: "PR permission without a write grant on the opted-in repository",
+      permissions: { pull_requests: "write" },
+      firstOnly: true,
+      pulls: [],
+      issues: [],
+    },
+    {
+      name: "both writes",
+      permissions: { issues: "write", pull_requests: "write" },
+      pulls: [delivery],
+      issues: [delivery],
+    },
+    {
+      name: "omitted policy retains legacy writes",
+      permissions: { issues: "write", pull_requests: "write" },
+      pulls: [application, delivery, outside],
+      issues: [application, delivery, outside],
+      options: { networkGrants: "omit" },
+    },
+  ];
+  const issue = { title: "Record observed behavior" };
+  const pull = { title: "Fix", head: "topic/fix", base: "main" };
+  for (const { name, permissions, pulls, issues, options, firstOnly } of cases) {
+    await t.test(name, async (t) => {
+      const held = await heldGit(
+        t,
+        { scopedRest: "v2", permissions, ...(firstOnly && { firstOnly }) },
+        options,
+      );
+      await held.reconcile();
+      assert.equal(held.activity.updates, 1, "provider passed policy readback");
+      await held.f.runtime.releasePreview(
+        held.revision.id,
+        held.startupId,
+        releaseAttempt(async () => true),
+        t.signal,
+      );
+      const released = await held.lookup();
+      assert.ok(released?.scope === "github-repository" && validGitHubRequestBinding(released));
+      const binding = released;
+
+      let approvals = 0;
+      async function post(repository: string, route: string, body: object, allowed: boolean) {
+        const before = approvals;
+        const result = await decideGitHubRequest({
+          request: {
+            target: {
+              reportedScheme: "https",
+              host: "api.github.com",
+              port: 443,
+              method: "POST",
+              path: `/repos/${repository}/${route}`,
+              query: "",
+            },
+            headers: [["content-type", "application/json"]],
+            body: Buffer.from(JSON.stringify(body)),
+          },
+          binding,
+          signal: t.signal,
+          deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+          requestDigest: () => "f".repeat(64),
+          authorize: async (request, installed) => {
+            approvals += 1;
+            return {
+              kind: "allow",
+              exchangeId: request.exchangeId,
+              requestDigestSha256: request.requestDigestSha256,
+              preparationAttemptId: installed.preparationAttemptId,
+              materialVersion: installed.materialVersion,
+              replyBy: request.deadlineAt,
+            };
+          },
+        });
+        assert.equal(approvals, before + Number(allowed), `${repository}/${route} owner calls`);
+        if (allowed) {
+          assert.equal(result.kind, "allowed");
+        } else {
+          assert.deepEqual(result, { kind: "refused", refusal: "route_unsupported" });
+        }
+      }
+      for (const repository of [application, delivery, outside]) {
+        await post(repository, "pulls", pull, pulls.includes(repository));
+        await post(repository, "issues", issue, issues.includes(repository));
+      }
+      if (options?.networkGrants === "omit") {
+        await post(delivery, "pulls", { ...pull, head: "fork:fix" }, true);
+        assert.equal(Object.hasOwn(binding, "scopedRestWrites"), false);
+      } else {
+        const expected: ScopedRepositoryRestWrites = {
+          pullRequestRepositories: pulls,
+          issueCreationRepositories: issues,
+        };
+        assert.deepEqual(binding.scopedRestWrites, expected);
+        for (const repository of pulls) {
+          await post(repository, "pulls", { ...pull, head_repo: "another-repo" }, false);
+        }
+      }
+    });
+  }
+  await t.test("an explicit empty frozen list never releases a binding", async (t) => {
+    const { f, prepare, executionId } = await selectedV5(
+      t,
+      { scopedRest: "v2", permissions: { issues: "write", pull_requests: "write" } },
+      { networkGrants: [] },
+    );
+    await assert.rejects(prepare(), /requires a nonempty admitted repository network policy/);
+    assert.equal(f.calls.material, 0);
+    assert.equal(
+      await f.runtime.lookup({ ...f.identity, bindingId: executionId }, t.signal),
+      undefined,
+    );
+  });
 });
 
 test("scoped REST intersects the selected permissions, registry opt-in and frozen Git ACL", async (t) => {
@@ -1507,7 +1645,8 @@ test("scoped REST intersects the selected permissions, registry opt-in and froze
     t.signal,
   );
   const binding = await held.lookup();
-  assert.ok(binding?.scope === "github-repository" && binding.sameRepositoryPullRequests);
+  assert.ok(binding?.scope === "github-repository");
+  assert.deepEqual(binding.scopedRestWrites?.pullRequestRepositories, ["example/delivery"]);
 
   const optedIn = await apiRules({ permissions: { issues: "write" }, firstOnly: true });
   assert.deepEqual(

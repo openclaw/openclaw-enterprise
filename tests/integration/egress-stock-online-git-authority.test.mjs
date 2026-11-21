@@ -747,8 +747,10 @@ test("repository API credential issuance is refused while ordinary collaboration
     { repositoryId: "43", repository: "openclaw/openclaw-enterprise" },
   ];
   let scope = "github-repository";
-  let sameRepositoryPullRequests;
-  const issueCreationRepositories = [];
+  let restBinding = {};
+  const writes = (pullRequestRepositories = [], issueCreationRepositories = []) => ({
+    scopedRestWrites: { pullRequestRepositories, issueCreationRepositories },
+  });
   const { client, keys } = await openShellOnlineGitWire(t, {
     budgetMs: 3000,
     lookupBinding: async () =>
@@ -757,8 +759,7 @@ test("repository API credential issuance is refused while ordinary collaboration
         : {
             ...binding,
             scope,
-            sameRepositoryPullRequests,
-            ...(issueCreationRepositories.length > 0 && { issueCreationRepositories }),
+            ...restBinding,
             installationId: "71",
             apiOrigin: "https://api.github.com",
             repositories,
@@ -806,7 +807,7 @@ test("repository API credential issuance is refused while ordinary collaboration
       const fork = { ...pull, head: "other:fix" };
       const create = (body) => evaluate(path, "POST", body);
       assert.equal((await create(fork)).decision, 1, "ordinary selected scope");
-      sameRepositoryPullRequests = true;
+      restBinding = writes([binding.repository]);
       for (const draft of [undefined, false, true]) {
         assert.equal((await create({ ...pull, draft })).decision, 1);
       }
@@ -826,15 +827,14 @@ test("repository API credential issuance is refused while ordinary collaboration
         assert.equal((await create(body)).reason_code, "request_not_allowed");
       }
       assert.equal(approvals, before);
-      sameRepositoryPullRequests = undefined;
+      restBinding = {};
     },
   );
   await t.test(
     "scoped issue creation binds the exact collection and payload before approval",
     async (t) => {
       t.after(() => {
-        issueCreationRepositories.length = 0;
-        sameRepositoryPullRequests = undefined;
+        restBinding = {};
         current = true;
       });
       const root = `/repos/${binding.repository}`;
@@ -853,12 +853,11 @@ test("repository API credential issuance is refused while ordinary collaboration
 
       const labeled = { ...issue, labels: ["bug"] };
       assert.equal((await create(labeled)).decision, 1, "ordinary selected scope");
-      sameRepositoryPullRequests = true;
+      restBinding = writes([binding.repository]);
       await refused(issues, "POST", issue);
       await refused(issues, "POST", pull);
 
-      sameRepositoryPullRequests = undefined;
-      issueCreationRepositories.push(binding.repository);
+      restBinding = writes([], [binding.repository]);
       await refused(pulls, "POST", pull);
       for (const body of [issue, { ...issue, body: "Details" }, { ...issue, body: "" }]) {
         const before = approvals;
@@ -866,7 +865,7 @@ test("repository API credential issuance is refused while ordinary collaboration
         assert.equal(approvals, before + 1);
       }
       assert.equal((await evaluate(other, "GET")).decision, 1);
-      sameRepositoryPullRequests = true;
+      restBinding = writes([binding.repository], [binding.repository]);
       assert.equal((await evaluate(pulls, "POST", pull)).decision, 1);
       for (const body of [
         undefined,
@@ -907,6 +906,33 @@ test("repository API credential issuance is refused while ordinary collaboration
       const before = approvals;
       assert.equal((await create(issue)).reason_code, "access_withdrawn");
       assert.equal(approvals, before + 1);
+    },
+  );
+  await t.test(
+    "an empty or malformed scoped write binding cannot fall back to legacy writes",
+    async (t) => {
+      t.after(() => {
+        restBinding = {};
+      });
+      const path = `/repos/${binding.repository}/pulls`;
+      const body = { title: "Fix", head: "topic/fix", base: "main" };
+      const before = approvals;
+      for (const scope of [
+        { pullRequestRepositories: [], issueCreationRepositories: [] },
+        undefined,
+        null,
+        { issueCreationRepositories: [] },
+        { pullRequestRepositories: binding.repository, issueCreationRepositories: [] },
+        { pullRequestRepositories: ["unselected/repository"], issueCreationRepositories: [] },
+        {
+          pullRequestRepositories: [binding.repository, binding.repository],
+          issueCreationRepositories: [],
+        },
+      ]) {
+        restBinding = { scopedRestWrites: scope };
+        assert.equal((await evaluate(path, "POST", body)).decision, 2);
+      }
+      assert.equal(approvals, before);
     },
   );
   await t.test("gh authentication discovery uses the current API grant", async () => {

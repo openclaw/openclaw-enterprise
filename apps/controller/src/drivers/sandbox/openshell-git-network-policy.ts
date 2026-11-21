@@ -1,4 +1,8 @@
 import { deepFreeze } from "@openclaw-enterprise/utils";
+import {
+  repositoryGitRestOperations,
+  type RepositoryGitRestAuthority,
+} from "../repo/access/delivery.ts";
 
 import type { OpenShellProviderProfileEndpoint } from "./openshell-gateway-client.ts";
 
@@ -15,13 +19,7 @@ export type OpenShellGitNetworkInput = OpenShellGitNetworkTarget & {
   readonly gitOrigin: string;
   readonly apiOrigin: string;
   readonly binaries: readonly string[];
-  readonly scopedRest?: readonly Readonly<{
-    repository: string;
-    version?: "v1" | "v2";
-    readIssues: boolean;
-    createIssues?: true;
-    createPullRequests?: true;
-  }>[];
+  readonly scopedRest?: RepositoryGitRestAuthority;
   readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
 };
 
@@ -172,16 +170,20 @@ function scopedApiEndpoints(
   permissions: OpenShellGitNetworkInput["scopedRest"],
 ): readonly OpenShellProviderProfileEndpoint[] {
   const rules = [];
-  for (const { repository, access } of policy) {
-    const rest = permissions?.find((grant) => grant.repository === repository);
-    if (access === "write" && rest?.createPullRequests === true) {
+  for (const {
+    repository,
+    createPullRequests,
+    createIssues,
+    readIssues,
+  } of repositoryGitRestOperations(policy, permissions)) {
+    if (createPullRequests) {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
     }
     const path = `/repos/${repository}/issues`;
-    if (access === "write" && rest?.version === "v2" && rest.createIssues === true) {
+    if (createIssues) {
       rules.push({ allow: { method: "POST", path } });
     }
-    if (rest?.readIssues === true) {
+    if (readIssues) {
       rules.push({ allow: { method: "GET", path } });
       // OpenShell matches globs. An unbounded * also admits /issues/comments and /issues/events.
       // Enumerate decimal widths through 19 digits (positive signed 64-bit issue numbers).

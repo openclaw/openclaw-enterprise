@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-21"
-last_updated_session: "authoring-run/2fbb50b2-c31e-4e63-8ef2-64b31f1d990c"
+last_updated_session: "authoring-run/5a47d04a-b14e-4099-8f4a-976e959cf7f8"
 ---
 
 # Agent sandbox policy flow
@@ -90,16 +90,14 @@ Sandbox verifies workspace enrollment against its Agent-owned setup binding and
 returns immutable policy in `SandboxResourceRef.proxyWiring`. Credential Proxy
 compares artifact and auxiliary rules with the complete loaded policy.
 
-Repo's [registry.ts:scopedRestPermissions](../../apps/controller/src/drivers/repo/github/access/registry.ts) preserves v1 issue reads and pull
-creation; [`scopedRest: "v2"`](../reference/repository-credentials/access-levels.md#scoped-rest)
-with `permissions.issues: write` adds issue creation to credential delivery. [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-allows `POST /repos/{owner}/{repo}/issues` only with a frozen write grant.
-Credential Proxy verifies loaded Provider rules and binds repositories to its hook.
-[request-selection.ts:installationApiOperation](../../apps/controller/src/drivers/repo/github/access/routes/request-selection.ts) checks method and path;
-`permitsIssueCreation` requires a nonblank string `title`, optional string `body`
-and no other fields before current authorization. Invalid or ungranted requests fail; unavailable validation or authorization fails
-closed. Pull branch checks remain; credentials stay outside the Agent; uncertain
-responses forbid replay.
+[Repo](../../apps/controller/src/drivers/repo/github/access/registry.ts) grants issue
+reads and pull creation in v1. [v2](../reference/repository-credentials/access-levels.md#scoped-rest)
+adds issue creation with `permissions.issues: write`. [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
+compiles the routes. Credential Proxy verifies the loaded rules and lists exact
+issue and pull write repositories using frozen grants and credential permissions.
+The [request selector](../../apps/controller/src/drivers/repo/github/access/routes/request-selection.ts)
+checks method, path and JSON before authorization. Issue creation accepts a
+nonblank `title` and optional string `body`. Both writes require current authorization.
 
 Driver admission receives `repositoryCredentials` for bindings or a Git-bound
 active revision. OpenShell refuses grants or defaults reaching `github.com`, its
@@ -273,6 +271,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-21 09:49: Verify frozen per-repository REST writes before requesting authorization. (authoring-run/5a47d04a-b14e-4099-8f4a-976e959cf7f8 - 3661206460e8bd7cb8c9cc201bade056034133af)
 
 - 2026-11-21 08:42: Issue creation. (authoring-run/2fbb50b2-c31e-4e63-8ef2-64b31f1d990c - 53f6c4c7527d07864915fe66ce3dd1777b751979)
 

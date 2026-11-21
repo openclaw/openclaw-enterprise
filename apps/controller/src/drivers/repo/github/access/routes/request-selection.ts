@@ -5,6 +5,7 @@ import type {
   PreparedGitHubUseRequest,
 } from "@openclaw-enterprise/contracts";
 import type { RequestHead } from "../../../access/backend-contracts.ts";
+import type { ScopedRepositoryRestWrites } from "../../../access/delivery.ts";
 import { parseUnambiguousJson } from "../../../../json-members.ts";
 import { parseCanonicalGitHubOrigin } from "../origin.ts";
 import { planDraftPull } from "../prepared-draft-pull.ts";
@@ -42,8 +43,7 @@ type GitHubScope =
   | { readonly scope: "github-installation" }
   | {
       readonly scope: "github-repository";
-      readonly sameRepositoryPullRequests?: true;
-      readonly issueCreationRepositories?: readonly string[];
+      readonly scopedRestWrites?: ScopedRepositoryRestWrites;
       readonly repositories: readonly Readonly<{ repository: string }>[];
     };
 
@@ -259,11 +259,7 @@ function installationApiOperation(
   const maximumBody = binding.scope === "github-repository" && !graph ? 1024 * 1024 : 64 * 1024;
   const read = method === "GET" || method === "HEAD";
   const scopedWrite =
-    !read &&
-    binding.scope === "github-repository" &&
-    (binding.sameRepositoryPullRequests || binding.issueCreationRepositories !== undefined)
-      ? binding
-      : undefined;
+    !read && binding.scope === "github-repository" ? binding.scopedRestWrites : undefined;
   const apiRoot = path === "/" && read && query === "";
   if (
     head.contentEncoding !== "identity" ||
@@ -310,12 +306,11 @@ function installationApiOperation(
       if (method !== "POST") {
         return;
       }
-      if (scopedWrite.issueCreationRepositories?.some((repo) => path === `/repos/${repo}/issues`)) {
+      if (scopedWrite.issueCreationRepositories.some((repo) => path === `/repos/${repo}/issues`)) {
         return permitsIssueCreation(body) ? "github-rest" : undefined;
       }
       if (
-        scopedWrite.sameRepositoryPullRequests !== true ||
-        !/^\/repos\/[^/]+\/[^/]+\/pulls$/.test(path) ||
+        !scopedWrite.pullRequestRepositories.some((repo) => path === `/repos/${repo}/pulls`) ||
         !permitsSameRepositoryPull(body)
       ) {
         return;

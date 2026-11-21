@@ -141,10 +141,12 @@ gh api --method POST repos/owner/repo/issues \
   -f title='Investigate a regression' -f body='Steps to reproduce'
 ```
 
-The Sandbox supplies the `GITHUB_TOKEN` placeholder; the protected sender keeps
-the real credential outside the Agent. The request validator checks the exact
-repository, method and JSON body, then requires current authorization. If the
-validator or authorization is unavailable, the write fails closed. `gh api` can
+The Sandbox supplies the `GITHUB_TOKEN` placeholder and the protected sender keeps
+the real credential outside the Agent. The request validator checks the method
+and JSON body. Issue and pull request creation each require a frozen write grant
+and the corresponding credential permission on that repository before the validator
+requests current authorization. If the validator or authorization is unavailable,
+the write fails closed. `gh api` can
 follow redirects; each follow-up request must pass policy and authorization
 again. To stop at the first redirect, use the curl pattern above without
 `--location`. Expect HTTP 201 and verify the created issue in GitHub. If the
