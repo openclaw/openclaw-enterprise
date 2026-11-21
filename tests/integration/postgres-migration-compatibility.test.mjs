@@ -2831,11 +2831,11 @@ test(
       // the reader. A receipt edit alone would not reproduce its catalog.
       const db = await historyDatabase(child, fixture, "oldnative", { prefix: 85 });
       const directory = await mkdtemp(join(tmpdir(), "openclaw-premerge-native-"));
-      const current = manifest.entries.slice(-2);
-      assert.deepEqual(
-        current.map(({ tag }) => tag),
-        ["0087_repository_network_policy", "0088_native_git_delivery"],
-      );
+      const current = ["0087_repository_network_policy", "0088_native_git_delivery"].map((tag) => {
+        const entry = manifest.entries.find((item) => item.tag === tag);
+        assert.ok(entry, `Missing canonical migration ${tag}`);
+        return entry;
+      });
       const entries = current.map(({ tag, idx, when, sha256: _sha256, ...entry }) => ({
         ...entry,
         idx: idx - 1,
