@@ -464,13 +464,11 @@ export type {
   AuthorityFence,
   AuthorizationSnapshot as DeployAgentAuthorization,
 } from "./controller-authority.ts";
-import {
-  InMemoryPlatformState,
-  type PlatformReadView,
-  type PlatformOperation,
-  type PlatformStateStore,
-  type PlatformUnitOfWork,
-} from "./state/platform-state.ts";
+import { InMemoryPlatformState } from "./state/platform-state.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
+import type { PlatformOperation } from "./ports/platform-operations.ts";
+import type { PlatformStateStore } from "./ports/platform-state-store.ts";
+import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import {
   controllerWorkDeploymentStatus,
   deploymentErrorForWork,
@@ -506,13 +504,14 @@ import {
   unrecordedProvisioningConfiguration,
   withUnrecordedProvisioningConfiguration,
   withoutUnrecordedProvisioningConfiguration,
-  type ProvisioningEffectReceipt,
-  type ProvisioningEffectTarget,
 } from "./provisioning-effects.ts";
 import type {
   AgentProvisioningCheckpoint,
   AgentProvisioningRecord,
-} from "./state/agent-provisioning.ts";
+  ProvisioningEffectReceipt,
+  ProvisioningEffectTarget,
+} from "./ports/agent-provisioning.ts";
+
 import {
   createSecretOperations,
   secretOperation,
@@ -670,26 +669,21 @@ export {
   validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
-export {
-  provisioningEffectReceipt,
-  provisioningPendingEffect,
-  type ProvisioningEffectReceipt,
-  type ProvisioningEffectTarget,
-  type ProvisioningPendingEffect,
-} from "./provisioning-effects.ts";
-export {
-  InMemoryPlatformState,
-  type PredecessorReplacement,
-  type AgentRevisionReadRepository,
-  type InMemoryPlatformStateOptions,
-  type PlatformAuditSink,
-  type PlatformOperation,
-  type ConnectionTokenCustody,
-  type PlatformReadView,
-  type PlatformStateStore,
-  type PlatformUnitOfWork,
-  type ServiceAccountReadRepository,
-} from "./state/platform-state.ts";
+export { provisioningEffectReceipt, provisioningPendingEffect } from "./provisioning-effects.ts";
+export type {
+  ProvisioningEffectReceipt,
+  ProvisioningEffectTarget,
+  ProvisioningPendingEffect,
+} from "./ports/agent-provisioning.ts";
+export { InMemoryPlatformState } from "./state/platform-state.ts";
+export type { PredecessorReplacement, AgentRevisionReadRepository } from "./ports/agent-reads.ts";
+export type { InMemoryPlatformStateOptions, PlatformAuditSink } from "./state/platform-state.ts";
+export type { PlatformOperation } from "./ports/platform-operations.ts";
+export type { ConnectionTokenCustody } from "./ports/saved-connections.ts";
+export type { PlatformReadView } from "./ports/platform-read-view.ts";
+export type { PlatformStateStore } from "./ports/platform-state-store.ts";
+export type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+export type { ServiceAccountReadRepository } from "./ports/service-accounts.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export { imageReferenceProblem } from "./image-reference.ts";
 export type { ImageReferenceProblem } from "./image-reference.ts";
@@ -790,20 +784,19 @@ export {
   isRepositoryRuntimeRetirementWork,
   repositoryCleanupRevisionId,
 } from "./repository-withdrawal.ts";
-export {
-  PostgresWorkQueue,
-  repositoryWithdrawalStateSql,
-  type ClaimRequest,
-  type EnqueueWork,
-  type PermanentFailure,
-  type PostgresQueryClient,
-  type PostgresWorkQueueOptions,
-  type RecoveryRequest,
-  type RecoverySummary,
-  type RetryableFailure,
-  type WorkClaim,
-  type WorkResult,
+export { PostgresWorkQueue, repositoryWithdrawalStateSql } from "./state/postgres-work-queue.ts";
+export type {
+  ClaimRequest,
+  EnqueueWork,
+  PermanentFailure,
+  PostgresQueryClient,
+  PostgresWorkQueueOptions,
+  RecoveryRequest,
+  RecoverySummary,
+  RetryableFailure,
+  WorkResult,
 } from "./state/postgres-work-queue.ts";
+export type { WorkClaim } from "./controller-work.ts";
 export { CREDENTIAL_WITHDRAWAL_TARGET } from "./controller-work.ts";
 export type { ClaimedWork, ControllerWork, ControllerWorkState } from "./controller-work.ts";
 export {
@@ -826,7 +819,7 @@ export type {
   AgentRevisionListPage,
 } from "./agent-queries.ts";
 export { type AgentProvisioningProgress, type ProvisionAgentInput } from "./agent-provisioning.ts";
-export type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
+export type { AgentProvisioningRecord } from "./ports/agent-provisioning.ts";
 
 export { createPostgresAuthBinding } from "./auth-persistence/postgres-auth-binding.ts";
 export type {
