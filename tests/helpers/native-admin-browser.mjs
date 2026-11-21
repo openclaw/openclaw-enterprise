@@ -895,9 +895,21 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
       const profile = await nativeProfile(nativePage, "operator.sessions.write");
       // Load the bookmarked main chat before the operator starts their first session.
       const mainChat = new URL("/chat/main", status.origin);
-      const response = await nativePage.goto(mainChat.href);
-      assert.equal(response?.status(), 200, "authenticated main chat document");
-      assert.equal(response?.url(), mainChat.href, "main chat document URL");
+      // The public reader probes the signed-in session before opening its private document.
+      const entry = new URL("/__openclaw__/session-entry", status.origin);
+      entry.searchParams.set("path", mainChat.pathname);
+      const [document, bookmark] = await Promise.all([
+        nativePage.waitForResponse(
+          (response) =>
+            response.url() === entry.href &&
+            response.request().isNavigationRequest() &&
+            response.frame() === nativePage.mainFrame(),
+          { timeout: 60_000 },
+        ),
+        nativePage.goto(mainChat.href, { waitUntil: "commit" }),
+      ]);
+      assert.equal(bookmark?.url(), mainChat.href, "main chat bookmark URL");
+      assert.equal(document.status(), 200, "authenticated main chat document");
       await waitForStockUi(nativePage);
       await nativePage.waitForFunction(
         () => {
