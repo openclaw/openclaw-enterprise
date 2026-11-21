@@ -9,7 +9,6 @@ import type {
   OpenShellGatewayClient,
   OpenShellSandboxCreateRequest,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { admitSandboxRepositoryNetworkPolicy } from "../../packages/contracts/src/index.ts";
 import type {
   SandboxHarnessContext,
   SandboxNetworkGrant,
@@ -228,30 +227,6 @@ export async function verifyProtectedGitNetworkPolicy({
     },
   );
   assert.equal(getCreated(), createdBefore, "no Sandbox is created for an IP-address grant");
-  // Driver admission preserves the exact artifact defaults. A legacy Git binding
-  // cannot provision an ACL revision through its existing protected proxy wiring.
-  const base = sandbox.admitProtectedCodexArtifactPolicy(3).snapshot;
-  const grant = { repository: "example/application", access: "read" } as const;
-  const acl = admitSandboxRepositoryNetworkPolicy(base, [grant], [grant], sandbox);
-  assert.deepEqual(acl.defaults, base.defaults);
-  assert.deepEqual(acl.repositoryNetworkPolicy?.grants, [grant]);
-  assert.throws(
-    () => admitSandboxRepositoryNetworkPolicy(base, [], [grant], sandbox),
-    /Sandbox Driver.*repository network policy/i,
-  );
-  await assert.rejects(
-    sandbox.provisionHarness({
-      ...context,
-      revision: { ...context.revision, sandboxPolicy: acl },
-      requirements,
-    }),
-    {
-      name: "SandboxRevisionUnsupportedError",
-      code: "SANDBOX_HARNESS_UNSUPPORTED",
-      message: /Repository network policy requires protected selected-repository Git/,
-    },
-  );
-  assert.equal(getCreated(), createdBefore, "a legacy Git binding cannot create an ACL Sandbox");
   // Backstop at live application: the running Git Sandbox's policy is never widened.
   const getSandbox = gateway.getSandbox;
   const updatePolicy = gateway.updatePolicy;

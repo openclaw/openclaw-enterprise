@@ -328,6 +328,14 @@ export interface OpenShellProviderDetachResult {
   readonly receiptId?: string;
 }
 
+export interface OpenShellProviderAttachResult {
+  readonly sandbox: OpenShellSandboxResponse;
+  readonly attached: boolean;
+  readonly receiptId: string;
+  readonly providerId: string;
+  readonly providerResourceVersion: string;
+}
+
 export interface OpenShellSandboxLogsRequest {
   readonly workspace: string;
   readonly sandbox: string;
@@ -445,6 +453,7 @@ export interface OpenShellGatewayClient
     workspace: string,
     sandboxId: string,
     signal: AbortSignal,
+    provider?: string,
   ): Promise<boolean>;
   getSandboxConfig?(workspace: string, sandbox: string, signal: AbortSignal): Promise<RecordValue>;
   getSandboxPolicyStatus?(
@@ -609,6 +618,14 @@ export interface OpenShellGatewayClient
     signal: AbortSignal,
     conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
   ): Promise<void>;
+  /** Native delivery requires correlated ATTACH receipt evidence before it can proceed. */
+  attachSandboxProviderWithReceipt?(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+    conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
+  ): Promise<OpenShellProviderAttachResult | undefined>;
   /** Undefined when the Sandbox no longer exists, so nothing remains to revoke. */
   detachSandboxProvider(
     workspace: string,
@@ -1084,6 +1101,21 @@ function timestampText(value: unknown): string | null {
     return null;
   }
   return `${date.toISOString().slice(0, 19)}.${String(nanos).padStart(9, "0")}Z`;
+}
+
+function validProviderReceiptTimestamp(value: unknown): boolean {
+  const timestamp = asRecord(value);
+  const seconds = Number(timestamp?.seconds ?? 0);
+  const nanos = Number(timestamp?.nanos ?? 0);
+  return (
+    timestamp !== undefined &&
+    Number.isSafeInteger(seconds) &&
+    seconds >= -62_135_596_800 &&
+    seconds <= 253_402_300_799 &&
+    Number.isInteger(nanos) &&
+    nanos >= 0 &&
+    nanos <= 999_999_999
+  );
 }
 
 function refreshStatus(value: unknown, operation: string): OpenShellRefreshStatus {
@@ -1697,7 +1729,12 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   }
 
   /** A snapshot, never a lock against a later operator attachment. */
-  async readExclusivePreviewWorkspace(workspace: string, sandboxId: string, signal: AbortSignal) {
+  async readExclusivePreviewWorkspace(
+    workspace: string,
+    sandboxId: string,
+    signal: AbortSignal,
+    provider?: string,
+  ) {
     const workspace_scope = { workspace: nonempty(workspace, "preview workspace") };
     const members = await this.unary(
       "ListWorkspaceMembers",
@@ -1713,9 +1750,36 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
     const { sandboxes, next_page_token } = await this.unary(
       "ListSandboxes",
-      { workspace_scope, page_size: 2 },
+      { workspace_scope, page_size: provider === undefined ? 2 : 100 },
       signal,
     );
+    if (provider !== undefined) {
+      if (!provider || !sandboxId || !Array.isArray(sandboxes) || next_page_token) {
+        return false;
+      }
+      const recipients: string[] = [];
+      for (const sandbox of sandboxes) {
+        const record = asRecord(sandbox);
+        const meta = asRecord(record?.metadata);
+        const spec = asRecord(record?.spec);
+        const attached = spec?.providers ?? [];
+        if (
+          !meta ||
+          meta.workspace !== workspace ||
+          typeof meta.id !== "string" ||
+          !meta.id ||
+          !spec ||
+          !Array.isArray(attached) ||
+          !attached.every((name: unknown) => typeof name === "string" && name.length > 0)
+        ) {
+          return false;
+        }
+        if (attached.includes(provider)) {
+          recipients.push(meta.id);
+        }
+      }
+      return recipients.length === 1 && recipients[0] === sandboxId;
+    }
     const only = Array.isArray(sandboxes) && sandboxes.length === 1 && asRecord(sandboxes[0]);
     const meta = only && asRecord(only.metadata);
     return (
@@ -2593,6 +2657,93 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       },
       signal,
     );
+  }
+
+  async attachSandboxProviderWithReceipt(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+    conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
+  ): Promise<OpenShellProviderAttachResult | undefined> {
+    if (!/^[1-9]\d*$/.test(conditional.expectedResourceVersion) || !conditional.requestId) {
+      throw new OpenShellGatewayFailure(
+        "A conditional attach requires a resource version and request ID.",
+      );
+    }
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "AttachSandboxProvider",
+        {
+          sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
+          provider: nonempty(provider, "OpenShell provider name"),
+          expected_resource_version: conditional.expectedResourceVersion,
+          workspace_scope: { workspace: nonempty(workspace, "OpenShell Workspace name") },
+          request_id: conditional.requestId,
+        },
+        signal,
+      );
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error instanceof OpenShellAdmissionLimitError) {
+        throw new OpenShellAdmissionLimitError(
+          "AttachSandboxProvider",
+          gatewayRequestFailure("AttachSandboxProvider", error.cause),
+        );
+      }
+      if (
+        error instanceof OpenShellGatewayRequestFailure ||
+        error instanceof OpenShellGatewayUnavailableError
+      ) {
+        throw error;
+      }
+      throw gatewayRequestFailure("AttachSandboxProvider", error);
+    }
+    const receipt = asRecord(response.receipt);
+    const desired = asRecord(receipt?.desired);
+    if (
+      !isNonEmptyString(receipt?.receipt_id) ||
+      !isNonEmptyString(receipt.mutation_id) ||
+      receipt.provider !== provider ||
+      receipt.workspace !== workspace ||
+      receipt.kind !== "PROVIDER_MUTATION_KIND_ATTACH" ||
+      desired?.sandbox !== sandbox ||
+      !isNonEmptyString(desired.sandbox_id) ||
+      !isNonEmptyString(desired.provider_id) ||
+      !validProviderReceiptTimestamp(receipt.persisted_time)
+    ) {
+      return undefined;
+    }
+    let attachedSandbox: OpenShellSandboxResponse;
+    try {
+      attachedSandbox = sandboxResponse(
+        response,
+        "AttachSandboxProvider",
+        this.options.endpoint,
+        false,
+      );
+    } catch {
+      return undefined;
+    }
+    if (
+      attachedSandbox.name !== sandbox ||
+      attachedSandbox.workspace !== workspace ||
+      !attachedSandbox.id ||
+      desired.sandbox_id !== attachedSandbox.id ||
+      (desired.attachment_epoch ?? "") !==
+        (attachedSandbox.spec?.provider_attachment_epoch ?? "") ||
+      !/^[1-9]\d*$/.test(attachedSandbox.resourceVersion ?? "")
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      sandbox: attachedSandbox,
+      attached: response.attached === true,
+      receiptId: receipt.receipt_id,
+      providerId: desired.provider_id,
+      providerResourceVersion: String(desired.provider_resource_version ?? "0"),
+    });
   }
 
   async detachSandboxProvider(

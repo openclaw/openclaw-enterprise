@@ -14,11 +14,7 @@ import {
   PUBLIC_GITHUB_READ_SKILL,
   publicGithubReadSkill,
 } from "../repo/github/public-read/codex.ts";
-import {
-  harnessEgressEnrollment,
-  repositoryGitStartupProbePath,
-  type HarnessEgressEnrollment,
-} from "./egress-enrollment.ts";
+import { harnessEgressEnrollment, type HarnessEgressEnrollment } from "./egress-enrollment.ts";
 
 export const PLUGIN_RUNTIME_DIRECTORY = "/etc/openclaw/plugin-runtime";
 export const PLUGIN_RUNTIME_MANIFEST = "runtime.json";
@@ -119,10 +115,7 @@ function pluginFreeRuntimeForRevision(
         ? {}
         : {
             providerTools: protectedProviderTools(revision),
-            egressEnrollment: harnessEgressEnrollment(
-              revision.egressPlan,
-              repositoryGitStartupProbePath(revision),
-            ),
+            egressEnrollment: harnessEgressEnrollment(revision.egressPlan),
           }),
       ...(revision.pluginApprovers === undefined
         ? {}
@@ -185,10 +178,7 @@ export function pluginRuntimeSpecForRevision(
             ? {}
             : {
                 providerTools: protectedProviderTools(revision),
-                egressEnrollment: harnessEgressEnrollment(
-                  revision.egressPlan,
-                  repositoryGitStartupProbePath(revision),
-                ),
+                egressEnrollment: harnessEgressEnrollment(revision.egressPlan),
               }),
           pluginApprovers: revision.pluginApprovers,
           ...(openaiBaseUrl === undefined

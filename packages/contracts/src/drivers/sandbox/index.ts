@@ -1,3 +1,4 @@
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
 import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
@@ -14,7 +15,6 @@ import type {
 } from "../../index.ts";
 import type { RepositoryExecutionIdentity } from "../repo/index.ts";
 import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
-import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type {
   ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
@@ -22,6 +22,8 @@ import type {
   SandboxPolicyRecommendations,
   SandboxPolicySnapshot,
 } from "../../sandbox-policy.ts";
+
+export type ProtectedRepositoryNetworkPolicyContext = Readonly<AgentRevision>;
 
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
 
@@ -251,6 +253,10 @@ export interface SandboxDriver extends Driver {
     policy: RepositoryNetworkPolicy,
     network: SandboxPolicySnapshot,
   ): SandboxPolicySnapshot["defaults"];
+  /** Revalidate effective policy and the current credential scope on the frozen revision. */
+  validateProtectedRepositoryNetworkPolicy?(
+    revision: ProtectedRepositoryNetworkPolicyContext,
+  ): void;
   /**
    * Side-effect-free admission for protected, dedicated Codex repository execution.
    * A normal network-policy result cannot acknowledge this purpose. The result names
@@ -309,8 +315,6 @@ export interface SandboxDriver extends Driver {
    * A denial observed here can select material, never release work. */
   observeHeldRepositoryGitPreview?(
     context: SandboxHarnessStatusContext,
-    /** Compute signs the exact one-use discovery probe for a repository network policy. */
-    signProbe?: (startupId: string, probeNonce: string) => string,
   ): Promise<"held" | "installed" | undefined>;
   /**
    * Release the exact protected Harness startup only after Compute has committed

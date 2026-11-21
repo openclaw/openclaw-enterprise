@@ -6,8 +6,11 @@ import {
   type OpenShellProviderProfile,
   type OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
+import {
+  inspectedWorkspaceNodeRule,
+  type InspectedWorkspaceNodeRoute,
+} from "../sandbox/openshell-workspace-node-policy.ts";
 import type { OpenShellPreparedGitInstalled } from "./openshell-prepared-git-provider.ts";
-import { withOpenShellProviderTokenGrantOwners } from "./openshell-token-grant-owner.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 
 /** Expected composition of an OCE-owned profile, before it is attached to a Sandbox. */
@@ -83,11 +86,42 @@ export type OpenShellGitSandboxVerifier = (
 
 type GitRule = OpenShellExpectedProviderRule["rule"];
 
+/** Stock stamps credential provenance after resolving a Sandbox policy binding. */
+export function openShellEffectiveBoundGitRule(
+  expected: GitRule,
+  source: unknown,
+  provider: string,
+) {
+  if (
+    expected.name !== "repository-git-network" ||
+    expected.endpoints.length === 0 ||
+    !isDeepStrictEqual(wirePolicy(source), wirePolicy(expected)) ||
+    !expected.endpoints.every((value) => {
+      const endpoint = asRecord(value);
+      return (
+        isDeepStrictEqual(endpoint?.credential_binding, { provider }) &&
+        endpoint?.provider_credentialed === undefined &&
+        endpoint?.token_grant_owner === undefined
+      );
+    })
+  ) {
+    return;
+  }
+  return {
+    ...expected,
+    endpoints: expected.endpoints.map((endpoint) => ({ ...endpoint, provider_credentialed: true })),
+  };
+}
+
 // Stock OpenShell can relay SQL in audit mode without inspecting the stream.
 const inspectedProtocols = new Set(["rest", "websocket", "graphql", "json-rpc", "mcp"]);
 
 /** An ambiguous destination or opaque relay could route around the exact Git rule. */
-function hasOnlyInspectedNonGitEndpoints(rule: unknown, gitRule: GitRule): boolean {
+function hasOnlyInspectedNonGitEndpoints(
+  rule: unknown,
+  gitRule: GitRule,
+  workspaceHost?: string,
+): boolean {
   const policy = asRecord(rule);
   if (!policy) {
     return false;
@@ -103,6 +137,7 @@ function hasOnlyInspectedNonGitEndpoints(rule: unknown, gitRule: GitRule): boole
         typeof host === "string" &&
         /^[a-z0-9-]+(?:[.][a-z0-9-]+)*[.][a-z][a-z0-9-]*$/i.test(host) &&
         !/(?:^|[.])github[.]com$/i.test(host) &&
+        host.toLowerCase() !== workspaceHost &&
         gitRule.endpoints.every((git) => git.host.toLowerCase() !== host.toLowerCase()) &&
         typeof endpoint.protocol === "string" &&
         inspectedProtocols.has(endpoint.protocol) &&
@@ -120,8 +155,10 @@ function matchesPolicy(
   source: Record<string, unknown>,
   effective: Record<string, unknown>,
   gitRule: GitRule,
-  gitProviderId: string,
   expectedProviders: readonly OpenShellExpectedProviderRule[],
+  workspaceRoute: InspectedWorkspaceNodeRoute | undefined,
+  gitProvider: string,
+  boundGitRule?: GitRule | undefined,
 ): boolean {
   const { network_policies: authored, ...staticSource } = source;
   const { network_policies: applied, ...staticEffective } = effective;
@@ -135,31 +172,43 @@ function matchesPolicy(
   ) {
     return false;
   }
-  const stampedGitRule = withOpenShellProviderTokenGrantOwners(gitRule, gitProviderId);
-  if (!stampedGitRule) {
+  const workspaceName = "workspace-node-enrollment";
+  const workspaceRule = workspaceRoute && inspectedWorkspaceNodeRule(workspaceRoute);
+  if (!isDeepStrictEqual(wirePolicy(sourceRules[workspaceName]), wirePolicy(workspaceRule))) {
     return false;
   }
-  const providerRules = { [gitRule.name]: stampedGitRule };
-  for (const { name, rule, providerId } of expectedProviders) {
+  const expectedSourceRules = { ...sourceRules };
+  if (boundGitRule) {
+    const bound = openShellEffectiveBoundGitRule(
+      boundGitRule,
+      sourceRules[boundGitRule.name],
+      gitProvider,
+    );
+    if (!bound || gitRule.endpoints.length !== 0 || gitRule.binaries.length !== 0) {
+      return false;
+    }
+    expectedSourceRules[bound.name] = bound;
+  }
+  const providerRules = { [gitRule.name]: gitRule };
+  for (const { name, rule } of expectedProviders) {
     if (
       rule.name !== "_provider_" + name.replaceAll("-", "_") ||
       Object.hasOwn(providerRules, rule.name)
     ) {
       return false;
     }
-    const stampedRule = withOpenShellProviderTokenGrantOwners(rule, providerId);
-    if (!stampedRule) {
-      return false;
-    }
-    providerRules[rule.name] = stampedRule;
+    providerRules[rule.name] = rule;
   }
   return (
     isDeepStrictEqual(
-      wirePolicy({ network_policies: { ...sourceRules, ...providerRules } }),
+      wirePolicy({ network_policies: { ...expectedSourceRules, ...providerRules } }),
       wirePolicy({ network_policies: effectiveRules }),
     ) &&
     Object.entries(effectiveRules).every(
-      ([name, rule]) => name === gitRule.name || hasOnlyInspectedNonGitEndpoints(rule, gitRule),
+      ([name, rule]) =>
+        name === (boundGitRule?.name ?? gitRule.name) ||
+        (name === workspaceName && workspaceRule !== undefined) ||
+        hasOnlyInspectedNonGitEndpoints(rule, boundGitRule ?? gitRule, workspaceRoute?.host),
     )
   );
 }
@@ -173,6 +222,8 @@ export async function verifyOpenShellRepositoryPolicy(
   expectedProviders: readonly OpenShellExpectedProviderRule[] | undefined,
   signal: AbortSignal,
   verifyManagedSandbox?: OpenShellGitSandboxVerifier,
+  workspaceRoute?: InspectedWorkspaceNodeRoute,
+  boundGitRule?: GitRule | undefined,
 ): Promise<boolean> {
   if (!expectedProviders || !client.getSandboxPolicyStatus || !client.getSandboxConfig) {
     return false;
@@ -206,9 +257,25 @@ export async function verifyOpenShellRepositoryPolicy(
     config.policy_hash !== policyHash ||
     config.config_revision !== installed.configRevision ||
     config.provider_env_revision !== installed.providerEnvRevision ||
-    !matchesPolicy(source, effective, gitRule, installed.providerId, expectedProviders)
+    !matchesPolicy(
+      source,
+      effective,
+      gitRule,
+      expectedProviders,
+      workspaceRoute,
+      installed.provider,
+      boundGitRule,
+    )
   ) {
     return false;
+  }
+  for (const expected of expectedProviders) {
+    if (expected.providerId !== undefined) {
+      const provider = await client.getProvider(workspace, expected.name, signal);
+      if (provider?.id !== expected.providerId) {
+        return false;
+      }
+    }
   }
   // Resolve the name again after the reads. A replacement must not inherit this observation.
   const box = await client.getSandbox({ workspace, name: sandbox }, signal);

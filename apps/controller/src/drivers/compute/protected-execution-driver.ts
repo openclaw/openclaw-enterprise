@@ -76,8 +76,12 @@ export class ProtectedExecutionDriver {
     const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
     if (
       profile &&
-      (await repositoryGitAuthorization(this.proxy.sourceControl, context.signal, profile)) !==
-        (context.plan.repositoryGitAuthorization ?? "exact-dispatch")
+      (await repositoryGitAuthorization(
+        this.proxy.sourceControl,
+        context.signal,
+        profile,
+        context.plan.repositoryGitAuthorization === "network-policy" ? "v1" : undefined,
+      )) !== (context.plan.repositoryGitAuthorization ?? "exact-dispatch")
     ) {
       throw new DependencyUnavailableError(
         "The protected Driver no longer supports GitHub installation access or its admitted sender guarantee.",
@@ -113,18 +117,29 @@ export class ProtectedExecutionDriver {
     custody: Pick<ComputeRevisionContext, "recordEgressInstallation" | "currentEgressInstallation">,
     ready: () => Promise<boolean>,
     harness: () => Promise<SandboxHarnessStatusContext>,
-    sign: (startupId: string, installed: EgressInstallation) => Readonly<Record<string, unknown>>,
-    signProbe?: (startupId: string, probeNonce: string) => string,
+    sign: (
+      startupId: string,
+      installed: EgressInstallation,
+      evidenceExpiresAt?: number,
+    ) => Readonly<Record<string, unknown>>,
   ): Promise<boolean | "held"> {
     const preview = context.plan.repositoryGitAuthorization === "request-hook-observed";
+    const nativeGit = context.plan.repositoryGitAuthorization === "network-policy";
+    if (
+      nativeGit &&
+      (context.revision.executionAdmission.version !== 8 ||
+        !context.revision.sandboxPolicy?.repositoryNetworkPolicy?.grants.length)
+    ) {
+      return false;
+    }
+    const requiresHeld = preview || nativeGit;
     const observeHeld =
-      preview ||
+      requiresHeld ||
       (context.plan.repositoryGitAuthorization === "online-request" &&
         !!this.sandbox.observeHeldRepositoryGitPreview);
     const launch = observeHeld ? await harness() : undefined;
-    const stage =
-      launch && (await this.sandbox.observeHeldRepositoryGitPreview?.(launch, signProbe));
-    if (preview && !stage) {
+    const stage = launch && (await this.sandbox.observeHeldRepositoryGitPreview?.(launch));
+    if (requiresHeld && !stage) {
       return false;
     }
     const installed = await this.observe(context, wiring);
@@ -135,13 +150,16 @@ export class ProtectedExecutionDriver {
     if (!(await this.verify(context, installed))) {
       return false;
     }
-    // In v6 the active pointer selects material. No Compute signature or work is released
-    // until a later pass verifies the policy and same recipient after installation.
+    // Held launches can commit custody before material installation. Release requires a
+    // later pass to verify the policy and the same recipient with material installed.
     if (stage === "held") {
       return "held";
     }
-    await this.sandbox.enrollHarness!(launch ?? (await harness()), installed, async (startupId) =>
-      sign(startupId, await this.current(context, custody, ready, installed)),
+    await this.sandbox.enrollHarness!(
+      launch ?? (await harness()),
+      installed,
+      async (startupId, evidenceExpiresAt?: number) =>
+        sign(startupId, await this.current(context, custody, ready, installed), evidenceExpiresAt),
     );
     return true;
   }

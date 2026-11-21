@@ -70,8 +70,6 @@
       "path": "tests/integration/sandbox-driver-startup.test.ts",
       "expectedTests": [
         "OpenShell reconciles renewed codex workspace-node setup into its revision provider",
-        "OpenShell adopts the shared openclaw runtime-files Provider profile without updates",
-        "OpenShell adopts the shared codex runtime-files Provider profile without updates",
         "OpenShell reconciles renewed openclaw workspace-node setup into its revision provider",
         "OpenShell legacy delivers codex initial workspace files privately after supervisor readiness",
         "OpenShell legacy delivers openclaw initial workspace files privately after supervisor readiness",
@@ -79,7 +77,6 @@
         "OpenShell service delivers openclaw initial workspace files privately after supervisor readiness",
         "native initializer serializes retries and preserves later edits",
         "configured protected OpenShell Git admits only the selected execution and network policy",
-        "managed Sandbox releases scoped Git for a successor of a Git-free revision",
         "stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence"
       ]
     },

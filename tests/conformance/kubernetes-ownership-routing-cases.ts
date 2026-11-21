@@ -281,6 +281,7 @@ export function registerKubernetesOwnershipRoutingCases(): void {
         `${tenantPath}/configmaps/plugin-runtime-${agentSuffix}-rev-${revisionSuffix}`,
         "configmaps",
       ],
+      [`${tenantPath}/secrets/browser-delegation-${agentSuffix}-${revisionSuffix}`, "secrets"],
       [`${tenantPath}/secrets/harness-secrets-${agentSuffix}-${revisionSuffix}`, "secrets"],
       [`${tenantPath}/secrets/gateway-secrets-${agentSuffix}-${revisionSuffix}`, "secrets"],
     ]);

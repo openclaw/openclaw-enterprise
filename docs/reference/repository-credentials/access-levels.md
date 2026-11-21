@@ -38,6 +38,108 @@ Installation-wide access uses a separate
 [`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
 `github-installation` is not a value in a repository's `profiles` list.
 
+### Native Git delivery
+
+A Namespace registration can select `nativeGit: "v1"` with the finite
+`github-repository` profile. Select it consistently across the Agent's bindings.
+Deployment also requires a saved [repository policy](../sandbox-policies.md#repository-network-policy)
+and a Compute Driver that admits the placement. Omitting the policy retains
+online authorization. Existing ref, draft and standing grants retain their own profiles.
+
+Before enabling `nativeGit: "v1"`, finish replacing incompatible Workers. An old
+Worker can consume a scoped deployment job attempt before refusing its marked
+revision. The repository policy reference covers recovery and the restriction on
+adopting previously deployed legacy Agents.
+
+OpenShell matches discovery and upload-pack for each read grant. Write also
+permits receive-pack. The Sandbox binds each repository path to a credential
+held by the Gateway. By default, this selection grants Git only.
+
+Before installing or renewing the credential, OCE checks that the expected
+Sandbox is the Provider's sole recipient and the workspace has no additional
+members. Operators must retain exclusive control of workspace, Sandbox and
+Provider writes for this delivery mode.
+
+To allow issue reads with the stock OpenShell Supervisor and managed installation
+Provider, set `scopedRest: "v1"` on the repository's Namespace registration alongside
+`nativeGit: "v1"`. The registry's `permissions.issues` must be `read` or `write`, and
+the GitHub App must already have that permission. The setting does not expand the
+issued token's permissions. Deploy a saved read or
+write grant for that repository, then use the supplied `GITHUB_TOKEN` placeholder:
+
+```sh
+gh api --method GET repos/OWNER/REPO/issues
+gh api --method GET repos/OWNER/REPO/issues/NUMBER
+```
+
+`NUMBER` must be a positive decimal issue number of at most 19 digits. OpenShell injects the real credential
+outside the Agent and permits only these issue GET paths. Unlisted repositories,
+adjacent paths such as comments, REST writes and GraphQL remain denied. Omitting
+`scopedRest` keeps native delivery Git-only.
+
+#### Pull request creation
+
+Creating a pull request requires a Gateway and Supervisor that support
+pre-credential middleware selection by HTTP method. The pinned 0.1.8 Gateway
+rejects the `http_request_methods` setting. Keep `nativeRestWrites` unset on
+that release to use native Git and issue reads.
+
+On a release qualified for method filtering, copy the existing
+[request-phase service registration](protected-openshell-git.md#register-the-request-phase-service).
+Append `-rest-writes` to the copy's name and set `http_request_methods = ["POST"]`
+in the copy. Use the same Worker endpoint, CA, audience, timeout and required
+binding. Keep the original registration for existing profiles. OCE checks the
+second registration before preparing the Git Provider and verifies the POST
+filter on the loaded Sandbox before installing the credential.
+
+On a qualified installation, set `nativeRestWrites: true` alongside
+`nativeGit: "v1"` and `scopedRest: "v1"` on the repository's Namespace
+registration. The GitHub App and registry must already grant
+`pull_requests: "write"`. Rebind the credential, save Write for that repository
+and deploy the Agent. Save the request in `pull.json` with two unqualified
+branch names in the approved repository.
+
+```json
+{ "title": "Fix", "head": "topic/fix", "base": "main" }
+```
+
+```sh
+gh api --method POST repos/OWNER/REPO/pulls --input pull.json
+```
+
+The validator rejects fork selectors, issue conversion and unknown fields before
+credential use. Optional fields are `body`, `draft` and `maintainer_can_modify`.
+Version v1 denies issue creation. OpenShell rechecks redirected destinations.
+If the validator is unavailable after startup,
+OpenShell refuses creation and continues to serve permitted Git and issue reads.
+If the result is uncertain, inspect the repository before submitting again.
+To withdraw creation, save Read for the repository and redeploy. Verify that
+the old Sandbox retires.
+
+#### Issue creation
+
+With the same POST validator, set `scopedRest: "v2"` and `nativeRestWrites: true`
+on the selected repository's Namespace registration. Issue creation requires
+an existing `issues: "write"` permission in the GitHub App and registry, plus
+a saved Write grant. Rebind and redeploy. Pull creation still requires its
+own `pull_requests: "write"` permission.
+
+Save a nonblank string `title` and an optional string `body` in `issue.json`.
+The validator rejects other fields, including labels, assignees and milestones.
+
+```json
+{ "title": "Investigate a regression", "body": "Steps to reproduce" }
+```
+
+```sh
+gh api --method POST repos/OWNER/REPO/issues --input issue.json
+```
+
+Verify the returned issue number, title and body in GitHub before retrying an
+uncertain creation. To withdraw issue creation while retaining pull creation,
+select v1, rebind and redeploy. To withdraw both, save Read and redeploy.
+Check retirement of the previous Sandbox.
+
 ## Console access levels
 
 | Console choice          | Configuration value | Meaning                                                                       |
@@ -93,69 +195,6 @@ A push can trigger repository CI, so review that CI's own secret and execution p
 A Git-only session does not admit REST or GraphQL. Draft transport admits only its bounded draft
 operation. Neither profile supports arbitrary GitHub CLI commands, merges, forks, SSH or LFS.
 A lost response does not authorize repeating a push or draft creation.
-
-## Scoped REST
-
-For protected `github-repository` delivery with a Sandbox repository network policy,
-set `scopedRest: "v1"` or `"v2"` on each participating repository's Namespace row
-in the GitHub registry. Version v1 permits the reads and pull request creation
-described below. Version v2 adds issue creation; it does not grant general issue
-management. Rebind and deploy after changing the setting. With the setting omitted,
-the network policy permits Git only. With the network policy omitted, the selected
-credential uses its ordinary API scope. The existing deployment and runtime
-qualification requirements apply.
-
-A repository read or write grant and `permissions.issues` of `read` or `write`
-allow listing issues and reading one by number. Substitute the approved
-lowercase owner, repository and issue number.
-
-```sh
-gh api repos/owner/repo/issues
-gh api repos/owner/repo/issues/42
-```
-
-A repository write grant and `permissions.pull_requests: "write"` allow pull
-request creation. Use the Sandbox's injected `GITHUB_TOKEN` placeholder. This
-command submits one POST, skips local curl settings and stops at redirects.
-
-```sh
-printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" |
-  curl -q --fail-with-body --header @- --write-out '\nHTTP %{http_code}\n' \
-    --json '{"title":"Fix","head":"topic/fix","base":"main"}' \
-    https://api.github.com/repos/owner/repo/pulls
-```
-
-Use two unqualified branch names in the approved repository. The hook rejects
-fork selectors, issue conversion, and `%3A` or `%25` in either branch. Optional
-fields are `body`, `draft` and `maintainer_can_modify`. Set `"draft":true` for a
-draft. Expect HTTP 201 and verify the returned PR in GitHub. If the outcome is
-uncertain, inspect the repository before submitting again.
-
-With v2, a repository write grant and `permissions.issues: "write"` also allow
-`POST /repos/owner/repo/issues`. Use a nonblank string `title` and, optionally, a
-string `body`. Other fields, including labels, assignees and milestones, are
-refused before the request reaches GitHub.
-
-```sh
-gh api --method POST repos/owner/repo/issues \
-  -f title='Investigate a regression' -f body='Steps to reproduce'
-```
-
-The Sandbox supplies the `GITHUB_TOKEN` placeholder and the protected sender keeps
-the real credential outside the Agent. The request validator checks the method
-and JSON body. Issue and pull request creation each require a frozen write grant
-and the corresponding credential permission on that repository before the validator
-requests current authorization. If the validator or authorization is unavailable,
-the write fails closed. `gh api` can
-follow redirects; each follow-up request must pass policy and authorization
-again. To stop at the first redirect, use the curl pattern above without
-`--location`. Expect HTTP 201 and verify the created issue in GitHub. If the
-result is uncertain, inspect the repository before submitting again.
-
-OpenShell also admits HEAD for the issue GET routes. Version v1 denies all issue
-writes; v2 admits only the issue creation POST described above. Both versions
-deny issue updates, comments, other API routes and GraphQL. The policy controls
-request destinations. GitHub can return references to other repositories.
 
 ## Supported commands
 

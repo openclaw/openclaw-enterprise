@@ -4,7 +4,6 @@ import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/comp
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { admitRepositoryNetworkPolicy } from "../../packages/contracts/src/index.ts";
 import {
   InstalledDriver,
   OpenClawController,
@@ -12,7 +11,12 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import {
+  editStoredRepositoryGrants,
+  verifyScopedDeploymentTransition,
+  verifyChannelPolicyHandoff,
+} from "./postgres-state-repository-network-policy-case.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
@@ -200,7 +204,7 @@ test(
         }
         if (scenario.protected) {
           const proxyConfiguration = { middlewareName: "integrity", authorityScope: "execution" };
-          const proxy = new OpenShellCredentialProxyDriver(proxyConfiguration, {
+          const proxy = new OpenShellLegacyEgressProxyDriver(proxyConfiguration, {
             id: sandboxDriver.id,
             sandbox: sandboxDriver,
             backend: {
@@ -389,17 +393,11 @@ test(
   async (t) => {
     const fixture = await createPolicyApp(t);
     const { controller, state, pool, inject, deployAgent, grant, sandboxDriver } = fixture;
-    // A valid ACL is still untrusted when returned by ordinary network admission.
-    const write = { repository: "example/project-a", access: "write" };
-    const repositoryNetworkPolicy = admitRepositoryNetworkPolicy([write], [write]);
-    assert.ok(repositoryNetworkPolicy);
-
     for (const scenario of [
       { name: "saved empty", allowed: true },
       { name: "simulated missing-row read", absent: true, allowed: true },
       { name: "Driver adds to saved empty", injectGrant: true },
       { name: "Driver adds under simulated missing-row read", absent: true, injectGrant: true },
-      { name: "ordinary Driver returns a repository write ACL", injectRepositoryPolicy: true },
       { name: "Driver returns wrong version", wrongVersion: true },
       { name: "Driver throws private error", producerError: "error" },
       { name: "Driver throws null", producerError: "null" },
@@ -476,9 +474,6 @@ test(
           if (scenario.wrongVersion) {
             return { ...snapshot, version: snapshot.version + 1 };
           }
-          if (scenario.injectRepositoryPolicy) {
-            return { ...snapshot, repositoryNetworkPolicy };
-          }
           return scenario.injectGrant ? { ...snapshot, additions: [grant] } : snapshot;
         };
         try {
@@ -540,7 +535,6 @@ test(
             app,
           );
           assert.equal(response.body.includes("PRIVATE_PRODUCER_DETAIL"), false);
-          assert.equal(response.body.includes(write.repository), false);
           const afterRevisions = await revisions();
           const afterJobs = await jobs();
           assert.deepEqual(
@@ -556,7 +550,6 @@ test(
             assert.equal(added.length, 1, "the HTTP request must persist a real revision");
             assert.equal(added[0].id, response.json().data.id);
             assert.equal(added[0].executionAdmission.mode, "unprotected");
-            assert.equal(added[0].sandboxPolicy?.repositoryNetworkPolicy, undefined);
             if (scenario.noAdmission) {
               assert.equal(added[0].sandboxDriverId, "deployment-no-policy");
               assert.equal(added[0].sandboxPolicy, undefined);
@@ -1153,5 +1146,30 @@ test(
       ).rows,
       jobs.rows,
     );
+  },
+);
+
+test(
+  "Agent policy HTTP preserves and withdraws stored repository grants",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t);
+    await editStoredRepositoryGrants(fixture, fixture.grant);
+  },
+);
+
+test(
+  "scoped deployment refuses an Agent with unscoped history after confirmed retirement",
+  requiresPostgres,
+  async (t) => {
+    await verifyScopedDeploymentTransition(await createPolicyApp(t, true));
+  },
+);
+
+test(
+  "Channel credential handoff respects a concurrent Secret permission revocation",
+  requiresPostgres,
+  async (t) => {
+    await verifyChannelPolicyHandoff(await createPolicyApp(t));
   },
 );

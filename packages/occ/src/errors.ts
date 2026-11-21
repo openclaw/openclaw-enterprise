@@ -189,6 +189,20 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   }
 }
 
+/** The caller cannot determine whether the storage transaction committed. */
+export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
+  constructor() {
+    super("The PostgreSQL transaction commit outcome is unknown.");
+    this.name = "PostgresCommitOutcomeUnknownError";
+  }
+}
+
+export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super("The Agent audit disclosure record is unavailable.");
+  }
+}
+
 /** The database did not accept required audit evidence in the current transaction. */
 export class AuditAppendUnavailableError extends DependencyUnavailableError {
   readonly reasonCode: "AUDIT_CAPACITY_EXCEEDED" | undefined;
@@ -411,6 +425,12 @@ export class RecoveryPasswordPolicyError extends ScopeViolationError {
     this.name = "RecoveryPasswordPolicyError";
   }
 }
+
+/** A submitted source field failed validation by the selected TokenService. */
+export class TokenServiceSourceInputError extends ScopeViolationError {}
+
+/** This registration was refused before the TokenService attempted any material write. */
+export class TokenServiceRegistrationRefusedError extends TokenServiceSourceInputError {}
 
 /** A device login's private binding does not match the admitted request scope. */
 export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {
@@ -690,6 +710,8 @@ export class SandboxNetworkPolicyConflictError extends ResourceStateConflictErro
 
 const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
   save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+  saveRepository:
+    "Protected execution applies to this Agent. The Credential Proxy governs its egress. To withdraw an existing repository list, send empty arrays for additions and repositoryNetworkPolicy.",
   apply:
     "This Agent's active revision runs under protected execution: the Credential Proxy routes alone govern its egress, so live network policy application is refused.",
   deploy:

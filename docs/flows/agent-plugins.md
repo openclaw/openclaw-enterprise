@@ -1,23 +1,23 @@
 ---
 created: 2026-09-08
-updated: "2026-11-19"
-last_updated_session: "authoring-run/cc87d188-cde6-4d4e-9781-dd8f883dbe3e"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Agent Plugin Deployment Flow
 
 ## Overview
 
-OCC validates selections against the Harness catalog and snapshots the Driver and policy at deployment. The Harness owns tools and approvals.
+OCC validates selections and snapshots the Driver and policy at deployment. The Harness owns tools and approvals.
 
 ## Entry Points
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-- Trigger: Agent create/update with `plugins`, then deployment.
+- Trigger: Save `plugins`, then deploy.
 - Requires Agent permission, valid selections and a compatible PluginDriver.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
-  [OpenClawController](../../packages/occ/src/index.ts), and
+  [OpenClawController](../../packages/occ/src/controller.ts), and
   [bundled PluginDrivers](../../apps/controller/src/drivers/plugin/index.ts).
 
 ## Flow
@@ -70,27 +70,26 @@ graph TD
 ### Credential-scoped discovery
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a
-Harness, Agent `create`, and caller `operate` on stored sources. Wrong Namespace:
-`400`; missing Secret: `404`; unavailable explicit CredentialSource: `409`.
+Harness, Agent `create`, and stored-source `operate`. Wrong Namespace `400`,
+missing Secret `404`, unavailable explicit CredentialSource `409`.
 
 Saved discovery requires a dedicated Agent and caller `read`/`update`. Bound sources
 require caller and Agent `operate`; explicit sources require caller `operate`.
 Missing or unready bound sources return `404`. Hosted catalogs require credentials;
 curated catalogs do not.
 
-The OpenShell Backend reads metadata and exports through operator mTLS. External
-Gateways retain optional `withSourceToken`. OCC checks source/Gateway ownership,
-then rechecks authority, attachment and catalog before dispatch. Cancellation
-discards late credentials; refresh stays with its owner.
+OpenShell uses operator mTLS for metadata and exports. External Gateways may use
+`withSourceToken`. OCC checks source and Gateway ownership, then rechecks authority,
+attachment, and catalog before dispatch. Owners refresh credentials. Cancellation
+discards late credentials.
 
-`packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
+`packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools`
 
 Managed MCP uses Secret Driver, rechecking before `tools/list`.
 `driverPolicy.toolNames` pins upstream names across runtimes.
 
-Closing cancels; account changes clear results; Harness changes clear selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-bound size/time, reject redirects and credential echoes, and return safe metadata
-with `Cache-Control: no-store`.
+Closing cancels. Account changes clear results. Harness changes clear selections and approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
+bound size and time, reject redirects and credential echoes, and set `Cache-Control: no-store`.
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
 `requires_local_executor`; explicit `true` without skills remains unavailable.
 Details reject unmatched MCP/scheduled tasks. Optional stdio
@@ -100,9 +99,10 @@ Details reject unmatched MCP/scheduled tasks. Optional stdio
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-HTTP validates input. [OCC](../../packages/occ/src/index.ts) checks the exact
-Namespace and Agent (`read` for reads). Create/PATCH saves `plugins` and Driver
-identity. Updates atomically save state and audit evidence. Omitted selections
+HTTP validates input. [`getAgentForBrowsing`](../../packages/occ/src/agent-queries.ts)
+requires exact Agent `read` in its Namespace.
+[Create and PATCH](../../packages/occ/src/agent-drafts.ts) save `plugins` and Driver
+identity. Updates commit state and audit together. Omitted selections
 persist, `{}` clears them, and nonempty maps replace them. Clear selections with
 unknown or different owners before changing catalogs.
 
@@ -133,29 +133,31 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 ### 2. Admit an immutable plugin deployment
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-At save and deployment, the OpenClaw Driver's
+At save and deploy, the OpenClaw
 [credential validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts)
-passes the admitted plugin identity and connections to
+passes plugin identity and connections to
 [`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts), then
-verifies the connections against OCC-authorized sources. Each connection identifies
-the requests eligible for credential injection. Discovery may use credentials.
+checks the returned connections against OCC-authorized sources. The description
+lists required network access; each connection identifies only requests eligible
+for credential injection. Other requests remain network-only, even on the same
+host. Discovery may be public or authenticated.
 
 OCC snapshots the Configuration, Driver and selections. The worker checks
-Driver–Harness compatibility. Gateway and worker verify Compute’s package descriptors.
+Driver–Harness compatibility before cutover. Gateway and worker verify artifacts
+against Compute’s package descriptors.
 
-- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable.
-  For Google, [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts)
-  checks the guard version before attachment. The signed guard enforces the source scope.
-- **Hosted MCP packages.** The worker advertises selected tools. Gateway grants same-node
-  execution. Code Mode returns results or denials for Gateway hooks and cross-node calls.
-  Sandbox supplies the attached source’s placeholder. OpenShell checks exact tool names
-  and rejects overlapping routes.
-- **Native runtime plugins.** Startup installs packages and checks tool policy.
-
-Before Sandbox readiness, the Google and [managed MCP](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts)
-checks verify the Provider routes and request rules independently of Gateway-assigned owners.
+- **CLI packages.** The Gateway loads skills; the Harness runs the pinned executable.
+  For Google, the [OpenShell Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts)
+  checks the guard version before attachment, and the signed guard enforces the
+  source scope and reviewed requests.
+- **Hosted MCP packages.** The worker advertises selected tools. Gateway grants
+  same-node execution; Gateway hooks and cross-node calls return structured
+  results or policy denials through Code Mode. The credential Driver attaches
+  the source, Sandbox supplies its placeholder, and OpenShell scopes requests,
+  enforces exact tool names and rejects overlapping routes.
+- **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
 Withdrawal removes credential injection. Recovery preserves other attachments.
 
@@ -386,7 +388,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
-- 2026-11-19 05:29: Describe the effective Provider route checks for managed plugins. (authoring-run/cc87d188-cde6-4d4e-9781-dd8f883dbe3e - 021fa1fee2574c997ec49de28f92892fd8683efd)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:13: Update discovery source. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
 
 - 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)
 

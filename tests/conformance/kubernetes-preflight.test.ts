@@ -24,7 +24,7 @@ import {
 import { refusingPort } from "../helpers/available-port.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
-import { jsonChunkDestination } from "../helpers/json-lines.mjs";
+import { jsonChunkDestination } from "../helpers/json-lines.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type CoreClient = InstanceType<KubernetesSdk["CoreV1Api"]>;

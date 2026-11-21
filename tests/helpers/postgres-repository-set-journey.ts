@@ -28,7 +28,7 @@ import type {
 import { InstalledDriver, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
@@ -109,9 +109,10 @@ type NarrowPreparation = Pick<
 
 export async function beforeNarrowGitPreparation(
   t: TestContext,
+  testUrl: string,
   exercise: (journey: NarrowPreparation) => Promise<void>,
 ) {
-  await repositoryGitJourney(t, import.meta.url, undefined, {}, exercise);
+  await repositoryGitJourney(t, testUrl, undefined, {}, exercise);
 }
 
 type NarrowPolicy = {
@@ -264,8 +265,8 @@ async function repositoryGitJourney(
     implementation: "openshell",
     configuration: opts,
     definition: {
-      configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
-      validateConfiguration: OpenShellCredentialProxyDriver.validateConfiguration,
+      configurationSchema: OpenShellLegacyEgressProxyDriver.configurationSchema,
+      validateConfiguration: OpenShellLegacyEgressProxyDriver.validateConfiguration,
       configurationContributions: OpenShellSandboxDriver.configurationContributions,
     },
   };
@@ -333,7 +334,7 @@ async function repositoryGitJourney(
       },
       { id, implementation: "openshell", backend: backend as never, openShellGit: runtime },
     );
-    const proxy = new OpenShellCredentialProxyDriver(opts, {
+    const proxy = new OpenShellLegacyEgressProxyDriver(opts, {
       id,
       sandbox,
       backend: backend as never,
@@ -1779,14 +1780,12 @@ async function repositoryGitJourney(
                   admission,
                   "recovery retains the committed execution authorization",
                 );
-                const signed = signComputeExecutionRelease(
-                  keys.privateKey,
-                  recoveredStartup,
-                  current,
-                );
-                assert.equal(signed.challenge.startupId, recoveredStartup);
+                return signComputeExecutionRelease(keys.privateKey, recoveredStartup, current);
               },
-              deliver: async () => true,
+              deliver: async (signed) => {
+                assert.equal(signed.challenge.startupId, recoveredStartup);
+                return true;
+              },
             });
             assert.equal(wire.world.writes, writes, "recovery does not replay credential writes");
             assert.equal(peer.gh.issuesOfTokens.length, 1, "recovery does not issue a new token");

@@ -1,7 +1,5 @@
-import {
-  HARNESS_GIT_PROBE_PREFIX,
-  HARNESS_REPOSITORY_GIT_PROBE_HEADER,
-} from "../compute/harness-egress-enrollment.ts";
+import { restWriteRegistration } from "./openshell-git-middleware.ts";
+import { HARNESS_GIT_PROBE_PREFIX } from "../compute/harness-egress-enrollment.ts";
 import type { InstalledGitMaterial } from "../repo/github/access/prepared-repository-git.ts";
 import { createHash } from "node:crypto";
 import type { Server } from "@grpc/grpc-js";
@@ -35,6 +33,7 @@ export interface OpenShellOnlineGitIdentity {
 
 /** The shared request binding, attributed to one authenticated sandbox binding. */
 export type OpenShellOnlineGitBinding = GitHubRequestBinding & {
+  readonly nativeGit?: true;
   readonly sandboxId: string;
   readonly bindingId: string;
   readonly workspace: string;
@@ -49,9 +48,7 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
   OpenShellOnlineHttpAuthorityOptions,
   "authorize"
 > & {
-  /** Only a binding using synthetic probe paths reserves the legacy prefix. */
-  readonly reservesLegacyProbePath?: (identity: OpenShellOnlineGitIdentity) => boolean;
-  /** This branch can only refuse a startup challenge, never authorize Git. */
+  /** This branch can only refuse the reserved pre-material challenge, never authorize Git. */
   readonly previewDenial?: (request: OpenShellOnlineHttpRequest) => string | undefined;
   /** Resolve exactly one live admitted workspace/execution from the authenticated sandbox and
    * binding. A retained Sandbox needs a fresh binding for each admitted execution. Recheck
@@ -68,6 +65,7 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
     request: Use,
     installed: InstalledGitMaterial,
     signal: AbortSignal,
+    nativeGit?: true,
   ) => Promise<RepositoryGitOnlineDecision>;
 };
 
@@ -139,19 +137,29 @@ export function createOpenShellOnlineGitAuthority(
   }
   return createOpenShellOnlineHttpAuthority({
     ...options,
-    async authorize(request, signal) {
-      const { sandboxId, bindingId, requestId, workspace } = request;
-      const identity = { sandboxId, bindingId, requestId, workspace };
+    additionalRegistrationName: restWriteRegistration(options.registrationName),
+    async authorize(request, signal, registrationName) {
+      const restWrite = registrationName !== options.registrationName;
       if (
-        request.headers.some(([name]) => name === HARNESS_REPOSITORY_GIT_PROBE_HEADER) ||
-        (HARNESS_GIT_PROBE_PREFIX.test(request.target.path) &&
-          options.reservesLegacyProbePath?.(identity))
+        restWrite &&
+        (request.target.host !== "api.github.com" || request.target.method !== "POST")
+      ) {
+        return "deny";
+      }
+      const { sandboxId, bindingId, requestId, workspace } = request;
+      if (
+        !restWrite &&
+        options.previewDenial &&
+        HARNESS_GIT_PROBE_PREFIX.test(request.target.path)
       ) {
         return {
-          reasonCode: options.previewDenial?.(request) ?? "preview_challenge_refused",
+          reasonCode: options.previewDenial(request) ?? "preview_challenge_refused",
         };
       }
-      const binding = await options.lookupBinding(identity, signal);
+      const binding = await options.lookupBinding(
+        { sandboxId, bindingId, requestId, workspace },
+        signal,
+      );
       if (!binding) {
         return "deny";
       }
@@ -177,7 +185,11 @@ export function createOpenShellOnlineGitAuthority(
       if (signal.aborted) {
         return deny("aborted");
       }
-      if (!validBinding(binding, request)) {
+      if (
+        !validBinding(binding, request) ||
+        (binding.nativeGit === true) !== restWrite ||
+        (restWrite && (binding.scope !== "github-repository" || !binding.scopedRestWrites))
+      ) {
         return deny("binding_mismatch");
       }
       const outcome = await decideGitHubRequest({
@@ -209,7 +221,8 @@ export function createOpenShellOnlineGitAuthority(
             .update(Buffer.from([0]))
             .update(request.body)
             .digest("hex"),
-        authorize: (q, installed, signal) => options.authorizeOnlineRequest(q, installed, signal),
+        authorize: (q, installed, signal) =>
+          options.authorizeOnlineRequest(q, installed, signal, binding.nativeGit),
       });
       if (outcome.kind === "allowed") {
         // The RPC owner checks this exact authority deadline at its final allow callback.

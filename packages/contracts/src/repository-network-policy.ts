@@ -24,8 +24,8 @@ export class RepositoryNetworkPolicyAdmissionError extends Error {
   }
 }
 
-const repositoryPattern = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
-const maxGrants = 32;
+export const repositoryNetworkGrantPattern = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
+export const maxRepositoryNetworkGrants = 32;
 
 function parseGrants(value: unknown, path: string): RepositoryNetworkGrant[] {
   if (!Array.isArray(value)) {
@@ -35,11 +35,11 @@ function parseGrants(value: unknown, path: string): RepositoryNetworkGrant[] {
       "Provide an array of repository grants.",
     );
   }
-  if (value.length > maxGrants) {
+  if (value.length > maxRepositoryNetworkGrants) {
     throw new RepositoryNetworkPolicyAdmissionError(
       "INVALID_VALUE",
       path,
-      `Provide at most ${maxGrants} repository grants.`,
+      `Provide at most ${maxRepositoryNetworkGrants} repository grants.`,
     );
   }
   const repositories = new Set<string>();
@@ -64,7 +64,7 @@ function parseGrants(value: unknown, path: string): RepositoryNetworkGrant[] {
     if (
       typeof repository !== "string" ||
       repository !== repository.trim() ||
-      !repositoryPattern.test(repository) ||
+      !repositoryNetworkGrantPattern.test(repository) ||
       repository.endsWith(".git")
     ) {
       throw new RepositoryNetworkPolicyAdmissionError(
@@ -93,7 +93,29 @@ function parseGrants(value: unknown, path: string): RepositoryNetworkGrant[] {
   return grants;
 }
 
-/** Validate and bind a requested ACL to the trusted Installation delegation limit. */
+/** Parse trusted Installation configuration without constructing an Agent policy. */
+export function parseRepositoryNetworkPolicyCeiling(
+  value: unknown,
+): RepositoryNetworkPolicyCeiling {
+  return Object.freeze(
+    parseGrants(value, "/repositoryNetworkPolicyCeiling").map((grant) => Object.freeze(grant)),
+  );
+}
+
+/** Match the persisted format, including a strict ordering that excludes duplicates. */
+export function isCanonicalRepositoryGrantList(
+  value: unknown,
+): value is readonly RepositoryNetworkGrant[] {
+  try {
+    const grants = parseGrants(value, "/repositoryNetworkPolicy");
+    return grants.every(
+      (grant, index) => index === 0 || grants[index - 1]!.repository < grant.repository,
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function admitRepositoryNetworkPolicy(
   value: unknown,
   ceiling: unknown,

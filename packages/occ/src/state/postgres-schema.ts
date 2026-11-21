@@ -1,4 +1,5 @@
-import type { CredentialPolicyReductionState, PredecessorReplacement } from "./platform-state.ts";
+import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type {
   InitialWorkspaceFiles,
   ProtectedEgressSource,
@@ -7,6 +8,7 @@ import type {
   AgentStatus,
   CredentialSourceState,
   CredentialSourceOwnerCapability,
+  TokenServiceRegistration,
   HarnessExecutionMode,
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
@@ -76,6 +78,32 @@ export const installation = occSchema.table(
       sql`${table.name} = btrim(${table.name}) AND ${table.name} !~ '[[:cntrl:]]'`,
     ),
     uniqueIndex("installation_one_row").on(sql`true`),
+  ],
+);
+
+export const tokenServiceInstances = occSchema.table(
+  "token_service_instances",
+  {
+    installationId: text("installation_id")
+      .primaryKey()
+      .references(() => installation.id, { onDelete: "restrict", onUpdate: "restrict" }),
+    id: text("id").notNull().unique(),
+    driverId: text("driver_id").notNull(),
+    storeIdentity: text("store_identity").notNull(),
+  },
+  (table) => [
+    check(
+      "token_service_instances_id_valid",
+      sql`${table.id} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
+    ),
+    check(
+      "token_service_instances_driver_valid",
+      sql`char_length(${table.driverId}) BETWEEN 1 AND 200 AND ${table.driverId} = btrim(${table.driverId})`,
+    ),
+    check(
+      "token_service_instances_store_valid",
+      sql`char_length(${table.storeIdentity}) BETWEEN 1 AND 200 AND ${table.storeIdentity} = btrim(${table.storeIdentity})`,
+    ),
   ],
 );
 
@@ -507,6 +535,12 @@ export const credentialSources = occSchema.table(
     egress: jsonb("egress").$type<ProtectedEgressSource>(),
     driverId: text("driver_id"),
     ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
+    tokenServiceInstanceId: text("token_service_instance_id").references(
+      () => tokenServiceInstances.id,
+      { onDelete: "restrict", onUpdate: "restrict" },
+    ),
+    registration: jsonb("registration").$type<TokenServiceRegistration>(),
+    registrationDispatchedAt: timestamp("registration_dispatched_at", { withTimezone: true }),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
@@ -538,7 +572,15 @@ export const credentialSources = occSchema.table(
     ),
     check(
       "credential_sources_owner_capability_valid",
-      sql`(${table.driverId} IS NOT NULL AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL))) OR (${table.ownerCapability} = 'token_service' AND ${table.driverId} IS NULL AND ${table.type} = 'oauth2-refresh-token' AND ${table.egress} IS NULL)`,
+      sql`CASE WHEN ${table.ownerCapability} = 'token_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND (
+      (${table.type} = 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NULL AND ${table.registration} IS NULL AND ${table.registrationDispatchedAt} IS NULL)
+      OR (${table.type} <> 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NOT NULL
+        AND (${table.registration} IS NULL OR occ.token_service_registration_is_valid(${table.registration}))
+        AND (${table.registrationDispatchedAt} IS NULL OR ${table.registrationDispatchedAt} >= ${table.createdAt})
+        AND (${table.state} <> 'registering' OR ${table.registration} IS NULL)
+        AND (${table.state} <> 'ready' OR (${table.registration} IS NOT NULL AND ${table.registrationDispatchedAt} IS NOT NULL)))
+    ) ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL AND ${table.registration} IS NULL AND ${table.registrationDispatchedAt} IS NULL
+      AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL)) END IS TRUE`,
     ),
     check(
       "credential_sources_driver_id_valid",
@@ -726,8 +768,9 @@ export const agentRevisions = occSchema.table(
       "agent_revisions_execution_admission",
       sql`COALESCE(
         jsonb_typeof(${table.admittedSpec}->'execution_admission') = 'object'
+        AND occ.repository_git_network_admission_is_valid(${table.admittedSpec})
         AND (${table.admittedSpec}->'execution_admission') ?& ARRAY['version', 'mode']
-        AND ((${table.admittedSpec}->'execution_admission') - 'version' - 'mode') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'execution_admission') - 'version' - 'mode' - 'repositoryNetworkPolicyVersion') = '{}'::jsonb
         AND (
           (${table.admittedSpec}->'execution_admission'->>'mode' = 'unprotected'
             AND ${table.admittedSpec} #> '{execution_admission,version}' = '2'::jsonb
@@ -738,12 +781,12 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND (
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7')
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7','8')
                 AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '7'
                   THEN ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
                   ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'policyReductionVersion') OR
                     (${table.admittedSpec} #>> '{execution_admission,version}' = '3' AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7'))
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7','8'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
@@ -754,6 +797,8 @@ export const agentRevisions = occSchema.table(
                       ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'
                       AND ${table.admittedSpec} #>> '{egress_plan,repositoryGit,bindings,0,profile}' = 'github-installation'
                       AND jsonb_array_length(${table.admittedSpec} #> '{egress_plan,repositoryGit,bindings}') = 1
+                    WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '8' THEN
+                      ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'network-policy'
                     ELSE NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGitAuthorization') END
                 AND
                 jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'
@@ -762,6 +807,14 @@ export const agentRevisions = occSchema.table(
                 AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
               ))
         ), false)`,
+    ),
+    check(
+      "agent_revisions_repository_policy_reader_version",
+      sql`CASE WHEN (${table.admittedSpec}->'sandbox_policy') ? 'repositoryNetworkPolicy'
+      THEN ${table.admittedSpec} #> '{execution_admission,repositoryNetworkPolicyVersion}' IS NOT DISTINCT FROM '1'::jsonb
+        AND ${table.admittedSpec} #> '{sandbox_policy,repositoryNetworkPolicy,version}' IS NOT DISTINCT FROM '1'::jsonb
+      ELSE NOT COALESCE((${table.admittedSpec}->'execution_admission') ? 'repositoryNetworkPolicyVersion', false)
+    END`,
     ),
     check(
       "agent_revisions_admitted_snapshot",
@@ -2386,7 +2439,8 @@ export const sandboxPolicies = occSchema.table(
       .onUpdate("restrict"),
     check(
       "sandbox_policies_document_valid",
-      sql`occ.sandbox_policy_is_valid(${table.document}, ${table.id}, ${table.namespaceId}, ${table.agentId}, ${table.version})`,
+      sql`occ.sandbox_policy_is_valid(${table.document} - 'repositoryNetworkPolicy', ${table.id}, ${table.namespaceId}, ${table.agentId}, ${table.version})
+        AND (NOT (${table.document} ? 'repositoryNetworkPolicy') OR occ.sandbox_repository_grants_are_valid(${table.document}->'repositoryNetworkPolicy'))`,
     ),
   ],
 );

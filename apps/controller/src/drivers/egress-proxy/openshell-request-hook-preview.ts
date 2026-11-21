@@ -1,3 +1,9 @@
+import type { compileOpenShellBoundGitRule } from "../sandbox/openshell-git-network-policy.ts";
+import {
+  nativeRestMode,
+  openShellGitMiddleware,
+  restWriteRegistration,
+} from "./openshell-git-middleware.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord } from "@openclaw-enterprise/utils";
@@ -6,10 +12,6 @@ import type {
   ProxyRevisionContext,
   RepositoryGitRecipient,
 } from "@openclaw-enterprise/contracts";
-import {
-  HARNESS_REPOSITORY_GIT_PROBE_HEADER,
-  repositoryGitDiscoveryProbePath,
-} from "../compute/harness-egress-enrollment.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellSandboxResponse,
@@ -19,7 +21,7 @@ import type {
   OpenShellPreparedGitInstalled,
 } from "./openshell-prepared-git-provider.ts";
 import type { OpenShellOnlineHttpRequest } from "./openshell-online-authority.ts";
-import { withOpenShellProviderTokenGrantOwners } from "./openshell-token-grant-owner.ts";
+import { openShellEffectiveBoundGitRule } from "./openshell-repository-policy-readback.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 
 export const observedRequestHook = "request-hook-observed" as const;
@@ -28,15 +30,18 @@ type Hook = NonNullable<RepositoryGitRecipient["observedHook"]>;
 
 interface Selection {
   readonly mandatory?: true;
+  readonly native?: boolean;
   readonly client: OpenShellGatewayClient;
   readonly sandbox: OpenShellSandboxResponse;
   readonly observed: OpenShellPreparedGitInstalled;
   readonly registration: string;
+  readonly bindingId?: string | undefined;
   readonly audience: string;
   readonly modelProvider: string;
   readonly runtimeProvider: string;
   readonly sourcePolicy: Readonly<Record<string, unknown>>;
   readonly gitRule: OpenShellExpectedProviderRule["rule"];
+  readonly boundGitRule?: ReturnType<typeof compileOpenShellBoundGitRule> | undefined;
   readonly execution: (
     sandbox: OpenShellSandboxResponse,
     signal: AbortSignal,
@@ -50,9 +55,10 @@ function expectedPolicy(
   source: Record<string, unknown>,
   effective: Record<string, unknown>,
   git: Selection["gitRule"],
-  gitProviderId: string,
   modelProvider: string,
   runtimeProvider: string,
+  gitProvider: string,
+  boundGitRule?: Selection["boundGitRule"],
 ) {
   const { network_policies: desired, ...staticPolicy } = source;
   const { network_policies: network, ...applied } = effective;
@@ -60,9 +66,9 @@ function expectedPolicy(
     return false;
   }
   const { [git.name]: rule, ...others } = asRecord(network) ?? {};
-  // The Gateway binds each endpoint's token-grant owner to the Provider record.
-  const expectedGit = withOpenShellProviderTokenGrantOwners(git, gitProviderId);
-  if (!rule || !expectedGit || !isDeepStrictEqual(wirePolicy(rule), wirePolicy(expectedGit))) {
+  // Stock 0.1.5 retains the imported port and marks each endpoint provider_credentialed.
+  // Compare the entire rule; accepting another rule because it names port 443 is not enough.
+  if (!rule || !isDeepStrictEqual(wirePolicy(rule), wirePolicy(git))) {
     return false;
   }
   // Only literal non-Git hosts, including the independently admitted model provider.
@@ -71,14 +77,30 @@ function expectedPolicy(
   // Even the endpointless runtime-files provider gets a named, empty rule in stock 0.1.5.
   const runtimeName = "_provider_" + runtimeProvider.replaceAll("-", "_");
   const { [modelName]: model, [runtimeName]: runtime, ...sourceRules } = others;
+  let expectedSourceRules = desired ?? {};
+  if (boundGitRule) {
+    const authored = asRecord(desired);
+    const bound = openShellEffectiveBoundGitRule(
+      boundGitRule,
+      authored?.[boundGitRule.name],
+      gitProvider,
+    );
+    if (!bound || git.endpoints.length !== 0 || git.binaries.length !== 0) {
+      return false;
+    }
+    expectedSourceRules = { ...authored, [bound.name]: bound };
+  }
   if (
     !model ||
     !isDeepStrictEqual(wirePolicy(runtime), { name: runtimeName }) ||
-    !isDeepStrictEqual(wirePolicy(sourceRules), wirePolicy(desired ?? {}))
+    !isDeepStrictEqual(wirePolicy(sourceRules), wirePolicy(expectedSourceRules))
   ) {
     return false;
   }
-  for (const raw of Object.values(others)) {
+  for (const [name, raw] of Object.entries(others)) {
+    if (name === boundGitRule?.name) {
+      continue;
+    }
     const endpoints = asRecord(raw)?.endpoints ?? [];
     if (
       !Array.isArray(endpoints) ||
@@ -107,14 +129,17 @@ export async function previewPolicyAndRecipient({
   sandbox,
   observed: o,
   registration,
+  bindingId,
   audience,
   gitRule,
+  boundGitRule,
   modelProvider,
   runtimeProvider,
   sourcePolicy,
   execution,
   signal,
   mandatory,
+  native,
 }: Selection): Promise<string | undefined> {
   const admission = sandbox.configurationAdmission;
   const started = sandbox.mainProcessStartedAt;
@@ -132,7 +157,13 @@ export async function previewPolicyAndRecipient({
     admission.policy_hash !== o.policyHash ||
     admission.config_revision !== o.configRevision ||
     admission.provider_env_revision !== o.providerEnvRevision ||
-    (!mandatory && !(await client.readExclusivePreviewWorkspace?.(o.workspace, sandbox.id, signal)))
+    ((native || !mandatory) &&
+      !(await client.readExclusivePreviewWorkspace?.(
+        o.workspace,
+        sandbox.id,
+        signal,
+        native ? o.provider : undefined,
+      )))
   ) {
     return;
   }
@@ -153,7 +184,15 @@ export async function previewPolicyAndRecipient({
   if (
     !c ||
     !policy ||
-    !expectedPolicy(sourcePolicy, policy, gitRule, o.providerId, modelProvider, runtimeProvider) ||
+    !expectedPolicy(
+      sourcePolicy,
+      policy,
+      gitRule,
+      modelProvider,
+      runtimeProvider,
+      o.provider,
+      boundGitRule,
+    ) ||
     c.version !== admission.policy_version ||
     c.workspace !== o.workspace ||
     c.configuration_instance_id !== admission.instance_id ||
@@ -171,15 +210,31 @@ export async function previewPolicyAndRecipient({
   ) {
     return;
   }
+  const filtered = native && nativeRestMode(boundGitRule) === "write";
+  const expectedRegistration = filtered ? restWriteRegistration(registration) : registration;
+  if (filtered) {
+    if (!bindingId) {
+      return;
+    }
+    const middlewares = wirePolicy(openShellGitMiddleware(registration, bindingId, true, "write"));
+    if (
+      ![sourcePolicy, policy].every((p) =>
+        isDeepStrictEqual(wirePolicy(p.network_middlewares), middlewares),
+      )
+    ) {
+      return;
+    }
+  }
   const services = c.supervisor_middleware_services;
   const selected = Array.isArray(services)
-    ? services.filter((s) => asRecord(s)?.name === registration)
+    ? services.filter((s) => asRecord(s)?.name === expectedRegistration)
     : [];
   const service = selected.length === 1 && asRecord(selected[0]);
   // Legacy observed-only registrations omit both fields. Absence proves no mandatory
   // support: strict grants never use it, and explicit/partial values cannot fall back.
   // The recipient fingerprint below fences changes after the registration is witnessed.
   const legacyObserved =
+    !filtered &&
     !mandatory &&
     service &&
     !Object.hasOwn(service, "binding_policy") &&
@@ -194,8 +249,8 @@ export async function previewPolicyAndRecipient({
       (![2, 3].includes(service.binding_policy as number) ||
         !Array.isArray(service.bindings) ||
         service.bindings.length !== 1 ||
-        service.bindings[0] !== 1)) ||
-    service.name !== registration ||
+        service.bindings[0] !== (filtered ? 4 : 1))) ||
+    !isDeepStrictEqual(service.http_request_methods ?? [], filtered ? ["POST"] : []) ||
     service.allow_insecure_transport ||
     timeout?.seconds !== "5" ||
     timeout.nanos ||
@@ -221,11 +276,16 @@ export async function previewPolicyAndRecipient({
   } = o;
   const { processInstanceId, networkInstanceId, supervisorSessionId, ...executionRecipient } =
     identity;
+  const fingerprint = native
+    ? { ...executionRecipient, processInstanceId, networkInstanceId }
+    : mandatory
+      ? executionRecipient
+      : identity;
   return createHash("sha256")
     .update(
       JSON.stringify([
-        mandatory ? executionRecipient : identity,
-        ...(mandatory ? [] : [started, admission.instance_id]),
+        fingerprint,
+        ...(mandatory && !native ? [] : [started, admission.instance_id]),
         wirePolicy(policy),
         wirePolicy(service),
         executionIdentity,
@@ -243,20 +303,49 @@ export class ObservedHookPreview {
   private armed?: {
     startupId: string;
     path: string;
-    nonce?: string;
     reason: string;
     until: number;
     requestId?: string;
   };
   hook?: Hook;
+  private nativeStartupId?: string;
   recipient?: string;
   bootstrapRevision?: string;
   /** A local deadline to stop and retire, never a lease or an authorization deadline. */
   verifyInstallBy?: number | undefined;
   release?: "preparing" | "sending" | "acknowledged";
 
+  get startupId(): string | undefined {
+    return this.nativeStartupId ?? this.hook?.startupId;
+  }
+
+  get configurationId(): string | undefined {
+    if (this.recipient === undefined || this.nativeStartupId === undefined) {
+      return this.recipient;
+    }
+    return createHash("sha256")
+      .update(JSON.stringify([this.recipient, this.nativeStartupId]))
+      .digest("hex");
+  }
+
+  bindNativeStartup(startupId: string): void {
+    if (
+      !this.native ||
+      !this.mandatory ||
+      this.startupId ||
+      !this.recipient ||
+      !this.bootstrapRevision
+    ) {
+      throw new Error("Native Git requires a fresh, verified held launcher.");
+    }
+    this.nativeStartupId = startupId;
+  }
+
   /** A new current runtime needs its own denial and release. Authority and configuration stay. */
   recover(): void {
+    if (this.native) {
+      throw new Error("Native Git requires a new revision after launcher replacement.");
+    }
     delete this.armed;
     delete this.hook;
     delete this.release;
@@ -264,10 +353,12 @@ export class ObservedHookPreview {
   }
 
   enrollment(): OpenShellPreparedGitInstalled["enrollment"] {
-    return this.mandatory && this.recipient && this.bootstrapRevision
+    const configurationId = this.configurationId;
+    return this.mandatory && configurationId && this.bootstrapRevision
       ? {
-          configurationId: this.recipient,
+          configurationId,
           bootstrapRevision: this.bootstrapRevision,
+          ...(this.nativeStartupId && { nativeStartupId: this.nativeStartupId }),
           ...(this.hook && { hook: this.hook }),
           release: this.release === "preparing" ? "held" : (this.release ?? "held"),
         }
@@ -315,49 +406,32 @@ export class ObservedHookPreview {
   }
 
   readonly mandatory: boolean;
-  constructor(workspace: string, bindingId: string, mandatory = false) {
+  readonly native: boolean;
+  constructor(workspace: string, bindingId: string, mandatory = false, native = false) {
     this.mandatory = mandatory;
+    this.native = native;
     this.workspace = workspace;
     this.bindingId = bindingId;
   }
   arm(startupId: string, repository?: string) {
+    if (this.armed || !this.recipient || !this.bootstrapRevision) {
+      throw new Error("Preview challenge is not fresh.");
+    }
     // git-write has an exact repository endpoint; installation-shaped providers
     // admit the root discovery probe. Both check policy before invoking the hook.
     const prefix = repository === undefined ? "" : `/${repository}.git`;
     const path = prefix + observedHookPath + randomBytes(16).toString("hex") + ".git/info/refs";
-    this.armPath(startupId, path);
-    return path;
-  }
-  /** The selected repository must come from the independently observed ACL profile. */
-  armRepositoryDiscovery(startupId: string, repository: string) {
-    const probePath = `/${repository}.git/info/refs`;
-    if (
-      !this.mandatory ||
-      repository.endsWith(".git") ||
-      !repositoryGitDiscoveryProbePath.test(probePath)
-    ) {
-      throw new Error("Repository discovery requires a mandatory hook and a canonical repository.");
-    }
-    const probeNonce = randomBytes(16).toString("hex");
-    this.armPath(startupId, probePath, probeNonce);
-    return { probePath, probeNonce };
-  }
-  private armPath(startupId: string, path: string, nonce?: string) {
-    if (this.armed || !this.recipient || !this.bootstrapRevision) {
-      throw new Error("Preview challenge is not fresh.");
-    }
     this.armed = {
       startupId,
       path,
-      ...(nonce !== undefined && { nonce }),
       reason: "oce_hook_" + randomBytes(18).toString("hex"),
       until: Date.now() + 30_000,
     };
+    return path;
   }
   deny(q: OpenShellOnlineHttpRequest, sandboxId: string) {
     const a = this.armed;
     const t = q.target;
-    const markers = q.headers.filter(([name]) => name === HARNESS_REPOSITORY_GIT_PROBE_HEADER);
     if (
       !a ||
       a.requestId ||
@@ -371,9 +445,6 @@ export class ObservedHookPreview {
       t.method !== "GET" ||
       t.path !== a.path ||
       t.query !== "service=git-upload-pack" ||
-      (a.nonce === undefined
-        ? markers.length !== 0
-        : markers.length !== 1 || markers[0]?.[1] !== a.nonce) ||
       q.body.length ||
       q.headers.some(([k]) =>
         ["authorization", "proxy-authorization", "cookie"].includes(k.toLowerCase()),
@@ -393,7 +464,6 @@ export class ObservedHookPreview {
       Date.now() >= a.until ||
       r?.startupId !== a.startupId ||
       r.probePath !== a.path ||
-      r.probeNonce !== a.nonce ||
       r.reasonCode !== a.reason
     ) {
       throw new Error("The held launcher did not receive its exact middleware denial.");

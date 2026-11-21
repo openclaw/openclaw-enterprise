@@ -7,7 +7,7 @@ import {
   AgentRevisionListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 
-import type { DeploymentStatus } from "../../packages/occ/src/state/controller-work.ts";
+import type { DeploymentStatus } from "../../packages/occ/src/controller-work.ts";
 
 import {
   persistedDeploymentError,

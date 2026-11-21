@@ -332,7 +332,7 @@ async function lockLiveSession(
 type LockedSession = {
   session: PreparedRepositorySession;
   end_ms: string;
-  authorization: "online-request" | "request-hook-observed" | null;
+  authorization: "online-request" | "request-hook-observed" | "network-policy" | null;
 };
 type Authorization = LockedSession["authorization"];
 type GitUse = Pick<
@@ -615,12 +615,20 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           ),
       } satisfies RepositoryGitAuthority<Allow>);
     };
+    const native = delivery("network-policy", onlineAllow).githubRepository;
     return Object.freeze({
       recipients: this.recipients,
       ...delivery(null, sendPermit),
       online: delivery("online-request", onlineAllow),
       ...(this.proxy.policy?.observedHook && {
         observedHook: delivery("request-hook-observed", onlineAllow).githubInstallation!,
+        networkPolicy: {
+          readMaterial: native!.readMaterial,
+          authorizeRest: (q, installed, signal) =>
+            q.operation === "github-rest"
+              ? native!.authorize(q, installed, signal)
+              : Promise.resolve({ kind: "denied", reason: "unavailable" }),
+        } satisfies NonNullable<ProtectedRepositoryGitAuthority["networkPolicy"]>,
       }),
     });
   }

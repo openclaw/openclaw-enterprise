@@ -1,6 +1,42 @@
+import type { AgentProvisioningReadRepository } from "./agent-provisioning.ts";
+import type { AgentReadRepository, AgentRevisionReadRepository } from "./agent-reads.ts";
+import type { SandboxPolicyReadRepository, WorkspaceSetupReadRepository } from "./agents.ts";
+import type { AuthenticationStateReadRepository } from "./authentication-states.ts";
+import type { ConfigurationReadRepository } from "./configurations.ts";
+import type { ConnectionTemplateReadRepository } from "./connection-templates.ts";
+import type { CredentialSourceReadRepository } from "./credential-sources.ts";
+import type { InstallationReadRepository } from "./installations.ts";
+import type { NamespaceReadRepository } from "./namespaces.ts";
+import type { PlatformOperationReadRepository } from "./platform-operations.ts";
+import type { PresetReadRepository } from "./presets.ts";
+import type { RepositorySessionReadRepository } from "./repository-sessions.ts";
+import type { SavedConnectionReadRepository } from "./saved-connections.ts";
+import type { SecretReadRepository } from "./secrets.ts";
+import type { ServiceAccountReadRepository } from "./service-accounts.ts";
+import type { IAMPolicyReadRepository } from "@openclaw-enterprise/contracts";
 import { bindRepository } from "./repository-factory.ts";
 import type { RepositoryTransactionLifetime } from "./transaction.ts";
-import type { PlatformReadView } from "../state/platform-state.ts";
+
+export interface PlatformReadView {
+  readonly sandboxPolicies: SandboxPolicyReadRepository;
+  readonly installations: InstallationReadRepository;
+  readonly namespaces: NamespaceReadRepository;
+  readonly configurations: ConfigurationReadRepository;
+  readonly connectionTemplates: ConnectionTemplateReadRepository;
+  readonly savedConnections: SavedConnectionReadRepository;
+  readonly presets: PresetReadRepository;
+  readonly authenticationStates: AuthenticationStateReadRepository;
+  readonly secrets: SecretReadRepository;
+  readonly credentialSources: CredentialSourceReadRepository;
+  readonly serviceAccounts: ServiceAccountReadRepository;
+  readonly agents: AgentReadRepository;
+  readonly workspaceSetups: WorkspaceSetupReadRepository;
+  readonly revisions: AgentRevisionReadRepository;
+  readonly iamPolicy: IAMPolicyReadRepository;
+  readonly repositorySessions: RepositorySessionReadRepository;
+  readonly provisioning: AgentProvisioningReadRepository;
+  readonly operations: PlatformOperationReadRepository;
+}
 
 /** The explicit outward projection shares one transaction lifetime. */
 export function createPlatformReadView(
@@ -8,7 +44,12 @@ export function createPlatformReadView(
   lifetime: RepositoryTransactionLifetime,
 ): PlatformReadView {
   return Object.freeze({
-    sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, ["find"]),
+    sandboxPolicies: Object.freeze({
+      ...bindRepository(repositories.sandboxPolicies, lifetime, ["find"]),
+      ...(repositories.sandboxPolicies.supportsRepositoryNetworkPolicy === true
+        ? { supportsRepositoryNetworkPolicy: true as const }
+        : {}),
+    }),
     operations: bindRepository(repositories.operations, lifetime, [
       "list",
       "findWork",

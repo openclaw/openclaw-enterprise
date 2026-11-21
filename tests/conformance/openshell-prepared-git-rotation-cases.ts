@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { open, rename, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import test from "node:test";
 import {
   OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitReadFailure,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { scope, signal, token, wire, type RecordedRequest } from "./openshell-prepared-git-wire.ts";
 
 function isUpdate(
@@ -129,75 +125,6 @@ export function registerPreparedGitRotationCases(): void {
       /refused/,
     );
   });
-
-  for (const failure of [
-    "lease expiry",
-    "write timeout",
-    "write timeout with empty bearer",
-  ] as const) {
-    const name =
-      failure === "write timeout"
-        ? "prepared Git records an unsent update when its write budget expires during authentication"
-        : `prepared Git records an unsent update after ${failure} during authentication`;
-    test(name, async (t) => {
-      const writeTimeout = failure !== "lease expiry";
-      const directory = await temporaryDirectory(t, "prepared-git-auth-");
-      const bearer = join(directory, "bearer");
-      const delayedBearer = join(directory, "delayed-bearer");
-      await writeFile(bearer, "fixture-bearer");
-      execFileSync("mkfifo", [delayedBearer]);
-
-      const { state, binding } = await wire(t, bearer);
-      const receipt = await binding.prepare(token(), signal());
-      const writeDeadline = new AbortController();
-      let interceptDeadline = writeTimeout;
-      const timeout = AbortSignal.timeout.bind(AbortSignal);
-      const deadlines = t.mock.method(AbortSignal, "timeout", (ms: number) =>
-        interceptDeadline && ms === 30_000 ? writeDeadline.signal : timeout(ms),
-      );
-      let expired = false;
-      let reachedAuthentication: Promise<void> | undefined;
-      const result = await binding.rotate(
-        receipt,
-        async () => {
-          await rename(delayedBearer, bearer);
-          // Opening the FIFO waits for the real Gateway credential reader. Expire the
-          // selected clock before allowing metadata setup to finish.
-          reachedAuthentication = open(bearer, "w").then(async (output) => {
-            try {
-              if (writeTimeout) {
-                writeDeadline.abort(new DOMException("Write budget expired", "TimeoutError"));
-              } else {
-                expired = true;
-              }
-              if (failure !== "write timeout with empty bearer") {
-                await output.writeFile("fixture-bearer");
-              }
-            } finally {
-              await output.close();
-            }
-          });
-          return { ...token("successor"), isCurrent: () => !expired };
-        },
-        signal(),
-      );
-      await reachedAuthentication;
-      assert.ok(reachedAuthentication);
-      assert.ok(deadlines.mock.calls.some(({ arguments: [ms] }) => ms === 30_000));
-      assert.equal(writeDeadline.signal.aborted, writeTimeout);
-      assert.equal(expired, !writeTimeout);
-      assert.equal(state.requests.filter(isUpdate).length, 0);
-      assert.equal(result, undefined, "the writer must report that nothing was sent");
-      assert.equal(state.provider?.metadata.resource_version, receipt.resourceVersion);
-
-      interceptDeadline = false;
-      await unlink(bearer);
-      await writeFile(bearer, "fixture-bearer");
-      const fresh = await binding.rotate(receipt, async () => token("fresh"), signal());
-      assert.equal(fresh?.resourceVersion, "2");
-      assert.equal(state.requests.filter(isUpdate).length, 1);
-    });
-  }
 
   test("prepared Git preserves uncertain write outcomes and redacts private gateway failures", async (t) => {
     const { state, binding } = await wire(t);

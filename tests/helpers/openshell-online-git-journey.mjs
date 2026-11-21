@@ -11,7 +11,6 @@ import {
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
-import { stockGitPolicy } from "./openshell-stock-git-policy.ts";
 
 const packet = (line) =>
   Buffer.from((Buffer.byteLength(line) + 4).toString(16).padStart(4, "0") + line);
@@ -430,10 +429,7 @@ export async function gitExpiryGateway(
           ...supervisor.policy,
           network_policies: {
             ...supervisor.policy.network_policies,
-            [supervisor.gitRule.name]: stockGitPolicy(
-              supervisor.gitRule,
-              repositoryGitRecipient.providerId,
-            ),
+            [supervisor.gitRule.name]: supervisor.gitRule,
             ["_provider_" + model.replaceAll("-", "_")]: {
               name: "_provider_" + model.replaceAll("-", "_"),
               endpoints: [{ host: "api.openai.com", port: 443 }],

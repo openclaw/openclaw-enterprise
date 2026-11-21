@@ -18,7 +18,6 @@ import {
   CredentialSourceResponse,
   RegisterTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
-  TokenServiceSourceMetadata,
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
   ErrorDetail as ErrorDetailSchema,
@@ -268,6 +267,8 @@ interface RequiredPermission {
     | "read_logs_alternative"
     | "bound_credential_source"
     | "unless_consent_owner"
+    | "saved_sandbox_policy_for_deployment"
+    | "explicit_repository_network_policy"
     | "saved_sandbox_policy_additions";
 }
 
@@ -927,17 +928,36 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               condition: "bound_credential_source" as const,
             },
           ]),
-      // Mirrors OCC createRevision and refuseRepositoryNetworkOverlap: refusals that name saved
-      // network policy additions come after SandboxPolicy read (findings 2151, 2881).
+      // OCC checks policy read before admitting the saved deployment policy or
+      // checking an Agent update for overlap between host additions and repository bindings.
       ...(operation.operationId === "deployAgent" || operation.operationId === "updateAgent"
         ? [
             {
               action: "read" as const,
               resourceKind: "sandbox_policy" as const,
               scope: "requested" as const,
-              condition: "saved_sandbox_policy_additions" as const,
+              condition:
+                operation.operationId === "deployAgent"
+                  ? ("saved_sandbox_policy_for_deployment" as const)
+                  : ("saved_sandbox_policy_additions" as const),
             },
           ]
+        : []),
+      ...(operation.operationId === "deployAgent"
+        ? ([
+            {
+              action: "manage_policy",
+              resourceKind: "agent",
+              scope: "requested",
+              condition: "explicit_repository_network_policy",
+            },
+            {
+              action: "update",
+              resourceKind: "sandbox_policy",
+              scope: "requested",
+              condition: "explicit_repository_network_policy",
+            },
+          ] as const)
         : []),
     ];
   }
@@ -1147,7 +1167,7 @@ function permissionDescription(
           return `Requires ${action} permission on each ${name} named in the request body secrets.`;
         }
         if (operation?.operationId === "updateCredentialSource") {
-          return `Requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
+          return `For a legacy Gateway update, requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
         }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }
@@ -1160,10 +1180,14 @@ function permissionDescription(
         }
         return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
       }
+      if (condition === "saved_sandbox_policy_for_deployment") {
+        return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions or an explicit repository network policy list, including an empty list.`;
+      }
+      if (condition === "explicit_repository_network_policy") {
+        return `Requires ${action} permission on the exact ${name} when the Agent has an explicit repository network policy list, including an empty list.`;
+      }
       if (condition === "saved_sandbox_policy_additions") {
-        return operation?.operationId === "updateAgent"
-          ? `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`
-          : `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions.`;
+        return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`;
       }
       if (condition === "missing_runtime_credentials") {
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
@@ -1415,7 +1439,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(ModelProviderSchema);
   app.addSchema(RegisterTokenServiceSourceBody);
   app.addSchema(UpdateTokenServiceSourceBody);
-  app.addSchema(TokenServiceSourceMetadata);
   app.addSchema(PushAgentCredentialsBody);
   app.addSchema(PushAgentCredentialsResponse);
   void app.register(swagger, {
@@ -1428,7 +1451,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           switch (schema.$id) {
             case "RegisterTokenServiceSourceBody":
             case "UpdateTokenServiceSourceBody":
-            case "TokenServiceSourceMetadata":
             case "PushAgentCredentialsBody":
             case "PushAgentCredentialsResponse":
               return schema.$id;
@@ -2831,6 +2853,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (resourceHandler) {
       await resourceHandler({
         controller,
+        resolveHarness: options.resolveHarness,
         context,
         request,
         reply,

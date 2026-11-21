@@ -210,6 +210,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         context.requirements.loginMode,
         context.requirements.workspaceSetup,
         context.revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
+        binding?.inspected,
       ),
     ];
     const index = RUNTIME_WRAPPER_COMMAND.length;

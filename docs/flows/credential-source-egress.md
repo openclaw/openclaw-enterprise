@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: "authoring-run/224d5954-94cf-48c2-a7dd-15d94cd74df7"
+last_updated_session: authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4
 ---
 
 # Protected credential request flow
@@ -60,52 +60,60 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-Bundled OpenShell's `InstalledDriver.assertNewStaticProviderUse` refuses new static
-OpenAI sources before material reads and deployments before counterpart probes.
-Retained revisions follow the
+Bundled OpenShell rejects new static OpenAI use via
+`InstalledDriver.assertNewStaticProviderUse`: source refusal precedes material
+reads; deployment refusal precedes counterpart probes. Retained revisions keep
+their provider, authorization, withdrawal and cleanup under the
 [current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
-Static admission hides incompatible types and returns 409 on creation or adoption.
-Refused adoption preserves the Gateway copy. `admitStaticEgressSource` checks both
-declarations before material access.
+Static admission hides incompatible types from capabilities. Creation and adoption
+return 409 on mismatch; refused adoption preserves the Gateway copy.
+`packages/occ/src/credential-egress-admission.ts:admitStaticEgressSource` rechecks both declarations before reading and injecting material.
 
 OCC checks source and Secret grants; adoption requires consent. Version 3 binds
-Sandbox and Proxy to one Driver. `admitProxyPlan` uses Harness settings and consent.
-Empty routes deny all. Plans pin execution, digest, grant and source generation.
-Deployment verifies the unique compatible Provider before transport credentials or
-revision writes. `checkEgressUseIn` checks send and delivery. `createCredentialProxy`
-checks ownership between metadata and material reads. The Console submits settings
-through `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides`.
+Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from Harness
+settings and consent; empty routes deny all. Plans pin execution, digest, grant
+and source generation. Deployment rechecks the unique compatible provider before
+provisioning transport credentials and saving the revision.
+`packages/occ/src/credential-egress-authority.ts:createEgressAuthority` rechecks
+source ownership before reading material and loads fresh policy before each send.
+`apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
+submitted settings for OCC normalization and grant checks.
 
-For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
+For credential-free metadata, `packages/occ/src/credential-egress-admission.ts:admitProxyPlan` rejects
 a Driver grant that differs from the source. Equivalent grants have the same
 digest across property orders. Unprotected revisions remain v2. Only the bundled
 Driver recognizes historical protected plans by original capability IDs for stored
 release or custody settlement.
 
-`validateExecutionAdmission` checks protected pairing before launch. PostgreSQL
-rejects unknown decisions and mixed v2/v3 fields. Upgrade writers before admitting v3.
+Compute's `validateExecutionAdmission` requires pairing only for protected
+revisions. Workers recheck before launch. PostgreSQL rejects unknown decisions
+and mixed v2/v3 fields. Upgrade all writers before admitting v3.
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
-selects the issuer and checks the source without token-read or lifecycle authority.
-Missing or mismatched owners withhold release. Cold sources remain pending.
+For each route, `apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
+selects the issuer, projects the admitted source and checks readiness. Compute has
+observation methods, without token-read or lifecycle authority. Missing or mismatched
+owners refuse release; cold sources remain pending.
 
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
 (`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, and Installation limits.
 Agents with ordinary Gateway sources and no protected sources or Git bindings
 need no Proxy plan. Agents with no sources retain selected Proxy admission.
-`packages/occ/src/index.ts:admitProxyPlan` checks availability before saving an
+`packages/occ/src/credential-egress-admission.ts:admitProxyPlan` checks availability before saving an
 empty protected plan; Kubernetes uses it for runtime-authenticated Dedicated
 Codex without inference access. Preparation repeats both Git refusals.
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
-Sandbox receives Compute's Proxy wiring. Protected sources require admission,
-API-key login and a source-key match. Gateway attachments and auth require Gateway ownership.
+Compute passes Credential Proxy wiring to Sandbox. Protected sources require
+admission, API-key login and an exact source-key match. Only Gateway-owned sources
+receive their exact Gateway attachment and authentication environment.
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
-emits the explicit `/**` inference matcher to admit verified executables through
-credential middleware. The egress Driver checks the full policy against the plan.
+emits `/**` on inference routes so any verified executable in the admitted
+execution can reach the model endpoint through credential middleware.
+The egress Driver compares the full prepared policy against the plan, including
+the explicit matcher.
 
 Authenticated [V1 evidence](../reference/credential-sources/protected-inference.md#loaded-enforcement)
 binds both policies to the Sandbox, instance, policy version, configuration and
@@ -119,26 +127,24 @@ The helper matches the manifest before opening the authenticated listener.
 The provider receives only the verifier; Compute withholds the private status
 revision, port, container name and Pod UID.
 
-Before the first model probe, Compute rechecks committed installation evidence.
-The Sandbox Driver verifies the Sandbox and service and reads the challenge.
-Compute signs the nonce and installation. The listener closes before Codex starts.
-Restart invalidates release. Startup fails closed after 180 seconds. Readiness
-checks neither resolve material nor retry requests. Default Kubernetes reconciles
-[Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration)
-during queued work.
+Before probing the model, Compute verifies the committed installation. The Sandbox Driver checks
+the service and challenge. Compute signs the nonce and installation. The Git Worker rechecks
+ownership and installation before POST. Failed signing permits retry. Lost acknowledgments
+block release. Withdrawal committed after the final ownership read can cross the POST.
+The listener closes before Codex starts. Restart invalidates release. Startup times out after 180 seconds.
+Reconciliation can repeat readiness checks without resolving material or retrying
+business requests. Active revisions require queued work; default Kubernetes has
+no periodic maintenance for [Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration).
 
-For repository network policy, the launcher verifies Compute's signature over
-the startup ID, enrolled path and nonce before probing. Legacy launchers check the
-startup ID and synthetic path. The Git authority refuses marked requests before
-credential lookup. Unmarked discovery uses regular Git authorization.
-
-`openshell-git-runtime.ts:observeHeldPreview` logs
+During held Git enrollment, `openshell-git-runtime.ts:observeHeldPreview` logs
 [curl and response failures](../reference/repository-credentials/protected-openshell-git.md#worker-log).
-An unconfirmed probe blocks credential delivery and release with `bootstrap_failed`.
+An unconfirmed one-shot probe blocks the route with `bootstrap_failed` before credential delivery or release.
 
-`openshell-git-installation.ts:observeOpenShellGitInstallation` requires a completed model
-OBSERVE per active environment, including rotations. Stale or incomplete receipts
-keep the route pending and preserve the launch records.
+`openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
+OBSERVE per active environment for observed Git routes, including rotations.
+`ObservedHookPreview.completedModelReceipt` caches completion per environment revision.
+Stale or incomplete model receipts keep the route pending without changing the
+original launch witness or startup acknowledgment.
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -165,8 +171,7 @@ Ambiguity refuses. OCC rechecks pins around provider calls and at material acces
 send and response release; changes restored between checks escape detection.
 Only one exact route match reserves a UUIDv7 ID before capture or policy I/O.
 Creation fixes its 30-second replay horizon; [capacity is bounded](../reference/drivers/credential-proxy.md#request-time-capacity).
-Unsupported or ambiguous operations refuse before reservation. `createCredentialProxy`
-audits only when exactly one refused route reports, exactly once with a valid rule.
+Unsupported or ambiguous operations refuse before reservation. The authority audits only a unique refusal with a valid rule.
 It records execution and exact request ID before capture or credential access.
 Persistence failure refuses as authority-unavailable.
 
@@ -178,7 +183,7 @@ cannot be substituted by an old executable-restricted grant.
 Each check requires a fresh platform transaction; enclosing transactions refuse to
 prevent IAM snapshot reuse. It verifies current Namespace/Agent state, admitted revision,
 installation, source generation, withdrawal and exact Agent source permission.
-`credentialNamespace` supplies Compute's runtime placement to the Driver; IAM and audit
+`packages/occ/src/credential-source-drivers.ts:credentialNamespace` supplies Compute's runtime placement to the Driver; IAM and audit
 retain logical Namespace identity. The Driver requeries policy-status evidence against
 the stored fence. Replacement, missing evidence or changed configuration refuses even
 if the saved installation was valid. Denials record phase and internal request attribution
@@ -284,37 +289,41 @@ grant selects model and destination. Resumed reasoning input can carry
 OCC commits withdrawal before provider action. Under the Agent lock,
 `packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` records the
 source or repository compare-and-reduce request in `credential_delivery_reductions`.
-Concurrent reductions wait; recovery only observes. The store separately constrains policy and material reduction receipts.
+Concurrent reductions wait; recovery observes without another capability probe or
+mutation. The store separately constrains policy and material reduction receipts.
 
 Only exact-dispatch Git uses reduction v2. Online and observed-hook Git retain v5/v6. Ordinary v3 uses reduction v1 only when the Driver
 explicitly declares it; v2 alone does not authorize v1 or multiple static sources.
 
 Policy requires the exact observed operation, stable recipient and retained plan;
-the original receipt remains. Missing identity, stale operations or invalid
-configuration/policy evidence keeps withdrawal pending. Confirmed replacement recipients can require retirement. Remaining grants persist; the last route leaves deny-all. Settlement and stale
-installation cannot restore withdrawn routes. Reference-peer proof cannot qualify released
+the original receipt stays unchanged. Missing identity, stale operations or invalid
+configuration/policy evidence keeps withdrawal pending. A confirmed replacement
+recipient can require retirement. Remaining grants stay unchanged; the last route leaves deny-all. Settlement and stale
+installation cannot restore withdrawn routes. Reference-peer proof does not qualify released
 Sandboxes or continued model execution.
 
 ### 7. Retain installation custody
 
-Snapshots and bootstrap require confirmed recipients and worker custody
-(`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries`).
+`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` requires
+independent confirmation for registered recipients; snapshots require their reserving
+worker, including bootstrap. Neither grants request authority.
 
-For explicit repository network policy rotations,
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
-rechecks durable ownership after Gateway authentication and material selection;
-otherwise authentication follows release, so withdrawal can precede writing without
-recheck. `releasePreview` checks ownership after Compute signs. Repository-policy
-dispatch checks withdrawal, expiry and supervisor lease; owners cancel unsent
-reservations. Uncertain writes block; Sandbox deletion drops closed routes.
+cancels definitely unsent writes. Uncertain writes remain blocked.
+`release` drops closed routes after Sandbox deletion, preserving refusal.
+`prepare` requires a held launch or explicit installation preview and closes
+another worker's persisted route before credential access. `verifyExecution`
+refuses historical installation-wide renewal. `retireExpiredRepositoryAccess`
+settles the original fenced detach.
 
-`prepare` requires held launch or explicit preview, closing other workers’ routes
-before credential access. `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence`
-checks sessions before transport. v4 and installation-wide v5 cannot issue or renew
-([restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)).
+Before transport startup, `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence`
+checks discovered sessions. Issuance requires selected online delivery or explicit
+observed-hook preview. Historical v4 and installation-wide v5 cannot issue.
+See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
-`openshell-git-route-store.ts:confirmDetached` retains deletion custody, verifying
-the original fence, recipient, material, policy and request without reapplying.
+Deletion retains custody but stops use.
+`apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:confirmDetached`
+verifies the original fence, recipient, material, policy and request without reapplying.
 
 ## Debugging and Verification
 
@@ -343,24 +352,8 @@ None.
 
 ## Changelog
 
-- 2026-11-19 12:19: Qualify rotations. (authoring-run/224d5954-94cf-48c2-a7dd-15d94cd74df7 - 92fe533603b2ffd20853d8e4d39dcc22079974d5)
-
-- 2026-11-19 11:59: Recheck durable ownership at dispatch. (authoring-run/2b8fc8d2-014c-4fdd-8a8a-4b36f8f06904 - 6faced2cc2dd1b68171f9973d28416df77a42f58)
-
-- 2026-11-19 11:36: Fence credential dispatch and launcher release against withdrawal. (authoring-run/e5c553f7-737b-4f9e-a1bb-75ff8aa2e5cc - 88411a2c219e6903d8777d68013ae4b2330ca5a6)
-
 - 2026-11-19 10:37: Check admitted provider identity. (authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4 - 6ff25175b)
-
 - 2026-11-19 09:31: Check static source lifecycles. (authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf - d3749595bd)
-
-- 2026-11-19 05:56: Cancel writes that expire before dispatch. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
-
-- 2026-11-19 05:12: Scope the synthetic Git probe path to legacy bindings. (authoring-run/c7cd8fa9-6181-469c-b712-11fae4a91393 - 42847c74f)
-
-- 2026-11-19 04:52: Verify the Compute signature before sending the repository Git probe. (authoring-run/6d450558-148a-4118-8bc7-31483e18da22 - 52ffc8982)
-
-- 2026-11-19 04:41: Bind the Git probe to launcher enrollment. (authoring-run/0b7efadc-accd-4592-b3d1-65dbdcfbaa17 - 3b7d42bc3)
-
 - 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)

@@ -51,12 +51,15 @@ function denial(result: OpenShellOnlineDecision): Wire {
 const boundedId = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9_-]{22,128}$/.test(value);
 
+export const onlineRequestImplementation = "online-request-authorization";
+
 export interface OpenShellOnlineHttpAuthorityOptions {
   readonly identity: Pick<
     OpenShellEgressIdentityOptions,
     "issuer" | "audience" | "keyId" | "publicKey"
   >;
   readonly registrationName: string;
+  readonly additionalRegistrationName?: string;
   /**
    * Resolve exactly one current execution and admitted binding from the signed sandbox ID and
    * opaque binding ID, then check current source, grant, method and path authority. The signed
@@ -72,6 +75,7 @@ export interface OpenShellOnlineHttpAuthorityOptions {
   readonly authorize: (
     request: OpenShellOnlineHttpRequest,
     signal: AbortSignal,
+    registrationName: string,
   ) => Promise<OpenShellOnlineDecision>;
   readonly budgetMs?: number;
   /** Advertise a pinned REST-only policy set. Each binding must name a release in that set. */
@@ -245,6 +249,9 @@ export function createOpenShellOnlineHttpAuthority(
       identity.sub === options.identity.issuer &&
       identity.sandbox_id === undefined) ||
     supervisor(identity) !== undefined;
+  const acceptsRegistration = (name: unknown): name is string =>
+    typeof name === "string" &&
+    (name === options.registrationName || name === options.additionalRegistrationName);
   const acceptedBinding = (config: unknown) => {
     const profile = options.httpPolicySet;
     const id = bindingId(config, profile !== undefined);
@@ -265,7 +272,7 @@ export function createOpenShellOnlineHttpAuthority(
         describeOpenShellMiddleware(
           call.request.gateway,
           options.identity.audience,
-          "online-request-authorization",
+          onlineRequestImplementation,
           options.httpPolicySet,
         );
       if (description) {
@@ -278,7 +285,7 @@ export function createOpenShellOnlineHttpAuthority(
       callback(null, {
         valid:
           control(claims(call)) &&
-          call.request.middleware_name === options.registrationName &&
+          acceptsRegistration(call.request.middleware_name) &&
           acceptedBinding(call.request.config),
       });
     },
@@ -302,6 +309,7 @@ export function createOpenShellOnlineHttpAuthority(
       const expiresAt = startedAt + Math.min(budgetMs, Number(call.getDeadline()) - Date.now());
       const expired = () => !(performance.now() < expiresAt);
       const sandboxId = supervisor(claims(call));
+      const registrationName = call.request.middleware_name;
       const request =
         sandboxId &&
         !expired() &&
@@ -314,7 +322,7 @@ export function createOpenShellOnlineHttpAuthority(
       if (
         !sandboxId ||
         !request ||
-        call.request.middleware_name !== options.registrationName ||
+        !acceptsRegistration(registrationName) ||
         (options.httpPolicySet !== undefined && !acceptedBinding(call.request.config)) ||
         pending >= pendingDecisionCapacity ||
         (sandboxPending.get(sandboxId) ?? 0) >= pendingDecisionSandboxShare ||
@@ -341,7 +349,7 @@ export function createOpenShellOnlineHttpAuthority(
         .then(() =>
           controller.signal.aborted || expired()
             ? "deny"
-            : options.authorize(request, controller.signal),
+            : options.authorize(request, controller.signal, registrationName),
         )
         .finally(() => {
           pending -= 1;

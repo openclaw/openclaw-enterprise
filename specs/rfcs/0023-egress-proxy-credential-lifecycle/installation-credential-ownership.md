@@ -53,7 +53,7 @@ A rejected withdrawal leaves the old policy in force and cannot count as complet
 
 - [TokenServiceDriver](../../../packages/contracts/src/drivers/token-service/index.ts) owns the six source lifecycle operations. OCC validates and persists its registration and supplies the recorded reference to trusted consumers. Client-registration material has a separate Installation identity and no delivery binding.
 - [Plugin deployment](../../../packages/contracts/src/drivers/plugin/deployment.ts) describes one plugin at a time. Tool IDs connect each named credential to its consumer and reviewed request requirements. An installed plugin may declare a credential requirement with zero connected accounts.
-- [Sandbox deployment](../../../packages/contracts/src/drivers/sandbox/deployment.ts) and [proxy deployment](../../../packages/contracts/src/drivers/credential-proxy/deployment.ts) share [deployment references and policies](../../../packages/contracts/src/credential-deployment.ts). Compute supplies both policies for the same target incarnation. Their implementing Drivers observe current desired state independently. Each conversion of an existing Driver and its real caller must land together.
+- [Sandbox deployment](../../../packages/contracts/src/drivers/sandbox/deployment.ts) and [proxy deployment](../../../packages/contracts/src/drivers/credential-proxy/index.ts) share [deployment references and policies](../../../packages/contracts/src/credential-deployment.ts). Compute supplies both policies for the same target incarnation. Their implementing Drivers observe current desired state independently. Each conversion of an existing Driver and its real caller must land together.
 
 ## Qualification
 
