@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { PUBLIC_GITHUB_READ_SKILL } from "../../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
 import { installPublicGithubReadFixture } from "../../../tests/helpers/public-github-read-k3d.mjs";
-import { failureSecrets, redactedOutputTail } from "../failure-redaction.ts";
+import { failureSecrets, redactedOutput, redactedOutputTail } from "../failure-redaction.ts";
 import { compareEvents, eventObservedTime } from "../kubernetes-event-time.ts";
 import {
   log,
@@ -734,8 +734,10 @@ export async function diagnostics(stack: (LocalSetup & Partial<SmokeStack>) | un
         cli(stack, ["agent", "logs", agent.id, "--source", source, "--tail", "300"]),
       );
     }
+    // The log follower keeps whole lines, so no line here starts inside a credential.
     for (const [index, output] of (agent.stoppedGatewayLogs ?? []).entries()) {
-      process.stdout.write(`----- ${agent.label} stopped gateway ${index + 1} logs\n${output}\n`);
+      const shown = redactedOutput(output, failureSecrets([process.env]));
+      process.stdout.write(`----- ${agent.label} stopped gateway ${index + 1} logs\n${shown}\n`);
     }
   }
   try {

@@ -503,12 +503,22 @@ export function redactOutputLines(
   return maskPrivateKeyLines(lines).map((line) => redactOutputLine(line, secrets, root, limit));
 }
 
-// The last `limit` characters of a command's output, for a log anyone who can read the run may
-// see. The lines are redacted as a failed file's output is; when the output was longer, the
-// first line of the redacted text is dropped, since it holds what is left of the cut one.
+// Whole lines of a command's output, for a log anyone who can read the run may see, redacted
+// as a failed file's output is.
+export function redactedOutput(text: string, secrets: RedactionSecrets) {
+  return redactOutputLines(text.split("\n"), secrets, "", failureInputLimit).join("\n");
+}
+
+// The last `limit` characters of a command's output, redacted as redactedOutput does. When the
+// output was longer, the first line of the redacted text is dropped, since it holds what is left
+// of the cut one; a fixed marker says so when nothing is left after it.
 export function redactedOutputTail(text: string, limit: number, secrets: RedactionSecrets) {
-  const lines = redactOutputLines(text.slice(-limit).split("\n"), secrets, "", failureInputLimit);
-  return withoutCutLine(lines.join("\n"), text.length > limit);
+  const cut = text.length > limit;
+  const shown = withoutCutLine(redactedOutput(text.slice(-limit), secrets), cut);
+  if (cut && shown === "") {
+    return `[diagnostics: output cut at ${limit} characters; first line dropped]`;
+  }
+  return shown;
 }
 
 // One line of a failed file's output for the diagnostics report.

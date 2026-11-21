@@ -688,19 +688,39 @@ async function smokeStdout(module: string, call: string, env: NodeJS.ProcessEnv 
   return stdout;
 }
 
+// The error message of a command that writes `output` to stderr and fails.
+async function failedRunMessage(output: string) {
+  const failure = await run(
+    process.execPath,
+    ["-e", "process.stderr.write(require('node:fs').readFileSync(0, 'utf8')); process.exit(3)"],
+    { input: output },
+  ).then(
+    () => assert.fail("the command must fail"),
+    (error: unknown) => error as Error,
+  );
+  assert.match(failure.message, /exited 3\n/u);
+  return failure.message;
+}
+
 test("a failed command's error message redacts its stderr tail from a whole line", async (t) => {
-  await assertTailsRedacted(t, 4_000, async (output) => {
-    const failure = await run(
-      process.execPath,
-      ["-e", "process.stderr.write(require('node:fs').readFileSync(0, 'utf8')); process.exit(3)"],
-      { input: output },
-    ).then(
-      () => assert.fail("the command must fail"),
-      (error: unknown) => error as Error,
+  await assertTailsRedacted(t, 4_000, failedRunMessage);
+});
+
+test("a cut stderr tail with no whole line left prints a marker instead", async () => {
+  // One line longer than the 4,000-character tail, with and without a final line break. All
+  // that is left after the cut is part of that line, which is dropped, so the reader must see
+  // why the block is empty. The marker is fixed text: nothing of the output is in it.
+  const line = `fixture prefix ${"filler ".repeat(600)}${cutCredentials
+    .filter((credential) => !credential.text.includes("\n"))
+    .map((credential) => credential.text)
+    .join(" ")}`;
+  for (const output of [line, `${line}\n`]) {
+    const message = await failedRunMessage(output);
+    assert.equal(
+      message.slice(message.indexOf("exited 3\n") + "exited 3\n".length),
+      "[diagnostics: output cut at 4000 characters; first line dropped]",
     );
-    assert.match(failure.message, /exited 3\n/u);
-    return failure.message;
-  });
+  }
 });
 
 test("diagnostics redact command output in the job log from a whole line", async (t) => {
@@ -733,6 +753,47 @@ test("the cluster watch log after a failed setup is redacted from a whole line",
     await writeFile(log, text);
     return smokeStdout("setup.ts", `printWatchLog(${JSON.stringify(log)})`);
   });
+});
+
+test("diagnostics redact the logs kept from a stopped gateway", async (t) => {
+  setEnvironment(t, { OCE_SMOKE_FIXTURE_REGISTERED: registeredCutSecret });
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-stopped-gateway-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // With no cluster, every other read diagnostics makes fails at once and is reported as
+  // unavailable; the kept log is printed from the Agent record the stop filled.
+  await writeCommand(directory, "docker", "exit 1");
+  await writeCommand(directory, "kubectl", "exit 1");
+  const kept = join(directory, "stopped-gateway.log");
+  // The log follower keeps whole lines, so each credential starts on its own line.
+  await writeFile(
+    kept,
+    [
+      "gateway started",
+      ...cutCredentials.map((credential) => `gateway ${credential.text}`),
+      "gateway shutdown completed cleanly in 12ms",
+    ].join("\n"),
+  );
+  const stack = `{
+    kubeconfig: "missing",
+    context: "missing",
+    namespaceId: "ns_missing",
+    state: { platformNamespace: "missing" },
+    api: async () => { throw new Error("no API"); },
+    agents: [{
+      id: "agent_missing",
+      label: "fixture",
+      stoppedGatewayLogs: [await (await import("node:fs/promises")).readFile(${JSON.stringify(kept)}, "utf8")],
+    }],
+  }`;
+  const printed = await smokeStdout("reader.ts", `diagnostics(${stack})`, {
+    ...process.env,
+    PATH: commandPath(directory),
+  });
+  assert.match(printed, /----- fixture stopped gateway 1 logs\ngateway started\n/u);
+  assert.match(printed, /\ngateway shutdown completed cleanly in 12ms\n/u);
+  for (const value of cutCredentials) {
+    assertAbsent(printed, value.secret, `stopped gateway logs: ${value.name}`);
+  }
 });
 
 registerImageCases();
