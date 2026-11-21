@@ -3,7 +3,6 @@ import {
   isSecretHarnessAuth,
   isServiceAccountHarnessAuth,
   type AuthorizationRequest,
-  type HarnessAuthBinding,
   type Namespace,
   type ResourceRef,
   type Secret,
@@ -13,7 +12,7 @@ import {
   type SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
-import type { AgentProvisioningConfigurationInput } from "./agent-provisioning.ts";
+import { parseProvisioningPlan } from "./agent-provisioning.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -44,14 +43,6 @@ export interface UpdateSecretInput {
   readonly value: string;
 }
 
-type ProvisioningRecord = NonNullable<
-  Awaited<ReturnType<PlatformReadView["provisioning"]["findByWorkId"]>>
->;
-type ConsumerProvisioningPlan = {
-  readonly configuration: Pick<AgentProvisioningConfigurationInput, "secretBindings">;
-  readonly harnessAuth: HarnessAuthBinding | null;
-};
-
 interface SecretOperationsDependencies {
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<
@@ -73,7 +64,6 @@ interface SecretOperationsDependencies {
   readonly nextIdentifier: (kind: "secret") => string;
   readonly timestamp: () => string;
   readonly registerRollback: (compensate: () => Promise<void>) => void;
-  readonly provisioningPlan: (record: ProvisioningRecord) => ConsumerProvisioningPlan;
 }
 
 /**
@@ -440,9 +430,9 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
     ) {
       return false;
     }
-    let plan: ConsumerProvisioningPlan;
+    let plan: ReturnType<typeof parseProvisioningPlan>;
     try {
-      plan = deps.provisioningPlan(record);
+      plan = parseProvisioningPlan(record);
     } catch (error) {
       if (error instanceof DependencyUnavailableError) {
         throw error;

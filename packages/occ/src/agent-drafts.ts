@@ -19,6 +19,7 @@ import {
   type RepositoryBindingRequest,
   type ResourceRef,
   type SecretBindings,
+  type ComputeDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
@@ -27,6 +28,7 @@ import {
   type AgentCredentialAccess,
 } from "./agent-credential-access.ts";
 import {
+  GATEWAY_MANAGED_MODE_UNSUPPORTED,
   type HarnessResolver,
   type createSavedAgentTopologyValidator,
 } from "./agent-harness-topology.ts";
@@ -48,6 +50,7 @@ import {
   QualifiedAuthorizationDeniedError,
   ResourceStateConflictError,
   ScopeViolationError,
+  ConfigurationHarnessError,
 } from "./errors.ts";
 import {
   harnessAuthBinding,
@@ -139,12 +142,8 @@ interface AgentDraftDependencies {
       values: Readonly<OpenClawConfigurationDocument>;
     },
   ) => Promise<Readonly<Configuration>>;
-  readonly authorizeGatewayManagedModeChange: (
-    principalId: string,
-    required: boolean,
-  ) => Promise<void>;
-  readonly requireGatewayManagedModeSupport: (enabled: boolean) => void;
-  readonly gatewayManagedModeSupported: () => boolean;
+  readonly installationId: string;
+  readonly selectedCompute: () => ComputeDriver | undefined;
   readonly refuseRepositoryNetworkOverlap: (
     principalId: string,
     policy: Awaited<ReturnType<PlatformReadView["sandboxPolicies"]["find"]>>,
@@ -292,6 +291,43 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     return { ...configuration, generation: prepared.generation };
   }
 
+  /**
+   * A new Agent's managed mode defaults to whether the selected Compute Driver enforces it, so
+   * an Agent on SSH Compute (or a Driver that does not declare support) is saved deployable
+   * instead of failing at its first deploy (finding 2676). The default needs no Installation
+   * administer: there is no enforcement to opt out of. Without a selected Compute it is on.
+   */
+  function gatewayManagedModeSupported(): boolean {
+    const compute = dependencies.selectedCompute();
+    return compute === undefined || compute.supportsGatewayManagedMode === true;
+  }
+
+  // Agent save refuses a managed mode the selected Compute Driver cannot apply, with deploy's
+  // message, so it fails at save rather than at the next deploy (finding 2676).
+  function requireGatewayManagedModeSupport(gatewayManagedMode: boolean): void {
+    if (gatewayManagedMode && !gatewayManagedModeSupported()) {
+      throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
+    }
+  }
+
+  async function authorizeGatewayManagedModeChange(
+    principalId: string,
+    required: boolean,
+  ): Promise<void> {
+    if (required) {
+      // The denial names gatewayManagedMode: the rest of the request needs no Installation grant
+      // (finding 2691).
+      await dependencies.authority
+        .authorize(principalId, "administer", {
+          kind: "installation",
+          id: dependencies.installationId,
+        })
+        .catch((error: unknown) => {
+          throw QualifiedAuthorizationDeniedError.qualify(error, "gateway_managed_mode");
+        });
+    }
+  }
+
   async function createAgent(
     principalId: string,
     input: CreateAgentInput,
@@ -320,7 +356,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     }
     const gatewayManagedMode = normalizeGatewayManagedMode(
       input.gatewayManagedMode,
-      dependencies.gatewayManagedModeSupported(),
+      gatewayManagedModeSupported(),
     );
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
@@ -333,11 +369,8 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         namespaceId: input.namespaceId,
       };
       await dependencies.authority.authorize(principalId, "create", target);
-      await dependencies.authorizeGatewayManagedModeChange(
-        principalId,
-        input.gatewayManagedMode === false,
-      );
-      dependencies.requireGatewayManagedModeSupport(gatewayManagedMode);
+      await authorizeGatewayManagedModeChange(principalId, input.gatewayManagedMode === false);
+      requireGatewayManagedModeSupport(gatewayManagedMode);
       const namespace = await lockNamespace(state, input.namespaceId);
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
       // while this write waited stops it before it leaves a durable Owner binding or grant.
@@ -481,15 +514,12 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       id: input.namespaceId,
       namespaceId: input.namespaceId,
     });
-    await dependencies.authorizeGatewayManagedModeChange(
+    await authorizeGatewayManagedModeChange(
       principalId,
       normalizeGatewayManagedMode(input.gatewayManagedMode, true) === false,
     );
-    dependencies.requireGatewayManagedModeSupport(
-      normalizeGatewayManagedMode(
-        input.gatewayManagedMode,
-        dependencies.gatewayManagedModeSupported(),
-      ),
+    requireGatewayManagedModeSupport(
+      normalizeGatewayManagedMode(input.gatewayManagedMode, gatewayManagedModeSupported()),
     );
     await dependencies.transactions.read(async (state) => {
       const namespace = await exactNamespace(state, input.namespaceId);
@@ -601,11 +631,11 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       }
       const configurationId = input.configurationId ?? agent.configurationId;
       if (gatewayManagedMode !== undefined) {
-        await dependencies.authorizeGatewayManagedModeChange(
+        await authorizeGatewayManagedModeChange(
           principalId,
           gatewayManagedMode !== agent.gatewayManagedMode,
         );
-        dependencies.requireGatewayManagedModeSupport(gatewayManagedMode);
+        requireGatewayManagedModeSupport(gatewayManagedMode);
       }
       const configuration = await readAgentConfiguration(
         state,

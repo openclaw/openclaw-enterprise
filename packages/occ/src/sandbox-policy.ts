@@ -23,6 +23,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type { DriverConfigurationRegistry } from "./configuration-registry.ts";
+import type { createCredentialEgressAdmission } from "./credential-egress-admission.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -41,11 +42,12 @@ interface SandboxPolicyDependencies {
   readonly ceiling: readonly SandboxNetworkGrant[];
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "authorizationDecision">;
-  readonly protectedExecutionApplies: (
-    state: PlatformReadView,
-    agent: Readonly<Agent>,
-    revision: Readonly<AgentRevision> | undefined,
-  ) => Promise<boolean>;
+  readonly egressAdmission: Pick<
+    ReturnType<typeof createCredentialEgressAdmission>,
+    "ordinaryModelBinding"
+  >;
+  readonly hasCredentialProxy: () => boolean;
+  readonly allowsOrdinaryCredentialGateway: () => boolean;
   readonly record: (
     state: PlatformUnitOfWork,
     operation: Parameters<PlatformUnitOfWork["operations"]["append"]>[0],
@@ -196,6 +198,26 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     }
   }
 
+  async function protectedExecutionApplies(
+    state: PlatformReadView,
+    agent: Readonly<Agent>,
+    activeRevision: Readonly<AgentRevision> | undefined,
+  ): Promise<boolean> {
+    if (activeRevision !== undefined && !unprotectedPolicyRevision(activeRevision)) {
+      return true;
+    }
+    if (!dependencies.hasCredentialProxy()) {
+      return false;
+    }
+    if (
+      !dependencies.allowsOrdinaryCredentialGateway() ||
+      (agent.repositoryBindings?.length ?? 0) > 0
+    ) {
+      return true;
+    }
+    return !(await dependencies.egressAdmission.ordinaryModelBinding(state, agent));
+  }
+
   async function authorizePolicyEdit(principalId: string, namespaceId: string, agentId: string) {
     await authorize(principalId, "manage_policy", {
       kind: "agent",
@@ -319,7 +341,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             agent.activeRevisionId === undefined
               ? undefined
               : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
-          if (await dependencies.protectedExecutionApplies(state, agent, active)) {
+          if (await protectedExecutionApplies(state, agent, active)) {
             throw new ProtectedExecutionNetworkPolicyError("save");
           }
         }
@@ -373,7 +395,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
           facet,
         ),
         editingEnabled: agent.sandboxPolicyEditing === true,
-        protectedExecution: await dependencies.protectedExecutionApplies(state, agent, revision),
+        protectedExecution: await protectedExecutionApplies(state, agent, revision),
         capability: sandboxDriver()?.networkPolicy ?? null,
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
@@ -546,7 +568,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
           agent.activeRevisionId === undefined
             ? undefined
             : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
-        if (await dependencies.protectedExecutionApplies(state, agent, active)) {
+        if (await protectedExecutionApplies(state, agent, active)) {
           throw new ProtectedExecutionNetworkPolicyError("save");
         }
       }
