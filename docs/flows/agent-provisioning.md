@@ -63,7 +63,7 @@ The Slack editor selects a ready static Source or calls `POST /namespaces/:names
 
 For supported models, Console enrolls a TokenService Source. Codex PAT enrollment can precede Apps discovery. Retries reuse confirmed Sources; check Credentials after uncertain enrollment. Direct authentication runs preflight before writing a Namespace Secret.
 
-Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without saving credentials again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate. A failed job, a different-plan refusal, or one naming a deleted Secret, credential Source, or ServiceAccount takes a fresh ID and unlocks the form for a replacement.
+Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without saving credentials again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate. A failed job, a different-plan refusal, or one naming a deleted Secret, credential Source, or ServiceAccount takes a fresh ID and unlocks the form for a replacement. A deleted channel-editor Secret is dropped from the bindings the replacement resubmits.
 
 Draft creation saves the Configuration and Agent. At deployment, admission checks Source access. OCC-managed transactional Native IAM can create missing exact Agent grants; otherwise, selected IAM must authorize the Agent. Credential-access retry retains the Agent but cannot grant Slack Source access.
 
@@ -242,26 +242,15 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - 2026-11-26 10:14: Replace Slack Namespace Secret selection and Channel validation with Source bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - a4ca743d6a6be2bdeb50bad94cd6718e91a4239d)
 - 2026-11-26 08:44: Trace Slack Channel validation through qualified OCC-owned Gateway Sources and the existing Secret path. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 5ce532c9533b8f14aabb245f4dd979c2449ec23f)
 - 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)
+- 2026-11-20 21:40: Follow the maintainer review: drop a deleted channel-editor Secret from the replacement plan; cover the different-plan replay refusal with a fresh request ID in tests. (feat/create-agent-progress - 97543a2e)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-20 17:05: Follow the maintainer review: one live status line naming the last server-confirmed checkpoint replaces the step meter. (feat/create-agent-progress - c615614eb)
+- 2026-11-20 17:05: Follow the maintainer review: one live status line naming the last server-confirmed checkpoint replaces the step meter. (feat/create-agent-progress - 937c9124)
 
-- 2026-11-17 16:05: Clear a deleted Secret from a restored draft's saved status and picker; a new request requires a replacement. (feat/create-agent-progress - 48e0e4d5f)
+- 2026-11-17 16:05: Clear a deleted Secret from a restored draft's saved status and picker; a new request requires a replacement. (feat/create-agent-progress - 3b5b23cb)
 
-- 2026-11-14 11:20: Apply the maintainer's unattributed-failure correction; clear deleted credentials from the saved form state. (feat/create-agent-progress - a4e22c4c0)
+- 2026-11-14 11:20: Apply the maintainer's unattributed-failure correction; clear deleted credentials from the saved form state. (feat/create-agent-progress - 7e26daa2)
 
 - 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
-- 2026-11-13 15:30: Unlock recovery for deleted resources; monotonic meter steps. (feat/create-agent-progress - 8c8f37e60)
-
-- 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
-
-- 2026-11-12 14:06: Record provisioning cancellation. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
-
-- 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
-
-- 2026-11-11 13:40: Follow the maintainer review: checkpoint status line, refused-read explanation, identity-preserving recovery. (feat/create-agent-progress - 7fd8e7475)
-- 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
-
-- 2026-11-06 19:35: Pin the Create Agent step meter in the sticky action bar; a failure names its step and reason there, and Retry appears only once the request has ended. (feat/create-agent-progress - bfcab8f8a)
-- 2026-11-06 18:20: Add the Create Agent step meter, driven by the polled job's status and phase. (feat/create-agent-progress - cd50db29a)
+- 2026-11-13 15:30: Unlock recovery for deleted resources; monotonic meter steps. (feat/create-agent-progress - 2e486274)
 
 [Agent provisioning documentation history](agent-provisioning/history.md) preserves the older dated entries.
