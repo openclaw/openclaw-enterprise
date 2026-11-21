@@ -221,6 +221,11 @@ and can be cleared to inherit. Tool IDs match the JSON keys.
 **Plugins** preloads the catalog with its Service Accounts Secret. In **Configure
 plugins**, add Documents, change Calendar's policy, save, and deploy. The deployment details show the saved plugin settings.
 
+In **Pages/Agent detail → Plugin catalog changed while loading**, confirm stale
+entries are gone, then use **Load plugins**. In **Plugin details changed while
+loading**, confirm **Add** is disabled, then use **Retry tools** for the selected
+plugin. Both stories show the request ID and keep draft selections unchanged.
+
 ## Update
 
 Compare **New version in progress** (v7 deploying) with **Current version during

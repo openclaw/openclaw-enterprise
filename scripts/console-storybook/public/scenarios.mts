@@ -47,6 +47,7 @@ import {
   calendarPlugin,
   pluginCapabilities,
   pluginDetailIdentityRefusal,
+  pluginDiscoveryConflict,
   pluginSetup,
 } from "./plugin-scenario-data.mts";
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
@@ -1024,6 +1025,35 @@ const authoredScenarios = {
       "Select Calendar. Its details show List events, and Add Calendar is available.",
     ],
     gap: "Catalog responses and the saved Agent are simulated.",
+  } satisfies LocalScenario,
+  pluginsCatalogConflict: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin catalog changed while loading",
+    agentPlugins: {},
+    actions: pluginDiscoveryConflict.actions,
+    rules: [pluginDiscoveryConflict.catalogRule],
+    description: "Reload the available plugins after the saved Agent's catalog read is refused.",
+    steps: [
+      "Wait for List events and enabled Add Calendar. Choose Load plugins to simulate the catalog conflict.",
+      "Check that the message points to Load plugins and shows a request ID. Calendar is no longer listed, so its old Add action cannot be reopened.",
+      "Choose Load plugins again, then open Calendar. Wait for List events and enabled Add Calendar.",
+      "Choose Done. Check that Plugin selections JSON contains only the unsaved Project tracker selection and that Save plugin selections is still available.",
+    ],
+    gap: "The saved Agent and catalog responses are simulated.",
+  } satisfies LocalScenario,
+  pluginsDetailsConflict: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin details changed while loading",
+    agentPlugins: {},
+    actions: pluginDiscoveryConflict.actions,
+    rules: [pluginDiscoveryConflict.detailsRule],
+    description: "Retry tool discovery for Calendar after the first details read is refused.",
+    steps: [
+      "Check that Calendar stays selected and Add Calendar is disabled. The message points to Retry tools and shows a request ID.",
+      "Choose Retry tools for Calendar. List events appears, the error clears, and Add Calendar becomes available.",
+      "Choose Done. Check that Plugin selections JSON contains only the unsaved Project tracker selection and that Save plugin selections is still available.",
+    ],
+    gap: "The saved Agent and tool details are simulated.",
   } satisfies LocalScenario,
   ...pluginApproverScenarios(draft),
   ...agentDetailScenarios.versions,

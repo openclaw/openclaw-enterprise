@@ -22,6 +22,8 @@ export interface PluginDiscoveryContext {
 
 type Message = string | (() => string);
 type CatalogRequest = { cursor?: string; q?: string } | { pluginId: string };
+type DiscoveryRetryAction = "Load plugins" | "Load tools" | "Retry tools";
+type DiscoveryEntry = CatalogEntry & { retryAfterConflict?: true | undefined };
 
 interface PluginDiscoveryOptions extends Pick<
   PluginFieldsOptions,
@@ -40,11 +42,23 @@ interface PluginDiscoveryOptions extends Pick<
   availableMessage?: Message;
 }
 
+function isDiscoveryConflict(error: ReturnType<typeof requestFailure>) {
+  return error.status === 409 && error.code === "RESOURCE_CONFLICT";
+}
+
+function discoveryConflictMessage(action: DiscoveryRetryAction) {
+  return `Plugin discovery could not finish with the current setup. Choose ${action} to try again.`;
+}
+
 function discoveryError(
   error: ReturnType<typeof requestFailure>,
   deniedMessage: Message,
   unsupportedMessage: string,
+  retryAction: DiscoveryRetryAction,
 ) {
+  if (isDiscoveryConflict(error)) {
+    return withRequestId(discoveryConflictMessage(retryAction), error.requestId);
+  }
   if (error.status === 403) {
     return typeof deniedMessage === "function" ? deniedMessage() : deniedMessage;
   }
@@ -88,11 +102,14 @@ export function createPluginDiscovery({
   let prefetched = false;
   let searchTimer: number | undefined;
   let requests = new AbortController();
-  let catalog: Pick<PluginFieldCatalog, "status" | "message" | "nextCursor" | "setup"> = {
+  let catalog: Pick<
+    PluginFieldCatalog,
+    "status" | "message" | "nextCursor" | "setup" | "reloadRequired"
+  > = {
     status: "idle",
     nextCursor: null,
   };
-  const entries = new Map<string, CatalogEntry>();
+  const entries = new Map<string, DiscoveryEntry>();
   let pageIds: string[] = [];
   let cursors: (string | null)[] = [null];
   let query = "";
@@ -154,26 +171,57 @@ export function createPluginDiscovery({
     }
   }
 
+  function invalidateHostedDetails(failedId: string, message: string) {
+    // Hosted details share the catalog binding. Keep row identities for manual retry and
+    // discard old tool data, including results that were still in flight at the conflict.
+    invalidateRequests();
+    for (const { id, name, remoteId, managedTools } of entries.values()) {
+      if (remoteId) {
+        const toolError = id === failedId ? message : discoveryConflictMessage("Retry tools");
+        entries.set(id, {
+          id,
+          name,
+          remoteId,
+          managedTools,
+          tools: null,
+          toolError,
+          retryAfterConflict: true,
+        });
+      }
+    }
+    render();
+  }
+
+  function resetCatalogPage(state: typeof catalog = { status: "idle", nextCursor: null }) {
+    pageIds = [];
+    cursors = [null];
+    pageIndex = 0;
+    catalog = state;
+  }
+
   function cancel() {
     const pending = searchTimer !== undefined || catalog.status === "loading";
     invalidateRequests();
     if (pending) {
-      pageIds = [];
-      cursors = [null];
-      pageIndex = 0;
-      catalog = { status: "idle", nextCursor: null, setup: catalog.setup };
+      resetCatalogPage(
+        catalog.reloadRequired
+          ? { ...catalog, status: "error" }
+          : { status: "idle", nextCursor: null, setup: catalog.setup },
+      );
     }
     render();
   }
 
   function scheduleSearch(q: string) {
+    query = q.trim();
+    if (catalog.reloadRequired) {
+      // Keep the recovery action explicit while still retaining the latest query.
+      cancel();
+      return;
+    }
     // Invalidate on input, before the delay, so an older response cannot fill this query.
     invalidateRequests();
-    query = q.trim();
-    pageIds = [];
-    cursors = [null];
-    pageIndex = 0;
-    catalog = { status: "idle", nextCursor: null, setup: catalog.setup };
+    resetCatalogPage({ status: "idle", nextCursor: null, setup: catalog.setup });
     if (context.isCurrent() && canDiscover() && !isPending()) {
       catalog.status = "loading";
       searchTimer = setTimeout(() => {
@@ -197,10 +245,7 @@ export function createPluginDiscovery({
     prefetched = false;
     query = "";
     fields.resetSearch();
-    pageIds = [];
-    cursors = [null];
-    pageIndex = 0;
-    catalog = { status: "idle", nextCursor: null };
+    resetCatalogPage();
     update();
   }
 
@@ -220,10 +265,7 @@ export function createPluginDiscovery({
     }
     if (queryChanged) {
       query = search;
-      cursors = [null];
-      pageIndex = 0;
-      pageIds = [];
-      catalog = { status: "idle", nextCursor: null };
+      resetCatalogPage(catalog.reloadRequired ? catalog : undefined);
     }
     let nextPageIndex = pageIndex;
     let cursor = cursors[nextPageIndex];
@@ -274,10 +316,14 @@ export function createPluginDiscovery({
         context.onExpired();
         return;
       }
+      if (isDiscoveryConflict(error)) {
+        entries.clear();
+        resetCatalogPage({ status: "error", nextCursor: null, reloadRequired: true });
+      }
       catalog = {
         ...catalog,
         status: "error",
-        message: discoveryError(error, deniedMessage, unsupportedMessage),
+        message: discoveryError(error, deniedMessage, unsupportedMessage, "Load plugins"),
       };
     } finally {
       if (context.isCurrent() && active === generation) {
@@ -301,7 +347,11 @@ export function createPluginDiscovery({
       if (!entry.remoteId || entry.toolStatus === "loading") {
         return;
       }
-      entries.set(id, { ...entry, toolStatus: "loading", toolError: undefined });
+      entries.set(id, {
+        ...entry,
+        toolStatus: "loading",
+        toolError: entry.retryAfterConflict ? entry.toolError : undefined,
+      });
     }
     const active = generation;
     const currentEntry = () => {
@@ -338,7 +388,13 @@ export function createPluginDiscovery({
               ...current,
               managedTools: { ...pending, status: "loaded", tools: detail.tools ?? [] },
             }
-          : { ...current, ...detail, toolStatus: "loaded", toolError: undefined },
+          : {
+              ...current,
+              ...detail,
+              toolStatus: "loaded",
+              toolError: undefined,
+              retryAfterConflict: undefined,
+            },
       );
     } catch (cause) {
       const current = currentEntry();
@@ -358,7 +414,12 @@ export function createPluginDiscovery({
         pending
           ? "Authenticated tool discovery is unavailable for this connection."
           : unsupportedMessage,
+        pending ? "Load tools" : "Retry tools",
       );
+      if (!pending && isDiscoveryConflict(error)) {
+        invalidateHostedDetails(id, message);
+        return;
+      }
       entries.set(
         id,
         pending
