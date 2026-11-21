@@ -24,14 +24,14 @@ import {
   safeFailureCode,
   validateFailureData,
   validateSuccessResultData,
-  type ControllerWorkAttempt,
-  type ControllerWorkLookup,
-  type DeferredWork,
-  type EnqueueWork,
-  type PermanentFailure,
-  type RetryableFailure,
-  type WorkClaim,
-  type WorkResult,
+} from "./controller-work.ts";
+import type { ControllerWorkAttempt, ControllerWorkLookup, WorkClaim } from "../controller-work.ts";
+import type {
+  DeferredWork,
+  EnqueueWork,
+  PermanentFailure,
+  RetryableFailure,
+  WorkResult,
 } from "./controller-work.ts";
 
 export {
@@ -46,7 +46,6 @@ export type {
   EnqueueWork,
   PermanentFailure,
   RetryableFailure,
-  WorkClaim,
   WorkResult,
 } from "./controller-work.ts";
 import type { RepositoryRevisionOwner } from "../ports/repository-sessions.ts";

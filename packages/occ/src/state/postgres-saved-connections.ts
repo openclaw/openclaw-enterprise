@@ -1,7 +1,7 @@
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type { SavedConnection, Secret } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "../errors.ts";
-import type { SavedConnectionRepository } from "./platform-state.ts";
+import type { SavedConnectionRepository } from "../ports/saved-connections.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 type Row = Record<string, unknown>;

@@ -56,6 +56,10 @@ import {
   ServiceAccountDriverNotConfiguredError,
   WorkClaimLostError,
 } from "./errors.ts";
+import type {
+  AgentProvisioningCheckpoint,
+  AgentProvisioningRecord,
+} from "./ports/agent-provisioning.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import {
@@ -166,10 +170,6 @@ function provisioningFailureMessage(code: string, error: unknown): string {
   return "Agent provisioning could not complete.";
 }
 
-export type AgentProvisioningRecord = NonNullable<
-  Awaited<ReturnType<PlatformReadView["provisioning"]["findByWorkId"]>>
->;
-type AgentProvisioningCheckpoint = Parameters<PlatformUnitOfWork["provisioning"]["checkpoint"]>[1];
 type RunEffect = NonNullable<AgentProvisioningWorkerOptions["runEffect"]>;
 
 interface ProvisioningWorkerDependencies {
