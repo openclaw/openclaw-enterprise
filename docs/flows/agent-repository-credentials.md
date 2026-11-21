@@ -121,7 +121,7 @@ allowlist. Omitted selections persist. `[]` clears them.
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 matches GitHub Backend and registry IDs. It snapshots policy before loading
 packages or registries, preserving protected Driver identity.
-`packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner.
+`packages/occ/src/repository-policy.ts:bindInstallation` binds that owner.
 File-based `repository` uses `built-in` policy, including explicit `repository.policyMode: built-in`. Startup rejects other modes, `drivers.repo` and separate Repo Drivers. Programmatic registration remains available.
 `apps/controller/src/drivers/egress-proxy/openshell-configuration.ts` owns
 OpenShell parsing and chart constraints.

@@ -30,6 +30,7 @@ import {
 import { validateRepositoryTopology } from "./agent-harness-topology.ts";
 import {
   DependencyUnavailableError,
+  DriverSelectionError,
   RepositoryBindingSelectionError,
   RepositoryDriverNotConfiguredError,
   RepositoryOptionsUnavailableError,
@@ -39,6 +40,7 @@ import {
   ScopeViolationError,
 } from "./errors.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
+import { unchangedDriver, type DriverRegistry, type RegisteredDriver } from "./driver-registry.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { exactNamespace, namespaceIdentity } from "./resource-scope.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
@@ -48,21 +50,15 @@ import {
   STANDING_APPROVAL_REFUSALS,
 } from "./repository-approval.ts";
 
-export interface SelectedRepositoryPolicyOwner {
+interface SelectedRepositoryPolicyOwner {
   readonly driver: RepositoryPolicyDriver;
   readonly admission: InstallationRepositoryAdmission | undefined;
   readonly unchanged: () => boolean;
 }
 
 interface RepositoryPolicyDependencies {
-  readonly installationRepositoryAdmission: () => InstallationRepositoryAdmission | undefined;
-  readonly selectedStandingRepositoryAdmission: () => InstallationRepositoryAdmission | undefined;
-  readonly repositoryPermissionOwner: (
-    admission: InstallationRepositoryAdmission | undefined,
-  ) => SelectedRepositoryPolicyOwner | undefined;
-  readonly hasRepositoryDriver: () => boolean;
+  readonly drivers: Pick<DriverRegistry, "hasSelection" | "selectedDriver" | "selection">;
   readonly backends: ReadonlyMap<string, BackendDefinition>;
-  readonly selectedCompute: () => ComputeDriver;
   readonly sandboxDriver: () => SandboxDriver | undefined;
   readonly authority: Pick<ControllerAuthority, "authorize">;
   readonly holdNamespacePolicyActor: (
@@ -149,11 +145,115 @@ function includesBinding(
 }
 
 export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyDependencies) {
+  let installationRepositoryAdmission: InstallationRepositoryAdmission | undefined;
+  let builtInRepositoryIdentity: RegisteredDriver | undefined;
+
+  function bindInstallation(
+    repositoryAdmission: InstallationRepositoryAdmission | undefined,
+    backends: readonly BackendDefinition[],
+  ): void {
+    if (
+      repositoryAdmission === undefined &&
+      backends.some((backend) => "repo" in backend.drivers)
+    ) {
+      throw new DriverSelectionError(
+        "The Installation requires an explicit repository admission owner.",
+      );
+    }
+    if (repositoryAdmission !== undefined) {
+      const backend = dependencies.backends.get(repositoryAdmission.backendId);
+      if (backend?.type !== "github" || backend.drivers.repo !== repositoryAdmission.policy.id) {
+        throw new DriverSelectionError("Repository admission must bind its exact owning Backend.");
+      }
+      if (
+        repositoryAdmission.policyMode !== undefined &&
+        repositoryAdmission.policyMode !== "built-in"
+      ) {
+        throw new DriverSelectionError("The repository policy mode is invalid.");
+      }
+      if (repositoryAdmission.policyMode === "built-in") {
+        const policy = repositoryAdmission.policy;
+        const identity: RegisteredDriver = Object.freeze({
+          driver: policy,
+          id: policy.id,
+          capability: policy.capability,
+          implementation: policy.implementation,
+        });
+        if (
+          identity.capability !== "repo" ||
+          !isNonEmptyString(identity.implementation) ||
+          !unchangedDriver(identity)
+        ) {
+          throw new DriverSelectionError("The bound repository policy is unavailable.");
+        }
+        builtInRepositoryIdentity = identity;
+      }
+      installationRepositoryAdmission = Object.freeze({ ...repositoryAdmission });
+    }
+  }
+
+  function hasBuiltInRepositoryPolicy(): boolean {
+    return installationRepositoryAdmission?.policyMode === "built-in";
+  }
+
+  function builtInBackendDriver(): RepositoryPolicyDriver | undefined {
+    if (installationRepositoryAdmission?.policyMode !== "built-in") {
+      return undefined;
+    }
+    const owner = repositoryPermissionOwner(installationRepositoryAdmission);
+    if (owner === undefined) {
+      throw new DriverSelectionError("The bound repository policy is unavailable.");
+    }
+    return owner.driver;
+  }
+
+  function repositoryPermissionOwner(
+    admission: InstallationRepositoryAdmission | undefined,
+  ): SelectedRepositoryPolicyOwner | undefined {
+    if (admission?.policyMode === "built-in") {
+      const identity = builtInRepositoryIdentity;
+      if (
+        identity === undefined ||
+        identity.driver !== admission.policy ||
+        !unchangedDriver(identity)
+      ) {
+        return undefined;
+      }
+      return {
+        driver: admission.policy,
+        admission,
+        unchanged: () => unchangedDriver(identity),
+      };
+    }
+    let driver: RepositoryPolicyDriver;
+    try {
+      driver = dependencies.drivers.selectedDriver("repo");
+    } catch {
+      return undefined;
+    }
+    if (admission !== undefined && admission.policy !== driver) {
+      throw new DependencyUnavailableError("The bound repository admission owner is not selected.");
+    }
+    return {
+      driver,
+      admission,
+      unchanged: () => {
+        const selected = dependencies.drivers.selection("repo");
+        return selected?.driver === driver && unchangedDriver(selected);
+      },
+    };
+  }
+
+  function selectedStandingRepositoryAdmission(): InstallationRepositoryAdmission | undefined {
+    const admission = installationRepositoryAdmission;
+    return admission?.policyMode === "built-in" ||
+      admission?.policy === dependencies.drivers.selection("repo")?.driver
+      ? admission
+      : undefined;
+  }
+
   function repositoryConfigured(): boolean {
-    return (
-      dependencies.installationRepositoryAdmission()?.policyMode === "built-in" ||
-      dependencies.hasRepositoryDriver()
-    );
+    return hasBuiltInRepositoryPolicy() || dependencies.drivers.hasSelection("repo");
   }
 
   async function listRepositoryOptions(
@@ -188,7 +288,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
     let compute: ComputeDriver;
     try {
-      compute = dependencies.selectedCompute();
+      compute = dependencies.drivers.selectedDriver("compute");
     } catch {
       throw new RepositoryOptionsUnavailableError(
         "The selected Compute Driver cannot support repository options.",
@@ -209,9 +309,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
           : "The selected Compute Driver cannot support repository options with this composition.",
       );
     }
-    const owner = dependencies.repositoryPermissionOwner(
-      dependencies.installationRepositoryAdmission(),
-    );
+    const owner = repositoryPermissionOwner(installationRepositoryAdmission);
     if (owner === undefined) {
       throw new RepositoryOptionsUnavailableError(
         "The selected repository credential Driver is unavailable.",
@@ -300,7 +398,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         namespaceId,
         agent.repositoryBindings,
         "saved",
-        dependencies.selectedStandingRepositoryAdmission(),
+        selectedStandingRepositoryAdmission(),
       );
       if (resolved === undefined) {
         return [];
@@ -357,12 +455,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     repositoryAccess?: RepositoryAccess;
   } {
     const resolve = (bindings: readonly RepositoryBindingRequest[] | undefined) =>
-      repositoryBindingSelections(
-        namespaceId,
-        bindings,
-        "request",
-        dependencies.installationRepositoryAdmission(),
-      );
+      repositoryBindingSelections(namespaceId, bindings, "request");
     if (input.repositoryAccess === undefined) {
       return {
         repositoryBindings: resolve(input.repositoryBindings),
@@ -409,7 +502,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     if (!repositoryConfigured()) {
       throw new RepositoryDriverNotConfiguredError();
     }
-    const owner = dependencies.repositoryPermissionOwner(admission);
+    const owner = repositoryPermissionOwner(admission);
     if (owner === undefined) {
       throw new DependencyUnavailableError(
         "The selected repository credential Driver is unavailable.",
@@ -476,10 +569,14 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   function repositoryBindingSelections(
     namespaceId: string,
     bindings: readonly RepositoryBindingRequest[] | undefined,
-    origin: "request" | "saved" = "request",
-    admission?: InstallationRepositoryAdmission,
+    origin: "request" | "saved",
   ): readonly RepositoryBindingSelection[] | undefined {
-    const resolved = resolveRepositoryBindings(namespaceId, bindings, origin, admission);
+    const resolved = resolveRepositoryBindings(
+      namespaceId,
+      bindings,
+      origin,
+      installationRepositoryAdmission,
+    );
     if (resolved === undefined || bindings === undefined) {
       return undefined;
     }
@@ -503,7 +600,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       agent.namespaceId,
       agent.repositoryBindings,
       "saved",
-      dependencies.installationRepositoryAdmission(),
+      installationRepositoryAdmission,
     );
     if (resolved === undefined) {
       return undefined;
@@ -626,7 +723,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
             agent.namespaceId,
             [selected],
             "saved",
-            dependencies.selectedStandingRepositoryAdmission(),
+            selectedStandingRepositoryAdmission(),
           );
         const binding = resolved?.resolution.bindings[0];
         const scope =
@@ -696,7 +793,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       namespaceId,
       [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
       "saved",
-      dependencies.installationRepositoryAdmission(),
+      installationRepositoryAdmission,
     )!;
     const scope = eligibleRepositoryApprovalScope(resolved.driver, { namespaceId, binding });
     if (
@@ -716,12 +813,14 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   }
 
   return {
+    bindInstallation,
+    hasBuiltInRepositoryPolicy,
+    builtInBackendDriver,
     listRepositoryOptions,
     listAgentStandingApprovals,
     listAgentStandingApprovalScopes,
     removeAgentStandingApproval,
     repositorySettings,
-    resolveRepositoryBindings,
     repositoryBindingSelections,
     admitRepositoryCredentials,
     reconcileAgentBindings,
