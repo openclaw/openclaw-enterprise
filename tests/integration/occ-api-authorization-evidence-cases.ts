@@ -37,9 +37,12 @@ type ConfigureController = (
   options?: ControllerOptions,
 ) => Promise<{ fixture: Fixture; request: FixtureRequest }>;
 
+const stringifyEvidence: (value: readonly AuditEvent[] | ErrorResponse) => string = JSON.stringify;
+
 function assertDependencyUnavailable(response: Awaited<ReturnType<FixtureRequest>>) {
-  const { error } = checkedInjectedBody(response, 503, ErrorResponse);
-  assert.equal(error.code, "DEPENDENCY_UNAVAILABLE");
+  const body = checkedInjectedBody(response, 503, ErrorResponse);
+  assert.equal(body.error.code, "DEPENDENCY_UNAVAILABLE");
+  return body;
 }
 
 export function registerBootstrapAuthorizationEvidenceCase(createFixture: () => Promise<Fixture>) {
@@ -351,7 +354,7 @@ export async function prepareAuditMutations(configureController: ConfigureContro
       ],
     );
     assert.equal(denials[1]?.authorization?.resource.id, targetAgent.id);
-    const recorded = JSON.stringify(memoryAuditSink.events);
+    const recorded = stringifyEvidence(memoryAuditSink.events);
     assert.equal(recorded.includes(fixture.session.cookie), false);
     assert.equal(recorded.includes("never-log-this-request-body"), false);
   }
@@ -410,6 +413,6 @@ export async function verifyDependencyFailure(fixture: Fixture, dependency: "aud
       fixture.iamDriver.authorize = originalAuthorize;
     }
   }
-  assertDependencyUnavailable(response);
-  assert.equal(JSON.stringify(response.body).includes(prefix), false);
+  const body = assertDependencyUnavailable(response);
+  assert.equal(stringifyEvidence(body).includes(prefix), false);
 }
