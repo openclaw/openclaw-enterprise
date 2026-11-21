@@ -7103,6 +7103,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async prepareRevisionWorkloads(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
+    credentialActivationRequested = false,
   ): Promise<ComputeReadiness> {
     this.validateHarnessStorage(revision);
     const execution = this.validateExecutionOrWithdrawPublicGithubRead(revision, context);
@@ -8120,10 +8121,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
               }
             }
           }
-          const credentialProjections = serving
-            ? undefined
-            : (await context!.configureCredentialDeployment!(configuration, signal))
-                .credentialProjections;
+          const credentialProjections =
+            serving || credentialActivationRequested
+              ? undefined
+              : (await context!.configureCredentialDeployment!(configuration, signal))
+                  .credentialProjections;
           if (
             credentialProjections !== undefined &&
             (credentialProjections.length !== staged.bindings.length ||
@@ -8683,7 +8685,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.activateCredentialDeployment(revision, namespace);
       // Enrollment and the Gateway's node binding depend on the launched Harness. Reconcile
       // them after activation while keeping public Agent routes unpublished.
-      const observation = await this.prepareRevision(revision, context);
+      const observation = await this.prepareRevisionWorkloads(revision, context, true);
       if (!observation.ready) {
         throw new ActivationPendingError(
           observation.pendingReason === "WORKSPACE_NODE_PENDING"
