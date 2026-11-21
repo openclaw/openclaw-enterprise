@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
-import { createServer, request as httpRequest } from "node:http";
+import { createServer, Server as HttpServer } from "node:http";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,9 +14,20 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
-import { registerOpenShellCodexReadinessCases } from "./openshell-harness-codex-readiness-cases.ts";
 import {
+  assertCodexHeldFailure,
+  assertHeldServiceHost,
+  codexHeldCases,
+  registerOpenShellCodexReadinessCases,
+} from "./openshell-harness-codex-readiness-cases.ts";
+import {
+  assertHarnessDiagnostics,
+  assertNativeHeldFailure,
   close,
+  readHarnessRecord,
+  nativeHeldCases,
+  readHarnessEvent,
+  registerNativeStatusCases,
   registerOpenShellServiceTransportCases,
 } from "./openshell-harness-service-transport-cases.ts";
 
@@ -38,7 +49,9 @@ registerOpenShellCodexReadinessCases(TOKEN, serviceUrl);
 
 function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
   const directory = mkdtempSync(join(tmpdir(), "openshell-held-failure-"));
+  /** @type {import("./openshell-harness-service-transport-cases.ts").HarnessServer[]} */
   const servers = [];
+  /** @type {unknown[]} */
   const diagnostics = [];
   let appServerStarts = 0;
   const sandbox = {
@@ -64,16 +77,22 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
     require(specifier) {
       if (specifier === "node:http") {
         return {
+          /** @param {import("./openshell-harness-service-transport-cases.ts").HarnessHandler} handler */
           createServer(handler) {
+            /** @type {import("./openshell-harness-service-transport-cases.ts").HarnessServer} */
             const server = { handler, listening: undefined };
             servers.push(server);
             if (http !== undefined) {
+              /** @type {unknown} */
               const real = http.createServer(handler);
+              assert.ok(real instanceof HttpServer, "expected the real HTTP server");
               server.real = real;
               return {
+                /** @param {"error"} event @param {(error: Error & { code?: string }) => void} listener */
                 on(event, listener) {
                   real.on(event, listener);
                 },
+                /** @param {number} port @param {string} host */
                 listen(port, host) {
                   server.listening = { port, host };
                   // The kernel picks a free loopback port, so no other socket can take it
@@ -83,11 +102,13 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
               };
             }
             return {
+              /** @param {"error"} event @param {(error: Error & { code?: string }) => void} listener */
               on(event, listener) {
                 if (event === "error") {
                   server.onError = listener;
                 }
               },
+              /** @param {number} port @param {string} host */
               listen(port, host) {
                 server.listening = { port, host };
               },
@@ -129,11 +150,18 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+  assertHarnessDiagnostics(diagnostics);
   return { servers, diagnostics, appServerStarts };
 }
 
+/**
+ * @param {import("./openshell-harness-service-transport-cases.ts").HarnessHandler} handler
+ * @param {Parameters<import("./openshell-harness-service-transport-cases.ts").HarnessCall>[1]} options
+ */
 function call(handler, { method = "GET", url = "/openclaw/runtime/status", authorization }) {
+  /** @type {number | undefined} */
   let status;
+  /** @type {import("node:http").OutgoingHttpHeaders | undefined} */
   let headers;
   let body = "";
   handler(
@@ -152,7 +180,9 @@ function call(handler, { method = "GET", url = "/openclaw/runtime/status", autho
       },
     },
   );
-  return { status, headers, body: JSON.parse(body) };
+  /** @type {unknown} */
+  const decoded = JSON.parse(body);
+  return { status, headers, body: readHarnessRecord(decoded) };
 }
 
 const providerEnv = { APP_TOKEN_SHA: sha256(TOKEN) };
@@ -165,85 +195,23 @@ const failedProbe = (message) => ({
 
 test("a provider-owned Codex Harness serves its held startup failure only to the transport token holder", async (t) => {
   for (const [name, options, expected] of [
-    [
-      "failed model probe",
-      { probe: failedProbe("stream error: model unavailable") },
-      {
-        check: "model-probe",
-        code: "MODEL_PROBE_FAILED",
-        cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
-      },
-    ],
-    [
-      "rejected model key",
-      { probe: failedProbe("unexpected status 401 Unauthorized: invalid api key") },
-      { check: "model-probe", code: "AUTHENTICATION_FAILED" },
-    ],
-    [
-      "failed login",
-      { login: { status: 1, stderr: "login failed" } },
-      { check: "login", code: "LOGIN_FAILED" },
-    ],
+    ...codexHeldCases(
+      failedProbe("stream error: model unavailable"),
+      failedProbe("unexpected status 401 Unauthorized: invalid api key"),
+    ),
   ]) {
     await t.test(name, () => {
       const { servers, diagnostics, appServerStarts } = runCodexEntrypoint({
         env: providerEnv,
         ...options,
       });
-      assert.equal(appServerStarts, 0, "a held failure never starts the app-server");
-      assert.ok(diagnostics.includes("Harness model authentication probe failed."));
-      const listening = servers.filter((server) => server.listening !== undefined);
-      assert.equal(listening.length, 1);
-      assert.deepEqual(listening[0].listening, { port: 4500, host: "0.0.0.0" });
-      const { handler } = listening[0];
-      // A listen error is logged by code only and the wrapper keeps holding.
-      listening[0].onError(
-        Object.assign(new Error("listen EADDRINUSE 0.0.0.0:4500"), {
-          code: "EADDRINUSE",
-        }),
+      assertCodexHeldFailure(
+        { servers, diagnostics, appServerStarts },
+        expected,
+        TOKEN,
+        sha256(TOKEN),
+        call,
       );
-      assert.equal(diagnostics.at(-1), "Held runtime failure server failed: EADDRINUSE");
-
-      const answer = call(handler, { authorization: `Bearer ${TOKEN}` });
-      assert.equal(answer.status, 200);
-      assert.equal(answer.headers["cache-control"], "no-store");
-      const { checkedAt, ...failure } = answer.body.runtimeFailure;
-      assert.ok(!Number.isNaN(Date.parse(checkedAt)));
-      assert.deepEqual(failure, { component: "agent", ...expected });
-      assert.deepEqual(Object.keys(answer.body), ["runtimeFailure"]);
-      // Lower-case scheme is the same credential.
-      assert.equal(call(handler, { authorization: `bearer ${TOKEN}` }).status, 200);
-
-      for (const authorization of [
-        undefined,
-        "",
-        `Bearer ${TOKEN}x`,
-        `Bearer ${sha256(TOKEN)}`,
-        `Basic ${TOKEN}`,
-        `Bearer  ${TOKEN}`,
-        `Bearer ${TOKEN} extra`,
-      ]) {
-        const refused = call(handler, { authorization });
-        assert.equal(refused.status, 401, String(authorization));
-        assert.deepEqual(refused.body, { error: "unauthorized" });
-      }
-      // The token is checked first: without it every other path and method is the same 401.
-      // With it, anything but the status read (such as the Agent Gateway's app-server
-      // upgrade on /) is told the Harness is unavailable and the held code, nothing more.
-      for (const request of [
-        { url: "/" },
-        { url: "/openclaw/runtime/diagnostics" },
-        { url: "/openclaw/plugin-runtime/status" },
-        { method: "POST" },
-      ]) {
-        const refused = call(handler, request);
-        assert.equal(refused.status, 401, JSON.stringify(request));
-        assert.deepEqual(refused.body, { error: "unauthorized" });
-        const unavailable = call(handler, { ...request, authorization: `Bearer ${TOKEN}` });
-        assert.equal(unavailable.status, 503, JSON.stringify(request));
-        assert.equal(unavailable.headers["cache-control"], "no-store");
-        assert.deepEqual(unavailable.body, { error: "runtime_failure_held", code: expected.code });
-      }
     });
   }
 });
@@ -291,60 +259,7 @@ test("the OpenShell client reads a held failure from the real Harness wrapper th
     http: { createServer },
   });
   const held = servers.find((server) => server.real !== undefined);
-  t.after(() => close(held.real));
-  await new Promise((resolve) =>
-    held.real.listening ? resolve() : held.real.once("listening", resolve),
-  );
-  const heldPort = held.real.address().port;
-  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${heldPort}` });
-  const signal = AbortSignal.timeout(5_000);
-  const document = await client.getServiceDocument(
-    serviceUrl,
-    "/openclaw/runtime/status",
-    TOKEN,
-    signal,
-  );
-  assert.equal(document.status, 200);
-  assert.equal(document.json.runtimeFailure.code, "MODEL_PROBE_FAILED");
-  assert.deepEqual(
-    await client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", "other", signal),
-    { status: 401, json: { error: "unauthorized" } },
-  );
-  // The held wrapper is not a Codex app-server: no WebSocket handshake completes.
-  assert.equal(await client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal), false);
-  // The Agent Gateway's own upgrade gets 503 naming the held code, not a missing route.
-  const upgrade = await new Promise((resolve, reject) => {
-    const request = httpRequest({
-      host: "127.0.0.1",
-      port: heldPort,
-      path: "/",
-      headers: {
-        authorization: `Bearer ${TOKEN}`,
-        connection: "Upgrade",
-        upgrade: "websocket",
-        "sec-websocket-version": "13",
-        "sec-websocket-key": "AAAAAAAAAAAAAAAAAAAAAA==",
-      },
-      signal,
-    });
-    request.on("upgrade", (_response, socket) => {
-      socket.destroy();
-      reject(new Error("the held wrapper must not upgrade"));
-    });
-    request.on("response", (response) => {
-      const chunks = [];
-      response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () =>
-        resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }),
-      );
-    });
-    request.on("error", reject);
-    request.end();
-  });
-  assert.deepEqual(upgrade, {
-    status: 503,
-    body: JSON.stringify({ error: "runtime_failure_held", code: "MODEL_PROBE_FAILED" }),
-  });
+  await assertHeldServiceHost(t, held, TOKEN, serviceUrl);
 });
 
 registerOpenShellServiceTransportCases(TOKEN, serviceUrl);
@@ -471,7 +386,9 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
       http: { createServer },
     });
     const held = servers.find((server) => server.real !== undefined);
-    t.after(() => close(held.real));
+    assert.ok(held?.real);
+    const real = held.real;
+    t.after(() => close(real));
     await new Promise((resolve) =>
       held.real.listening ? resolve() : held.real.once("listening", resolve),
     );
@@ -508,9 +425,12 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
 // A provider-owned dedicated OpenClaw worker (finding 1642) holds a failed model
 // check the same way: it never connects its node, so without this nothing reports
 // the hold and the revision waits for its deadline as WORKSPACE_NODE_PENDING.
+/** @param {import("./openshell-harness-service-transport-cases.ts").NativeEntrypointOptions} options */
 function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout, probeStatus }) {
   const directory = mkdtempSync(join(tmpdir(), "native-held-failure-"));
+  /** @type {import("./openshell-harness-service-transport-cases.ts").HarnessServer[]} */
   const servers = [];
+  /** @type {unknown[]} */
   const diagnostics = [];
   let connectStarts = 0;
   const realFs = nodeRequire("node:fs");
@@ -549,15 +469,19 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
     require(specifier) {
       if (specifier === "node:http") {
         return {
+          /** @param {import("./openshell-harness-service-transport-cases.ts").HarnessHandler} handler */
           createServer(handler) {
+            /** @type {import("./openshell-harness-service-transport-cases.ts").HarnessServer} */
             const server = { handler, listening: undefined };
             servers.push(server);
             return {
+              /** @param {"error"} event @param {(error: Error & { code?: string }) => void} listener */
               on(event, listener) {
                 if (event === "error") {
                   server.onError = listener;
                 }
               },
+              /** @param {number} port @param {string} host */
               listen(port, host) {
                 server.listening = { port, host };
               },
@@ -629,9 +553,10 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+  assertHarnessDiagnostics(diagnostics);
   const events = diagnostics
     .filter((line) => typeof line === "string" && line.startsWith("{"))
-    .map((line) => JSON.parse(line));
+    .map(readHarnessEvent);
   return { servers, diagnostics, events, connectStarts };
 }
 
@@ -640,53 +565,7 @@ const nativeProviderEnv = { APP_TOKEN_SHA: sha256(TOKEN), APP_SERVER_PORT: "1879
 test("a provider-owned native OpenClaw worker serves its held model-check failure to the transport token holder", async (t) => {
   const hostile = "sk-proj-HostileFixtureKey0123456789abcdef";
   for (const [name, upfrontStatus, providerCode, responseHeaderMarker, upfrontStdout, body] of [
-    ["an unclassified 401 without known header names", 3, undefined, "none"],
-    [
-      "an unclassified 401 whose error carries a closed-set code and type",
-      13,
-      undefined,
-      "provider-like",
-      '["json-error-code","no_organization","invalid_request_error"]',
-      {
-        bodyShape: "json-error-code",
-        providerErrorCode: "no_organization",
-        providerErrorType: "invalid_request_error",
-      },
-    ],
-    [
-      "an unclassified 401 whose error has an off-set code and no type",
-      13,
-      undefined,
-      "provider-like",
-      '["json-error-code","other",""]',
-      { bodyShape: "json-error-code", providerErrorCode: "other" },
-    ],
-    [
-      "an unclassified non-JSON 401",
-      23,
-      undefined,
-      "openshell-policy",
-      '["non-json","",""]',
-      { bodyShape: "non-json" },
-    ],
-    [
-      "a 401 whose child output is off-set",
-      15,
-      "missing_api_key",
-      "provider-like",
-      JSON.stringify([hostile, hostile, "Bearer " + hostile]),
-      {},
-    ],
-    ["a rejected key with provider-like headers", 14, "invalid_api_key", "provider-like"],
-    [
-      "a request that arrived at the provider without its credential",
-      15,
-      "missing_api_key",
-      "provider-like",
-    ],
-    ["a key without the endpoint's scope", 6, "insufficient_permissions", "none"],
-    ["an unclassified 401 stamped X-OpenShell-Policy", 23, undefined, "openshell-policy"],
-    ["a rejected key forwarded with the relay's stamp", 34, "invalid_api_key", "mixed"],
+    ...nativeHeldCases(hostile),
   ]) {
     await t.test(name, () => {
       const { servers, diagnostics, events, connectStarts } = runNativeWorkerEntrypoint({
@@ -694,174 +573,15 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
         upfrontStatus,
         upfrontStdout,
       });
-      assert.equal(connectStarts, 0, "a held failure never starts the node");
-      assert.ok(diagnostics.includes("Harness model authentication probe failed."));
-      // The probe event names the HTTP status, a closed-vocabulary code and the
-      // responder's closed-vocabulary source only.
-      const probe = events.find((event) => event.event === "openclaw.model_probe");
-      assert.equal(probe.code, "AUTHENTICATION_FAILED");
-      assert.equal(probe.providerStatus, 401);
-      assert.equal(probe.providerCode, providerCode);
-      assert.equal(probe.responseHeaderMarker, responseHeaderMarker);
-      // The 401 body's closed-set tokens, each only when the child named it.
-      assert.deepEqual(
-        {
-          bodyShape: probe.bodyShape,
-          providerErrorCode: probe.providerErrorCode,
-          providerErrorType: probe.providerErrorType,
-        },
-        {
-          bodyShape: undefined,
-          providerErrorCode: undefined,
-          providerErrorType: undefined,
-          ...body,
-        },
+      assertNativeHeldFailure(
+        { servers, diagnostics, events, connectStarts },
+        { providerCode, responseHeaderMarker, body },
+        TOKEN,
+        sha256(TOKEN),
+        call,
       );
-      assert.equal(probe.cause, undefined);
-      for (const line of diagnostics) {
-        assert.ok(!line.includes("fixture-model-key"), "the credential never reaches the log");
-        assert.ok(!line.includes("Hostile"), "off-set child output never reaches the log");
-      }
-
-      const listening = servers.filter((server) => server.listening !== undefined);
-      assert.equal(listening.length, 1);
-      assert.deepEqual(listening[0].listening, { port: 18790, host: "0.0.0.0" });
-      const { handler } = listening[0];
-      const answer = call(handler, { authorization: `Bearer ${TOKEN}` });
-      assert.equal(answer.status, 200);
-      assert.equal(answer.headers["cache-control"], "no-store");
-      const { checkedAt, ...failure } = answer.body.runtimeFailure;
-      assert.ok(!Number.isNaN(Date.parse(checkedAt)));
-      // The held code and nothing else: no cause, no provider status or text.
-      assert.deepEqual(failure, {
-        component: "agent",
-        check: "model-probe",
-        code: "AUTHENTICATION_FAILED",
-      });
-      assert.deepEqual(Object.keys(answer.body), ["runtimeFailure"]);
-      for (const authorization of [undefined, `Bearer ${TOKEN}x`, `Bearer ${sha256(TOKEN)}`]) {
-        const refused = call(handler, { authorization });
-        assert.equal(refused.status, 401, String(authorization));
-        assert.deepEqual(refused.body, { error: "unauthorized" });
-      }
-      const unavailable = call(handler, { url: "/", authorization: `Bearer ${TOKEN}` });
-      assert.equal(unavailable.status, 503);
-      assert.deepEqual(unavailable.body, {
-        error: "runtime_failure_held",
-        code: "AUTHENTICATION_FAILED",
-      });
     });
   }
 });
 
-test("a provider-owned native OpenClaw worker serves a full-probe failure with its closed-vocabulary cause only", () => {
-  const { servers, diagnostics, events, connectStarts } = runNativeWorkerEntrypoint({
-    env: nativeProviderEnv,
-    upfrontStatus: 0,
-    probeStatus: "rate_limit",
-  });
-  assert.equal(connectStarts, 0);
-  const probe = events.find((event) => event.event === "openclaw.model_probe");
-  assert.equal(probe.code, "MODEL_PROBE_FAILED");
-  assert.deepEqual(probe.cause, { kind: "PROBE_STATUS", detail: "rate_limit" });
-  assert.equal(probe.providerStatus, undefined);
-  for (const line of diagnostics) {
-    assert.doesNotMatch(line, /fixture-model-key|provider-detail/);
-  }
-  const [{ handler }] = servers.filter((server) => server.listening !== undefined);
-  const answer = call(handler, { authorization: `Bearer ${TOKEN}` });
-  assert.equal(answer.status, 200);
-  const { checkedAt, ...failure } = answer.body.runtimeFailure;
-  assert.ok(!Number.isNaN(Date.parse(checkedAt)));
-  assert.deepEqual(failure, {
-    component: "agent",
-    check: "model-probe",
-    code: "MODEL_PROBE_FAILED",
-    cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
-  });
-  assert.doesNotMatch(JSON.stringify(answer.body), /fixture-model-key|provider-detail/);
-  assert.deepEqual(call(handler, { url: "/", authorization: `Bearer ${TOKEN}` }).body, {
-    error: "runtime_failure_held",
-    code: "MODEL_PROBE_FAILED",
-  });
-});
-
-test("a native OpenClaw worker without an exposed port, or with a Compute status port, keeps its held failure private", () => {
-  // A Sandbox provisioned before Compute asked for the exposure: nothing listens.
-  const outboundOnly = runNativeWorkerEntrypoint({});
-  assert.equal(outboundOnly.connectStarts, 0);
-  assert.deepEqual(
-    outboundOnly.servers.filter((server) => server.listening !== undefined),
-    [],
-  );
-  // Compute-owned: the readiness server alone, like the Compute-owned Codex Harness.
-  const computeOwned = runNativeWorkerEntrypoint({
-    env: { ...nativeProviderEnv, OPENCLAW_RUNTIME_STATUS_PORT: "18789" },
-  });
-  assert.equal(computeOwned.connectStarts, 0);
-  assert.deepEqual(
-    computeOwned.servers.map((server) => server.listening),
-    [{ port: 18789, host: "0.0.0.0" }],
-  );
-  // Without Compute's status identity nothing is served there; with it, the readiness
-  // server reports the held check on the status path, as the Codex status server does
-  // (finding 2686), and readiness stays 503.
-  let unidentified;
-  computeOwned.servers[0].handler(
-    { method: "GET", url: "/openclaw/runtime/status", headers: {} },
-    {
-      writeHead(code) {
-        unidentified = code;
-      },
-      end() {},
-    },
-  );
-  assert.equal(unidentified, 404);
-  const identified = runNativeWorkerEntrypoint({
-    env: {
-      OPENCLAW_RUNTIME_STATUS_PORT: "18789",
-      OPENCLAW_AGENT_REVISION_ID: "rev_fixture",
-      OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent",
-      OPENCLAW_POD_UID: "pod-fixture",
-    },
-  });
-  assert.equal(identified.connectStarts, 0);
-  const [{ handler: statusHandler }] = identified.servers;
-  const status = call(statusHandler, {});
-  assert.equal(status.status, 200);
-  const { checkedAt, ...heldCheck } = status.body.runtimeFailure;
-  assert.ok(!Number.isNaN(Date.parse(checkedAt)));
-  assert.deepEqual(
-    { ...status.body, runtimeFailure: heldCheck },
-    {
-      revisionId: "rev_fixture",
-      container: "agent",
-      podUid: "pod-fixture",
-      runtimeFailure: { component: "agent", check: "model-probe", code: "AUTHENTICATION_FAILED" },
-    },
-  );
-  // A present but malformed verifier or port never starts the server (finding 1661): a
-  // loosened check would serve the held failure against a credential nobody can hold.
-  const verifier = sha256(TOKEN);
-  for (const env of [
-    { ...nativeProviderEnv, APP_TOKEN_SHA: "" },
-    { ...nativeProviderEnv, APP_TOKEN_SHA: verifier.toUpperCase() },
-    { ...nativeProviderEnv, APP_TOKEN_SHA: verifier.slice(0, 63) },
-    { ...nativeProviderEnv, APP_TOKEN_SHA: `${verifier}a` },
-    { ...nativeProviderEnv, APP_TOKEN_SHA: `${verifier.slice(0, 63)}g` },
-    { ...nativeProviderEnv, APP_SERVER_PORT: "" },
-    { ...nativeProviderEnv, APP_SERVER_PORT: "0" },
-    { ...nativeProviderEnv, APP_SERVER_PORT: "65536" },
-    { ...nativeProviderEnv, APP_SERVER_PORT: "18790.5" },
-    { ...nativeProviderEnv, APP_SERVER_PORT: "-18790" },
-    { ...nativeProviderEnv, APP_SERVER_PORT: "port" },
-  ]) {
-    const malformed = runNativeWorkerEntrypoint({ env });
-    assert.equal(malformed.connectStarts, 0, JSON.stringify(env));
-    assert.deepEqual(
-      malformed.servers.filter((server) => server.listening !== undefined),
-      [],
-      JSON.stringify(env),
-    );
-  }
-});
+registerNativeStatusCases(TOKEN, nativeProviderEnv, runNativeWorkerEntrypoint, call);
