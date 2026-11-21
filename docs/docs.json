@@ -357,6 +357,10 @@
                   {
                     "page": "guides/topics/agent-revisions",
                     "label": "Agent Revisions"
+                  },
+                  {
+                    "page": "guides/topics/agent-apply",
+                    "label": "Apply an Agent"
                   }
                 ]
               }
@@ -1369,6 +1373,7 @@
               "flows/container-publication",
               "flows/cli-publication",
               "flows/cli-agent-browsing",
+              "flows/cli-agent-apply",
               "flows/github-actions-testing/preparation",
               "flows/agent-repository-credentials",
               "flows/public-github-reads",

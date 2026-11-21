@@ -324,6 +324,11 @@ func (client *Client) CreateAgent(namespaceID string, body jsontext.Value) (any,
 	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents"}, body)
 }
 
+// ProvisionAgent queues first-time provisioning of an Agent from a JSON document.
+func (client *Client) ProvisionAgent(namespaceID string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", "provision"}, body)
+}
+
 // ListAgents lists Agents in a Namespace.
 func (client *Client) ListAgents(namespaceID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents")
