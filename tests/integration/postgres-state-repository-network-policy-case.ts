@@ -486,8 +486,16 @@ export async function editStoredRepositoryGrants(
   const observed = await view();
   assert.deepEqual(observed.policy, preserved);
   assert.equal(observed.repositoryNetworkPolicySaveSupported, true);
+  assert.equal(observed.defaults, null);
+  assert.equal(observed.protectedExecution, true);
   assert.equal(observed.defaultsRevisionId, undefined);
   assert.equal(observed.deployedPolicyVersion, undefined);
+  const edit = await inject("PUT", path, {
+    expectedVersion: preserved.version,
+    additions: [addition],
+  });
+  assert.equal(edit.statusCode, 409, edit.body);
+  assert.deepEqual(await stored(), preserved);
   const apply = await inject("POST", path + "/apply", {
     expectedVersion: preserved.version,
     revisionId: id,

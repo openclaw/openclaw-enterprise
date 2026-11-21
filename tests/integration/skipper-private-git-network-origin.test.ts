@@ -269,6 +269,36 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
     "require receive-pack with the exact issued credential",
   );
 
+  // The synthetic origin must also allow a real primary-A push outside the approval ref.
+  const primaryRef = "refs/heads/issued-primary-control";
+  assert.notEqual(primaryRef, origin.approvalRef);
+  assert.equal(await network.ref(origin.repository, primaryRef), undefined);
+  assert.equal(await network.hasObject(origin.repository, sha), false);
+  const beforePrimaryPush = network.requests().length;
+  await git([
+    "-C",
+    repo,
+    "push",
+    "-q",
+    `${origin.origin}/${origin.repository}.git`,
+    `HEAD:${primaryRef}`,
+  ]);
+  assert.equal(await network.ref(origin.repository, primaryRef), sha);
+  assert.equal(await network.hasObject(origin.repository, sha), true);
+  assert.ok(
+    network
+      .requests()
+      .slice(beforePrimaryPush)
+      .some(
+        (entry) =>
+          entry.repository === origin.repository &&
+          entry.operation === "receive-pack" &&
+          entry.authenticated &&
+          entry.credentialIndex === index,
+      ),
+    "require primary receive-pack with the exact issued credential",
+  );
+
   const pull = (token: string) =>
     send(origin, `/repos/${repo}/pulls`, {
       method: "POST",
