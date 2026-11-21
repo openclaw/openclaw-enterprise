@@ -82,8 +82,8 @@ repository admission can carry the Sandbox Driver's explicitly acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
 identity, version and empty additions before runtime credential provisioning.
-That immutable snapshot remains ineligible for live apply. The policy view reports
-`protectedExecution`.
+That immutable snapshot remains ineligible for live apply. For unreadable scoped revisions, the policy view reports
+`protectedExecution: null`.
 
 Protected Codex repository preparation compiles the revision's qualified artifact
 snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.

@@ -32512,8 +32512,8 @@
                           "type": "object"
                         },
                         "protectedExecution": {
-                          "description": "True while the active revision or the next deploy runs under protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
-                          "type": "boolean"
+                          "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+                          "description": "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone."
                         },
                         "repositoryNetworkPolicySaveSupported": {
                           "description": "Whether the state adapter can save a withdrawal of this Agent's existing repository grants.",

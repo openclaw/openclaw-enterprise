@@ -459,7 +459,8 @@ export async function editStoredRepositoryGrants(
   assert.deepEqual(await stored(), preserved);
   assert.deepEqual(await read(), preserved);
 
-  // Model a compatible controller having admitted and selected a restricted revision.
+  // Model a compatible controller having admitted a repository policy in unprotected execution.
+  assert.equal(revision.executionAdmission.mode, "unprotected");
   const id = `rev_${randomUUID()}`;
   const insert = storedRevisionWriter(pool, revision.id);
   assert.ok(revision.sandboxPolicy);
@@ -487,7 +488,9 @@ export async function editStoredRepositoryGrants(
   assert.deepEqual(observed.policy, preserved);
   assert.equal(observed.repositoryNetworkPolicySaveSupported, true);
   assert.equal(observed.defaults, null);
-  assert.equal(observed.protectedExecution, true);
+  assert.equal(observed.protectedExecution, null);
+  assert.equal(observed.capability, null);
+  assert.match(observed.unavailableReason, /cannot read the active revision/);
   assert.equal(observed.defaultsRevisionId, undefined);
   assert.equal(observed.deployedPolicyVersion, undefined);
   const edit = await inject("PUT", path, {
@@ -495,6 +498,7 @@ export async function editStoredRepositoryGrants(
     additions: [addition],
   });
   assert.equal(edit.statusCode, 409, edit.body);
+  assert.equal(edit.json().error.message, observed.unavailableReason);
   assert.deepEqual(await stored(), preserved);
   const apply = await inject("POST", path + "/apply", {
     expectedVersion: preserved.version,

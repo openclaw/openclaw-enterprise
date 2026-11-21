@@ -334,17 +334,14 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       }
-      const ordinaryPolicy =
-        first === undefined
-          ? await deploymentSandboxPolicy(
-              state,
-              dependencies.authority,
-              principalId,
-              namespace.id,
-              agent.id,
-            )
-          : undefined;
       if (first === undefined) {
+        await deploymentSandboxPolicy(
+          state,
+          dependencies.authority,
+          principalId,
+          namespace.id,
+          agent.id,
+        );
         await dependencies.provisioningWorker.guardAgentProvisioning(
           state,
           namespace.id,
@@ -414,16 +411,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           );
         }
       }
-      const policy =
-        first === undefined
-          ? ordinaryPolicy
-          : await deploymentSandboxPolicy(
-              state,
-              dependencies.authority,
-              principalId,
-              namespace.id,
-              lockedAgent.id,
-            );
+      const policy = await deploymentSandboxPolicy(
+        state,
+        dependencies.authority,
+        principalId,
+        namespace.id,
+        lockedAgent.id,
+      );
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }

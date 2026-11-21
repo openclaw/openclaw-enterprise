@@ -8533,7 +8533,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.policy.repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
 | `data.policy.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.policy.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.protectedExecution` | `boolean` | Yes | True while the active revision or the next deploy runs under protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone. |
+| `data.protectedExecution` | `boolean or null` | Yes | Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone. |
 | `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the state adapter can save a withdrawal of this Agent's existing repository grants. |
 | `data.unavailableReason` | `string` | No | Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list. |
 | `meta` | `object` | Yes | — |

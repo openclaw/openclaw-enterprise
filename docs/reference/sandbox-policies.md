@@ -53,6 +53,12 @@ disabling it stays allowed. When the Installation selects no Sandbox Driver,
 validate, save and apply return the same 409 right after authorization. Policy GET
 then returns `capability: null` and the cause in `unavailableReason`.
 
+If the controller cannot read the active revision of an Agent with saved
+repository grants, GET returns the saved policy with `protectedExecution`,
+`capability` and `defaults` set to `null`. See `unavailableReason`. An
+authorized editor can clear saved grants. Use a compatible controller and
+Worker to inspect or stop the workload and confirm retirement.
+
 The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
 the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS
 `host`, and `ports` containing inclusive `{from,to}` ranges. Defaults grant

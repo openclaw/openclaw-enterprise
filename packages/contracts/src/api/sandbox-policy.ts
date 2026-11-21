@@ -89,9 +89,9 @@ export const SandboxPolicyViewResponse = Type.Object(
         policy: SandboxPolicySchema,
         configuration: Type.Optional(DriverConfigurationDescriptorSchema),
         editingEnabled: Type.Boolean(),
-        protectedExecution: Type.Boolean({
+        protectedExecution: Type.Union([Type.Boolean(), Type.Null()], {
           description:
-            "True while the active revision or the next deploy runs under protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
+            "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
         repositoryNetworkPolicySaveSupported: Type.Boolean({

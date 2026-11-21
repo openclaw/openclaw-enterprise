@@ -368,6 +368,9 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     });
   }
 
+  const unreadableRevisionReason =
+    "This controller cannot read the active revision. Use a compatible controller and Worker to inspect or stop it. You can still clear saved grants.";
+
   async function activePolicyRevision(
     state: PlatformReadView,
     agent: Readonly<Agent>,
@@ -411,7 +414,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         policy.repositoryNetworkPolicy !== undefined,
       );
       const driver = sandboxDriver();
-      const unavailableReason = networkPolicyUnavailable();
+      const unavailableReason =
+        revision === null ? unreadableRevisionReason : networkPolicyUnavailable();
       const defaults =
         revision === null
           ? null
@@ -429,8 +433,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         ),
         editingEnabled: agent.sandboxPolicyEditing === true,
         protectedExecution:
-          revision === null || (await protectedExecutionApplies(state, agent, revision)),
-        capability: sandboxDriver()?.networkPolicy ?? null,
+          revision === null ? null : await protectedExecutionApplies(state, agent, revision),
+        capability: revision === null ? null : (driver?.networkPolicy ?? null),
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
         repositoryNetworkPolicySaveSupported:
@@ -649,7 +653,10 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
           agent,
           previous.repositoryNetworkPolicy !== undefined,
         );
-        if (active === null || (await protectedExecutionApplies(state, agent, active))) {
+        if (active === null) {
+          throw new ResourceStateConflictError(unreadableRevisionReason);
+        }
+        if (await protectedExecutionApplies(state, agent, active)) {
           throw new ProtectedExecutionNetworkPolicyError(
             repositoryNetworkPolicy === undefined ? "save" : "saveRepository",
           );
