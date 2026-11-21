@@ -66,7 +66,14 @@ OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
   node --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-Both modes must pass without skips. The scenario deploys an
+If the host can run only one cluster at a time, keep both paths in the input
+map. Run the command twice. Add `--test-skip-pattern='operator template sizing'`
+after `--test` while the managed cluster runs. Use
+`--test-skip-pattern='managed template sizing'` while the operator cluster runs.
+Each filtered report covers the named stage that ran. Check that both stages
+passed at the same commit.
+
+The scenario deploys an
 Agent through the API, compares its real Pod resources, verifies operator mounts,
 reads and writes a workspace file, and completes a real model turn. Cleanup removes
 the run-owned Agent, role and grant. Each Agent uses the prepared source directly.

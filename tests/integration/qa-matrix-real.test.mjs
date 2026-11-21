@@ -253,7 +253,7 @@ test(
         await stage(
           context,
           `kubernetes/Codex/OpenShell/${workspaceMode}`,
-          "template sizing, workspace access and real model turn",
+          `${workspaceMode} template sizing, workspace access and real model turn`,
           () => verifyOpenShellTemplateResources(context, inputs[workspaceMode], workspaceMode),
           "openshell-template-resources",
         );
