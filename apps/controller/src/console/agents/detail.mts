@@ -3518,9 +3518,14 @@ export async function renderAgentDetail(
         const failure = requestFailure(error);
         proxyUnknown = failure.status === undefined || failure.status >= 500;
         proxyReload.hidden = !proxyUnknown;
-        proxyFeedback.textContent = proxyUnknown
-          ? "The Network proxy may have been saved. Reload this draft before continuing."
-          : describeFailure(error, { mutation: true, form: true });
+        if (proxyUnknown) {
+          const reason = failure.status === 503 ? failure.serverMessage : undefined;
+          proxyFeedback.textContent = reason
+            ? `${reason} Reload this draft before continuing because the save outcome could not be confirmed.`
+            : "The Network proxy may have been saved. Reload this draft before continuing.";
+        } else {
+          proxyFeedback.textContent = describeFailure(error, { mutation: true, form: true });
+        }
         setStatusTone(proxyFeedback, "danger");
       } finally {
         networkProxySaving = false;

@@ -25,6 +25,10 @@ export const NetworkProxySaveError = {
   ...story("networkProxySaveError"),
   name: "Gateway Channel Proxy Save Error",
 };
+export const NetworkProxyEnforcementUnavailable = {
+  ...story("networkProxyEnforcementUnavailable"),
+  name: "Gateway Channel Proxy Enforcement Unavailable",
+};
 export const NetworkProxyPermission = {
   ...story("networkProxyPermission"),
   name: "Gateway Channel Proxy Permission",

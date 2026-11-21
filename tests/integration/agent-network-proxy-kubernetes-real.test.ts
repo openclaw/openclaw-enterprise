@@ -53,7 +53,27 @@ test(
     assert.equal(deployments.items.length, 1);
     const deployment = deployments.items[0].metadata.name as string;
     let fleetStopped = false;
+    let controllerStopped = false;
     const restoreFleet = async () => {
+      if (controllerStopped) {
+        await kubectl(
+          "scale",
+          "deployment",
+          "envoy-gateway",
+          "-n",
+          fleet.envoyNamespace,
+          "--replicas=1",
+        );
+        await kubectl(
+          "rollout",
+          "status",
+          "deployment/envoy-gateway",
+          "-n",
+          fleet.envoyNamespace,
+          "--timeout=120s",
+        );
+        controllerStopped = false;
+      }
       if (!fleetStopped) {
         return;
       }
@@ -69,6 +89,33 @@ test(
       fleetStopped = false;
     };
     context.after(restoreFleet);
+    // Pause reconciliation first so the managed data-plane outage remains observable.
+    controllerStopped = true;
+    await kubectl(
+      "scale",
+      "deployment",
+      "envoy-gateway",
+      "-n",
+      fleet.envoyNamespace,
+      "--replicas=0",
+    );
+    await waitFor("Envoy Gateway controller to stop", async () => {
+      const current = JSON.parse(
+        await kubectl(
+          "get",
+          "deployment",
+          "envoy-gateway",
+          "-n",
+          fleet.envoyNamespace,
+          "-o",
+          "json",
+        ),
+      );
+      return (
+        (current.status.readyReplicas ?? 0) === 0 &&
+        current.status.observedGeneration >= current.metadata.generation
+      );
+    });
     fleetStopped = true;
     await kubectl("scale", "deployment", deployment, "-n", fleet.envoyNamespace, "--replicas=0");
     await waitFor("channel Envoy fleet to stop", async () => {
