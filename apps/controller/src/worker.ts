@@ -86,6 +86,7 @@ import {
   ActivationFailedError,
   ComputePreparationFailedError,
   ActivationPendingError,
+  CredentialDeploymentFailedError,
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   AuditAppendUnavailableError,
@@ -5081,6 +5082,7 @@ export class ControllerWorker {
           // claim's chain too: the revision cannot activate without a new one.
           if (
             error instanceof ActivationFailedError ||
+            error instanceof CredentialDeploymentFailedError ||
             error instanceof CredentialSourceRevisionError ||
             // Finding 2265: a 403 on a private Secret write fails the deployment at once here as
             // in preparation (finding 1770). A maintenance pass keeps the running revision's
@@ -5226,6 +5228,7 @@ export class ControllerWorker {
           error instanceof RepositoryGitProfileUnsupportedError ||
           error instanceof SandboxRevisionUnsupportedError ||
           error instanceof CredentialSourceRevisionError ||
+          error instanceof CredentialDeploymentFailedError ||
           error instanceof ActivationFailedError ||
           // Finding 1770: Kubernetes refused a private Secret write with 403. An operator must
           // change a grant, admission policy or quota first, so no retry can succeed.

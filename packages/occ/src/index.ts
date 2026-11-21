@@ -115,6 +115,7 @@ export type { OperationRefusalHintCode } from "./deployment-work-status.ts";
 export {
   ActivationFailedError,
   ComputePreparationFailedError,
+  CredentialDeploymentFailedError,
   RepositoryExecutionRequiresRedeployError,
   ActivationPendingError,
   agentEntryMessage,
