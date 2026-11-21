@@ -607,6 +607,17 @@ export class KubernetesChannelEgress {
     encoded: string,
   ): Promise<ChannelEgressBinding> {
     const slot = await this.credentialSlot(binding);
+    const listener = await this.read(
+      this.header("EnvoyPatchPolicy", this.slotName(binding.port), this.options.gatewayNamespace),
+    );
+    if (!listener) {
+      throw new Error("Channel listener ownership changed before credential delivery.");
+    }
+    this.verifySlot(listener, binding.port, binding.proxy!.gatewayUid);
+    const current = this.binding(listener);
+    if (current?.id !== binding.id || current.state === "revoking") {
+      throw new Error("Channel listener ownership changed before credential delivery.");
+    }
     const owner = slot.metadata.annotations?.[RECORD];
     const keys = Object.keys(slot.data ?? {});
     if (owner === binding.id) {
@@ -742,17 +753,14 @@ export class KubernetesChannelEgress {
     }
     let slot = await this.credentialSlot(binding);
     const owner = slot.metadata.annotations?.[RECORD];
-    if ((owner === undefined || owner === "idle") && Object.keys(slot.data ?? {}).length === 0) {
-      await this.waitCredentialRoute(binding, false);
-      await this.waitSds(binding, false);
-      return;
-    }
-    if (owner !== binding.id) {
+    if (
+      owner !== binding.id &&
+      !((owner === undefined || owner === "idle") && Object.keys(slot.data ?? {}).length === 0)
+    ) {
       throw new Error("Channel proxy credential slot belongs to another binding.");
     }
-    if (Object.keys(slot.data ?? {}).length !== 0) {
-      slot = await this.replaceCredentialSlot(slot, binding.id, {});
-    }
+    // Fence even an empty slot: a former worker may still hold its previous resourceVersion.
+    slot = await this.replaceCredentialSlot(slot, binding.id, {});
     await this.waitCredentialRoute(binding, false);
     await this.waitSds(binding, false);
     await this.replaceCredentialSlot(slot, "idle", {});
