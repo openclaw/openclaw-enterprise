@@ -31,6 +31,13 @@ import type {
   PresetSummaryWire,
 } from "../../packages/contracts/src/api/resources.ts";
 
+import type { CredentialGatewayDriver } from "../../packages/contracts/src/index.ts";
+import { Check } from "typebox/value";
+import {
+  CredentialSourceResponse,
+  SecretResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -54,6 +61,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  shippedPreset,
   takeLayoutShifts,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -64,6 +72,7 @@ import {
   waitForIdleFetches,
 } from "./console-fetch-accounting.ts";
 import {
+  nativeSandboxDriver,
   configurationPostRequests,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
@@ -425,6 +434,10 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     },
   ];
   const bodies: ProvisionAgentBody[] = [];
+  // Work slots by request ID and back: a recovery resend reuses its job's slot, so reads
+  // map by slot, not by position in the recorded bodies.
+  const slotByRequestId = new Map<string, number>();
+  const workRequestIds = new Map<number, string>();
   let provisionPosts = 0;
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route, request) => {
     provisionPosts += 1;
@@ -449,9 +462,14 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       return;
     }
     const body: ProvisionAgentBody = request.postDataJSON();
-    // Like the API, a known request ID returns its existing job.
-    const work =
-      bodies.findIndex((earlier) => earlier.requestId === body.requestId) + 1 || bodies.length + 1;
+    // Like the API, a known request ID returns its existing job; a new ID takes the next
+    // work slot. Slots map by request ID, so a recovery resend reuses its job's slot.
+    let work = slotByRequestId.get(body.requestId);
+    if (work === undefined) {
+      work = slotByRequestId.size + 1;
+      slotByRequestId.set(body.requestId, work);
+    }
+    workRequestIds.set(work, body.requestId);
     bodies.push(body);
     const url = `/namespaces/${namespace.id}/agents/provision/work_${work}`;
     await route.fulfill(
@@ -492,7 +510,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       json(
         {
           provisioning: {
-            requestId: admission(bodies, 2).requestId,
+            requestId: workRequestIds.get(2),
             workId: "work_2",
             status: "failed",
             phase: "transport",
@@ -525,9 +543,27 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     }),
   );
   let work4Reads = 0;
+  // After the API refuses work_2's retry, the job has finished: its next read succeeds.
+  let work2Finished = false;
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_*`, async (route) => {
     const index = Number(new URL(route.request().url()).pathname.split("_").at(-1));
     const url = `/namespaces/${namespace.id}/agents/provision/work_${index}`;
+    if (index === 2 && work2Finished) {
+      await route.fulfill(
+        json({
+          requestId: workRequestIds.get(2),
+          workId: "work_2",
+          status: "succeeded",
+          phase: "handoff",
+          attemptCount: 2,
+          updatedAt,
+          agentId: agentIds[0],
+          revisionId: "rev_00000000-0000-4000-8000-00000000c0d2",
+          url,
+        }),
+      );
+      return;
+    }
     if (index === 4) {
       work4Reads += 1;
       await route.fulfill(
@@ -541,7 +577,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
               }),
             }
           : json({
-              requestId: admission(bodies, 4).requestId,
+              requestId: workRequestIds.get(4),
               workId: "work_4",
               status: "succeeded",
               phase: "handoff",
@@ -559,7 +595,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     const { agentId: createdAgentId, ...error } = failure;
     await route.fulfill(
       json({
-        requestId: admission(bodies, index).requestId,
+        requestId: workRequestIds.get(index),
         workId: `work_${index}`,
         status: "failed",
         phase: "accepted",
@@ -635,27 +671,41 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   assert.equal(await retry.isVisible(), true);
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
 
-  // A refused retry ends that job: Create Agent submits a new request ID instead of
-  // replaying the failed job.
+  // A refused retry may hide a finished job, so the admitted identity is preserved: the
+  // form stays locked and Create Agent resends the same request ID, which the API answers
+  // with that job instead of admitting a duplicate.
   await retry.click();
   await page
     .getByText(
-      "The provisioning job can no longer be retried. Select Create Agent to submit a new request.",
+      "The provisioning job can no longer be retried. Select Create Agent to resend the same request ID.",
     )
     .waitFor();
   assert.equal(retries, 2);
   assert.equal(await retry.isVisible(), false);
-  await waitForEnabled(page.getByLabel("Agent name"));
+  assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+  work2Finished = true;
+  // The resend carries the kept request ID and recovers the finished job.
+  await submitPolled(2);
+  await page.waitForURL(new RegExp(`/agents/${agentIds[0]}\\?`));
+  assert.equal(bodies.length, 3);
+  assert.equal(admission(bodies, 3).requestId, available.requestId);
+
+  // A cancelled job cannot be retried; a fresh form submits a new request ID.
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Free again");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-value-2");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   await submitPolled(3);
   await page
     .getByText(
       "Provisioning was cancelled because the Agent was deleted. Select Create Agent to submit a new request.",
     )
     .waitFor();
-  assert.equal(bodies.length, 3);
-  const cancelled = admission(bodies, 3);
+  assert.equal(bodies.length, 4);
+  const cancelled = admission(bodies, 4);
   assert.notEqual(cancelled.requestId, available.requestId);
-  // A cancelled job cannot be retried either; the next submit uses a new request ID.
   assert.equal(await retry.isVisible(), false);
   await waitForEnabled(page.getByLabel("Agent name"));
   await submitPolled(4);
@@ -666,8 +716,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       /^Outcome unknown after provisioning admission\. Retry resumes the accepted provisioning job, or retries it if it failed\. If the API refuses because the job finished, select Create Agent to resend the same request ID\./,
     )
     .waitFor();
-  assert.equal(bodies.length, 4);
-  const finished = admission(bodies, 4);
+  assert.equal(bodies.length, 5);
+  const finished = admission(bodies, 5);
   assert.notEqual(finished.requestId, cancelled.requestId);
   // After an unknown outcome a refused retry may mean the job succeeded, so the request
   // ID is kept and Create Agent recovers the job instead of starting a new one.
@@ -686,8 +736,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await waitForEnabled(page.getByRole("button", { name: "Start over" }));
   await submitPolled(4, 2);
   await page.waitForURL(new RegExp(`/agents/${agentIds[2]}\\?`));
-  assert.equal(bodies.length, 5);
-  assert.equal(admission(bodies, 5).requestId, finished.requestId);
+  assert.equal(bodies.length, 6);
+  assert.equal(admission(bodies, 6).requestId, finished.requestId);
 });
 
 test("Dedicated Agent creation shows the API's named reason when a provisioning retry is refused", async (t) => {
@@ -707,9 +757,15 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
     "Secret sec_00000000-0000-4000-8000-00000000dead, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.",
   ];
   const requestIds: string[] = [];
+  // After the API refuses a job's retry, that job has finished: its next read succeeds.
+  const finished = new Set<number>();
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route) => {
     const { requestId }: ProvisionAgentBody = route.request().postDataJSON();
-    const jobs = requestIds.push(requestId);
+    // A recovery resend carries a known ID; only a new ID takes the next work slot.
+    if (!requestIds.includes(requestId)) {
+      requestIds.push(requestId);
+    }
+    const jobs = requestIds.indexOf(requestId) + 1;
     await route.fulfill({
       status: 202,
       contentType: "application/json",
@@ -731,6 +787,27 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   });
   const routeJob = async (route: Route) => {
     const work = Number(new URL(route.request().url()).pathname.split("/")[5]?.split("_")[1]);
+    if (route.request().method() === "GET" && finished.has(work)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            requestId: requestIds[work - 1],
+            workId: `work_${work}`,
+            status: "succeeded",
+            phase: "handoff",
+            attemptCount: 1,
+            updatedAt,
+            agentId: `agt_00000000-0000-4000-8000-00000000c0d${work}`,
+            revisionId: `rev_00000000-0000-4000-8000-00000000c0d${work}`,
+            url: jobUrl(work),
+          },
+          meta,
+        }),
+      });
+      return;
+    }
     await route.fulfill(
       route.request().method() === "POST"
         ? {
@@ -776,26 +853,75 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   const retry = page.getByRole("button", { name: "Retry provisioning request" });
   const create = page.getByRole("button", { name: "Create Agent" });
-  for (const [index, expected] of [
-    "The provisioning job can no longer be retried.",
-    refusals[1],
-  ].entries()) {
-    // Each submit is a new job, polled once.
-    await runProvisioningPolls(page, () => create.click(), jobUrl(index + 1), 1);
+  // A refused retry whose job may have finished keeps the admitted identity: the form stays
+  // locked and the resend recovers that job instead of admitting a duplicate.
+  const submitAndFail = async () => {
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.pauseAt(now + 100);
+    const admission = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === `/namespaces/${namespace.id}/agents/provision`,
+    );
+    await create.click();
+    await admission;
+    await page.clock.runFor(1_500);
     await page
       .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
       .waitFor();
-    await retry.click();
-    await page
-      .getByText(
-        `${expected} Select Create Agent to submit a new request. Request ID: req_00000000-0000-4000-8000-000000000409`,
-        { exact: true },
-      )
-      .waitFor();
-    assert.equal(await retry.isVisible(), false);
-    await waitForEnabled(page.getByLabel("Agent name"));
-  }
-  assert.equal(requestIds.length, 2);
+    await page.clock.resume();
+  };
+  await submitAndFail();
+  await retry.click();
+  await page
+    .getByText(
+      "The provisioning job can no longer be retried. Select Create Agent to resend the same request ID. Request ID: req_00000000-0000-4000-8000-000000000409",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await retry.isVisible(), false);
+  assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+  finished.add(1);
+  await runProvisioningPolls(page, () => create.click(), jobUrl(1), 1);
+  await page.waitForURL(/\/agents\/agt_00000000-0000-4000-8000-00000000c0d1/);
+
+  // A deleted Secret makes the request unrecoverable: the refusal says to submit a new one,
+  // so the form unlocks and the operator replaces the Secret and submits a fresh request.
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Refused retry again");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-value-2");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  const beforeReplace = requestIds.length;
+  await runProvisioningPolls(page, () => create.click(), jobUrl(2), 1);
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
+  await retry.click();
+  await page
+    .getByText(
+      `${refusals[1]} Replace the deleted resource, then select Create Agent to submit a new request. Request ID: req_00000000-0000-4000-8000-000000000409`,
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await retry.isVisible(), false);
+  // The unrecoverable request unlocks the form for the replacement.
+  await waitForEnabled(page.getByLabel("Agent name"));
+  await openCreateSecretDialog(page, "Service account token Secret");
+  const replaceDialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+  await replaceDialog.getByLabel("Name", { exact: true }).fill("Replacement model key");
+  await replaceDialog.getByLabel("Value", { exact: true }).fill("model-secret-value-3");
+  await replaceDialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await replaceDialog.waitFor({ state: "hidden" });
+  // Replacing the Secret submits once, under a fresh request ID.
+  await runProvisioningPolls(page, () => create.click(), jobUrl(3), 1);
+  assert.equal(requestIds.length, beforeReplace + 2);
+  const replacement = requestIds.at(-1);
+  assert.notEqual(replacement, requestIds[beforeReplace - 1]);
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
 });
 
 // Neutral deployment guidance is not an error, so neither its text nor its block's stripe takes the
@@ -1309,7 +1435,11 @@ for (const mode of ["unavailable", "refused"] as const) {
     assert.deepEqual(
       await page.evaluate(() => globalThis.provisioningWrites),
       mode === "refused"
-        ? ["Provisioning request accepted.", "Provisioning queued…", "Provisioning Agent…"]
+        ? [
+            "Provisioning request accepted.",
+            "Provisioning queued…",
+            "Provisioning Agent… Deployment details are unavailable.",
+          ]
         : ["Provisioning request accepted.", "Provisioning queued…", POD_QUOTA_FULL],
     );
   });
@@ -1419,7 +1549,7 @@ for (const leave of [false, true]) {
     await page.getByRole("button", { name: "Start without Preset" }).click();
     await page.getByLabel("Agent name").fill("Stalled Agent");
     await enterManualModel(page, "test-model-key");
-    await page.clock.install();
+    await trackSettledFetches(page);
     await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
     await page.getByRole("button", { name: "Create Agent" }).click();
     await page.getByText("Provisioning queued…").waitFor();
@@ -1680,7 +1810,9 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
     "Provisioning request accepted.",
     "Provisioning queued…",
-    "Provisioning Agent…",
+    // One label across the retries, carrying the checkpoint the job confirmed; a queued
+    // retry keeps it instead of reverting to the bare wording.
+    "Provisioning Agent… Configuration and Agent created.",
   ]);
 });
 
@@ -3359,4 +3491,364 @@ test("the Agents list does not move when failed deployments land", async (t) => 
       assert.equal(await note.getAttribute("title"), error.message);
     }
   }
+});
+
+async function preparePasswordPresetRecovery(t: TestContext, name: string) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: await shippedPreset("standard-codex"),
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
+  const requests = apiRequests(page, fixture.origin);
+  const namespacePath = `/namespaces/${namespace.id}`;
+  const secrets = namespacePath + "/secrets";
+  const provision = namespacePath + "/agents/provision";
+  const post = (path: string) =>
+    page.waitForResponse(
+      (r) => r.url() === fixture.origin + path && r.request().method() === "POST",
+    );
+  const submit = (status: number) =>
+    submitCreateAgent(page, fixture, namespace.id, { path: "agents/provision", status });
+  const failed = page.getByText(
+    `${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`,
+  );
+  const openPreset = async () => {
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByLabel("Name", { exact: true }).fill(name);
+    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await page.getByLabel("Model Secret", { exact: true }).fill("sk-deleted-saved-secret");
+    await page.getByRole("button", { name: "Use Preset" }).click();
+  };
+  const readSavedSecret = async (responsePromise: Promise<Response>) => {
+    const response = await responsePromise;
+    assert.equal(response.status(), 201);
+    const saved: unknown = await response.json();
+    assert.ok(Check(SecretResponse, saved));
+    return saved.data;
+  };
+  const retryDeletedSecret = async (id: string, jobUrl: string) => {
+    // The Secret lifecycle uses the fixture controller. The simulated durable job returns its
+    // named retry refusal only after the Secret has actually gone.
+    const secretPath = `${secrets}/${id}`;
+    assert.equal((await fixture.request("DELETE", secretPath)).status, 204);
+    assert.equal((await fixture.request("GET", secretPath)).status, 404);
+    const retryPath = jobUrl + "/retry";
+    const refusal = `Secret ${id}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`;
+    await page.route(fixture.origin + retryPath, (route) =>
+      route.fulfill(apiErrorResponse(409, "RESOURCE_CONFLICT", refusal)),
+    );
+    const refused = post(retryPath);
+    const retry = page.getByRole("button", { name: "Retry provisioning request" });
+    await retry.click();
+    assert.equal((await refused).status(), 409);
+    await page
+      .getByRole("alert")
+      .filter({ hasText: `${refusal} Replace the deleted resource, then select Create Agent` })
+      .waitFor();
+    assert.equal(await retry.isVisible(), false);
+    return retryPath;
+  };
+  return {
+    fixture,
+    namespace,
+    page,
+    requests,
+    secrets,
+    provision,
+    post,
+    submit,
+    failed,
+    openPreset,
+    readSavedSecret,
+    retryDeletedSecret,
+  };
+}
+
+// An open password-Preset form recovers by typing and registering a replacement key.
+test("Dedicated Agent creation clears a deleted saved Secret for a fresh request", async (t) => {
+  const {
+    fixture,
+    namespace,
+    page,
+    requests,
+    secrets,
+    provision,
+    post,
+    submit,
+    failed,
+    openPreset,
+    readSavedSecret,
+    retryDeletedSecret,
+  } = await preparePasswordPresetRecovery(t, "Open password recovery");
+
+  const firstJob = provisioningJob(namespace.id, "work_open_original");
+  await routeProvisioningJob(page, fixture, firstJob, [firstJob.failed({ phase: "admitted" })]);
+  await openPreset();
+  const password = page.getByLabel("API key", { exact: true });
+  const firstSecret = post(secrets);
+  const admitted = await submit(202);
+  const original = await readSavedSecret(firstSecret);
+  const originalPlan: ProvisionAgentBody = admitted.request().postDataJSON();
+  assert.deepEqual(originalPlan.harnessAuth, { method: "api_key", source: original.ref });
+  await failed.waitFor();
+  assert.equal(await password.isDisabled(), true);
+
+  const retryPath = await retryDeletedSecret(original.id, firstJob.url);
+  await waitForEnabled(password);
+  const agentName = page.getByLabel("Agent name", { exact: true });
+  await agentName.fill("Open password recovery replacement");
+  await password.fill("synthetic-replacement-key");
+  const nextJob = provisioningJob(namespace.id, "work_open_replacement");
+  await routeProvisioningJob(page, fixture, nextJob, [nextJob.failed({ phase: "admitted" })]);
+  const nextSecret = post(secrets);
+  const readmitted = await submit(202);
+  const replacement = await readSavedSecret(nextSecret);
+  const replacementPlan: ProvisionAgentBody = readmitted.request().postDataJSON();
+  assert.notEqual(replacement.id, original.id);
+  assert.notEqual(replacementPlan.requestId, originalPlan.requestId);
+  assert.deepEqual(replacementPlan, {
+    ...originalPlan,
+    name: "Open password recovery replacement",
+    requestId: replacementPlan.requestId,
+    harnessAuth: { method: "api_key", source: replacement.ref },
+  });
+  await failed.waitFor();
+  assert.equal(pathRequests(requests, "POST", retryPath).length, 1);
+  assert.equal(pathRequests(requests, "POST", secrets).length, 2);
+  assert.equal(pathRequests(requests, "POST", provision).length, 2);
+});
+
+// A restored password Preset uses its saved Secret as the selected credential. If Retry
+// confirms that Secret was deleted, Create must require a replacement before sending a new plan.
+test("Dedicated Agent creation clears a deleted saved Secret after Refresh", async (t) => {
+  const {
+    fixture,
+    namespace,
+    page,
+    requests,
+    secrets,
+    provision,
+    post,
+    submit,
+    failed,
+    openPreset,
+    readSavedSecret,
+    retryDeletedSecret,
+  } = await preparePasswordPresetRecovery(t, "Deleted saved Secret Agent");
+  const nextSecret = await fixture.createSecret(
+    namespace.id,
+    "Replacement model key",
+    "synthetic-replacement-key",
+  );
+  const job = provisioningJob(namespace.id, "work_1");
+  await routeProvisioningJob(page, fixture, job, [job.failed({ phase: "admitted" })]);
+  // A save-time name conflict definitively refuses the first admission after the form saves
+  // the password as a real Secret. This allows the Console to keep and restore the draft.
+  await page.route(
+    fixture.origin + provision,
+    (route) => route.fulfill(apiErrorResponse(409, "RESOURCE_CONFLICT", AGENT_NAME_CONFLICT)),
+    { times: 1 },
+  );
+  await openPreset();
+  const password = page.getByLabel("API key", { exact: true });
+  const oldInput = await password.elementHandle();
+  assert.ok(oldInput);
+  const secretCreated = post(secrets);
+  await submit(409);
+  const saved = await readSavedSecret(secretCreated);
+  const savedStatus = page.getByRole("status").filter({ hasText: `Secret saved: ${saved.id}.` });
+  await page.getByRole("alert").filter({ hasText: AGENT_NAME_CONFLICT }).waitFor();
+  await savedStatus.waitFor();
+  assert.equal(await password.isDisabled(), true);
+
+  // Toolbar Refresh restores the saved Secret into the picker without retaining the password.
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.waitForFunction((input) => !input.isConnected, oldInput);
+  const picker = page.getByLabel("API key Secret", { exact: true });
+  await picker.waitFor();
+  assert.equal(await picker.isDisabled(), true);
+  const agentName = page.getByLabel("Agent name", { exact: true });
+  await waitForEnabled(agentName);
+  await agentName.fill("Deleted saved Secret Agent 2");
+  const admitted = await submit(202);
+  const original: ProvisionAgentBody = admitted.request().postDataJSON();
+  assert.deepEqual(original.harnessAuth, { method: "api_key", source: saved.ref });
+  await failed.waitFor();
+
+  const retryPath = await retryDeletedSecret(saved.id, job.url);
+  await waitForEnabled(picker);
+  const staleStatusCount = await savedStatus.count();
+
+  // Observe either the required-field error or an unexpected provisioning POST so the
+  // regression has a concrete result on the old form without relying on a no-request timeout.
+  const unchangedCreate = Promise.race([
+    page
+      .getByText("API key Secret is required.", { exact: true })
+      .waitFor()
+      .then(() => "required"),
+    post(provision).then(() => "provision POST"),
+  ]);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.deepEqual(
+    {
+      staleStatusCount,
+      result: await unchangedCreate,
+      provisionPosts: pathRequests(requests, "POST", provision).length,
+    },
+    { staleStatusCount: 0, result: "required", provisionPosts: 2 },
+    "A deleted Secret must disappear from saved status and Create must require a replacement",
+  );
+
+  await selectSecret(page, "API key Secret", nextSecret);
+  const nextJob = provisioningJob(namespace.id, "work_2");
+  await routeProvisioningJob(page, fixture, nextJob, [nextJob.failed({ phase: "admitted" })]);
+  const readmitted = await submit(202);
+  const replacement: ProvisionAgentBody = readmitted.request().postDataJSON();
+  assert.notEqual(replacement.requestId, original.requestId);
+  assert.deepEqual(replacement, {
+    ...original,
+    requestId: replacement.requestId,
+    harnessAuth: { method: "api_key", source: nextSecret.ref },
+  });
+  await failed.waitFor();
+  assert.equal(pathRequests(requests, "POST", retryPath).length, 1);
+  assert.equal(pathRequests(requests, "POST", provision).length, 3);
+  assert.equal(pathRequests(requests, "POST", secrets).length, 1);
+});
+
+test("Dedicated Agent creation registers a replacement for a deleted Credential Source", async (t) => {
+  let now = Date.now();
+  const registrations: string[] = [];
+  const unused = async () => assert.fail("Unexpected Gateway operation before deployment");
+  const gateway: CredentialGatewayDriver = {
+    id: "model-source-gateway",
+    implementation: "test-model-source",
+    capability: "credential_gateway",
+    validateSourceConfig() {},
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+    async registerSource(context) {
+      registrations.push(context.source.id);
+      return { state: "ready" };
+    },
+    async sourceStatus() {
+      return { state: "ready" };
+    },
+    async removeSource() {},
+    updateSource: unused,
+    attachForRevision: unused,
+    attachmentStatus: unused,
+    withdraw: unused,
+  };
+  const fixture = await createConsoleAppFixture(t, {
+    now: () => new Date(now),
+    agentProvisioning: true,
+    configurationDriver: new KubernetesConfigurationDriver({
+      authentication: { mode: "inCluster" },
+    }),
+    sandboxDriver: { ...nativeSandboxDriver(), validateWorkspaceSetup() {} },
+    credentialGatewayDriver: gateway,
+  });
+  await fixture.bootstrap();
+  fixture.controller.registerDriver(gateway);
+  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const namespace = await fixture.createNamespace("Credential Source recovery", { ready: true });
+  const root = `/namespaces/${namespace.id}`;
+  const sources = root + "/credential-sources";
+  const nextSecret = await fixture.createSecret(
+    namespace.id,
+    "Replacement model key",
+    "synthetic-replacement-key",
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const post = (path: string) =>
+    page.waitForResponse(
+      (r) => r.url() === fixture.origin + path && r.request().method() === "POST",
+    );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await page.getByLabel("Authentication method").selectOption("api_key");
+  await page.getByLabel("Agent name").fill("Source recovery");
+  const originalSecret = await enterManualModel(page, "synthetic-original-model-key", "gpt-5");
+  assert.ok(originalSecret);
+  const picker = page.getByLabel("API key Secret", { exact: true });
+
+  // Registration and removal use the controller. Only the durable job responses are simulated.
+  const firstJob = provisioningJob(namespace.id, "work_source_original");
+  const first = await routeProvisioningJob(page, fixture, firstJob, [firstJob.failed()]);
+  const submit = async () => {
+    const registered = post(sources);
+    const admission = await submitCreateAgent(page, fixture, namespace.id, {
+      path: "agents/provision",
+      status: 202,
+    });
+    const response = await registered;
+    assert.equal(response.status(), 201);
+    const result: unknown = await response.json();
+    assert.ok(Check(CredentialSourceResponse, result));
+    assert.equal(result.data.state, "ready");
+    const plan: ProvisionAgentBody = admission.request().postDataJSON();
+    assert.deepEqual(plan.harnessAuth, { method: "credential_source", sourceId: result.data.id });
+    return { source: result.data, plan };
+  };
+  const original = await submit();
+  assert.deepEqual(original.source.secrets, { api_key: originalSecret.ref });
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
+  assert.equal(await picker.isDisabled(), true);
+
+  // Move the controller clock past its registration fence before removing the source.
+  now += 120_000;
+  const sourcePath = `${sources}/${original.source.id}`;
+  assert.equal((await fixture.request("DELETE", sourcePath)).status, 204);
+  assert.equal((await fixture.request("GET", sourcePath)).status, 404);
+  const refusal = `Credential source ${original.source.id}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`;
+  const retryPath = firstJob.url + "/retry";
+  await page.route(fixture.origin + retryPath, (route) =>
+    route.fulfill(apiErrorResponse(409, "RESOURCE_CONFLICT", refusal)),
+  );
+  const refused = post(retryPath);
+  await page.getByRole("button", { name: "Retry provisioning request" }).click();
+  assert.equal((await refused).status(), 409);
+  await page.getByRole("alert").filter({ hasText: refusal }).waitFor();
+  await waitForEnabled(picker);
+  await selectSecret(page, "API key Secret", nextSecret);
+  const nextJob = provisioningJob(namespace.id, "work_source_replacement");
+  const next = await routeProvisioningJob(page, fixture, nextJob, [nextJob.failed()]);
+  const replacement = await submit();
+  assert.notEqual(replacement.source.id, original.source.id);
+  assert.deepEqual(registrations, [original.source.id, replacement.source.id]);
+  assert.deepEqual(replacement.source.secrets, { api_key: nextSecret.ref });
+  assert.notEqual(replacement.plan.requestId, original.plan.requestId);
+  assert.deepEqual(replacement.plan, {
+    ...original.plan,
+    requestId: replacement.plan.requestId,
+    harnessAuth: replacement.plan.harnessAuth,
+  });
+  await page
+    .getByText(`${PROVISIONING_NOT_COMPLETED} Retry uses the accepted provisioning job.`)
+    .waitFor();
+  assert.equal(first.submitted, 1);
+  assert.equal(next.submitted, 1);
+  assert.equal(pathRequests(requests, "POST", retryPath).length, 1);
+  assert.equal(pathRequests(requests, "POST", sources).length, 2);
+  assert.equal(pathRequests(requests, "POST", root + "/agents/provision").length, 2);
 });
