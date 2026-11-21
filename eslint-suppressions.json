@@ -22,11 +22,6 @@
       "count": 1
     }
   },
-  "packages/audit/src/index.ts": {
-    "no-control-regex": {
-      "count": 1
-    }
-  },
   "packages/contracts/src/api/plain-text.ts": {
     "no-control-regex": {
       "count": 1

@@ -253,26 +253,26 @@ to the same session, Agent, and window.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:ensureGatewayRuntimeAudit`
 and `apps/controller/src/http/runtime-audit.ts`
 
-When audit and managed Gateway routing are enabled, Helm creates a private
-HTTPS listener. The OCC worker creates a token for the revision and saves its
-hash in PostgreSQL. The Gateway mounts the token Secret and the listener's
-public CA certificate. A NetworkPolicy permits this connection. Compute
-revokes the grant after the revision stops and deletes the Secret at retirement.
+With audit and managed Gateway routing, Helm creates a private HTTPS listener.
+Compute mounts the revision token and CA certificate, permits the connection,
+and stores the token hash in PostgreSQL. Compute revokes the grant after stop
+and deletes the Secret at retirement.
 
-Compute enables the OCE plugin in a read-only volume with the Gateway
-configuration and the original revision configuration. The plugin reads
-[notifications from OpenClaw](../guides/topics/audit-log.md#agent-runtime-activity)
-as work runs. It saves each event in
-`/home/node/.openclaw/pending-runtime-audit/observations.sqlite` before delivery.
-The file holds up to 256 events and excludes credentials. If the queue is full,
-the plugin skips the new event and logs a warning. Chat continues during outages.
+Compute requires `oce-runtime-audit` through `OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN`.
+The launcher checks `build.json` for session and admission support before
+starting an audited Gateway. Before dispatch, the Gateway supplies both IDs.
+`deploy/runtime/managed-runtime-audit/sink.mjs:admitTurn` sends
+`openclaw.runtime.turn.admitted` to OCC. OCC validates the revision grant and
+appends the event in one transaction. After PostgreSQL commits, OCC sends
+HTTP 204. Dispatch requires this response within two seconds.
 
-OCC checks the token, gets the revision from the grant, and appends the event
-in one transaction. After confirmation, the plugin deletes its copy. A permanent
-refusal produces a warning. After a restart in the same Pod, the plugin checks
-the credential fingerprint, source, and destination before retrying.
-OCC accepts retries with identical IDs and values once. Conflicting values
-fail. Kubernetes deletes the file with the Pod.
+When the Gateway saves a new session ID, the plugin queues its creation record.
+It keeps up to 256 [observations](../guides/topics/audit-log.md#agent-runtime-activity)
+in `/home/node/.openclaw/pending-runtime-audit/observations.sqlite` until OCC confirms delivery.
+It warns and discards records on overflow or permanent refusal. After a restart,
+it checks the credential fingerprint, source, and destination before retrying.
+OCC accepts identical copies once and rejects conflicting IDs. Kubernetes deletes
+the queue with the Pod.
 
 ### 8. An analyst opens the user message for a turn
 
@@ -280,11 +280,10 @@ fail. Kubernetes deletes the file with the Pod.
 `apps/controller/src/http/agent-audit.ts:getAgentAuditEventMessage` and
 `apps/controller/src/gateway/audit-message-client.ts:readAgentAuditMessage`
 
-When the Gateway saves a [supported user message](../guides/topics/audit-log.md#open-the-message-for-a-turn),
-the plugin remembers its ID for that session and turn. For OpenClaw HTTP
-chat, the saved input carries channel `openai-http` and key `<turn ID>:user`.
-The plugin copies the ID into `details.messageId` when it reports the turn.
-The text stays in chat history.
+The plugin sets `details.messageId` for [supported inputs](../guides/topics/audit-log.md#open-the-message-for-a-turn).
+It matches OpenClaw HTTP inputs by the `openai-http` channel and `<turn ID>:user` key.
+The plugin and reader use `runtimeAuditReference` to match turn IDs that need
+a hash. The link requires the original session and message IDs.
 
 1. The analyst supplies the audit event ID. In a PostgreSQL transaction,
    `packages/occ/src/index.ts:selectAgentAuditMessage` checks the human
@@ -338,6 +337,8 @@ The text stays in chat history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 15:15: Trace session creation and the required turn admission write. (authoring-run/2fce19b6-c5f9-489d-862a-df3396f922c2 - e2d6da28746ecc1cc756a226c91bd0e360da2211)
 
 - 2026-11-20 14:01: Trace the saved HTTP message ID from OpenClaw to the turn event. (authoring-run/2fce19b6-c5f9-489d-862a-df3396f922c2 - 097f01174caa0d1db9a7e412efd2558b352a59d2)
 

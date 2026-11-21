@@ -25,7 +25,7 @@ import {
   podList,
   signInConsole,
   wireField,
-  interruptRefusedObservation,
+  withRefusedTurnWrite,
   type KubernetesAccess,
   type LocalSetup,
   type SmokeStack,
@@ -387,6 +387,19 @@ export async function assertAgentTurnAudit(
           );
         });
       });
+      if (value) {
+        const admissions = events.filter(
+          (event) =>
+            event.action === "openclaw.runtime.turn.admitted" &&
+            event.details.sessionId === value.details.sessionId &&
+            event.details.turnId === value.details.turnId,
+        );
+        assert.equal(
+          admissions.length,
+          1,
+          `${label}: expected one admission for the completed turn`,
+        );
+      }
       return {
         done: value !== undefined,
         value,
@@ -397,7 +410,7 @@ export async function assertAgentTurnAudit(
   );
   assert.ok(event);
   log(
-    `${label}: stored matching turn start and result (${event.details.outcome}) on ${revisionId}`,
+    `${label}: stored matching turn admission, start and result (${event.details.outcome}) on ${revisionId}`,
   );
   return event;
 }
@@ -496,12 +509,45 @@ async function savedUserMessageIds(
   return { first, second };
 }
 
-export async function checkLinkedHttpChat(
-  stack: KubernetesAccess & Pick<LocalSetup, "api">,
+async function checkSessionStarted(
+  reader: AuditReader,
+  revisionId: string,
+  sessionId: string,
+  { empty = false } = {},
+) {
+  await waitFor(
+    `the session creation record for ${sessionId}`,
+    async () => {
+      const events = (await reader.readAudit()).events
+        .filter((event) => event.event === "runtime_activity")
+        .filter(
+          (event) =>
+            event.details.agentRevisionId === revisionId && event.details.sessionId === sessionId,
+        );
+      const starts = events.filter(({ action }) => action === "openclaw.runtime.session.started");
+      assert.ok(starts.length <= 1, `more than one creation record for ${sessionId}`);
+      if (empty) {
+        assert.ok(
+          !events.some(({ details }) => "turnId" in details),
+          "an empty session has a turn",
+        );
+      }
+      return { done: starts.length === 1 };
+    },
+    minute,
+  );
+}
+
+export async function checkHttpTurnAudit(
+  stack: KubernetesAccess & Pick<LocalSetup, "api" | "state">,
   agent: SmokeAgent,
   revisionId: string,
   reader: AuditReader,
   runtime: "codex" | "embedded-openclaw" | "dedicated-openclaw",
+  countModelRequests = async () =>
+    (await modelEvents()).filter(
+      ({ event, caller }) => event === "request" && caller === agent.label,
+    ).length,
 ) {
   const signal = stack.commandOptions?.signal;
   const gateway = await readyGateway(stack, agent.id, revisionId);
@@ -509,14 +555,21 @@ export async function checkLinkedHttpChat(
   const nonce = `OCE_SMOKE_${randomUUID()}`;
   const text = `Reply with exactly this nonce and no other text: ${nonce}`;
 
-  async function send(responseNumber: number, inputs = [text]) {
+  function post(inputs: string[], expectedStatus = 200) {
     const timeout = AbortSignal.timeout(3 * minute);
-    const result = await stack.api(
+    return stack.api(
       "POST",
       `/agents/${agent.id}/chat`,
       { user, messages: inputs.map((content) => ({ role: "user", content })) },
-      { response: "chat", signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
+      {
+        response: "chat",
+        expectedStatus,
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      },
     );
+  }
+  async function send(responseNumber: number, inputs = [text]) {
+    const result = await post(inputs);
     const choices = wireField(result, "choices");
     assert.ok(Array.isArray(choices) && choices.length === 1);
     const reply = wireField(choices[0], "message");
@@ -536,11 +589,13 @@ export async function checkLinkedHttpChat(
     });
   }
 
-  // Identical requests in one session must link to different messages in chat history.
+  // The first HTTP request creates the session. The next request reuses it.
+  const initialRequests = await countModelRequests();
   const first = await send(1);
+  const sessionId = first.details.sessionId;
+  await checkSessionStarted(reader, revisionId, sessionId);
   const second = await send(2);
   assert.notEqual(first.details.turnId, second.details.turnId);
-  const sessionId = first.details.sessionId;
   assert.equal(second.details.sessionId, sessionId);
   const session = await gatewayRpc(stack, gateway, "sessions.resolve", { sessionId });
   assert.equal(wireField(session, "ok"), true);
@@ -556,6 +611,31 @@ export async function checkLinkedHttpChat(
     await assert.rejects(reader.readMessage(combined.id), /HTTP 404$/);
   }
   log(`${agent.label}: OCC HTTP turn events matched the saved user messages`);
+  await checkSessionStarted(reader, revisionId, sessionId);
+
+  // Creating an empty chat must record the session before any user sends a message.
+  const created = await gatewayRpc(stack, gateway, "sessions.create", {
+    key: `agent:main:empty-${randomUUID()}`,
+    agentId: "main",
+  });
+  const emptySessionId = wireField(created, "sessionId");
+  assert.ok(typeof emptySessionId === "string" && emptySessionId.length > 0);
+  await checkSessionStarted(reader, revisionId, emptySessionId, { empty: true });
+  log(`${agent.label}: recorded one start for the HTTP session and one for the empty session`);
+
+  // Check the request counter with successful turns before refusing the next admission.
+  const before = await countModelRequests();
+  assert.ok(
+    before > initialRequests,
+    `${agent.label}: the model request counter missed the HTTP turns`,
+  );
+  await withRefusedTurnWrite(stack, revisionId, "admitted", () => post([text], 500));
+  assert.equal(
+    await countModelRequests(),
+    before,
+    `${agent.label}: refused turn reached the model`,
+  );
+  log(`${agent.label}: PostgreSQL refused admission before a model request`);
 }
 
 export async function checkLinkedChat(
@@ -567,25 +647,30 @@ export async function checkLinkedChat(
 ) {
   const gateway = await readyGateway(stack, agent.id, revisionId);
   const sessionKey = `agent:main:message-${randomUUID()}`;
-  async function send() {
-    const text = `Reply with exactly OCE_SMOKE_${randomUUID()} and no other text.`;
+  async function send(idempotencyKey: string, turnId = idempotencyKey) {
+    const nonce = `OCE_SMOKE_${randomUUID()}`;
+    const text = `Reply with exactly ${nonce} and no other text.`;
     const sent = await gatewayRpc(stack, gateway, "chat.send", {
       sessionKey,
-      idempotencyKey: randomUUID(),
+      idempotencyKey,
       message: text,
     });
-    const turnId = wireField(sent, "runId");
-    assert.ok(typeof turnId === "string" && turnId.length > 0);
+    assert.equal(wireField(sent, "runId"), idempotencyKey);
     const turn = await assertAgentTurnAudit(reader.readAudit, {
       revisionId,
       runtimeSource,
       label: agent.label,
       turnId,
+      ...(runtimeSource === "codex" ? codexResponse(nonce) : { model: defaultAgentModel }),
     });
     return { turn, text };
   }
-  const first = await send();
-  await send();
+  const first = await send(randomUUID());
+  // The Gateway accepts caller keys with spaces and more than 256 characters.
+  // Audit must accept the chat and use the same digest in each event for that turn.
+  const callerKey = `caller ${randomUUID()} ${"x".repeat(300)}`;
+  const digest = createHash("sha256").update(JSON.stringify(callerKey)).digest("hex");
+  const second = await send(callerKey, `sha256:${digest}`);
   // Opening the earlier event after a follow-up must return the first user message.
   const ids = await savedUserMessageIds(stack, gateway, sessionKey, first.turn.details.sessionId);
   await assertAgentAuditMessage(
@@ -594,7 +679,8 @@ export async function checkLinkedChat(
     { messageId: ids.first, text: first.text },
     { checkGrant: true },
   );
-  log(`${agent.label}: audit message matched the earlier chat after the content grant`);
+  await assertAgentAuditMessage(reader, second.turn, { messageId: ids.second, text: second.text });
+  log(`${agent.label}: both audit messages matched their chats after the content grant`);
   return first;
 }
 
@@ -775,9 +861,10 @@ export async function proveCodexAuditInterruptions(
       3 * minute,
     );
   };
-  const { turn: interrupted, refusedId } = await interruptRefusedObservation(
+  const { turn: interrupted, refusedId } = await withRefusedTurnWrite(
     stack,
     revisionId,
+    "started",
     () => start("restart"),
     restart,
   );

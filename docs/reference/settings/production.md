@@ -124,7 +124,8 @@ Audit is off by default. Set Helm `controlPlaneAudit.enabled: true` or
 Restrict API access. [Check ledger capacity](../../guides/topics/audit-log.md)
 before enablement. Rejected requests can fill the ledger.
 
-With Helm-managed Gateway routing, the switch also enables
+With Helm-managed Gateway routing, an audited Gateway starts a turn only
+after the control plane confirms its audit record. See
 [Agent runtime audit](../../guides/topics/audit-log.md#agent-runtime-activity).
 
 ### External sign-in and trusted proxies

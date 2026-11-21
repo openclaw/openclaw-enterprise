@@ -79,6 +79,7 @@ export function linkedTurnEntry<Common extends TProperties>(common: Common) {
 const schemas = [
   runtimeEvent("openclaw.runtime.session.started", session),
   runtimeEvent("openclaw.runtime.session.ended", session),
+  runtimeEvent("openclaw.runtime.turn.admitted", { sessionId: reference, turnId: reference }),
   ...turnSchemas(turn),
   runtimeEvent("openclaw.runtime.model_call.started", model),
   runtimeEvent("openclaw.runtime.model_call.completed", { ...model, outcome }),

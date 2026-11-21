@@ -13,7 +13,7 @@ import {
   allowAgentAuditRead,
   assertAgentAuditMessage,
   assertAgentTurnAudit,
-  checkLinkedHttpChat,
+  checkHttpTurnAudit,
 } from "../../scripts/ci/first-agent-smoke/agents.ts";
 import {
   apiProcess,
@@ -1257,18 +1257,34 @@ test(
           checkInitialFilesAndExec,
         );
         await nativeContext.test(
-          "dedicated OpenClaw links identical HTTP messages to distinct turns",
+          "dedicated OpenClaw records the session, admission, and message for each HTTP turn",
           async (httpContext) => {
             // A failed browser test may have stopped before granting access to its reader.
             const httpReader = await createReader();
             await httpReader.grantContent();
             const commandOptions = { ...chartOptions, signal: httpContext.signal };
-            await checkLinkedHttpChat(
+            // OpenShell records each model request from this worker, including retries.
+            const providerOrigin = new URL(configuration.models.providers.openai.baseUrl).origin;
+            const countModelRequests = async () => {
+              const logs = await request(
+                "GET",
+                `${nativePath}/deployments/${initialRevisionId}/runtime/logs?source=sandbox&tailLines=1000`,
+                undefined,
+                httpContext.signal,
+              );
+              assert.equal(logs.truncated, false);
+              return logs.records.filter(
+                ({ message }) =>
+                  message?.startsWith("HTTP:POST ") && message.includes(` ${providerOrigin}/`),
+              ).length;
+            };
+            await checkHttpTurnAudit(
               { ...chartStack, commandOptions, api: createApi(env.OCC_URL, serviceKey) },
               { id: nativeAgent.id, label: "Dedicated OpenClaw" },
               initialRevisionId,
               httpReader,
               "dedicated-openclaw",
+              countModelRequests,
             );
             await expectPersistedRuntimeAudit(
               chartStack,

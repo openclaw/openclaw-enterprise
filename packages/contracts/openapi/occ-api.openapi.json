@@ -23193,6 +23193,78 @@
                                     "additionalProperties": false,
                                     "properties": {
                                       "action": {
+                                        "const": "openclaw.runtime.turn.admitted",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "sessionId",
+                                          "turnId"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
                                         "const": "openclaw.runtime.turn.started",
                                         "type": "string"
                                       },

@@ -40,7 +40,7 @@ import {
 import {
   allowAgentAuditRead,
   checkLinkedChat,
-  checkLinkedHttpChat,
+  checkHttpTurnAudit,
   chatCodexWithAudit,
   assertAgentTurnAudit,
   chatTurn,
@@ -208,7 +208,7 @@ async function smoke() {
         );
         linkedEventId = first.turn.id;
         await checkMessageDisclosure(stack, linkedEventId, first.text, codexReader.readMessage);
-        await checkLinkedHttpChat(stack, codex.agent, codex.revisionId, codexReader, "codex");
+        await checkHttpTurnAudit(stack, codex.agent, codex.revisionId, codexReader, "codex");
         await expectPersistedRuntimeAudit(stack, codex.revisionId, await readCodexAudit());
       }),
       auditStep("embedded-audit", async () => {
@@ -251,7 +251,7 @@ async function smoke() {
     await auditStep(
       "chat-after-start",
       async () => {
-        await checkLinkedHttpChat(
+        await checkHttpTurnAudit(
           stack,
           embedded.agent,
           embeddedRevision,

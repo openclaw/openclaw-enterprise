@@ -96,24 +96,28 @@ Enable [Control Plane audit](../../reference/settings/production.md#control-plan
 on a Helm installation with managed Gateway routing. Deploy the Agent revision
 and send a message as usual. Compute loads the OCE plugin in the Gateway and
 gives it a credential for that revision. The Agent audit API returns the
-saved records with `event` set to `runtime_activity`. If the Gateway
-configuration disables all plugins or denies `oce-runtime-audit`, the Gateway
-starts without runtime reporting.
+saved records with `event` set to `runtime_activity`. An audited revision
+requires the `oce-runtime-audit` plugin. Compute reports a configuration
+error if the revision disables plugins or blocks this plugin. If startup
+reports missing audit support, select a current OCE Gateway image.
 
 | Action                                     | What the Gateway observed                                                                                             |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `openclaw.runtime.session.started`         | OpenClaw sent a session-start notification. The first HTTP chat can create a session without this notification.       |
+| `openclaw.runtime.session.started`         | The Gateway saved a new session ID. This includes an empty chat and a chat created by its first message.              |
 | `openclaw.runtime.session.ended`           | OpenClaw reported that it deleted the session.                                                                        |
+| `openclaw.runtime.turn.admitted`           | The Gateway asked to run a turn. PostgreSQL saved this record before the Gateway could send the work to the agent.    |
 | `openclaw.runtime.turn.started`            | The Gateway observed the start of a run with an identified session.                                                   |
 | `openclaw.runtime.turn.completed`          | The Gateway observed a final result for the run. Read `details.outcome`.                                              |
 | `openclaw.runtime.model_call.started`      | Embedded OpenClaw reported that it started a model call.                                                              |
 | `openclaw.runtime.model_call.completed`    | Embedded OpenClaw reported the result of the call. The same `modelCallId` links the two records.                      |
 | `openclaw.runtime.model_response.observed` | The Codex connection reported a provider response. `responseIdHash` identifies the response without storing its text. |
 
-Use `sessionId` and `turnId` together to find records for a run. The Gateway
-supplies the run ID. OpenClaw can reuse it during recovery. A missing result
-leaves the outcome unknown. The plugin saves metadata only.
-When a turn includes `details.messageId`, you can
+Use `sessionId` and `turnId` together to find records for a run. OpenClaw can
+reuse a run ID during recovery. Each new dispatch needs a new admission record.
+A missing result leaves the outcome unknown. If an ID contains spaces, exceeds
+256 characters, or fails an audit format check, OCE uses its hash. If the
+session or message ID needs a hash, OCE omits the message link. A hashed
+turn ID still works with a message link. When a turn includes `details.messageId`, you can
 [open its saved user message](#open-the-message-for-a-turn).
 
 Dedicated OpenClaw reports the turn through its Gateway. Its worker does not
@@ -122,11 +126,17 @@ after one or more attempts. Its response record gives no count of failed or
 retried attempts. Embedded OpenClaw reports calls that it starts. A provider
 can retry within one call.
 
-Audit records describe work that the Gateway observed. Chat can continue when
-PostgreSQL cannot accept an event. The Gateway can keep up to 256 pending
-events on local disk and retry after a restart in the same Pod. When the queue
-is full, the plugin warns and omits new events. Deleting the Pod removes
-pending events. The control plane keeps events it already saved in PostgreSQL.
+The Gateway waits up to two seconds for the control plane to confirm a turn
+admission. If the write fails or the confirmation is missing, the Gateway
+stops the turn before it sends the work to the agent. Check the control plane
+and [audit storage](#manage-audit-storage) if new chat requests fail. An
+admission record means the control plane accepted the request. Check the turn
+result to find out how the work ended.
+
+The Gateway can keep up to 256 other events on local disk. It retries delivery
+after a restart in the same Pod. If the queue is full, the plugin warns and
+omits new observations. Deleting the Pod removes pending events. The control
+plane keeps events it already saved in PostgreSQL.
 
 ### Agent runtime logs
 
@@ -164,8 +174,8 @@ SELECT pg_total_relation_size('occ.audit_events') AS used_bytes,
 ```
 
 If `accepts_new_events` is `false`, the API can block covered requests or
-withhold audit results. Agent chat can continue. Its Gateway queues runtime
-events up to the limit in [Agent runtime activity](#agent-runtime-activity).
+withhold audit results. An audited Gateway refuses new turns. It can queue
+observations from work that already started. See [Agent runtime activity](#agent-runtime-activity).
 The control plane worker cannot claim covered jobs or save the
 results of audited attempts until space is available. It reports
 `worker.error` with code `AUDIT_CAPACITY_EXCEEDED`. Preserve the existing

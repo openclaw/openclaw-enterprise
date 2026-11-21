@@ -6,6 +6,9 @@ import type {
   AuthorizationRequest,
 } from "@openclaw-enterprise/contracts";
 
+import { REDACTED, redactAuditText } from "./runtime-reference.ts";
+
+export { runtimeAuditReference } from "./runtime-reference.ts";
 export type { AuditEvent, AuditEventKind, AuditOutcome } from "@openclaw-enterprise/contracts";
 
 export type AuditEventInput = Omit<AuditEvent, "id" | "occurredAt" | "kind" | "outcome">;
@@ -46,21 +49,17 @@ export interface AuditEventFactoryOptions {
   readonly idGenerator?: () => string;
 }
 
-const REDACTED = "[REDACTED]";
 const SENSITIVE_KEY =
   /(?:access[_-]?token|api[_-]?key|authorization|bearer|client[_-]?secret|cookie|credential|password|private[_-]?key|provider[_-]?(?:credential|token)|refresh[_-]?token|secret|session[_-]?(?:cookie|token)|token|body|content|message|prompt|text|transcript)/i;
 const SAFE_REFERENCE_KEY = /(?:id|ids|ref|reference|name|names|kind|count)$/i;
-const SENSITIVE_VALUE =
-  /(?:\bBearer\s+[\w.+/=-]+|\b(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[baprs]-|xapp-)[A-Za-z0-9_-]{8,})/gi;
 const UNSAFE_PROPERTY = /^(?:__proto__|constructor|prototype)$/;
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/g;
 
 function redact(value: unknown, visited: WeakSet<object>, depth: number): unknown {
   if (depth > 16) {
     return REDACTED;
   }
   if (typeof value === "string") {
-    return value.replace(SENSITIVE_VALUE, REDACTED).replace(CONTROL_CHARACTER, " ");
+    return redactAuditText(value);
   }
   if (value === null || typeof value !== "object") {
     return typeof value === "bigint" ? value.toString() : value;
@@ -207,7 +206,7 @@ function validateInput(input: AuditEventInput): void {
 }
 
 function safeReason(value: string): string {
-  return value.replace(SENSITIVE_VALUE, REDACTED).replace(CONTROL_CHARACTER, " ").slice(0, 120);
+  return redactAuditText(value).slice(0, 120);
 }
 
 function safeReasonCode(value: string): string {

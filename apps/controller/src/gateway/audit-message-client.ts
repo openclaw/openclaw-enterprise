@@ -1,4 +1,5 @@
 import { GatewayClientRequestError } from "@openclaw/gateway-client";
+import { runtimeAuditReference } from "@openclaw-enterprise/audit";
 import {
   AGENT_AUDIT_MESSAGE_BYTES,
   type AgentRevision,
@@ -57,9 +58,12 @@ function projectMessage(result: unknown, { turnId, messageId }: MessageIdentity)
   if (response?.ok !== true || !message || metadata?.id !== messageId) {
     throw unavailable();
   }
-  const belongsToTurn =
-    metadata.runId === turnId ||
-    (metadata.runId === undefined && message.idempotencyKey === `${turnId}:user`);
+  let runId = metadata.runId;
+  const key = message.idempotencyKey;
+  if (runId === undefined && typeof key === "string" && key.endsWith(":user")) {
+    runId = key.slice(0, -":user".length);
+  }
+  const belongsToTurn = typeof runId === "string" && runtimeAuditReference(runId) === turnId;
   if (message.role !== "user" || !belongsToTurn || metadata.truncated === true) {
     return undefined;
   }
@@ -73,6 +77,12 @@ function projectMessage(result: unknown, { turnId, messageId }: MessageIdentity)
 /** Resolve IDs from an authorized audit row against the serving revision's chat history. */
 export async function readAgentAuditMessage(input: AuditMessageRead) {
   const { computeDriver, revision, gatewayApiKey, sessionId, messageId } = input;
+  if (
+    runtimeAuditReference(sessionId) !== sessionId ||
+    runtimeAuditReference(messageId) !== messageId
+  ) {
+    return undefined;
+  }
   if (
     activeReads >= MAX_ACTIVE_READS ||
     !gatewayApiKey ||

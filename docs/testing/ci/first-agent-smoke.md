@@ -43,7 +43,7 @@ it does not use a suite manifest.
 | Setup and action                                                             | Expected outcome                                                                                                                                                                          | Source                                                                              |
 | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | Build the checkout images and run Kubernetes-only Local Setup.               | Installation becomes available with the selected images.                                                                                                                                  | Smoke script: `buildImages` and `startLocalSetup`.                                  |
-| Create embedded OpenClaw and dedicated Codex Agents. Send chat requests.     | Each runtime returns the expected reply. For each revision, an authorized reader finds the start and result of the turn in the audit API.                                                 | [First-Agent helper](../../../scripts/first-agent.ts) and smoke script: `chatTurn`. |
+| Create embedded OpenClaw and dedicated Codex Agents. Send chat requests.     | Each runtime returns the expected reply. For each revision, the audit API shows when the Gateway accepted, started, and finished the turn.                                                | [First-Agent helper](../../../scripts/first-agent.ts) and smoke script: `chatTurn`. |
 | Read gateway logs and dedicated Agent logs through the CLI.                  | `occ agent logs` returns nonempty logs for the selected sources.                                                                                                                          | Smoke script: `readLogs`.                                                           |
 | Withdraw public Git reader access and deploy a revision without that access. | The old workload and policy are removed and open connections close. The retired revision and the successor without reader access make no further reads; the control Agent retains access. | Smoke script: `proveRetirement`.                                                    |
 | Stop and start both Agents, then chat again.                                 | Stopped Pods terminate, starting the Agents creates new revisions, and both chat turns succeed.                                                                                           | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                           |
@@ -108,8 +108,9 @@ After redeployment, the API must refuse to open the previous revision's message.
 For embedded OpenClaw and dedicated Codex, the smoke test sends two messages
 in one Gateway chat. A reader with `read_audit` can list the events. The
 message request must return HTTP 403. The test grants `read_audit_content` on
-the same Agent and opens the earlier event. Its message ID must match the ID
-in chat history. Its text must match the first message.
+the same Agent and opens both events. The second request uses a key that contains
+spaces and exceeds 256 characters. The audit event must use the hash of that
+key. Each event must return the correct message ID and text from chat history.
 
 For Codex, the test checks that PostgreSQL records the event ID when the
 reader opens its message. The test then makes PostgreSQL refuse the next
@@ -120,6 +121,15 @@ For each runtime, the installed test sends two requests to
 same text. Each JSON response must have a different turn ID. The test
 compares the message ID for each turn with the ID in chat history. An
 authorized reader must get the exact text through the audit API.
+
+For each runtime, the first HTTP message must create one session record.
+After the second message, the count must still be one. Creating an empty
+chat must produce one session record and zero turns.
+
+The test then makes PostgreSQL refuse `openclaw.runtime.turn.admitted` for
+the revision. The HTTP request must return 500. The model request count must
+stay at its previous value. For dedicated OpenClaw, the test counts requests
+in the OpenShell log. The other two tests use the test provider’s request log.
 
 In both OpenClaw modes, the test also sends two user messages in one
 HTTP request. The turn must finish. Its audit event must omit the message

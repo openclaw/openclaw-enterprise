@@ -2678,6 +2678,16 @@ if (countsUnexplainedExits) {
   countUnexplainedExits(previous + 1);
 }
 
+if (process.env.OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN) {
+  let metadata;
+  try {
+    metadata = require("/opt/oce/runtime/build.json");
+  } catch {}
+  if (metadata?.runtimeAudit !== true) {
+    throw new Error("This Gateway image cannot enforce runtime audit logging. Select an image that supports runtime audit and deploy a new Agent revision.");
+  }
+}
+
 ${pluginRuntimeHelpers(true, true)}
 ${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}

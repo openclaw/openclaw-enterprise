@@ -131,34 +131,47 @@ function recordModel({ sessionId, runId, callId, model, provider, outcome, failu
 }
 
 function createService(runtime) {
-  let owner;
-  let unsubscribe;
-  let unsubscribeTranscript;
+  let subscriptions;
   return {
     id,
     start() {
+      if (subscriptions) {
+        return;
+      }
+      using setup = new DisposableStack();
       const sink = createAuditSink();
       if (!sink) {
         return;
       }
+      setup.defer(sink.close);
       const inputs = new Map();
-      owner = { sink, turns: new Map(), inputs };
-      active = owner;
-      unsubscribeTranscript = runtime.events.onSessionTranscriptUpdate((update) =>
-        recordInput(inputs, sink.source, update),
+      const owner = { sink, turns: new Map(), inputs };
+      setup.defer(
+        runtime.events.onSessionCreated(({ sessionId }) => {
+          if (active === owner) {
+            sink.emit({ action: "openclaw.runtime.session.started", sessionId });
+          }
+        }),
+      );
+      setup.defer(
+        runtime.events.onSessionTranscriptUpdate((update) =>
+          recordInput(inputs, sink.source, update),
+        ),
       );
       if (sink.source === "codex") {
-        unsubscribe = subscribeCodexResponses(sink.emit);
+        setup.defer(subscribeCodexResponses(sink.emit));
       }
+      active = owner;
+      setup.defer(() => {
+        if (active === owner) {
+          active = undefined;
+        }
+      });
+      subscriptions = setup.move();
     },
     stop() {
-      unsubscribe?.();
-      unsubscribeTranscript?.();
-      if (active === owner) {
-        active = undefined;
-      }
-      owner?.sink.close();
-      owner = undefined;
+      subscriptions?.dispose();
+      subscriptions = undefined;
     },
   };
 }
@@ -167,22 +180,25 @@ export default {
   id,
   name: "Runtime audit",
   register(api) {
-    if (api.registrationMode !== "full") {
+    if (
+      api.registrationMode !== "full" ||
+      process.env.OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN !== id
+    ) {
       return;
     }
     api.registerService(createService(api.runtime));
+    api.on("before_turn_start", ({ sessionId, runId }) => {
+      if (!active) {
+        throw new Error("The runtime audit service is unavailable.");
+      }
+      return active.sink.admitTurn(sessionId, runId);
+    });
     api.agent.events.registerAgentEventSubscription({
       id,
       streams: ["lifecycle"],
       phases: ["start", "end", "error"],
       payload: "metadata",
       handle: recordLifecycle,
-    });
-    api.on("session_start", ({ sessionId, resumedFrom }) => {
-      // Reset can start fresh history while keeping the session ID.
-      if (sessionId !== resumedFrom) {
-        return active?.sink.emit({ action: "openclaw.runtime.session.started", sessionId });
-      }
     });
     api.on("session_end", ({ sessionId, reason }) => {
       if (reason === "deleted") {

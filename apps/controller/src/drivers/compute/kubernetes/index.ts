@@ -1217,6 +1217,7 @@ const MANAGER = "openclaw-enterprise";
 const FIELD_MANAGER = "openclaw-enterprise-compute";
 const TOKEN_PATH = "/var/run/secrets/openclaw/service-principal";
 const RUNTIME_AUDIT_VOLUME = "runtime-audit";
+const RUNTIME_AUDIT_PLUGIN = "oce-runtime-audit";
 const RUNTIME_AUDIT_DIRECTORY = "/var/run/openclaw-runtime-audit";
 const RUNTIME_AUDIT_TOKEN_KEY = "token";
 const RUNTIME_AUDIT_CA_VOLUME = "runtime-audit-ca";
@@ -3267,16 +3268,21 @@ function requireNativeWorkerSandbox(
 
 function gatewayAuditPluginDocument(document: string): string {
   const config = JSON.parse(document) as OpenClawConfigurationDocument;
-  const id = "oce-runtime-audit";
+  const id = RUNTIME_AUDIT_PLUGIN;
   const plugins = asRecord(config.plugins) ?? {};
   const allow = plugins.allow;
   const deny = plugins.deny;
+  const entries = asRecord(plugins.entries);
+  const plugin = asRecord(entries?.[id]);
   if (
     plugins.enabled === false ||
+    plugin?.enabled === false ||
     (Array.isArray(deny) &&
       deny.some((entry) => typeof entry === "string" && entry.trim().toLowerCase() === id))
   ) {
-    return document;
+    throw new ConfigurationFailure(
+      `Control Plane audit requires the ${id} Gateway plugin. Enable plugins, enable ${id}, and remove it from plugins.deny.`,
+    );
   }
   const load = asRecord(plugins.load) ?? {};
   const paths = Array.isArray(load.paths) ? load.paths : [];
@@ -3286,7 +3292,7 @@ function gatewayAuditPluginDocument(document: string): string {
       ...plugins,
       ...(Array.isArray(allow) && allow.length > 0 && { allow: [...new Set([...allow, id])] }),
       load: { ...load, paths: [...new Set([...paths, "/app/oce-plugins/" + id])] },
-      entries: { ...asRecord(plugins.entries), [id]: { enabled: true } },
+      entries: { ...entries, [id]: { ...plugin, enabled: true } },
     },
   });
 }
@@ -18114,6 +18120,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         );
       }
       if (auditTarget !== undefined && auditRevisionId !== undefined) {
+        variables.push({
+          name: "OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN",
+          value: RUNTIME_AUDIT_PLUGIN,
+        });
         volumes.push({
           name: RUNTIME_AUDIT_VOLUME,
           secret: {

@@ -4,10 +4,30 @@ import { request } from "node:https";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { runtimeAuditReference } from "./runtime-reference.ts";
+
 const auditPath = "/internal/runtime-audit";
 const destinationFile = "/etc/openclaw-runtime-audit/destination.json";
 const queueDirectory = "/home/node/.openclaw/pending-runtime-audit";
 const capacity = 256;
+
+function encode(event) {
+  const sessionId = event.sessionId && runtimeAuditReference(event.sessionId);
+  // Message lookup needs both the original physical session ID and the original message ID.
+  const canLink =
+    sessionId === event.sessionId &&
+    event.messageId &&
+    runtimeAuditReference(event.messageId) === event.messageId;
+  return JSON.stringify({
+    ...event,
+    sessionId,
+    turnId: event.turnId && runtimeAuditReference(event.turnId),
+    modelCallId: event.modelCallId && runtimeAuditReference(event.modelCallId),
+    messageId: canLink ? event.messageId : undefined,
+    eventId: randomUUID(),
+    occurredAt: event.occurredAt ?? new Date().toISOString(),
+  });
+}
 
 function post(url, headers, ca, body, signal) {
   return new Promise((resolve, reject) => {
@@ -94,6 +114,11 @@ export function createAuditSink() {
   let retryTimer;
   const shutdown = new AbortController();
 
+  function send(body) {
+    const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(2000)]);
+    return post(endpoint, headers, ca, body, signal);
+  }
+
   async function drain() {
     if (sending || closed || retryTimer) {
       return;
@@ -101,13 +126,7 @@ export function createAuditSink() {
     sending = true;
     try {
       for (let row = next.get(scope); row; row = next.get(scope)) {
-        const status = await post(
-          endpoint,
-          headers,
-          ca,
-          row.body,
-          AbortSignal.any([shutdown.signal, AbortSignal.timeout(2000)]),
-        );
+        const status = await send(row.body);
         if (closed) {
           return;
         }
@@ -137,15 +156,22 @@ export function createAuditSink() {
   void drain();
   return {
     source,
+    async admitTurn(sessionId, turnId) {
+      // OCC returns 204 only after PostgreSQL commits the admission.
+      const body = encode({ action: "openclaw.runtime.turn.admitted", sessionId, turnId });
+      const status = await send(body).catch(() => undefined);
+      if (status !== 204) {
+        const reason = status === undefined ? "connection failed" : "HTTP " + status;
+        const message = "The control plane could not confirm the turn audit record (" + reason + ").";
+        process.emitWarning(message);
+        throw new Error(message);
+      }
+    },
     emit(event) {
       if (closed) {
         return;
       }
-      const body = JSON.stringify({
-        ...event,
-        eventId: randomUUID(),
-        occurredAt: event.occurredAt ?? new Date().toISOString(),
-      });
+      const body = encode(event);
       try {
         if (Buffer.byteLength(body) <= 4096 && enqueue.run(scope, body, capacity).changes === 1) {
           void drain();

@@ -29,7 +29,7 @@ export function createApi(origin: string, key: string) {
     method: string,
     path: string,
     body?: unknown,
-    options?: { response: "chat"; signal: AbortSignal },
+    options?: { response: "chat"; signal: AbortSignal; expectedStatus?: number },
   ) => {
     const url = new URL(path, origin);
     assert.equal(
@@ -63,7 +63,11 @@ export function createApi(origin: string, key: string) {
     }
     // The chat route returns native Chat Completions JSON. Keep its body out of failure logs.
     if (options?.response === "chat") {
-      assert.equal(response.status, 200, `${method} ${path}: chat failed`);
+      assert.equal(
+        response.status,
+        options.expectedStatus ?? 200,
+        `${method} ${path}: chat failed`,
+      );
       return envelope;
     }
     if (!response.ok) {
@@ -518,16 +522,19 @@ export async function checkMessageDisclosure(
 const runtimeRows = `FROM occ.audit_events
   WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'`;
 
-export async function interruptRefusedObservation<T>(
-  stack: InstalledAuditStack,
+export async function withRefusedTurnWrite<T>(
+  stack: InstalledAuditStack & KubernetesAccess,
   revisionId: string,
+  phase: "started" | "admitted",
   send: () => Promise<T>,
-  restart: () => Promise<void>,
+  restart?: () => Promise<void>,
 ) {
   const marker = `smoke_audit_${randomUUID().replaceAll("-", "")}`;
-  const query = (sql: string) => queryRevision(stack, revisionId, sql);
-  // The rejected transaction leaves its audit ID in the disposable database log.
-  // Compare that ID with the API record after the Gateway restarts and retries.
+  const action = `openclaw.runtime.turn.${phase}`;
+  const query = (sql: string, options?: RunOptions) =>
+    queryAudit(stack, { revision_id: revisionId, action }, sql, options);
+  // PostgreSQL logs the event ID even when the transaction fails. The restart
+  // test uses it to identify a second delivery of the same event.
   const pattern = new RegExp(`${marker} (aud_[a-f0-9-]{36})`);
   try {
     await query(`
@@ -538,13 +545,13 @@ export async function interruptRefusedObservation<T>(
       CREATE TRIGGER ${marker} BEFORE INSERT ON occ.audit_events FOR EACH ROW
         WHEN (NEW.kind = 'runtime_activity'
           AND NEW.details->>'agentRevisionId' = :'revision_id'
-          AND NEW.action = 'openclaw.runtime.turn.started')
+          AND NEW.action = :'action')
         EXECUTE FUNCTION occ.${marker}();
       COMMIT;
     `);
     const turn = await send();
     const refusedId = await waitFor(
-      `PostgreSQL to refuse the turn observation on ${revisionId}`,
+      `PostgreSQL to refuse ${action} on ${revisionId}`,
       async () => {
         const { stdout } = await kubectl(stack, [
           "logs",
@@ -561,15 +568,19 @@ export async function interruptRefusedObservation<T>(
       minute,
     );
     assert.ok(refusedId);
-    await restart();
+    await restart?.();
     return { turn, refusedId };
   } finally {
-    await query(`
+    // Remove the trigger even if the test canceled the request.
+    await query(
+      `
       BEGIN;
       DROP TRIGGER IF EXISTS ${marker} ON occ.audit_events;
       DROP FUNCTION IF EXISTS occ.${marker}();
       COMMIT;
-    `);
+    `,
+      { signal: undefined },
+    );
   }
 }
 
