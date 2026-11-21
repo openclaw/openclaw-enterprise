@@ -1,5 +1,6 @@
 import type { RepositoryGitCustody } from "../../../../composition/repository-credentials/custody-selection.ts";
 import type {
+  AgentRevision,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
@@ -365,6 +366,13 @@ type Policy = (session: PreparedRepositorySession) => PreparedRepositoryGitSourc
 /** A native revision's token state; `quarantined` is terminal for that revision. */
 export type PreparedRepositoryGitMaterialState = "ready" | "pending" | "quarantined";
 
+/** The durable broker identity for a native repository session. */
+export type NativeRepositoryWithdrawalSession = Readonly<{
+  admissionId: string;
+  sessionId: string;
+  generation: string;
+}>;
+
 /** An ended admission is withdrawn. Incomplete recipient or material evidence is unprepared. */
 export interface RepositoryGitMaterialAbsence {
   readonly absent: "withdrawn" | "unprepared";
@@ -548,6 +556,71 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       return "quarantined";
     }
     return sessions.length > 0 && sessions.every(({ ready }) => ready) ? "ready" : "pending";
+  }
+
+  /** Observe every original finite native family after the Worker proves the removal fence. */
+  async observeNativeWithdrawal(
+    revision: Readonly<Pick<AgentRevision, "id" | "namespaceId" | "agentId">>,
+    sessions: readonly NativeRepositoryWithdrawalSession[],
+  ): Promise<"disposed" | "pending" | "unsafe"> {
+    if (this.proxy || sessions.length === 0) {
+      return "unsafe";
+    }
+    const requested = new Map(sessions.map((session) => [session.admissionId, session]));
+    if (requested.size !== sessions.length) {
+      return "unsafe";
+    }
+    const { rows } = await this.transaction((c) =>
+      c.query(
+        `SELECT s.admission_id AS "admissionId", b.session_id AS "sessionId",
+         b.generation::text AS generation,
+         (f.source_id IS NULL OR (
+           f.source->>'adoption'=$4 AND f.admission->>'issuerAuthority'=$5
+           AND ${repositoryGitBrokerOwnerPredicate}
+           AND (f.source#>>'{session,namespaceId}',f.source#>>'{session,agentId}',
+                f.source#>>'{session,installationId}')=(s.namespace_id,s.agent_id,i.id)
+           AND f.source #> '{session,driver}'=s.cleanup_context->'driver'
+           AND f.source #> '{session,binding}'=s.cleanup_context->'binding'
+           AND NOT EXISTS (SELECT FROM ${attempts} a WHERE a.source_id=f.source_id
+             AND a.admission->>'issuerAuthority' IS DISTINCT FROM $5)
+         )) IS TRUE AS "ownerMatches",
+         f.source_id IS NULL OR (NOT f.enabled AND NOT EXISTS (
+           SELECT FROM ${attempts} a WHERE a.source_id=f.source_id
+             AND NOT ${preparedAttemptSettled("a")})) AS settled
+       FROM occ.repository_session_attempts s
+       JOIN occ.repository_broker_receipts b USING(admission_id)
+       LEFT JOIN ${families} f ON f.source_id='repository-git:' || s.admission_id
+       CROSS JOIN occ.installation i
+       WHERE (s.namespace_id,s.agent_id,s.revision_id,s.live_revision_id)=($1,$2,$3,$3)
+         AND s.phase='disposed' AND s.broker_protocol=3
+         AND b.state='disposed' AND b.session_id=s.session_id AND b.generation IS NOT NULL`,
+        [revision.namespaceId, revision.agentId, revision.id, legacyAdoption, this.authority],
+      ),
+    );
+    // Attempts require a family row via an undeletable foreign key. An exact disposed
+    // session without a family has never issued. The removal fence prevents a later issue.
+    const observed = rows as {
+      admissionId: string;
+      sessionId: string;
+      generation: string;
+      ownerMatches: boolean;
+      settled: boolean;
+    }[];
+    if (
+      observed.length !== requested.size ||
+      observed.some((row) => {
+        const session = requested.get(row.admissionId);
+        return (
+          row.ownerMatches !== true ||
+          !session ||
+          row.sessionId !== session.sessionId ||
+          row.generation !== session.generation
+        );
+      })
+    ) {
+      return "unsafe";
+    }
+    return observed.every(({ settled }) => settled === true) ? "disposed" : "pending";
   }
 
   /** This port exists only on a selected Driver. It carries no issuer, connection or maintenance authority. */

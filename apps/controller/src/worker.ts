@@ -131,7 +131,10 @@ import {
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
-import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/access/prepared-repository-git.ts";
+import type {
+  NativeRepositoryWithdrawalSession,
+  PreparedRepositoryGitMaterialState,
+} from "./drivers/repo/github/access/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
   captureNamespaceHint,
@@ -211,6 +214,11 @@ export interface ControllerWorkerOptions {
   readonly repositoryGitMaterial?: (
     revisionId: string,
   ) => Promise<PreparedRepositoryGitMaterialState>;
+  /** The selected native prepared Git owner observes terminal custody for the exact sessions. */
+  readonly observeNativeRepositoryWithdrawal?: (
+    revision: Readonly<AgentRevision>,
+    sessions: readonly NativeRepositoryWithdrawalSession[],
+  ) => Promise<"disposed" | "pending" | "unsafe">;
 }
 
 type Observation = NamespaceEnsureResult | NamespaceDeleteResult;
@@ -1274,6 +1282,7 @@ export class ControllerWorker {
   private readonly onHealthy: (() => Promise<void>) | undefined;
   private readonly onProgress: (() => Promise<void>) | undefined;
   private readonly repositoryGitMaterial: ControllerWorkerOptions["repositoryGitMaterial"];
+  private readonly observeNativeRepositoryWithdrawal: ControllerWorkerOptions["observeNativeRepositoryWithdrawal"];
   private readonly abort = new AbortController();
   private installation: Readonly<Installation> | undefined;
   private loop: Promise<void> | undefined;
@@ -1454,6 +1463,7 @@ export class ControllerWorker {
     this.healthClock = options.healthClock ?? (() => performance.now());
     this.onProgress = options.onProgress;
     this.repositoryGitMaterial = options.repositoryGitMaterial;
+    this.observeNativeRepositoryWithdrawal = options.observeNativeRepositoryWithdrawal;
     this.repositoryPolicy = drivers?.repositoryPolicy;
     this.repositoryAdmission = drivers?.repositoryAdmission;
     this.nativeRepositorySender = drivers?.nativeRepositorySender;
@@ -2529,8 +2539,19 @@ export class ControllerWorker {
         };
         const expiry = await queue.repositoryExpiryState(owner);
         const waitingForStop = expiry === "removal" && agent?.desiredRuntimeState === "stopped";
+        const requiredModelWithdrawn =
+          withdrawal === "withdrawn" &&
+          expiry === "removal" &&
+          this.repositoryCredentials.selectsFiniteNativeWithdrawal(expiryRevision) &&
+          expiryRevision.harnessAuth.method === "credential_source" &&
+          (await unit.credentialSources.findCredentialWithdrawal(
+            expiryRevision.namespaceId,
+            expiryRevision.id,
+            expiryRevision.harnessAuth.sourceId,
+          )) !== undefined;
         if (
           withdrawal === "retire-runtime" ||
+          requiredModelWithdrawn ||
           agent?.status !== "active" ||
           agent.activeRevisionId !== expiryRevision.id ||
           (!waitingForStop && agent.desiredRuntimeState !== "running") ||
@@ -2728,6 +2749,12 @@ export class ControllerWorker {
       }
       // Expiry recovery observes the original operation; it must not replay source detaches.
       signal.throwIfAborted();
+      if (
+        expiry === "removal" &&
+        this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision)
+      ) {
+        return { withdrawal: await this.withdrawFiniteNativeRepositoryAccess(revision, signal) };
+      }
       try {
         const result =
           revision.egressPlan?.policyReductionVersion === 2
@@ -2750,6 +2777,43 @@ export class ControllerWorker {
         return { withdrawal: "pending" };
       }
     });
+  }
+
+  private async withdrawFiniteNativeRepositoryAccess(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<"withdrawn" | "pending" | "retire-runtime"> {
+    const observePrepared = this.observeNativeRepositoryWithdrawal;
+    if (!observePrepared || !this.compute.observeRevision) {
+      return "retire-runtime";
+    }
+    try {
+      // The caller already observed the irreversible removal fence. Neither receipt
+      // observation can issue a credential or reopen the original admission.
+      const broker = await this.repositoryCredentials.observeFiniteNativeWithdrawal(revision);
+      if (broker.state !== "disposed") {
+        return broker.state === "pending" ? "pending" : "retire-runtime";
+      }
+      const prepared = await observePrepared(revision, broker.sessions);
+      signal.throwIfAborted();
+      if (prepared === "pending") {
+        return "pending";
+      }
+      if (prepared !== "disposed") {
+        return "retire-runtime";
+      }
+      const runtime = await this.compute.observeRevision(
+        revision,
+        AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+      );
+      signal.throwIfAborted();
+      return runtime.state === "running" ? "withdrawn" : "retire-runtime";
+    } catch (error) {
+      if (signal.aborted || error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      return "retire-runtime";
+    }
   }
 
   /** Log a stuck cleanup's cause once per work item and cause, not on every recheck. */

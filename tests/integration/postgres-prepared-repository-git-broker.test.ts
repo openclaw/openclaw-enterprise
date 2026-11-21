@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { request, Agent, type RequestOptions } from "node:https";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   createServer as createHttpServer,
   type IncomingMessage,
@@ -11,7 +11,7 @@ import { createNativeClientMaterial } from "../fixtures/repository-credentials/c
 import { connect, createServer as createTcpServer } from "node:net";
 import { readFile, writeFile } from "node:fs/promises";
 import { buffer } from "node:stream/consumers";
-import test, { type TestContext } from "node:test";
+import test, { after, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { setTimeout as delay } from "node:timers/promises";
@@ -43,6 +43,21 @@ import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/ac
 import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
 import type { RefusalRecord } from "../../apps/controller/src/drivers/repo/access/transport/agent.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
+import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
+import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
+import type {
+  ComputeDriver,
+  RepositoryCredentialRuntimeBinding,
+} from "../../packages/contracts/src/index.ts";
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
+import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type BrokerInput = Parameters<
   NonNullable<NonNullable<Parameters<typeof fixture>[1]>["openBroker"]>
@@ -267,6 +282,379 @@ function refusedOnceBy(
       ...b.identity,
     },
   ]);
+}
+
+const { setup: setupNativeWithdrawal, cleanup: cleanupNativeWithdrawal } =
+  createWorkerRevisionFixtures(import.meta.url);
+after(cleanupNativeWithdrawal);
+
+function discoverNativeBearer(
+  port: number,
+  ca: Buffer,
+  bearer: string,
+): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const outgoing = request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: "/fixture/repository.git/info/refs?service=git-upload-pack",
+        method: "GET",
+        ca,
+        agent: false,
+        timeout: 8000,
+        headers: {
+          host: "credentials.example.test",
+          authorization: `Basic ${Buffer.from(`gateway-session:${bearer}`).toString("base64")}`,
+        },
+      },
+      (incoming) => {
+        incoming.resume();
+        incoming.once("error", reject);
+        incoming.once("end", () => resolve(incoming.statusCode));
+      },
+    );
+    outgoing.once("timeout", () => outgoing.destroy(new Error("Git discovery timed out")));
+    outgoing.once("error", reject);
+    outgoing.end();
+  });
+}
+
+for (const outcome of ["settled", "unconfirmed revocation", "inference unavailable"] as const) {
+  test(
+    `finite native Git binding removal: ${outcome}`,
+    { ...requiresPostgres, timeout: 65_000 },
+    async (t) => {
+      const backendId = "github-fixture";
+      const driverId = "repository-credentials";
+      const f = await setupNativeWithdrawal(t, {
+        backends: [
+          {
+            id: backendId,
+            type: "github",
+            configuration: { registryPath: "/unused/controlled-registry.json" },
+            drivers: { repo: driverId },
+          },
+        ],
+      });
+      const clock = createControlledClock();
+      const startedWall = clock.wallNow();
+      const git = await startRegistryCredentialServiceFixture(t, {
+        namespaceId: f.namespace.id,
+        backendId,
+        repositories: [
+          { repositoryRef: "repo-a", repository: "fixture/repository", repositoryId: "73" },
+        ],
+        autoOpen: false,
+        clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
+        gateway: { listen: "127.0.0.1:0" },
+      });
+      const socket = git.config.gateway.controlSocket;
+      const driver = new GitHubRepositoryPolicy({ driverId, backendId }, git.registry, {
+        sessionDurationSeconds: 60,
+      });
+      const sender = new GitHubNativeRepositorySender(
+        {
+          id: git.backendId,
+          client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
+          drivers: { repo: driver.id },
+        },
+        { publicCa: git.tls.ca },
+      );
+      const receipts = await startRepositoryReceiptServer({
+        state: f.state,
+        controlSocket: socket,
+        driverId: driver.id,
+        implementation: driver.implementation,
+        backendId: git.backendId,
+      });
+      t.after(() => receipts.close());
+      const subject = git.byRef.get("repo-a")!;
+      const keyDirectory = await temporaryDirectory(t, "native-withdrawal-owner-");
+      const privateKeyPath = join(keyDirectory, "app.pem");
+      const custodyKeyPath = join(keyDirectory, "custody");
+      await writeFile(
+        privateKeyPath,
+        subject.github.privateKey.export({ type: "pkcs8", format: "pem" }),
+        { mode: 0o600 },
+      );
+      await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
+      const issuer = new URL(subject.github.origin);
+      assert.equal(issuer.hostname, "127.0.0.1");
+      const prepared = await startPreparedGitHubGitOwner({
+        registry: git.registry,
+        pool: f.observerPool,
+        driverId,
+        backendId,
+        implementation: driver.implementation,
+        privateKeyPath,
+        custodyKeyPath,
+        controlSocket: socket,
+        apiOrigin: issuer.origin,
+        ca: git.tls.ca,
+        startWorker: false,
+        repositoryGitCustody: { kind: "native-broker" },
+      });
+      t.after(() => prepared.close());
+      f.controller.registerDriver(driver);
+      f.controller.selectDriver("repo", driver.id);
+      const owner = await f.agent("finite-native-withdrawal", { executionMode: "dedicated" });
+      const selections = [{ repositoryRef: "repo-a", profile: "git-write" }];
+      await f.controller.updateAgent(f.actor.id, {
+        namespaceId: f.namespace.id,
+        agentId: owner.id,
+        configurationId: owner.configurationId,
+        repositoryBindings: selections,
+      });
+      const binding = driver.resolve({
+        namespaceId: f.namespace.id,
+        bindings: selections,
+      }).bindings;
+      const candidate = await f.revision(owner, 1, {
+        repositoryCredentials: {
+          driver: { id: driver.id, implementation: driver.implementation },
+          deadlineWallMs: Date.now() + 55_000,
+          bindings: binding,
+        },
+      });
+      const deliveries: Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>[] = [];
+      const stops: string[] = [];
+      let runtimeObservations = 0;
+      const compute: ComputeDriver = {
+        ...f.compute,
+        validateRepositoryCredentials(harness, sandboxDriverId) {
+          assert.equal(harness.mode, "dedicated");
+          assert.equal(sandboxDriverId, undefined);
+        },
+        async prepareRevision(revision, context) {
+          const delivery = context?.repositoryCredentials?.find((value) => value.kind === "new");
+          if (delivery) {
+            deliveries.push(delivery);
+          }
+          return f.compute.prepareRevision(revision, context);
+        },
+        // An unsupported native Compute still uses the ordinary terminal disposition. The ready
+        // observation is controlled here so this case exercises real PostgreSQL and broker custody.
+        async retireExpiredRepositoryAccess() {
+          return "retire-runtime";
+        },
+        async observeRevision(revision) {
+          assert.equal(revision.id, candidate.id);
+          runtimeObservations++;
+          return { state: outcome === "inference unavailable" ? "unknown" : "running" };
+        },
+        async stopRevision(revision) {
+          stops.push(revision.id);
+          return f.compute.stopRevision(revision);
+        },
+      };
+      const statuses: Readonly<Record<string, unknown>>[] = [];
+      const observeNativeRepositoryWithdrawal = prepared.observeNativeWithdrawal;
+      assert.ok(observeNativeRepositoryWithdrawal);
+      const configured = createBackendWorkerDrivers(compute, []);
+      const startWorker = async (pool = f.workerPool) => {
+        const worker = createControllerWorker({
+          pool,
+          pollIntervalMs: 15,
+          leaseDurationMs: 5_000,
+          maxAttempts: 12,
+          drivers: {
+            ...configured,
+            secretDriver: f.secretDriver,
+            repositoryPolicy: driver,
+            nativeRepositorySender: sender,
+          },
+          observeNativeRepositoryWithdrawal,
+          emit: (event) => {
+            if (event.event === "worker.completed") {
+              statuses.push(event);
+            }
+          },
+        });
+        f.database.workers.add(worker);
+        await worker.start();
+        return worker;
+      };
+      let worker = await startWorker();
+      t.after(() => worker.stop());
+      await f.work(candidate, "succeeded");
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+      assert.equal(deliveries.length, 1, "runtime gets one admitted broker bearer");
+      const admit = deliveries[0]!;
+      await prepared.maintain();
+      assert.equal(
+        subject.github.issuesOfTokens.length,
+        1,
+        "actual prepared owner issued one token",
+      );
+      const origin = subject.git;
+      const initial = origin.traffic().requests;
+      assert.equal(
+        await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+        200,
+      );
+      assert.equal(origin.traffic().requests, initial + 1);
+      const removed = await f.controller.updateAgent(f.actor.id, {
+        namespaceId: owner.namespaceId,
+        agentId: owner.id,
+        configurationId: owner.configurationId,
+        repositoryBindings: [],
+      });
+      assert.equal(removed.activeRevisionId, candidate.id);
+      const key = repositoryRemovalWorkKey(candidate.id);
+      const readWork = async () =>
+        (
+          await f.observerPool.query(
+            "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key=$1",
+            [key],
+          )
+        ).rows[0];
+      const first = await waitFor(
+        "exact finite removal first disposition",
+        async () => {
+          const row = await readWork();
+          const last = statuses.find(({ workId }) => workId === key);
+          return row?.state === "queued" && last
+            ? last
+            : row?.state === "succeeded"
+              ? { code: row.reason_code }
+              : undefined;
+        },
+        10000,
+      );
+      const receipt = await f.state.read((view) =>
+        view.repositorySessions.findBrokerReceiptBySession(admit.sessionId),
+      );
+      assert.ok(receipt);
+      assert.equal(receipt.state, "disposed");
+      assert.ok(receipt.generation);
+      assert.equal(
+        await observeNativeRepositoryWithdrawal(candidate, [
+          {
+            admissionId: receipt.admissionId,
+            sessionId: admit.sessionId,
+            generation: randomUUID(),
+          },
+        ]),
+        "unsafe",
+        "the prepared owner refuses proof from another broker generation",
+      );
+      assert.equal(
+        await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+        401,
+      );
+      assert.equal(
+        origin.traffic().requests,
+        initial + 1,
+        "fresh old-bearer request never reaches Git origin",
+      );
+      assert.equal(
+        first.code,
+        "REPOSITORY_CLEANUP_PENDING",
+        "broker disposal alone cannot certify provider settlement",
+      );
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+      assert.deepEqual(stops, []);
+      assert.equal(runtimeObservations, 0);
+      // Re-adding the desired binding cannot restore the old revision's admission or its bearer.
+      await f.controller.updateAgent(f.actor.id, {
+        namespaceId: owner.namespaceId,
+        agentId: owner.id,
+        configurationId: owner.configurationId,
+        repositoryBindings: selections,
+      });
+      if (outcome === "unconfirmed revocation") {
+        subject.github.disconnectAfterMutation("DELETE", "/installation/token");
+        await assert.rejects(prepared.maintain(), { message: "provider-unavailable" });
+      } else {
+        await prepared.maintain();
+      }
+      assert.equal(
+        subject.github.trace.filter(
+          ({ method, target }) => method === "DELETE" && target === "/installation/token",
+        ).length,
+        1,
+      );
+      const { rows } = await f.observerPool.query(
+        "SELECT custody FROM occ.prepared_github_attempts WHERE source_id=$1",
+        ["repository-git:" + receipt.admissionId],
+      );
+      assert.deepEqual(rows, [
+        { custody: outcome === "unconfirmed revocation" ? "unknown" : "revoked" },
+      ]);
+      if (outcome === "settled") {
+        // Recover the cleanup from durable receipts on a replacement Worker.
+        await worker.stop();
+        worker = await startWorker(f.createWorkerPool());
+      }
+      const beforeRetry = statuses.length;
+      assert.equal(
+        (
+          await f.observerPool.query(
+            "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE idempotency_key=$1 AND state='queued'",
+            [key],
+          )
+        ).rowCount,
+        1,
+      );
+      const completion = await waitFor(
+        "the same finite cleanup claim to publish its outcome",
+        async () => statuses.slice(beforeRetry).find(({ workId }) => workId === key),
+        10_000,
+      );
+      assert.equal(
+        await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+        401,
+      );
+      assert.equal(origin.traffic().requests, initial + 1);
+      assert.equal(subject.github.issuesOfTokens.length, 1);
+      if (outcome === "inference unavailable") {
+        assert.equal(completion.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor(
+          "terminal work to stop the exact original revision",
+          async () =>
+            (await f.currentAgent(owner))?.activeRevisionId === undefined ? true : undefined,
+          10_000,
+        );
+        assert.deepEqual(stops, [candidate.id]);
+      } else {
+        assert.equal(
+          completion.code,
+          outcome === "settled" ? "REPOSITORY_ACCESS_WITHDRAWN" : "REPOSITORY_CLEANUP_PENDING",
+        );
+        assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+        assert.deepEqual(stops, []);
+      }
+      assert.equal(runtimeObservations, outcome === "unconfirmed revocation" ? 0 : 1);
+      if (outcome === "settled") {
+        const due = await f.advanceMaintenance(candidate);
+        assert.equal(due.rowCount, 1);
+        const observed = await waitFor(
+          "ordinary maintenance to supervise the same revision without Git",
+          async () => statuses.find(({ workId }) => workId === due.rows[0]?.idempotency_key),
+          10_000,
+        );
+        assert.equal(observed.code, "REPOSITORY_ACCESS_WITHDRAWN");
+        assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+        assert.equal(runtimeObservations, 2);
+        assert.deepEqual(stops, []);
+      } else if (outcome === "unconfirmed revocation") {
+        await prepared.maintain();
+        assert.equal(
+          subject.github.trace.filter(
+            ({ method, target }) => method === "DELETE" && target === "/installation/token",
+          ).length,
+          1,
+          "the owner did not replay a lost revocation acknowledgement",
+        );
+      }
+      assert.equal(
+        deliveries.length,
+        1,
+        "withdrawal does not prepare or deliver another credential",
+      );
+    },
+  );
 }
 
 async function withdrawRepositoryBinding(

@@ -125,6 +125,13 @@ that remains running, confirm a new authenticated fetch is denied and chat still
 an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
 
+The Worker keeps the same Agent revision running once the broker confirms
+session disposal, the prepared Git owner confirms token settlement, and
+Kubernetes verifies that the existing Gateway and Harness are ready. The
+committed removal blocks new Git requests while settlement is pending. The
+Worker queues retirement when it cannot establish safe withdrawal or verify
+the inference runtime.
+
 ## Read broker refusals
 
 Git shows only the HTTP status of a refusal, so read the reason in the log of the worker

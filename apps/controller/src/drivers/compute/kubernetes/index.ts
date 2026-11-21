@@ -6901,6 +6901,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sandbox = this.sandboxDriverForRevision(revision);
     if (!sandbox?.observeHarness) {
+      if (
+        this.preparedRepositoryIngress &&
+        this.sandboxDriver === undefined &&
+        revision.sandboxDriverId === undefined &&
+        revision.executionAdmission.mode === "unprotected" &&
+        revision.repositoryCredentials !== undefined &&
+        revision.harness.id === "codex" &&
+        revision.harness.mode === "dedicated"
+      ) {
+        return withComputeAbortSignal(signal, () => this.observePreparedNativeRuntime(revision));
+      }
       return { state: "unknown" };
     }
     return withComputeAbortSignal(signal, async () => {
@@ -6916,6 +6927,91 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       return sandbox.observeHarness!({ ...context, revision });
     });
+  }
+
+  /** Observe the already-running Compute-owned Gateway and Harness without reenrolling either. */
+  private async observePreparedNativeRuntime(
+    revision: Readonly<AgentRevision>,
+  ): Promise<SandboxHarnessObservation> {
+    const namespace = await this.ownedRepositoryNamespace(revision);
+    const enrollment = this.nodeEnrollment;
+    const endpoint = this.getGatewayEndpoint(revision);
+    if (!namespace || !enrollment || !endpoint) {
+      return { state: "unknown" };
+    }
+    const gatewayNamespace = await this.requireGatewayNamespace(revision, namespace);
+    const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
+    const gatewayOwner = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const consumer = this.repositoryConsumer(revision);
+    const [gateway, harness, node] = await Promise.all([
+      this.getOwned("Deployment", gatewayName, gatewayNamespace, gatewayOwner),
+      this.getOwned("Deployment", consumer.name, namespace, consumer.owner),
+      this.getOwned(
+        "Secret",
+        this.workspaceNodeName(revision),
+        namespace,
+        this.workspaceNodeOwnership(revision),
+      ),
+    ]);
+    if (
+      !gateway ||
+      !harness ||
+      gateway.metadata.deletionTimestamp !== undefined ||
+      harness.metadata.deletionTimestamp !== undefined ||
+      gateway.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id ||
+      gateway.metadata.annotations?.[AGENT_REVISION_ANNOTATION] !== String(revision.revision) ||
+      !this.deploymentReady(harness) ||
+      !this.deploymentRolledOut(harness)
+    ) {
+      return { state: "unknown" };
+    }
+    const device = recordedWorkspaceNodeDeviceId(node?.data?.deviceId);
+    if (
+      !device ||
+      node?.metadata.deletionTimestamp !== undefined ||
+      node?.data?.[WORKSPACE_NODE_ENROLLED_REVISION_KEY] !==
+        Buffer.from(revision.id).toString("base64") ||
+      node?.data?.[WORKSPACE_NODE_RECEIPT_DEVICE_KEY] !== undefined ||
+      !(await this.gatewayReady(gatewayOwner, gatewayName, gatewayNamespace))
+    ) {
+      return { state: "unknown" };
+    }
+    const observe = () =>
+      Promise.all([
+        this.privateStatusReadback(revision, namespace, "gateway", RUNTIME_STATUS_PATH),
+        this.privateStatusReadback(revision, namespace, "agent", RUNTIME_STATUS_PATH),
+      ]);
+    const [gatewayStatus, harnessStatus] = await observe();
+    if (
+      !gatewayStatus?.containerId ||
+      !harnessStatus?.containerId ||
+      asRecord(gatewayStatus.status)?.workspaceNodeId !== device ||
+      this.validRuntimeDiagnosticChecks(
+        gatewayStatus.status,
+        revision,
+        "gateway",
+        gatewayStatus.podUid,
+      ).some(({ state }) => state === "failed") ||
+      this.validRuntimeDiagnosticChecks(
+        harnessStatus.status,
+        revision,
+        "agent",
+        harnessStatus.podUid,
+      ).some(({ state }) => state === "failed") ||
+      !(await enrollment.isConnected(endpoint, device, this.operationSignal()))
+    ) {
+      return { state: "unknown" };
+    }
+    // A Pod replacement during the node's connection observation invalidates the proof.
+    const [currentGateway, currentHarness] = await observe();
+    const sameContainer = (
+      before: PrivateStatusReadback,
+      after: PrivateStatusReadback | undefined,
+    ) => after?.podUid === before.podUid && after.containerId === before.containerId;
+    return sameContainer(gatewayStatus, currentGateway) &&
+      sameContainer(harnessStatus, currentHarness)
+      ? { state: "running" }
+      : { state: "unknown" };
   }
 
   /** Resolve the same selected Sandbox and exact owned Namespace for observation or withdrawal. */
