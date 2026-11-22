@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-22
-last_updated_session: authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c
+last_updated_session: authoring-run/25d72135-b5b4-456b-a1c3-25c6dfee5cb1
 ---
 
 # Platform console request flow
@@ -150,6 +150,10 @@ Return and refocus hold views inert. **Still checking…** appears after one
 second. Up to 16 views retain drafts and disclosures by route, Namespace, and
 session. Changed reads, newly readable Namespaces, and Refresh rebuild. Cancelled
 returns preserve views. Cancelled Refresh discards them.
+On Namespaces, `namespaces.mts:renderNamespaces` filters admitted rows by name or
+ID. Refocus keeps the query and restores focus after admission. Back scrolls
+the readable return link into view.
+
 Discovery, passwords, mutations, and pending or failed reads prevent reuse.
 Read-only POSTs permit reuse.
 
@@ -376,6 +380,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 11:22: Trace Namespace search and return focus. (authoring-run/25d72135-b5b4-456b-a1c3-25c6dfee5cb1 - d687874b7213584ff916a22cdfccdce48bfe1fc8)
 
 - 2026-11-22 08:59: Trace keyboard search. (authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c - f3996c521e94d8bf18ff9018069c699dda6913c6)
 

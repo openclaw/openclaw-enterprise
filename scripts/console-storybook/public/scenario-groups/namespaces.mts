@@ -44,6 +44,8 @@ type NamespaceScenario = {
   mobile?: true;
   emptyAgents?: true;
   emptyNamespaces?: true;
+  additionalNamespaceNames?: readonly string[];
+  namespaceRechecks?: readonly NamespaceStatus[];
   observabilityDenied?: true;
   namespaceStatus?: NamespaceStatus;
   namespaceDeleteDenied?: true;
@@ -64,6 +66,25 @@ export const namespacesScenarios = {
     steps: [
       "Select Create Namespace, enter a unique name, and submit. The success dialog explains provisioning; Open Agents selects the created Namespace.",
       "Reset, then cancel a new form with Escape. No Namespace is created and focus returns to Create Namespace.",
+    ],
+  },
+  namespaceSearch: {
+    group: "Pages/Namespaces",
+    name: "Search by name or ID",
+    path: "/console/namespaces",
+    additionalNamespaceNames: Array.from(
+      { length: 24 },
+      (_, index) => `Team ${String(index + 1).padStart(2, "0")}`,
+    ),
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["ready"],
+    description: "Find a readable Namespace in a long list and return to it from Agents.",
+    steps: [
+      "Enter TEAM 22 in Search Namespaces. Check that only Team 22 is visible. Clear search, then paste an ID from a row to find it.",
+      "Enter a name that has no match. Check the no-match message, then use Clear search to show all rows.",
+      "Focus Team 22 and press Enter. Go Back and check that Team 22 is focused and visible.",
+      "At phone width, repeat the search and use Clear search. Scroll to check the Ready and Provisioning badges.",
     ],
   },
   namespaceDelete: {

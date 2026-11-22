@@ -1181,7 +1181,10 @@ function focusInShownView() {
               remounted.querySelectorAll<HTMLElement & { disabled?: boolean }>(
                 "[data-refocus-key]",
               ),
-            ).find((item) => item.dataset.refocusKey === wanted && !item.disabled)
+            ).find(
+              (item) =>
+                item.dataset.refocusKey === wanted && !item.disabled && item.checkVisibility(),
+            )
           : undefined;
       const target = rebuilt
         ? key &&
@@ -2263,6 +2266,11 @@ async function loadPage({
       restoreRefocus = () => restoreFocus?.restore(restoredShell.view);
       return;
     }
+    // Rebuilding replaces the shell too, so check whether focus moved before it can blur.
+    const namespaceRefocus =
+      current.feature === "namespaces" && retained && document.activeElement === document.body
+        ? refocused
+        : null;
     // The destination rebuilds: a retained view that did not match is stale from here on.
     forgetRetainedView(taken);
     // An Agent page renders hidden behind what is on screen (the opening panel, a held page or
@@ -2778,6 +2786,11 @@ async function loadPage({
           ...agentContext,
           reload: () => loadPage(),
           fromRefresh,
+          // Only a successful read for the retained view's session can reuse its query.
+          searchQuery:
+            (retained && reuseView
+              ? retainedView?.snapshot.querySelector<HTMLInputElement>("#namespace-search")?.value
+              : undefined) ?? "",
           sorted,
           onRemoved(namespace) {
             clearRetainedViewsForNamespace(namespace.id);
@@ -2796,6 +2809,8 @@ async function loadPage({
         },
         items,
       );
+      const rebuiltView = shell.view;
+      restoreRefocus = () => namespaceRefocus?.restore(rebuiltView, { rebuilt: true });
     } else if (current.feature === "secrets" && selectedNamespace !== null) {
       renderSecrets({
         ...agentContext,
@@ -2996,11 +3011,14 @@ async function loadPage({
           );
         // A rebuild started at the top. Restore the snapshot's scroll and let focus
         // bring the shortcut into view if the page changed height.
-        if (current.agentId && focusTarget && retainedView) {
+        const restoreScroll = Boolean(
+          focusTarget && (current.agentId || current.feature === "namespaces"),
+        );
+        if (restoreScroll && retainedView) {
           window.scrollTo({ top: retainedView.scrollY, left: 0 });
         }
         (focusTarget || app.querySelector<HTMLHeadingElement>(".content h1"))?.focus({
-          preventScroll: !current.agentId || !focusTarget,
+          preventScroll: !restoreScroll,
         });
       }
       if (fromRefresh && document.activeElement === document.body) {

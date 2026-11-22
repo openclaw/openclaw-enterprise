@@ -73,6 +73,7 @@ export function renderNamespaces(
     operatorId: string;
     installationAdmin: boolean | null;
     fromRefresh: boolean;
+    searchQuery: string;
     reload(): Promise<void>;
     pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
     sorted(items: readonly Namespace[]): Namespace[];
@@ -101,6 +102,12 @@ export function renderNamespaces(
     `${NAMESPACE_CREATE_DENIED} Then select Refresh.`,
   );
   const emptyText = element("p");
+  const empty = element(
+    "section",
+    { className: "state-panel" },
+    element("h2", {}, NO_READABLE_NAMESPACES),
+    emptyText,
+  );
   // The API refused this person's creation: the control says so instead of offering another
   // attempt that it would refuse again. It stays in the Tab order, described by the refusal (class
   // of finding 2899).
@@ -135,7 +142,64 @@ export function renderNamespaces(
     collection,
   );
   if (items.length) {
+    const search = element("input", {
+      id: "namespace-search",
+      type: "search",
+      "aria-label": "Search Namespaces",
+      "data-refocus-key": "namespace-search",
+      placeholder: "Search Namespaces by name or ID",
+    });
+    search.value = context.searchQuery;
+    const clear = button(
+      "Clear search",
+      () => {
+        search.value = "";
+        search.focus();
+        updateMatches();
+      },
+      { tone: "ghost", "data-refocus-key": "namespace-clear-search" },
+    );
+    const searchToolbar = element(
+      "div",
+      { className: "collection-toolbar namespace-search" },
+      search,
+      clear,
+    );
     const list = element("ul", { className: "collection", "aria-label": "Namespaces" });
+    const table = element(
+      "div",
+      { className: "resource-list namespace-table" },
+      element(
+        "div",
+        { className: "resource-list-header namespace-table-head", "aria-hidden": "true" },
+        ...["Namespace", "Status", "Created", "Actions"].map((label) => element("span", {}, label)),
+      ),
+      list,
+    );
+    const noMatch = element(
+      "section",
+      { className: "state-panel" },
+      element("h2", {}, "No matching Namespaces"),
+      element("p", {}, "Try another name or ID."),
+    );
+    const rows = new Map<Namespace, HTMLLIElement>();
+
+    // Keep each row mounted so filtering preserves its deletion status and feedback.
+    function updateMatches() {
+      const query = search.value.trim().toLowerCase();
+      let matched = false;
+      for (const [item, row] of rows) {
+        row.hidden =
+          !item.id.toLowerCase().includes(query) && !item.name?.toLowerCase().includes(query);
+        matched ||= !row.hidden;
+      }
+      searchToolbar.hidden = rows.size === 0;
+      clear.hidden = !search.value;
+      table.hidden = !matched;
+      noMatch.hidden = matched || rows.size === 0;
+      empty.hidden = rows.size > 0;
+    }
+
     for (const item of context.sorted(items)) {
       const statuses = {
         ready: { label: "Ready", tone: "success" },
@@ -157,6 +221,7 @@ export function renderNamespaces(
       setStatus(item.status);
       const name = element("a", { href: context.pageUrl("agents", item.id) }, item.name ?? item.id);
       name.dataset.returnFocusHref = name.href;
+      name.dataset.refocusKey = `${item.id} namespace-name`;
       name.addEventListener("click", (event) => {
         if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
           return;
@@ -176,6 +241,8 @@ export function renderNamespaces(
             const focused =
               row.contains(active) || (refocus && (!active || active === document.body));
             row.remove();
+            rows.delete(item);
+            updateMatches();
             context.onRemoved(namespace);
             outcome.replaceChildren(
               statusBlock(
@@ -184,16 +251,6 @@ export function renderNamespaces(
                 `${namespace.name ?? namespace.id} was deleted. Its name remains reserved.`,
               ),
             );
-            if (!list.children.length) {
-              collection.replaceChildren(
-                element(
-                  "section",
-                  { className: "state-panel" },
-                  element("h2", {}, NO_READABLE_NAMESPACES),
-                  emptyText,
-                ),
-              );
-            }
             if (focused) {
               outcome.focus();
             }
@@ -218,31 +275,14 @@ export function renderNamespaces(
         deletion.actions,
         deletion.feedback,
       );
+      rows.set(item, row);
       list.append(row);
     }
-    collection.append(
-      element(
-        "div",
-        { className: "resource-list namespace-table" },
-        element(
-          "div",
-          { className: "resource-list-header namespace-table-head", "aria-hidden": "true" },
-          ...["Namespace", "Status", "Created", "Actions"].map((label) =>
-            element("span", {}, label),
-          ),
-        ),
-        list,
-      ),
-    );
+    search.addEventListener("input", updateMatches);
+    collection.append(searchToolbar, table, noMatch, empty);
+    updateMatches();
   } else {
-    collection.append(
-      element(
-        "section",
-        { className: "state-panel" },
-        element("h2", {}, NO_READABLE_NAMESPACES),
-        emptyText,
-      ),
-    );
+    collection.append(empty);
   }
   if (refused) {
     showRefused();

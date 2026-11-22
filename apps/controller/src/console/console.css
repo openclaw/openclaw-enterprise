@@ -2823,6 +2823,13 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   flex-wrap: wrap;
   margin-top: var(--space-5);
 }
+.namespace-search {
+  justify-content: flex-start;
+}
+.namespace-search > input[type="search"] {
+  flex: 1 1 190px;
+  min-width: 0;
+}
 .namespace-toolbar {
   display: flex;
   align-items: center;
