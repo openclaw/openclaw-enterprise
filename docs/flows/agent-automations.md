@@ -75,6 +75,13 @@ interactive approvals.
 
 ### 2. Qualify the selected runtime and effective MCP operations
 
+`apps/controller/src/http/agent-automations.ts:createAgentAutomationHandlers`
+evaluates the selected Compute policy before opening transport for POST and PATCH
+other than disable-only. Missing qualification returns `503 AUTOMATIONS_UNQUALIFIED`;
+evaluator or dependency failures return `503 DEPENDENCY_UNAVAILABLE`. Disable-only
+PATCH, DELETE and history retain recovery under existing authorization,
+native-shape and transport checks.
+
 `apps/controller/src/composition/agent-automations.ts:createAgentAutomationsAccess`
 checks Compute identity and observed main-container provenance before returning
 the result of `ComputeDriver.evaluateAgentAutomationPolicy` and a transport from
