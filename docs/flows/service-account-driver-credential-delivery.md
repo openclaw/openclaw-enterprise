@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-22
+last_updated_session: authoring-run/01a20518-956e-7d31-8500-0ce8a2f1c171
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -41,7 +41,7 @@ graph TD
     C --> E["Authorize and create OCC account"]
     E --> F["Create upstream account and private binding"]
     F --> G["Authorize separate credential issuance"]
-    G --> H["Issue token and store account Secret"]
+    G --> H["Issue token, store and confirm account Secret"]
     H --> I["Persist credential ID and Secret reference"]
     I --> J["Save nullable Agent backendId"]
     J --> K["Validate binding and freeze Agent revision"]
@@ -122,12 +122,19 @@ account lock, so deletion uses uid and resourceVersion preconditions to protect
 a later issuance.
 
 `KubernetesComputeDriver.storeServiceAccountCredential` stores the token in one
-account-owned control-plane Secret. If the create reply is lost, an exact
-readback of ownership, token, credential ID, uid, and resourceVersion confirms
-the stored state without repeating or deleting the Secret. An absent or
-mismatched object leaves the create failure in force; an unreadable or
-unidentified object remains an unknown outcome. The Driver owns compensation
-after either storage failure or a later known transaction failure.
+account-owned control-plane Secret and confirms the returned Secret before the
+ChatGPT Driver records the credential binding. Compute checks the Secret kind,
+API-version string, exact namespace and name, ownership labels and annotations,
+provider credential ID, canonical base64 token, and nonempty uid and
+resourceVersion. An unusable create response leaves storage unconfirmed and fails before the binding
+write.
+
+If create fails, Compute applies the same checks to a readback. A match confirms
+storage without repeating the create; an absent or mismatched Secret leaves the
+create failure in force. A failed read or an otherwise matching Secret missing
+either uid or resourceVersion leaves the outcome unconfirmed. The Driver uses
+its existing compensation after storage failure or a later known transaction
+failure.
 
 The private Backend binding retains workspace metadata. The private credential
 ID, internal credential reference, and audit changes commit together.

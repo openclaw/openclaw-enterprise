@@ -102,10 +102,12 @@ account-owned Secret holding both its token and credential ID. If revocation is
 unconfirmed, the Secret remains available for recovery. Compensation runs after
 the account lock is released, so exact deletion also uses uid and
 resourceVersion preconditions to protect a later issuance.
-If a Kubernetes Secret create fails, Compute reads the deterministic name.
-Matching ownership, token, credential ID, uid, and resourceVersion confirm the
-stored state and allow issuance to continue without repeating the create.
-Otherwise the create failure stands, and the Driver owns any compensation.
+With Kubernetes Compute, issuance confirms the returned account Secret before
+recording the credential binding. If create fails, Compute can confirm the same
+Secret by readback without repeating the create. Unusable confirmation follows
+the existing compensation and recovery paths; see
+[credential issuance](../../flows/service-account-driver-credential-delivery.md#3-issue-the-credential-and-create-one-account-secret)
+for the identity checks and failure handling.
 The Secret also records the provider credential ID. A crash or an unknown
 COMMIT that failed runs no compensation, so under the account lock, with no
 credential recorded, issuance and deletion first revoke the credential a

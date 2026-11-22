@@ -281,7 +281,11 @@
       "expectedTests": [
         "an issuance that never committed is reclaimed by the next issuance under the account lock",
         "deleting an account after an issuance that never committed revokes its credential and removes its Secret",
-        "a reclaim whose PostgreSQL session ends during the Secret read leaves a later issuance intact"
+        "a reclaim whose PostgreSQL session ends during the Secret read leaves a later issuance intact",
+        "Kubernetes Compute validates successful ServiceAccount credential Secret receipts",
+        "managed HTTP issuance binds the exact Kubernetes credential Secret receipt",
+        "managed HTTP issuance compensates a transformed Kubernetes create receipt by exact readback",
+        "unknown managed issuance COMMIT retains an exact Kubernetes credential Secret"
       ]
     },
     {

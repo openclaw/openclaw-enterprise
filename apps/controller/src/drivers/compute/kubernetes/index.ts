@@ -1652,9 +1652,19 @@ function storesServiceAccountToken(
   secret: ManagedKubernetesObject<"Secret">,
   accessToken: string,
 ): boolean {
-  const stored = Buffer.from(secret.data?.[SERVICE_ACCOUNT_TOKEN_KEY] ?? "");
+  const encoded = secret.data?.[SERVICE_ACCOUNT_TOKEN_KEY];
+  if (typeof encoded !== "string") {
+    return false;
+  }
+  const stored = Buffer.from(encoded);
   const requested = Buffer.from(Buffer.from(accessToken).toString("base64"));
   return stored.length === requested.length && timingSafeEqual(stored, requested);
+}
+
+function serviceAccountCredentialSecretOutcomeUnknown(): DependencyUnavailableError {
+  return new DependencyUnavailableError(
+    "The ServiceAccount credential Secret create outcome could not be confirmed.",
+  );
 }
 
 /** The wait before retry `attempt + 1`: exponential with jitter, or the server's
@@ -6092,8 +6102,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
     const clients = await this.clients(namespace.plane);
     const manifest = this.manifest("v1", "Secret", name, ownership, namespace);
+    let created: V1Secret;
     try {
-      await this.request(
+      created = await this.request(
         () =>
           clients.core.createNamespacedSecret({
             namespace: namespace.name,
@@ -6130,6 +6141,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       throw error;
     }
+    if (
+      !this.matchesServiceAccountCredentialSecret(
+        created,
+        name,
+        namespace,
+        ownership,
+        credentialId,
+        accessToken,
+      )
+    ) {
+      throw serviceAccountCredentialSecretOutcomeUnknown();
+    }
     return { name, key: SERVICE_ACCOUNT_TOKEN_KEY };
   }
 
@@ -6149,33 +6172,55 @@ export class KubernetesComputeDriver implements ComputeDriver {
     credentialId: string,
     accessToken: string,
   ): Promise<boolean> {
-    const unknown = () =>
-      new DependencyUnavailableError(
-        "The ServiceAccount credential Secret create outcome could not be confirmed.",
-      );
     let existing: ManagedKubernetesObject<"Secret"> | undefined;
     try {
       existing = await this.get("Secret", name, namespace);
     } catch {
-      throw unknown();
+      throw serviceAccountCredentialSecretOutcomeUnknown();
     }
-    if (existing === undefined) {
+    return this.matchesServiceAccountCredentialSecret(
+      existing,
+      name,
+      namespace,
+      ownership,
+      credentialId,
+      accessToken,
+    );
+  }
+
+  private matchesServiceAccountCredentialSecret(
+    value: unknown,
+    name: string,
+    namespace: KubernetesNamespaceAddress,
+    ownership: Ownership,
+    credentialId: string,
+    accessToken: string,
+  ): boolean {
+    const secret = asRecord(value);
+    const metadata = asRecord(secret?.metadata);
+    if (
+      secret?.kind !== "Secret" ||
+      typeof secret.apiVersion !== "string" ||
+      metadata?.name !== name ||
+      metadata.namespace !== namespace.name
+    ) {
       return false;
     }
+    const observed = secret as unknown as ManagedKubernetesObject<"Secret">;
     try {
-      this.verifyOwnership(existing, ownership);
+      this.verifyOwnership(observed, ownership);
     } catch {
       return false;
     }
     if (
-      !storesServiceAccountToken(existing, accessToken) ||
-      existing.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION] !== credentialId
+      !storesServiceAccountToken(observed, accessToken) ||
+      observed.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION] !== credentialId
     ) {
       return false;
     }
-    const { uid, resourceVersion } = existing.metadata;
+    const { uid, resourceVersion } = observed.metadata;
     if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
-      throw unknown();
+      throw serviceAccountCredentialSecretOutcomeUnknown();
     }
     return true;
   }
