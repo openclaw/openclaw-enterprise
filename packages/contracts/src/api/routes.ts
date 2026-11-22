@@ -206,6 +206,11 @@ const automationMutationErrors = {
   },
 };
 
+const automationDeleteErrors = {
+  ...mutationErrors,
+  503: automationMutationErrors[503],
+};
+
 const runtimeReadErrors = {
   ...readErrors,
   429: ErrorResponseRef,
@@ -311,7 +316,7 @@ export const occApiRoutes = [
     schema: {
       params: AgentAutomationParams,
       querystring: DeleteAgentAutomationQuery,
-      response: { 204: Type.Null(), ...automationMutationErrors },
+      response: { 204: Type.Null(), ...automationDeleteErrors },
     },
   },
   {

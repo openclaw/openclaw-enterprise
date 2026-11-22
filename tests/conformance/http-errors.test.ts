@@ -1247,6 +1247,7 @@ const NOT_PROVISIONING_REFUSALS = [
   // meets it before its revision commits and names it with its own text.
   "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
   // Raised by other routes themselves, outside this mapping.
+  "AUTOMATIONS_UNQUALIFIED",
   "INSTALLATION_EXISTS",
   "METHOD_NOT_ALLOWED",
   "NATIVE_ADMIN_RETURN_RATE_LIMITED",
