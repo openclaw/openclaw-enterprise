@@ -352,10 +352,10 @@ becomes `RUNTIME_LOGS_SANDBOX_NOT_FOUND`. See
   the attachment and check its provider status in OpenShell.
 - For an unavailable Gateway, check Service and Pod readiness.
 - For `SANDBOX_HARNESS_UNSUPPORTED`, select dedicated Codex or OpenClaw.
-- `OpenShell refused <method>: ... limit of 1000 durable request admissions ...`
-  reports `SANDBOX_ADMISSION_LIMIT_REACHED`. The message names OpenShell's default;
-  see the [configured limit](../../guides/deploy/eks-openshell-setup.md#openshell-gateway-admission-limit).
-  No API resets unresolved records: inspect the Gateway database, then redeploy.
+- `OpenShell refused <method>: ... limit of durable request admissions ...`
+  reports `SANDBOX_ADMISSION_LIMIT_REACHED`. Raise the
+  [configured limit](../../guides/deploy/eks-openshell-setup.md#openshell-gateway-admission-limit)
+  or, since no API resets unresolved records, inspect the Gateway database, then redeploy.
   Other `RESOURCE_EXHAUSTED` errors retry.
 - `OpenShell dedicated Harness exposure requires one literal APP_TOKEN_SHA verifier.`
   Malformed deployment or raw app-server token.

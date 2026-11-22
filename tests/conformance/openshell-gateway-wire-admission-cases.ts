@@ -259,7 +259,10 @@ export function registerAdmissionCases(): void {
           assert.ok(error instanceof TransientDependencyError);
           assert.equal(error.dependency, "sandbox_admission");
           assert.equal(error.code, "SANDBOX_ADMISSION_LIMIT_REACHED");
-          assert.match(error.message, /limit of 1000 durable request admissions.*then redeploy/);
+          assert.match(
+            error.message,
+            /limit of durable request admissions.*mutation_admission_limit_per_caller.*then redeploy/,
+          );
           assert.equal(asRecord(error.cause)?.code, grpc.status.RESOURCE_EXHAUSTED);
           return true;
         });
