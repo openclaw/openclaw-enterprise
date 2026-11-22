@@ -34,7 +34,9 @@ exports `CredentialProxyDriver`, `LegacyEgressProxyDriver`, `DriverRegistration`
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
 The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines both contracts.
 
-The Sandbox registration exposes `credential_proxy_delivery`: `deployProxy`, `configureDeployment`, `getDeploymentStatus`, `removeDeployment`, and optional source-scoped `notifyCredentialUpdated`. OpenShell resolves OCC TokenService Sources only to create Providers and reuses owned Providers. An allowed Source change can leave a reused or preparing Provider stale until push is implemented; active bound updates return 409. Readiness checks the route, delivered Provider version, and supervisor. It detaches after policy removal. Executable rules temporarily include descendants ([#4943](https://github.com/ai-openshell/openshell/issues/4943)); placeholder substitution is not Bearer-only. Production startup remains unqualified. See the [source lifecycle flow](../../flows/credential-source-lifecycle.md#pending-native-integration).
+Registration exposes `credential_proxy_delivery`: `deployProxy`, `configureDeployment`, `getDeploymentStatus`, `removeDeployment`, and optional [`notifyCredentialUpdated`](../../flows/credential-source-lifecycle.md#deliver-source-updates). OpenShell supports OCC TokenService. Deployment resolves initially and reuses Providers. Committed replacements notify the selected Proxy, including for active revisions. Delivery calls `UpdateProvider`, verifies receipts and serving status, and preserves custody on failure. No Provider means no resolution or creation. Manual retry and live rotation proof remain pending.
+
+Readiness checks route, version, and supervisor; detach requires policy removal. Executable rules include descendants ([#4943](https://github.com/ai-openshell/openshell/issues/4943)); substitution is not Bearer-only. Startup remains unqualified.
 
 ## Legacy protected egress
 

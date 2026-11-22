@@ -53,13 +53,43 @@ export async function installTokenServiceDriver(
     drivers.secretDriver.id,
   );
   const instanceId = await controller.activateTokenServiceInstance(selection.id, storeIdentity);
+  const delivery = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
   const owner = new OCCTokenServiceDriver(
     selection.id,
     controller.installation.id,
     store,
     instanceId,
     state,
+    delivery,
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
+  if (delivery !== undefined) {
+    const [{ OpenShellCredentialProxyDriver }, { OpenShellCredentialDeliveryRefusedError }] =
+      await Promise.all([
+        import("../drivers/credential-proxy/openshell.ts"),
+        import("../drivers/credential-proxy/openshell-pushed-provider.ts"),
+      ]);
+    if (delivery instanceof OpenShellCredentialProxyDriver) {
+      delivery.bindSourceNamespaceResolver(async (sourceRef, signal) => {
+        signal.throwIfAborted();
+        if (controller.selectedDriver("credential_proxy_delivery") !== delivery) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        const namespace = await state.read((view) =>
+          view.namespaces.findNamespace(sourceRef.namespaceId),
+        );
+        if (namespace?.status !== "ready") {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        const compute = controller.selectedDriver("compute");
+        const placed = await compute.resolveSandboxNamespace?.(namespace);
+        signal.throwIfAborted();
+        if (placed?.id !== sourceRef.namespaceId || placed.status !== "ready") {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        return placed;
+      });
+    }
+  }
 }

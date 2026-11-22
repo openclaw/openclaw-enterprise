@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-22
-last_updated_session: 01a1ec21-b384-7472-887f-945ae0ab16fc
+last_updated_session: authoring-run/52979f29-7db2-44bf-a8e4-3a7d8a6b9134
 ---
 
 # Credential source lifecycle flow
@@ -28,12 +28,10 @@ graph TD
   Grants -->|authorized binding| Draft["<b>Agent draft</b><br/>Source identity"]
   Draft -->|admit exact route| Revision["<b>Agent revision</b><br/>Frozen Source and policy"]
   Revision -->|dispatch| Delivery["<b>Worker and Proxy</b><br/>Prepare delivery copy"]
-  Delivery -. native readiness pending .-> Start["<b>Sandbox</b><br/>Start Harness after authorization"]
-  classDef pending fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-dasharray:4 4
-  class Start pending
+  Delivery -->|verify policy and Provider| Start["<b>Sandbox</b><br/>Start Harness after authorization"]
 ```
 
-The dashed edge marks the remaining native readiness dependency. A prepared revision does not prove a successful runtime request.
+A prepared revision does not prove a successful runtime request.
 
 ## Execution Trace
 
@@ -51,7 +49,17 @@ The deprecated `CredentialGatewayDriver` and transitional protected Source forms
 
 `packages/occ/src/credential-source-operations.ts:credentialSourceUpdateIdentity`, `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`
 
-OCC authorizes exact `credential_source:update` and dispatches PATCH by the locked Source owner. For a managed static Source, TokenService replaces material from the write-only `secret` field; omitted fields retain their values. A provider-preset change or removal requires an unbound Source and a separate request from credential replacement. A credential update is refused while an active staged revision uses the Source, until source-scoped delivery updates are supported. Draft selection alone does not prevent credential replacement. OCC commits policy-only changes itself; credential updates go through TokenService in its own transaction before OCC records completion. See the [managed static reference](../reference/credential-sources/managed-static.md) for PATCH rules.
+OCC authorizes exact `credential_source:update` and dispatches PATCH by the locked Source owner. For a managed static Source, TokenService replaces material from the write-only `secret` field; omitted fields retain their values. A provider-preset change or removal requires an unbound Source and a separate request from credential replacement. Credential replacement is allowed while an active staged Agent revision uses the Source. OCC commits policy-only changes itself; credential updates go through TokenService in its own transaction before OCC records completion. See the [managed static reference](../reference/credential-sources/managed-static.md) for PATCH rules.
+
+#### Deliver Source updates
+
+`apps/controller/src/composition/token-service.ts:installTokenServiceDriver`, `apps/controller/src/drivers/credential-proxy/openshell.ts:bindSourceNamespaceResolver`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`, `apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts:updateOccTokenServiceProviderCopy`
+
+During TokenService installation, composition binds the validated Credential Proxy to TokenService and supplies the native Proxy with a trusted Namespace resolver. The resolver verifies that this exact Proxy remains selected, reads the ready Namespace from state, asks the selected Compute for the Sandbox placement, checks cancellation, and verifies the placed Namespace ID and status. After committing replacement material, TokenService notifies the Proxy with the Source reference and version, plus a lazy resolver bound to that Source and TokenService instance. If no Provider exists, the Proxy returns without resolving material or creating one. Otherwise it resolves the authoritative credential and Source version and sends both through OpenShell `UpdateProvider`, conditional on the Provider resource version. Attached running Sandboxes are eligible; the Provider profile retains `stable_placeholder`.
+
+The Gateway returns the affected targets in update receipts. The Proxy validates each receipt and confirms its target. For an activated target, it waits while receipt status is `PROVIDER_READINESS_STATE_PENDING` or `PROVIDER_READINESS_STATE_PERSISTED`, using the caller's operation signal. When status becomes `PROVIDER_READINESS_STATE_READY`, the Proxy fetches the target's current configuration admission and checks serving evidence before acknowledging delivery. An explicitly never-activated target needs no serving check. The wait does not send another `UpdateProvider` request or retry delivery.
+
+If delivery fails, the new credential remains in TokenService custody. OCC records the committed Source update and the delivery failure as separate audit outcomes, and PATCH returns `503 DEPENDENCY_UNAVAILABLE`. Authorized explicit retry and live rotation proof remain separate work.
 
 ### 3. Bind and admit an Agent revision
 
@@ -100,6 +108,10 @@ Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged
 
 ## Changelog
 
+- 2026-11-22 12:21: Combine committed Source notification with native Provider receipt readiness. (authoring-run/52979f29-7db2-44bf-a8e4-3a7d8a6b9134 - 4df883ed81bb92632f909d76346d7874ec2761c5)
+- 2026-11-22 12:16: Connect committed Source replacement to native Proxy delivery and allow active-bound credential updates. (authoring-run/c68f6f42-f163-4903-80e4-815e23cd470d - 403ad1bbacb79d2c504026c696a343d29bfa948a)
+- 2026-11-22 20:17: Describe asynchronous native Provider pushes and the remaining caller, retry, and live-proof dependencies. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - a6b923bad)
+- 2026-11-22 20:14: Describe direct native Provider pushes and the remaining caller, retry, and live-proof dependencies. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - a6b923bad)
 - 2026-11-22 11:54: Restore first-use-only Provider delivery and update the Worker resolver source pointer. (01a1ec21-b384-7472-887f-945ae0ab16fc - 2c2c13373)
 - 2026-11-22 08:39: Bind native delivery to the selected OCC TokenService implementation before Gateway access. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - f3a2121af)
 - 2026-11-21 22:19: Integrate TokenService-owned Source enrollment and Worker startup with native Proxy delivery and cleanup. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 86772f7b5)

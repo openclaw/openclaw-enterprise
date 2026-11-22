@@ -16,7 +16,7 @@ credential. The Namespace must be `ready`. Send
 
 `secret` is write-only and accepts exactly one value. Its field name does not
 grant destination authority. OCC stores no Namespace Secret reference for this
-Source. The optional `config.provider_preset` permits the exact approved preset
+Source. The optional `config.provider_preset` currently accepts the approved preset
 `openai`; omitting it grants no provider authority. If a private-store write is
 unconfirmed, POST can fail without creating a Source while leaving orphaned
 credential material. An authorized request already in flight may finish after IAM
@@ -28,10 +28,13 @@ with exact `credential_source:update`. Supply `secret`, `config`, or both.
 Omitting `config` preserves the preset; `config: {}` removes it. An effective
 preset change or removal requires an unbound Source and a separate request from
 material or lifecycle changes. A mixed change returns `409 RESOURCE_CONFLICT`
-before custody changes. Repeating the same preset with a material rotation is
-allowed while the Source is selected in a draft. Credential changes return
-`409` while an active staged Agent revision uses the Source, until delivery
-updates are supported.
+before custody changes. Repeating the same preset with a material rotation does
+not change the policy. Credential material can be replaced while an active staged
+Agent revision uses the Source. After committing replacement material, TokenService
+notifies the selected Credential Proxy. The native Proxy updates an existing
+Provider without creating one if none exists. If delivery fails, PATCH returns
+`503 DEPENDENCY_UNAVAILABLE`; the Source remains ready and the new credential
+remains stored.
 
 Exact GET requires `credential_source:read`. List requires Namespace `read` and
 returns only Sources with exact Source `read`. Responses contain sanitized Source
@@ -49,8 +52,9 @@ fails, the Source is gone. A retry returns `403` if removing the Source also
 removed the caller's delete authority, or `404` if the caller remains authorized.
 
 An authorized Agent draft can bind the Source for Harness authentication.
-Deployment can admit the approved model route when the selected Sandbox and
-Credential Proxy support it. Native readiness remains a separate requirement;
-enrollment and admission do not prove runtime delivery or a model turn. See the
+Deployment attaches the Provider and applies the admitted credential policy before
+starting the Harness when the selected Sandbox and Credential Proxy support the
+route. Native readiness remains a separate requirement; enrollment and admission
+do not prove runtime delivery or a model turn. See the
 [custody flow](../../flows/token-service-static-custody.md) for execution and
 failure handling.
