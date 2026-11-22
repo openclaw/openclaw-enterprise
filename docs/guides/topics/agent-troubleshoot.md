@@ -318,22 +318,30 @@ Inspect them locally and remove sensitive values before sharing.
   }
 
   harness=$(one_pod "openclaw.dev/workload-role=agent,openclaw.dev/revision=$revision" Harness) || exit 1
+  pod_name='.name | strings | select(length>0)'
+  harness_name=$(jq -er "$pod_name" <<<"$harness") || exit 1
+  status=0
+  kubectl get --raw "/api/v1/namespaces/$ns/pods/$harness_name/log?container=agent&tailLines=200" || {
+    echo 'Harness log read failed' >&2
+    status=1
+  }
+
   id=$(jq -er '.annotations["openshell.ai/sandbox-id"] // empty' <<<"$harness") &&
     [[ $id =~ ^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$ ]] || {
       echo 'Missing or invalid Sandbox ID on the Harness Pod' >&2
       exit 1
     }
   supervisor=$(one_pod "openshell.ai/sandbox-id=$id,openshell.ai/boundary-role=supervisor" supervisor) || exit 1
-  harness_name=$(jq -er '.name' <<<"$harness") || exit 1
-  supervisor_name=$(jq -er '.name' <<<"$supervisor") || exit 1
-
-  kubectl get --raw "/api/v1/namespaces/$ns/pods/$harness_name/log?container=agent&tailLines=200" || exit 1
-  kubectl get --raw "/api/v1/namespaces/$ns/pods/$supervisor_name/log?container=supervisor&tailLines=200"
+  supervisor_name=$(jq -er "$pod_name" <<<"$supervisor") || exit 1
+  kubectl get --raw "/api/v1/namespaces/$ns/pods/$supervisor_name/log?container=supervisor&tailLines=200" || {
+    echo 'Supervisor log read failed' >&2
+    status=1
+  }
+  exit "$status"
 )
 ```
 
-A failed lookup leaves Pod presence unknown. An empty list means no Pod matches
-now. Check the namespace, Agent revision and
-[deployment status](../../reference/agents.md#deployment-status). If either
-lookup matches multiple Pods or the Harness has no usable Sandbox ID, resolve
-the workload identity before reading logs.
+Lookup failures leave Pod presence unknown. Check namespace, Agent revision
+and [deployment status](../../reference/agents.md#deployment-status). Both reads
+require one named Harness Pod. Supervisor logs require a valid Sandbox ID and
+one named supervisor Pod.
