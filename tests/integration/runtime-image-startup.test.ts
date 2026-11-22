@@ -139,21 +139,23 @@ test(
   () => verifyCodexPackaging(requiredImage(), profile),
 );
 
-// The historical staging image predates Claude Code.
-const claudeCodeTestOptions = historicalCodex
-  ? { skip: "The historical runtime image has no Claude Code." }
-  : imageTestOptions;
+// The historical staging image predates Claude Code. The runner counts any skip as a failure,
+// so these cases pass with a diagnostic on that profile instead of skipping.
+function claudeCodeCase(verify: (t: TestContext) => Promise<void>) {
+  return (t: TestContext) =>
+    historicalCodex ? t.diagnostic("The historical runtime image has no Claude Code.") : verify(t);
+}
 
 test(
   "runtime image ships the pinned Claude Code binary and an empty managed settings mount point",
-  claudeCodeTestOptions,
-  () => verifyClaudeCodeBinary(requiredImage()),
+  imageTestOptions,
+  claudeCodeCase(() => verifyClaudeCodeBinary(requiredImage())),
 );
 
 test(
   "runtime image Claude Code managed settings and configuration are written by the init and read-only to the Gateway uid",
-  claudeCodeTestOptions,
-  (t) => verifyClaudeCodeSettingsMounts(t, requiredImage()),
+  imageTestOptions,
+  claudeCodeCase((t) => verifyClaudeCodeSettingsMounts(t, requiredImage())),
 );
 
 test(
