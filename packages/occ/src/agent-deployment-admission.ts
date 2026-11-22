@@ -1,3 +1,4 @@
+import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   assertExecutionAdmission,
@@ -508,6 +509,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         );
       }
       if (first === undefined) {
+        await deploymentSandboxPolicy(
+          state,
+          dependencies.authority,
+          principalId,
+          namespace.id,
+          agent.id,
+        );
         await dependencies.provisioningWorker.guardAgentProvisioning(
           state,
           namespace.id,
@@ -590,6 +598,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           "Replacing an active staged managed-credential revision is not supported. Complete Stop before deploying again.",
         );
       }
+      const policy = await deploymentSandboxPolicy(
+        state,
+        dependencies.authority,
+        principalId,
+        namespace.id,
+        lockedAgent.id,
+      );
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -855,11 +870,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       // The repository credential deadline above stays on this controller's clock.
       const revisionId = dependencies.nextIdentifier("agent_revision");
-      const policy =
-        stagedModel === undefined
-          ? undefined
-          : await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
-      if (policy !== undefined && policy.additions.length > 0) {
+      if (stagedModel !== undefined && policy !== undefined && policy.additions.length > 0) {
         await dependencies.authority.authorize(principalId, "read", {
           kind: "sandbox_policy",
           id: policy.id,
@@ -918,14 +929,14 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         );
       }
       const sandboxPolicy = await dependencies.sandboxPolicy.admitDeploymentSnapshot(
-        state,
+        policy,
         principalId,
         lockedAgent,
         revisionHarness,
         sandbox,
         executionAdmission,
         repositoryCredentials !== undefined,
-        stagedModel === undefined ? undefined : { policy },
+        stagedModel !== undefined,
       );
       if (compute.requiresAgentRuntimeCredentials === true) {
         await ensureRuntimeCredentials(

@@ -58,7 +58,10 @@ gateway call), and Compute has no maintenance (the Kubernetes Compute Driver
 has none), the worker queues another series 30 seconds later, then after 1, 2
 and 4 minutes, then every 5 minutes, 15 series in all (about an hour).
 Meanwhile the read shows `pending`, the latest `reason`, and
-`withdrawalInProgress: true`, and the source still resolves in the Sandbox. The first series the gateway confirms
+`withdrawalInProgress: true`, and the source can still resolve in the Sandbox.
+The Sandbox may stop resolving it a few seconds before the gateway confirms.
+If a series ends in between, the read stays `pending` until the next series
+runs, although the source is no longer usable. The first series the gateway confirms
 records `revoked`, with no replay needed. A withdraw request sent while a
 series waits queues nothing more; the series runs at once, on the caller's
 authority.
@@ -81,6 +84,13 @@ attach again, so removing one cannot stop it. After model-source withdrawal,
 maintenance never prepares the version again. It continues recovering pending
 tool withdrawals even when the model source is already `revoked`, and stops only when every withdrawal is `revoked`.
 Redeploy to resume Compute repair.
+
+A running Agent whose Harness source is withdrawn still reads `active`, but its
+model requests no longer leave the Sandbox. The Codex Harness treats this as a
+connection failure and keeps retrying, so a turn gets no answer and ends only
+when its caller disconnects. No error on the turn names the withdrawal: read
+the withdrawal state as described above, and deploy a new version to resume
+model execution.
 
 For externally managed Codex OAuth, restarting the same OpenShell Sandbox after
 withdrawal keeps the Harness process alive but unready, with

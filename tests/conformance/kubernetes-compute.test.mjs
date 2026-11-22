@@ -2573,6 +2573,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
         revisions: {
           findRevision: () => structuredClone(pendingRevision),
           listRevisionMetadata: () => [pendingRevision],
+          pageRevisionSummaries: async () => ({ revisions: [pendingRevision] }),
         },
         secrets: {
           findSecret: () => ({

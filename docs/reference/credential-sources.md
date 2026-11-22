@@ -198,6 +198,10 @@ Updated Gateway copies reach new Harness processes only. To rotate a copied key,
    `secrets` if you created a new Secret.
 3. Redeploy each Agent that uses the source.
 
+With OpenShell, step 2
+[briefly interrupts running Agents](drivers/kubernetes-secret.md#update-and-redeploy)
+that use the source.
+
 A Secret-backed `refresh` source keeps no static value: an update replaces its refresh
 material and mints a new token, and OCC commits replacement Secret references
 only after that mint succeeds. If the mint fails, the update returns `503`, but

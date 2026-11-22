@@ -1,3 +1,4 @@
+import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import type {
   ChannelDriver,
   Configuration,
@@ -150,6 +151,13 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
         id: agent.configurationId,
         namespaceId: input.namespaceId,
       });
+      await deploymentSandboxPolicy(
+        state,
+        dependencies.authority,
+        principalId,
+        input.namespaceId,
+        agent.id,
+      );
       return state.configurations.findConfiguration(input.namespaceId, agent.configurationId);
     });
     return prepareDeploymentChannels(principalId, input, metadata);

@@ -87,6 +87,9 @@ Only the Gateway Pod mounts these writable directories:
 
 These directories persist across Gateway replacement.
 
+If an earlier Pod lost a Skill Library bundle, follow
+[recover a missing Skill Library bundle](../../../guides/topics/remote-harness.md#recover-a-missing-skill-library-bundle).
+
 Back up `state/openclaw.sqlite` with its matching `client/credentials.sqlite`.
 Restore both at their original configured paths with private ownership and
 permissions. For OpenClaw backup archives, `openclaw backup restore` validates

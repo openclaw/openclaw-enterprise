@@ -165,6 +165,16 @@ export {
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
 } from "./sandbox-policy.ts";
+export {
+  maxRepositoryNetworkGrants,
+  repositoryNetworkGrantPattern,
+  parseRepositoryNetworkPolicyCeiling,
+  RepositoryNetworkPolicyAdmissionError,
+  type RepositoryNetworkPolicyCeiling,
+  isCanonicalRepositoryGrantList,
+  type RepositoryNetworkGrant,
+  type RepositoryNetworkPolicy,
+} from "./repository-network-policy.ts";
 
 export type {
   OAuthClient,
@@ -1601,6 +1611,7 @@ export type {
 export type {
   HarnessExecutionModeSupport,
   SandboxDriver,
+  ProtectedRepositoryNetworkPolicyContext,
   SandboxRepositoryAccess,
   KubernetesNamespacedResource,
   SandboxWorkspaceMount,
@@ -1822,3 +1833,5 @@ export type {
   PluginDeploymentDescription,
   PluginDeploymentContract,
 } from "./drivers/plugin/deployment.ts";
+
+export { admitRepositoryNetworkPolicy } from "./repository-network-policy.ts";

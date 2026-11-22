@@ -478,7 +478,7 @@ ALTER TABLE occ.agent_revisions
   ADD CONSTRAINT agent_revisions_execution_admission CHECK (COALESCE(
         jsonb_typeof(admitted_spec->'execution_admission') = 'object'
         AND (admitted_spec->'execution_admission') ?& ARRAY['version', 'mode']
-        AND ((admitted_spec->'execution_admission') - 'version' - 'mode') = '{}'::jsonb
+        AND ((admitted_spec->'execution_admission') - 'version' - 'mode' - 'repositoryNetworkPolicyVersion') = '{}'::jsonb
         AND (
           (admitted_spec->'execution_admission'->>'mode' = 'unprotected'
             AND admitted_spec #> '{execution_admission,version}' = '2'::jsonb
@@ -514,6 +514,7 @@ ALTER TABLE occ.agent_revisions
               ))
           OR (admitted_spec #>> '{execution_admission,mode}' = 'standalone'
             AND admitted_spec #> '{execution_admission,version}' = '8'::jsonb
+            AND NOT ((admitted_spec->'execution_admission') ? 'repositoryNetworkPolicyVersion')
             AND NOT (admitted_spec ? 'egress_plan')
             AND NOT ((admitted_spec->'harness_auth') ? 'protectedExecutionVersion')
             AND occ.standalone_credential_deployment_is_valid(admitted_spec, namespace_id))

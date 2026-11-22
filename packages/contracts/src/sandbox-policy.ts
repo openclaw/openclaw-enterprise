@@ -1,3 +1,7 @@
+import type {
+  RepositoryNetworkGrant,
+  RepositoryNetworkPolicy,
+} from "./repository-network-policy.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
@@ -49,6 +53,7 @@ export interface SandboxPolicySnapshot {
   readonly version: number;
   readonly defaults: Readonly<OpenClawConfigurationDocument>;
   readonly additions: readonly SandboxNetworkGrant[];
+  readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
 }
 
 /** Explicit, nonsecret acknowledgement; only its validated snapshot is persisted. */
@@ -77,6 +82,7 @@ export interface SandboxPolicy {
   readonly agentId: string;
   readonly version: number;
   readonly additions: readonly SandboxNetworkGrant[];
+  readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
   readonly application?: SandboxPolicyApplication;
   readonly applied?: {
     readonly revisionId: string;

@@ -243,7 +243,7 @@ export class ObservedHookPreview {
   bootstrapRevision?: string;
   /** A local deadline to stop and retire, never a lease or an authorization deadline. */
   verifyInstallBy?: number | undefined;
-  release?: "sending" | "acknowledged";
+  release?: "preparing" | "sending" | "acknowledged";
 
   /** A new current runtime needs its own denial and release. Authority and configuration stay. */
   recover(): void {
@@ -259,7 +259,7 @@ export class ObservedHookPreview {
           configurationId: this.recipient,
           bootstrapRevision: this.bootstrapRevision,
           ...(this.hook && { hook: this.hook }),
-          release: this.release ?? "held",
+          release: this.release === "preparing" ? "held" : (this.release ?? "held"),
         }
       : undefined;
   }

@@ -608,7 +608,14 @@
       "idx": 87,
       "version": "7",
       "when": 1787000000087,
-      "tag": "0087_standalone_credential_deployment",
+      "tag": "0087_repository_network_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1787000000088,
+      "tag": "0088_standalone_credential_deployment",
       "breakpoints": true
     }
   ]
