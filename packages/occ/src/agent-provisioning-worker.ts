@@ -319,33 +319,37 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
           progress: {},
         });
       }
-      const revision = await transactions.transact(async (state) => {
-        const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
-        if (
-          current === undefined ||
-          current.status === "cancelled" ||
-          current.status === "failed" ||
-          current.agentId === undefined
-        ) {
-          throw new ResourceStateConflictError(
-            "The Agent provisioning lifecycle changed before handoff.",
+      // Deployment admission reads current authority after waiting for its locks.
+      const revision = await transactions.transact(
+        async (state) => {
+          const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
+          if (
+            current === undefined ||
+            current.status === "cancelled" ||
+            current.status === "failed" ||
+            current.agentId === undefined
+          ) {
+            throw new ResourceStateConflictError(
+              "The Agent provisioning lifecycle changed before handoff.",
+            );
+          }
+          await fenceAgentProvisioning(state, claim);
+          const revision = await handoffClaim.run(claim, () =>
+            dependencies.deploy(
+              current.actorId,
+              { namespaceId: current.namespaceId, agentId: current.agentId! },
+              resolveHarness,
+            ),
           );
-        }
-        await fenceAgentProvisioning(state, claim);
-        const revision = await handoffClaim.run(claim, () =>
-          dependencies.deploy(
-            current.actorId,
-            { namespaceId: current.namespaceId, agentId: current.agentId! },
-            resolveHarness,
-          ),
-        );
-        await commitProvisioningCheckpoint(state, claim, {
-          completedPhase: "handoff",
-          status: "running",
-          revisionId: revision.id,
-        });
-        return revision;
-      });
+          await commitProvisioningCheckpoint(state, claim, {
+            completedPhase: "handoff",
+            status: "running",
+            revisionId: revision.id,
+          });
+          return revision;
+        },
+        { readCommitted: true },
+      );
       return await observeProvisioningDeployment(claim, {
         ...record,
         completedPhase: "handoff",
