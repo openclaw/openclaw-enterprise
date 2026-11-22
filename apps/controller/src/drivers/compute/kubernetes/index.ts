@@ -683,6 +683,31 @@ interface GatewayConfigurationSnapshot {
   readonly nativeWorkerNodeId?: string;
 }
 
+interface DeploymentInput {
+  readonly name: string;
+  readonly ownership: Ownership;
+  readonly namespace: KubernetesNamespaceAddress;
+  readonly images: { readonly runtime: string; readonly workspaceSetup: string };
+  readonly serviceAccountName: string;
+  readonly role: "gateway" | "agent";
+  readonly environment: Readonly<Record<string, string>>;
+  readonly loggingLevel: LoggingLevel;
+  readonly configuration?: GatewayConfigurationSnapshot | undefined;
+  readonly embedded?: boolean | undefined;
+  readonly workloadServicePrincipalId?: string | undefined;
+  readonly harnessAuth?: PreparedHarnessAuth | undefined;
+  readonly enabledChannels?: PreparedChannelRouting | undefined;
+  readonly secretEnvironment?: readonly SecretEnvironmentProjection[] | undefined;
+  readonly pluginRuntime?: PluginRuntimeSnapshot | undefined;
+  readonly pluginWarnings?: readonly PluginDeploymentWarning[] | undefined;
+  readonly workspaceSetup?: WorkspaceSetup | undefined;
+  readonly repositoryMaterial?: ResolvedRepositoryMaterialSpec | undefined;
+  readonly nativeRuntime?: NativeRuntimeSnapshot | undefined;
+  readonly providerEndpoint?: SandboxHarnessEndpoint | undefined;
+  readonly codexLaunch?: CodexLaunch | undefined;
+  readonly scratch?: KubernetesScratchVolume | undefined;
+}
+
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
 const PROXY_CODEX_LAUNCH = "explicit-proxy-codex-launch:v1:";
 const OPENSHELL_CODEX_LAUNCH = "openshell-codex-launch:v1:";
@@ -1082,6 +1107,25 @@ function repositoryBrokerPublicCaPath(
     );
   }
   return `${withCa[0]?.directory}/${REPOSITORY_BROKER_CA_BUNDLE}`;
+}
+
+function repositoryBrokerCaVariables(
+  environment: readonly { readonly name: string }[],
+  material: ResolvedRepositoryMaterialSpec | undefined,
+): readonly { readonly name: string; readonly value: string }[] {
+  const caPath = material === undefined ? undefined : repositoryBrokerPublicCaPath(material);
+  if (caPath === undefined) {
+    return [];
+  }
+  const conflict = environment.find(({ name }) =>
+    REPOSITORY_BROKER_CA_ENVIRONMENT.some((variable) => variable === name),
+  );
+  if (conflict !== undefined) {
+    throw new ConfigurationFailure(
+      `Repository credential broker CA delivery cannot replace explicit ${conflict.name} environment configuration.`,
+    );
+  }
+  return REPOSITORY_BROKER_CA_ENVIRONMENT.map((name) => ({ name, value: caPath }));
 }
 
 interface RuntimeCredentialSecretSpec {
@@ -7486,28 +7530,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
         await this.prepareRevisionStage("gateway_deployment", () =>
           this.reconcile(
-            this.deployment(
-              gatewayName,
-              gatewayOwnership,
-              gatewayNamespace,
-              this.workloadImages(revision, "gateway"),
-              gatewayAccountName,
-              "gateway",
+            this.deployment({
+              name: gatewayName,
+              ownership: gatewayOwnership,
+              namespace: gatewayNamespace,
+              images: this.workloadImages(revision, "gateway"),
+              serviceAccountName: gatewayAccountName,
+              role: "gateway",
               environment,
-              configuration.loggingLevel,
+              loggingLevel: configuration.loggingLevel,
               configuration,
               embedded,
-              embedded ? revision.servicePrincipalId : undefined,
-              embedded ? deliveredHarnessAuth : undefined,
-              channels,
-              gatewaySecretEnvironment,
+              workloadServicePrincipalId: embedded ? revision.servicePrincipalId : undefined,
+              harnessAuth: embedded ? deliveredHarnessAuth : undefined,
+              enabledChannels: channels,
+              secretEnvironment: gatewaySecretEnvironment,
               pluginRuntime,
-              [],
               workspaceSetup,
-              repositoryConsumer?.role === "gateway" ? repositoryMaterial : undefined,
-              undefined,
+              repositoryMaterial:
+                repositoryConsumer?.role === "gateway" ? repositoryMaterial : undefined,
               providerEndpoint,
-            ),
+            }),
             gatewayOwnership,
             gatewayNamespace,
           ),
@@ -8086,34 +8129,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         return ready();
       }
-      const agentDeployment = this.deployment(
-        revisionName,
-        revisionOwnership,
+      const agentDeployment = this.deployment({
+        name: revisionName,
+        ownership: revisionOwnership,
         namespace,
-        this.workloadImages(revision, "agent"),
-        agentName,
-        "agent",
-        launch.environment,
-        configuration.loggingLevel,
-        undefined,
-        false,
-        undefined,
-        deliveredHarnessAuth,
-        undefined,
-        [],
+        images: this.workloadImages(revision, "agent"),
+        serviceAccountName: agentName,
+        role: "agent",
+        environment: launch.environment,
+        loggingLevel: configuration.loggingLevel,
+        harnessAuth: deliveredHarnessAuth,
         pluginRuntime,
-        [],
         workspaceSetup,
-        repositoryConsumer?.role === "agent" ? repositoryMaterial : undefined,
+        repositoryMaterial: repositoryConsumer?.role === "agent" ? repositoryMaterial : undefined,
         nativeRuntime,
-        undefined,
-        {
+        codexLaunch: {
           ...codexLaunch,
           withNode: node !== undefined,
           workspaceSetup: workspaceSetup !== undefined,
         },
-        this.scratchAdmission(revision).binding,
-      );
+        scratch: this.scratchAdmission(revision).binding,
+      });
       if (node !== undefined) {
         if (nativeRuntime === undefined) {
           this.addWorkspaceNode(agentDeployment, node.name, node.ca, revision, nodeSetupFile);
@@ -8397,27 +8433,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
             namespace,
           );
           await this.reconcileChannelNetworkPolicy(revision, channels, namespace);
+          const images = this.workloadImages(revision, "gateway");
+          const environment = launch.environment;
+          const configuration = this.gatewayConfiguration(admittedRevision);
           await this.reconcile(
-            this.deployment(
-              gatewayName,
-              gatewayOwnership,
+            this.deployment({
+              name: gatewayName,
+              ownership: gatewayOwnership,
               namespace,
-              this.workloadImages(revision, "gateway"),
-              agentName,
-              "gateway",
-              launch.environment,
-              this.gatewayConfiguration(admittedRevision).loggingLevel,
-              this.gatewayConfiguration(admittedRevision),
-              true,
-              revision.servicePrincipalId,
-              deliveredHarnessAuth,
-              channels,
-              gatewaySecretEnvironment,
+              images,
+              serviceAccountName: agentName,
+              role: "gateway",
+              environment,
+              loggingLevel: configuration.loggingLevel,
+              configuration,
+              embedded: true,
+              workloadServicePrincipalId: revision.servicePrincipalId,
+              harnessAuth: deliveredHarnessAuth,
+              enabledChannels: channels,
+              secretEnvironment: gatewaySecretEnvironment,
               pluginRuntime,
-              [],
               workspaceSetup,
               repositoryMaterial,
-            ),
+            }),
             gatewayOwnership,
             namespace,
           );
@@ -8512,30 +8550,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
       environment: Readonly<Record<string, string>>,
       withNode = false,
     ) =>
-      this.deployment(
-        revisionName,
-        { ...ownership, revisionId: revision.id },
+      this.deployment({
+        name: revisionName,
+        ownership: { ...ownership, revisionId: revision.id },
         namespace,
-        this.workloadImages(revision, "agent"),
-        agentName,
-        "agent",
+        images: this.workloadImages(revision, "agent"),
+        serviceAccountName: agentName,
+        role: "agent",
         environment,
-        configuration.loggingLevel,
-        undefined,
-        false,
-        undefined,
-        activatedHarnessAuth,
-        undefined,
-        [],
+        loggingLevel: configuration.loggingLevel,
+        harnessAuth: activatedHarnessAuth,
         pluginRuntime,
-        [],
         workspaceSetup,
-        sandboxDriver === undefined ? repositoryMaterial : undefined,
+        repositoryMaterial: sandboxDriver === undefined ? repositoryMaterial : undefined,
         nativeRuntime,
-        undefined,
-        { ...codexLaunch, withNode, workspaceSetup: workspaceSetup !== undefined },
-        this.scratchAdmission(revision).binding,
-      );
+        codexLaunch: { ...codexLaunch, withNode, workspaceSetup: workspaceSetup !== undefined },
+        scratch: this.scratchAdmission(revision).binding,
+      });
     let providerEndpoint: SandboxHarnessEndpoint | undefined;
     const harnessRuntime = this.harnessForRevision(revision);
     if (harnessRuntime.kind === "kubernetes") {
@@ -8670,28 +8701,22 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name);
     await this.reconcile(
-      this.deployment(
-        gatewayName,
-        gatewayOwnership,
-        gatewayNamespace,
-        this.workloadImages(revision, "gateway"),
-        gatewayName,
-        "gateway",
-        {},
-        configuration.loggingLevel,
+      this.deployment({
+        name: gatewayName,
+        ownership: gatewayOwnership,
+        namespace: gatewayNamespace,
+        images: this.workloadImages(revision, "gateway"),
+        serviceAccountName: gatewayName,
+        role: "gateway",
+        environment: {},
+        loggingLevel: configuration.loggingLevel,
         configuration,
-        false,
-        undefined,
-        undefined,
-        channels,
-        gatewaySecretEnvironment,
+        enabledChannels: channels,
+        secretEnvironment: gatewaySecretEnvironment,
         pluginRuntime,
-        [],
         workspaceSetup,
-        undefined,
-        undefined,
         providerEndpoint,
-      ),
+      }),
       gatewayOwnership,
       gatewayNamespace,
     );
@@ -12221,24 +12246,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
     }
     environment.push(...this.sandboxEnvironmentVariables(auth.environment));
-    if (repositoryMaterial !== undefined) {
-      const brokerCa = repositoryBrokerPublicCaPath(repositoryMaterial);
-      if (brokerCa !== undefined) {
-        const conflict = environment.find(({ name }) =>
-          REPOSITORY_BROKER_CA_ENVIRONMENT.includes(
-            name as (typeof REPOSITORY_BROKER_CA_ENVIRONMENT)[number],
-          ),
-        );
-        if (conflict !== undefined) {
-          throw new ConfigurationFailure(
-            `Repository credential broker CA delivery cannot replace explicit ${conflict.name} environment configuration.`,
-          );
-        }
-        environment.push(
-          ...REPOSITORY_BROKER_CA_ENVIRONMENT.map((name) => ({ name, value: brokerCa })),
-        );
-      }
-    }
+    environment.push(...repositoryBrokerCaVariables(environment, repositoryMaterial));
     if (this.options.executionCluster !== undefined) {
       environment.push({ name: "OPENCLAW_REMOTE_PLUGIN_STATUS", value: "true" });
     }
@@ -17330,30 +17338,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
-  private deployment(
-    name: string,
-    ownership: Ownership,
-    namespace: KubernetesNamespaceAddress,
-    images: { readonly runtime: string; readonly workspaceSetup: string },
-    serviceAccountName: string,
-    role: "gateway" | "agent",
-    environment: Readonly<Record<string, string>>,
-    loggingLevel: LoggingLevel,
-    configuration?: GatewayConfigurationSnapshot,
+  private deployment({
+    name,
+    ownership,
+    namespace,
+    images,
+    serviceAccountName,
+    role,
+    environment,
+    loggingLevel,
+    configuration,
     embedded = false,
-    workloadServicePrincipalId?: string,
-    harnessAuth?: PreparedHarnessAuth,
-    enabledChannels: PreparedChannelRouting | undefined = undefined,
-    secretEnvironment: readonly SecretEnvironmentProjection[] = [],
-    pluginRuntime?: PluginRuntimeSnapshot,
-    pluginWarnings: readonly PluginDeploymentWarning[] = [],
-    workspaceSetup?: WorkspaceSetup,
-    repositoryMaterial?: ResolvedRepositoryMaterialSpec,
-    nativeRuntime?: NativeRuntimeSnapshot,
-    providerEndpoint?: SandboxHarnessEndpoint,
-    codexLaunch?: CodexLaunch,
-    scratch?: KubernetesScratchVolume,
-  ): ManagedKubernetesObject {
+    workloadServicePrincipalId,
+    harnessAuth,
+    enabledChannels,
+    secretEnvironment = [],
+    pluginRuntime,
+    pluginWarnings = [],
+    workspaceSetup,
+    repositoryMaterial,
+    nativeRuntime,
+    providerEndpoint,
+    codexLaunch,
+    scratch,
+  }: DeploymentInput): ManagedKubernetesObject {
     const image = images.runtime;
     const providerOwnsHarness = codexLaunch?.providerOwned === true;
     if (nativeRuntime !== undefined && (embedded || role !== "agent")) {
@@ -17606,7 +17614,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       const packages = [];
       for (const install of managedInstalls) {
         const selection = selections[install.id];
-        if (!selection || (!selection.enabled && role !== "gateway")) {
+        if (!selection) {
           continue;
         }
         const binding =
@@ -17615,11 +17623,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           kind: install.kind,
           packageName: install.packageName,
           slotId: Object.keys(install.credentials)[0],
-          ...(role === "gateway" && { id: install.id }),
+          id: install.id,
           ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
           ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
-          ...(role === "gateway" &&
-            binding?.approvalToolNames.length && { approvalToolNames: binding.approvalToolNames }),
+          ...(binding?.approvalToolNames.length && {
+            approvalToolNames: binding.approvalToolNames,
+          }),
         });
       }
       if (packages.length > 0) {
@@ -17932,23 +17941,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
       variables.push(...harnessAuth.environment);
     }
-    if (embedded && repositoryMaterial !== undefined) {
-      const brokerCa = repositoryBrokerPublicCaPath(repositoryMaterial);
-      if (brokerCa !== undefined) {
-        const existingCaPolicy = variables.find((variable) =>
-          REPOSITORY_BROKER_CA_ENVIRONMENT.includes(
-            variable.name as (typeof REPOSITORY_BROKER_CA_ENVIRONMENT)[number],
-          ),
-        );
-        if (existingCaPolicy !== undefined) {
-          throw new ConfigurationFailure(
-            `Repository credential broker CA delivery cannot replace explicit ${existingCaPolicy.name} environment configuration.`,
-          );
-        }
-        variables.push(
-          ...REPOSITORY_BROKER_CA_ENVIRONMENT.map((name) => ({ name, value: brokerCa })),
-        );
-      }
+    if (embedded) {
+      variables.push(...repositoryBrokerCaVariables(variables, repositoryMaterial));
     }
     if (workspaceSetup !== undefined && (embedded || role === "agent")) {
       const workspace = embedded
@@ -18039,15 +18033,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (harness !== undefined) {
       variables.push(...harness.environment);
     }
-    const names = new Set<string>();
-    for (const variable of variables) {
-      if (names.has(variable.name)) {
-        throw new ConfigurationFailure(
-          `Workload environment variable ${variable.name} is duplicated.`,
-        );
-      }
-      names.add(variable.name);
-    }
+    this.requireDistinctEnvironment(variables);
     const port =
       role === "agent" && runtime !== undefined
         ? AGENT_TRANSPORT_PORT

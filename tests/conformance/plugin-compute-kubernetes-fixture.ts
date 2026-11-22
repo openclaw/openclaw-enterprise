@@ -162,24 +162,24 @@ interface KubernetesFixtureMethods {
     context: ComputeRevisionContext,
     target: Address,
   ): PreparedAuth;
-  deployment(
-    name: string,
-    owner: Ownership,
-    target: Address,
-    images: Readonly<{ runtime: string; workspaceSetup: string }>,
-    serviceAccount: string,
-    role: "gateway" | "agent",
-    environment: Readonly<Record<string, string>>,
-    loggingLevel: LoggingLevel,
-    configuration?: GatewayConfiguration,
-    embedded?: boolean,
-    workloadServicePrincipalId?: string,
-    harnessAuth?: PreparedAuth,
-    enabledChannels?: readonly { egress: "https-proxy" }[],
-    secretEnvironment?: readonly SecretEnvironmentProjection[],
-    pluginRuntime?: { name: string; runtime: PluginRuntimeSpec },
-    pluginWarnings?: readonly PluginDeploymentWarning[],
-  ): KubernetesObject;
+  deployment(input: {
+    name: string;
+    ownership: Ownership;
+    namespace: Address;
+    images: Readonly<{ runtime: string; workspaceSetup: string }>;
+    serviceAccountName: string;
+    role: "gateway" | "agent";
+    environment: Readonly<Record<string, string>>;
+    loggingLevel: LoggingLevel;
+    configuration?: GatewayConfiguration;
+    embedded?: boolean;
+    workloadServicePrincipalId?: string;
+    harnessAuth?: PreparedAuth;
+    enabledChannels?: readonly { egress: "https-proxy" }[];
+    secretEnvironment?: readonly SecretEnvironmentProjection[];
+    pluginRuntime?: { name: string; runtime: PluginRuntimeSpec };
+    pluginWarnings?: readonly PluginDeploymentWarning[];
+  }): KubernetesObject;
 }
 
 type KubernetesFixture = Pick<KubernetesComputeDriver, keyof KubernetesComputeDriver> &
