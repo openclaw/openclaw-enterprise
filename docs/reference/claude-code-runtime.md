@@ -37,6 +37,19 @@ and WebFetch. File, shell and web fetch work therefore follows `tools.deny`,
 `tools.allow`, the tool profile and their `byProvider` entries. A side question
 runs with no Claude Code tools.
 
+## Web search
+
+Claude Code's native WebSearch tool stays on by default. The search runs at
+the model provider, on the endpoint that already receives the conversation, so
+it opens no new egress from the gateway Pod. It works only where that endpoint
+offers Anthropic's server-side web search. Turn it off with either setting:
+
+- deny `web_search` in tool policy, for example `tools.deny: ["web_search"]`;
+- set `tools.web.search.enabled` to `false`.
+
+OpenClaw also drops it when `tools.web.search.provider` names a search
+provider, whose own `web_search` tool then serves searches.
+
 ## Authentication and startup
 
 Authentication is the ordinary `api_key` [binding](harness-execution.md#harness-authentication): the
