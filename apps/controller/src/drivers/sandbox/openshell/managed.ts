@@ -281,6 +281,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     config: Readonly<Record<string, string>>,
     credentials: Readonly<Record<string, string>>,
     credentialExpirationTimes: Readonly<Record<string, string>>,
+    retainedSetup?: string,
   ) {
     const name = this.runtimeProviderName(context.revision.agentId);
     const labels = {
@@ -316,7 +317,14 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       throw new Error("Managed runtime Provider disappeared during creation.");
     }
     if (provider.config.oce_revision_id === context.revision.id) {
-      const renewal = runtimeProviderSetupUpdate(provider, name, profileId, labels, desired);
+      const renewal = runtimeProviderSetupUpdate(
+        provider,
+        name,
+        profileId,
+        labels,
+        desired,
+        retainedSetup,
+      );
       if (renewal !== undefined) {
         const updated = await client.updateProviderConfig(
           workspace,

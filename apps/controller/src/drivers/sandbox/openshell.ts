@@ -396,6 +396,8 @@ const WORKSPACE_NODE_SETUP_ENVIRONMENT = "OPENCLAW_NODE_SETUP_CODE";
 const WORKSPACE_NODE_ENVELOPE_ENVIRONMENT = "OPENCLAW_NODE_SETUP_ENVELOPE";
 const WORKSPACE_NODE_ENVELOPE_FILE = "node-setup.json";
 const WORKSPACE_NODE_SETUP_CONFIG = "node_setup_json";
+// Compute's node Secret key for a setup consumed by a device not yet confirmed.
+const WORKSPACE_NODE_RECEIPT_DEVICE_KEY = "setupReceiptDeviceId";
 const WORKSPACE_NODE_CA_ENVIRONMENT = "OPENCLAW_NODE_CA_PEM";
 const WORKSPACE_NODE_CA_PATH_ENVIRONMENT = "OPENCLAW_NODE_CA_PATH";
 const WORKSPACE_NODE_CA_FILE = "node-ca.pem";
@@ -979,6 +981,8 @@ interface HarnessRuntimeCredentialMaterial {
   readonly credentialExpirationTimes: Readonly<Record<string, string>>;
   readonly config: Readonly<Record<string, string>>;
   readonly binding?: WorkspaceNodeBinding;
+  /** The spent setup that a provider created before the device was recorded may keep. */
+  readonly retainedSetup?: string;
 }
 
 async function harnessRuntimeCredentials(
@@ -1019,13 +1023,26 @@ async function harnessRuntimeCredentials(
     throw error;
   }
   const endpoint = new URL(setupEnvelope.url);
+  const secretData = asRecord(asRecord(secret)?.data);
+  // Once Compute records the device (and holds no setup receipt), the setup is spent.
+  // The Codex Harness's node then starts from its saved identity when it finds no
+  // complete setup. Presented again, the spent setup counts as a failed authentication
+  // at a Gateway that is still starting, and ten lock the node out for five minutes.
+  // The OpenClaw native worker connects only with a setup, so it keeps receiving it.
+  const spentSetup =
+    context.revision.harness.id === "codex" &&
+    secretData?.deviceId !== undefined &&
+    secretData[WORKSPACE_NODE_RECEIPT_DEVICE_KEY] === undefined;
+  const setupJson = JSON.stringify(setupEnvelope);
   // TODO(openshell-workspace-node-proof-binding): Return the bootstrap token to
   // OpenShell credential storage after OpenClaw can sign a stable public binding
   // instead of the token value that OpenShell rewrites on the WebSocket.
   return Object.freeze({
     credentials: Object.freeze({}),
     credentialExpirationTimes: Object.freeze({}),
-    config: Object.freeze({ [WORKSPACE_NODE_SETUP_CONFIG]: JSON.stringify(setupEnvelope) }),
+    // The empty object is the profile's own placeholder for "no setup".
+    config: Object.freeze({ [WORKSPACE_NODE_SETUP_CONFIG]: spentSetup ? "{}" : setupJson }),
+    ...(spentSetup ? { retainedSetup: setupJson } : {}),
     binding: Object.freeze({
       host: endpoint.hostname,
       port:
@@ -3196,6 +3213,7 @@ export function runtimeProviderSetupUpdate(
   profileId: string,
   expectedLabels: Readonly<Record<string, string>>,
   expectedConfig: Readonly<Record<string, string>>,
+  retainedSetup?: string,
 ): Readonly<Record<string, string>> | undefined {
   verifyRuntimeProvider(provider, name, profileId, expectedLabels);
   if (exactStringMap(provider.config, expectedConfig)) {
@@ -3207,6 +3225,18 @@ export function runtimeProviderSetupUpdate(
   delete expectedStaticConfig[WORKSPACE_NODE_SETUP_CONFIG];
   const actualSetup = runtimeProviderSetupEnvelope(provider.config[WORKSPACE_NODE_SETUP_CONFIG]);
   const expectedSetup = runtimeProviderSetupEnvelope(expectedConfig[WORKSPACE_NODE_SETUP_CONFIG]);
+  const retained = runtimeProviderSetupEnvelope(retainedSetup);
+  // A provider created before its device was recorded keeps the setup it delivered to
+  // its running Sandbox: same Gateway and trust anchor, no update and no new Sandbox.
+  if (
+    retained !== undefined &&
+    actualSetup !== undefined &&
+    exactStringMap(actualStaticConfig, expectedStaticConfig) &&
+    actualSetup.url === retained.url &&
+    actualSetup.tlsFingerprint === retained.tlsFingerprint
+  ) {
+    return undefined;
+  }
   const now = Date.now();
   if (
     !exactStringMap(actualStaticConfig, expectedStaticConfig) ||
@@ -3867,6 +3897,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       { ...runtimeFiles.config, ...runtimeCredentialMaterial.config },
       runtimeCredentialMaterial.credentials,
       runtimeCredentialMaterial.credentialExpirationTimes,
+      runtimeCredentialMaterial.retainedSetup,
     );
     const serviceExposures = exposed
       ? [
@@ -5648,6 +5679,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     config: Readonly<Record<string, string>>,
     credentials: Readonly<Record<string, string>>,
     credentialExpirationTimes: Readonly<Record<string, string>>,
+    retainedSetup?: string,
   ): Promise<{ readonly name: string; readonly created: boolean }> {
     const name = runtimeProviderName(context.revision.id);
     const expectedLabels = runtimeProviderLabels(context.namespace, context.revision);
@@ -5686,7 +5718,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       profileId,
       expectedLabels,
       config,
+      retainedSetup,
     );
+    // No update means the provider was verified as it stands, including a retained setup.
     if (setupUpdate !== undefined) {
       provider = await client.updateProviderConfig(
         workspace,
@@ -5695,8 +5729,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         provider.resourceVersion,
         context.signal,
       );
+      verifyRuntimeProvider(provider, name, profileId, expectedLabels, config);
     }
-    verifyRuntimeProvider(provider, name, profileId, expectedLabels, config);
     return Object.freeze({ name, created });
   }
 

@@ -39,7 +39,9 @@ updates `node_setup_json` only if the provider's resource version still matches;
 endpoint, TLS fingerprint, runtime files, CA, and identity labels must also match.
 Native startup reads the envelope; the Codex
 supervisor rereads it before node retries and retains valid setup during projection
-gaps. The raw app-server token stays outside the provider. Repository broker
+gaps. Once Compute records the node's device, a new Codex provider carries an empty
+`node_setup_json`, so the node starts from its saved identity instead of presenting the
+spent setup; an existing provider keeps the setup it delivered. The raw app-server token stays outside the provider. Repository broker
 configuration fails before creation.
 
 Agent revision cleanup deletes the Sandbox before its Git and runtime providers; Namespace

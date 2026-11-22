@@ -6,7 +6,7 @@ import type {
   HarnessWorkloadRequirements,
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
-import { asRecord } from "../../packages/utils/src/index.ts";
+import { asRecord, type WorkspaceNodeSetupEnvelope } from "../../packages/utils/src/index.ts";
 import {
   completeWorkspaceRevision,
   type SandboxFixtureRevision,
@@ -29,6 +29,7 @@ type RuntimeFixture = {
   };
   revision: SandboxFixtureRevision;
   requirements: HarnessWorkloadRequirements;
+  nodeSetup: WorkspaceNodeSetupEnvelope;
 };
 type Fixtures = {
   openShellDriver: (gatewayClient: Gateway) => OpenShellSandboxDriver;
@@ -39,6 +40,51 @@ type Fixtures = {
   callCount: (gatewayClient: Gateway, operation: string) => number;
 };
 
+// A gateway that keeps the one Sandbox it creates, so a repeated provision adopts it.
+function storingGateway(harnessId: string) {
+  let storedSandbox: OpenShellSandboxResponse | undefined;
+  let created = 0;
+  const gatewayClient: Gateway = workspaceGatewayClient();
+  gatewayClient.createSandbox = async (request) => {
+    created += 1;
+    storedSandbox = {
+      name: request.name,
+      workspace: request.workspace,
+      labels: structuredClone(request.labels),
+      annotations: structuredClone(request.annotations),
+      spec: structuredClone(request.spec),
+      serviceUrls: {},
+    };
+    return {
+      ...storedSandbox,
+      serviceUrls: harnessId === "codex" ? { "": "http://codex.example.test:8080/" } : {},
+    };
+  };
+  gatewayClient.getSandbox = async () => storedSandbox;
+  gatewayClient.getService = async () => {
+    assert.ok(storedSandbox);
+    return {
+      sandbox: storedSandbox.name,
+      name: "",
+      targetPort: 8080,
+      authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+      advertisedUrl: "http://codex.example.test:8080/",
+      url: "http://codex.example.test:8080/",
+    };
+  };
+  return {
+    gatewayClient,
+    sandboxesCreated: () => created,
+    enrollmentPolicy: () =>
+      asRecord(asRecord(storedSandbox?.spec?.policy)?.network_policies)?.[
+        "workspace-node-enrollment"
+      ],
+  };
+}
+
+const encode = (value: string) => Buffer.from(value).toString("base64");
+const recordedDevice = encode("recorded-node:1");
+
 export function registerSandboxDriverWorkspaceRenewalCases({
   openShellDriver,
   runtimeSandboxFixture,
@@ -46,34 +92,7 @@ export function registerSandboxDriverWorkspaceRenewalCases({
 }: Fixtures): void {
   for (const harnessId of ["codex", "openclaw"]) {
     test(`OpenShell reconciles renewed ${harnessId} workspace-node setup into its revision provider`, async () => {
-      let storedSandbox: OpenShellSandboxResponse | undefined;
-      const gatewayClient: Gateway = workspaceGatewayClient();
-      gatewayClient.createSandbox = async (request) => {
-        storedSandbox = {
-          name: request.name,
-          workspace: request.workspace,
-          labels: structuredClone(request.labels),
-          annotations: structuredClone(request.annotations),
-          spec: structuredClone(request.spec),
-          serviceUrls: {},
-        };
-        return {
-          ...storedSandbox,
-          serviceUrls: harnessId === "codex" ? { "": "http://codex.example.test:8080/" } : {},
-        };
-      };
-      gatewayClient.getSandbox = async () => storedSandbox;
-      gatewayClient.getService = async () => {
-        assert.ok(storedSandbox);
-        return {
-          sandbox: storedSandbox.name,
-          name: "",
-          targetPort: 8080,
-          authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
-          advertisedUrl: "http://codex.example.test:8080/",
-          url: "http://codex.example.test:8080/",
-        };
-      };
+      const { gatewayClient } = storingGateway(harnessId);
       const driver = openShellDriver(gatewayClient);
       const {
         context,
@@ -164,4 +183,92 @@ export function registerSandboxDriverWorkspaceRenewalCases({
       );
     });
   }
+
+  // Compute keeps the setup in the node Secret after it records the device. Presented
+  // again, that spent setup counts as a failed authentication at a starting Gateway.
+  test("OpenShell delivers no spent setup to a codex node whose device is recorded", async () => {
+    const provisioned = async (extra: Readonly<Record<string, string>>) => {
+      const { gatewayClient, enrollmentPolicy } = storingGateway("codex");
+      const driver = openShellDriver(gatewayClient);
+      const {
+        context,
+        revision: fixtureRevision,
+        requirements,
+        nodeSetup,
+      } = runtimeSandboxFixture(driver);
+      const revision = completeWorkspaceRevision(fixtureRevision, requirements);
+      context.kubernetes.read = async ({ metadata }) =>
+        workspaceNodeSetupSecret(metadata, context.namespace.id, revision.agentId, {
+          ...workspaceNodeSetupSecretData(nodeSetup),
+          ...extra,
+        });
+      await driver.provisionHarness({ ...context, revision, requirements });
+      const [provider] = [...gatewayClient.providers.values()];
+      assert.ok(provider);
+      const setupJson = provider.config.node_setup_json;
+      assert.ok(setupJson);
+      return { nodeSetup, setup: JSON.parse(setupJson) as unknown, policy: enrollmentPolicy() };
+    };
+
+    // First enrollment, and renewal while a setup receipt is pending, deliver the setup.
+    const enrolling = await provisioned({});
+    assert.deepEqual(enrolling.setup, enrolling.nodeSetup);
+    assert.ok(enrolling.policy, "the node's Gateway route is bound to the setup URL");
+    const renewing = await provisioned({
+      deviceId: recordedDevice,
+      setupReceiptDeviceId: recordedDevice,
+    });
+    assert.deepEqual(renewing.setup, renewing.nodeSetup);
+
+    // A recorded device gets the profile's empty placeholder, so its node starts from
+    // its saved identity, and keeps the same route to its Gateway.
+    const paired = await provisioned({ deviceId: recordedDevice });
+    assert.deepEqual(paired.setup, {});
+    assert.deepEqual(paired.policy, enrolling.policy);
+  });
+
+  test("OpenShell keeps a codex revision provider created before its device was recorded", async () => {
+    const { gatewayClient, sandboxesCreated } = storingGateway("codex");
+    const driver = openShellDriver(gatewayClient);
+    const {
+      context,
+      revision: fixtureRevision,
+      requirements,
+      nodeSetup,
+    } = runtimeSandboxFixture(driver);
+    const revision = completeWorkspaceRevision(fixtureRevision, requirements);
+    const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+    await provision();
+    const [runtimeProviderName] = [...gatewayClient.providers.keys()];
+    assert.ok(runtimeProviderName);
+    const delivered = gatewayClient.providers.get(runtimeProviderName);
+    assert.ok(delivered);
+    assert.deepEqual(JSON.parse(delivered.config.node_setup_json ?? ""), nodeSetup);
+
+    // The node paired with that setup and Compute recorded its device. Each later pass
+    // verifies the provider as it stands: no update, no replacement, no new Sandbox.
+    context.kubernetes.read = async ({ metadata }) =>
+      workspaceNodeSetupSecret(metadata, context.namespace.id, revision.agentId, {
+        ...workspaceNodeSetupSecretData(nodeSetup),
+        deviceId: recordedDevice,
+      });
+    for (let pass = 0; pass < 2; pass += 1) {
+      await provision();
+      assert.deepEqual(gatewayClient.providers.get(runtimeProviderName), delivered);
+    }
+    assert.equal(callCount(gatewayClient, "createProvider"), 1);
+    assert.equal(callCount(gatewayClient, "updateProviderConfig"), 0);
+    assert.equal(sandboxesCreated(), 1);
+
+    // Keeping the delivered setup is no authority to keep one for another Gateway.
+    gatewayClient.providers.set(runtimeProviderName, {
+      ...delivered,
+      config: {
+        ...delivered.config,
+        node_setup_json: JSON.stringify({ ...nodeSetup, url: "wss://other.example.test/node" }),
+      },
+    });
+    await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+    assert.equal(callCount(gatewayClient, "updateProviderConfig"), 0);
+  });
 }

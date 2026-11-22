@@ -89,9 +89,11 @@ export function registerSandboxDriverWorkspaceExpiryCases({
         deviceId: Buffer.from("recorded-node:1").toString("base64"),
       });
 
-      // A replacement Harness must receive the retained envelope so native can
-      // verify its saved identity and device token. This is provider planning,
-      // not proof that the native runtime accepts those credentials.
+      // The native worker connects only with a setup, so a replacement OpenClaw
+      // Harness receives the retained envelope and native verifies its saved
+      // identity and device token. The Codex Harness's node starts from its saved
+      // identity instead, so it receives the profile's empty placeholder. This is
+      // provider planning, not proof that the native runtime accepts the identity.
       const provision = () => driver.provisionHarness({ ...context, revision, requirements });
       await provision();
       const [provider] = [...gatewayClient.providers.values()];
@@ -99,7 +101,7 @@ export function registerSandboxDriverWorkspaceExpiryCases({
       const setupJson = provider.config.node_setup_json;
       assert.ok(typeof setupJson === "string");
       const parsedSetup: unknown = JSON.parse(setupJson);
-      assert.deepEqual(parsedSetup, expiredSetup);
+      assert.deepEqual(parsedSetup, harnessId === "codex" ? {} : expiredSetup);
       assert.equal(callCount(gatewayClient, "createProvider"), 1);
 
       // Reconciliation of that exact expired envelope must not rotate a provider
