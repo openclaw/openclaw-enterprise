@@ -86,6 +86,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   const installation = { id: `ins_${randomUUID()}`, name: "TokenService startup", createdAt };
   await state.transact((unit) => unit.installations.createInstallation(installation));
   let deliveredCredential: string | undefined;
+  let initialDrivers: Awaited<ReturnType<typeof loadInstallationFile>>;
   const notify: NonNullable<CredentialProxyDriver["notifyCredentialUpdated"]> = async (
     _notification,
     resolveCredential,
@@ -107,6 +108,9 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     Reflect.set(drivers.secretDriver, "client", Promise.resolve(core));
     const proxy = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
     assert.ok(proxy);
+    if (initialDrivers === undefined) {
+      initialDrivers = drivers;
+    }
     // Control only the delivery boundary; production composition must bind this registered Proxy
     // before the controller has selected its Sandbox or delivery capability.
     assert.equal(Reflect.set(proxy, "notifyCredentialUpdated", notify), true);
@@ -117,6 +121,11 @@ test("TokenService startup keeps marker ownership with the selected private Secr
 
   const initial = await start("secret-a");
   const initialInstance = initial.currentTokenServiceInstanceId();
+  // An API restart can reuse the same loaded native registration and replace its resolver.
+  assert.ok(initialDrivers);
+  const restartedApi = new OpenClawController(installation, { state });
+  await installTokenServiceDriver(restartedApi, initialDrivers, state);
+  assert.equal(restartedApi.currentTokenServiceInstanceId(), initialInstance);
   assert.equal((await start("secret-a")).currentTokenServiceInstanceId(), initialInstance);
   assert.equal(core.secrets.size, 1);
 

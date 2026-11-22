@@ -93,9 +93,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       signal: AbortSignal,
     ) => Promise<Readonly<Namespace>>,
   ): void {
-    if (this.sourceNamespaceResolver) {
-      throw new Error("The native credential Source placement resolver is already bound.");
-    }
     this.sourceNamespaceResolver = resolve;
   }
 

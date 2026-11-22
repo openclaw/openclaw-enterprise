@@ -44,7 +44,7 @@ graph TD
 
 `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`
 
-Startup binds the selected TokenService instance to the Secret Driver's Installation-private store and the PostgreSQL Source catalog. If runtime configuration supplies a validated credential-delivery registration, composition takes its `credential_proxy_delivery` capability directly with `require`. TokenService can therefore bind update notifications before Sandbox selection. A Source pins the TokenService instance that created it. Changing Driver selection does not transfer custody.
+Startup binds the selected TokenService instance to the Secret Driver's Installation-private store and the PostgreSQL Source catalog. API composition takes the `credential_proxy_delivery` capability from the validated registration with `require`, so it can bind update notifications before Sandbox selection. Worker installs TokenService for Source resolution and does not bind the native Proxy’s Source placement resolver. A Source pins the TokenService instance that created it. Changing Driver selection does not transfer custody.
 
 ### 2. Create the Source
 

@@ -9,7 +9,6 @@ import type {
   ResolvedCredential,
 } from "../../packages/contracts/src/index.ts";
 import {
-  InstalledDriver,
   OpenClawController,
   CredentialDeploymentFailedError,
   ResourceStateConflictError,
@@ -21,6 +20,7 @@ import { resolveApprovedHarness } from "../../apps/controller/src/composition/pr
 import {
   MANAGED_BY,
   MANAGED_BY_LABEL,
+  createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
@@ -95,7 +95,7 @@ function recordingActiveGateway(
     },
     mainProcessInstanceId: networkInstanceId,
   };
-  const client = completeOpenShellGatewayClient({
+  const client = {
     async getWorkspace(name) {
       assert.equal(name, workspace);
       return {
@@ -237,7 +237,7 @@ function recordingActiveGateway(
       assert.equal(receiptId, status.receipt?.receiptId);
       return status;
     },
-  } satisfies Partial<OpenShellGatewayClient>);
+  } satisfies Partial<OpenShellGatewayClient>;
   return { client, updates, receiptReads, sandbox, provider: () => provider, status: () => status };
 }
 
@@ -260,12 +260,18 @@ async function stagedCredentialScenario(
   const baseline = installation.drivers.sandbox.configuration.policy.networkPolicies[0]!;
   baseline.name = "baseline";
   baseline.endpoints[0]!.host = "baseline.example.test";
-  const runtime = await loadInstallationFile(context, installation);
+  const gatewayTransport: Partial<OpenShellGatewayClient> = {};
+  const runtime = await loadInstallationFile(context, installation, {
+    createOpenShellBackend: (definition) =>
+      createOpenShellBackend(definition, {
+        gatewayClient: completeOpenShellGatewayClient(gatewayTransport),
+      }),
+  });
   assert.ok(runtime?.credentialDeliveryRegistration && runtime.sandboxDriver);
   const registration = runtime.credentialDeliveryRegistration;
   const sandbox = registration.require("sandbox");
-  // Compute and the Worker-side Proxy are controlled. Admission, the Worker, TokenService,
-  // PostgreSQL, and Native IAM remain real; this does not qualify native OpenShell delivery.
+  // Control Compute and deployment configuration only. The API and Worker share the exact
+  // selected native Proxy; its Source notification and Gateway receipt handling remain real.
   const deliveries: {
     namespace: Readonly<Namespace>;
     targetRef: Parameters<CredentialProxyDriver["configureDeployment"]>[1]["targetRef"];
@@ -273,55 +279,27 @@ async function stagedCredentialScenario(
     binding: DeploymentCredentialBinding;
     credential: ResolvedCredential;
   }[] = [];
-  const proxy: CredentialProxyDriver = {
-    capability: "credential_proxy_delivery",
-    id: sandbox.id,
-    implementation: sandbox.implementation,
-    async deployProxy() {
-      throw new Error("Unexpected Proxy staging in controlled Compute.");
-    },
-    async configureDeployment(deploymentContext, input) {
-      const supplied = input.bindings[0];
-      assert.ok(supplied && input.bindings.length === 1);
-      deliveries.push({
-        namespace: deploymentContext.namespace,
-        targetRef: input.targetRef,
-        configurationId: input.configurationId,
-        binding: supplied.binding,
-        credential: await supplied.resolveCredential(),
-      });
-      return {
-        credentialProjections: [
-          {
-            bindingRef: supplied.binding.bindingRef,
-            environment: supplied.binding.projection.environment,
-            placeholder: { kind: "runtime" },
-          },
-        ],
-      };
-    },
-    async getDeploymentStatus() {
-      throw new Error("Unexpected native readiness observation in controlled Compute.");
-    },
-    async removeDeployment() {
-      throw new Error("Unexpected Proxy removal in controlled Compute.");
-    },
+  const proxy = registration.require("credential_proxy_delivery");
+  proxy.configureDeployment = async (deploymentContext, input) => {
+    const supplied = input.bindings[0];
+    assert.ok(supplied && input.bindings.length === 1);
+    deliveries.push({
+      namespace: deploymentContext.namespace,
+      targetRef: input.targetRef,
+      configurationId: input.configurationId,
+      binding: supplied.binding,
+      credential: await supplied.resolveCredential(),
+    });
+    return {
+      credentialProjections: [
+        {
+          bindingRef: supplied.binding.bindingRef,
+          environment: supplied.binding.projection.environment,
+          placeholder: { kind: "runtime" },
+        },
+      ],
+    };
   };
-  const workerRegistration = new InstalledDriver(
-    {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configuration: {
-        sandbox: runtime.installation.drivers.sandbox!.configuration,
-        backend: runtime.installation.backend[0],
-      },
-    },
-    { capabilities: { sandbox, credential_proxy_delivery: proxy } },
-  );
-  assert.deepEqual(workerRegistration.ref, registration.ref);
-  const workerNamespaceLifecycleBindings = runtime.namespaceLifecycleBindings?.map((binding) =>
-    binding.owner === registration ? { ...binding, owner: workerRegistration } : binding,
-  );
   const placedName = `placed-${randomUUID().slice(0, 8)}`;
   const compute = extendCompute({
     ...fixture.compute,
@@ -422,8 +400,8 @@ async function stagedCredentialScenario(
         },
       },
       secretDriver,
-      namespaceLifecycleBindings: workerNamespaceLifecycleBindings,
-      credentialDeliveryRegistration: workerRegistration,
+      namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
+      credentialDeliveryRegistration: registration,
       sandboxDriver: sandbox,
     }),
   } satisfies NonNullable<Parameters<RevisionFixture["start"]>[1]>;
@@ -437,6 +415,7 @@ async function stagedCredentialScenario(
     enrolledCredential,
     deliveries,
     placedName,
+    gatewayTransport,
     currentAgent: () => fixture.currentAgent(owner),
   };
 }
@@ -489,6 +468,7 @@ cases.revisionTest(
       deliveries,
       placedName,
       currentAgent,
+      gatewayTransport,
     } = await stagedCredentialScenario(fixture, context, (compute) => ({
       ...compute,
       async prepareRevision(revision, revisionContext) {
@@ -566,6 +546,9 @@ cases.revisionTest(
         credential: { credential: enrolledCredential, version: canonical.version },
       },
     ]);
+    // Worker shutdown closes its database pool. Source PATCH must retain the API-bound placement
+    // resolver instead of depending on a resolver installed by the Worker.
+    await fixture.stop();
 
     // The Worker has committed a real active v8 binding. Control only the Gateway transport:
     // the selected native Proxy must push the committed Source version and acknowledge the
@@ -573,8 +556,7 @@ cases.revisionTest(
     const nativeProxy = controller.selectedDriver("credential_proxy_delivery");
     assert.ok(nativeProxy instanceof OpenShellCredentialProxyDriver);
     const gateway = recordingActiveGateway(namespaceId, placedName, sandboxId, source.id);
-    const backend = Reflect.get(nativeProxy, "backend") as { client: object };
-    assert.equal(Reflect.set(backend.client, "injectedClient", gateway.client), true);
+    Object.assign(gatewayTransport, gateway.client);
     const preparedProvider = await prepareOccTokenServiceProviderCopy({
       client: gateway.client,
       workspace: placedName,

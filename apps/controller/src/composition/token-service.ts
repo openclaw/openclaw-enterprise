@@ -38,6 +38,7 @@ export async function installTokenServiceDriver(
   controller: OpenClawController,
   drivers: InstallationRuntimeDrivers | undefined,
   state: PlatformStateStore,
+  options: { bindSourceUpdatePlacement?: boolean } = {},
 ): Promise<void> {
   const selection = drivers?.installation.drivers.token_service;
   if (!selection || !drivers) {
@@ -64,7 +65,7 @@ export async function installTokenServiceDriver(
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
-  if (delivery !== undefined) {
+  if (delivery !== undefined && options.bindSourceUpdatePlacement !== false) {
     const [{ OpenShellCredentialProxyDriver }, { OpenShellCredentialDeliveryRefusedError }] =
       await Promise.all([
         import("../drivers/credential-proxy/openshell.ts"),
