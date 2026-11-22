@@ -138,22 +138,22 @@ and a real Gateway channel connection. Extend
 [channel egress integration](../../tests/integration/channel-egress-kubernetes-real.test.ts)
 through the real caller; register new cases in CI.
 
-| Required outcome           | Evidence and remaining check                                                                                                                                               | Result  |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| AC-1 routing and admission | Normal no-channel Agent admission, deployment, outage recovery, and model turn passed with the published runtime; channel-enabled direct/proxied route remains unverified. | Partial |
-| AC-2 compatibility         | Pinned transport qualification and real API SOCKS/PAC safe-refusal checks passed; published-runtime channel-enabled HTTPS and certificate-failure paths remain.            | Partial |
-| AC-3 isolation             | Real fixture and pinned Envoy CIDR, excluded-IP, and alternate-numeric denial proofs passed; two live Agents with distinct proxies remain.                                 | Partial |
-| AC-4 lifecycle             | Revision persistence, real-cluster reuse/fencing, a deterministic Driver drain barrier, and controlled 407 passed; live retry, outage, and recovery remain.                | Partial |
-| AC-5 scope                 | No-channel no-grant and model turn passed; post-selection OCC credential/directory and dedicated Harness containment remain.                                               | Partial |
-| AC-6 Secrets and UI        | Secret denial, redaction, inspection/log qualification, and rebuilt Console media passed; integrated channel-enabled Gateway/audit/inspection containment remains.         | Partial |
+| Required outcome           | Evidence and remaining check                                                                                                                | Result  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| AC-1 routing and admission | Published-runtime no-channel Agent and hosted controlled dedicated direct/proxied routes passed; live Slack routing remains.                | Partial |
+| AC-2 compatibility         | Controlled HTTP/HTTPS, private CA, bad TLS and real SOCKS/PAC refusal passed; published-runtime live channel compatibility remains.         | Partial |
+| AC-3 isolation             | Controlled two-Agent isolation, pinned authority denials and enforcing-cluster endpoint qualification passed; live two-Agent proof remains. | Partial |
+| AC-4 lifecycle             | Controlled revision edit/clear, 407 recovery, real-cluster reuse/fencing and deterministic drain passed; live lifecycle proof remains.      | Partial |
+| AC-5 scope                 | Hosted controlled OCC validation/directory, dedicated Harness routing and no-channel no-grant model proof passed; live scope proof remains. | Partial |
+| AC-6 Secrets and UI        | Hosted controlled Gateway/audit/inspection/log containment and rebuilt Console media passed; live channel containment remains.              | Partial |
 
 ## Qualification and delivery record
 
 - The RFC is Proposed and retains its human-review/manual-merge hold.
   [Implementation PR #6856](https://github.com/openclaw/openclaw-enterprise/pull/6856)
-  is open; its reviewed routing fix is at `e66d1168`. Hosted controlled
-  acceptance remains pending. Submission and implementation do not establish acceptance or
-  permission to merge.
+  is open; its reviewed routing fix is at `e66d1168`. Hosted controlled proof
+  passed; live Slack acceptance remains pending. Submission and implementation
+  do not authorize a merge.
 - Main pins OpenClaw source `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`.
   The exact submitted RFC records the earlier pin `82b682c…`; qualification
   must use the current shipped source and immutable runtime images.
@@ -239,13 +239,13 @@ through the real caller; register new cases in CI.
 - Live Slack QA selects these scoped inputs:
   `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`,
   `OCC_TEST_SLACK_SENDER_BOT_TOKEN`, and `OCC_TEST_SLACK_CHANNEL_ID`.
-  A dedicated QA app, distinct driver, and non-DM channel passed read-only
-  identity, membership, and history checks. The human conditionally authorized
-  the exact test posts, but the supported fixture lease and a usable dedicated
-  sandbox host remain pending. A separate no-message attempt stopped at OCC
-  admission: enabled channels require a dedicated Agent workload. No real Socket
-  Mode connection or message was started. The controlled provider does not
-  satisfy live Slack acceptance.
+  Read-only identity, membership, and history checks passed for a dedicated QA
+  app, distinct driver, and non-DM channel. QA requires an approved working Codex
+  PAT and exclusive fixture lease. Exact posts are conditionally authorized; no
+  QA messages were posted. An isolated sequential Slack hello baseline passed,
+  but Codex login failed before Slack configuration; no Gateway Socket Mode
+  consumer started. OCC refused embedded channels, which require dedicated
+  execution. Live Slack with the unmodified shipped runtime remains unverified.
 
 - [Main-only publisher run 44955206942](https://github.com/openclaw/openclaw-enterprise/actions/runs/44955206942)
   succeeded for OCE main `e9abd346` and OpenClaw `cf0b3bb0`. Its runtime index is
@@ -270,9 +270,16 @@ through the real caller; register new cases in CI.
   write; gauge 0 permits retirement and same-port reuse. This is deterministic
   Driver conformance, not a real Envoy drain-timing measurement.
 
+- [Hosted First Agent Smoke](https://github.com/openclaw/openclaw-enterprise/actions/runs/44966079230/job/137035493277) passed at `b937e52e7`. In 328 seconds, two dedicated Agents passed HTTP/HTTPS private CA, Socket Mode, policy denials, OCC/Harness isolation, 407 recovery, revision edit/clear, bad TLS, and credential containment. It used stand-in Slack/model providers and a checkout-derived runtime with an added stand-in CA; it did not qualify the unmodified shipped runtime.
+- Credential-free enforcing-cluster qualification used the production Driver, a synthetic revision, and published arm64 runtime. The Envoy Pod reached only `172.18.0.5/32 TCP 38001`; unselected controls reached `38002` and non-node neighbor `.6:38001`. Unauthorized observations were zero; 19 UID/ID-checked resources were removed. This was not normal Agent or Slack proof.
+
+- [Native arm64 container check](https://github.com/openclaw/openclaw-enterprise/actions/runs/44963429693) passed: artifact `14732406861`, native `linux/arm64`, source `f8fe9476850d5cee45759bbf36e0530b8e24435f`, manifest `sha256:b3ac8fd2a37680252e1190c743794a883a4759122b8714aa5b1ec2523cb5fab5`, config `sha256:e90e22472a3233798008822cefdec6f7cb7d139aeddb8e4db2710ff541e90601`. Repository verification rehashed the OCI graph.
+
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-21 16:43: Record controlled, endpoint, and native arm64 qualification (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298 - 9e5d24b106bbbf8532cc276a1a09f98bf1cf0444).
 
 - 2026-11-21: Record the published-runtime no-channel Agent proof and real SOCKS/PAC refusal checks (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298).
 
