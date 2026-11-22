@@ -222,7 +222,10 @@ async function assertKubernetesRuntimeLogIdentity() {
     target.logsPath("source=gateway&container=agent"),
   );
   assert.equal(undeclared.status, 400);
-  assert.equal(observed().calls.some((entry) => entry.call === "readNamespacedPodLog"), false);
+  assert.equal(
+    observed().calls.some((entry) => entry.call === "readNamespacedPodLog"),
+    false,
+  );
 }
 
 test("runtime status and log reads enforce their permission tiers before any Driver call", async () => {
