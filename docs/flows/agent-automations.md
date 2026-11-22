@@ -99,6 +99,13 @@ a read-only root filesystem and no mounts replacing `/app`.
 The route renders the default backend `weight: 1` explicitly so API defaulting
 does not change the spec used for strict readback.
 
+Automation verification requires only these additional `tenant-api` grants in the
+[control chart](../../deploy/helm/openclaw-enterprise/templates/rbac.yaml): Services
+`get`, HTTPRoutes `get`, EndpointSlices `list` and NetworkPolicies `get`.
+The existing `tenant-configuration` binding supplies ConfigMap `get`.
+[Tenant-local RoleBindings](../guides/deploy/production-agents.md#grant-tenant-rolebindings)
+scope access to the Gateway namespace. These reads need no execution-chart grants.
+
 The native adapter checks bounded, nonempty handshake boot ID and same-socket
 `system.info` process-instance ID plus positive PID. Only the hostname is compared
 with the expected Pod name; boot/process IDs have no prior expected value.
