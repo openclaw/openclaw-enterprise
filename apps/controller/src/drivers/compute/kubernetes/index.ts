@@ -15128,12 +15128,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           },
         ],
         rules: [
-          this.gatewayRootRouteRule(
-            service,
-            this.automationRoutePath(revision),
-            "operator",
-            "Exact",
-          ),
+          {
+            ...this.gatewayRootRouteRule(
+              service,
+              this.automationRoutePath(revision),
+              "operator",
+              "Exact",
+            ),
+            backendRefs: [{ ...this.gatewayRouteBackendRef(service), weight: 1 }],
+          },
         ],
       },
     };
