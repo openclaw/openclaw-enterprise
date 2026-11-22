@@ -100,7 +100,7 @@ Harness removal; Sandbox cleanup follows the [provisioning lifecycle](#sandbox-p
 Stop retains Agent-owned PersistentVolumeClaims and runtime credential Secrets;
 retirement removes resources for that Agent revision. Repeated stop
 observes exact ownership and converges when the runtime objects are already
-absent. When an Agent revision uses a Credential Proxy, Compute stops the Harness before it removes the Proxy deployment. It keeps the deployment target record until removal succeeds. Stop retains the Credential Source and Provider copy.
+absent. When an Agent revision uses a Credential Proxy, Compute stops the Harness before it removes the Proxy deployment. It keeps the deployment target record until removal succeeds. Stop retains the Credential Source; the [OpenShell Proxy](credential-proxy.md) retires its delivery copy after the last binding is removed.
 
 ### Plugin startup status
 

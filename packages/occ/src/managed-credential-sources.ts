@@ -102,6 +102,11 @@ interface ManagedCredentialSourceDependencies {
   >;
   readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
+  readonly retireDelivery: (
+    namespace: Readonly<Namespace>,
+    source: CredentialSourceReference,
+    signal: AbortSignal,
+  ) => Promise<void>;
   readonly clock: () => Date;
   readonly timestamp: () => string;
   readonly tokenServiceTimeoutMs: number;
@@ -496,6 +501,16 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         sourceRef: credentialSourceRef(source),
         tokenServiceInstanceId: source.tokenServiceInstanceId,
       };
+      try {
+        await dependencies.retireDelivery(
+          namespace,
+          identity.sourceRef,
+          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+        );
+      } catch {
+        // Native errors can contain credential or Workspace details.
+        throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
+      }
       const removed = await driverOperation(
         () => owner.removeSource(identity, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
         "TokenService",

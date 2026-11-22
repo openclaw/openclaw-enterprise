@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-22
-last_updated_session: authoring-run/c68f6f42-f163-4903-80e4-815e23cd470d
+last_updated_session: authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc
 ---
 
 # Managed static credential source custody flow
@@ -22,7 +22,11 @@ A caller enrolls a credential through the authenticated Namespace Source API. Th
 ## Flow
 
 ```mermaid
-graph TD
+---
+config:
+  htmlLabels: true
+---
+flowchart TB
   A["<b>Source API</b><br/>Write-only credential"] --> B["<b>OCC</b><br/>Authorize and audit request"]
   B --> C["<b>TokenService</b><br/>Create Source and credential"]
   C -->|commit ready Source| D["<b>OCC</b><br/>Grant creator and audit separately"]
@@ -34,8 +38,11 @@ graph TD
   G -->|after commit, if selected| L["<b>Credential Proxy</b><br/>Handle Source update"]
   L -->|delivery fails| M["<b>Delivery failure</b><br/>New credential remains"]
   F -->|DELETE, unreferenced| K["<b>OCC</b><br/>Commit deleting and intent"]
-  K --> H["<b>TokenService</b><br/>Remove Source and material"]
-  H -->|uncertain removal| I["<b>Source deleting</b><br/>Authorized retry"]
+  K -->|Proxy selected| N["<b>Credential Proxy</b><br/>Retire delivery copy"]
+  K -->|no Proxy selected| H
+  N -->|success| H["<b>TokenService</b><br/>Remove Source and material"]
+  N -->|failure, custody remains| I["<b>Retirement unconfirmed</b><br/>Retry if Source remains"]
+  H -->|uncertain removal| I
 ```
 
 ## Execution Trace
@@ -66,7 +73,7 @@ For a credential change, OCC commits intent and releases its locks before it cal
 
 `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`, `apps/controller/src/drivers/token-service/occ.ts:removeSource`
 
-OCC authorizes exact DELETE, refuses blocking references, and commits `deleting` and retirement intent. It releases its locks before calling TokenService once. TokenService locks the Namespace and Source in its own transaction, rechecks references, erases private material, and deletes the Source and its IAM bindings. TokenService returns the actual removed AccessBindings, and OCC records them in completion audit separately. An uncertain removal can leave `deleting` for retry. If TokenService commits before completion audit fails, the Source and its exact IAM bindings are gone. A retry can return `403` if the caller lost delete authority, or `404` if still authorized. Retirement intent remains.
+OCC authorizes exact DELETE, refuses blocking references, and commits `deleting` and retirement intent. It releases its locks before Driver calls. If a Proxy is selected, OCC asks it to retire the owned delivery copy and profile first. If that call fails, the Source stays `deleting` and TokenService keeps custody for a retry. After retirement succeeds, or when no Proxy is selected, TokenService locks the Namespace and Source in its own transaction, rechecks references, erases private material, and deletes the Source and its IAM bindings. TokenService returns the actual removed AccessBindings, and OCC records them in completion audit separately. An uncertain removal can leave `deleting` for retry. If TokenService commits before completion audit fails, the Source and its exact IAM bindings are gone. A retry can return `403` if the caller lost delete authority, or `404` if still authorized. Retirement intent remains.
 
 ### 5. Stop at the Agent delivery boundary
 
@@ -76,7 +83,7 @@ An authorized Agent draft can bind a ready same-Namespace Source by ID without r
 
 ## Debugging and Verification
 
-Run `node --test tests/integration/postgres-staged-agent-credential-binding.test.ts` with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It exercises real Fastify routes, PostgreSQL application-role persistence, Native IAM, concrete TokenService custody, sanitized reads, updates, denial audit, retirement, and Agent draft binding. The Secret Driver's Kubernetes API transport is simulated; this does not establish live Kubernetes storage, runtime delivery, or model execution.
+Run `node --test tests/integration/postgres-staged-agent-credential-binding.test.ts` with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It exercises real Fastify routes, PostgreSQL application-role persistence, Native IAM, concrete TokenService custody, sanitized reads, updates, denial audit, retirement, and Agent draft binding. Source DELETE coverage uses the selected OpenShell Proxy and production gRPC client against a controlled loopback service. The Secret Driver's Kubernetes API transport is also controlled. This does not establish live Kubernetes storage, native OpenShell deletion, runtime delivery, or model execution.
 
 ## Related docs
 
@@ -90,6 +97,8 @@ Run `node --test tests/integration/postgres-staged-agent-credential-binding.test
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 12:28: Retire the selected Proxy delivery copy before TokenService removes Source custody. (authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc - 802c9adb9)
 
 - 2026-11-22 12:16: Combine staged deployment with Source updates through the selected native Proxy. (authoring-run/c68f6f42-f163-4903-80e4-815e23cd470d - 403ad1bbacb79d2c504026c696a343d29bfa948a)
 
