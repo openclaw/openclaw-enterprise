@@ -8,6 +8,7 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
+  answerDeployGrantsSources,
   apiRequests,
   asksBeforeUnload,
   detailUrl,
@@ -44,6 +45,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   );
   const member = await fixture.createNamespaceMember("picker-member", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
+  await answerDeployGrantsSources(page);
   const collection = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
   const listRead = () => responseTo(page, "GET", collection);
   const initial = listRead();
@@ -158,11 +160,13 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
     assert.equal(save.request().postDataJSON().secretBindings[key].source.id, id);
     assert.equal((await save.json()).data.secretBindings[key].source.id, id);
   }
-  const warning = page
-    .getByRole("alert")
-    .filter({ hasText: "this session did not verify that this Agent can use" });
-  await warning.waitFor();
-  assert.match(await warning.innerText(), /Installation administrator.*Retry Secret access/);
+  // A member's save sends no grant: the member's deploy writes it (RFC-0040).
+  await page
+    .getByText(
+      "Channel Secret bindings saved. Deploying the new version delivers them and gives this Agent operate on them.",
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
   await settlePageRequests(page);
   const checked = await page.context().request.get(configuration);

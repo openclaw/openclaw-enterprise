@@ -28454,6 +28454,7 @@
                         "configurationUpdate": true,
                         "delete": true,
                         "deploy": true,
+                        "deployGrantsSources": true,
                         "operate": true,
                         "readLogs": true,
                         "sandboxPolicyRead": true,
@@ -28503,6 +28504,10 @@
                           "description": "Whether the selected IAM Driver allows Agent deploy now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
                         },
+                        "deployGrantsSources": {
+                          "description": "Whether an Agent deploy gives the Agent's ServicePrincipal the operate grant it lacks on each Secret and credential source the Agent and its Configuration reference, for each source the deploying caller may operate. `false` when the selected IAM Driver cannot write Namespace access bindings in OCC State, or when the Installation decides authorization outside the IAM Driver; the Agent then needs those grants before it deploys. The same for every caller: it does not say whether this caller may deploy (see `deploy`).",
+                          "type": "boolean"
+                        },
                         "operate": {
                           "description": "Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
@@ -28531,6 +28536,7 @@
                         "configurationSecretsOperate",
                         "configurationSecretsOperateDeniedBindings",
                         "agentSourcesOperate",
+                        "deployGrantsSources",
                         "sandboxPolicyRead",
                         "readLogs"
                       ],

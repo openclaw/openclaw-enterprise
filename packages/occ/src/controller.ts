@@ -291,6 +291,15 @@ export class OpenClawController {
     return this.composition.iamPolicy.defaultUserGroupIds();
   }
 
+  /**
+   * Whether an Agent deploy writes the Agent's operate grant on each source the deployer may
+   * operate (RFC-0040). The Agent permission summary reports it so the console promises a
+   * deploy-time grant only where the deploy writes one.
+   */
+  deployGrantsAgentSources(): boolean {
+    return this.composition.iamPolicy.deployGrantsAgentSources();
+  }
+
   async createIAMAccessBinding(
     principalId: string,
     input: CreateIAMAccessBindingInput,

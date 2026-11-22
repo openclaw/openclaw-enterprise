@@ -241,6 +241,14 @@ records `openclaw.iam.access_bindings.create` with the source as resource and
 `reason: "agent_deploy"` and `agentId` in details. The grants commit with the
 deployment; a refused deployment writes none.
 
+OCC writes these grants only when the selected IAM Driver has
+`createNamespaceAccessBinding` and reads its policy from OCC State, as Native
+IAM does. With another IAM Driver, or with decisions from the controller's
+`authorize` option, the deploy writes no grant: an administrator must grant
+each source before the deploy. The `deployGrantsSources` field of
+`GET /namespaces/:namespaceId/agents/:agentId/permissions` says which case
+applies. The console says that deploying grants access only when it is `true`.
+
 A source that the caller cannot operate gets no grant. The Agent principal check
 then refuses the deploy until someone who can operate the source deploys, or an
 administrator grants access as in

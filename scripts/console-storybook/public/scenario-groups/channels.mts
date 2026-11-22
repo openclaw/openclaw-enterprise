@@ -86,6 +86,7 @@ export function channelsScenarios({
         configurationSecretsOperate: false,
         configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
         agentSourcesOperate: false,
+        deployGrantsSources: true,
         sandboxPolicyRead: true,
       },
       description:
@@ -731,16 +732,16 @@ export function channelsScenarios({
       ],
       rules: [{ suffix: "/iam/roles", status: 403 }],
       description:
-        "A session the console takes for an Installation administrator saves a Slack token from the editor. The Configuration saves, but its IAM read for the Agent's grant is refused. That is a known outcome, not an unknown one: the page names who can grant it and links to Credentials, where Retry Secret access waits.",
+        "A session the console takes for an Installation administrator saves a Slack token from the editor. The Configuration saves, but its IAM read for the Agent's grant is refused. That is a known outcome, not an unknown one: the page says deploying grants this Agent access and links to Credentials, where Retry Secret access waits.",
       steps: [
-        "The editor closes. A warning above Channels names the Installation administrator step; Prepare says to resolve the saved Secret access grant, not that the outcome is unknown.",
+        "The editor closes. A warning above Channels says deploying grants this Agent access, not that the outcome is unknown. Deploy new version stays available.",
         "Edit Slack stays available. Open Credentials: the app token reads Bound · Agent access not confirmed beside Retry Secret access.",
       ],
       gap: "The member browser test uses a member account and the real Native IAM refusal.",
     },
-    channelSecretGrantMemberUnverified: {
+    channelSecretGrantMemberAtDeploy: {
       group: "Components/Channels",
-      name: "Member Slack token saved, access not verified",
+      name: "Member Slack token saved, granted at deploy",
       path: `${draft}&tab=channels`,
       slack: true,
       observabilityDenied: true,
@@ -750,12 +751,12 @@ export function channelsScenarios({
         click("Save configuration"),
       ],
       description:
-        "A member saves a Slack token from the editor. The session already knows this member does not administer the Installation, so it sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access and names the Installation administrator step.",
+        "A member saves a Slack token from the editor. The session already knows this member does not administer the Installation, so it sends no IAM request for the Agent's grant: the member's deploy gives the Agent operate on each Secret it binds (RFC-0040). The saved notice says so, and no warning names an administrator.",
       steps: [
-        "The editor closes. The warning above Channels says access was not verified; Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows no /iam/ request.",
-        "Open Credentials: the app token reads Bound · Agent access not confirmed. There is no Retry Secret access; Reload draft clears the warning.",
+        "The editor closes. The notice reads Channels saved. Deploying gives this Agent operate on the selected Slack Secrets. Deploy new version stays available. The request log shows no /iam/ request.",
+        "Open the Credentials tab: both tokens read Bound. There is no warning, Retry Secret access or Reload draft.",
       ],
-      gap: "The member browser test uses a member account and the real Installation permission check.",
+      gap: "The member browser test uses a member account and the real Installation permission check. The PostgreSQL Default users test proves that the member's deploy writes and audits the grant.",
     },
     channelSaveUnknown: {
       group: "Components/Channels",

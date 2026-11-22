@@ -235,6 +235,7 @@ async function getAgentCallerPermissions({
     configurationSecretsOperate,
     configurationSecretsOperateDeniedBindings,
     agentSourcesOperate,
+    deployGrantsSources: controller.deployGrantsAgentSources(),
     sandboxPolicyRead,
     readLogs,
   };

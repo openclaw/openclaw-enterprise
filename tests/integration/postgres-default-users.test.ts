@@ -246,6 +246,12 @@ test(
     );
     assert.equal(ownerAudit.rowCount, 3);
 
+    // Native IAM over OCC State is where deploy-time grants live, so Alice's Agent answer says her
+    // deploy writes them; her console promises the grant only on this answer (RFC-0040).
+    const permissions = await alice.request("GET", `${base}/agents/${agent.data.id}/permissions`);
+    assert.equal(permissions.status, 200);
+    assert.equal(permissions.data.deploy, true);
+    assert.equal(permissions.data.deployGrantsSources, true);
     const deployed = await alice.request("POST", `${base}/agents/${agent.data.id}/deploy`);
     assert.equal(deployed.status, 202);
     const grants = await pool.query(

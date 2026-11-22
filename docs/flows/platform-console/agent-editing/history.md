@@ -8,6 +8,16 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-19 00:40: Grant warnings and member saves offer the deploy only when `deployGrantsSources` says it writes the grant. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - 6a10ce5dc6665051ae57eae8982c6a2f203659db)
+- 2026-11-18 22:40: Grant warnings name who can grant access when the reader may neither retry nor deploy. (authoring-run/f86b341d-b08f-47f4-80ff-a375893c8e05 - cfbec6564415e928e74062b91ab00f19656b6a86)
+- 2026-11-17 05:44: Deploys write credential grants; no grant outcome holds Deploy. (authoring-run/08b481d4-4a5e-4aed-b768-352a6716323c - 28afb11d68da12a17148895883235d074b9bb46f)
+- 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
+- 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
+- 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
+- 2026-11-05 01:51: Guard pending-save history. (authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746 - 516ee6d87dea5326df70e647b17e2a141392cd0c)
+- 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
+- 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
 - 2026-10-31 09:00: Confirm access when the read after Reload draft finds no grant outstanding. (fix-3030)
 - 2026-10-31 08:00: Name the save after a refused Retry. (fix-offers-1031)
 - 2026-10-31 07:30: Word an unconfirmed Retry without a Configuration save; clear it on Reload draft. (fix-3023)

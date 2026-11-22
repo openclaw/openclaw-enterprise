@@ -244,7 +244,12 @@ behavior.
   collects the Agent's Secret and credential source references. For each source
   that the caller can `operate` and the Agent ServicePrincipal cannot,
   `ensureAgentOperateGrants` writes an exact AccessBinding. OCC audits it with
-  `reason: "agent_deploy"`. A failed deploy rolls back these grants.
+  `reason: "agent_deploy"`. A failed deploy rolls back these grants. It writes
+  nothing when `iamPolicy.occBindingDriver("createNamespaceAccessBinding")` is
+  undefined. `packages/occ/src/iam-policy-operations.ts:deployGrantsAgentSources`
+  applies the same check, and
+  `apps/controller/src/http/permission-advice.ts:getAgentCallerPermissions`
+  returns it as `deployGrantsSources`.
 
 ## Debugging and Verification
 
@@ -297,29 +302,13 @@ behavior.
 ## Changelog
 
 - 2026-11-20 17:01: Point to deployment grant creation in the Agent credential access module. (authoring-run/fda3d531-de1b-4732-984e-f4c3f1c19868 - 91d5a4bc0ddd450d83d4ec939dd9c377cc145f8e)
-
 - 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
-
 - 2026-11-20 16:40: Update source pointers for Namespace policy commands and configured grants. (authoring-run/5e3917d4-e775-43a5-9016-4f8ba744675e - dde01a7334a51ced932f1eb0ea6a4561c3e97581)
 - 2026-11-20 16:23: Point to the shared authority fence used by OCC transactions. (authoring-run/44d201ec-ee79-4633-aebb-a4ae8e9cd904 - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
+- 2026-11-19 00:40: Report whether a deploy writes Agent grants as `deployGrantsSources`. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - 6a10ce5dc6665051ae57eae8982c6a2f203659db)
 - 2026-11-17 19:20: Order Connection ownership, standing repository approval, and startup Preset ownership against configured-policy changes. (authoring-run/01a1bfc4-452e-7521-a7b2-2e1c44f855df - ecf6a80b605ec64c9d68a150cb07dbda5055d2a8)
 - 2026-11-13 06:59: Condense the Namespace IAM policy flow while retaining authorization and transaction boundaries. (authoring-run/91737212-2ec5-4aca-981d-501670320fd5 - 6192588c3a8fce971689a174fc34ae9deb1c8c80)
 - 2026-11-13 05:56: Authorize Agent creation before configured Backend lookup; preserve creator and catalog permissions, distinguish Namespace creation admission, and cover denial audit and unchanged State. (authoring-run/3e297b79-1580-4c10-ade8-4fa8031618a7 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 - 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)
-- 2026-11-04 12:00: Replace the built-in Roles, Group, and membership routes with the configured policy and membership at account creation; deploy grants for any Role. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
-- 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)
-- 2026-11-02 10:00: Trace Owner bindings for every create, the default Namespace binding, and the Namespace Creator setting; drop the Namespace limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - aba993606)
-- 2026-11-02 16:00: Trace parent checks that apply an exact Agent binding to the Agent's revisions and sandbox policy. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
-- 2026-11-02 21:00: Trace the second authorization under the Namespace lock for creates and deploy, and the provisioning authority lock. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
-- 2026-11-02 18:00: Trace the authority fence; correct the membership session hold. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
-- 2026-10-30 09:02: Trace Default users membership, the Namespace owner binding, and deploy-time Agent grants; working tree changes uncommitted. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - a382326dde18057a250e93a222aa8f4000477166)
-- 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
-- 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)
-- 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)
-- 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)
-- 2026-09-29 05:28: Bind selected native policy reloads to the original State transaction and reject escaped reads. (codex/01a0eb4c-5933-7752-bddc-f787e8da79e7 - 2a191c74c0079e329db130d0a81a1f0f87869bb9)
-- 2026-09-27 19:15: Clarify unknown commit handling and the unregistered authority barrier. (codex/01a0b3bf-83a8-7392-ae2d-1a369b54ab3f - 181b0472f9a5a9d422035edf5121d3a15c200cb5)
-- 2026-09-23 22:56: Update source ownership for extracted IAM HTTP handlers; preserve admission and transaction boundaries. (codex/01a0d075-a358-7620-8c16-fd4290acddf1 - 4df9f9800836dc1c2b57afd5f8af4d91f55088d5)
 
-- 2026-09-23 08:44: Extend the managed grant path to existing humans and exact Namespace targets. (authoring-run/1d5da2d1-e61e-4277-bd91-037d64c10744 - 370570d788725a178a7441f8388a333c47c29798)
-- 2026-09-20 09:32: Document Namespace IAM policy management flow. (codex/01a0bce5-9f29-7110-85fd-6b140674d362 - 5f7728e8c5d128bc7067b7035e07f06c3c4da92c)
+[Namespace IAM policy documentation history](namespace-iam-policy/history.md) preserves the older dated entries.

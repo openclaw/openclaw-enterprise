@@ -1219,6 +1219,7 @@ export function createAgentDetailScenarios({
           configurationSecretsOperate: false,
           configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: false,
+          deployGrantsSources: true,
           sandboxPolicyRead: false,
         },
         description:
@@ -2122,6 +2123,7 @@ export function createAgentDetailScenarios({
           configurationSecretsOperate: true,
           configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: true,
+          deployGrantsSources: true,
           sandboxPolicyRead: false,
           readLogs: true,
         },
@@ -2156,6 +2158,7 @@ export function createAgentDetailScenarios({
           configurationSecretsOperate: true,
           configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: false,
+          deployGrantsSources: true,
           sandboxPolicyRead: false,
           readLogs: true,
         },
@@ -2277,6 +2280,7 @@ export function createAgentDetailScenarios({
           configurationSecretsOperate: false,
           configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: false,
+          deployGrantsSources: true,
           sandboxPolicyRead: false,
         },
         description:
@@ -2304,6 +2308,7 @@ export function createAgentDetailScenarios({
           configurationSecretsOperate: true,
           configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: false,
+          deployGrantsSources: true,
           sandboxPolicyRead: false,
         },
         description:
@@ -2449,6 +2454,7 @@ export function createAgentDetailScenarios({
           configurationSecretsOperate: false,
           configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: false,
+          deployGrantsSources: true,
           sandboxPolicyRead: false,
         },
         rules: [

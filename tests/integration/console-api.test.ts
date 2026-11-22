@@ -38,7 +38,9 @@ import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/sl
 import {
   SandboxNetworkPolicyConfiguration,
   type AgentRevision,
+  type AuthorizationRequest,
   type ChannelCredentialReader,
+  type IAMDriver,
   type ProtectedRepositoryNetworkPolicyContext,
   type RepositoryNetworkGrant,
   type SandboxDriver,
@@ -564,6 +566,65 @@ test("the Agent readLogs answer matches what the runtime log read checks", async
   assert.equal(suffix.lastIndex, "openclaw.agents.".length);
 });
 
+// The console promises that deploying grants an Agent access only when deployGrantsSources says
+// the deploy writes that grant (RFC-0040). OCC writes it only where the IAM Driver reads it: not
+// for this fixture's Native IAM, which reads the fixture's policy instead of OCC State, and not
+// for decisions from the `authorize` option. There the answer is false, and the deploy refuses an
+// Agent that lacks the grant and names who can give it. postgres-default-users proves the true
+// answer with the grant it writes.
+for (const authority of ["policy-store", "authorize-option"] as const) {
+  test(`${authority}: deployGrantsSources is false when a deploy cannot write the Agent's credential grant`, async (t) => {
+    const fixture = await createConsoleAppFixture(
+      t,
+      authority === "authorize-option"
+        ? {
+            authorizeWith: (native: IAMDriver) => (request: AuthorizationRequest) =>
+              native.authorize(request),
+          }
+        : {},
+    );
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Deploy grants ${authority}`, { ready: true });
+    const base = `/namespaces/${namespace.id}`;
+    const configuration = await fixture.createConfiguration(
+      namespace.id,
+      createHarnessConfiguration("openclaw", "gpt-4.1"),
+    );
+    const secret = await fixture.createSecret(
+      namespace.id,
+      "Deploy grant key",
+      `key-${randomUUID()}`,
+    );
+    // Created through the API without the fixture's grant, so the Agent has no access to its key.
+    const created = await fixture.request("POST", `${base}/agents`, {
+      body: {
+        name: `Deploy grant ${authority}`,
+        configurationId: configuration.id,
+        harnessAuth: { method: "api_key", source: secret.ref },
+      },
+    });
+    assert.equal(created.status, 201);
+    const agent = created.data as { id: string };
+    const agentPath = `${base}/agents/${agent.id}`;
+    const permissions = await fixture.request("GET", `${agentPath}/permissions`);
+    assert.equal(permissions.status, 200);
+    // The administrator may deploy and operate the key, so only the IAM Driver keeps the deploy
+    // from granting it.
+    assert.equal(permissions.data.deploy, true);
+    assert.equal(permissions.data.agentSourcesOperate, true);
+    assert.equal(permissions.data.deployGrantsSources, false);
+    const deployed = await fixture.request("POST", `${agentPath}/deploy`);
+    assertApiError(deployed, 403, "FORBIDDEN");
+    assert.match(
+      checkedResponse(fixture, deployed, ErrorResponse, 403).error.message,
+      /the Agent itself needs Secret operate on it\. Ask an Installation administrator/,
+    );
+    const revisions = await fixture.request("GET", `${agentPath}/revisions`);
+    assert.equal(revisions.status, 200);
+    assert.deepEqual(revisions.data, [], "the refused deploy created no revision");
+  });
+}
+
 test("caller permission summaries report primary IAM decisions without authorizing a later operation", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -587,6 +648,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     configurationSecretsOperate: true,
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: true,
+    deployGrantsSources: false,
     sandboxPolicyRead: true,
     readLogs: true,
   });
@@ -629,6 +691,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     configurationSecretsOperate: false,
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
+    deployGrantsSources: false,
     sandboxPolicyRead: false,
     readLogs: false,
   });

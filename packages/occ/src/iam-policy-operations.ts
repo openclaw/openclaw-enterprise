@@ -396,6 +396,23 @@ export function createIAMPolicyOperations({
     return Object.freeze(groups.map(configuredGroupId));
   }
 
+  /**
+   * Whether an Agent deploy writes the Agent's operate grant on each source the deployer may
+   * operate (RFC-0040). It does not when decisions come from the `authorize` option, or when the
+   * IAM Driver cannot write Namespace access bindings in this controller's State.
+   */
+  function deployGrantsAgentSources(): boolean {
+    try {
+      return occBindingDriver("createNamespaceAccessBinding") !== undefined;
+    } catch (error) {
+      // A Driver without transactional policy support makes the deploy itself unavailable.
+      if (error instanceof DependencyUnavailableError) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   async function createIAMAccessBinding(
     principalId: string,
     input: CreateIAMAccessBindingInput,
@@ -1021,6 +1038,7 @@ export function createIAMPolicyOperations({
     deleteIAMRole,
     listIAMAccessBindings,
     defaultUserGroupIds,
+    deployGrantsAgentSources,
     createIAMAccessBinding,
     getIAMAccessBinding,
     deleteIAMAccessBinding,

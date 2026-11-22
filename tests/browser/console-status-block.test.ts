@@ -11,6 +11,7 @@ import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
+  answerDeployGrantsSources,
   consoleViewports,
   detailUrl,
   fileBrowser,
@@ -430,6 +431,8 @@ test("Authentication source save outcomes", async (t) => {
     );
     const secret = await fixture.createSecret(namespace.id, "Status key", "synthetic-status-key");
     const { page } = await newPage(t, fixture, { browser });
+    // These outcomes are worded for an Installation whose deploy writes the Agent's grants.
+    await answerDeployGrantsSources(page);
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
     if (!harnessId) {
       await page.getByLabel("Authentication source").selectOption("api_key");
@@ -542,7 +545,7 @@ test("Authentication source save outcomes", async (t) => {
       // The rebuilt tab repeats the shared grant warning (finding 2259).
       const kept = page.getByRole("alert").filter({
         hasText:
-          "Authentication source saved, but the request to grant this Agent access to the selected Secret was refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source. Select Retry credential access once you have that access.",
+          "Authentication source saved, but the request to grant this Agent access to the selected Secret was refused. Deploying grants this Agent access.",
       });
       await kept.waitFor();
       assert.deepEqual(await statusTone(kept), {

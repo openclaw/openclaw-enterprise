@@ -368,6 +368,37 @@ export function fileBrowser() {
   return sharedBrowser;
 }
 
+// The console fixture's Native IAM reads the fixture's own policy store, not OCC State, so OCC
+// writes no deploy-time credential grants there and each Agent permission answer says
+// deployGrantsSources: false (tests/integration/console-api.test.ts). With Native IAM over OCC
+// State the answer is true and the deploy writes the grant
+// (tests/integration/postgres-default-users.test.ts). A case about the console's wording for such
+// an Installation sets that one field on each real answer; the API decides every other field.
+export async function answerDeployGrantsSources(page: Page) {
+  await page.context().route(
+    (url) => /\/namespaces\/[^/]+\/agents\/[^/]+\/permissions$/.test(url.pathname),
+    async (route) => {
+      try {
+        const response = await route.fetch();
+        if (response.status() !== 200) {
+          await route.fulfill({ response });
+          return;
+        }
+        const body = (await response.json()) as { data: Record<string, unknown> };
+        body.data.deployGrantsSources = true;
+        await route.fulfill({ response, json: body });
+      } catch (error) {
+        // A test that ends while an answer is in flight closes its context; nothing waits for
+        // that answer. Any other failure still surfaces.
+        if (!(error instanceof Error) || !CLOSED_ROUTE.test(error.message)) {
+          throw error;
+        }
+      }
+    },
+  );
+}
+const CLOSED_ROUTE = /has been closed|has been disposed/;
+
 export async function newPage(
   t: TestContext,
   fixture: PageFixture,
