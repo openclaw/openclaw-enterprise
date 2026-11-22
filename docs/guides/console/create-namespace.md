@@ -15,11 +15,12 @@ the Installation. No model credentials are needed.
    without creating anything.
 3. **Namespace created** confirms that the request succeeded. Select **Open
    Agents** once the Console confirms you can view the Namespace, or **Done** to
-   return to Namespaces. If the access check fails, **Check access again**
-   repeats the read. If you lack access, the confirmation offers **Done**.
+   return to Namespaces. **Check access again** repeats an inconclusive read.
+   If the Namespace is unavailable, follow the guidance in the confirmation.
 4. Select **Refresh** on Namespaces to check readiness. Provisioning continues
-   asynchronously. You can save Agent drafts while it provisions, but deployment
-   waits for readiness. See [Namespace lifecycle](../../reference/namespaces.md#lifecycle).
+   asynchronously. With Agent create permission, you can save drafts during
+   provisioning. Deployment requires a ready Namespace. See
+   [Namespace lifecycle](../../reference/namespaces.md#lifecycle).
 
 The form creates an ordinary OCE Namespace. To select an existing Kubernetes
 namespace, use the [API](../../reference/namespaces.md#ownership-and-supported-operations)

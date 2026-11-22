@@ -16,7 +16,6 @@ import { createNamespaceDeletion } from "./namespace-deletion.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
   askAdministratorTo,
-  askForGrant,
   namespaceCreateDenied,
 } from "./agents/access-reasons.mjs";
 
@@ -341,8 +340,7 @@ export function renderNamespaces(
 
     function confirmCreation(id: string, createdName: string) {
       title.textContent = "Namespace created";
-      const createdMessage = `${createdName} has been created.`;
-      description.textContent = createdMessage;
+      description.textContent = `${createdName} has been created.`;
       const access = statusBlock(
         "info",
         null,
@@ -379,14 +377,14 @@ export function renderNamespaces(
             }
             return listed.some((item: unknown) => responseFields(item).id === id)
               ? "readable"
-              : "unreadable";
+              : "omitted";
           },
           (cause: unknown) => {
             const { status } = requestFailure(cause);
             if (status === 401) {
               return "expired";
             }
-            return status === 403 ? "unreadable" : "unconfirmed";
+            return status === 403 ? "denied" : "unconfirmed";
           },
         );
         if (!dialog.open || !dialog.isConnected || !context.isCurrent()) {
@@ -398,7 +396,6 @@ export function renderNamespaces(
         }
         const keepDoneFocus = !initial && document.activeElement === done;
         if (result === "readable") {
-          description.textContent = `${createdMessage} Provisioning is in progress; Agents can be saved as drafts, but deployment waits until the Namespace is ready.`;
           access.remove();
           dialog.setAttribute("aria-describedby", description.id);
           done.removeAttribute("aria-describedby");
@@ -412,12 +409,20 @@ export function renderNamespaces(
           );
           actions.replaceChildren(done, openAgents);
           (keepDoneFocus ? done : openAgents).focus();
-        } else if (result === "unreadable") {
-          const guidance =
-            context.installationAdmin === true
-              ? "Check whether an IAM Restriction applies."
-              : askForGrant("Namespace read on it to open its Agents");
-          access.textContent = `Your access does not include viewing this Namespace. ${guidance}`;
+        } else if (result === "denied" || result === "omitted") {
+          if (result === "denied") {
+            const guidance =
+              context.installationAdmin === true
+                ? "Check whether an IAM Restriction applies."
+                : askAdministratorTo("check your access");
+            access.textContent = `Access to the Namespaces list was denied. ${guidance}`;
+          } else {
+            const guidance =
+              context.installationAdmin === true
+                ? "Check its status and access."
+                : askAdministratorTo("check its status and your access");
+            access.textContent = `This Namespace is unavailable to view. ${guidance}`;
+          }
           done.classList.add("button", "button--primary");
           actions.replaceChildren(done);
           done.focus();

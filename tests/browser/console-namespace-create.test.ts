@@ -124,7 +124,11 @@ test("create a Namespace from the console, then open its Agent workflow", async 
   create.release();
 
   dialog = page.getByRole("dialog", { name: "Namespace created", exact: true });
-  await dialog.getByText(/Provisioning is in progress/).waitFor();
+  await dialog.getByRole("button", { name: "Open Agents" }).waitFor();
+  assert.equal(
+    await dialog.locator("#create-namespace-description").textContent(),
+    "Support team has been created.",
+  );
   const [createRequest] = creates(requests);
   assert.equal(creates(requests).length, 1);
   assert.ok(createRequest);
@@ -212,7 +216,7 @@ test("a reload asks first only while Namespace creation is in flight", async (t)
     settled: () =>
       page
         .getByRole("dialog", { name: "Namespace created", exact: true })
-        .getByText(/Provisioning is in progress/)
+        .getByRole("button", { name: "Open Agents" })
         .waitFor(),
   });
 });
@@ -332,7 +336,7 @@ test("a rate-limited or malformed creation answer is reported, not shown as crea
   await focusReturnsToOpener(page);
 });
 
-test("a creator who cannot read Namespaces is told so instead of offered Open Agents", async (t) => {
+test("a created Namespace omitted for a create-only caller is unavailable to view", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   fixture.policy.roles.push({
@@ -361,13 +365,16 @@ test("a creator who cannot read Namespaces is told so instead of offered Open Ag
   const dialog = page.getByRole("dialog", { name: "Namespace created", exact: true });
   await dialog
     .getByRole("status")
-    .filter({ hasText: "Your access does not include viewing this Namespace." })
+    .filter({
+      hasText:
+        "This Namespace is unavailable to view. Ask an Installation administrator to check its status and your access.",
+    })
     .waitFor();
   assert.equal(await dialog.getByRole("button", { name: "Open Agents" }).count(), 0);
   assert.equal(await dialog.getByRole("button", { name: "Check access again" }).count(), 0);
   const done = dialog.getByRole("button", {
     name: "Done",
-    description: /Your access does not include viewing this Namespace/,
+    description: /This Namespace is unavailable to view/,
   });
   assert.equal(await done.evaluate((node) => node === node.ownerDocument.activeElement), true);
   assert.ok((await readNamespaces(fixture)).some((item) => item.name === "Creator team"));
@@ -419,6 +426,9 @@ for (const closeOnRetry of [false, true]) {
       const namespaceName = `${"service_".repeat(24)}prod2026`;
       assert.equal(namespaceName.length, 200);
       const posted = isCollectionResponse("POST");
+      const initialRead = page.waitForRequest(
+        (request) => request.url() === collectionUrl && request.method() === "GET",
+      );
       await submitCreate(page, namespaceName);
       assert.equal((await posted).status(), 201);
       await unavailable.requested;
@@ -428,11 +438,20 @@ for (const closeOnRetry of [false, true]) {
         .filter({ hasText: "Checking whether you can view this Namespace" })
         .waitFor();
       if (closeOnRetry) {
-        const timedOut = await page.waitForEvent("requestfailed", {
-          predicate: (request) => request.url() === collectionUrl && request.method() === "GET",
-          timeout: 20_000,
+        const originalRequest = await initialRead;
+        const timedOut = page.waitForEvent("requestfailed", {
+          predicate: (request) => request === originalRequest,
+          timeout: 5_000,
         });
-        assert.match(timedOut.failure()?.errorText ?? "", /ERR_ABORTED/);
+        // Advance Chromium's native AbortSignal.timeout while the list has no HTTP response.
+        const cdp = await page.context().newCDPSession(page);
+        try {
+          await cdp.send("Emulation.setVirtualTimePolicy", { policy: "advance", budget: 15_001 });
+          assert.match((await timedOut).failure()?.errorText ?? "", /ERR_ABORTED/);
+          assert.equal(await originalRequest.response(), null);
+        } finally {
+          await cdp.detach();
+        }
         unavailable.release();
       } else {
         const unavailableAnswer = isCollectionResponse("GET");
@@ -484,6 +503,15 @@ for (const closeOnRetry of [false, true]) {
         namespaceId: created.id,
         permissions: { namespace: ["read"], agent: ["read"] },
       });
+      if (!closeOnRetry) {
+        // Provisioning can finish while the confirmation waits for an explicit retry.
+        const ready = await fixture.controller.handleNamespaceLifecycle(
+          fixture.principal.id,
+          created.id,
+          "ready",
+        );
+        assert.equal(ready?.status, "ready");
+      }
       const read = await holdRequests(t, page, collectionUrl, {
         method: "GET",
         once: true,
@@ -496,6 +524,7 @@ for (const closeOnRetry of [false, true]) {
       await retry.click();
       const response = await read.requested;
       assert.equal(response?.status(), 200);
+      assert.equal(await retry.isDisabled(), true);
       const retryRequests = requests.slice(beforeRetry);
       assert.deepEqual(retryRequests, [{ method: "GET", path: "/namespaces", body: null }]);
       if (closeOnRetry) {
@@ -523,8 +552,17 @@ for (const closeOnRetry of [false, true]) {
         await retryRequest;
         const listed = isCollectionResponse("GET");
         read.release();
-        assert.equal((await listed).status(), 200);
+        const answer = await listed;
+        assert.equal(answer.status(), 200);
+        const body: unknown = await answer.json();
+        assert.ok(Check(NamespaceListResponse, body));
+        assert.equal(body.data.find((item) => item.id === created.id)?.status, "ready");
         const openAgents = dialog.getByRole("button", { name: "Open Agents" });
+        await openAgents.waitFor();
+        assert.equal(
+          await dialog.locator("#create-namespace-description").textContent(),
+          `${namespaceName} has been created.`,
+        );
         await openAgents.click();
         await page.waitForURL(new RegExp(`/console/agents\\?namespace=${created.id}`));
       }
@@ -532,6 +570,87 @@ for (const closeOnRetry of [false, true]) {
     },
   );
 }
+
+test("a Namespace deleted before the access retry is unavailable to its administrator", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, "/console/namespaces");
+  await page.getByRole("button", { name: "Create Namespace", exact: true }).waitFor();
+  const url = `${fixture.origin}/namespaces`;
+  const unavailable = await holdRequests(t, page, url, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."),
+  });
+  const namespaceName = "Team removed before retry";
+  await submitCreate(page, namespaceName);
+  await unavailable.requested;
+  unavailable.release();
+  const dialog = page.getByRole("dialog", { name: "Namespace created", exact: true });
+  const retry = dialog.getByRole("button", { name: "Check access again" });
+  await retry.waitFor();
+
+  // Delete through the exact Namespace operation, then let the lifecycle worker mark it deleted.
+  const created = (await readNamespaces(fixture)).find((item) => item.name === namespaceName);
+  assert.ok(created);
+  assert.equal((await fixture.request("DELETE", `/namespaces/${created.id}`)).status, 202);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, created.id, "deleted");
+
+  const listed = page.waitForResponse(
+    (response) => response.url() === url && response.request().method() === "GET",
+  );
+  await retry.click();
+  const answer = await listed;
+  assert.equal(answer.status(), 200);
+  const body: unknown = await answer.json();
+  assert.ok(Check(NamespaceListResponse, body));
+  assert.equal(
+    body.data.some((item) => item.id === created.id),
+    false,
+  );
+  await dialog.getByText(`${namespaceName} has been created.`, { exact: true }).waitFor();
+  const done = dialog.getByRole("button", {
+    name: "Done",
+    description: "This Namespace is unavailable to view. Check its status and access.",
+  });
+  await done.waitFor();
+  assert.equal(await done.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.equal(await retry.count(), 0);
+  assert.equal(await dialog.getByRole("button", { name: "Open Agents" }).count(), 0);
+  assert.equal(creates(requests).length, 1);
+});
+
+test("a refused Namespace list read after creation offers access guidance", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/namespaces");
+  await page.getByRole("button", { name: "Create Namespace", exact: true }).waitFor();
+  const url = `${fixture.origin}/namespaces`;
+  // An HTTP refusal is distinct from a successful collection response omitting the created ID.
+  const refused = await holdRequests(t, page, url, {
+    method: "GET",
+    once: true,
+    fulfill: proxyErrorResponse(403),
+  });
+  await submitCreate(page, "List access refused");
+  await refused.requested;
+  refused.release();
+
+  const dialog = page.getByRole("dialog", { name: "Namespace created", exact: true });
+  await dialog.getByText("List access refused has been created.", { exact: true }).waitFor();
+  const done = dialog.getByRole("button", {
+    name: "Done",
+    description:
+      "Access to the Namespaces list was denied. Check whether an IAM Restriction applies.",
+  });
+  await done.waitFor();
+  assert.equal(await done.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.equal(await dialog.getByRole("button", { name: "Open Agents" }).count(), 0);
+  assert.equal(await dialog.getByRole("button", { name: "Check access again" }).count(), 0);
+});
 
 test("a member is not invited to create, and a real IAM denial disables Create Namespace", async (t) => {
   const fixture = await createConsoleAppFixture(t);

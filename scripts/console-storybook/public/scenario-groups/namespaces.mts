@@ -379,7 +379,7 @@ export const namespacesScenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "Creation succeeded in the simulated fixture. The dialog distinguishes provisioning from readiness and offers the new Namespace's Agents.",
+      "Creation succeeded in the simulated fixture. The dialog offers Open Agents after the created Namespace appears in the list.",
   },
   namespaceCreateUnreadable: {
     group: "Pages/Namespaces",
@@ -394,7 +394,7 @@ export const namespacesScenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "The caller may create Namespaces but not read them. The dialog says the Namespace was created and that their access does not include viewing it, and offers only Done.",
+      "This create-only caller's list omits the new Namespace. The dialog confirms creation, says the Namespace is unavailable to view, and offers Done.",
   },
   namespaceCreateAccessUnconfirmed: {
     group: "Pages/Namespaces",

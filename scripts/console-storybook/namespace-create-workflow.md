@@ -29,10 +29,12 @@ in-memory storage for those API boundaries.
    timeout, or in **Create Unknown**, submission is disabled. Select
    **Check Namespaces** to inspect the list before starting another attempt.
 5. Open **Create Unreadable**: a create-only caller sees that the Namespace
-   was created, that their access does not include viewing it, and only **Done**.
+   was created and is unavailable to view. The confirmation suggests an
+   administrator check and offers **Done**.
 6. Open **Created with access unconfirmed** and submit the sample long name.
    Check that the full name fits at 1440 and 390 px. **Check access again**
-   repeats the read and reveals **Open Agents** once access is confirmed.
+   repeats the read and reveals **Open Agents** once the Namespace appears in
+   the list. The confirmation keeps the creation message.
 
 Capture desktop and phone screenshots and a short creation walkthrough outside
 the checkout. Attach them to the task and the PR's Verification section. Record
