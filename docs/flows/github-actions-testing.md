@@ -251,9 +251,9 @@ fixture fallback requires completed cleanup. Verified pre-mutation refusals perm
 See [named-volume limits](../testing/local.md#staged-sign-in-cleanup).
 
 `scripts/ci/command-supervision.ts:runCommand` awaits exit and pipe closure for preparation and cleanup.
-On POSIX, `scripts/ci/cleanup-command.ts` kills the owned group when caller IPC closes.
+For POSIX groups, `scripts/ci/cleanup-command.ts` stops the group when caller IPC closes.
 At [timeout](../testing/ci/configuration.md#runner-overrides), the caller sends TERM, then KILL after one grace period.
-Escaped descendants’ pipes close after another. Windows signals only the direct child.
+After another, the caller closes retained pipes. Windows signals its direct child.
 
 `scripts/ci/runner-process.ts:killDescendants` stops cleanup groups before sweeping descendants.
 `tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records timeouts and continues.
