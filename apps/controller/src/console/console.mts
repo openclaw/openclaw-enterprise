@@ -1181,7 +1181,10 @@ function focusInShownView() {
               remounted.querySelectorAll<HTMLElement & { disabled?: boolean }>(
                 "[data-refocus-key]",
               ),
-            ).find((item) => item.dataset.refocusKey === wanted && !item.disabled)
+            ).find(
+              (item) =>
+                item.dataset.refocusKey === wanted && !item.disabled && item.checkVisibility(),
+            )
           : undefined;
       const target = rebuilt
         ? key &&
@@ -2239,6 +2242,12 @@ async function loadPage({
     // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
     // replacing the shell briefly leaves it on the body again.
     const restoreFocus = document.activeElement === document.body ? refocused : null;
+    // The Namespaces view is inert during the recheck. If Tab reached a shell control,
+    // match that control when the shell is replaced, including the phone navigation toggle.
+    const namespaceShellFocus =
+      retained && resumingView && current.feature === "namespaces" && !restoreFocus
+        ? focusInShownView()
+        : null;
     if (unchanged && retainedView && retainedState) {
       stopLoadingTimer();
       forgetRetainedView(taken);
@@ -2260,7 +2269,7 @@ async function loadPage({
       writeInFlight = retainedState.writeInFlight ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
-      restoreRefocus = () => restoreFocus?.restore(restoredShell.view);
+      restoreRefocus = () => (restoreFocus ?? namespaceShellFocus)?.restore(restoredShell.view);
       return;
     }
     // The destination rebuilds: a retained view that did not match is stale from here on.
@@ -2778,6 +2787,11 @@ async function loadPage({
           ...agentContext,
           reload: () => loadPage(),
           fromRefresh,
+          // Only a successful read for the retained view's session can reuse its query.
+          searchQuery:
+            (retained && reuseView
+              ? retainedView?.snapshot.querySelector<HTMLInputElement>("#namespace-search")?.value
+              : undefined) ?? "",
           sorted,
           onRemoved(namespace) {
             clearRetainedViewsForNamespace(namespace.id);
@@ -2796,6 +2810,11 @@ async function loadPage({
         },
         items,
       );
+      const focus = restoreFocus ?? namespaceShellFocus;
+      if (retained && focus) {
+        const rebuiltView = shell.view;
+        restoreRefocus = () => focus.restore(rebuiltView, { rebuilt: restoreFocus !== null });
+      }
     } else if (current.feature === "secrets" && selectedNamespace !== null) {
       // Only carry the reader's filter into freshly admitted rows for the same owner and route.
       const previous =
@@ -3006,11 +3025,14 @@ async function loadPage({
           );
         // A rebuild started at the top. Restore the snapshot's scroll and let focus
         // bring the shortcut into view if the page changed height.
-        if (current.agentId && focusTarget && retainedView) {
+        const restoreScroll = Boolean(
+          focusTarget && (current.agentId || current.feature === "namespaces"),
+        );
+        if (restoreScroll && retainedView) {
           window.scrollTo({ top: retainedView.scrollY, left: 0 });
         }
         (focusTarget || app.querySelector<HTMLHeadingElement>(".content h1"))?.focus({
-          preventScroll: !current.agentId || !focusTarget,
+          preventScroll: !restoreScroll,
         });
       }
       if (fromRefresh && document.activeElement === document.body) {

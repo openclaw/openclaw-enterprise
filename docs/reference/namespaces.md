@@ -42,6 +42,12 @@ They do not backfill an existing Installation, recreate a deleted Namespace,
 or overwrite configuration. Additional named Namespaces remain available
 through `POST /namespaces`.
 
+**Search Namespaces** finds readable Namespaces by name or ID, regardless of
+letter case. **Clear search** shows the full readable list. **No matching
+Namespaces** reports an empty search result. A separate message appears when
+you have no readable Namespaces. Back from a Namespace's Agents returns focus
+to that Namespace if it remains visible and readable.
+
 In the console, open **Namespaces → Create Namespace**, enter a unique name,
 and submit. The confirmation offers **Open Agents** for the new scope;
 provisioning continues asynchronously. See the

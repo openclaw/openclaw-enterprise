@@ -60,7 +60,7 @@ import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
 import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installedGatewayRpc } from "./installed-gateway-rpc.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
-import { defaultUsersIAM } from "./default-users-iam.mjs";
+import { defaultUsersIAM } from "./default-users-iam.ts";
 import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.mjs";
 import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 

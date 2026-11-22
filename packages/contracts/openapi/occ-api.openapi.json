@@ -11830,7 +11830,7 @@
                             "scopes": ["profile.read"],
                             "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                             "tokenUrl": "https://accounts.example.com/token",
-                            "version": 1
+                            "version": 2
                           },
                           "displayName": "Example account",
                           "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -11938,16 +11938,16 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
+                    "authorizationUrl": "https://accounts.example.com/authorize",
                     "destinations": [
-                      {
-                        "host": "inference.example.com",
-                        "method": "POST",
-                        "path": "/v1/responses",
-                        "port": 443
-                      }
+                      { "host": "api.example.com", "path": "/profile", "port": 443 }
                     ],
-                    "displayName": "Research inference",
-                    "mode": "static_bearer"
+                    "displayName": "Example account",
+                    "issuer": "https://accounts.example.com",
+                    "mode": "manual",
+                    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                    "scopes": ["profile.read"],
+                    "tokenUrl": "https://accounts.example.com/token"
                   }
                 }
               },
@@ -12132,21 +12132,22 @@
                       "data": {
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "current": {
+                          "authorizationParameters": {},
+                          "authorizationUrl": "https://accounts.example.com/authorize",
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "destinations": [
-                            {
-                              "host": "inference.example.com",
-                              "method": "POST",
-                              "path": "/v1/responses",
-                              "port": 443
-                            }
+                            { "host": "api.example.com", "path": "/profile", "port": 443 }
                           ],
-                          "mode": "static_bearer",
-                          "templateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                          "issuer": "https://accounts.example.com",
+                          "mode": "manual",
+                          "scopes": ["profile.read"],
+                          "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "tokenUrl": "https://accounts.example.com/token",
                           "version": 1
                         },
-                        "displayName": "Research inference",
-                        "id": "ctp_223e4567-e89b-42d3-a456-426614174000"
+                        "displayName": "Example account",
+                        "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -12657,7 +12658,7 @@
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
-                          "version": 1
+                          "version": 2
                         },
                         "displayName": "Example account",
                         "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -12971,7 +12972,7 @@
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
-                          "version": 1
+                          "version": 2
                         },
                         "displayName": "Engineering account",
                         "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -16268,7 +16269,7 @@
                                 "type": "string"
                               },
                               "credentialSources": {
-                                "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                                "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                                 "items": {
                                   "additionalProperties": false,
                                   "properties": {
@@ -16771,7 +16772,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                    "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -17076,7 +17077,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -20972,7 +20973,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -21409,7 +21410,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                              "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -21935,7 +21936,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                    "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -22260,7 +22261,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -25290,7 +25291,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -32578,7 +32579,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                              "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -35400,7 +35401,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -36137,7 +36138,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
+                          "description": "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -38523,7 +38524,7 @@
                             "scopes": ["profile.read"],
                             "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                             "tokenUrl": "https://accounts.example.com/token",
-                            "version": 1
+                            "version": 2
                           },
                           "displayName": "Example account",
                           "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -38661,7 +38662,7 @@
                         {
                           "clientId": "example-client",
                           "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-                          "connectionTemplateVersion": 1,
+                          "connectionTemplateVersion": 2,
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
                           "destinations": [
@@ -46775,6 +46776,7 @@
                           "displayName": "Example provider client",
                           "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "issuer": "https://accounts.example.com",
+                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "tokenEndpointAuthMethod": "client_secret_basic",
                           "tokenUrl": "https://accounts.example.com/token"
                         }
@@ -46990,6 +46992,7 @@
                         "displayName": "Example provider client",
                         "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
                         "issuer": "https://accounts.example.com",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "tokenEndpointAuthMethod": "client_secret_basic",
                         "tokenUrl": "https://accounts.example.com/token"
                       },
@@ -47318,6 +47321,7 @@
                         "displayName": "Example provider client",
                         "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
                         "issuer": "https://accounts.example.com",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "tokenEndpointAuthMethod": "client_secret_basic",
                         "tokenUrl": "https://accounts.example.com/token"
                       },

@@ -38,19 +38,38 @@ The commands below also use `jq`.
    Never put credential values in the file. Use
    [Secret references and bindings](../../reference/configuration/secrets.md).
 
-3. Save the Configuration and review its new generation. Then deploy:
+3. Save the Configuration and review its new generation.
 
    ```bash
    occ configuration update "$CONFIGURATION_ID" --file configuration-update.json
+   ```
+
+   To use current Installation defaults, run the command below. To retain or
+   change a provider override, run one command from
+   [Choose a Harness destination](#choose-a-harness-destination) instead.
+   If the Agent uses a provider override, using current Installation defaults
+   can change its model endpoint.
+
+   When replacing an active revision, if either revision uses managed credential
+   delivery, [complete Stop](../../reference/agents/deployment.md#stop-and-resume)
+   first. Stop requires `operate` on the Agent. Replacing the Source credential
+   after Stop can leave the retained Provider using its previous value; see
+   [credential implementation status](../../reference/credential-sources.md#implementation-status).
+
+   ```bash
    occ agent deploy "$AGENT_ID" --output json
    ```
 
    Save the returned Agent revision `id`, version number, and
    `configurationGeneration`. An accepted request means the control plane stored
    the version and queued deployment; it does not mean the Agent is running.
-   If the response is lost, check version history before retrying: a second
-   accepted request creates another version. An empty history can mean you
-   lack `read` on the new Agent revision; ask an administrator before retrying.
+   If you lose the response, run `occ agent revisions "$AGENT_ID"`. If you
+   identify your revision, check its deployment status as described in step 4.
+   Older versions can remain visible even if you lack `read` on the new Agent
+   revision. Your request may still be in progress, and another caller may
+   deploy concurrently. If you cannot identify your revision, ask an
+   administrator to inspect the result. Do not retry while the outcome is
+   uncertain. A second accepted request creates another version.
 
 4. Check the deployment until it reports `succeeded` or `failed`:
 
@@ -79,7 +98,8 @@ validate and admit the request. If admission refuses it, correct the settings or
 source permissions and retry. The admitted version shows the actual resolved
 settings; the default is selected at admission.
 
-For the CLI, write the override object to `harness-overrides.json`:
+To supply a new override with the CLI, create `harness-overrides.json` with the
+following contents.
 
 ```json
 {
@@ -90,10 +110,18 @@ For the CLI, write the override object to `harness-overrides.json`:
 }
 ```
 
+Choose one deployment command. Each accepted request creates a new version.
+
+To deploy with the override file, run the following command.
+
 ```sh
-occ agent deploy "$AGENT_ID" --harness-overrides harness-overrides.json
-# Submit the requested overrides from an exact revision:
-occ agent deploy "$AGENT_ID" --retain-harness-overrides REVISION_ID
+occ agent deploy "$AGENT_ID" --harness-overrides harness-overrides.json --output json
+```
+
+To retain the requested overrides from an earlier Agent revision, use its ID.
+
+```sh
+occ agent deploy "$AGENT_ID" --retain-harness-overrides '<revision-id>' --output json
 ```
 
 The flags are mutually exclusive. With neither flag, deployment uses current

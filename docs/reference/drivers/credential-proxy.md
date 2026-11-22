@@ -6,15 +6,11 @@ kind: reference/driver
 
 ## Overview
 
-`CredentialProxyDriver` defines staged delivery of TokenService-owned credentials for an Agent deployment. It shares one Driver registration with the selected Sandbox.
+`CredentialProxyDriver` configures and enforces credential injection. `SandboxDriver` enforces network policy and routing. OCC coordinates compatible implementations; neither contract owns the other.
 
-`LegacyEgressProxyDriver` serves existing protected-egress deployments. See the [legacy implementation walkthrough](../../contributing/credential-proxy-driver.md) and [selection rules](selection.md#select-a-protected-sender).
+`LegacyEgressProxyDriver` serves protected-egress deployments. See its [walkthrough](../../contributing/credential-proxy-driver.md) and [selection rules](selection.md#select-a-protected-sender).
 
-OpenClaw Control Plane (OCC) owns authorization, access bindings, execution identity, access expiry and
-withdrawal. Token Service owns credential acquisition, freshness, renewal, material
-custody and retirement. Provider adapters own provider-specific scope, injection
-and response rules. The proxy enforces requests and obtains eligible material;
-it does not run a credential renewal loop.
+OpenClaw Control Plane (OCC) owns authorization, bindings, execution identity, expiry, and withdrawal. TokenService acquires, stores, renews, and retires credentials. Provider adapters define scope, injection, and response rules. The Proxy enforces requests and resolves credentials.
 
 Legacy Gateway sources remain Gateway-owned; new Source custody belongs to [TokenService](../../flows/token-service-static-custody.md). When static protection is required, neither
 the Gateway nor the Proxy may declare refresh, device authorization or managed
@@ -34,7 +30,9 @@ exports `CredentialProxyDriver`, `LegacyEgressProxyDriver`, `DriverRegistration`
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
 The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines both contracts.
 
-The Sandbox registration exposes `credential_proxy_delivery`: `deployProxy`, `configureDeployment`, `getDeploymentStatus`, `removeDeployment`, and optional source-scoped `notifyCredentialUpdated`. OpenShell resolves OCC TokenService Sources only to create Providers and reuses owned Providers. An allowed Source change can leave a reused or preparing Provider stale until push is implemented; active bound updates return 409. Readiness checks the route, delivered Provider version, and supervisor. It detaches after policy removal. Executable rules temporarily include descendants ([#4943](https://github.com/ai-openshell/openshell/issues/4943)); placeholder substitution is not Bearer-only. Production startup remains unqualified. See the [source lifecycle flow](../../flows/credential-source-lifecycle.md#pending-native-integration).
+OCC currently requires delivery and Sandbox in one registration; independent composition is planned. Worker and Compute use `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` for an Agent revision. Optional `notifyCredentialUpdated` receives a Source notification and credential resolver, without a revision.
+
+The OpenShell Proxy resolves OCC TokenService material only to create a missing Provider; it reuses existing owned Providers without credential resolution or update. The Proxy attaches the Provider to the Sandbox. Readiness checks policy, delivered version, and supervisor. Stop removes the Sandbox and attachment but retains the Source, Provider, and IAM grants. See [implementation status](../credential-sources.md#implementation-status) for the stale-copy limitation.
 
 ## Legacy protected egress
 

@@ -30,10 +30,12 @@ rejects names over its Workspace limit.
 
 OpenShell integrations ([operator](openshell-sandbox.md) or experimental
 [managed](kubernetes-openshell-compute.md)) own dedicated Codex and native OpenClaw
-Harness Pods. Internal execution classes share `occ/kubernetes`; Compute owns other resources.
-Dedicated native OpenClaw requires a selected SandboxDriver with Harness provisioning and
-networking, filesystem, and process containment. Stock OpenShell lacks required
-credential and workload-identity projections, so Agent deployment remains unsupported.
+Harness Pods. Internal execution classes share `occ/kubernetes`; Compute owns other
+resources. Dedicated native OpenClaw requires a selected SandboxDriver with Harness
+provisioning and networking, filesystem, and process containment. OpenShell rejects
+Kubernetes Secret environment projection and projected Agent identity. Use supported
+credential delivery and disable ServicePrincipal credential projection; see
+[OpenShell qualification](openshell-sandbox.md#workload-identity).
 
 HTTP chat defaults on for new single-cluster runtime revisions and uses a
 private exact-POST route with trusted-proxy chat authority. Explicit opt-out
@@ -64,14 +66,15 @@ Harness configuration selects the Agent's execution topology:
   tenant namespace, with separate ServiceAccounts and storage. They communicate through
   authenticated app-server transport. The Gateway uses fully qualified Harness
   Service DNS and the paired node for workspace operations. Codex accepts an
-  Agent-scoped model API key or a managed ChatGPT service-account credential,
-  and permits `openai/` or `codex/` models.
+  Agent-scoped API key, a managed ChatGPT account credential, or a supported
+  Credential Source, and permits `openai/` or `codex/` models.
 - **Dedicated native OpenClaw:** The gateway and paired OpenClaw Harness run in
   separate Pods with separate ServiceAccounts. Compute issues a node-only setup
   credential through the gateway and stores the resulting device identity on the
   Harness workspace claim. The node host supervises the remote worker, which owns
-  the agent loop, model inference, and coding tools. Only the Harness receives the
-  model API key. Compute makes its generated `dedicated-native` worker-inference
+  the agent loop, model inference, and coding tools. With direct Secret delivery,
+  only the Harness receives the model API key. With managed delivery, it receives a
+  placeholder and the paired Proxy injects the credential. Compute makes its generated `dedicated-native` worker-inference
   profile mandatory, so sessions use the enrolled Harness without a Cloud Worker
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,
@@ -92,10 +95,11 @@ execution-mode combinations fail deployment. Embedded OpenClaw is never delegate
 Stopping an Agent deletes its exact gateway route and runtime, then removes the
 dedicated Harness Deployment or delegates removal to its provider. Sandbox cleanup
 follows the [provisioning lifecycle](#sandbox-provisioning). Stop retains Agent-owned
-PersistentVolumeClaims and runtime credential Secrets; retirement removes revision
-resources. Repeated stop checks exact ownership and converges when runtime objects
-are absent. For a staged revision, stop removes the bound Credential Proxy deployment
-after the Harness stops and retains the target record until removal succeeds.
+PersistentVolumeClaims, runtime credential Secrets, the Credential Source, and Provider
+copy; retirement removes revision resources. Repeated stop checks exact ownership
+and converges when runtime objects are absent. For revisions with a Credential Proxy,
+Compute stops the Harness before removing the Proxy deployment and keeps the target
+record until removal succeeds.
 
 ### Plugin startup status
 
@@ -159,14 +163,17 @@ A provider-owned dedicated Harness is ready only with exactly one live Pod in th
 resolved namespace. It must match the active Service selector's Agent ID, revision
 ID, and `agent` role, all supplied Harness requirement labels, and `Ready=True`.
 Zero or multiple live candidates, or one unready candidate, return `ready: false`.
-For staged credentials, Compute can report `preparedForCredentialActivation` after
-preparing an idle target and fresh launch inputs. The worker selects the revision
-and authorizes the source before activation starts the Harness. The authenticated
-Gateway operator route supports node enrollment during preparation. User chat and
-delegated browser routes appear only after the Harness serves and the node is ready.
-Staged managed-credential replacement is unsupported; other unready revisions cannot
-activate. Pods with a valid deletion timestamp, another namespace, Agent ID, revision ID, or role
-do not count.
+Pods with a valid deletion timestamp, another namespace, Agent ID, revision ID, or
+role do not count.
+
+For managed credential delivery, Compute prepares an idle Sandbox and reports
+`preparedForCredentialActivation` only when the network policy matches, the
+Credential Proxy is ready, and the Sandbox has fresh launch inputs. The worker
+selects the revision and authorizes the Credential Source before activation starts
+the Harness. The authenticated Gateway operator route supports node enrollment.
+Compute publishes user chat and delegated browser routes only after verifying the
+runtime and workspace node. See [Credential Source implementation status](../credential-sources.md#implementation-status)
+for current limits. Other unready revisions cannot activate.
 
 Malformed or incomplete Pod lists, invalid identities or conditions, duplicate
 condition types, contradictory Harness labels, and additional pages are errors.
@@ -291,43 +298,37 @@ before replacing the controller images.
 
 <a id="failure-conditions"></a>
 
-- **Namespace provisioning or deletion fails:** A `worker.completed` log for `namespace.ensure`
-  or `namespace.delete` with `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes
-  returned HTTP 403 while the worker reconciled or cleaned up the tenant's resources. Check the worker's
-  [tenant-local RoleBinding](../../guides/deploy/production-agents.md#grant-tenant-rolebindings) in the affected target.
-  Also verify namespace ownership labels, restricted Pod Security labels, and enforced
-  NetworkPolicies in each selected tenant target. Existing
-  namespaces also require external lifecycle ownership, exclusive tenant use,
-  and no foreign NetworkPolicies.
-- **Gateway or Harness remains pending:** Check image digests, image pull
-  permissions, CPU and memory limits, namespace quotas, required Secrets, and
-  workload readiness, including the
+- **Namespace provisioning or deletion fails:** `worker.completed` for `namespace.ensure`
+  or `namespace.delete` with `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means
+  Kubernetes returned HTTP 403 during tenant reconciliation or cleanup. Check the
+  worker's [tenant-local RoleBinding](../../guides/deploy/production-agents.md#grant-tenant-rolebindings),
+  namespace ownership and restricted Pod Security labels, and enforced NetworkPolicies
+  in the affected target. Existing namespaces also require external lifecycle ownership,
+  exclusive tenant use, and no foreign NetworkPolicies.
+- **Gateway or Harness remains pending:** Check image digests and pull permissions,
+  CPU and memory limits, quotas, Secrets, workload readiness, and the
   [network profile](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
-  label. Private HTTP readiness returns `503` until native, plugin,
-  authentication, or identity gates pass. Dedicated Codex clears its plugin
-  marker at process start to reject stale readiness. For Compute-owned Harnesses, resident HTTP `GET /readyz`
-  requires a successful loopback app-server `initialize` response. It creates no
-  thread or model turn. The resident RPC check has a two-second internal deadline;
-  Kubernetes retains its one-second default HTTP-probe timeout. This does not
-  verify the Gateway's network path to the Harness. Access-token login retries timeouts,
-  `network` and `http_5xx` failures: five attempts, 90 seconds. Exhausted startup remains unready
-  until an explicit restart; see the
+  label. Private HTTP readiness returns `503` until native, plugin, authentication,
+  and identity gates pass. Dedicated Codex clears its plugin marker at process start
+  to reject stale readiness. For Compute-owned Harnesses, resident `GET /readyz`
+  requires successful loopback app-server `initialize`; it creates no thread or model
+  turn. The RPC deadline is two seconds; Kubernetes' default HTTP-probe timeout is
+  one second. This does not verify the Gateway-to-Harness network path. Access-token
+  login retries timeouts, `network`, and `http_5xx` failures: five attempts, 90
+  seconds. Exhaustion remains unready until explicit restart; see the
   [authentication probe contract](../harness-execution.md#harness-authentication)
-  for model-probe retries and sanitized attempt logs.
-  Native plugin startup, authentication, transport, and installation failures
-  remain generic workload startup failures unless the Compute-owned runtime
-  reports a verified current-startup warning for an admitted selected plugin.
+  for model-probe retries and sanitized attempt logs. Native plugin startup, authentication,
+  transport, and installation failures remain generic unless the Compute-owned
+  runtime reports a verified current-startup warning for an admitted selected plugin.
 - **Check `gateway-config` fails:** See
   [configuration OpenClaw refuses](kubernetes-compute/managed-native-configuration.md#configuration-openclaw-refuses-at-startup).
-- **`RUNTIME_STARTUP_FAILED` with a container in `CrashLoopBackOff`:** A live
-  Pod's `gateway` container, or a Deployment-run `agent` container, exited 3
-  times in a row without a deliberate restart (internal check `crash-loop`).
-  The Gateway wrapper exits 75 and logs startup phase `container-restart` when
-  it restarts its container on purpose; those restarts never count, and readiness
-  resets the count. Without the wrapper's count (a Harness, or an older Pod),
-  restart count 2 in backoff is the third exit. `occ agent runtime` shows the
-  restart count and last exit code; `occ agent logs --previous` shows the
-  crashed container's output.
+- **`RUNTIME_STARTUP_FAILED` with `CrashLoopBackOff`:** A live Pod's `gateway`
+  or Deployment-run `agent` container exited three consecutive times without a
+  deliberate restart (check `crash-loop`). For deliberate restarts, the Gateway
+  wrapper exits 75 and logs phase `container-restart`; these do not count. Readiness
+  resets the count. Without a wrapper count (Harness or older Pod), restart count
+  2 in backoff means the third exit. Use `occ agent runtime` for restart count and
+  last exit code, and `occ agent logs --previous` for crashed-container output.
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available space for the configured Gateway
   capacity, filesystem support, worker PVC permissions, and the PVC's exact ownership. Preserve

@@ -127,7 +127,8 @@ try {
     "code" in error &&
     (error.code === "MIGRATION_HISTORY_UNSUPPORTED" ||
       error.code === "MIGRATION_HISTORY_NOT_EMPTY" ||
-      error.code === "MIGRATION_HISTORY_PENDING")
+      error.code === "MIGRATION_HISTORY_PENDING" ||
+      error.code === "MIGRATION_REGISTRATION_PENDING")
   ) {
     code = error.code;
     operatorMessage = error.message;

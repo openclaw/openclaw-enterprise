@@ -60,7 +60,7 @@ Construct a new Driver after changing Installation settings.
 | Method                                       | Requirement           | Caller and behavior                                                                                                                                                                                                                                       |
 | -------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cleanup`                                    | Required              | Stop or retire an Agent revision, or clean a Namespace when the revision is omitted.                                                                                                                                                                      |
-| `configureAgent`                             | Optional              | Synchronously transform Configuration values for the resolved Harness. OCC validates the result and stores it in the Agent revision. OCC uses the original values by default.                                                                             |
+| `configureAgent`                             | Optional              | Synchronously transform the resolved Harness's Configuration values. OCC validates and stores the result in the Agent revision. Original values apply by default.                                                                                         |
 | `validateWorkspaceSetup`                     | Optional              | Synchronously checks the projected configuration. Without it, Compute rejects initial workspace files in a Sandbox. Compute still checks storage and workload identity.                                                                                   |
 | `ensureNamespace`                            | Optional              | Prepare the backend after baseline Namespace isolation through the OCC Namespace lifecycle.                                                                                                                                                               |
 | `provisionHarness`                           | Optional              | Create a dedicated Harness and return its [resource identity](#sandbox-resource-identity). Required for a non-staged provider-owned Harness.                                                                                                              |
@@ -176,12 +176,7 @@ the marker is missing or mismatched, refuse startup with
 `SandboxWorkspaceSetupRefusedError` to preserve later edits. See the
 [workspace setup sequence](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution).
 
-The paired [Credential Gateway](credential-gateway.md#lifecycle) issues one opaque
-`{ sourceId, ref }` attachment per bound credential source. Compute passes them
-in `credentialAttachments`, which is empty when the revision uses no sources.
-The Sandbox must consume every attachment and reject references from any other
-provider. Compute waits for the gateway to report every attachment
-`ready` before activation.
+For Gateway-owned Sources, [Credential Gateway](credential-gateway.md#lifecycle) issues opaque `{ sourceId, ref }` attachments. Compute passes them in `credentialAttachments`; Sandbox consumes each and rejects foreign references. Compute waits until the Gateway reports every attachment ready before activation. For TokenService-owned Sources, the paired Credential Proxy configures delivery separately.
 
 ### Sandbox resource identity
 
