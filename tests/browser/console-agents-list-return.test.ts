@@ -364,14 +364,26 @@ void test("A return rereads only the rows the search shows", async (t) => {
   await page.keyboard.press("Escape");
   assert.equal(await search.inputValue(), "");
 
-  // The list changed while away. A rebuilt search keeps focus and opens only
-  // its visible match, never on the Enter that confirms IME composition.
+  // The list changed while away. Resume editing the selected text in the rebuilt search.
   await search.fill(target.name);
+  await search.evaluate((input: HTMLInputElement) => input.setSelectionRange(1, 4, "backward"));
   await tagView(page);
   await fixture.createAgent(namespace.id, "Another", nativeValues("Another"));
   await refocusHeld(t, page);
   assert.equal(await viewTag(page), null);
   assert.ok(await hasFocus(search));
+  assert.deepEqual(
+    await search.evaluate((input: HTMLInputElement) => [
+      input.selectionStart,
+      input.selectionEnd,
+      input.selectionDirection,
+    ]),
+    [1, 4, "backward"],
+  );
+  await page.keyboard.insertText("EAM");
+  assert.equal(await search.inputValue(), "TEAM Agent 03");
+
+  // Open the single match only on an Enter that does not confirm IME composition.
   await search.dispatchEvent("keydown", { key: "Enter", isComposing: true });
   await page.locator(settledView).getByRole("row").nth(1).waitFor();
   assert.equal(await page.locator(activeView).locator(".agent-table tbody tr").count(), 1);
