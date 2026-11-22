@@ -7,9 +7,18 @@ export function preparedGitHubConfiguration(input: unknown, repository: boolean)
   const owner = object(input, label);
   closed(
     owner,
-    ["custodyKeyPath", ...(repository ? ["privateKeyPath"] : []), "apiOrigin", "issuerCaPath"],
+    [
+      "custodyKeyPath",
+      ...(repository ? ["privateKeyPath", "tokenPath"] : []),
+      "apiOrigin",
+      "issuerCaPath",
+    ],
     label,
   );
+  // One repository authority per Installation: the App key or one token Secret, never both.
+  if (repository && (owner.privateKeyPath === undefined) === (owner.tokenPath === undefined)) {
+    throw new Error(label + " requires exactly one of privateKeyPath and tokenPath.");
+  }
   const privatePath = (key: string): string => {
     const path = nonempty(owner[key], label + "." + key);
     if (!isAbsolute(path)) {
@@ -19,7 +28,10 @@ export function preparedGitHubConfiguration(input: unknown, repository: boolean)
   };
   return Object.freeze({
     custodyKeyPath: privatePath("custodyKeyPath"),
-    ...(repository ? { privateKeyPath: privatePath("privateKeyPath") } : {}),
+    ...(repository && owner.privateKeyPath !== undefined
+      ? { privateKeyPath: privatePath("privateKeyPath") }
+      : {}),
+    ...(repository && owner.tokenPath !== undefined ? { tokenPath: privatePath("tokenPath") } : {}),
     ...(owner.apiOrigin === undefined
       ? {}
       : { apiOrigin: nonempty(owner.apiOrigin, label + ".apiOrigin") }),

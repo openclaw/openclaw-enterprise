@@ -185,11 +185,21 @@ spec:
           projected:
             defaultMode: 288
             sources:
+              {{- if $.Values.repositoryCredentials.tokenSecretName }}
+              # A fine-grained token: the worker re-reads it at every loan, so a replaced
+              # Secret applies without a redeploy.
+              - secret:
+                  name: {{ $.Values.repositoryCredentials.tokenSecretName | quote }}
+                  items:
+                    - key: {{ $.Values.repositoryCredentials.tokenKey | quote }}
+                      path: token
+              {{- else }}
               - secret:
                   name: {{ $.Values.repositoryCredentials.appKeySecretName | quote }}
                   items:
                     - key: {{ $.Values.repositoryCredentials.appKeyKey | quote }}
                       path: private-key.pem
+              {{- end }}
               - secret:
                   name: {{ $.Values.repositoryCredentials.preparedCustodySecretName | quote }}
                   items:

@@ -12,7 +12,7 @@ export interface RepositoryGitDeliveryBinding {
         readonly permissions: Readonly<Record<string, string>>;
       } & (
         | { readonly installationId: string; readonly tokenSource?: never }
-        /** The registry's token Secret name: native Git only, lent rather than issued. */
+        /** A token registry's providerInstanceId: native Git only, lent rather than issued. */
         | {
             readonly installationId?: never;
             readonly tokenSource: string;

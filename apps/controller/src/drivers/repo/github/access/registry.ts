@@ -3,6 +3,7 @@ import {
   isGitHubRepositoryPermissions,
   parseGitHubNumericId,
   type GitHubRepositoryGrant,
+  type GitHubRepositoryTokenGrant,
 } from "./repository-grant.ts";
 import type { RepositoryGitDeliveryResolver } from "../../access/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -61,11 +62,11 @@ export interface GitHubInstallationAccess {
   }>[];
 }
 
-/** A fine-grained token in an Installation-private Secret that only the Worker reads. */
+/** A fine-grained token in an Installation-private Secret that only the Worker reads. The chart
+ * names and mounts that Secret (`repositoryCredentials.tokenSecretName`), as it does the App key;
+ * the registry only says which authority the mounted material must be. */
 export interface GitHubTokenAuthority {
   readonly kind: "github-token";
-  /** Kubernetes Secret name; never a value. */
-  readonly tokenSecret: string;
 }
 
 interface GitHubRepositoryRegistryFields {
@@ -108,16 +109,17 @@ export function requireGitHubAppRegistry(
   return registry;
 }
 
-const secretNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// A token registry's providerInstanceId names its source in delivery and the Provider fingerprint.
+const tokenSourcePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 // The network policy enforces Git paths only: a token registration grants nothing else.
 const tokenRegistrationPermissions = new Set(["metadata", "contents"]);
 
 function tokenAuthority(value: unknown): GitHubTokenAuthority {
-  const { kind, tokenSecret } = object(value, ["kind", "tokenSecret"]);
+  const { kind } = object(value, ["kind"]);
   if (kind !== "github-token") {
     return invalid();
   }
-  return Object.freeze({ kind, tokenSecret: text(tokenSecret, secretNamePattern) });
+  return Object.freeze({ kind });
 }
 
 const selectorPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -389,7 +391,7 @@ export function validateGitHubRepositoryRegistry(
     return Object.freeze({
       version: 1,
       backendId,
-      providerInstanceId: text(root.providerInstanceId),
+      providerInstanceId: text(root.providerInstanceId, tokenSourcePattern),
       authority,
       maximumDurationSeconds,
       repositories: Object.freeze(repositories),
@@ -695,7 +697,7 @@ export function createGitHubRepositoryDeliveryResolver(
         delivery: Object.freeze({
           scope: "github-repository" as const,
           ...(registry.authority
-            ? { tokenSource: registry.authority.tokenSecret }
+            ? { tokenSource: registry.providerInstanceId }
             : { installationId: registry.githubInstallationId }),
           repositories: scope.repositories,
           permissions: scope.permissions,
@@ -748,18 +750,16 @@ export function resolveSelectedRepositoryGrant(
   namespaceId: string,
   revisionId: string,
   bindings: readonly AdmittedRepositoryBinding[],
-): GitHubRepositoryGrant {
-  if (registry.authority) {
-    // App issuance only; a token source is lent, never issued.
-    throw new Error("selected-repository-grant-requires-github-app");
-  }
+): GitHubRepositoryGrant | GitHubRepositoryTokenGrant {
   const scope = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
   return Object.freeze({
     id: bindings[0]!.grant.grantId,
     isolationId: revisionId,
-    appId: registry.appId,
-    installationId: registry.githubInstallationId,
-    profile: "github-repository",
+    // A token source is lent under the registry's providerInstanceId, never issued by an App.
+    ...(registry.authority
+      ? { tokenSource: registry.providerInstanceId }
+      : { appId: registry.appId, installationId: registry.githubInstallationId }),
+    profile: "github-repository" as const,
     repositories: scope.repositories,
     permissions: scope.permissions,
   });

@@ -3498,19 +3498,64 @@ test(
   },
 );
 
+const protectedOpenShellGitValues = {
+  ...protectedRepositoryValues,
+  "openshellGit.enabled": "true",
+  "openshellGit.tlsSecretName": "openshell-git-tls",
+  "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
+  "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+    "openshell-system",
+  "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+};
+
+test(
+  "a repository token Secret replaces the App key in the worker's projection only",
+  tooling,
+  async () => {
+    // The token Secret is named by Helm like the App key and mounted beside custody.key,
+    // in the worker alone: the API, broker and Sandboxes never see it.
+    const token = {
+      ...protectedOpenShellGitValues,
+      "repositoryCredentials.appKeySecretName": "",
+      "repositoryCredentials.tokenSecretName": "repository-token",
+    };
+    const objects = await resources((await render(token)).stdout);
+    const owner = "prepared-repository-owner";
+    const mounted = objects
+      .filter(({ kind }) => kind === "Deployment")
+      .flatMap(({ spec }) => [
+        ...spec.template.spec.containers,
+        ...(spec.template.spec.initContainers ?? []),
+      ])
+      .filter(({ volumeMounts }) => volumeMounts?.some(({ name }) => name === owner))
+      .map(({ name }) => name);
+    assert.deepEqual(mounted, ["worker"]);
+    const pod = findResource(objects, "Deployment", "openclaw-enterprise-worker").spec.template
+      .spec;
+    assert.deepEqual(pod.volumes.find(({ name }) => name === owner).projected.sources, [
+      { secret: { name: "repository-token", items: [{ key: "token", path: "token" }] } },
+      { secret: { name: "git-custody", items: [{ key: "custody.key", path: "custody.key" }] } },
+    ]);
+    assert.doesNotMatch(JSON.stringify(objects), /repository-app-key|private-key\.pem/);
+    // One authority per Installation: both or neither is refused before anything renders.
+    for (const values of [
+      { ...token, "repositoryCredentials.appKeySecretName": "repository-app-key" },
+      { ...token, "repositoryCredentials.tokenSecretName": "" },
+    ]) {
+      await assert.rejects(render(values), /exactly one of appKeySecretName and tokenSecretName/);
+    }
+    await assert.rejects(
+      render({ ...token, "repositoryCredentials.tokenKey": "../token" }),
+      /repositoryCredentials\.tokenKey/,
+    );
+  },
+);
+
 test(
   "protected OpenShell Git installs without a repository broker and refuses the retired trial",
   tooling,
   async () => {
-    const selected = {
-      ...protectedRepositoryValues,
-      "openshellGit.enabled": "true",
-      "openshellGit.tlsSecretName": "openshell-git-tls",
-      "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
-      "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-        "openshell-system",
-      "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
-    };
+    const selected = protectedOpenShellGitValues;
     const defaults = await renderObjects();
     assert.ok(!defaults.some(({ metadata }) => metadata?.name?.includes("openshell-git")));
     const { stdout } = await render(selected);

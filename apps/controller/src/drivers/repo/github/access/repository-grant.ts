@@ -9,6 +9,15 @@ export interface GitHubRepositoryGrant {
   readonly permissions: Readonly<Record<string, string>>;
 }
 
+/** A token registry's grant: the registry admits the repositories; the token is lent, never issued. */
+export interface GitHubRepositoryTokenGrant extends Omit<
+  GitHubRepositoryGrant,
+  "appId" | "installationId"
+> {
+  /** The token registry's providerInstanceId, as its delivery names it. */
+  readonly tokenSource: string;
+}
+
 const repositoryPermissions = new Set([
   "actions",
   "administration",

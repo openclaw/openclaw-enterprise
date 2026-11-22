@@ -567,9 +567,15 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if ne $credentials.authority "prepared-git" -}}
 {{- fail "GitHub App signing gateway retired: stop admissions and drain accepted work on its original owner before switching to authority prepared-git and worker Token Service custody; do not transfer keys or replay uncertain work" -}}
 {{- end -}}
-{{- if not $credentials.appKeySecretName -}}{{- fail "repositoryCredentials.appKeySecretName is required when enabled" -}}{{- end -}}
+{{- if eq (empty $credentials.appKeySecretName) (empty $credentials.tokenSecretName) -}}{{- fail "repositoryCredentials requires exactly one of appKeySecretName and tokenSecretName when enabled" -}}{{- end -}}
+{{- if $credentials.tokenSecretName -}}
+{{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.tokenSecretName" "value" $credentials.tokenSecretName) -}}
+{{- if not $credentials.tokenKey -}}{{- fail "repositoryCredentials.tokenKey is required with tokenSecretName" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.tokenKey" "value" $credentials.tokenKey) -}}
+{{- else -}}
 {{- if not $credentials.appKeyKey -}}{{- fail "repositoryCredentials.appKeyKey is required when enabled" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.appKeyKey" "value" $credentials.appKeyKey) -}}
+{{- end -}}
 {{- if and (eq $credentials.authority "prepared-git") (not $credentials.preparedCustodySecretName) -}}
 {{- fail "repositoryCredentials.preparedCustodySecretName is required for prepared-git" -}}
 {{- end -}}
@@ -745,7 +751,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}{{- $roles = append $roles (list (printf "executionCluster.%s" $key) (index $.Values.executionCluster $key)) -}}{{- end -}}
 {{- end -}}
 {{- if $repositoryGit -}}
+{{- if .Values.repositoryCredentials.tokenSecretName -}}
+{{- $roles = append $roles (list "repositoryCredentials.tokenSecretName" .Values.repositoryCredentials.tokenSecretName) -}}
+{{- else -}}
 {{- $roles = append $roles (list "repositoryCredentials.appKeySecretName" .Values.repositoryCredentials.appKeySecretName) -}}
+{{- end -}}
 {{- if eq .Values.repositoryCredentials.authority "prepared-git" -}}
 {{- $roles = append $roles (list "repositoryCredentials.preparedCustodySecretName" .Values.repositoryCredentials.preparedCustodySecretName) -}}
 {{- end -}}

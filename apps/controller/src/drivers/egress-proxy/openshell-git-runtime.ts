@@ -181,6 +181,13 @@ export function protectedOpenShellGitOwner(
   };
 }
 
+/** The token source a delivery or lent material names; App material and deliveries have none. */
+function tokenSourceOf(value: object): string | undefined {
+  return "tokenSource" in value && typeof value.tokenSource === "string"
+    ? value.tokenSource
+    : undefined;
+}
+
 type MaterialIdentity =
   | Omit<ProtectedRepositoryGitMaterial, "value">
   | Omit<ProtectedGitHubInstallationMaterial, "value">
@@ -2061,6 +2068,8 @@ export class OpenShellGitRuntime {
         ("scope" in material
           ? material.scope !== scopeName ||
             material.installationId !== entry.authorization.delivery.installationId ||
+            // A token is lent only for the delivery that names its source, never for an App's.
+            tokenSourceOf(material) !== tokenSourceOf(entry.authorization.delivery) ||
             (material.scope === "github-repository" &&
               (!("repositories" in entry.authorization.delivery) ||
                 !isDeepStrictEqual(
@@ -2391,6 +2400,11 @@ export class OpenShellGitRuntime {
         }
         if (!this.materialIsLive(entry.revision, material.expiresAt)) {
           reason = "material_expired";
+          break;
+        }
+        if (tokenSourceOf(material) !== undefined) {
+          // A lent token reaches Git only through the network policy's Provider; no online route.
+          reason = "no_binding";
           break;
         }
         return {

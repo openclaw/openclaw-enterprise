@@ -172,8 +172,12 @@ repositoryCredentials:
   registryKey: registry.json
   serviceConfigSecretName: ""
   serviceConfigKey: config.json
+  # Exactly one repository authority: the App key, or one fine-grained token Secret for
+  # native Git (registry authority github-token). Only the worker mounts either.
   appKeySecretName: ""
   appKeyKey: private-key.pem
+  tokenSecretName: ""
+  tokenKey: token
   # Prepared Git: only the worker mounts the App key and this 32-byte custody.key.
   preparedCustodySecretName: ""
   # Optional public ca.crt for a private issuer and Git origin, in worker and broker.

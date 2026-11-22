@@ -9,7 +9,7 @@ import type {
   PreparedGitHubRepositoryUseRequest,
   PreparedGitHubPullResult,
 } from "@openclaw-enterprise/contracts";
-import type { PostgresPool } from "@openclaw-enterprise/occ";
+import type { PostgresClient, PostgresPool } from "@openclaw-enterprise/occ";
 import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
 import { createSystemClock } from "../../drivers/repo/access/clock.ts";
 import {
@@ -19,7 +19,14 @@ import {
 import { createGitHubKeyOwner } from "../../drivers/repo/github/access/material.ts";
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/access/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prepared-retirement.ts";
-import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/prepared-repository-git.ts";
+import {
+  PreparedRepositoryGitStore,
+  type PreparedRepositoryGitSource,
+} from "../../drivers/repo/github/access/prepared-repository-git.ts";
+import {
+  createGitHubTokenLoanSource,
+  createGitHubTokenMaterialReader,
+} from "../../drivers/repo/github/access/token-loan.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveCurrentGitHubRepositoryBinding,
@@ -36,7 +43,10 @@ import { TokenService } from "../token-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 
 export interface PreparedRepositoryGitConfiguration {
-  readonly privateKeyPath: string;
+  /** The App key (Helm `repositoryCredentials.appKeySecretName`), or else `tokenPath`. */
+  readonly privateKeyPath?: string;
+  /** The token Secret (Helm `repositoryCredentials.tokenSecretName`), for a token registry. */
+  readonly tokenPath?: string;
   readonly custodyKeyPath: string;
   readonly apiOrigin?: string;
   /** Mounted in the worker, not required in the API's filesystem. */
@@ -59,7 +69,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
       | "PREPARED_GITHUB_MAINTENANCE_FAILED"
       | "PREPARED_GITHUB_APP_KEY_INVALID"
       | "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC"
-      | "PREPARED_GITHUB_RETIRED_UNREVOKED",
+      | "PREPARED_GITHUB_RETIRED_UNREVOKED"
+      | "PREPARED_GITHUB_TOKEN_REFUSED",
     context?: Readonly<Record<string, string | number | boolean | undefined>>,
     severity?: "info" | "error",
   ) => void;
@@ -202,12 +213,20 @@ export async function startPreparedGitHubGitOwner(
     throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
   }
   const selected = custodySelection.kind === "selected";
-  const loaded = validateGitHubRepositoryRegistry(options.registry, options.backendId);
-  if (loaded.authority !== undefined) {
-    // A token source is lent by its own owner (token-loan.ts), never issued with an App key.
-    throw new Error("PREPARED_REPOSITORY_TOKEN_SOURCE_HAS_NO_APP_ISSUER");
+  const registry = validateGitHubRepositoryRegistry(options.registry, options.backendId);
+  // One authority per Installation: the registry says which, the chart mounts its material.
+  const app = registry.authority === undefined ? registry : undefined;
+  const { privateKeyPath, tokenPath } = options;
+  if (app ? privateKeyPath === undefined || tokenPath !== undefined : tokenPath === undefined) {
+    throw new Error(
+      `The repository registry's authority is ${app ? "the GitHub App" : "github-token"}, but the ` +
+        "Worker mounts " +
+        (tokenPath === undefined
+          ? "the App key (repositoryCredentials.appKeySecretName)"
+          : "a token Secret (repositoryCredentials.tokenSecretName)") +
+        ": set exactly the one the registry's authority names.",
+    );
   }
-  const registry = loaded;
   for (const repo of registry.repositories) {
     if (
       repo.namespaces.some(
@@ -225,7 +244,27 @@ export async function startPreparedGitHubGitOwner(
   const authority = preparationIssuerAuthority(apiOrigin, ca);
   // Refuse a key that cannot sign before the worker reports ready, not at the first
   // preparation (finding 2217). Maintenance reads it again, so a rotated Secret applies.
-  (await appSigningKey(options.privateKeyPath, registry.appId, clock)).owner.close();
+  if (app) {
+    (await appSigningKey(privateKeyPath!, app.appId, clock)).owner.close();
+  }
+  // A token is re-read at every loan, so a replaced Secret reaches the next loan without a
+  // redeploy. A refused read is reported by fixed reason and class, never token bytes.
+  const lent =
+    tokenPath === undefined
+      ? undefined
+      : createGitHubTokenMaterialReader<PostgresClient, PreparedRepositoryGitSource>(
+          createGitHubTokenLoanSource({
+            path: tokenPath,
+            secretName: "repositoryCredentials.tokenSecretName",
+            clock: { now: () => clock.wallNow() },
+          }),
+          { now: () => clock.wallNow() },
+          (error) =>
+            options.report?.("PREPARED_GITHUB_TOKEN_REFUSED", {
+              reason: error.reason,
+              tokenClass: error.tokenClass,
+            }),
+        );
   const custody = await privateInput(options.custodyKeyPath);
   if (custody.length !== 32) {
     custody.fill(0);
@@ -248,6 +287,10 @@ export async function startPreparedGitHubGitOwner(
         ) {
           return;
         }
+      }
+      if (binding.profile !== "github-repository" && !app) {
+        // A token registry admits only the selected repository profile (registry load refuses others).
+        return;
       }
       if (binding.profile === "github-repository") {
         if (
@@ -295,15 +338,15 @@ export async function startPreparedGitHubGitOwner(
         return;
       }
       const admitted = resolveCurrentGitHubRepositoryBinding(registry, namespaceId, binding);
-      if (!admitted) {
+      if (!admitted || !app) {
         return;
       }
       const common = { key: { source: { id: "repository-git:" + session.admissionId } }, session };
       const grant = {
         id: admitted.grant.grantId,
         isolationId: session.revisionId,
-        appId: registry.appId,
-        installationId: registry.githubInstallationId,
+        appId: app.appId,
+        installationId: app.githubInstallationId,
       };
       if (installation) {
         return {
@@ -327,6 +370,7 @@ export async function startPreparedGitHubGitOwner(
       };
     },
     custodySelection,
+    lent,
   );
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>
@@ -348,6 +392,10 @@ export async function startPreparedGitHubGitOwner(
   let sources: Awaited<ReturnType<typeof store.discover>> = [];
   const maintenance = (options.tokenService ?? new TokenService()).ownFamilies({
     async discover() {
+      if (!app) {
+        // A lent token has no family to discover, prepare or renew.
+        return;
+      }
       sources = await store.discover(({ providerExpiresAt, ...context }) =>
         options.report?.("PREPARED_GITHUB_RETIRED_UNREVOKED", {
           reason: "issuer_authority_changed",
@@ -358,14 +406,10 @@ export async function startPreparedGitHubGitOwner(
     },
     retire: (signal) => retirePreparedGitHubToken(store, null, signal, apiOrigin, ca, clock),
     async prepare(_signal, run) {
-      if (!sources.length) {
+      if (!sources.length || !app) {
         return;
       }
-      const { keyObject, owner: key } = await appSigningKey(
-        options.privateKeyPath,
-        registry.appId,
-        clock,
-      );
+      const { keyObject, owner: key } = await appSigningKey(privateKeyPath!, app.appId, clock);
       try {
         const version = createHash("sha256")
           .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))

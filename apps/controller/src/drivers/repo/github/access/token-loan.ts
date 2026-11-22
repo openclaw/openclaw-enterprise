@@ -189,6 +189,8 @@ export function createGitHubTokenMaterialReader<
 >(
   loans: TokenLoanSource,
   clock: { now(): number } = Date,
+  /** Told of each refused loan (unreadable, malformed or wrong class): names, never bytes. */
+  refused?: (error: GitHubTokenSourceError) => void,
 ): TokenMaterialReader<Transaction, Source> {
   const identity = (source: Source, window: number, secretVersion: string) => ({
     preparationAttemptId: loanUuid("github-token-loan", source.key.source.id, String(window)),
@@ -209,8 +211,11 @@ export function createGitHubTokenMaterialReader<
           revisionId: source.key.source.id,
           untilMs: (window + 2) * githubTokenLoanWindowMs,
         });
-      } catch {
-        // The named diagnostic is the loan source's audit and report; the route waits for material.
+      } catch (error) {
+        // The route waits for material; the operator gets the named diagnostic.
+        if (error instanceof GitHubTokenSourceError) {
+          refused?.(error);
+        }
         return undefined;
       }
       const current = identity(source, window, loan.secretVersion);

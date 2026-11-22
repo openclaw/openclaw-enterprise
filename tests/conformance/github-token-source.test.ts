@@ -7,9 +7,13 @@ import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
+  resolveSelectedRepositoryGrant,
   resolveSelectedRepositoryScope,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { preparedGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/access/prepared-configuration.ts";
+import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
+import type { PostgresPool } from "@openclaw-enterprise/occ";
 import {
   GitHubTokenSourceError,
   createGitHubTokenLoanSource,
@@ -36,7 +40,8 @@ const fakeOther = {
   unknown: "FAKE-not-a-github-token",
 } as const;
 
-const tokenAuthority = { kind: "github-token", tokenSecret: "repository-token" } as const;
+// The registry says only which authority; Helm names and mounts the Secret.
+const tokenAuthority = { kind: "github-token" } as const;
 
 function tokenRegistryInput(): Record<string, unknown> & {
   repositories: (Record<string, unknown> & { namespaces: Record<string, unknown>[] })[];
@@ -88,9 +93,9 @@ test("a token authority replaces the App fields and binds the same Namespace gra
     repositoryRef: "a",
   });
   assert.equal(binding.profile, "github-repository");
-  // The grant identity binds the authority, so a changed Secret name is a changed grant.
+  // The grant identity binds the token source, so a changed providerInstanceId is a changed grant.
   const renamed = tokenRegistryInput();
-  renamed.authority = { kind: "github-token", tokenSecret: "repository-token-2" };
+  renamed.providerInstanceId = "github-com-secondary";
   assert.notEqual(
     resolveGitHubRepositoryBinding(validateGitHubRepositoryRegistry(renamed), {
       namespaceId: "namespace-a",
@@ -114,13 +119,13 @@ test("registry load refuses every option the network policy cannot enforce for a
       input.appId = "12345";
     },
     "an unknown authority kind": (input) => {
-      input.authority = { kind: "github-app", tokenSecret: "repository-token" };
+      input.authority = { kind: "github-app" };
     },
     "an extra authority field": (input) => {
-      input.authority = { ...tokenAuthority, tokenValue: "x" };
+      input.authority = { ...tokenAuthority, tokenSecret: "repository-token" };
     },
-    "a Secret name that is not a Kubernetes name": (input) => {
-      input.authority = { kind: "github-token", tokenSecret: "Repository_Token" };
+    "a providerInstanceId that cannot name a token source": (input) => {
+      input.providerInstanceId = "GitHub_Primary";
     },
     "a registration without nativeGit": (input) => {
       delete input.repositories[0]!.namespaces[0]!.nativeGit;
@@ -204,7 +209,7 @@ test("delivery names the token source in place of an installation and requires n
     ).delivery,
     {
       scope: "github-repository",
-      tokenSource: "repository-token",
+      tokenSource: "github-com-primary",
       repositories: [
         { repositoryId: "101", repository: "fixture/a" },
         { repositoryId: "102", repository: "fixture/b" },
@@ -389,9 +394,11 @@ test("the native material reader lends without a row and turns stale on replacem
     clock,
     audit: (event) => audit.push(event),
   });
+  const refused: GitHubTokenSourceError[] = [];
   const reader = createGitHubTokenMaterialReader<null, { key: { source: { id: string } } }>(
     loans,
     clock,
+    (error) => refused.push(error),
   );
   const source = { key: { source: { id: "repository-git:admission-1" } } };
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -436,8 +443,75 @@ test("the native material reader lends without a row and turns stale on replacem
   // A classic token fails the loan: no material, and no value in the audit.
   await replace(fakeOther.classic);
   assert.equal(await reader.readWarm(null, source), undefined);
+  // The operator is told why, by fixed reason and class: the Worker reports this refusal.
+  assert.deepEqual(
+    refused.map(({ reason, tokenClass }) => [reason, tokenClass]),
+    [["token_class_refused", "classic"]],
+  );
   const recorded = JSON.stringify(audit);
   for (const value of [fakeFineGrained, fakeReplacement, fakeOther.classic]) {
     assert.equal(recorded.includes(value), false);
+  }
+});
+
+test("a selected token grant names its source and carries no App identity", () => {
+  const registry = validateGitHubRepositoryRegistry(tokenRegistryInput(), "github-primary");
+  const binding = resolveGitHubRepositoryBinding(registry, {
+    namespaceId: "namespace-a",
+    repositoryRef: "a",
+  });
+  assert.deepEqual(resolveSelectedRepositoryGrant(registry, "namespace-a", "rev_token", [binding]), {
+    id: binding.grant.grantId,
+    isolationId: "rev_token",
+    tokenSource: "github-com-primary",
+    profile: "github-repository",
+    repositories: [{ repositoryId: "101", repository: "fixture/a" }],
+    permissions: { metadata: "read", contents: "write" },
+  });
+});
+
+test("the Worker mounts exactly one authority and refuses one the registry does not name", async () => {
+  const paths = {
+    custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
+    privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
+    tokenPath: "/etc/openclaw/prepared-repository/token",
+  };
+  assert.deepEqual(
+    preparedGitHubConfiguration({ custodyKeyPath: paths.custodyKeyPath, tokenPath: paths.tokenPath }, true),
+    { custodyKeyPath: paths.custodyKeyPath, tokenPath: paths.tokenPath },
+  );
+  for (const input of [paths, { custodyKeyPath: paths.custodyKeyPath }]) {
+    assert.throws(
+      () => preparedGitHubConfiguration(input, true),
+      /exactly one of privateKeyPath and tokenPath/,
+    );
+  }
+  // Worker start compares the registry's authority with the mounted material before it reads
+  // a key or opens the database, and names both settings in its refusal.
+  const start = (registry: unknown, mounted: { privateKeyPath?: string; tokenPath?: string }) =>
+    startPreparedGitHubGitOwner({
+      ...mounted,
+      custodyKeyPath: paths.custodyKeyPath,
+      pool: {} as PostgresPool,
+      driverId: "openshell",
+      implementation: "openshell",
+      backendId: "github-primary",
+      registry: registry as never,
+      repositoryGitCustody: { kind: "native-broker" },
+      startWorker: false,
+    });
+  const appRegistry = tokenRegistryInput();
+  delete appRegistry.authority;
+  appRegistry.appId = "12345";
+  appRegistry.githubInstallationId = "67890";
+  for (const [registry, mounted, authority] of [
+    [tokenRegistryInput(), { privateKeyPath: paths.privateKeyPath }, /github-token/],
+    [appRegistry, { tokenPath: paths.tokenPath }, /the GitHub App/],
+  ] as const) {
+    await assert.rejects(start(registry, mounted), (error: Error) => {
+      assert.match(error.message, authority);
+      assert.match(error.message, /repositoryCredentials\.(?:appKey|token)SecretName/);
+      return true;
+    });
   }
 });
