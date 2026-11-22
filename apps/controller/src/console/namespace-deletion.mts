@@ -1,10 +1,5 @@
 import type { Namespace } from "@openclaw-enterprise/contracts";
-import {
-  namedDenial,
-  requestFailure,
-  responseFields,
-  type ConsoleApiError,
-} from "./api-client.mjs";
+import { requestFailure, responseFields, type ConsoleApiError } from "./api-client.mjs";
 import {
   button,
   describeDisabled,
@@ -513,7 +508,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         if (error.status === 403) {
           denied = true;
           // A delete can check more than Namespace delete, such as Preset delete during cleanup.
-          message = namedDenial(cause) ?? NAMESPACE_DELETE_REFUSED;
+          message = error.serverMessage ?? NAMESPACE_DELETE_REFUSED;
         } else if (error.status === 400 || error.status === 409 || error.status === 429) {
           message = describeFailure(cause, { mutation: true });
         } else {

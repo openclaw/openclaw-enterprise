@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Locator } from "playwright";
+import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 import { namespaceDeleteDenied } from "../helpers/refusal-access.ts";
+import { callerDenied } from "../helpers/refusal-text.mjs";
 
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
@@ -295,6 +298,37 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   await page.getByText(namespaceDeleteDenied(namespace.id), { exact: true }).waitFor();
   // The refused trash control, natively disabled while the write ran, takes focus back.
   assert.equal(await hasFocus(remove), true);
+});
+
+test("a Namespace deletion refused during cleanup names the Preset permission", async (t) => {
+  const preset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+  );
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Default Preset cleanup", {
+    defaultPresets: [preset],
+  });
+  const member = await fixture.createNamespaceMember("namespace-deleter", namespace.id, [
+    ["read", "namespace"],
+    ["delete", "namespace"],
+  ]);
+  const path = `/namespaces/${namespace.id}`;
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, member.credentials);
+  await page.getByRole("button", { name: "Delete Default Preset cleanup", exact: true }).click();
+  const response = page.waitForResponse(
+    (reply) => reply.url() === fixture.origin + path && reply.request().method() === "DELETE",
+  );
+  await page.getByRole("dialog").getByRole("button", { name: "Delete Namespace" }).click();
+  const refused = await response;
+  assert.equal(refused.status(), 403);
+  const body: ErrorResponse = await refused.json();
+  const message = callerDenied("Preset delete", "a Preset this request uses");
+  assert.deepEqual(body.error, { code: "FORBIDDEN", message });
+  await page
+    .locator(`#namespace-delete-feedback-${namespace.id}`)
+    .getByText(message, { exact: true })
+    .waitFor();
+  assert.equal((await fixture.request("GET", path)).data.status, "ready");
 });
 
 // The same advisory answer can follow a missing grant or a Restriction (finding 2861).

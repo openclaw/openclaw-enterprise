@@ -27,7 +27,7 @@ const pluralKind = (kind: string) => (kind.endsWith("y") ? `${kind.slice(0, -1)}
 const SHOWN_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
 const ASK = "Ask an Installation administrator to grant it.";
-const CHECK_ACCESS = "Ask an Installation administrator to check your access.";
+const CHECK_ACCESS = "Review this permission with whoever manages IAM.";
 
 // A native admin request the caller may not make. The Agent comes from the host name, not from
 // the caller, so the text names no Agent, and an unknown host gets it too.

@@ -40,7 +40,7 @@ async function memberSession(fixture: Fixture, label: string, namespaceId: strin
 }
 
 // The production Fastify app with the Native IAM Driver and a live policy (finding 2534). A
-// caller's own 403 names the grant its request checked and who grants it. It never names an ID
+// caller's own 403 names the grant its request checked and gives a next step. It never names an ID
 // the request did not carry, never tells a Restriction from a missing grant, and reads the same
 // for an unknown resource as for one the caller cannot read.
 test("a caller's own denial names the missing grant without disclosing what the caller cannot see", async (t) => {

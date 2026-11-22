@@ -3,15 +3,15 @@ import { AGENT_CREATE_ACCESS_CHECK, askForGrant, notIncluded } from "./refusal-t
 
 // An ordinary denial identifies the required action and scope without disclosing a cause.
 export const createDenied = (kind: string, namespaceId: string): string =>
-  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Ask an Installation administrator to check your access.`;
+  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Review this permission with whoever manages IAM.`;
 // The API confirms a Restriction for a caller who administers the Installation when it has
 // evidence of that Restriction (finding D769).
 export const createRestricted = (kind: string, namespaceId: string): string =>
   `Not authorized: a Restriction in Namespace ${namespaceId} denies ${kind} create, even for Installation administrators. Check your access and the applicable IAM Restriction.`;
 export const NAMESPACE_CREATE_DENIED =
-  "Not authorized: this needs Namespace create. Ask an Installation administrator to check your access.";
+  "Not authorized: this needs Namespace create. Review this permission with whoever manages IAM.";
 export const namespaceDeleteDenied = (namespaceId: string): string =>
-  `Not authorized: this needs Namespace delete on Namespace ${namespaceId}. Ask an Installation administrator to check your access.`;
+  `Not authorized: this needs Namespace delete on Namespace ${namespaceId}. Review this permission with whoever manages IAM.`;
 export const INSTALLATION_ADMINISTER_DENIED =
   "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
 

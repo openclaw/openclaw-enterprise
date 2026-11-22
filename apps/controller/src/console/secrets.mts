@@ -20,7 +20,7 @@ import {
   NAMESPACE_NOT_READY_MESSAGE,
   readFailureReason,
 } from "./agents/list.mjs";
-import { namedDenial, requestFailure, responseFields } from "./api-client.mjs";
+import { requestFailure, responseFields } from "./api-client.mjs";
 import {
   button,
   dismissOnBackdrop,
@@ -729,10 +729,8 @@ export function renderSecrets(
             ? "Outcome unknown. The value may have changed and cannot be read back. Close this dialog and verify credential use before deciding to submit a new replacement."
             : "Outcome unknown. The Secret may have been created. Close this dialog and Refresh the list before deciding to create another.";
         } else if (status === 403) {
-          // The create request can name the checked access. Keep that reason when the API sends it.
-          description = replacing
-            ? SECRET_UPDATE_DENIED
-            : (namedDenial(cause) ?? createDeniedReason);
+          // This request carries a Secret value, so use local guidance for either write.
+          description = replacing ? SECRET_UPDATE_DENIED : createDeniedReason;
           if (!replacing) {
             showCreateRefused();
           }

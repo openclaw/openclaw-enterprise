@@ -52,7 +52,8 @@ export function namespaceCreateDenied(installationAdmin: boolean | null) {
 }
 export const namespaceDeleteDenied = (permissions?: InstallationPermissions) =>
   accessRequired("Deleting this Namespace", "Namespace delete", permissions);
-export const NAMESPACE_DELETE_REFUSED = `Deletion was refused. ${CHECK_ACCESS}`;
+export const NAMESPACE_DELETE_REFUSED =
+  "Deletion was refused. Review your access with whoever manages IAM.";
 
 // POST /agents/{id}/stop authorizes Agent operate; DELETE /agents/{id} authorizes Agent delete.
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
