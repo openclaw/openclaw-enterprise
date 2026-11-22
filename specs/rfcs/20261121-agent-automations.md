@@ -95,11 +95,12 @@ has `url`, exact host `egressCidrs` (/32 or /128) and optional public PEM
 `caBundle`. Refuse stdio, wildcard destinations, credentials and private keys;
 attest identical anonymous actions.
 
-Compute renders server-owned opaque Gateway loopback routes. Each grant binds
-the full canonical enabled route map and every endpoint attestation to original
-HTTPS targets, revision and CAs. Public source remains original; successor changes
-invalidate standing grants. Native discovery may initialize/list enabled siblings
-before cap filtering; forbidden tool calls remain denied.
+Compute renders server-owned opaque Gateway loopback routes. Each MCP-tool grant
+binds the full canonical enabled route map and all endpoint attestations to original
+HTTPS targets, revision and CAs. Pinned Harnesses skip MCP acquisition for
+`toolsAllow: []`. Public source stays original; successor changes invalidate grants.
+Native discovery may initialize/list siblings before cap filtering; forbidden calls
+remain denied.
 
 Before Doctor/native startup, a Gateway Node supervisor listens and forwards only
 to fixed targets with verified TLS. Resolve the approved hostname, refuse addresses
@@ -297,9 +298,8 @@ stop a running scheduler.
 - **AC5. Durable records.** Verify PostgreSQL reservation, binding and audit
   atomicity, lost-response pending discovery, authorized cancellation racing with
   binding, disabled late-add orphan handling, failed-create cleanup racing with binding, Agent deletion with
-  sibling retention, and history access after deletion. Use the actual packaged
-  Harnesses and real endpoint, credential, model and database evidence for
-  their relevant criteria.
+  sibling retention, and history access after deletion. Use packaged Harnesses and real endpoint, credential, model and database evidence
+  as applicable.
 
 - **AC6. Runtime and egress.** On both Harnesses, prove positive forwarding,
   zero redirect-sink effects, malformed/mutation denial, TLS with the projected CA,
