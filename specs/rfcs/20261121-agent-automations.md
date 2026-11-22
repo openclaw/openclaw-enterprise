@@ -89,18 +89,26 @@ discovery and app tools. Creation and runs cannot introduce tools through discov
 OpenClaw and ordinary dedicated Codex independently. Managed MCP Sandbox and apps
 are ineligible; chat and native administration remain trusted.
 
-Both Harnesses accept only operator-attested anonymous HTTPS. Each Compute
-`automations.trustedAnonymousMcpEndpoints` entry has `url`, `egressCidrs`
-and optional public PEM `caBundle`. Require an exact normalized HTTPS URL
-and exact host addresses (/32 or /128). Refuse stdio, wildcard destinations,
-credentials, private keys and redirects to unapproved origins. Attest identical anonymous actions.
+Both Harnesses qualify enabled anonymous static `transport: "streamable-http"`
+at an exact reviewed HTTPS URL. Legacy SSE is unqualified. Each Compute `automations.trustedAnonymousMcpEndpoints` entry
+has `url`, exact host `egressCidrs` (/32 or /128) and optional public PEM
+`caBundle`. Refuse stdio, wildcard destinations, credentials and private keys;
+attest identical anonymous actions.
+
+Compute renders a server-owned opaque Gateway loopback route and exact mapping
+bound to the original HTTPS target, revision, grant and CA; public source remains
+original. A Gateway Node supervisor listens before Doctor/native startup, forwards
+only to that target with verified TLS, enforces strict method, route and headers
+with bounded streaming, and refuses all 3xx without Location or replay. Expose no
+generic URL/CONNECT, auth or cookie forwarding. Bind, fail, hold and attest the
+proxy and mapping throughout the lifecycle.
 
 Derive the TCP port from the URL (default 443). Add listed endpoint IP/port
-pairs only to the Gateway NetworkPolicy. Validate TLS hostname and chain; merge
-the public automation CA only into Gateway Node trust via `NODE_EXTRA_CA_CERTS`,
-which affects Gateway-wide trust. Dedicated Agents receive no automation-specific
-endpoint rule, CA map/mount or `CODEX_CA_CERTIFICATE`. Retain default-deny,
-independent model/workload routes and unrelated Codex trust. Keep model credentials
+pairs only to the Gateway NetworkPolicy. Validate upstream TLS hostname and chain;
+supply the public automation CA only to the fixed target's proxy TLS request. Never
+expand process-wide Gateway/model or dedicated Agent trust. Dedicated Agents receive
+no automation-specific endpoint rule, CA map/mount or `CODEX_CA_CERTIFICATE`.
+Retain default-deny, independent model/workload routes and unrelated Codex trust. Keep model credentials
 out of the dedicated Gateway; refuse unenforceable topologies.
 
 Native administrators and chat remain trusted writers outside OCC. OCC does
@@ -159,19 +167,17 @@ OCC invokes only `cron.add`, `cron.list`, `cron.get`, `cron.update`,
 `cron.remove` and `cron.runs`, plus bounded qualification reads and `system.info` for peer identity.
 Keep the administrative credential private.
 
-Creation maps to `sessionTarget: "isolated"`, `wakeMode: "now"`, an `agentTurn`
-payload with the requested prompt and explicit `toolsAllow`, and
-`delivery.mode: "none"`. Preserve native schedule normalization, including generated
-interval anchors and cron staggering, in reads and subsequent edits. Persist the immutable ceiling and binding identities
-with the OCC reservation. Reassert the permitted cap on update. Additions to
-the Agent policy never expand an existing job. All captured operations must
-remain present with the same binding identity. A missing alias cannot prove safe withdrawal: another tool or wrapper could
-reuse its name. Therefore
-narrowing, removal, remapping or unverifiable binding blocks enablement and
-successor admission/startup while any active, paused or uncertain ownership
-record retains the grant. Delete or retire affected jobs, deploy the narrower
-policy, then create new jobs. Do not automatically shrink a persisted cap. An empty MCP include filter can mean unrestricted access. Disable or omit that server when its permitted set is empty.
-Never serialize an empty include list as a restriction.
+Creation uses `sessionTarget: "isolated"`, `wakeMode: "now"`, an `agentTurn`
+prompt with explicit `toolsAllow`, and `delivery.mode: "none"`. Preserve native
+normalization (generated interval anchors and cron staggering) in reads and edits.
+Persist immutable cap/bindings with the reservation; reassert the cap on update.
+Policy additions never expand jobs. Each captured operation must retain its binding;
+a missing alias cannot prove withdrawal because another tool or wrapper could reuse
+its name. Narrowing, removal, remapping or unverifiable binding blocks enablement
+and successor admission/startup while active, paused or uncertain records retain
+the grant. Retire affected jobs, deploy narrower policy, then create new jobs;
+never shrink a persisted cap. An empty MCP include can be unrestricted; disable or
+omit the server instead of serializing `[]` as a restriction.
 
 Before native create, reserve a public OCC UUID with its exact Namespace, Agent,
 human creator, selected native Agent and creation time. Commit reservation and
@@ -184,21 +190,17 @@ within an Agent. Store no prompt, credential, duplicate definition or scheduler.
 retains them so the same creator/admin boundary authorizes history afterward.
 Native history expiry still applies, and a deleted job that never ran returns 404.
 
-A lost create reply can leave a disabled job. Read recovery matches the reserved
-declaration key and fills a missing binding once, with audit; it neither replays
-create nor automatically enables the job. If transport proves no send, or native
-rejects create and inventory confirms absence, conditionally discard only the
-original creator's unbound reservation with audit in the same transaction.
-Concurrent binding and failed audit must prevent deletion. Admission evidence
-survives cleanup.
+A lost reply can leave a disabled job. Recovery matches the declaration key and
+fills a missing binding once with audit; never replay create or enable. If transport
+proves no send, or native rejects create and inventory confirms absence, discard
+only the creator's unbound reservation atomically with audit. Concurrent binding
+or failed audit prevents deletion. Keep admission evidence.
 
-If no job appears after an uncertain create, the creator with `operate`, or an
-exact-Agent administrator, can cancel the listed pending reservation. OCC checks
-its reservation revision and discards the still-unbound record with audit in one
-transaction. Binding and cancellation cannot both succeed. A delayed native add
-can leave a disabled job after cancellation; OCC cannot bind or enable it. A
-trusted native administrator must remove that orphan. OCC does not replay the add
-or promise automatic orphan cleanup.
+After uncertain create with no job, the creator with `operate` or exact-Agent
+administrator can cancel the pending reservation using its revision. Atomically
+discard the unbound record with audit; binding and cancellation cannot both succeed.
+A delayed add can leave a disabled orphan. OCC cannot bind, enable, replay or
+automatically clean it; a trusted native administrator removes it.
 
 ## Concurrency, failures and audit
 
@@ -266,17 +268,14 @@ stop a running scheduler.
   packaged Harnesses. Provider or service records must prove a real permitted
   scheduled MCP operation has the same action, workload identity and standing
   approval as ordinary Agent chat.
-- **AC2. Restricted execution.** On both Harnesses, request a forbidden sibling
-  tool, a second server and a forbidden action on the allowed tool. Verify
-  refusals and absence of provider effects. Attempt native shell/file actions,
-  delegation, messaging, app tools and discovery. Verify the effective tool
-  surface and absence of effects. A personal credential or an interactive
-  approval requirement cannot qualify. Refuse invalid provisioning before native
-  access. Embedded rejects foreign, cron, dock, subagent or absent ordinary
-  sessions, mismatched MCP identities and exhausted read limits; dedicated performs
-  no session/history reads. Check explicit
-  model-only execution with no eligible operations, and refusal of Code Mode/tool
-  search on a nonempty cap.
+- **AC2. Restricted execution.** On both Harnesses, verify forbidden sibling tool,
+  second server, forbidden action, shell/file, delegation, messaging, app and
+  discovery requests produce no provider effects; inspect the effective surface.
+  Personal credentials or interactive approval cannot qualify. Refuse invalid
+  provisioning before native access. Embedded rejects foreign, cron, dock,
+  subagent or absent ordinary sessions, mismatched MCP identities and exhausted
+  reads; dedicated reads no session/history. Check explicit model-only execution
+  and refusal of Code Mode/tool search on nonempty caps.
 - **AC3. Ownership and persistence.** Verify CSRF/Origin, service-key refusal,
   exact-Agent create and creator/admin management, UUID validation and native
   history after deletion. Demote the creator and verify the job still uses the
@@ -297,9 +296,9 @@ stop a running scheduler.
   Harnesses and real endpoint, credential, model and database evidence for
   their relevant criteria.
 
-- **AC6. Runtime and egress.** On both Harnesses, prove TLS with the projected CA
-  and rejection of an untrusted certificate, wrong hostname, sibling IP and
-  port. On dedicated Codex verify credential isolation. Reject an old launcher,
+- **AC6. Runtime and egress.** On both Harnesses, prove positive forwarding,
+  zero redirect-sink effects, malformed/mutation denial, TLS with the projected CA,
+  and rejection of an untrusted certificate, wrong hostname, sibling IP and port. On dedicated Codex verify credential isolation. Reject an old launcher,
   stale Pod/container evidence, mutable plugin origin, changed digest and
   unsupported Node switch or legacy `agents.list`. Repeat after native respawn and container restart
   with an overdue job. Race RPC admission with old and new Pods during
