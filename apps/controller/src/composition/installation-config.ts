@@ -1,6 +1,8 @@
 import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
+import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
+import { supportsOpenShellModelCredentialDeployment } from "./openshell-model-admission.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
   openShellProxyConfiguration,
@@ -226,8 +228,12 @@ export function installationControllerOptions(
   | "iamConfiguration"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
+  | "modelCredentialPreset"
+  | "supportsModelCredentialDeployment"
 > {
   return {
+    modelCredentialPreset: resolveModelCredentialPreset,
+    supportsModelCredentialDeployment: supportsOpenShellModelCredentialDeployment,
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
     repositoryNetworkPolicyCeiling: installation?.repositoryNetworkPolicyCeiling ?? [],
@@ -1563,12 +1569,14 @@ async function composeInstallationConfiguration(
   }
   const createCredentialDeliveryProxy = async (
     pairedSandbox: SandboxDriver,
+    tokenServiceImplementation: string,
   ): Promise<CredentialProxyDriver> => {
     const { OpenShellCredentialProxyDriver } =
       await import("../drivers/credential-proxy/openshell.ts");
     return new OpenShellCredentialProxyDriver({
       id: pairedSandbox.id,
       implementation: pairedSandbox.implementation,
+      tokenServiceImplementation,
       backend: openShell!,
       sandbox: pairedSandbox,
     });
@@ -1652,7 +1660,10 @@ async function composeInstallationConfiguration(
     const deliveryProxy =
       tokenServiceSelection === undefined
         ? undefined
-        : await createCredentialDeliveryProxy(capabilities.sandbox);
+        : await createCredentialDeliveryProxy(
+            capabilities.sandbox,
+            tokenServiceSelection.implementation,
+          );
     const owner = new InstalledDriver(
       {
         ...sandbox,
@@ -1699,7 +1710,10 @@ async function composeInstallationConfiguration(
     !boxPackage &&
     options.createSandboxDriver === undefined
   ) {
-    const deliveryProxy = await createCredentialDeliveryProxy(sandboxDriver);
+    const deliveryProxy = await createCredentialDeliveryProxy(
+      sandboxDriver,
+      tokenServiceSelection.implementation,
+    );
     credentialDeliveryRegistration = new InstalledDriver(
       {
         id: sandboxDriver.id,
@@ -1778,6 +1792,7 @@ async function composeInstallationConfiguration(
           }
         : {}),
       ...(protectedDriver === undefined ? {} : { protectedDriver }),
+      ...(credentialDeliveryRegistration === undefined ? {} : { credentialDeliveryRegistration }),
       preparedTokens: tokenService,
       ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
         ? {}

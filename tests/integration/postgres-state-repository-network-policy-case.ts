@@ -424,7 +424,7 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   };
   const native = {
     ...successor,
-    executionAdmission: { version: 8, mode: "protected" } as const,
+    executionAdmission: { version: 9, mode: "protected" } as const,
     repositoryCredentials: credentials,
     egressPlan: {
       ...successor.egressPlan!,
@@ -435,10 +435,34 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   await createRevision(native);
   const network = await readStoredSpec(native.id);
   assert.deepEqual(network.execution_admission, { ...native.executionAdmission, ...marker });
-  assert.equal(network.harness_auth.protectedExecutionVersion, 8);
+  assert.equal(network.harness_auth.protectedExecutionVersion, 9);
   const readNative = await readRevision(native.id);
   assert.deepEqual(readNative?.egressPlan, native.egressPlan);
   assert.deepEqual(readNative?.sandboxPolicy?.repositoryNetworkPolicy, admitted);
+
+  // A native draft from before the version split must not claim the standalone
+  // version, and an admitted native revision cannot carry standalone custody.
+  const invalidNativeId = `rev_${randomUUID()}`;
+  const invalidNative = {
+    ...network,
+    egress_plan: {
+      ...native.egressPlan,
+      execution: { ...native.egressPlan.execution, revisionId: invalidNativeId },
+    },
+  };
+  for (const spec of [
+    {
+      ...invalidNative,
+      execution_admission: { ...native.executionAdmission, ...marker, version: 8 },
+      harness_auth: { ...network.harness_auth, protectedExecutionVersion: 8 },
+    },
+    { ...invalidNative, credential_deployment: {} },
+  ]) {
+    await assert.rejects(
+      insertStoredRevision({ id: invalidNativeId, revision: native.revision + 1 }, spec),
+      { code: "23514", constraint: "agent_revisions_execution_admission" },
+    );
+  }
 
   const denyAll = { ...desired, version: desired.version + 1, repositoryNetworkPolicy: [] };
   // The user can withdraw existing grants even after losing the Sandbox Driver.

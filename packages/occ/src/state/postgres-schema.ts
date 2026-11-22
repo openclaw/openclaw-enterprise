@@ -774,12 +774,12 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND (
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7','8')
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7','9')
                 AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '7'
                   THEN ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
                   ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'policyReductionVersion') OR
                     (${table.admittedSpec} #>> '{execution_admission,version}' = '3' AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7','8'))
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7','9'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
@@ -790,7 +790,7 @@ export const agentRevisions = occSchema.table(
                       ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'
                       AND ${table.admittedSpec} #>> '{egress_plan,repositoryGit,bindings,0,profile}' = 'github-installation'
                       AND jsonb_array_length(${table.admittedSpec} #> '{egress_plan,repositoryGit,bindings}') = 1
-                    WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '8' THEN
+                    WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '9' THEN
                       ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'network-policy'
                     ELSE NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGitAuthorization') END
                 AND
@@ -799,7 +799,18 @@ export const agentRevisions = occSchema.table(
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,implementation}') > 0
                 AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
               ))
-        ), false)`,
+          OR (${table.admittedSpec} #>> '{execution_admission,mode}' = 'standalone'
+            AND ${table.admittedSpec} #> '{execution_admission,version}' = '8'::jsonb
+            AND NOT ((${table.admittedSpec}->'execution_admission') ? 'repositoryNetworkPolicyVersion')
+            AND NOT (${table.admittedSpec} ? 'egress_plan')
+            AND NOT ((${table.admittedSpec}->'harness_auth') ? 'protectedExecutionVersion')
+            AND occ.standalone_credential_deployment_is_valid(${table.admittedSpec}, ${table.namespaceId}))
+        )
+        AND (${table.admittedSpec} #>> '{execution_admission,mode}' = 'standalone' OR (
+          NOT (${table.admittedSpec} ? 'credential_deployment')
+          AND NOT ((${table.admittedSpec}->'harness_auth') ? 'tokenServiceInstanceId')
+          AND NOT COALESCE(jsonb_path_exists(${table.admittedSpec}->'credential_sources', '$[*] ? (exists(@.tokenServiceInstanceId))'), false)
+        )), false)`,
     ),
     check(
       "agent_revisions_repository_policy_reader_version",
@@ -819,7 +830,7 @@ export const agentRevisions = occSchema.table(
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
           - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
-          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission') = '{}'::jsonb
+          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission' - 'credential_deployment') = '{}'::jsonb
     AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
         AND jsonb_typeof(${table.admittedSpec}->'configuration_kind') = 'string'

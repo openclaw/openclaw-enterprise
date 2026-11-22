@@ -127,7 +127,7 @@ export class ProtectedExecutionDriver {
     const nativeGit = context.plan.repositoryGitAuthorization === "network-policy";
     if (
       nativeGit &&
-      (context.revision.executionAdmission.version !== 8 ||
+      (context.revision.executionAdmission.version !== 9 ||
         !context.revision.sandboxPolicy?.repositoryNetworkPolicy?.grants.length)
     ) {
       return false;

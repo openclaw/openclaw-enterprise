@@ -138,6 +138,8 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
       "expectedTests": [
+        "standalone activation commits the prepared revision before first startup",
+        "standalone activation refuses a source grant removed during preparation",
         "credential withdrawal work revokes from the active revision without redeploying it",
         "a withdrawal that outlasts its attempts in a gateway outage is retried later and revoked without a replay",
         "a withdrawal in a long outage backs off to 5 minutes, stops after its last retry, and a replay starts again",

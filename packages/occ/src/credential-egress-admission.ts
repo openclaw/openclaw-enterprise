@@ -352,6 +352,7 @@ export function createCredentialEgressAdmission(
         repositoryGit &&
         source?.state === "ready" &&
         harnessAuth?.method === "credential_source" &&
+        harnessAuth.credentialGatewayId !== undefined &&
         source.id === harnessAuth.sourceId &&
         credentialSourceMatchesSnapshot(source, harnessAuth)
       ) {

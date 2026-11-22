@@ -228,7 +228,7 @@ async function selectedV5(t: TestContext, native = false, deadlineWallMs?: numbe
         repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
       },
     }),
-    executionAdmission: { version: native ? 8 : 5, mode: "protected" },
+    executionAdmission: { version: native ? 9 : 5, mode: "protected" },
     egressPlan: {
       driver: { id: "openshell" },
       execution: { executionId },
@@ -3909,6 +3909,28 @@ test("native Git cannot opt a ref or draft limited registration into repository-
   ]) {
     assert.throws(() => validate(restriction), /invalid-repository-registry/);
   }
+});
+
+test("native Git refuses obsolete or standalone admissions before Provider work", async (t) => {
+  const { f, revision, prepare, store, noCredentials } = await selectedV5(t, true);
+  const calls = structuredClone(f.calls);
+  const rows = store.rows.size;
+  for (const admission of [
+    { version: 8, mode: "protected" },
+    { version: 8, mode: "standalone" },
+    { version: 9, mode: "standalone" },
+  ]) {
+    await assert.rejects(
+      prepare(f.runtime, [], {
+        ...revision,
+        executionAdmission: admission as AgentRevision["executionAdmission"],
+      }),
+      /OpenShell prepared Git requires one explicitly admitted GitHub binding/,
+    );
+  }
+  assert.deepEqual(f.calls, calls);
+  assert.equal(store.rows.size, rows);
+  noCredentials();
 });
 
 test("native Git registration refuses an online authorization plan before Provider work", async (t) => {

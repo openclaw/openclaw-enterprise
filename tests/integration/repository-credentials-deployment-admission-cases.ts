@@ -1267,7 +1267,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       const revision = await f.state.read((view) =>
         view.revisions.findRevision(f.namespace.id, agent.id, data.id),
       );
-      assert.equal(revision?.executionAdmission.version, grants ? 8 : 5);
+      assert.equal(revision?.executionAdmission.version, grants ? 9 : 5);
       assert.equal(
         revision.egressPlan?.repositoryGitAuthorization,
         grants ? "network-policy" : "online-request",

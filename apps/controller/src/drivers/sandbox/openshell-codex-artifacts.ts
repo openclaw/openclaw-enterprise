@@ -154,7 +154,7 @@ export function openShellProtectedCodexArtifacts(
   revision: Readonly<AgentRevision> | undefined,
 ): Readonly<OpenClawConfigurationDocument> {
   const snapshot = revision?.sandboxPolicy;
-  const nativeGit = revision?.executionAdmission.version === 8;
+  const nativeGit = revision?.executionAdmission.version === 9;
   if (nativeGit && !snapshot?.repositoryNetworkPolicy?.grants.length) {
     refuse();
   }

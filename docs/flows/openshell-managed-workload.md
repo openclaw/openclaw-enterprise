@@ -120,13 +120,15 @@ identity across two reads. Git verifies Provider receipts, network and superviso
 identities against [OpenShell execution reports](../reference/repository-credentials/protected-openshell-git.md#execution-identity).
 The launch fingerprint excludes OpenShell-internal annotations.
 
-For a deployment-scoped Git grant (execution version 8), the Sandbox binds each
+For a deployment-scoped Git grant (protected execution version 9), the Sandbox binds each
 repository route to one attached Provider. Its profile supplies credentials and
 contributes zero endpoints. The Worker compares the loaded policy with the
 authored rules, the sibling Providers and the current supervisor generation.
 It binds the held launcher to that observation before selecting the finite
 credential and checks the recipient again before rotation and release. OpenShell
 authorizes Git locally. Replacing the launcher requires a new revision.
+Standalone managed credentials retain execution version 8 and use a separate
+activation path. Each revision can admit only one of these delivery modes.
 
 For an online grant after a restart, `observeHeldPreview` requires a fresh authenticated denial before
 `releasePreview` acknowledges the launcher. The original worker records release

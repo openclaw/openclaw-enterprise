@@ -29,7 +29,9 @@ Omitting `config` preserves the preset; `config: {}` removes it. An effective
 preset change or removal requires an unbound Source and a separate request from
 material or lifecycle changes. A mixed change returns `409 RESOURCE_CONFLICT`
 before custody changes. Repeating the same preset with a material rotation is
-allowed, including while bound.
+allowed while the Source is selected in a draft. Credential changes return
+`409` while an active staged Agent revision uses the Source, until delivery
+updates are supported.
 
 Exact GET requires `credential_source:read`. List requires Namespace `read` and
 returns only Sources with exact Source `read`. Responses contain sanitized Source
@@ -47,7 +49,8 @@ fails, the Source is gone. A retry returns `403` if removing the Source also
 removed the caller's delete authority, or `404` if the caller remains authorized.
 
 An authorized Agent draft can bind the Source for Harness authentication.
-Deployment currently returns `409` before creating an Agent revision or work;
-enrollment does not prove runtime delivery or a model turn. See the
+Deployment can admit the approved model route when the selected Sandbox and
+Credential Proxy support it. Native readiness remains a separate requirement;
+enrollment and admission do not prove runtime delivery or a model turn. See the
 [custody flow](../../flows/token-service-static-custody.md) for execution and
 failure handling.

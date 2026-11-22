@@ -467,7 +467,8 @@ export class OpenShellGitRuntime {
     const state = revision.repositoryCredentials;
     const binding = state?.bindings[0];
     const native =
-      revision.executionAdmission?.version === 8 &&
+      revision.executionAdmission?.version === 9 &&
+      revision.executionAdmission.mode === "protected" &&
       revision.egressPlan?.repositoryGitAuthorization === "network-policy";
     if (
       !state ||
