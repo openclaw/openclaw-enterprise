@@ -14,6 +14,7 @@ import type { SavedConnectionReadRepository } from "./saved-connections.ts";
 import type { SecretReadRepository } from "./secrets.ts";
 import type { ServiceAccountReadRepository } from "./service-accounts.ts";
 import type { IAMPolicyReadRepository } from "@openclaw-enterprise/contracts";
+import { deepFreeze } from "@openclaw-enterprise/utils";
 import { bindRepository } from "./repository-factory.ts";
 import type { RepositoryTransactionLifetime } from "./transaction.ts";
 
@@ -38,7 +39,7 @@ export interface PlatformReadView {
   readonly operations: PlatformOperationReadRepository;
 }
 
-export const platformReadMethods = {
+export const platformReadMethods = deepFreeze({
   sandboxPolicies: ["find"],
   operations: [
     "list",
@@ -136,7 +137,7 @@ export const platformReadMethods = {
   ],
 } as const satisfies {
   [Name in keyof PlatformReadView]: readonly (keyof PlatformReadView[Name])[];
-};
+});
 
 /** The explicit outward projection shares one transaction lifetime. */
 export function createPlatformReadView(
