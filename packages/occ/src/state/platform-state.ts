@@ -3791,6 +3791,9 @@ function repositories(
     },
   };
 
+  const listOperations = async () =>
+    Object.freeze(snapshot.operations.map((operation) => immutableCopy(operation)));
+
   const repositorySessions = memoryRepositorySessions(
     snapshot.repositoryStandingExecutions,
     snapshot.repositoryStandingApprovals,
@@ -4004,8 +4007,9 @@ function repositories(
         }
         snapshot.operations.push(immutableCopy(operation));
       },
-      list: async () =>
-        Object.freeze(snapshot.operations.map((operation) => immutableCopy(operation))),
+      list: listOperations,
+      // Recorded work never finishes here, so no operation is settled.
+      listUnsettledOperations: listOperations,
       // The in-memory operation log has no executing or terminal work records.
       retryFailedAgentDeletion: async () => false,
       retryFailedNamespaceDeletion: async () => false,

@@ -117,6 +117,7 @@ are excluded. Pending repository cleanup is allowed.
 
 `deploymentInventorySnapshot` reads deployment work in one State snapshot and
 refuses missing or mismatched work. Credential withdrawal is separate.
+`listUnsettledOperations` skips finished revision work.
 `findRevisionForBrowsing` returns `unknown` for unreadable snapshots and
 propagates database or identity errors. `readDeploymentInventory` gives Compute
 ten seconds outside State transactions, then rechecks fleet authorization and

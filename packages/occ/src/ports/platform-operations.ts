@@ -40,6 +40,12 @@ export type PlatformOperation =
 
 export interface PlatformOperationReadRepository extends AgentDeploymentWorkReader {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
+  /**
+   * `list()` without finished deployment work for a revision under its own reconcile key.
+   * That work cannot change a deployment inventory, so its history is never read. Other work
+   * is returned in `list()` order, including rows that need a refusal.
+   */
+  listUnsettledOperations(): Promise<readonly Readonly<PlatformOperation>[]>;
   /** True while credential withdrawal work for the revision is queued or claimed. */
   hasOutstandingCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
 }

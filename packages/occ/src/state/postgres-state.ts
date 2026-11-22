@@ -334,6 +334,104 @@ function decodeQueryRows(result: { readonly rows: unknown[] }): PostgresRow[] {
   return decodeRows(result.rows);
 }
 
+// Finished deployment work for a revision under its own reconcile key. Its timestamps must be
+// finite because the work decoder refuses infinite ones; every other column is bound by table
+// constraints. A deployment inventory learns nothing from such a row, so it can skip it.
+const SETTLED_REVISION_WORK_SQL = `(
+  revision_id IS NOT NULL AND agent_id IS NOT NULL
+  AND namespace_target IS NULL AND agent_target IS NULL
+  AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
+  AND state NOT IN ('queued', 'claimed')
+  AND isfinite(available_at) AND isfinite(created_at) AND isfinite(updated_at)
+  AND (completed_at IS NULL OR isfinite(completed_at))
+  AND (lease_expires_at IS NULL OR isfinite(lease_expires_at))
+)`;
+
+async function listLifecycleWorkRows(
+  client: PostgresClient,
+  excludeSettledRevisions: boolean,
+): Promise<PostgresRow[]> {
+  // CASE skips revision-specific regex compilation for ordinary lifecycle work.
+  return decodeQueryRows(
+    await client.query(
+      `SELECT idempotency_key, namespace_id, agent_id, revision_id, actor_id,
+              namespace_target, agent_target
+       FROM occ.controller_work
+       WHERE work_kind = 'lifecycle'
+         AND CASE
+           WHEN strpos(idempotency_key, '${REPOSITORY_CLEANUP_KEY_SEPARATOR}') = 0 THEN TRUE
+           ELSE NOT ${repositoryCleanupSql("controller_work")}
+         END
+         ${excludeSettledRevisions ? `AND NOT ${SETTLED_REVISION_WORK_SQL}` : ""}
+       ORDER BY created_at, idempotency_key`,
+    ),
+  );
+}
+
+function decodeOperationRows(
+  found: readonly PostgresRow[],
+): readonly Readonly<PlatformOperation>[] {
+  return Object.freeze(
+    found.map((row): Readonly<PlatformOperation> => {
+      const namespaceId = text(row, "namespace_id");
+      const revisionId = optionalText(row, "revision_id");
+      const agentId = optionalText(row, "agent_id");
+      const base = {
+        action: "reconcile" as const,
+        namespaceId,
+        resourceId: revisionId ?? agentId ?? namespaceId,
+        actorId: text(row, "actor_id"),
+      };
+      // The three shapes are distinguished by which owner columns are
+      // populated: a revision names one, Agent teardown names only its
+      // Agent, and Namespace work names neither and carries a target.
+      if (agentId === undefined) {
+        const target = text(row, "namespace_target");
+        if (target !== "ready" && target !== "deleted") {
+          throw new PersistedStateInvalidError("Persisted Namespace work has an invalid target.");
+        }
+        return immutableCopy({ ...base, kind: "namespace", target });
+      }
+      if (revisionId === undefined) {
+        const target = text(row, "agent_target");
+        if (target !== "stopped" && target !== "deleted" && target !== "sandbox_policy") {
+          throw new PersistedStateInvalidError("Persisted Agent work has an invalid target.");
+        }
+        if (target === "deleted") {
+          return immutableCopy({ ...base, kind: "agent", target });
+        }
+        const key = text(row, "idempotency_key");
+        const prefix = `agent:${agentId}:reconcile:${target}:`;
+        if (!key.startsWith(prefix) || key.length === prefix.length) {
+          throw new PersistedStateInvalidError(
+            "Persisted Agent work has an invalid operation identity.",
+          );
+        }
+        return immutableCopy({
+          ...base,
+          kind: "agent",
+          target,
+          operationId: key.slice(prefix.length),
+        });
+      }
+      const revisionTarget = optionalText(row, "agent_target");
+      if (revisionTarget === undefined) {
+        return immutableCopy({ ...base, kind: "agent_revision" });
+      }
+      const operationId = credentialWithdrawalOperationId(revisionId, text(row, "idempotency_key"));
+      if (revisionTarget !== CREDENTIAL_WITHDRAWAL_TARGET || operationId === undefined) {
+        throw new PersistedStateInvalidError("Persisted AgentRevision work has an invalid target.");
+      }
+      return immutableCopy({
+        ...base,
+        kind: "agent_revision",
+        target: revisionTarget,
+        operationId,
+      });
+    }),
+  );
+}
+
 function text(row: PostgresRow, key: string): string {
   const value = row[key];
   if (typeof value !== "string" || value.length === 0) {
@@ -5656,88 +5754,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         list: async () => {
           await this.requireInitialized(context);
-          // CASE skips revision-specific regex compilation for ordinary lifecycle work.
-          const found = decodeQueryRows(
-            await client.query(
-              `SELECT idempotency_key, namespace_id, agent_id, revision_id, actor_id,
-                        namespace_target, agent_target
-                 FROM occ.controller_work
-                 WHERE work_kind = 'lifecycle'
-                   AND CASE
-                     WHEN strpos(idempotency_key, '${REPOSITORY_CLEANUP_KEY_SEPARATOR}') = 0 THEN TRUE
-                     ELSE NOT ${repositoryCleanupSql("controller_work")}
-                   END
-                 ORDER BY created_at, idempotency_key`,
-            ),
-          );
-          return Object.freeze(
-            found.map((row): Readonly<PlatformOperation> => {
-              const namespaceId = text(row, "namespace_id");
-              const revisionId = optionalText(row, "revision_id");
-              const agentId = optionalText(row, "agent_id");
-              const base = {
-                action: "reconcile" as const,
-                namespaceId,
-                resourceId: revisionId ?? agentId ?? namespaceId,
-                actorId: text(row, "actor_id"),
-              };
-              // The three shapes are distinguished by which owner columns are
-              // populated: a revision names one, Agent teardown names only its
-              // Agent, and Namespace work names neither and carries a target.
-              if (agentId === undefined) {
-                const target = text(row, "namespace_target");
-                if (target !== "ready" && target !== "deleted") {
-                  throw new PersistedStateInvalidError(
-                    "Persisted Namespace work has an invalid target.",
-                  );
-                }
-                return immutableCopy({ ...base, kind: "namespace", target });
-              }
-              if (revisionId === undefined) {
-                const target = text(row, "agent_target");
-                if (target !== "stopped" && target !== "deleted" && target !== "sandbox_policy") {
-                  throw new PersistedStateInvalidError(
-                    "Persisted Agent work has an invalid target.",
-                  );
-                }
-                if (target === "deleted") {
-                  return immutableCopy({ ...base, kind: "agent", target });
-                }
-                const key = text(row, "idempotency_key");
-                const prefix = `agent:${agentId}:reconcile:${target}:`;
-                if (!key.startsWith(prefix) || key.length === prefix.length) {
-                  throw new PersistedStateInvalidError(
-                    "Persisted Agent work has an invalid operation identity.",
-                  );
-                }
-                return immutableCopy({
-                  ...base,
-                  kind: "agent",
-                  target,
-                  operationId: key.slice(prefix.length),
-                });
-              }
-              const revisionTarget = optionalText(row, "agent_target");
-              if (revisionTarget === undefined) {
-                return immutableCopy({ ...base, kind: "agent_revision" });
-              }
-              const operationId = credentialWithdrawalOperationId(
-                revisionId,
-                text(row, "idempotency_key"),
-              );
-              if (revisionTarget !== CREDENTIAL_WITHDRAWAL_TARGET || operationId === undefined) {
-                throw new PersistedStateInvalidError(
-                  "Persisted AgentRevision work has an invalid target.",
-                );
-              }
-              return immutableCopy({
-                ...base,
-                kind: "agent_revision",
-                target: revisionTarget,
-                operationId,
-              });
-            }),
-          );
+          return decodeOperationRows(await listLifecycleWorkRows(client, false));
+        },
+        listUnsettledOperations: async () => {
+          await this.requireInitialized(context);
+          return decodeOperationRows(await listLifecycleWorkRows(client, true));
         },
         retryFailedAgentDeletion: async (namespaceId, agentId, initiatingActorId, actorId) => {
           await this.requireInitialized(context);

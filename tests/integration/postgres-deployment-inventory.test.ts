@@ -77,7 +77,13 @@ test(
     const read = async () => {
       const before = sql.mock.callCount();
       const reply = await inject("GET", inventoryPath);
-      const queries = sql.mock.callCount() - before;
+      const calls = sql.mock.calls.slice(before);
+      const queries = calls.length;
+      let rows = 0;
+      for (const call of calls) {
+        const result = (await call.result) as { rows?: unknown[] } | undefined;
+        rows += result?.rows?.length ?? 0;
+      }
       assert.equal(reply.statusCode, 200, reply.body);
       const inventory = reply.json<InstallationDeploymentInventoryResponse>().data;
       const selected = inventory.namespaces
@@ -85,7 +91,7 @@ test(
         ?.agents.find(({ id }) => id === agent.id);
       assert.ok(selected);
       assert.equal(selected.activeRevisionId, revision.id);
-      return { inventory, selected, queries };
+      return { inventory, selected, queries, rows };
     };
     const small = await read();
     assert.equal(small.selected.deploymentInProgress, false);
@@ -96,6 +102,8 @@ test(
     await appendHistory(1, historicalRevisions, "failed_permanent");
     const populated = await read();
     assert.deepEqual(populated.inventory, small.inventory);
+    // Settled history stays in PostgreSQL: the rows read do not grow with it.
+    assert.equal(populated.rows, small.rows, "settled history must not add rows read");
 
     await appendHistory(historicalRevisions + 1, 1, "queued");
     const pending = await read();
@@ -125,7 +133,7 @@ test(
     assert.deepEqual(firstRefusal.json().error, incomplete.json().error);
 
     t.diagnostic(
-      `Inventory queries with 0 and ${historicalRevisions} historical revisions: ${small.queries} and ${populated.queries}`,
+      `Inventory queries and rows with 0 and ${historicalRevisions} historical revisions: ${small.queries}/${small.rows} and ${populated.queries}/${populated.rows}`,
     );
     assert.ok(small.queries > 0, "inventory must read PostgreSQL");
     assert.ok(

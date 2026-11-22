@@ -127,7 +127,7 @@ async function deploymentInventorySnapshot(
     const revisions = new Map<string, Readonly<AgentRevision> | undefined>();
     const deploymentsInProgress = new Set<string>();
     // Credential withdrawal targets an active revision without deploying it.
-    const deployments = (await state.operations.list())
+    const deployments = (await state.operations.listUnsettledOperations())
       .filter(
         (operation) =>
           operation.kind === "agent_revision" && operation.target !== "credentials_withdrawn",
