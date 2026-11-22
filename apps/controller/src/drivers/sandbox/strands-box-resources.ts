@@ -13,6 +13,15 @@ import {
   WORKSPACE_SETUP_RUNTIME,
   workspaceSetupVerifier,
 } from "../compute/workspace-setup-runtime.ts";
+import {
+  PLUGIN_RUNTIME_CODEX_CONFIG,
+  PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
+  PLUGIN_RUNTIME_MANIFEST,
+  PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT,
+  pluginRuntimeSpecForRevision,
+  pluginRuntimeConfigMapData,
+} from "../compute/plugin-runtime.ts";
+import { savedModelProvider } from "../compute/model-provider.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
 import { resolverEgress } from "../kubernetes/network-policy.ts";
 import type { StrandsBoxOptions } from "./strands-box.ts";
@@ -29,6 +38,26 @@ const PRIVATE = [
 ].map((part) => `/home/node/${part}`);
 export const STRANDS_STATUS_PORT = 18791;
 const ROOT = "/etc/strands-box";
+const OPENAI_MODEL_HOST = "api.openai.com";
+const OPENAI_MODEL_PATH = "/v1/responses";
+const OPENAI_MODEL_KEY = "OPENAI_API_KEY";
+
+const MODEL_WORKLOAD_ENVIRONMENT = new Set([
+  "CODEX_LOGIN_MODE",
+  "LOG_FORMAT",
+  "RUST_LOG",
+  "OPENCLAW_HARNESS_MODEL",
+  "OPENCLAW_PLUGIN_READY_MARKER",
+  "APP_SERVER_PORT",
+  "HOME",
+  "PATH",
+  "CODEX_HOME",
+  "OPENCLAW_NODE_STATE_DIR",
+  "OPENCLAW_NODE_DISPLAY_NAME",
+  "OPENCLAW_NODE_CA_PEM",
+  "OPENCLAW_WORKSPACE_BOOTSTRAP",
+  "OPENCLAW_WORKSPACE_DIR",
+]);
 const SHARED_IMAGE_PATHS = [
   "usr/local/bin/node",
   "usr/bin/env",
@@ -64,6 +93,96 @@ function grantRoots(paths: readonly string[]): string[] {
   return [...new Set(paths)].filter(
     (path) => !paths.some((other) => other !== path && path.startsWith(`${other}/`)),
   );
+}
+
+function openAiModelKey(
+  { requirements, revision }: SandboxHarnessContext,
+  network: StrandsBoxOptions["policy"]["network"],
+): { name: string; key: string } | undefined {
+  if (
+    network.experimentalOpenAiModelCredential === undefined ||
+    network.experimentalOpenAiModelCredential === false
+  ) {
+    return undefined;
+  }
+  const [endpoint] = network.endpoints;
+  if (
+    network.experimentalOpenAiModelCredential !== true ||
+    requirements.loginMode !== "api_key" ||
+    revision.harness.id !== "codex" ||
+    revision.harness.mode !== "dedicated" ||
+    revision.harnessAuth.method !== "api_key" ||
+    revision.executionAdmission.mode !== "unprotected" ||
+    revision.egressPlan !== undefined ||
+    requirements.proxyWiring !== undefined ||
+    (requirements.workloadIdentity &&
+      requirements.workloadIdentity.token.mountPath !==
+        "/var/run/secrets/openclaw/service-principal") ||
+    network.endpoints.length !== 1 ||
+    endpoint?.host !== OPENAI_MODEL_HOST ||
+    endpoint.ports.length !== 1 ||
+    endpoint.ports[0] !== 443
+  ) {
+    refuse();
+  }
+
+  // Admit the ordinary Compute-generated HTTPS provider. An arbitrary TOML file
+  // or another endpoint could direct Codex away from this model route.
+  const provider = savedModelProvider(revision.harness.configuration);
+  if (provider?.baseUrl !== "https://api.openai.com/v1" || provider.supportsStandaloneWebSearch) {
+    refuse();
+  }
+  const runtime = pluginRuntimeSpecForRevision(revision, undefined, provider.baseUrl);
+  if (runtime?.kind !== "codex" || Object.keys(runtime.selections).length) {
+    refuse();
+  }
+  const data = pluginRuntimeConfigMapData(runtime);
+  const files = new Map([
+    [PLUGIN_RUNTIME_MANIFEST, PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT],
+    [PLUGIN_RUNTIME_CODEX_CONFIG, PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT],
+  ]);
+  if (
+    requirements.files.length !== files.size ||
+    !requirements.files.every(
+      (file) =>
+        files.get(file.name) === file.environmentVariable && data[file.name] === file.content,
+    )
+  ) {
+    refuse();
+  }
+
+  // The transport and model entries normally share a Secret. Project only
+  // the selected key and forbid another path to that key in any container.
+  const model = requirements.environment.find(({ name }) => name === OPENAI_MODEL_KEY);
+  if (!model || !("valueFrom" in model) || "value" in model) {
+    refuse();
+  }
+  const reference = model.valueFrom.secretKeyRef;
+  if (!reference.name || !reference.key || Object.keys(reference).length !== 2) {
+    refuse();
+  }
+  const aliasesModelKey = (other: { name: string; key: string }) =>
+    other.name === reference.name && other.key === reference.key;
+
+  for (const item of requirements.environment) {
+    if (item === model) {
+      continue;
+    }
+    if ("valueFrom" in item) {
+      if (
+        (item.name !== "APP_SERVER_TOKEN" && item.name !== "OPENCLAW_NODE_SETUP_CODE") ||
+        aliasesModelKey(item.valueFrom.secretKeyRef)
+      ) {
+        refuse();
+      }
+    } else if (!MODEL_WORKLOAD_ENVIRONMENT.has(item.name)) {
+      refuse();
+    }
+  }
+  if (requirements.workspaceSetup && aliasesModelKey(requirements.workspaceSetup.secretKeyRef)) {
+    refuse();
+  }
+  return { name: reference.name, key: reference.key };
 }
 
 export function strandsBoxService(
@@ -166,6 +285,16 @@ export function strandsBoxResources(
   ) {
     refuse();
   }
+  const modelKey = openAiModelKey(context, options.policy.network);
+  if (
+    modelKey &&
+    (!roles ||
+      literal("CODEX_LOGIN_MODE") !== "api_key" ||
+      literal("CODEX_HOME") !== "/home/node/.codex" ||
+      workspacePath !== "/home/node/workspace")
+  ) {
+    refuse();
+  }
   const environment: Record<string, string> = {};
   const secretEnvironment: Record<string, string> = {};
   const volumes: Record<string, unknown>[] = [
@@ -200,6 +329,10 @@ export function strandsBoxResources(
       refuse();
     }
     seen.add(entry.name);
+    if (modelKey && entry.name === OPENAI_MODEL_KEY) {
+      // Box supplies the child environment entry through its credential proxy.
+      continue;
+    }
     if (
       roles &&
       [
@@ -246,6 +379,17 @@ export function strandsBoxResources(
   for (const mount of r.workspaceMounts) {
     absolute(mount.mountPath);
     relative(mount.subPath);
+    if (
+      modelKey &&
+      ![
+        "/home/node/workspace",
+        "/home/node/.openclaw-node",
+        "/home/node/.codex/generated_images",
+        "/home/node/.codex/sessions",
+      ].includes(mount.mountPath)
+    ) {
+      refuse();
+    }
     if (!mount.mountPath.startsWith("/home/node/") || typeof mount.readOnly !== "boolean") {
       refuse();
     }
@@ -321,6 +465,7 @@ export function strandsBoxResources(
   const manifest = {
     port,
     transportHash,
+    ...(modelKey && { proxyOpenAiModelCredential: true }),
     ...(gateway ? { gateway } : {}),
     command: roles ? roles.codex : r.command.slice(workloadStart),
     revisionId: context.revision.id,
@@ -332,10 +477,13 @@ export function strandsBoxResources(
     privateDirectories: PRIVATE,
   };
   data["workload.json"] = JSON.stringify(manifest);
+  const requestScope = modelKey
+    ? ` && context.input.intercepted && context.input.method == "POST" && context.input.path == ${JSON.stringify(OPENAI_MODEL_PATH)}`
+    : "";
   const policy = options.policy.network.endpoints.flatMap((endpoint, index) =>
     endpoint.ports.map(
       (allowedPort) =>
-        `// Installation-approved destination, including its HTTP authorization.\n@id("connect_${index}_${allowedPort}")\npermit (principal, action == Box::Action::"net:connect", resource)\nwhen { context.input.host == ${JSON.stringify(endpoint.host)} && context.input.port == ${allowedPort} };\n@id("request_${index}_${allowedPort}")\npermit (principal, action == Box::Action::"http:request", resource)\nwhen { context.input.host == ${JSON.stringify(endpoint.host)} && context.input.port == ${allowedPort} };`,
+        `// Installation-approved destination, including its HTTP authorization.\n@id("connect_${index}_${allowedPort}")\npermit (principal, action == Box::Action::"net:connect", resource)\nwhen { context.input.host == ${JSON.stringify(endpoint.host)} && context.input.port == ${allowedPort} };\n@id("request_${index}_${allowedPort}")\npermit (principal, action == Box::Action::"http:request", resource)\nwhen { context.input.host == ${JSON.stringify(endpoint.host)} && context.input.port == ${allowedPort}${requestScope} };`,
     ),
   );
   const shellWorkspace = workspace.replace(/^\/home\/node(?=\/)/u, "~");
@@ -349,6 +497,18 @@ export function strandsBoxResources(
   // the Box config protection masks. Secret references remain private files.
   data["box.toml"] =
     `name = "${name.slice(0, 32)}"\nbox_dir = "/run/strands-box/state"\npolicy = "${ROOT}/policy.dw"\n[experimental-features]\ncontainer-agent = true\n[agent]\ncommand = ["/usr/local/bin/node", "--jitless", "/opt/oce/strands-box/inner.mjs", "${ROOT}/workload.json"]\nworkspace = ${JSON.stringify(workspace)}\n[agent.filesystem]\nread = ${JSON.stringify(grantRoots(read))}\nwrite = ${JSON.stringify(grantRoots(write))}\nexec = ["/usr/bin/tini", "/usr/bin/env", "/usr/local/bin/node", "/usr/lib/aarch64-linux-gnu", "/app/node_modules", "/opt/oce/runtime"]\n`;
+  if (modelKey) {
+    volumes.push({
+      name: "model-credential",
+      secret: {
+        secretName: modelKey.name,
+        defaultMode: 0o440,
+        items: [{ key: modelKey.key, path: "key" }],
+      },
+    });
+    data["box.toml"] +=
+      `\n[egress.model]\ndestinations = ["${OPENAI_MODEL_HOST}:443${OPENAI_MODEL_PATH}"]\nsecret.inject = "phantom"\nsecret.ref = "env://${OPENAI_MODEL_KEY}"\n`;
+  }
   const securityContext = {
     allowPrivilegeEscalation: false,
     readOnlyRootFilesystem: true,
@@ -602,6 +762,9 @@ mv -T preparing image`,
           env: [{ name: "HOME", value: "/home/node" }],
           volumeMounts: [
             ...workloadMounts,
+            ...(modelKey
+              ? [{ name: "model-credential", mountPath: "/run/strands-model", readOnly: true }]
+              : []),
             ...(roles
               ? [{ name: "workspace-outcome", mountPath: "/run/oce-workspace", readOnly: true }]
               : []),

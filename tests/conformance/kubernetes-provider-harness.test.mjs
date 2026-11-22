@@ -21,6 +21,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { strandsBoxResources } from "../../apps/controller/src/drivers/sandbox/strands-box-resources.ts";
 import test from "node:test";
 import {
   checkProviderEndpointRequirements,
@@ -84,16 +85,183 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
 
 const openAiStaticProvider = createOpenAiStaticProvider();
 
-test("the Box provisioner receives the launcher for a mounted private hook directory", async () => {
+async function preparedBoxHarness() {
   const fixture = providerEndpointFixture();
   fixture.sandbox.implementation = "strands-box";
   fixture.revision.compute.admission = fixture.driver.admitRevision(fixture.revision);
   await preparedEndpoint(fixture);
-  const command = fixture.provisions.at(-1).requirements.command;
+  return fixture.provisions.at(-1);
+}
+
+test("the Box provisioner receives the launcher for a mounted private hook directory", async () => {
+  const {
+    requirements: { command },
+  } = await preparedBoxHarness();
   const evaluation = command.lastIndexOf("-e");
   assert.ok(evaluation >= 0);
   const launcher = containerProgram({ args: command.slice(evaluation + 1) });
   assert.match(launcher, /Native hook storage must be private/u);
+});
+
+function boxNetwork() {
+  return { endpoints: [{ host: "api.openai.com", ports: [443] }] };
+}
+
+function renderBoxHarness(context, network) {
+  const peer = { namespace: "control-plane", podLabels: { app: "controller" } };
+  return strandsBoxResources(
+    context,
+    {
+      kubernetes: {
+        seccompProfile: "box.json",
+        nodeSelector: { "kubernetes.io/arch": "arm64" },
+        controlPlanePeer: peer,
+      },
+      policy: { network },
+    },
+    "box",
+    {},
+    "input-hash",
+    "a".repeat(64),
+    peer,
+    undefined,
+    [],
+  );
+}
+
+test("Strands Box mounts the opted-in OpenAI model key only in the supervisor", async () => {
+  const context = await preparedBoxHarness();
+  const { environment, workloadIdentity } = context.requirements;
+  const model = environment.find(({ name }) => name === "OPENAI_API_KEY").valueFrom.secretKeyRef;
+  const transport = environment.find(({ name }) => name === "APP_SERVER_TOKEN").valueFrom
+    .secretKeyRef;
+  // Compute puts both keys in the same Secret. Filtering by Secret name would
+  // either refuse this revision or give the supervisor an unintended second key.
+  assert.equal(model.name, transport.name);
+  assert.notEqual(model.key, transport.key);
+
+  const ordinary = renderBoxHarness(context, boxNetwork());
+  assert.deepEqual(
+    renderBoxHarness(context, { ...boxNetwork(), experimentalOpenAiModelCredential: false }),
+    ordinary,
+  );
+  const { data: ordinaryData } = ordinary.find(({ kind }) => kind === "ConfigMap");
+  const ordinaryWorkload = JSON.parse(ordinaryData["workload.json"]);
+  assert.equal(ordinaryWorkload.proxyOpenAiModelCredential, undefined);
+  assert.ok(ordinaryWorkload.secretEnvironment.OPENAI_API_KEY);
+
+  const preview = renderBoxHarness(context, {
+    ...boxNetwork(),
+    experimentalOpenAiModelCredential: true,
+  });
+  const { data } = preview.find(({ kind }) => kind === "ConfigMap");
+  // The Box credential route matches descendants. Only the HTTP policy
+  // prevents a matching bearer from authorizing another path or method.
+  assert.ok(data["box.toml"].includes('destinations = ["api.openai.com:443/v1/responses"]'));
+  assert.ok(data["box.toml"].includes('secret.inject = "phantom"'));
+  const httpRules = data["policy.dw"].split(";").filter((rule) => rule.includes('"http:request"'));
+  assert.equal(httpRules.length, 1);
+  assert.ok(
+    httpRules[0].includes(
+      'context.input.intercepted && context.input.method == "POST" && context.input.path == "/v1/responses"',
+    ),
+  );
+  const workload = JSON.parse(data["workload.json"]);
+  assert.equal(workload.proxyOpenAiModelCredential, true);
+  assert.equal(Object.hasOwn(workload.environment, "OPENAI_API_KEY"), false);
+  assert.equal(Object.hasOwn(workload.secretEnvironment, "OPENAI_API_KEY"), false);
+  assert.equal(JSON.stringify(data).includes(model.name), false);
+  for (const file of context.requirements.files) {
+    assert.equal(data[`file-${file.name}`], file.content);
+  }
+
+  const pod = preview.find(({ kind }) => kind === "Deployment").spec.template.spec;
+  assert.equal(pod.serviceAccountName, workloadIdentity.serviceAccountName);
+  const modelVolumes = pod.volumes.filter(({ secret }) => secret?.secretName === model.name);
+  assert.equal(modelVolumes.length, 1);
+  const [modelVolume] = modelVolumes;
+  assert.deepEqual(
+    modelVolume.secret.items.map(({ key }) => key),
+    [model.key],
+  );
+  const containers = [...pod.containers, ...pod.initContainers];
+  const mounts = containers.flatMap(({ name, volumeMounts }) =>
+    (volumeMounts ?? [])
+      .filter((mount) => mount.name === modelVolume.name)
+      .map(({ readOnly }) => ({ name, readOnly })),
+  );
+  assert.deepEqual(mounts, [{ name: "agent", readOnly: true }]);
+  for (const { env, envFrom } of containers) {
+    assert.equal(
+      env?.some(
+        ({ valueFrom }) =>
+          valueFrom?.secretKeyRef?.name === model.name && valueFrom.secretKeyRef.key === model.key,
+      ) ?? false,
+      false,
+    );
+    assert.equal(envFrom?.some(({ secretRef }) => secretRef?.name === model.name) ?? false, false);
+  }
+});
+
+test("Strands Box refuses an opted-in model key with incompatible grants or workload inputs", async (t) => {
+  const context = await preparedBoxHarness();
+  const model = context.requirements.environment.find(({ name }) => name === "OPENAI_API_KEY")
+    .valueFrom.secretKeyRef;
+  const cases = {
+    "missing model key"({ requirements }) {
+      requirements.environment = requirements.environment.filter(
+        ({ name }) => name !== "OPENAI_API_KEY",
+      );
+    },
+    "incorrect network grant"(_, network) {
+      network.endpoints[0].ports[0] = 8443;
+    },
+    "a model key aliased to node setup"({ requirements }) {
+      requirements.environment.find(
+        ({ name }) => name === "OPENCLAW_NODE_SETUP_CODE",
+      ).valueFrom.secretKeyRef = model;
+    },
+    "a workspace mount covering Codex credentials"({ requirements }) {
+      requirements.workspaceMounts.push({
+        ...requirements.workspaceMounts[0],
+        mountPath: "/home/node/.codex",
+      });
+    },
+    "a changed launch command"({ requirements }) {
+      requirements.command.push("--unexpected");
+    },
+    "a different saved model endpoint"({ revision }) {
+      revision.harness.configuration.modelProvider.baseUrl = "https://model.example.test/v1";
+    },
+    "a credential source"({ revision }) {
+      revision.harnessAuth = {
+        method: "credential_source",
+        loginMode: "api_key",
+        sourceId: "source",
+        sourceType: "openai",
+        credentialGatewayId: "credential-gateway",
+      };
+    },
+    "a managed Codex configuration override"({ requirements }) {
+      requirements.files.find(({ name }) => name === "config.toml").content +=
+        '\nmodel_provider = "other"\n';
+    },
+  };
+  for (const [label, change] of Object.entries(cases)) {
+    await t.test(label, () => {
+      const candidate = {
+        ...context,
+        revision: structuredClone(context.revision),
+        requirements: structuredClone(context.requirements),
+      };
+      const network = { ...boxNetwork(), experimentalOpenAiModelCredential: true };
+      change(candidate, network);
+      assert.throws(() => renderBoxHarness(candidate, network), {
+        name: "SandboxRevisionUnsupportedError",
+        code: "SANDBOX_HARNESS_UNSUPPORTED",
+      });
+    });
+  }
 });
 
 for (const implementation of ["openshell", "strands-box"]) {

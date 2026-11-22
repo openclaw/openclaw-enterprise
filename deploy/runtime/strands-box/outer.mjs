@@ -5,6 +5,12 @@ import { nativeStatus } from "./status.mjs";
 import { serveHarness } from "./supervisor.mjs";
 
 const manifest = JSON.parse(readFileSync(process.argv[2], "utf8"));
+if (
+  manifest.proxyOpenAiModelCredential !== undefined &&
+  manifest.proxyOpenAiModelCredential !== true
+) {
+  throw new Error("Invalid Strands Box model credential mode.");
+}
 // The private socket belongs to the file-node init container. Kubernetes starts
 // this supervisor once the node can report either terminal baseline outcome.
 let startupFailure;
@@ -37,11 +43,24 @@ const tls = {
 };
 // A restarted supervisor cannot inherit the admitted execution's TLS identity.
 unlinkSync(directory + "/key.pem");
+let modelEnvironment = {};
+if (manifest.proxyOpenAiModelCredential === true && !startupFailure) {
+  const key = readFileSync("/run/strands-model/key", "utf8");
+  if (!/^[!-~]{1,8192}$/u.test(key) || key.startsWith("strands_box_")) {
+    throw new Error("Strands Box model credential is missing or invalid.");
+  }
+  modelEnvironment = { OPENAI_API_KEY: key };
+}
 const box = startupFailure
   ? undefined
   : spawn("/opt/strands-box/strands-box", ["run", "--config", "/etc/strands-box/box.toml"], {
       stdio: ["pipe", "pipe", "inherit"],
-      env: { HOME: "/home/node", PATH: process.env.PATH, EXPERIMENTAL_LINUX_SUPPORT: "TRUE" },
+      env: {
+        HOME: "/home/node",
+        PATH: process.env.PATH,
+        EXPERIMENTAL_LINUX_SUPPORT: "TRUE",
+        ...modelEnvironment,
+      },
     });
 let shutdownRequested = false;
 const { stop } = serveHarness(manifest, {
