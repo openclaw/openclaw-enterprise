@@ -117,9 +117,11 @@ OCC adds the rows that are missing and updates a Role's permissions when they
 changed. It deletes each `binding_config_` binding that the configuration no
 longer lists, then each configured Role or Group that the configuration no
 longer lists. If a binding that OCC did not configure, such as an Owner
-binding, still uses a removed Role or Group, startup fails and names the
-binding. Delete that binding, or list the Role or Group again. API and worker
-must use the same `iam` value.
+binding, still uses a removed Role or Group, startup fails and lists up to
+three binding IDs. Restore the Role or Group in the configuration and restart the
+API and worker with the same `iam` value. Before retrying removal, verify any
+replacement access and delete only the bindings you intend to revoke. Keep the
+Role or Group in the configuration if a binding you need still uses it.
 
 When OCC creates a Namespace, it writes the configured bindings whose scope names
 that Namespace in the same transaction. Bootstrap creates `default`, so a binding
@@ -169,10 +171,13 @@ Removing a Group binding and disabling an account have different results:
   request, so all of the person's API access stops. Their Owner bindings stay in
   IAM policy and apply again if the account is enabled.
 
-In both cases, everything the person created stays: their Owner bindings,
-Namespaces, Agents, and deploy-time grants remain, and their Agents keep running.
-To remove that access, an administrator deletes the resources or the Owner
-bindings.
+In both cases, the person's Owner bindings, Namespaces, Agents, and deploy-time
+grants remain, and their Agents keep running. Deleting the person's Owner
+bindings leaves the Agent's own grants in place. To remove a deploy-time grant,
+delete the AccessBinding that gives the Agent's ServicePrincipal `operate` on
+that source. Other grants may still allow access. A later authorized deploy can
+restore the grant. See [Manage Namespace policy](../authorization.md#manage-namespace-policy)
+for revocation limits and containment steps.
 
 ## The default Namespace
 
@@ -205,10 +210,14 @@ rule covers every creator, including administrators and ServiceAccounts:
   `openclaw.iam.access_bindings.create` with `reason: "creator"`.
 
 Without `ownerRole`, OCC writes no Owner binding. Deleting a resource deletes its
-exact bindings, including the Owner binding. To change an owner, an
-administrator deletes the Owner binding by its ID through the Namespace policy
-API and grants the new owner. An administrator's Owner bindings add nothing to
-the administrator binding, but they stay if that binding is removed.
+exact bindings, including the Owner binding. The Namespace policy API can delete
+an Owner binding by ID. It cannot transfer or recreate the binding. Use Namespace
+Roles to grant access to individual resources. If those grants meet the new user's
+needs, verify access before deleting the original binding. Before deleting a
+Namespace-wide Owner binding, verify that the new user has equivalent
+Namespace-wide access. Removing an administrator binding leaves that person's
+Owner bindings in place. Those bindings grant the permissions configured in the
+Owner Role.
 
 Each create or deploy that writes an Owner binding or a deploy-time grant holds
 the caller's session and the IAM configuration lock until COMMIT, and authorizes
@@ -241,10 +250,9 @@ records `openclaw.iam.access_bindings.create` with the source as resource and
 `reason: "agent_deploy"` and `agentId` in details. The grants commit with the
 deployment; a refused deployment writes none.
 
-A source that the caller cannot operate gets no grant. The Agent principal check
-then refuses the deploy until someone who can operate the source deploys, or an
-administrator grants access as in
-[Let an Agent use a Secret](../../guides/topics/iam.md#let-an-agent-use-a-secret).
+The caller needs `operate` on each referenced Secret and credential source even
+if the Agent already has access. Grant the caller the missing permission or ask
+an authorized caller to deploy.
 OCC does not remove these grants when the Agent stops using a source. Deleting
 the Agent or the source removes them, as
 [Manage Namespace policy](../authorization.md#manage-namespace-policy) describes.

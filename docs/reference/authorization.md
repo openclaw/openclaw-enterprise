@@ -24,26 +24,27 @@ AccessBinding ──► Role ──► Permission
 ## Supported policy surface
 
 Fresh native-IAM bootstrap provisions the human administrator and one
-Installation-scoped, non-Agent ServicePrincipal. Each receives its own binding
-to the same administrator Role, with no Namespace or resource filter:
+Installation-scoped non-Agent ServicePrincipal. Separate unfiltered bindings
+grant both the same administrator Role.
 
-| Resource kind                                | Actions                                                                 |
-| -------------------------------------------- | ----------------------------------------------------------------------- |
-| `installation`                               | `administer`, `read`                                                    |
-| `namespace`                                  | `create`, `read`, `delete`                                              |
-| `configuration`, `preset`, `service_account` | `create`, `read`, `update`, `delete`                                    |
-| `secret`                                     | `create`, `read`, `update`, `delete`, `operate`                         |
-| `credential_source`                          | `create`, `read`, `update`, `delete`, `operate`                         |
-| `agent`                                      | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer` |
-| `agent_revision`                             | `read`                                                                  |
+| Resource kind                                | Actions                                                                                  |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `installation`                               | `administer`, `read`                                                                     |
+| `namespace`                                  | `create`, `read`, `delete`                                                               |
+| `configuration`, `preset`, `service_account` | `create`, `read`, `update`, `delete`                                                     |
+| `secret`                                     | `create`, `read`, `update`, `delete`, `operate`                                          |
+| `credential_source`                          | `create`, `read`, `update`, `delete`, `operate`                                          |
+| `agent`                                      | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `manage_policy` |
+| `agent_revision`                             | `read`                                                                                   |
+| `sandbox_policy`                             | `read`, `update`                                                                         |
 
 These grants cover existing and future Namespaces in this Installation, subject
 to exact authorization and matching Restrictions. They confer no Kubernetes or
-provider authority. Rerunning bootstrap does not rewrite stored grants, so an
-Installation bootstrapped before an action was added to this seed lacks it until
-an administrator grants it; `credential_source:update` is one such action.
-Custom Roles never gain permissions automatically. The
-Preset upgrade extends only the unchanged built-in administrator Role; see
+provider authority. Rerunning bootstrap leaves stored grants unchanged. Upgrades
+can change grants. Check the stored Role for `credential_source:update`. An
+unchanged built-in administrator Role can receive `manage_policy` and both
+`sandbox_policy` grants on upgrade. Custom Roles never gain permissions
+automatically. Preset upgrades extend only that unchanged Role. See
 [Preset upgrade eligibility](presets.md#crud-and-permissions). Removing the original human account does not
 remove the service identity. See
 [bootstrap authentication](authentication.md#installation-and-account-ownership)
@@ -370,8 +371,9 @@ tiers on the exact Agent and version: Pod status and Events need Agent
 `operate` and `read` plus Agent revision `read`; container log text needs Agent
 `read_logs` or `administer` and Agent `read`, which cover every version of that
 Agent, including later deployments. A matching
-`read_logs` Restriction denies log text even to a holder of `administer`. Each
-follow poll is authorized again, so revoking a grant stops the next poll.
+`read_logs` Restriction denies log text even to a holder of `administer`.
+OCC checks access on each follow poll. Removing a binding blocks the next poll
+only if the caller loses the required access.
 
 The selected IAM Driver loads current authoritative policy for each identity
 lookup and decision, so account and permission changes reach every controller

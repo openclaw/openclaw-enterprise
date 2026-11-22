@@ -8,17 +8,18 @@ override grants, and one action never implies another. See
 
 ## Actions
 
-| Action       | What it permits                                                                                                                                                                                        |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `create`     | Create a resource in its parent Installation or Namespace.                                                                                                                                             |
-| `read`       | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                                                                     |
-| `update`     | Change a resource or its credential.                                                                                                                                                                   |
-| `delete`     | Request deletion of the exact resource.                                                                                                                                                                |
-| `deploy`     | Create an Agent revision or recover its exact first-deployment receipt.                                                                                                                                |
-| `operate`    | Submit an Agent HTTP turn or chat in its browser UI, stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
-| `administer` | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions.                                         |
-| `read_logs`  | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                                                             |
-| `read_audit` | Read selected audit metadata for one Agent. Requires a direct AccessBinding on the Agent and a human session.                                                                                          |
+| Action          | What it permits                                                                                                                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `create`        | Create a resource in its parent Installation or Namespace.                                                                                                                                             |
+| `read`          | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                                                                     |
+| `update`        | Change a resource or its credential.                                                                                                                                                                   |
+| `delete`        | Request deletion of the exact resource.                                                                                                                                                                |
+| `deploy`        | Create an Agent revision or recover its exact first-deployment receipt.                                                                                                                                |
+| `operate`       | Submit an Agent HTTP turn or chat in its browser UI, stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
+| `administer`    | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions.                                         |
+| `read_logs`     | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                                                             |
+| `manage_policy` | Required on the exact Agent for sandbox policy changes. See [policy authority](../sandbox-policies.md#authority-and-admission) for additional permissions.                                             |
+| `read_audit`    | Read selected audit metadata for one Agent. Requires a direct AccessBinding on the Agent and a human session.                                                                                          |
 
 ## Resources and scopes
 
@@ -174,8 +175,8 @@ operation was not authorized.`
 
 The [Namespace policy API](../authorization.md#manage-namespace-policy) accepts
 the per-kind actions in the table above on `agent`, `agent_revision`,
-`configuration`, `credential_source`, `preset`, `secret`, and `service_account`,
-except `create`.
+`configuration`, `credential_source`, `preset`, `sandbox_policy`, `secret`, and
+`service_account`, except `create`.
 It refuses, with `400 INVALID_REQUEST`, a Role with a combination no operation
 checks, such as `secret:read_logs` or `configuration:deploy`, because it would
 grant nothing, and a Role with any `create` Permission, which no exact-resource
