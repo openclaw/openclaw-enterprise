@@ -132,6 +132,19 @@ rules:
   - apiGroups: [""]
     resources: [pods/proxy]
     verbs: [get]
+  # Verify the revision-owned automation route, endpoint, and egress policy.
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [httproutes]
+    verbs: [get]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [list]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get]
   {{- if .Values.agentRuntimeLogs.enabled }}
   # Runtime log reads: OCC re-checks revision ownership of every named Pod.
   - apiGroups: [""]

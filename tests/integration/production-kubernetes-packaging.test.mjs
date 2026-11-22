@@ -425,9 +425,18 @@ function tenantApiRules() {
       resources: ["pods/proxy"],
       verbs: ["get"],
     },
+    ...automationTransportRules,
     ...runtimeLogRules,
   ];
 }
+
+// Automation transport checks are read-only and become effective only through a tenant RoleBinding.
+const automationTransportRules = [
+  { apiGroups: [""], resources: ["services"], verbs: ["get"] },
+  { apiGroups: ["gateway.networking.k8s.io"], resources: ["httproutes"], verbs: ["get"] },
+  { apiGroups: ["discovery.k8s.io"], resources: ["endpointslices"], verbs: ["list"] },
+  { apiGroups: ["networking.k8s.io"], resources: ["networkpolicies"], verbs: ["get"] },
+];
 
 // Runtime log reads: added by agentRuntimeLogs.enabled (default true), never cluster-bound.
 const runtimeLogRules = [
@@ -3218,7 +3227,14 @@ test(
         verbs: ["get", "create", "patch", "delete"],
       },
     );
-    assert.ok(!tenantApi.rules.some(({ resources }) => resources.includes("httproutes")));
+    assert.deepEqual(
+      tenantApi.rules.filter(({ resources }) =>
+        resources.some((resource) =>
+          ["services", "httproutes", "endpointslices", "networkpolicies"].includes(resource),
+        ),
+      ),
+      automationTransportRules,
+    );
     assert.equal(
       configured.some(({ kind }) => kind === "ConfigMap"),
       false,
