@@ -20,6 +20,8 @@ export interface RequiredPermission {
     | "read_logs_alternative"
     | "bound_credential_source"
     | "unless_consent_owner"
+    | "saved_sandbox_policy_for_deployment"
+    | "explicit_repository_network_policy"
     | "saved_sandbox_policy_additions";
 }
 
@@ -232,10 +234,22 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         ),
       );
     }
-    // Rejections that name saved network policy additions require SandboxPolicy read.
+    // OCC checks policy read before admitting the saved deployment policy or
+    // checking an Agent update for overlap between host additions and repository bindings.
     if (deploying || updating) {
       permissions.push(
-        requirement("read", "sandbox_policy", "requested", "saved_sandbox_policy_additions"),
+        requirement(
+          "read",
+          "sandbox_policy",
+          "requested",
+          deploying ? "saved_sandbox_policy_for_deployment" : "saved_sandbox_policy_additions",
+        ),
+      );
+    }
+    if (deploying) {
+      permissions.push(
+        requirement("manage_policy", "agent", "requested", "explicit_repository_network_policy"),
+        requirement("update", "sandbox_policy", "requested", "explicit_repository_network_policy"),
       );
     }
     if (operationId === "deployAgentFirst") {
@@ -352,10 +366,14 @@ function permissionDescription(
         }
         return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
       }
+      if (condition === "saved_sandbox_policy_for_deployment") {
+        return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions or an explicit repository network policy list, including an empty list.`;
+      }
+      if (condition === "explicit_repository_network_policy") {
+        return `Requires ${action} permission on the exact ${name} when the Agent has an explicit repository network policy list, including an empty list.`;
+      }
       if (condition === "saved_sandbox_policy_additions") {
-        return operationId === "updateAgent"
-          ? `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`
-          : `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions.`;
+        return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`;
       }
       if (condition === "missing_runtime_credentials") {
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;

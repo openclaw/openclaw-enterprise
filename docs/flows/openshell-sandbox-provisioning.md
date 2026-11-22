@@ -253,7 +253,10 @@ owns state-child isolation, retained permissions and temporary paths.
 existing ones to be process-owned `0700`. Managed preparation uses a restricted
 revision Deployment for other subpaths. It checks ownership and mode before
 UID-fenced foreground deletion. Completed preparation exits successfully on
-SIGTERM. Sandbox creation waits for all writer Pods. Admission requires
+SIGTERM. Sandbox creation waits for all writer Pods. When `ReplicaFailure`
+names a Pod quota that a new read shows full, the preparer is removed and
+Compute returns pending `NAMESPACE_POD_QUOTA_EXCEEDED`; the next pass prepares
+again. Admission requires
 `userNamespaces: false`, one optional operator-mode ServiceAccount, and the pinned
 Gateway's default identity. Preparation has no model credentials, ServiceAccount
 tokens, capabilities, or direct Pod creation.
@@ -423,6 +426,8 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 - 2026-11-22 10:40: Link the exposure sweep. (authoring-run/88a02f98-14c3-4a30-af11-58217411a763 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 08:39: Stop native workspace preparation at a full Pod quota and report the pending quota reason. (authoring-run/275abc15-117c-45f0-920d-9ff2e08084c9 - e54145b9772eb083b2cb9a33ffef6274d99eb269)
+
 - 2026-11-20 08:09: Serialize sizing. (01a1f50f-138b-756e-be12-ada2880622e2 - 6967d8e4dea2b4c5bb769c8697e7d4cfd046c55a)
 
 - 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
@@ -442,19 +447,5 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 - 2026-11-11 21:12: Preload Agent Sandbox locally. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
 
 - 2026-11-11 16:37: Check the managed controller before local Agent deployment. (authoring-run/8dc2b49c-caf2-4594-9d69-06d1826b336e - 98da01c910)
-
-- 2026-11-11 06:13: Trace attachment refusals. (authoring-run/04448580-0c4a-4965-8c27-7f586386c885 - fef779767c622b30bab45c7a0a94f16fc04f70ab)
-
-- 2026-11-11 05:33: Record lazy packing and PAT evidence. (authoring-run/1354aaee-dc47-423c-864d-41dfc9608912 - f633bf27c890)
-
-- 2026-11-11 05:03: Explain revision-bound command selection and PAT startup refusal. (authoring-run/d486197b-c9d9-437a-8a99-f54368ab9e69 - a7d8e6a5d2b0)
-
-- 2026-11-10 21:21: Guard scratch storage. (authoring-run/77c6dd8e-42d7-4688-9561-cf468610374c - 011cd43b9c88d4123b19f12bd5d7bd0938e905d2)
-
-- 2026-11-10 21:04: Trace scratch PVC admission and mounts. (authoring-run/0029d37a-209b-4105-8242-a8c48c959c81 - 8b0d0518cb8786253d9632ae4beb8a75758a2e61)
-
-- 2026-11-10 20:33: Wait for the native Gateway node binding and rollout before readiness. (authoring-run/01a1b316-df53-7fc0-b967-6e23527300dc - 5b7ee9438050)
-
-- 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

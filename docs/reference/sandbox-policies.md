@@ -166,9 +166,27 @@ on its OIDC gateway; these permissions are separate from OCE resource authority.
 
 Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository delegation. It accepts up to 32 unique repositories in lowercase `owner/name` form without `.git`, each with `read` or `write` access. Startup rejects invalid entries. An absent or empty ceiling delegates nothing. The policy GET returns the subset approved for this Namespace.
 
-`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access and returns saved repository grants and withdrawal availability. An absent policy retains legacy behavior. An explicit `[]` records zero grants.
+`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. PUT validates the whole list because a Driver can require multiple grants together.
 
-PUT preserves omitted `repositoryNetworkPolicy`. To withdraw an existing policy's grants, submit `additions: []` and `repositoryNetworkPolicy: []` with `expectedVersion`, editing enabled and normal authorization. Withdrawal remains available after Driver capability loss. First saves and edits that grant access require further Driver support. Explicit policies, including `[]`, block deployment before credential provisioning and block live application. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
+PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. An explicit empty list requests denial of all repositories and requires SandboxPolicy `read` even on the first save. This check prevents a caller from learning whether a list already exists. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []`.
+
+A save updates desired policy. Deployment checks the current grants and selected Drivers, validates the frozen revision, and rechecks authority before credential operations. The Worker refuses stale or unsupported policy before dispatch. Live apply refuses an explicit list. To end current access, use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
+
+When a Channel needs a bound Secret, the controller checks the saved repository
+policy and the caller's Secret access before handing the value to the Channel.
+The handoff shares the lock used by permission changes. The controller checks
+permissions committed before it acquires the lock. It releases the lock before
+waiting for the provider and checks deployment admission again before saving the
+revision.
+
+To opt into repository policy, an Agent must have an explicit list from its
+first deployment. Ordinary Agents can keep deploying without a list.
+A delayed write to its Gateway can outlive a Worker claim and a completed
+stop. Deployment returns 409 if any earlier revision has no list. The Worker
+checks the same history before preparing a queued scoped revision. For a
+previously deployed Agent with that history, create a new Agent and save
+the list before deploying it. An Agent that started with a list can
+deploy subsequent policy changes under the same Agent ID.
 
 After refusing a scoped replacement before its first provider call, the Worker
 can maintain the serving predecessor if the deployment has no earlier attempt.
