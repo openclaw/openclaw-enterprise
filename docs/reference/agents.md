@@ -1,26 +1,21 @@
 # Agents
 
-An Agent is a named AI workload in a [Namespace](namespaces.md). It has its own
-identity, Agent revision history, and gateway. Its permissions do not grant
-access across Namespaces.
+An Agent is a named workload with its own identity, revision history, and gateway in one [Namespace](namespaces.md). Its permissions do not cross Namespaces.
 
-Use a [Preset](presets.md) to copy launch settings into an Agent draft.
+A [Preset](presets.md) supplies draft launch settings.
 
 [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md), choose
 [Compute](../guides/topics/agent-compute.md), manage
 [versions](../guides/topics/agent-revisions.md), or
 [troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
 
-Creation saves identity and exact Namespace-owned Configuration with `active`
-status and `stopped` desired runtime state. No Agent revision is
-created and no workload or model starts until an authorized caller requests
-[deployment](#identity-and-deployment).
+Creation saves the identity and exact Namespace-owned Configuration with `active` status and `stopped` desired runtime state. Authorized [deployment](#identity-and-deployment) creates the first revision and starts the workload.
 
 ## Supported operations
 
 Operations beneath `/namespaces/:namespaceId/agents` return `201` for creation,
 `200` for reads/updates, and `202` for deployment, stop, or deletion. Deployment
-returns the saved Agent revision (`AgentRevision`). Stop sets
+returns the saved `AgentRevision`. Stop sets
 `desiredRuntimeState` to `stopped`. Lists require each Agent's exact `read`.
 See [API schemas, envelopes, and permissions](api.md).
 
@@ -181,12 +176,12 @@ Changing the binding does not clear historical Agent revisions. For a request th
 never created an Agent, see
 [clear legacy bindings](settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
-For dedicated Codex with a Credential Gateway, use
-`{ "method": "credential_source", "sourceId": "cs_…" }`; see
-[credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
-It must also be listed in `credentialSources`.
+For dedicated OpenClaw or Codex, use
+`{ "method": "credential_source", "sourceId": "cs_…" }` with a supported
+TokenService and Credential Proxy or legacy Credential Gateway. List it in
+`credentialSources`; see [Source grants](credential-sources.md#bind-a-source-to-an-agent).
 
-Replacement involving staged managed credentials returns `409` before queuing work. After a selected launch fails, complete Stop before retrying.
+Replacing a revision from or to managed credential delivery currently returns `409` before queueing. Complete Stop before deploying again. See [implementation status](credential-sources.md#implementation-status).
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
@@ -313,7 +308,7 @@ Compute, retires every version, and removes runtime credentials. It
 atomically deletes the Agent, its Agent revisions, service principal, API keys, and
 exact IAM bindings and restrictions. Kubernetes retirement waits for owned Pods
 and removes owned artifacts, including workspace data. Namespace Configurations
-and Secrets survive. Deletion releases its name;
+and Secrets survive. See [Credential Source implementation status](credential-sources.md#implementation-status) for managed credential retirement. Deletion releases its name;
 [repository cleanup](repository-credentials.md#repo-driver-contract) continues independently.
 
 Permanent failure or exhausted attempts leave the Agent `deleting`.
@@ -347,7 +342,7 @@ deployed Agents keep separate gateways and stable service principals.
 
 The public API has no Agent revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
-The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Its Credential Gateway mediates model sources; direct Secret delivery remains unsupported. Check its compatibility limits.
+The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Credential Gateway or the paired Credential Proxy delivers model credentials; direct Secret delivery remains unsupported. Check its compatibility limits.
 
 ## Failure semantics
 

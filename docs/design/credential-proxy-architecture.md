@@ -1,5 +1,7 @@
 # Credential Proxy architecture
 
+These diagrams follow the existing protected Git path. For the broader proposed model and plugin credential flow and its implementation status, see [credential sources](../reference/credential-sources.md).
+
 A user asks an Agent, “Implement a feature and push a branch.” OpenClaw Enterprise (OCE) runs the Agent in a sandbox. The Agent runs ordinary Git commands. OCE keeps the GitHub App signing key and the installation token outside that sandbox.
 
 ## From the user to GitHub
