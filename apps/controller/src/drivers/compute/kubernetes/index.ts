@@ -31,6 +31,7 @@ import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/con
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { OpenShellSandboxConfigurationFailure } from "../../sandbox/openshell-sandbox-errors.ts";
 import { networkPolicySpecToJson, resolverEgress } from "../../kubernetes/network-policy.ts";
+import { podQuotaFull, podQuotaRefusal } from "../../kubernetes/pod-quota.ts";
 import {
   KubernetesRequestTimeout,
   unreachableSocketCause,
@@ -221,6 +222,7 @@ import {
   RuntimeLogsForbiddenByClusterError,
   runtimeFailureCause,
   SandboxNamespaceRefusedError,
+  SandboxPodQuotaExceededError,
   SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
@@ -2319,38 +2321,6 @@ function validateCodexSeccompProfile(value: unknown): string {
     );
   }
   return profile;
-}
-
-// The API server's quota refusal, `exceeded quota: <name>, requested: <resource>=<quantity>[,...],
-// used: ..., limited: ...`, lists only the resources over their limit.
-const QUOTA_REFUSAL = /\bexceeded quota: ([^\s,]+), requested: ([^\s,]+(?:,[^\s,]+)*), used: /u;
-const POD_QUOTA_RESOURCES = ["pods", "count/pods"] as const;
-
-// The ResourceQuota a Pod creation refusal names when that quota had no Pods left.
-function podQuotaRefusal(message: unknown): string | undefined {
-  const refusal = typeof message === "string" ? QUOTA_REFUSAL.exec(message) : null;
-  return refusal?.[2]?.split(",").some((entry) => {
-    const resource = entry.split("=", 1)[0];
-    return POD_QUOTA_RESOURCES.some((name) => name === resource);
-  })
-    ? refusal[1]
-    : undefined;
-}
-
-// True when a ResourceQuota's status shows its Pods all used: a Pod needs one more.
-function podQuotaFull(quota: unknown): boolean {
-  const status = asRecord(asRecord(quota)?.status);
-  const hard = asRecord(status?.hard);
-  const used = asRecord(status?.used);
-  return POD_QUOTA_RESOURCES.some((resource) => {
-    const limit = hard?.[resource];
-    const count = used?.[resource];
-    return (
-      typeof limit === "string" &&
-      typeof count === "string" &&
-      (compareResourceQuantities(count, limit) ?? -1) >= 0
-    );
-  });
 }
 
 // The kubelet's waiting reasons while it cannot pull a container image: ErrImagePull on a
@@ -8095,6 +8065,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
               checkedAt: new Date().toISOString(),
             };
             return { ...result, runtimeFailure };
+          }
+          if (error instanceof SandboxPodQuotaExceededError) {
+            // A full Pod quota refused the provider's temporary workspace preparation Pod. Wait
+            // with the reason Compute gives its own refused Pods; the next pass prepares again.
+            return incomplete("NAMESPACE_POD_QUOTA_EXCEEDED");
           }
           if (!(error instanceof SandboxWorkspaceSetupRefusedError)) {
             throw error;

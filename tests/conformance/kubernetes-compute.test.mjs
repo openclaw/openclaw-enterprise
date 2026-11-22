@@ -35,6 +35,7 @@ import {
   ConfigurationHarnessError,
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
+  SandboxPodQuotaExceededError,
   SandboxWorkspaceSetupRefusedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
@@ -2316,6 +2317,44 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
   );
   await assert.rejects(prepare(), (error) => error === failure);
   assert.equal(provisions.length, 3);
+});
+
+// A full Namespace Pod quota refused the Sandbox Driver's temporary workspace preparation Pod.
+// The revision waits with the reason Compute gives its own refused Pods, which the worker
+// renders as fixed text, instead of failing after configuration retries. Each later pass calls
+// the Driver again, so a freed Pod resumes the deployment.
+test("Kubernetes Sandbox provisioning keeps a revision pending when preparation Pods hit a full quota", async () => {
+  const provisions = [];
+  const sandboxDriver = {
+    ...nativeSandboxIdentity(),
+    async workspaceNodePeerLabels() {
+      return undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      throw new SandboxPodQuotaExceededError("The Namespace Pod quota is full.");
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async harnessStatus() {
+      assert.fail("a pending quota is reported without a status read");
+    },
+    async withdrawHarnessExposure() {},
+  };
+  const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    revision: nativeSandboxRevision(sandboxDriver.id, "quota"),
+  });
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  const pending = await prepare();
+  assert.equal(provisions.length, 1);
+  assert.equal(pending.ready, false);
+  assert.equal(pending.pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
+  assert.equal(pending.runtimeFailure, undefined);
+  assert.equal((await prepare()).pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
+  assert.equal(provisions.length, 2);
 });
 
 // Finding 1671: the node Secret is the Agent's, so a redeploy found a recorded device from its

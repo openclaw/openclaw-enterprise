@@ -24,6 +24,7 @@ import {
   networkPolicySpecToJson,
   networkPolicyToSdk,
 } from "../kubernetes/network-policy.ts";
+import { podQuotaFull, podQuotaRefusal } from "../kubernetes/pod-quota.ts";
 import { unsentManifestFields } from "../kubernetes/manifest-fields.ts";
 import {
   openShellEgressConfiguration,
@@ -105,6 +106,7 @@ import {
   SandboxNamespaceRefusedError,
   SandboxNamespacePendingError,
   SandboxNetworkPolicyConflictError,
+  SandboxPodQuotaExceededError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
@@ -1660,6 +1662,45 @@ function sandboxServiceAccounts(
   );
 }
 
+// The Deployment controller copies a Pod create refusal onto the Deployment. A full Pod quota
+// refuses every retry, so waiting for the deadline would only delay the same answer. The
+// condition can outlive the refusal, so the named quota is read again and must be full now.
+async function preparationPodQuotaFull(
+  api: KubernetesObjectApi,
+  deployment: V1Deployment,
+  namespaceName: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  for (const item of deployment.status?.conditions ?? []) {
+    const condition = asRecord(item);
+    if (
+      condition?.type !== "ReplicaFailure" ||
+      condition.status !== "True" ||
+      condition.reason !== "FailedCreate"
+    ) {
+      continue;
+    }
+    const quotaName = podQuotaRefusal(condition.message);
+    if (quotaName === undefined) {
+      continue;
+    }
+    try {
+      const quota = await api.read({
+        apiVersion: "v1",
+        kind: "ResourceQuota",
+        metadata: { name: quotaName, namespace: namespaceName },
+      });
+      if (podQuotaFull(quota)) {
+        return true;
+      }
+    } catch {
+      // An unreadable or forbidden quota proves nothing: keep waiting until the deadline.
+      signal.throwIfAborted();
+    }
+  }
+  return false;
+}
+
 // TODO(openshell-private-subpath-preparation): Remove if OpenShell adds support for preparing private subpaths
 // and OCE adopts that support.
 // Use existing Deployment permissions; never grant OCC direct Pod creation for this.
@@ -1883,6 +1924,12 @@ async function prepareNativeWorkspace(
         existing.status.observedGeneration === existing.metadata?.generation
       ) {
         break;
+      }
+      // Compute reports this as the revision's NAMESPACE_POD_QUOTA_EXCEEDED wait.
+      if (await preparationPodQuotaFull(api, existing, sandbox.namespaceName, context.signal)) {
+        throw new SandboxPodQuotaExceededError(
+          `Native workspace preparation ${name} cannot create a Pod: the Namespace Pod quota is full.`,
+        );
       }
       if (Date.now() >= deadline) {
         throw new OpenShellSandboxConfigurationFailure(
