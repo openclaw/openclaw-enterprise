@@ -650,6 +650,14 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   await page.goBack();
   await list.waitFor();
 
+  const dateLabel = list.locator(".namespace-cell-created .namespace-cell-label").first();
+  await page.setViewportSize({ width: 1101, height: 844 });
+  assert.equal(await head.isVisible(), true, "column headings are visible above 1100 px");
+  assert.ok((await visibleBox(dateLabel)).width <= 1, "the date uses the column heading");
+  await page.setViewportSize({ width: 1100, height: 844 });
+  assert.equal(await head.isVisible(), false, "row labels replace column headings at 1100 px");
+  assert.ok((await visibleBox(dateLabel)).width > 1, "the date has a visible row label");
+
   // Just above the phone breakpoint, the sidebar leaves less room for the Namespace rows.
   await page.setViewportSize({ width: 761, height: 844 });
   const search = page.getByRole("searchbox", { name: "Search Namespaces" });

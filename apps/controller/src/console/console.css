@@ -1413,13 +1413,8 @@ p {
   clip-path: inset(50%);
   white-space: nowrap;
 }
-@media (max-width: 1100px) {
-  .namespace-table {
-    --namespace-columns: minmax(0, 1fr) 7rem 13rem 8rem;
-  }
-}
 /* Stack Namespace rows when the sidebar leaves too little room for four columns. */
-@media (max-width: 980px) {
+@media (max-width: 1100px) {
   .namespace-table-head {
     display: none;
   }
