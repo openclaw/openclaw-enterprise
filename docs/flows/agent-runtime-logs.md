@@ -99,8 +99,13 @@ reasons and Event messages are redacted.
 
 `runtime-logs/read.ts:readRuntimeLogPage` verifies the cursor HMAC against principal,
 Agent, version and source (`runtime-logs/cursor.ts`). Select a listed Pod and main or
-init `container`. A different stream, missing or expired cursor (one hour), or departed Pod starts
-a new view, first auditing the admitting action as `openclaw.agents.runtime_logs.view`. The Driver rechecks Pod ownership and container, then calls `readNamespacedPodLog`
+init `container`. A view covers the selected source, Pod name, container, and current or
+previous container logs. A missing or expired cursor (one hour), a changed selection, or
+a departed Pod replaced by another selected Pod requires a new view. OCC audits each new
+view as `openclaw.agents.runtime_logs.view` before the Driver read. To change the source,
+omit the old cursor; a cursor for another source is invalid. A UID or restart-count change for the
+same selection keeps the view ID and does not add another view audit. The Driver rechecks
+Pod ownership and container, then calls `readNamespacedPodLog`
 with `tailLines`, `sinceSeconds`, `previous`, 1 MiB `limitBytes`, and timestamps. After this name-addressed read, Kubernetes Compute requires a fresh revision-owned
 Pod, UID, declared container, and observed restart count. Missing identity fails
 without content; changed UID or restart count discards fetched lines. OCC rejects
@@ -110,8 +115,11 @@ instance returns a `stream_replaced` gap without lines; unchanged lines continue
 prevents stale status from hiding output; other failures keep their mapping.
 `kubernetesRuntimeLogLine` separates kubelet's RFC3339 timestamp from each raw
 line and converts numeric offsets to UTC while retaining every fractional digit.
-Unknown or malformed offset prefixes remain untimed raw text. Cursor polls derive `sinceSeconds` from the newest delivered line or, before any
-delivery, the previous read (a full or byte-cut tail emits `window_exceeded`). If a line exceeding 1 MiB stalls every poll and is over about 3 seconds old,
+Unknown or malformed offset prefixes remain untimed raw text. After a discarded replacement
+read, cursor polls reapply the requested relative duration, or leave it omitted, until the first
+identity-verified read. A verified empty read returns to ordinary quiet polling from the start
+of that read. Ordinary polls derive `sinceSeconds` from the newest delivered timestamp or,
+when none exists, the previous read start (a full or byte-cut tail emits `window_exceeded`). If a line exceeding 1 MiB stalls every poll and is over about 3 seconds old,
 the cursor resumes from the current read; `window_exceeded` dates the lost interval. A carried PEM block loses its time boundary and remains masked; earlier lines are dropped.
 Cursors are signed, not encrypted; keyed line/window hashes prevent testing masked
 values. Verified `v1` cursors expire into new audited views.
