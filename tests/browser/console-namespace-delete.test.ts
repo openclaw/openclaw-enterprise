@@ -3,7 +3,12 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Locator } from "playwright";
 import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
-import type { AuditEvent } from "../../packages/contracts/src/index.ts";
+import {
+  CONFIGURED_IAM_ID_PREFIXES,
+  type AuditEvent,
+  type Permission,
+} from "../../packages/contracts/src/index.ts";
+import { validatePersistedNativeIAMState } from "../../packages/iam/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
@@ -11,7 +16,7 @@ import { grantRole, restrict } from "../helpers/iam-grants.ts";
 import { namespaceDeleteDenied } from "../helpers/refusal-access.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 
-import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { callbackGate } from "../helpers/wait-for.ts";
 import {
@@ -39,6 +44,39 @@ const NAMESPACE_DELETE_ACCESS_CHECK =
   "Deleting this Namespace requires Namespace delete. Check your access and whether an IAM Restriction applies.";
 
 const browser = fileBrowser();
+
+async function configuredNamespaceMember(
+  fixture: Pick<
+    Awaited<ReturnType<typeof createConsoleAppFixture>>,
+    "policy" | "createAccountWithPolicy"
+  >,
+  namespaceId: string,
+  actions: Permission["action"][],
+) {
+  const { policy } = fixture;
+  const name = "namespace-cleanup";
+  const groupId = `${CONFIGURED_IAM_ID_PREFIXES.group}${name}`;
+  const role = {
+    id: `${CONFIGURED_IAM_ID_PREFIXES.role}${name}`,
+    name,
+    permissions: actions.map((action) => ({ action, resourceKind: "namespace" as const })),
+  };
+  // Configured IAM grants use an Installation Role and a Namespace-scoped Group binding.
+  policy.roles.push(role);
+  policy.groups.push({ id: groupId, name });
+  policy.bindings.push({
+    id: `${CONFIGURED_IAM_ID_PREFIXES.binding}${name}`,
+    namespaceId,
+    roleId: role.id,
+    subjectKind: "group",
+    subjectId: groupId,
+  });
+  const member = await fixture.createAccountWithPolicy(name, (principal) => {
+    policy.memberships.push({ groupId, principalId: principal.id });
+  });
+  validatePersistedNativeIAMState(policy);
+  return { credentials: member.credentials, role };
+}
 
 // How a refused, still focusable delete control looks once a keyboard user reaches it (findings
 // D788, 2863): its icon or label fades as a disabled button's does, but nothing fades the control
@@ -263,10 +301,9 @@ test("a lost Namespace deletion response requires a status read without automati
 
 test("Namespace deletion permission is advisory and a later revocation is enforced by the real write", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Restricted cleanup");
-  const label = "restricted-namespace-deleter";
-  const member = await fixture.createNamespaceMember(label, namespace.id, [["read", "namespace"]]);
+  const { credentials, role } = await configuredNamespaceMember(fixture, namespace.id, ["read"]);
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, member.credentials);
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, credentials);
   const remove = page.getByRole("button", { name: "Delete Restricted cleanup", exact: true });
   // The icon stays in the Tab order with the permission requirement (finding D788).
   // A denied operation opens no confirmation by either keyboard or pointer.
@@ -286,11 +323,11 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   assert.equal(await page.locator("dialog[open]").count(), 0);
   await remove.click({ force: true });
   assert.equal(await page.locator("dialog[open]").count(), 0);
-  grantMember(fixture, label, [["delete", "namespace"]]);
+  role.permissions.push({ action: "delete", resourceKind: "namespace" });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await remove.click();
   // Revocation after the advisory answer must prevent any lifecycle transition.
-  memberRole(fixture, label).permissions = [{ action: "read", resourceKind: "namespace" }];
+  role.permissions = [{ action: "read", resourceKind: "namespace" }];
   await page.getByRole("button", { name: "Delete Namespace", exact: true }).click();
   await page.waitForFunction(() => !document.querySelector("dialog[open]"));
   assert.equal((await fixture.request("GET", `/namespaces/${namespace.id}`)).data.status, "ready");
@@ -307,13 +344,13 @@ test("a Namespace deletion refused during cleanup names the Preset permission", 
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Default Preset cleanup", {
     defaultPresets: [preset],
   });
-  const member = await fixture.createNamespaceMember("namespace-deleter", namespace.id, [
-    ["read", "namespace"],
-    ["delete", "namespace"],
+  const { credentials } = await configuredNamespaceMember(fixture, namespace.id, [
+    "read",
+    "delete",
   ]);
   const path = `/namespaces/${namespace.id}`;
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, member.credentials);
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, credentials);
   await page.getByRole("button", { name: "Delete Default Preset cleanup", exact: true }).click();
   const response = page.waitForResponse(
     (reply) => reply.url() === fixture.origin + path && reply.request().method() === "DELETE",
@@ -361,13 +398,12 @@ test("a Restriction on Namespace delete gives an Installation administrator the 
 
 test("losing Namespace read permission during cleanup does not report deletion", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Lost read access");
-  const label = "namespace-cleanup-reader";
-  const member = await fixture.createNamespaceMember(label, namespace.id, [
-    ["read", "namespace"],
-    ["delete", "namespace"],
+  const { credentials, role } = await configuredNamespaceMember(fixture, namespace.id, [
+    "read",
+    "delete",
   ]);
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, member.credentials);
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, credentials);
   await page.getByRole("button", { name: "Delete Lost read access", exact: true }).click();
   await page.getByRole("button", { name: "Delete Namespace", exact: true }).click();
   const refresh = page.getByRole("button", {
@@ -376,7 +412,7 @@ test("losing Namespace read permission during cleanup does not report deletion",
   });
   await refresh.waitFor();
   // Revoke only read after acceptance; the Namespace still exists and the next GET really denies.
-  memberRole(fixture, label).permissions = [{ action: "delete", resourceKind: "namespace" }];
+  role.permissions = [{ action: "delete", resourceKind: "namespace" }];
   await refresh.click();
   await page
     .getByText(
