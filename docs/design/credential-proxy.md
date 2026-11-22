@@ -1,5 +1,7 @@
 # Why an Agent needs a Credential Proxy
 
+This chapter uses a protected GitHub request to explain a trusted sender. For the broader proposed model and plugin credential flow, start with [credential sources](../reference/credential-sources.md#intended-credential-flow) and its [implementation status](../reference/credential-sources.md#implementation-status).
+
 An Agent needs to confirm that a private GitHub repository is the one its
 operator approved. Giving the Agent an installation token would also give
 any script it runs a credential it could copy and use elsewhere. A proxy that
