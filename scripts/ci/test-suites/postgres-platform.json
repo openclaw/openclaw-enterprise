@@ -28,6 +28,7 @@
     "tests/integration/postgres-worker-stale-claim.test.ts",
     "tests/integration/postgres-worker-audit.test.ts",
     "tests/integration/postgres-namespace-iam-policy.test.ts",
+    "tests/integration/postgres-agent-revision-list-authority.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/postgres-static-token-service-lifecycle.test.ts",
@@ -222,6 +223,12 @@
       "path": "tests/integration/postgres-agent-update-authority.test.ts",
       "expectedTests": [
         "Agent update refuses an exact grant withdrawn while waiting for its Namespace lock"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-revision-list-authority.test.ts",
+      "expectedTests": [
+        "revision history uses one PostgreSQL Native IAM policy snapshot for the parent and rows"
       ]
     },
     {

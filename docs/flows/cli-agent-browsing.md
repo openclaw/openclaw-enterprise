@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
-updated: 2026-11-19
-last_updated_session: authoring-run/d6c35425-ad20-4bc3-a09a-0756d3839065
+updated: 2026-11-22
+last_updated_session: authoring-run/df672d87-560b-44f3-a1d3-a6214e4a754f
 ---
 
 # CLI Agent metadata browsing flow
@@ -42,8 +42,11 @@ graph TD
   K --> L["Render saved status and available current Agent state"]
   J -->|No| B{"Version history?"}
   B -->|No| F["Render metadata and saved-settings error"]
-  B -->|Yes| C["Read one page of version summaries with deployment status"]
-  C --> D["Read Agent selected version"]
+  B -->|Yes| C["Open State read for one history page"]
+  C --> M{"Parent Agent read allowed?"}
+  M -->|No| H["Return command error"]
+  M -->|Yes| N["Resolve parent, filter revisions, and read matching work"]
+  N --> D["Read Agent selected version"]
   D -->|Readable| E["Mark the active version; keep listed status"] --> F
   D -->|Failure| H["Return command error"]
 ```
@@ -76,16 +79,25 @@ endpoints.
 ### 2. Mark the active version in version history
 
 Version history pages hold summaries, newest first (`--limit`, `--cursor`).
+`packages/occ/src/agent-queries.ts:listRevisions` opens a State read, authorizes
+`read` on the exact parent Agent, and looks up that Agent in the requested
+Namespace. It checks `read` on each Agent revision before including its summary
+and reads matching deployment work in the same context. With PostgreSQL State
+and Native IAM, the parent and revision permission checks use the same policy
+snapshot for one page. Each later page uses a new snapshot. This flow does not
+establish the same guarantee for external IAM. OCC emits a cursor only after
+finding an older readable revision. Revision detail separately authorizes the
+exact AgentRevision, without requiring parent Agent `read`.
+
 `revisionSummaryFromRow` in `packages/occ/src/state/postgres-state.ts` keeps the
 recorded Harness identity, version and mode. It includes overrides and resolved
 configuration only when they were recorded, without inventing defaults. Summaries
 have no `configurationReadError`. For revision detail, `revisionForBrowsingFromRow`
 returns that typed error with metadata when either Harness settings object is
 missing; it does not expose the incomplete saved payload.
-`packages/occ/src/agent-queries.ts:listRevisions` adds each version's
-`deploymentStatus` and `deploymentErrorCode` from its deployment work record in
-the same read, so a version or Agent with unreadable saved settings keeps its
-status. A version without a deployment work record has `null` for both.
+The list adds each version's `deploymentStatus` and `deploymentErrorCode` from
+its deployment work record, so a version or Agent with unreadable saved settings
+keeps its status. A version without a deployment work record has `null` for both.
 
 `internal/occcli/cli.go:describeAgentRevisions` reads the Agent to determine its
 selected version, clones each summary, and sets its `active` marker. It keeps
@@ -178,6 +190,8 @@ for each version, and that `--cursor` continues the history. See the PostgreSQL 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 15:47: Keep parent and revision authorization in one history-page read. (authoring-run/df672d87-560b-44f3-a1d3-a6214e4a754f - 941336af8d029038229937ec48c40e3671a96b73)
 
 - 2026-11-19 14:44: Show the recorded cleanup status in the deployment status table. (authoring-run/d6c35425-ad20-4bc3-a09a-0756d3839065 - 7e8f8612809e5c18ad9f0bdde73aa5ab29edfb22)
 

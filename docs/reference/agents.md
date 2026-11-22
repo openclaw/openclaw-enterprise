@@ -9,19 +9,23 @@ A [Preset](presets.md) supplies draft launch settings.
 [versions](../guides/topics/agent-revisions.md), or
 [troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
 
-Creation saves the identity and exact Namespace-owned Configuration with `active` status and `stopped` desired runtime state. Authorized [deployment](#identity-and-deployment) creates the first revision and starts the workload.
+Creation saves the identity and Namespace-owned Configuration with `active` status
+and `stopped` desired runtime state.
 
 ## Supported operations
 
-Operations beneath `/namespaces/:namespaceId/agents` return `201` for creation,
-`200` for reads/updates, and `202` for deployment, stop, or deletion. Deployment
-returns the saved `AgentRevision`. Stop sets
-`desiredRuntimeState` to `stopped`. Lists require each Agent's exact `read`.
-See [API schemas, envelopes, and permissions](api.md).
+Under `/namespaces/:namespaceId/agents`, creation returns `201`, reads and updates
+`200`, and deployment, stop, or deletion `202`. [Deployment](#identity-and-deployment) returns the saved
+`AgentRevision`; stop sets `desiredRuntimeState: stopped`. Agent lists require
+exact `read` for each Agent. See [API schemas and permissions](api.md).
+
+Revision lists require exact Agent `read`, check `read` on each Agent revision,
+and emit a cursor only for an older readable revision. Detail requires exact
+AgentRevision `read`, without Agent `read`.
 
 Responses include immutable `servicePrincipalId` for
 [Namespace IAM bindings](authorization.md#manage-namespace-policy). Do not derive
-it from the Agent ID; create/update reject caller-supplied values.
+it from the Agent ID; creation and updates reject supplied values.
 
 Creation body:
 
@@ -34,21 +38,20 @@ Creation body:
 }
 ```
 
-Creation requires a `provisioning` or `ready` Namespace, a same-Namespace
-Configuration with `kind: "agent"`, Namespace Agent `create`, and exact
-Configuration `read`. See [Harness authentication](#harness-authentication)
-for credential permissions and [authorization](authorization.md) for grants.
+Creation requires Namespace status `provisioning` or `ready`, a Configuration of
+`kind: "agent"` in that Namespace, Namespace Agent `create`, and exact
+Configuration `read`. See [credential permissions](#harness-authentication)
+and [grants](authorization.md).
 
 ### Unreadable saved settings
 
 Agent list/detail and revision detail GETs omit unreadable saved settings
 without defaults, keep readable metadata and siblings, and add
 `configurationReadError` with `code: "SAVED_CONFIGURATION_UNREADABLE"` and the
-affected `field`. Revision summaries have no error field: they preserve the recorded
-Harness identity, version and mode, omitting overrides or resolved configuration
-when those settings were not recorded. Opening such a revision returns the
-metadata-only detail response. Authorization and strict mutation/runtime validation
-are unchanged; query failures still fail requests. See the
+affected `field`. Revision summaries have no error field. They retain recorded
+Harness identity, version and mode and omit unrecorded overrides or resolved
+configuration. Opening such a revision returns metadata and the error. Strict
+mutation/runtime validation still applies; query failures fail requests. See the
 [Console warning](../guides/console/agent-details.md#unreadable-saved-settings).
 
 ## Deployment status
