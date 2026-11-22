@@ -26,6 +26,9 @@ export const CreateSecretOperateDenied = {
   name: "Secret operate not permitted",
 };
 export const CreateAgentSaveRefused = story("createAgentSaveRefused");
+export const CreateAgentSaveConfigurationReadRefused = story(
+  "createAgentSaveConfigurationReadRefused",
+);
 export const CreateRepositoryOnlyCredentialProxy = story("createRepositoryOnlyCredentialProxy");
 export const CreateRepositoryNotConfigured = {
   ...story("createRepositoryNotConfigured"),

@@ -215,25 +215,64 @@ const AGENT_NAME_TAKEN_FIELD = "Another Agent in this Namespace has this name.";
 
 function agentSaveAccessRefusal(
   cause: unknown,
-  modelSecretId: string | undefined,
+  namespaceId: string,
+  request: {
+    configurationId: string;
+    harnessAuth: HarnessAuthBinding;
+    credentialSources: readonly AgentCredentialSourceBinding[] | undefined;
+    nativeAdmin?: boolean;
+  },
   confirmedMember: boolean,
 ) {
   const denial = namedDenial(cause);
-  // Name the model Secret only when the API denied the exact reference sent by this form.
-  const prefix = "Not authorized: this needs Secret operate on ";
-  const suffix = ". Ask an Installation administrator to grant it.";
-  let secret: string | undefined;
-  if (modelSecretId && denial === `${prefix}Secret ${modelSecretId}${suffix}`) {
-    secret = "the selected model Secret";
-  } else if (denial === `${prefix}a Secret this request uses${suffix}`) {
-    secret = "the Secrets this request uses";
+  // Interpret only complete caller-denial sentences for inputs submitted by this form.
+  const matches = (
+    kind: "Configuration" | "CredentialSource" | "Secret" | "ServiceAccount",
+    action: "read" | "update" | "operate",
+    id?: string,
+  ) => {
+    const target = id === undefined ? `a ${kind} this request uses` : `${kind} ${id}`;
+    return (
+      denial ===
+      `Not authorized: this needs ${kind} ${action} on ${target}. Ask an Installation administrator to grant it.`
+    );
+  };
+  const { configurationId, harnessAuth, credentialSources, nativeAdmin } = request;
+  const source =
+    "source" in harnessAuth && harnessAuth.source.namespaceId === namespaceId
+      ? harnessAuth.source
+      : undefined;
+  const agentCreate = `Not authorized: this needs Agent create in Namespace ${namespaceId}.`;
+  let reason: string | undefined;
+  if (matches("Configuration", "read", configurationId)) {
+    reason = "You need Configuration read on the saved Configuration.";
+  } else if (nativeAdmin && matches("Configuration", "update", configurationId)) {
+    reason = "You need Configuration update on the saved Configuration.";
+  } else if (source?.kind === "secret" && matches("Secret", "operate", source.id)) {
+    reason = "You need Secret operate on the selected model Secret.";
+  } else if (matches("Secret", "operate")) {
+    // Stored Configuration bindings can require Secret operate without naming a Secret.
+    reason = "You need Secret operate on a Secret this request uses.";
+  } else if (source?.kind === "service_account" && matches("ServiceAccount", "read", source.id)) {
+    reason = "You need ServiceAccount read on the selected service account.";
+  } else if (
+    credentialSources?.some(({ sourceId }) => matches("CredentialSource", "operate", sourceId))
+  ) {
+    reason = "You need CredentialSource operate on a Credential Source used by this Agent.";
+  } else if (
+    denial === `${agentCreate} Ask an Installation administrator to check your access.` ||
+    denial ===
+      `${agentCreate} Only an Installation administrator can create Agents: ask one to create it.` ||
+    denial ===
+      `Not authorized: a Restriction in Namespace ${namespaceId} denies Agent create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the Agent in another Namespace.`
+  ) {
+    reason = "You need Agent create in this Namespace.";
   }
-  const reason = secret ? `Check Secret operate for ${secret}.` : ACCESS_NOT_INCLUDED;
   const help = confirmedMember
     ? askAdministratorTo("check your access")
-    : "Check with whoever manages IAM whether this access is intended.";
-  const retry = secret ? " If access changes, select Create Agent again here." : "";
-  return `Agent creation was refused. ${reason} ${help}${retry}`;
+    : "Review grants and IAM Restrictions.";
+  const retry = reason ? " If access changes, select Create Agent again here." : "";
+  return `Agent creation was refused. ${reason ?? ACCESS_NOT_INCLUDED} ${help}${retry}`;
 }
 
 // The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
@@ -4248,28 +4287,26 @@ function renderAgentForm(
       let createdServicePrincipalId: string | undefined;
       if (!savedAgent) {
         mutationStarted = true;
-        const modelSecretId =
-          "source" in harnessAuth && harnessAuth.source.kind === "secret"
-            ? harnessAuth.source.id
-            : undefined;
+        const agentBody = {
+          ...body,
+          harnessAuth,
+          credentialSources,
+          configurationId: savedConfiguration.id,
+          ...(nativeAdmin.checked && nativeAdminAvailable
+            ? { nativeAdmin: true, expectedConfigurationGeneration: 1 }
+            : {}),
+        };
         const created = responseFields(
           await request(`${namespacePath(namespaceId)}/agents`, {
             method: "POST",
             expectedStatus: 201,
-            body: {
-              ...body,
-              harnessAuth,
-              credentialSources,
-              configurationId: savedConfiguration.id,
-              ...(nativeAdmin.checked && nativeAdminAvailable
-                ? { nativeAdmin: true, expectedConfigurationGeneration: 1 }
-                : {}),
-            },
+            body: agentBody,
           }).catch((cause: unknown) => {
             if (repositoryBindings.length === 0 && requestFailure(cause).status === 403) {
               responseFields(cause).refusal = agentSaveAccessRefusal(
                 cause,
-                modelSecretId,
+                namespaceId,
+                agentBody,
                 capabilitiesUnreadable && context.installationAdmin === false,
               );
             }

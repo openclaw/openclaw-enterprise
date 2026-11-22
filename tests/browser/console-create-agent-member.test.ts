@@ -461,8 +461,13 @@ test("a draft that saved its Configuration keeps it when a permission retry refu
   );
 });
 
-for (const persona of ["member", "administrator"] as const) {
-  test(`${persona === "member" ? "a member" : "an administrator"} can retry an Agent save refused after saving its Configuration`, async (t) => {
+for (const { persona, resource } of [
+  { persona: "member", resource: "Secret" },
+  { persona: "administrator", resource: "Secret" },
+  { persona: "member", resource: "Configuration" },
+  { persona: "administrator", resource: "Agent" },
+] as const) {
+  test(`${persona === "member" ? "a member" : "an administrator"} can retry an Agent save refused after saving its Configuration (${resource})`, async (t) => {
     const { fixture, namespace, secret } = await setup(t);
     const member =
       persona === "member"
@@ -480,11 +485,24 @@ for (const persona of ["member", "administrator"] as const) {
     const configurationUrl = fixture.origin + scope + "/configurations";
     const agentUrl = fixture.origin + scope + "/agents";
     let restriction: ReturnType<typeof restrict> | undefined;
-    // Change only Secret operate after validation and the Configuration write have completed.
+    // Change access after validation and the Configuration write have completed. Only the
+    // final Agent save can check read access on this exact, newly saved Configuration.
     await page.route(
       agentUrl,
       async (route) => {
-        if (memberOperate) {
+        if (resource === "Configuration") {
+          const { configurationId } = route.request().postDataJSON() as { configurationId: string };
+          assert.ok(typeof configurationId === "string" && configurationId.startsWith("cfg_"));
+          restriction = restrict(fixture.policy, "read", "configuration", {
+            namespaceId: namespace.id,
+            resourceId: configurationId,
+          });
+        } else if (resource === "Agent") {
+          restriction = restrict(fixture.policy, "create", "agent", {
+            namespaceId: namespace.id,
+            resourceId: namespace.id,
+          });
+        } else if (memberOperate) {
           memberOperate.revoke(secret.id);
         } else {
           restriction = restrict(fixture.policy, "operate", "secret", {
@@ -516,24 +534,42 @@ for (const persona of ["member", "administrator"] as const) {
     assert.equal(refusalResponse.status(), 403);
     const { error, meta }: ErrorResponse = await refusalResponse.json();
     assert.equal(error.code, "FORBIDDEN");
-    const requirement = `Secret operate on Secret ${secret.id}`;
-    assert.ok(error.message.startsWith(`Not authorized: this needs ${requirement}.`));
-    const alert = page
-      .getByRole("alert")
-      .filter({ hasText: "Check Secret operate for the selected model Secret." })
-      .or(page.getByRole("alert").filter({ hasText: "Your access does not include this action." }));
+    const alert = page.getByRole("alert").filter({ hasText: "Agent creation was refused." });
     await alert.waitFor();
     const text = await alert.innerText();
-    assert.match(text, /^Agent creation was refused\./);
-    assert.match(text, /Check Secret operate for the selected model Secret\./);
+    if (resource === "Configuration") {
+      assert.equal(
+        error.message,
+        `Not authorized: this needs Configuration read on Configuration ${configuration.id}. Ask an Installation administrator to grant it.`,
+      );
+      assert.match(text, /You need Configuration read on the saved Configuration\./);
+      assert.doesNotMatch(text, /Secret operate/);
+      assert.ok(!text.includes(configuration.id), text);
+    } else if (resource === "Agent") {
+      assert.ok(
+        error.message.startsWith(
+          `Not authorized: a Restriction in Namespace ${namespace.id} denies Agent create,`,
+        ),
+      );
+      assert.match(text, /You need Agent create in this Namespace\./);
+      assert.doesNotMatch(text, /a Restriction (in|denies)/i);
+      assert.ok(!text.includes(namespace.id), text);
+    } else {
+      assert.ok(
+        error.message.startsWith(
+          `Not authorized: this needs Secret operate on Secret ${secret.id}.`,
+        ),
+      );
+      assert.match(text, /You need Secret operate on the selected model Secret\./);
+    }
     assert.match(text, /If access changes, select Create Agent again here\./);
     assert.ok(!text.includes(secret.id), text);
     assert.ok(meta?.requestId && text.includes(meta.requestId));
     if (member) {
       assert.match(text, /Ask an Installation administrator to check your access/);
     } else {
-      assert.match(text, /Check with whoever manages IAM whether this access is intended/);
-      assert.doesNotMatch(text, /Installation administrator|Restriction/);
+      assert.match(text, /Review grants and IAM Restrictions\./);
+      assert.doesNotMatch(text, /Installation administrator|lift/i);
     }
     await page
       .getByRole("status")
@@ -555,11 +591,11 @@ for (const persona of ["member", "administrator"] as const) {
       `Discard this draft? Configuration ${configuration.id} will remain saved. A new draft can save another Configuration.`,
     );
 
-    if (member) {
-      grantSecretOperate(fixture, namespace.id, member.principal, [secret.id]);
-    } else {
-      assert.ok(restriction);
+    if (restriction) {
       liftRestriction(fixture.policy, restriction);
+    } else {
+      assert.ok(member && memberOperate);
+      grantSecretOperate(fixture, namespace.id, member.principal, [secret.id]);
     }
     assert.deepEqual((await fixture.request("GET", scope + "/agents")).data, []);
     const agentSaved = responseTo(page, "POST", agentUrl);
@@ -592,13 +628,30 @@ test("untrusted Agent denials stay generic and an interrupted retry keeps the dr
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   const alert = page.getByRole("alert").filter({ hasText: "Agent creation was refused." });
   const configurationSaved = responseTo(page, "POST", fixture.origin + scope + "/configurations");
-  const unrelatedId = "sec_00000000-0000-4000-8000-000000000099";
+  const unrelatedSecret = "sec_00000000-0000-4000-8000-000000000099";
+  const unrelatedConfiguration = "cfg_00000000-0000-4000-8000-000000000099";
+  const unrelatedNamespace = "ns_00000000-0000-4000-8000-000000000099";
   // A canonical sentence about a different Secret and a sentence with extra instructions
   // about the selected Secret must both lose their untrusted specificity.
   // An unnamed denial can identify the permission, but cannot identify the Secret.
   for (const { message, expected, excluded } of [
     {
-      message: `Not authorized: this needs Secret operate on Secret ${unrelatedId}. Ask an Installation administrator to grant it.`,
+      message: `Not authorized: this needs Configuration read on Configuration ${unrelatedConfiguration}. Ask an Installation administrator to grant it.`,
+      expected: /Your access does not include this action/,
+      excluded: /Configuration read|Create Agent again/,
+    },
+    {
+      message: `Not authorized: this needs Agent create in Namespace ${unrelatedNamespace}. Ask an Installation administrator to check your access.`,
+      expected: /Your access does not include this action/,
+      excluded: /You need Agent create|Create Agent again/,
+    },
+    {
+      message: `Not authorized: this needs Agent create in Namespace ${namespace.id}. Ask an Installation administrator to check your access.`,
+      expected: /You need Agent create in this Namespace.*If access changes/,
+      excluded: /Installation administrator/,
+    },
+    {
+      message: `Not authorized: this needs Secret operate on Secret ${unrelatedSecret}. Ask an Installation administrator to grant it.`,
       expected: /Your access does not include this action/,
       excluded: /Secret operate|Create Agent again/,
     },
@@ -610,7 +663,7 @@ test("untrusted Agent denials stay generic and an interrupted retry keeps the dr
     {
       message:
         "Not authorized: this needs Secret operate on a Secret this request uses. Ask an Installation administrator to grant it.",
-      expected: /Check Secret operate for the Secrets this request uses/,
+      expected: /You need Secret operate on a Secret this request uses/,
       excluded: /selected model Secret/,
     },
   ]) {
@@ -629,10 +682,18 @@ test("untrusted Agent denials stay generic and an interrupted retry keeps the dr
     await currentAlert.waitFor();
     const text = await currentAlert.innerText();
     assert.match(text, expected);
-    assert.match(text, /Check with whoever manages IAM whether this access is intended/);
+    assert.match(text, /Review grants and IAM Restrictions\./);
     assert.doesNotMatch(text, excluded);
-    assert.doesNotMatch(text, /Installation administrator|Restriction/);
-    assert.ok(!text.includes(unrelatedId) && !text.includes(secret.id), text);
+    assert.doesNotMatch(text, /Installation administrator|lift/i);
+    for (const id of [
+      unrelatedConfiguration,
+      unrelatedNamespace,
+      unrelatedSecret,
+      namespace.id,
+      secret.id,
+    ]) {
+      assert.ok(!text.includes(id), text);
+    }
     await waitForEnabled(submit);
   }
   const configurationResponse = await configurationSaved;
