@@ -409,8 +409,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	keyWritten = true
-	_, namespaceID, err := r.waitForDevelopmentKubernetesNamespace(ctx, timeout)
+	bootstrapNamespace, namespaceID, err := r.waitForDevelopmentKubernetesNamespace(ctx, timeout)
 	if err != nil {
+		return err
+	}
+	if err := r.installDevelopmentAutomationObserver(ctx, state, bootstrapNamespace, namespaceID); err != nil {
 		return err
 	}
 	if err := waitForDevelopmentNamespace(ctx, client, namespaceID, timeout); err != nil {
@@ -1153,6 +1156,85 @@ func developmentOpenShellWorkspaceRole(labels map[string]string) map[string]any 
 			},
 		},
 	}
+}
+
+type developmentAutomationObserverSubject struct {
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+}
+
+type developmentAutomationObserverBinding struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Metadata   struct {
+		Name        string            `json:"name"`
+		Namespace   string            `json:"namespace"`
+		Labels      map[string]string `json:"labels"`
+		Annotations map[string]string `json:"annotations"`
+	} `json:"metadata"`
+	RoleRef struct {
+		APIGroup string `json:"apiGroup"`
+		Kind     string `json:"kind"`
+		Name     string `json:"name"`
+	} `json:"roleRef"`
+	Subjects []developmentAutomationObserverSubject `json:"subjects"`
+}
+
+func (r *runner) installDevelopmentAutomationObserver(ctx context.Context, state *developmentState, namespace, namespaceID string) error {
+	const name = "openclaw-development-automation-observer"
+	var desired developmentAutomationObserverBinding
+	desired.APIVersion = "rbac.authorization.k8s.io/v1"
+	desired.Kind = "RoleBinding"
+	desired.Metadata.Name = name
+	desired.Metadata.Namespace = namespace
+	desired.Metadata.Labels = map[string]string{"app.kubernetes.io/managed-by": "openclaw-development"}
+	desired.Metadata.Annotations = map[string]string{"openclaw.dev/namespace-id": namespaceID}
+	desired.RoleRef.APIGroup = "rbac.authorization.k8s.io"
+	desired.RoleRef.Kind = "ClusterRole"
+	desired.RoleRef.Name = "openclaw-enterprise-openclaw-tenant-automation-observer"
+	desired.Subjects = []developmentAutomationObserverSubject{{Kind: "ServiceAccount", Name: "openclaw-enterprise-api", Namespace: state.PlatformNamespace}}
+
+	data, err := r.output(ctx, "kubectl", "get", "rolebinding", name, "-n", namespace, "--ignore-not-found", "-o", "json")
+	if err != nil {
+		return fmt.Errorf("read automation observer binding in bootstrap Namespace %s: %w", namespace, err)
+	}
+	if len(data) != 0 {
+		var existing developmentAutomationObserverBinding
+		if err := json.Unmarshal(data, &existing); err != nil {
+			return fmt.Errorf("invalid automation observer binding in bootstrap Namespace %s: %w", namespace, err)
+		}
+		if existing.APIVersion != desired.APIVersion || existing.Kind != desired.Kind ||
+			existing.Metadata.Name != name || existing.Metadata.Namespace != namespace ||
+			existing.Metadata.Labels["app.kubernetes.io/managed-by"] != desired.Metadata.Labels["app.kubernetes.io/managed-by"] ||
+			existing.Metadata.Annotations["openclaw.dev/namespace-id"] != namespaceID ||
+			existing.RoleRef != desired.RoleRef || len(existing.Subjects) != 1 || existing.Subjects[0] != desired.Subjects[0] {
+			return fmt.Errorf("conflicting automation observer binding in bootstrap Namespace %s", namespace)
+		}
+		return nil
+	}
+
+	data, err = json.Marshal(desired)
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(state.directory, "development-automation-observer-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	// Create, rather than apply, so a concurrent conflicting object cannot be overwritten.
+	if err := r.run(ctx, "kubectl", "create", "-f", file.Name()); err != nil {
+		return fmt.Errorf("create automation observer binding in bootstrap Namespace %s: %w", namespace, err)
+	}
+	return nil
 }
 
 func developmentClusterRoleBinding(name, role, namespace, account string, labels map[string]string) map[string]any {
