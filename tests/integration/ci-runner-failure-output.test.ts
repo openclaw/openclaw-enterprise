@@ -9,6 +9,7 @@ import {
   redactOutputLine,
 } from "../../scripts/ci/failure-redaction.ts";
 import reporter from "../../scripts/ci/reporter.ts";
+import { channelEgressCase } from "../../scripts/ci/channel-egress-diagnostic.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   createRunnerFixture,
@@ -553,6 +554,65 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     "unexpected diagnostic output lines",
   );
   assert.equal(record.output.omittedLines, 0);
+});
+
+test("runner emits a finite channel egress failure stage", async (t) => {
+  const root = await createRunnerFixture(t);
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "slack-live");
+  const { file, title } = channelEgressCase;
+  const wrongFile = "tests/integration/not-channel-egress.test.ts";
+  const helper = new URL("../../scripts/ci/channel-egress-diagnostic.ts", import.meta.url);
+  const importTest = 'import test from "node:test";';
+  const exact = JSON.stringify(title);
+  const diagnostic = (stage: string) => ({ kind: "channel-egress", stage });
+  const syntheticThrow = (value: unknown) =>
+    `throw Object.assign(new Error("synthetic failure"), {openclawCiDiagnostic: ${JSON.stringify(value)}});`;
+  await writeFile(
+    join(root, wrongFile),
+    [importTest, `test(${exact}, () => { ${syntheticThrow(diagnostic("active-tunnel"))} });`].join(
+      "\n",
+    ),
+  );
+  await writeFile(
+    join(root, file),
+    [
+      importTest,
+      `import { withChannelEgressStage } from ${JSON.stringify(helper.href)};`,
+      `test(${exact}, withChannelEgressStage(async (_t, setStage) => { setStage("connect-routing"); throw new Error("synthetic route"); }));`,
+      `test(${exact}, withChannelEgressStage(async (_t, setStage) => { setStage("active-tunnel"); throw new Error("synthetic tunnel"); }));`,
+      `test(${exact}, () => { ${syntheticThrow(diagnostic("fixture-unrecognized-stage"))} });`,
+      `test(${exact}, () => { ${syntheticThrow({ ...diagnostic("active-tunnel"), extra: "fixture-extra-field" })} });`,
+      `test("other title", () => { ${syntheticThrow(diagnostic("active-tunnel"))} });`,
+      `test("parent", async (t) => { await t.test(${exact}, () => { ${syntheticThrow(diagnostic("active-tunnel"))} }); });`,
+      `test(${exact}, () => {});`,
+    ].join("\n"),
+  );
+  await writeRunnerManifest(root, {
+    lanes: { "slack-live": { files: [{ path: file }, { path: wrongFile }] } },
+  });
+  const run = runRunnerSync(laneArgs(root, "slack-live", statePath, resultsPath));
+  assert.equal(run.status, 1, run.stderr);
+  const text = await readFile(resultsPath, "utf8");
+  const result: unknown = JSON.parse(text);
+  assert(isRecord(result) && Array.isArray(result.files));
+  const receipts = result.files.map((entry: unknown) => {
+    assert(isRecord(entry) && Array.isArray(entry.tests));
+    return entry.tests.flatMap((result: unknown) => {
+      assert(isRecord(result));
+      if (!isRecord(result.error) || result.error.diagnostic === undefined) {
+        return [];
+      }
+      return [{ name: result.name, status: result.status, diagnostic: result.error.diagnostic }];
+    });
+  });
+  assert.deepEqual(receipts, [
+    [
+      { name: title, status: "failed", diagnostic: diagnostic("connect-routing") },
+      { name: title, status: "failed", diagnostic: diagnostic("active-tunnel") },
+    ],
+    [],
+  ]);
+  assert.doesNotMatch(text, /fixture-unrecognized-stage|fixture-extra-field/);
 });
 
 test("replacement readiness goes only to the failed attempt diagnostic output", async (t) => {

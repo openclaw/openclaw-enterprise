@@ -1,5 +1,6 @@
 import { skipperOperationDiagnostic } from "./skipper-release.ts";
 import { isRecord } from "./records.ts";
+import { channelEgressStages } from "./channel-egress-diagnostic.ts";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -356,7 +357,7 @@ function relayNodeDiagnostic(value: unknown) {
 export function projectFailureDiagnostic(
   error: unknown,
   projectNativeFirstAgentProof: NativeProofProjection,
-  nativeChildFailure = false,
+  scope: "native-child" | "channel-egress" | undefined,
 ) {
   const diagnostic = optionalProperty(error, "openclawCiDiagnostic");
   if (!isRecord(diagnostic)) {
@@ -418,9 +419,19 @@ export function projectFailureDiagnostic(
     }
     return undefined;
   }
+  if (diagnostic.kind === "channel-egress") {
+    const keys = Reflect.ownKeys(diagnostic);
+    return scope === "channel-egress" &&
+      keys.length === 2 &&
+      keys.includes("kind") &&
+      keys.includes("stage") &&
+      includes(channelEgressStages, diagnostic.stage)
+      ? { kind: "channel-egress", stage: diagnostic.stage }
+      : undefined;
+  }
   if (diagnostic.kind === "topology-native-child") {
     const keys = Reflect.ownKeys(diagnostic);
-    return nativeChildFailure &&
+    return scope === "native-child" &&
       keys.length === 2 &&
       keys.includes("kind") &&
       keys.includes("stage") &&
