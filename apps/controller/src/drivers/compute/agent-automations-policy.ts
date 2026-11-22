@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import type {
-  AgentAutomationPolicyBinding,
-  AgentAutomationPolicyQualification,
-  AgentRevision,
+import {
+  isName,
+  type AgentAutomationPolicyBinding,
+  type AgentAutomationPolicyQualification,
+  type AgentRevision,
 } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { AUTOMATION_NO_MCP_PLUGIN_IDS } from "./agent-automation-guard.ts";
@@ -19,6 +20,12 @@ export { AUTOMATION_NO_MCP_PLUGIN_IDS };
 const noMcpPluginIds = new Set<string>(AUTOMATION_NO_MCP_PLUGIN_IDS);
 const immutableImage = /^.+@sha256:[a-f0-9]{64}$/u;
 const literal = /^[A-Za-z][A-Za-z0-9_-]*$/u;
+const syntheticMcpUtilityNames = new Set([
+  "resources_list",
+  "resources_read",
+  "prompts_list",
+  "prompts_get",
+]);
 const permittedServerKeys = new Set([
   "enabled",
   "command",
@@ -142,7 +149,65 @@ function publicToolPolicy(
   };
 }
 
-function publicPluginActivation(value: unknown): Record<string, unknown> | undefined {
+export function qualifiedCodexPluginConfig(value: unknown): Record<string, unknown> | undefined {
+  const config = asRecord(value);
+  const appServer = asRecord(config?.appServer);
+  if (
+    !config ||
+    Object.keys(config).some((key) => key !== "appServer" && key !== "codexDynamicToolsExclude") ||
+    !appServer ||
+    Object.keys(appServer).some(
+      (key) =>
+        ![
+          "mode",
+          "transport",
+          "url",
+          "authToken",
+          "approvalPolicy",
+          "sandbox",
+          "remoteWorkspaceRoot",
+        ].includes(key),
+    ) ||
+    appServer.mode !== "guardian" ||
+    appServer.transport !== "websocket" ||
+    appServer.url !== "${APP_SERVER_URL}" ||
+    appServer.authToken !== "${APP_SERVER_TOKEN}" ||
+    !["on-request", "never"].includes(String(appServer.approvalPolicy)) ||
+    !["read-only", "workspace-write"].includes(String(appServer.sandbox)) ||
+    (appServer.remoteWorkspaceRoot !== undefined &&
+      appServer.remoteWorkspaceRoot !== "/home/node/workspace")
+  ) {
+    return undefined;
+  }
+  const excluded = config.codexDynamicToolsExclude;
+  if (
+    excluded !== undefined &&
+    (!Array.isArray(excluded) ||
+      excluded.some(
+        (name) => typeof name !== "string" || !nativeToolName.test(name) || name.includes("*"),
+      ) ||
+      new Set(excluded).size !== excluded.length)
+  ) {
+    return undefined;
+  }
+  return {
+    appServer: {
+      mode: "guardian",
+      transport: "websocket",
+      endpoint: "agent-harness-environment",
+      authentication: "agent-owned-environment",
+      approvalPolicy: appServer.approvalPolicy,
+      sandbox: appServer.sandbox,
+      remoteWorkspaceRoot: appServer.remoteWorkspaceRoot,
+    },
+    codexDynamicToolsExclude: [...((excluded as string[] | undefined) ?? [])].sort(),
+  };
+}
+
+function publicPluginActivation(
+  value: unknown,
+  dedicatedCodex: boolean,
+): Record<string, unknown> | undefined {
   const plugins = asRecord(value);
   if (!plugins || (plugins.enabled !== undefined && typeof plugins.enabled !== "boolean")) {
     return undefined;
@@ -153,18 +218,31 @@ function publicPluginActivation(value: unknown): Record<string, unknown> | undef
   if (!allow || !deny || (plugins.entries !== undefined && !entries)) {
     return undefined;
   }
-  const activation: Record<string, boolean | undefined> = {};
+  const activation: Record<string, unknown> = {};
   for (const [id, value] of Object.entries(entries ?? {})) {
     const entry = asRecord(value);
     if (
       !noMcpPluginIds.has(id) ||
       !entry ||
-      Object.keys(entry).some((key) => key !== "enabled") ||
+      Object.keys(entry).some(
+        (key) => key !== "enabled" && !(dedicatedCodex && id === "codex" && key === "config"),
+      ) ||
       (entry.enabled !== undefined && typeof entry.enabled !== "boolean")
     ) {
       return undefined;
     }
-    activation[id] = entry.enabled;
+    if (dedicatedCodex && id === "codex") {
+      const config = qualifiedCodexPluginConfig(entry.config);
+      if (!config || entry.enabled !== true || !allow.includes("codex")) {
+        return undefined;
+      }
+      activation[id] = { enabled: true, config };
+    } else {
+      activation[id] = entry.enabled;
+    }
+  }
+  if (dedicatedCodex && activation.codex === undefined) {
+    return undefined;
   }
   const slots = asRecord(plugins.slots);
   if (
@@ -230,10 +308,18 @@ function defaultNamespaceIsStaticOnly(revision: Readonly<AgentRevision>): boolea
   return true;
 }
 
-function codeModeOverridesAreOff(configuration: Readonly<AgentRevision["configuration"]>): boolean {
+function agentToolOverrides(
+  configuration: Readonly<AgentRevision["configuration"]>,
+  dedicatedCodex: boolean,
+  servers: Record<string, unknown>,
+  gatewayAllow: readonly unknown[],
+): { identityName: string; workspace: string; mainAllow?: readonly string[] } | undefined {
   const agents = asRecord(configuration.agents);
-  if (!agents) {
-    return configuration.agents === undefined;
+  if (configuration.agents !== undefined && !agents) {
+    return undefined;
+  }
+  if (agents?.list !== undefined) {
+    return undefined;
   }
   const checkModels = (value: unknown): boolean => {
     if (value === undefined) {
@@ -252,24 +338,58 @@ function codeModeOverridesAreOff(configuration: Readonly<AgentRevision["configur
       })
     );
   };
-  const defaults = asRecord(agents.defaults);
-  if ((agents.defaults !== undefined && !defaults) || !checkModels(defaults?.models)) {
-    return false;
+  const defaults = asRecord(agents?.defaults);
+  const workspace = dedicatedCodex ? "/home/node/workspace" : "/home/node/.openclaw/workspace";
+  if (
+    (agents?.defaults !== undefined && !defaults) ||
+    !checkModels(defaults?.models) ||
+    (defaults?.workspace !== undefined && defaults.workspace !== workspace)
+  ) {
+    return undefined;
   }
-  if (agents.list !== undefined && !Array.isArray(agents.list)) {
-    return false;
+  const entries = asRecord(agents?.entries);
+  const main = asRecord(entries?.main);
+  const identity = asRecord(main?.identity);
+  const identityName = identity?.name;
+  if (
+    !entries ||
+    Object.keys(entries).length !== 1 ||
+    !main ||
+    Object.keys(main).some((key) => key !== "identity" && key !== "tools") ||
+    !identity ||
+    Object.keys(identity).length !== 1 ||
+    !isName(identityName)
+  ) {
+    return undefined;
   }
-  return (agents.list ?? []).every((entry: unknown) => {
-    const agent = asRecord(entry);
-    const tools = asRecord(agent?.tools);
-    return (
-      !!agent &&
-      (agent.tools === undefined || !!tools) &&
-      (tools?.codeMode === undefined || tools.codeMode === false) &&
-      (tools?.toolSearch === undefined || tools.toolSearch === false) &&
-      checkModels(agent.models)
-    );
-  });
+  if (main.tools === undefined) {
+    return dedicatedCodex ? undefined : { identityName, workspace };
+  }
+  const tools = asRecord(main.tools);
+  const allow = tools?.allow;
+  if (
+    !tools ||
+    Object.keys(tools).some((key) => key !== "allow") ||
+    !Array.isArray(allow) ||
+    allow.length === 0 ||
+    allow.some(
+      (name) =>
+        typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9_-]*__[A-Za-z][A-Za-z0-9_-]*$/u.test(name),
+    ) ||
+    new Set((allow as string[]).map((name) => name.toLowerCase())).size !== allow.length
+  ) {
+    return undefined;
+  }
+  for (const name of allow as string[]) {
+    const declared = Object.entries(servers).some(([serverName, value]) => {
+      const include = asRecord(asRecord(value)?.toolFilter)?.include;
+      return Array.isArray(include) && include.some((raw) => `${serverName}__${raw}` === name);
+    });
+    if (!gatewayAllow.includes(name) || !declared) {
+      return undefined;
+    }
+  }
+  return { identityName, workspace, mainAllow: allow as string[] };
 }
 
 /**
@@ -310,6 +430,11 @@ export function nativeAutomationPolicy(
   if (!tools || !Array.isArray(allow) || allow.some((entry) => typeof entry !== "string")) {
     return undefined;
   }
+  const dedicatedCodex = revision.harness.mode === "dedicated";
+  const agentOverrides = agentToolOverrides(configuration, dedicatedCodex, servers, allow);
+  if (!agentOverrides) {
+    return undefined;
+  }
   const gateway = asRecord(configuration.gateway);
   const nodeControls = asRecord(gateway?.nodes);
   const nodePluginTools = asRecord(nodeControls?.pluginTools);
@@ -342,7 +467,13 @@ export function nativeAutomationPolicy(
       Object.keys(filter).some((key) => key !== "include") ||
       !Array.isArray(include) ||
       include.length === 0 ||
-      include.some((entry) => typeof entry !== "string" || !literal.test(entry))
+      include.some(
+        (entry) =>
+          typeof entry !== "string" ||
+          !literal.test(entry) ||
+          syntheticMcpUtilityNames.has(entry.toLowerCase()) ||
+          entry.toLowerCase().startsWith(`${serverName.toLowerCase()}__`),
+      )
     ) {
       return undefined;
     }
@@ -408,13 +539,17 @@ export function nativeAutomationPolicy(
       if (!allow.includes(name)) {
         continue;
       }
-      // TODO: Remove this refusal only after genuine dedicated scheduled MCP
-      // qualification proves approved execution without permission escalation.
-      if (revision.harness.mode === "dedicated") {
-        return undefined;
+      if (agentOverrides.mainAllow !== undefined && !agentOverrides.mainAllow.includes(name)) {
+        continue;
       }
       const policy = publicToolPolicy(tools, gatewayPolicy!, name);
-      const pluginActivation = publicPluginActivation(configuration.plugins);
+      const pluginActivation = publicPluginActivation(configuration.plugins, dedicatedCodex);
+      const codexConfig = asRecord(asRecord(asRecord(pluginActivation?.entries)?.codex)?.config);
+      if (
+        (codexConfig?.codexDynamicToolsExclude as readonly string[] | undefined)?.includes(name)
+      ) {
+        return undefined;
+      }
       if (
         !policy ||
         !pluginActivation ||
@@ -461,6 +596,19 @@ export function nativeAutomationPolicy(
             },
             // Other approved operations may be added without widening this grant.
             policy,
+            agentPolicy:
+              agentOverrides.mainAllow === undefined
+                ? {
+                    kind: "default",
+                    identityName: agentOverrides.identityName,
+                    workspace: agentOverrides.workspace,
+                  }
+                : {
+                    kind: "main-exact-allow",
+                    identityName: agentOverrides.identityName,
+                    workspace: agentOverrides.workspace,
+                    name,
+                  },
             // Plugin activation can change the non-MCP tool namespace before cron starts.
             pluginNamespace: pluginActivation,
           }),
@@ -479,7 +627,10 @@ export function nativeAutomationPolicy(
     bindings.length > 0 &&
     (tools.codeMode !== false ||
       tools.toolSearch !== false ||
-      !codeModeOverridesAreOff(configuration) ||
+      (dedicatedCodex &&
+        (revision.sandboxDriverId !== undefined ||
+          revision.egressPlan !== undefined ||
+          revision.credentialDeployment !== undefined)) ||
       !defaultNamespaceIsStaticOnly(revision) ||
       nodePluginTools?.enabled !== false ||
       nodeControls?.allowSkills !== false ||

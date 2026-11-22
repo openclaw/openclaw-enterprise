@@ -441,20 +441,27 @@ test(
                     async (agent, step) => {
                       const { verifyQaAgentAutomations } =
                         await import("../helpers/qa-agent-automations.ts");
-                      // Broader no-tools qualification combines this runtime evidence
-                      // with forced-dispatch proof and the pinned source family map.
-                      await step(
-                        "OCC model-only scheduling, observed no-tool behavior, history and replacement",
-                        () => verifyQaAgentAutomations(f, agent),
-                      );
                       const { verifyQaAgentAutomationMcp } =
                         await import("../helpers/qa-agent-automation-mcp.ts");
-                      await step(
-                        agent.preset === "Codex"
-                          ? "dedicated MCP scheduling refusal without native mutation"
-                          : "approved MCP ordinary and scheduled authority parity",
-                        () => verifyQaAgentAutomationMcp(f, agent),
-                      );
+                      // Dedicated admission must be proved on a fresh Agent before any session exists.
+                      const mcp = () =>
+                        step("approved MCP ordinary and scheduled authority parity", () =>
+                          verifyQaAgentAutomationMcp(f, agent),
+                        );
+                      // Broader no-tools qualification combines this runtime evidence
+                      // with forced-dispatch proof and the pinned source family map.
+                      const modelOnly = () =>
+                        step(
+                          "OCC model-only scheduling, observed no-tool behavior, history and replacement",
+                          () => verifyQaAgentAutomations(f, agent),
+                        );
+                      if (agent.preset === "Codex") {
+                        await mcp();
+                        await modelOnly();
+                      } else {
+                        await modelOnly();
+                        await mcp();
+                      }
                     },
                   ],
                   [

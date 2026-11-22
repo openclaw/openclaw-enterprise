@@ -90,6 +90,53 @@ export function createAgentAutomations(deps: {
         return discarded;
       });
     },
+    async cancelUnbound(
+      principalId: string,
+      input: Pick<BindAgentAutomationInput, "namespaceId" | "agentId" | "id">,
+      audit: (
+        record: Readonly<AgentAutomationOwnership>,
+        action: "operate" | "administer",
+      ) => AuditEvent,
+    ) {
+      return deps.transactions.transact(async (state) => {
+        await authorize(principalId, input.namespaceId, input.agentId);
+        const namespace = await lockNamespace(state, input.namespaceId);
+        const agent = await state.agents.lockAgent(namespace.id, input.agentId);
+        const administer = await authorize(principalId, input.namespaceId, input.agentId);
+        const record =
+          agent && (await state.agentAutomations.find(namespace.id, agent.id, input.id));
+        if (!record) {
+          throw new ScopeViolationError("The requested automation was not found.");
+        }
+        if (!administer && record.creatorPrincipalId !== principalId) {
+          throw new HiddenResourceAuthorizationDeniedError(
+            new AuthorizationDeniedError(
+              "The automation belongs to another creator.",
+              undefined,
+              {
+                action: "operate",
+                resource: { kind: "agent", id: input.agentId, namespaceId: input.namespaceId },
+              },
+              principalId,
+            ),
+          );
+        }
+        if (
+          record.nativeJobId !== null ||
+          !(await state.agentAutomations.discardUnbound(
+            namespace.id,
+            agent.id,
+            input.id,
+            record.creatorPrincipalId,
+          ))
+        ) {
+          throw new ResourceStateConflictError(
+            "The automation reservation was bound or cancelled. Refresh before retrying.",
+          );
+        }
+        await state.audit.append(audit(record, administer ? "administer" : "operate"));
+      });
+    },
     async reserve(
       principalId: string,
       input: ReserveAgentAutomationInput,

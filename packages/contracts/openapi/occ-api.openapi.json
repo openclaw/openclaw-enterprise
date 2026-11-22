@@ -22972,6 +22972,18 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "pending"
+              }
+            },
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": { "const": "pending", "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
                 "value": "ns_123e4567-e89b-42d3-a456-426614174000"
               }
             },
@@ -23025,6 +23037,7 @@
                           }
                         ],
                         "nextOffset": null,
+                        "pendingReservations": [],
                         "snapshotRevision": "example-inventory-revision",
                         "total": 1
                       },
@@ -23172,10 +23185,34 @@
                         "nextOffset": {
                           "anyOf": [{ "minimum": 0, "type": "integer" }, { "type": "null" }]
                         },
+                        "pendingReservations": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "configRevision": {
+                                "pattern": "^reservation:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                                "type": "string"
+                              },
+                              "createdAt": { "format": "date-time", "type": "string" },
+                              "id": { "format": "uuid", "type": "string" },
+                              "status": { "const": "pending", "type": "string" }
+                            },
+                            "required": ["id", "status", "createdAt", "configRevision"],
+                            "type": "object"
+                          },
+                          "maxItems": 100,
+                          "type": "array"
+                        },
                         "snapshotRevision": { "maxLength": 128, "minLength": 1, "type": "string" },
                         "total": { "minimum": 0, "type": "integer" }
                       },
-                      "required": ["jobs", "total", "nextOffset", "snapshotRevision"],
+                      "required": [
+                        "jobs",
+                        "pendingReservations",
+                        "total",
+                        "nextOffset",
+                        "snapshotRevision"
+                      ],
                       "type": "object"
                     },
                     "meta": {
@@ -23264,7 +23301,7 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "List authorized Agent automations",
+        "summary": "List authorized Agent automations or pending reservations",
         "tags": ["Agent automations"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" },
@@ -23746,7 +23783,7 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Delete an Agent automation",
+        "summary": "Delete an Agent automation or cancel a pending reservation",
         "tags": ["Agent automations"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" },

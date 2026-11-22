@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: "2026-11-22"
-last_updated_session: "01a1fc52-9d88-7223-b8a1-3c98595d3fbe"
+last_updated_session: "authoring-run/7fb7cb15-5b9d-496d-b268-bba1a49025fd"
 ---
 
 # Agent automation broker flow
@@ -19,16 +19,20 @@ qualification remains a separate gate.
 - Trigger: one of the six automation collection, item or history HTTP operations.
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`
 - Source: `apps/controller/src/http/agent-automations.ts:createAgentAutomationHandlers`
-- Assumptions: the selected running revision has native access and supported
-  provenance. OCC manages its registered jobs; trusted native writers remain
-  outside the guarantee.
+- Assumptions: native operations require a selected running revision with native
+  access and supported provenance. The pending view and reservation cancellation
+  require OCC state but no native transport. Trusted native writers remain outside
+  the guarantee.
 
 ## Flow
 
 ```mermaid
 graph TD
   A["Human HTTP request"] --> B["Check session, Origin and exact-Agent authority"]
-  B -->|"authorized"| C["Select runtime and Driver qualification"]
+  B -->|"authorized"| V{"Pending view or reservation cancellation?"}
+  V -->|"yes"| S["Read authorized reservations or conditionally discard with audit"]
+  S --> O["Return projected response"]
+  V -->|"no"| C["Select runtime and Driver qualification"]
   B -->|"denied"| E["Refuse operation; audit where applicable"]
   C --> F{"Create?"}
   F -->|"yes, nonempty grant"| D["Inspect plugin origins, catalog and effective MCP evidence"]
@@ -47,7 +51,7 @@ graph TD
   K -->|"uncertain mutation"| U
   L -->|"post-mutation failure"| U
   L -->|"read recheck denied"| E
-  L --> O["Return projected response"]
+  L --> O
   P["Successor admission or worker preparation"] --> Q["Check every unretired captured grant"]
   Q -->|"preserved"| R["Continue deployment or maintenance"]
   Q -->|"removed or rebound"| E
@@ -62,6 +66,12 @@ graph TD
 retains closed schemas, mutation Origin/CSRF checks and the refusal of caller-native
 authority headers. Creation requires exact-Agent `operate`; management uses creator
 `operate` or exact-Agent `administer`.
+
+For `view=pending`, the handler reads unbound OCC rows, then reauthenticates and
+checks exact-Agent access before disclosure. If administration was lost, it
+filters to the creator before calculating the page, total and snapshot. DELETE with the returned
+`reservation:<id>` revision checks the same authority and conditionally discards
+the unbound row with audit. Both paths return before native selection or transport.
 
 `packages/occ/src/agent-automations.ts:createAgentAutomations` checks creator
 ownership before native access. Foreign and absent records remain indistinguishable.
@@ -93,8 +103,16 @@ selects the revision-specific Service/operator HTTPRoute through existing Envoy
 filters. `verifyAutomationRouteInstance` checks the exact selector, route and
 EndpointSlice targets against the sole live revision Pod. Observations bind Pod
 UID, container/image identity and pinned source; `assertCurrent` repeats them.
-Nonempty grants also require the deployed wrapper, endpoint rules and CA assets,
-a read-only root filesystem and no mounts replacing `/app`.
+For nonempty grants, `verifyAutomationEndpointAssets` checks the expected
+role-specific Gateway ServiceAccount, embedded ServicePrincipal label and configured
+projected identity, or dedicated Agent identity through the same helper. During
+preparation, the controller reads the revision-owned immutable ConfigMap back and
+records its UID in Gateway Pod annotation
+`openclaw.dev/automation-configuration-uid`. Qualification fetches the owned map, compares that UID with the Pod annotation, verifies the
+expected name, immutable state, exact renderer data and read-only mounted
+`openclaw.json`, and refuses mismatches even without an optional CA. Endpoint rules and configured CA assets receive separate
+checks. The deployed wrapper, read-only root filesystem and no mounts replacing
+`/app` remain required.
 `reconcileGatewayRoute` creates these resources; revision cleanup removes them.
 The route renders the default backend `weight: 1` explicitly so API defaulting
 does not change the spec used for strict readback.
@@ -119,27 +137,55 @@ qualifies the static provisioning and policy. The Kubernetes implementation owns
 the exact anonymous HTTPS endpoint attestation, translated host CIDRs and optional
 public CA bundle. Stdio is ineligible. Literal raw operations map to canonical
 aliases; unsupported credentials, approval controls, transports or ambiguous names
-refuse qualification. A selected nonempty operation on dedicated Codex returns
-unqualified before grant creation; it is not replaced by an empty grant. Qualified
-model-only paths remain available. Embedded nonempty grants require the supported
-public tool/server controls and reject unsupported extra settings. Code Mode and
-tool search must already be disabled. This does not modify ordinary chat.
+refuse qualification. Only ordinary Kubernetes deployment-backed dedicated Codex
+can qualify; provider-owned Sandbox, protected-egress and credential variants
+fail closed. OCC revision admission inserts the sole main entry
+`identity.name`; the policy validates and binds its exact public value. Embedded
+OpenClaw admits an identity-only main entry. Dedicated Codex also requires the
+exact main tool allow list and intersects each alias with the literal
+MCP filter, Gateway allow list and canonical `agents.entries.main.tools.allow`. It
+requires server approval and the qualified guardian WebSocket plugin configuration.
+The binding covers effective workspace, transport/authentication provenance,
+guardian posture, dynamic exclusions and immutable Gateway/Agent images; it stores
+no raw app-server token or URL. Unsupported qualification refuses without fallback; qualified model-only paths
+remain available. Genuine HTTPS execution proof is a separate qualification gate.
+Code Mode and tool search must already be disabled. This does not modify ordinary chat.
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:requireAutomationRenderedEquivalence`
+compares Compute-owned runtime projections with their expected values, removes
+those projections from a copy, and rechecks the original qualification. The final
+dedicated workspace must match the Harness workspace. A mismatch refuses
+preparation; this does not qualify app tools or authenticated connectors.
 
 `apps/controller/src/gateway/agent-automations-client.ts:createNativeAgentAutomationsAccess`
 checks native administrative scope, the six cron methods and sole native Agent.
 For a nonempty grant, `captureToolGrant` checks `plugins.inspect` for admitted
-bundled origins and no MCP declarations. `tools.catalog` checks core/plugin alias
-collisions without ordinary-session overrides. Bounded `sessions.list` and
-`tools.effective` reads match MCP source, server, raw operation and canonical alias,
-and reject session-denied entries. These observations corroborate the Driver's
-qualification; they do not create authority from a raw filter.
+bundled origins and `tools.catalog` for core/plugin collisions without session
+overrides. Native server include filtering precedes alias allocation. Dedicated
+checks the complete resulting source namespace for collisions, suffix ambiguity
+and the reserved `mcp__` prefix before Gateway, Agent or caller subsets. Both Harnesses reject enabled filters
+containing raw `resources_list`, `resources_read`, `prompts_list` or `prompts_get`
+case-insensitively; tool-only authority cannot approve synthesized utilities. The
+policy also rejects raw include entries beginning with their own normalized safe
+server prefix plus `__`, ignoring case, before policy subsets. Native interprets
+them as alias selectors; unrelated raw `foo__bar` remains valid. No probe or
+fallback occurs. Embedded uses `sessions.list` and
+`tools.effective` to match MCP source, server, raw operation and alias. The
+existing session must prove ordinary same-Agent scope; cron, subagent, system,
+dock, foreign, unknown and session-denied entries are refused. Dedicated uses the
+standing immutable Agent grant and performs no `sessions.list`, `tools.effective`,
+`sessions.get` or history read. It does not inherit chat-session-specific denials.
+Real ordinary and scheduled identity, source and cap parity is a packaged-runtime
+qualification gate, not an admission-time discovery step.
 
 `apps/controller/src/drivers/compute/agent-automation-program.ts:verifyAgentAutomationProgram`
 matches the complete deployed wrapper against the rendered program and grant.
 `apps/controller/src/drivers/compute/agent-automation-guard.ts:AGENT_AUTOMATION_ORIGIN_GUARD`
+compares canonical entries and MCP against the immutable mounted source for
+embedded OpenClaw, or the immutable rendered ConfigMap for dedicated Codex. It
 checks writable discovery roots, installed-plugin state and bundled manifests. It
 also rechecks disabled Code Mode/tool search, node plugin/skill controls and
-Agent/model overrides.
+canonical `agents.entries` and model overrides; legacy `agents.list` is refused.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:gatewayRuntimeEntrypoint`
 runs this guard before every native Gateway spawn, including respawns and container
 startup. This local origin check is separate from OCC grant compatibility checks.
@@ -212,6 +258,11 @@ caller/revision after mutation produces `UNKNOWN_OUTCOME`; no mutation is replay
 `AutomationCreateNotCommittedError` permits atomic discard only for a proven
 noncommitted, still-unbound create. Concurrent binding or failed discard audit
 prevents deletion. Other uncertain creates retain their grant and recovery record.
+An authorized reservation cancellation uses the same unbound conditional deletion
+as a fence: if binding wins, cancellation fails; if cancellation wins, binding
+cannot succeed and OCC cannot enable the job. A delayed add can leave a disabled
+native orphan, which a trusted native administrator must remove. No automatic
+cleanup or add replay occurs.
 
 ## Debugging and Verification
 
@@ -243,6 +294,8 @@ for each selected Harness/runtime. Testing procedures belong in the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 14:03: Trace uncommitted pending recovery and dedicated MCP qualification (authoring-run/7fb7cb15-5b9d-496d-b268-bba1a49025fd - dc328404503ca35be4e042540307388a5141e2d0)
 
 - 2026-11-22 01:19: Clarify uncommitted dedicated MCP refusal and explicit route weight (01a1fc52-9d88-7223-b8a1-3c98595d3fbe - 269ecf6b)
 

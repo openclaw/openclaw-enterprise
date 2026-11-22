@@ -1713,6 +1713,7 @@ export * from "./api/routes.ts";
 export {
   AgentAutomationParams,
   AgentAutomationPageQuery,
+  AgentAutomationListQuery,
   CreateAgentAutomationBody,
   UpdateAgentAutomationBody,
   DeleteAgentAutomationQuery,
@@ -1857,12 +1858,14 @@ export {
   AgentAutomationRunsPageSchema,
   AgentAutomationRunsResponse,
   AgentAutomationUnsupportedSummary,
+  AgentAutomationPendingReservationSchema,
 } from "./api/agent-automations.ts";
 export type {
   AgentAutomationCreateInput,
   AgentAutomationUpdateInput,
   AgentAutomationData,
   AgentAutomationSummary,
+  AgentAutomationPendingReservation,
   AgentAutomationRunsPage,
 } from "./api/agent-automations.ts";
 export { admitRepositoryNetworkPolicy } from "./repository-network-policy.ts";

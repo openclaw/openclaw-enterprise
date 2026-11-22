@@ -1,14 +1,10 @@
 # Agent automations
 
-The OpenClaw Control Plane (OCC) automation broker derives a ceiling of Agent-shared,
-preapproved static Model Context Protocol (MCP) operations for scheduled turns. A qualified Agent with no eligible operations receives an
-explicit empty ceiling, `[]`, for model-only execution. OCC owns authorization,
-creator records and the saved grant; OpenClaw owns scheduling, execution and
-history. Use the [scheduling guide](../guides/agent-automations.md) for HTTP operations.
-
-The approved-MCP pilot is under qualification. Its implementation and earlier
-model-only results do not establish MCP execution safety on every supported
-Harness. See [verification status](#verification-status).
+OpenClaw Control Plane (OCC) derives a ceiling of Agent-shared approved static
+Model Context Protocol (MCP) operations for scheduled turns. Qualified `[]` permits
+model-only execution. OCC owns authorization, creators and grants; OpenClaw owns
+scheduling and history. See the [guide](../guides/agent-automations.md) and
+[verification status](#verification-status).
 
 ## Execution qualification
 
@@ -21,31 +17,26 @@ A raw native filter is not an authorization grant. Eligible operations must have
 - The same endpoint, workload credential identity, permitted provider actions and
   standing approval as ordinary unattended Agent execution.
 
-The Kubernetes pilot may qualify explicitly trusted anonymous HTTPS MCP endpoints
-for embedded OpenClaw. Dedicated Codex refuses nonempty MCP grants with
-`503 AUTOMATIONS_UNQUALIFIED`; it does not silently downgrade them to `[]`.
-Qualified model-only scheduling remains available. Stdio and general
-credential-bearing MCP are not qualified. An
-Installation administrator supplies the exact endpoint attestation through
+Only Kubernetes Compute can qualify operator-attested anonymous HTTPS MCP for
+embedded OpenClaw or ordinary deployment-backed dedicated Codex. Provider-owned
+Sandbox, protected-egress and credential deployment variants fail closed.
+Qualify each packaged Harness with genuine permitted and forbidden HTTPS execution
+proof before deployment. Unsupported qualification returns `503 AUTOMATIONS_UNQUALIFIED` without fallback;
+qualified model-only scheduling remains available. Stdio and credential-bearing MCP
+are unqualified. An Installation administrator supplies endpoint attestations through
 [`automations.trustedAnonymousMcpEndpoints`](drivers/kubernetes-compute.md#automation-mcp-endpoints).
-This is an operator trust decision, not permission inferred from an Agent's raw filter.
 
-OCC saves the exact tool ceiling and opaque binding fingerprints. It stores no
-credential values in this record. Clients cannot supply a ceiling, native aliases,
-credentials or approval decisions. A tool that needs interactive approval or
-requester-specific authority is ineligible. Approval of a tool does not approve
-every action its arguments can request.
+OCC saves ceilings and binding fingerprints, never credentials. Clients cannot
+choose tools, credentials or approvals. Interactive or requester-specific authority
+is ineligible; approve actions separately.
 
-Approval settings belong to their runtime owner. Interactive approval cannot
-qualify. A server's `codex.defaultToolsApprovalMode: "approve"` does not qualify
-dedicated scheduling or grant additional operations or provider actions. The [Plugin Driver's app approval mapping](drivers/plugin-bundled.md#native-mappings-and-limits)
-is a separate contract, outside this pilot.
+Dedicated requires `codex.defaultToolsApprovalMode: "approve"` on each HTTPS server;
+this grants no provider actions. [App approval mapping](drivers/plugin-bundled.md#native-mappings-and-limits)
+is outside this pilot.
 
-For a nonempty MCP grant, Code Mode and tool search must already be off. OCC
-refuses an incompatible configuration; automation admission does not turn these
-features off for ordinary chat. Native shell/file tools, code, discovery,
-delegation, messaging and apps are outside the tool-bearing pilot. Current managed
-MCP Sandbox and native app topologies do not supply its qualification contract.
+For nonempty grants, Code Mode and tool search must already be off; admission
+does not change ordinary chat. Shell/file tools, code, discovery, delegation,
+messaging, apps and managed MCP Sandbox are outside this pilot.
 
 Native writes carry an explicit `payload.toolsAllow`, including `[]` for a
 model-only job. The adapter refuses automatic/default-tool flags, triggers,
@@ -67,49 +58,61 @@ permit `enabled`, `url`, `transport`, `connectionTimeoutMs`, `requestTimeoutMs`,
 `supportsParallelToolCalls`, `sslVerify`, `toolFilter` and `codex`. Timeouts must be
 finite nonnegative numbers; `supportsParallelToolCalls` must be boolean and TLS
 verification cannot be disabled. The `codex` object accepts only
-`defaultToolsApprovalMode: "approve"`. Plugin entries support only boolean `enabled`.
-Unsupported extra settings in these controls refuse qualification.
+`defaultToolsApprovalMode: "approve"`. Plugin entries accept `enabled`; dedicated Codex also requires its qualified
+guardian WebSocket `config`.
+Extra settings refuse qualification.
 
 The nonempty-grant pilot also requires immutable runtime image references and a
 restricted native plugin namespace. Channel entries, selected managed/native
-plugins and local plugin load paths are not qualified. Only the pinned core plugin
-IDs verified not to add MCP declarations are admitted. Agent/model overrides must
-not re-enable Code Mode or tool search. `gateway.nodes.pluginTools.enabled` and
+plugins and local plugin load paths are not qualified. Only pinned core plugin IDs
+without MCP declarations qualify. OCC admits sole
+`agents.entries.main.identity.name` under the [API Name rule](../../packages/contracts/src/api/plain-text.ts).
+The grant binds its exact value. Embedded may use identity alone;
+dedicated also requires exact aliases in `main.tools.allow`, Gateway policy and
+literal MCP filters. Bindings include workspace, guardian posture and exclusions;
+no app-server token or URL.
+Agent/model overrides cannot re-enable Code Mode or tool search; legacy
+`agents.list` is refused. `gateway.nodes.pluginTools.enabled` and
 `gateway.nodes.allowSkills` must be `false`; environment overrides, Secret bindings
 and repository credentials are not qualified.
 
 The deployed Gateway must use the version-bound, controller-rendered plugin-origin
 guard and endpoint network/trust assets. Verification requires a read-only root
-filesystem with no mounts replacing `/app`. The guard rechecks disabled Code Mode,
-tool search and node plugin/skill controls, including Agent/model overrides. It
+filesystem with no mounts replacing `/app`. The guard compares canonical entries
+and MCP with immutable mounted source for embedded, or the immutable rendered
+ConfigMap for dedicated. It rechecks Code Mode, tool search and node plugin/skill
+controls, including Agent/model overrides. It
 checks writable plugin discovery roots and installed-plugin state before each native Gateway spawn, including
 respawns and container startup. Unsafe or unrecognized origins prevent startup.
-Admission also checks `plugins.inspect` and `tools.catalog` for bundled provenance
-and alias collisions, then corroborates MCP bindings with bounded `sessions.list`
-and `tools.effective` reads. These checks do not grant authority or continuously
-monitor a running process.
+Both paths check bundled plugin provenance and core or plugin collisions through
+`plugins.inspect` and `tools.catalog`. Server include filters apply before native alias allocation. Dedicated checks the
+complete resulting source namespace before Gateway, Agent or caller subsets, refusing
+collisions, suffix ambiguity and reserved `mcp__` prefixes (case-insensitive). Embedded
+corroborates MCP bindings using `sessions.list` and `tools.effective` from an
+ordinary same-Agent session. Cron, subagent, system,
+dock, foreign and unknown scopes or session-denied tools are ineligible. Dedicated
+uses the standing Agent grant without session/effective/history reads or
+chat-session-specific denial inheritance. Packaged-runtime parity is qualification
+proof, not discovery during creation. Both Harnesses refuse enabled raw include
+entries starting case-insensitively with their own normalized safe server prefix
+plus `__` (alias selectors), or utility names `resources_list`, `resources_read`,
+`prompts_list`, `prompts_get` (case-insensitive). Unrelated raw `foo__bar` remains valid. Refuse
+before subsets without probe or fallback.
 
-These limits govern model-requested tools. Scheduler housekeeping, bootstrap,
-history processing and configured failure alerts can still occur. Ordinary chat
-and native administration retain their existing policies and remain trusted.
-Native writers can change jobs outside OCC. There is no native-edit import,
-automatic adoption or tamper-resistant sole-writer guarantee.
+These limits govern model-requested tools, not scheduler housekeeping, bootstrap,
+history or failure alerts. Ordinary chat and native administrators remain trusted
+writers outside OCC; OCC does not import or adopt their native jobs.
 
 ## Ownership and authority
 
-A human controller session needs exact-Agent `operate` to create a job. The same
-permission admits reads and mutations of that creator's records. Exact-Agent
-`administer` admits management of all OCE-owned jobs for the Agent, but does not
-replace `operate` for creation. Service keys are refused. Foreign and absent
-ownership records return the same 404 response.
+A human session needs exact-Agent `operate` to create, read and manage
+records it created. Exact-Agent `administer` manages all OCC-owned records but
+cannot replace `operate` for creation. OCC refuses service keys; foreign and absent
+ownership records return the same 404.
 
-Native edits, imports and reconciliation are outside the supported workflow.
-Native jobs without an OCC ownership record are not exposed through this API.
-
-Creation delegates the Agent's already-approved shared workload authority. It does
-not capture the creator's personal account, provider credentials, session or
-approval. The ceiling is relative to that Agent authority, not the creator's
-personal provider permissions. Model requests use the Agent's runtime authentication.
+Creation delegates the Agent's approved shared workload authority, never the
+creator's personal account, provider credential, session or approval. Model
+requests use the Agent's runtime authentication.
 
 Revoking the creator's `operate` removes management and history access unless
 another grant permits it; it does not cancel existing jobs. An Agent administrator
@@ -120,14 +123,14 @@ or configuration changes.
 
 All paths start with `/namespaces/{namespaceId}/agents/{agentId}/automations`.
 
-| Method | Suffix                 | Request                                           | Success                   |
-| ------ | ---------------------- | ------------------------------------------------- | ------------------------- |
-| POST   | Collection             | Required `name`, `enabled`, `schedule`, `prompt`  | 201, normalized job       |
-| GET    | Collection             | Optional `offset`, `limit`                        | 200, authorized summaries |
-| GET    | `/{automationId}`      | No query                                          | 200, job                  |
-| PATCH  | `/{automationId}`      | Expected revision and at least one editable field | 200, job                  |
-| DELETE | `/{automationId}`      | `expectedConfigRevision` query                    | 204                       |
-| GET    | `/{automationId}/runs` | Optional `offset`, `limit`                        | 200, run history          |
+| Method | Suffix                 | Request                                           | Success                 |
+| ------ | ---------------------- | ------------------------------------------------- | ----------------------- |
+| POST   | Collection             | Required `name`, `enabled`, `schedule`, `prompt`  | 201, normalized job     |
+| GET    | Collection             | Optional `offset`, `limit`, `view`                | 200, authorized entries |
+| GET    | `/{automationId}`      | No query                                          | 200, job                |
+| PATCH  | `/{automationId}`      | Expected revision and at least one editable field | 200, job                |
+| DELETE | `/{automationId}`      | `expectedConfigRevision` query                    | 204                     |
+| GET    | `/{automationId}/runs` | Optional `offset`, `limit`                        | 200, run history        |
 
 Create and edit accept `at` with an RFC3339 timestamp, `every` with a positive
 integer `everyMs`, or `cron` with `expr` and an IANA `tz`. Native validation owns
@@ -142,20 +145,27 @@ at most 128 characters. Mutations require the configured Origin and existing
 session CSRF checks. Native routing/authority headers and extra body fields are
 rejected; callers cannot choose native Agent IDs, creators or tool grants.
 
-Lists omit prompts and filter ownership before paging and totals. The public
-`snapshotRevision` describes only authorized summaries. Restart a paged scan if
-it changes. A registered unsupported job returns only ID, name, enabled state,
-schedule kind and revision; GET and PATCH reject it. An Agent administrator can
-remove it using the observed revision.
+The default collection view returns native job summaries in `jobs` and an empty
+`pendingReservations` array. `view=pending` returns unbound OCC reservations in
+`pendingReservations` and an empty `jobs` array; it does not contact the native
+runtime. Each pending entry has `id`, `status: "pending"`, `createdAt` and
+`configRevision: "reservation:<id>"`. It has no native name or schedule.
 
-Automation IDs are UUIDs. Malformed IDs return 400 before persistence lookup;
-well-formed missing IDs return 404. List disclosure uses the final authority mode,
+Both views filter by authority before paging. `total`, `nextOffset` and
+`snapshotRevision` describe the selected authorized view. Restart a paged scan if
+the snapshot changes. Job summaries omit prompts. A registered unsupported job
+returns only ID, name, enabled state, schedule kind and revision; GET and PATCH
+reject it. An Agent administrator can remove it using the observed revision.
+
+Malformed automation UUIDs return 400; missing valid UUIDs return 404. List disclosure uses the final authority mode,
 so losing `administer` cannot expose rows loaded under the earlier grant.
 
 PATCH checks its `expectedConfigRevision` against the full job read used for
-eligibility, then passes that revision to the native atomic mutation. DELETE
-also uses a native revision precondition. Refresh after a 409; do not overwrite
-another request's changes blindly.
+eligibility, then passes that revision to the native atomic mutation. DELETE of a
+job also uses a native revision precondition. For an unbound reservation, DELETE
+accepts its `reservation:<id>` revision and uses local conditional deletion; it
+does not contact the native runtime. Refresh after a 409; do not overwrite another
+request's changes blindly.
 
 ## Persistence and history
 
@@ -178,6 +188,14 @@ and records that outcome in the same transaction. Admission audit remains. Clean
 cannot remove another creator's reservation or a bound native identity. Lost replies,
 failed absence checks and other uncertain outcomes retain the recovery record.
 
+The creator with `operate`, or an exact-Agent administrator, can list and cancel
+an unbound reservation even when the native runtime is unavailable. OCC commits
+the conditional deletion and audit together. Binding and cancellation cannot
+both succeed. Cancellation releases the reservation's grant. If a delayed native
+add completes afterward, its job remains disabled because OCC cannot bind or
+enable it. A trusted native administrator must remove that orphan; OCC does not
+automatically adopt or clean it up.
+
 Ownership records survive native one-shot deletion and explicit deletion, so OCC
 can authorize history afterward. Native history retention still applies; an
 expired history or a deleted job that never ran returns 404. Agent
@@ -190,16 +208,13 @@ content are excluded from OCC mutation audit.
 
 ## Policy changes and retained grants
 
-Policy additions do not expand an existing automation. Admission and deployment
-compare its saved grant with the selected runtime owner's qualified authority.
-The captured grant must remain a subset of the successor's qualified operations,
-with each captured binding unchanged. Unrelated operation additions can be
-compatible, but cannot enlarge an existing job. Removing a captured operation,
-even to narrow the Agent's policy, blocks the successor until the affected grant
-is retired. Reusing its name for another endpoint, workload identity, action scope
-or standing approval is also refused. Runtime image identity is part of the binding,
-so an image change can require retiring and recreating affected automations.
-Paused jobs and unresolved creation records retain their grants. Stopping an Agent does not retire those records.
+Admission and deployment require each saved grant to remain a subset of the
+successor's qualified operations with unchanged bindings. Additions cannot enlarge
+an existing job. Removing an operation or reusing its name for another endpoint,
+identity, action scope or approval blocks the successor until grant retirement.
+Image identity is part of the binding, so image changes can require retirement
+and recreation. Paused jobs and unresolved reservations retain grants; stopping
+an Agent does not retire them.
 
 Deployment admission and the worker recheck retained grants before a successor
 can run. OCC-managed preparation, recovery and maintenance repeat that check. A kubelet
@@ -234,31 +249,30 @@ pilot's qualification. Secret APIs do not retire automation grants.
 
 ## Runtime and failure boundaries
 
-Both Installation and Agent native access must be enabled. OCC requires a running
-selected revision, matching Compute ownership, a usable private endpoint and
-runtime-image provenance for each main Gateway/Harness container. The current
-source eligibility pin is `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`; a new pin
-needs management-protocol proof before admission is extended. This pin does not
-qualify scheduled execution. Missing provenance or
-an unsupported source is refused before native cron dispatch.
+Native operations require Installation and Agent native access, a running selected
+revision, matching Compute ownership, a private endpoint and runtime-image
+provenance for each main Gateway/Harness container. Source eligibility pins `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`; changing it
+requires management-protocol proof; the pin alone does not qualify scheduled
+execution. Refuse missing provenance or unsupported source before cron dispatch.
 
 Compute opens a transport bound to the selected running Gateway instance. The
 Kubernetes implementation uses a revision-specific Service and operator HTTPRoute
 through existing Envoy authentication and filters. It verifies the sole live Pod,
-container/image identity and EndpointSlice targets. The broker validates
-`system.info` hostname against the expected Pod name on the handshake WebSocket.
-It checks that the handshake boot ID and reported process-instance ID are bounded,
-nonempty strings and that PID is positive; it does not compare those IDs with a
-previously known process. Mutations require that captured identity and an unchanged
-handshake boot ID. It rechecks the Pod/container instance before requests.
+container/image identity and EndpointSlices. For nonempty grants, it also verifies
+the Gateway ServiceAccount, embedded ServicePrincipal and configured projected identity, and
+immutable revision-owned mounted ConfigMap with exact rendered `openclaw.json`,
+even without optional CA. The broker checks `system.info` hostname against the Pod
+name. Boot and process-instance IDs must be 1–128 characters and PID positive;
+neither ID has a prior expected value. Mutations require captured identity and
+unchanged boot ID; each request rechecks the Pod and container.
 A closed connection is not reconnected or replayed. The Agent-wide route is not
 an automation transport. Revision cleanup removes its route and Service.
 
 Missing policy qualification permits only inventory, inspection, history,
 disable-only updates and deletion under existing authorization and native-shape
-checks. It never permits creation, other edits or re-enablement. Recovery still
-requires the instance-bound transport and supported runtime provenance; it does
-not fall back to another route.
+checks. It never permits creation, other edits or re-enablement. Native job recovery still requires the instance-bound transport and supported
+runtime provenance; it does not fall back to another route. The pending view and
+reservation cancellation do not require native access.
 
 The private connection must grant native administration, advertise all six cron
 methods and identify one unambiguous native Agent. The native inspection methods
@@ -267,7 +281,8 @@ qualification reads, not public operations or new mutation authority. OCC's type
 operations; the underlying native credential has broader authority
 and never reaches the caller. Browser chat scopes are unchanged.
 
-A stopped, replacing or unavailable runtime returns `503 DEPENDENCY_UNAVAILABLE`.
+A stopped, replacing or unavailable runtime returns `503 DEPENDENCY_UNAVAILABLE`
+for native-dependent requests.
 Missing automation transport returns `503 AUTOMATIONS_UNQUALIFIED`. Updates and
 explicit re-enablement also require current qualification of the captured grant.
 After policy withdrawal, disable-only PATCH, DELETE and history remain available,
@@ -279,22 +294,13 @@ return 404; conflicts and unsupported job shapes return 409.
 A lost mutation reply, malformed acknowledgement, selected-revision change after
 dispatch, or failed success-audit append returns `503 UNKNOWN_OUTCOME`. OCC records
 an indeterminate outcome when audit is available and does not replay the request.
-Use the response's `Location` path to inspect the automation or its `/runs`
-history before deciding whether to issue another mutation. A missing live job
-does not prove it never ran. A disconnect cannot guarantee cancellation of a
-native effect, and a lost HTTP response can also lose its recovery reference.
+Inspect `Location` or `/runs` before another mutation. A missing job does not
+prove it never ran. Disconnect does not cancel native effects; a lost response
+can lose its recovery reference.
 
 ## Verification status
 
-The [implementation plan](../../specs/plans/20261121-agent-automations.md) records
-results and remaining acceptance gates. Earlier model-only management, execution
-and empty-cap refusal results remain historical evidence for that narrower
-contract. They do not qualify a nonempty MCP grant, shared credential identity,
-action restrictions, standing approval or policy-change handling.
-
-The approved-MCP path needs real positive calls and independent provider-side
-effects, followed by denied calls after narrowing or withdrawal, for each selected
-Harness and packaged version. Source filters, rendered configuration and passing
-fixture tests do not substitute for that proof. Testing setup and evidence belong
-in the [runtime testing guide](../testing/docker.md); the
-[source-backed flow](../flows/agent-automations.md) describes implementation order.
+The [plan](../../specs/plans/20261121-agent-automations.md) records gates. Each
+packaged Harness needs real permitted provider effects and denials after narrowing
+or withdrawal; model-only fixtures and rendered settings do not qualify MCP. See
+[testing](../testing/docker.md) and the [flow](../flows/agent-automations.md).

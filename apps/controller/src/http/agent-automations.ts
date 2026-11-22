@@ -127,6 +127,100 @@ export function createAgentAutomationHandlers(options: {
         throw failure(404, "NOT_FOUND", "The automation was not found.");
       }
     }
+    const query = request.query as Record<string, string | undefined>;
+    const offset = Number(query.offset ?? "0");
+    const limit = Number(query.limit ?? "50");
+    if (operation === "listAgentAutomations" && query.view === "pending") {
+      // Recovery must not depend on a selected revision or a reachable native scheduler.
+      await options.reauthenticate(request, context);
+      owned = await controller.listAgentAutomationOwnership(context.actorId, namespaceId, agentId);
+      // The ownership read can finish after an administrator is demoted. Recheck
+      // the session and exact Agent access before disclosing rows or aggregate metadata.
+      await options.reauthenticate(request, context);
+      const finalAccess = await controller.getAgentBrowserAccess(
+        context.actorId,
+        namespaceId,
+        agentId,
+      );
+      if (finalAccess.mode !== "admin") {
+        owned = owned.filter((entry) => entry.creatorPrincipalId === context.actorId);
+      }
+      const pendingReservations = owned
+        .filter((entry) => entry.nativeJobId === null && entry.retiredAt === null)
+        .map((entry) => ({
+          id: entry.id,
+          status: "pending" as const,
+          createdAt: entry.createdAt,
+          configRevision: `reservation:${entry.id}`,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      const total = pendingReservations.length;
+      const page = pendingReservations.slice(offset, offset + limit);
+      reply.code(200).send({
+        data: {
+          jobs: [],
+          pendingReservations: page,
+          total,
+          nextOffset: offset + page.length < total ? offset + page.length : null,
+          snapshotRevision: createHash("sha256")
+            .update(JSON.stringify(pendingReservations))
+            .digest("hex"),
+        },
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+    if (
+      operation === "deleteAgentAutomation" &&
+      (record?.nativeJobId === null || query.expectedConfigRevision?.startsWith("reservation:"))
+    ) {
+      if (
+        !record ||
+        record.nativeJobId !== null ||
+        query.expectedConfigRevision !== `reservation:${record.id}`
+      ) {
+        throw failure(
+          409,
+          "RESOURCE_CONFLICT",
+          "The automation reservation changed. Refresh before retrying.",
+        );
+      }
+      await options.reauthenticate(request, context);
+      await controller.cancelUnboundAgentAutomation(
+        context.actorId,
+        { namespaceId, agentId, id: record.id },
+        (cancelled, action) =>
+          options.factory.create({
+            installationId: options.installationId,
+            namespaceId,
+            kind: "mutation",
+            source: "occ",
+            actor: {
+              principalId: context.actorId,
+              kind: "principal",
+              issuer: context.issuer,
+              subject: context.subject,
+            },
+            resource: { kind: "agent", id: agentId, namespaceId },
+            authorization: {
+              principalId: context.actorId,
+              action,
+              resource: { kind: "agent", id: agentId, namespaceId },
+            },
+            action: `${context.operation.action}.cancelled`,
+            outcome: "success",
+            requestId: request.id,
+            admissionDecisionId: context.admissionDecisionId,
+            details: {
+              operation,
+              phase: "cancelled",
+              jobId: cancelled.id,
+            },
+          }),
+      );
+      reply.code(204).send();
+      return;
+    }
     if (
       options.nativeAdmin?.enabled !== true ||
       agent.status !== "active" ||
@@ -279,9 +373,6 @@ export function createAgentAutomationHandlers(options: {
     if (request.raw.aborted || reply.raw.destroyed) {
       abort.abort();
     }
-    const query = request.query as Record<string, string | undefined>;
-    const offset = Number(query.offset ?? "0");
-    const limit = Number(query.limit ?? "50");
     let native: AgentAutomationGatewaySession | undefined;
     let committed = false;
     try {
@@ -381,6 +472,7 @@ export function createAgentAutomationHandlers(options: {
           const page = jobs.slice(offset, offset + limit);
           return {
             jobs: page,
+            pendingReservations: [],
             total,
             nextOffset: offset + page.length < total ? offset + page.length : null,
             snapshotRevision,

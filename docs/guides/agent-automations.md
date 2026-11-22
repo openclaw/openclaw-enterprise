@@ -15,21 +15,68 @@ runtime owner must verify exact static MCP operations, their canonical aliases,
 endpoint, Agent-shared credential identity, provider actions and standing approval.
 The operation must already work unattended under that Agent's authority. A raw
 include filter or a successful call with your personal account is insufficient.
+Embedded OpenClaw also requires an existing ordinary same-Agent session for
+effective-tool corroboration; dock and subagent sessions do not qualify. Dedicated
+Codex needs no prior session and does not inherit chat-session-specific denials.
 
-Use embedded OpenClaw for Installation-attested anonymous HTTPS MCP. Dedicated
-Codex refuses nonempty grants with `AUTOMATIONS_UNQUALIFIED`, without a model-only
-fallback; qualified model-only scheduling remains available. Stdio, general
-credentialed MCP, managed MCP and native apps are not qualified. Ask the
+Use Installation-attested anonymous HTTPS MCP only on a Harness with genuine
+permitted and forbidden execution proof. Unsupported qualification returns `AUTOMATIONS_UNQUALIFIED` without
+fallback; qualified model-only scheduling remains available. Stdio, credentialed
+MCP, managed MCP and native apps are not qualified. Ask the
 Installation administrator to verify the [exact endpoint attestation](../reference/drivers/kubernetes-compute.md#automation-mcp-endpoints).
 
 A nonempty grant requires Code Mode and tool search to be off before admission.
 MCP execution also requires immutable images and the restricted core-plugin
-namespace, without channel entries, Agent plugin selections or local plugin paths.
+namespace, without channel entries, unrelated Agent plugins or local plugin paths.
 Set `gateway.nodes.pluginTools.enabled` and `gateway.nodes.allowSkills` to `false`;
 environment overrides, Secret bindings and repository credentials are ineligible.
 These are operator configuration choices that affect ordinary chat; creating an
 automation does not change those settings. An empty MCP include list can expose
-all operations. Never use it to revoke access.
+all operations. Never use it to revoke access. Tool-only qualification rejects
+`resources_list`, `resources_read`, `prompts_list` and `prompts_get` in enabled
+include filters, without regard to case. For server `reports`, include the raw
+operation `daily`, not `reports__daily`: native can treat that own-prefix value
+as an alias selector. The check ignores case and refuses admission before policy
+subsets, without probing or fallback. An unrelated raw `foo__bar` remains valid.
+
+For ordinary Kubernetes deployment-backed dedicated Codex, retain the enabled
+Codex plugin and its guardian WebSocket
+configuration from the selected Harness preset. Each HTTPS server needs
+`codex.defaultToolsApprovalMode: "approve"`. Put each approved native alias in both
+`agents.entries.main.tools.allow` and `tools.gatewayPolicy.allow`; its raw operation
+must also appear in the server's literal include filter. For example, these partial
+settings grant only the `reports__daily` alias. OCC adds the admitted Agent
+identity as `agents.entries.main.identity.name`; do not add other identity fields.
+Embedded OpenClaw can use that identity-only main entry, while dedicated Codex also
+needs the exact tool allow list:
+
+```json
+{
+  "agents": { "entries": { "main": { "tools": { "allow": ["reports__daily"] } } } },
+  "mcp": {
+    "servers": {
+      "reports": {
+        "transport": "streamable-http",
+        "url": "https://mcp.example.org/reports",
+        "toolFilter": { "include": ["daily"] },
+        "codex": { "defaultToolsApprovalMode": "approve" }
+      }
+    }
+  },
+  "tools": {
+    "profile": "full",
+    "gatewayPolicy": { "allow": ["reports__daily"] },
+    "codeMode": false,
+    "toolSearch": false
+  }
+}
+```
+
+Use the canonical `agents.entries` roster; legacy `agents.list` is refused. This
+configuration does not qualify provider-owned Sandbox, protected-egress or
+credential deployment variants, authenticated connectors, or app tools. Dedicated
+server IDs that produce an `mcp__` alias prefix, regardless of case, are refused
+until the native and user MCP namespace is separately qualified.
 
 Use the [human sign-in procedure](../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator). Exact-Agent `operate` admits your own records;
 `administer` admits all OCE-owned records for that Agent. Service keys are refused.
@@ -114,9 +161,28 @@ to stop further provider calls; a call already issued can complete.
 ## Handle an uncertain result
 
 `503 UNKNOWN_OUTCOME` means the mutation might have committed. Do not retry it
-automatically. Keep the response's `Location` path: it identifies the automation
-even if a successful one-shot has already disappeared. Inspect that path or its
-`/runs` history. A recovered create can be disabled because activation did not
-commit. Inspect its current revision and history before deciding whether to
-request activation. See the
-[error and persistence contract](../reference/agent-automations.md#runtime-and-failure-boundaries).
+automatically. Keep the response's `Location` path when present. Inspect the job
+or its `/runs` history; a recovered create can be disabled because activation did
+not commit. Inspect its revision and history before requesting activation.
+
+If the response was lost, or no native job can be found, list pending reservations:
+
+```sh
+curl --fail-with-body --cookie "$COOKIE" "$AUTOMATIONS?view=pending&offset=0&limit=50"
+```
+
+The response returns authorized entries in `data.pendingReservations`. Use
+`nextOffset` to read later pages. This view works without the native runtime. To
+cancel a still-unbound reservation, use its returned `id` and `configRevision`:
+
+```sh
+curl --fail-with-body --request DELETE --cookie "$COOKIE" \
+  -H "Origin: $OCC_URL" --get --data-urlencode "expectedConfigRevision=$CONFIG_REVISION" \
+  "$AUTOMATIONS/$RESERVATION_ID"
+```
+
+Success returns 204 and releases the reservation's grant. A 404 or 409 can mean
+binding or cancellation won; refresh before taking further action. If a native add
+arrives after cancellation, it remains disabled. Ask a trusted native administrator
+to remove that orphan; OCC does not clean it up automatically. See the
+[persistence contract](../reference/agent-automations.md#persistence-and-history).

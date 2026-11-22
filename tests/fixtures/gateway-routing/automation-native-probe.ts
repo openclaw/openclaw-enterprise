@@ -68,7 +68,9 @@ const apiKey = await readFile(keyPath, "utf8");
 const nativeContainer = process.env.OCC_AUTOMATION_PROOF_NATIVE_CONTAINER;
 const replacementArgumentsPath = process.env.OCC_AUTOMATION_PROOF_REPLACEMENT_ARGS;
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
-assert.ok(nativeContainer && replacementArgumentsPath && databaseUrl);
+const barrierDatabaseUrl = process.env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL;
+assert.ok(nativeContainer && replacementArgumentsPath && databaseUrl && barrierDatabaseUrl);
+const barrierPool = new pg.Pool({ connectionString: barrierDatabaseUrl, max: 2 });
 const platformPool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
 const platformState = new PostgresPlatformState(platformPool);
 let worker: ControllerWorker | undefined;
@@ -88,9 +90,11 @@ const sockets = new websocket.WebSocketServer({ noServer: true });
 const proxy = createServer({ cert: await readFile(certPath), key: await readFile(tlsKeyPath) });
 let nativeCreateRequests = 0;
 let nativeUpdates = 0;
+let beforeCreate: undefined | (() => Promise<void>);
 let beforeUpdate: undefined | (() => Promise<void>);
 let verifyActivationBinding: undefined | ((nativeJobId: string) => Promise<void>);
 let verifiedActivations = 0;
+const pendingCreateReleases = new Set<() => void>();
 let loseCreateReply = false;
 let loseUpdateReply = false;
 let afterUpdate: undefined | (() => Promise<void>);
@@ -135,7 +139,16 @@ proxy.on("upgrade", (request, socket, head) => {
           queue.push(bytes);
         }
       };
-      if (frame.method === "cron.update") {
+      if (frame.method === "cron.add") {
+        const action = beforeCreate;
+        beforeCreate = undefined;
+        void Promise.resolve(action?.())
+          .then(forward)
+          .catch(() => {
+            downstream.terminate();
+            upstream.terminate();
+          });
+      } else if (frame.method === "cron.update") {
         nativeUpdates++;
         assert.deepEqual(
           frame.params?.patch?.payload?.toolsAllow,
@@ -676,7 +689,7 @@ try {
     },
   });
   assert.equal(operatorBinding.status, 201);
-  const guestSession = await f.signIn(guest.credentials);
+  let guestSession = await f.signIn(guest.credentials);
   assert.equal((await request("GET", `${base}/${job.id}`, { session: guestSession })).status, 404);
   assert.equal(
     (
@@ -691,7 +704,98 @@ try {
   const guestList = await request("GET", base, { session: guestSession });
   assert.equal(guestList.status, 200);
   assert.deepEqual(guestList.data.jobs, []);
+  assert.deepEqual(guestList.data.pendingReservations, []);
   assert.equal(guestList.data.total, 0);
+
+  async function delayCreate(session: typeof administrator, name: string) {
+    const captured = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    pendingCreateReleases.add(release.resolve);
+    beforeCreate = async () => {
+      captured.resolve();
+      await release.promise;
+    };
+    const creation = request("POST", base, {
+      body: { ...input, name, enabled: true },
+      session,
+    });
+    const timeout = setTimeout(
+      () => captured.reject(new Error("delayed native create was not observed")),
+      10_000,
+    );
+    try {
+      await captured.promise;
+    } finally {
+      clearTimeout(timeout);
+    }
+    return { creation, release };
+  }
+  async function finishCancelled(
+    delayed: Awaited<ReturnType<typeof delayCreate>>,
+    id: string,
+    updatesBeforeCancellation: number,
+  ) {
+    delayed.release.resolve();
+    pendingCreateReleases.delete(delayed.release.resolve);
+    const result = await delayed.creation;
+    assert.equal(result.status, 503, JSON.stringify(result.body));
+    assert.equal(result.body.error.code, "UNKNOWN_OUTCOME");
+    assert.equal(
+      nativeUpdates,
+      updatesBeforeCancellation,
+      "a cancelled reservation cannot activate the delayed native add",
+    );
+    const page = await observer.request<{
+      jobs: Array<{
+        id: string;
+        declarationKey?: string;
+        enabled: boolean;
+        configRevision: string;
+      }>;
+    }>("cron.list", {
+      includeDisabled: true,
+      includeDeliveryPreviews: false,
+      limit: 200,
+      offset: 0,
+    });
+    const orphan = page.jobs.find((entry) => entry.declarationKey === `occ-automation:${id}`);
+    assert.ok(orphan, "the delayed native add must be visible to a trusted native administrator");
+    assert.equal(orphan.enabled, false, "late native work must remain disabled");
+    assert.equal(
+      (await request("GET", `${base}?view=pending`)).data.pendingReservations.some(
+        (entry: { id: string }) => entry.id === id,
+      ),
+      false,
+    );
+    // OCC no longer owns this disabled orphan. A trusted native administrator removes it.
+    await observer.request("cron.remove", {
+      id: orphan.id,
+      expectedConfigRevision: orphan.configRevision,
+    });
+  }
+
+  const delayedForeign = await delayCreate(administrator, "Delayed administrator create");
+  const creatorPending = await request("GET", `${base}?view=pending`);
+  assert.equal(creatorPending.status, 200);
+  const foreignReservation = creatorPending.data.pendingReservations[0];
+  assert.ok(foreignReservation);
+  assert.equal(foreignReservation.status, "pending");
+  assert.equal(foreignReservation.configRevision, `reservation:${foreignReservation.id}`);
+  const hiddenPending = await request("GET", `${base}?view=pending`, { session: guestSession });
+  assert.deepEqual(hiddenPending.data.pendingReservations, []);
+  assert.equal(
+    (
+      await request(
+        "DELETE",
+        `${base}/${foreignReservation.id}?expectedConfigRevision=${encodeURIComponent(foreignReservation.configRevision)}`,
+        {
+          session: guestSession,
+        },
+      )
+    ).status,
+    404,
+    "an operator cannot cancel another creator's reservation",
+  );
 
   // Grant and revoke administration through real HTTP IAM operations while a
   // list holds its all-creator result. Demotion must not disclose that stale view.
@@ -702,7 +806,7 @@ try {
     },
   });
   assert.equal(role.status, 201);
-  const binding = await request("POST", `${iam}/access-bindings`, {
+  let binding = await request("POST", `${iam}/access-bindings`, {
     body: {
       subjectKind: "identity",
       subjectId: guest.principal.id,
@@ -712,6 +816,153 @@ try {
     },
   });
   assert.equal(binding.status, 201);
+  async function stallFinalPendingRead(session: typeof administrator) {
+    const initial = await barrierPool.connect();
+    const final = await barrierPool.connect();
+    let initialReleased = false;
+    let response: ReturnType<typeof request> | undefined;
+    try {
+      await initial.query("BEGIN");
+      await final.query("BEGIN");
+      const initialPid = (await initial.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+        .rows[0]!.pid;
+      const finalPid = (await final.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+        .rows[0]!.pid;
+      await initial.query("LOCK TABLE occ.agent_automations IN ACCESS EXCLUSIVE MODE");
+      response = request("GET", `${base}?view=pending&limit=1`, { session });
+      async function waitForSelect(blocker: number) {
+        await waitFor(
+          "the actual automation ownership SELECT to wait on its table lock",
+          async () => {
+            const result = await platformPool.query(
+              "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1::int=ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT * FROM occ.agent_automations%') AS waiting",
+              [blocker],
+            );
+            return result.rows[0]?.waiting === true ? true : undefined;
+          },
+        );
+      }
+      await waitForSelect(initialPid);
+      const finalLock = final.query("LOCK TABLE occ.agent_automations IN ACCESS EXCLUSIVE MODE");
+      await waitFor("the second lock to queue behind the first ownership SELECT", async () => {
+        const result = await platformPool.query(
+          "SELECT $1::int=ANY(pg_blocking_pids($2::int)) OR cardinality(pg_blocking_pids($2::int))>0 AS waiting",
+          [initialPid, finalPid],
+        );
+        return result.rows[0]?.waiting === true ? true : undefined;
+      });
+      await initial.query("COMMIT");
+      initial.release();
+      initialReleased = true;
+      await finalLock;
+      await waitForSelect(finalPid);
+      return {
+        response,
+        async release() {
+          await final.query("COMMIT");
+          final.release();
+        },
+      };
+    } catch (error) {
+      await Promise.allSettled([
+        ...(initialReleased ? [] : [initial.query("ROLLBACK")]),
+        final.query("ROLLBACK"),
+      ]);
+      if (!initialReleased) {
+        initial.release();
+      }
+      final.release();
+      await Promise.allSettled(response ? [response] : []);
+      throw error;
+    }
+  }
+
+  // Two queued PostgreSQL table locks let the preliminary ownership SELECT finish,
+  // then hold the final all-creator SELECT after authorization chose administrator scope.
+  // Revoke through the actual IAM API while that second statement waits.
+  const demotion = await stallFinalPendingRead(guestSession);
+  try {
+    assert.equal(
+      (await request("DELETE", `${iam}/access-bindings/${binding.data.id}`)).status,
+      204,
+    );
+  } finally {
+    await demotion.release();
+  }
+  const demotedPending = await demotion.response;
+  assert.equal(demotedPending.status, 200, JSON.stringify(demotedPending.body));
+  assert.deepEqual(demotedPending.data.jobs, []);
+  assert.deepEqual(demotedPending.data.pendingReservations, []);
+  assert.equal(demotedPending.data.total, 0);
+  assert.equal(demotedPending.data.nextOffset, null);
+  assert.equal(demotedPending.data.snapshotRevision, hiddenPending.data.snapshotRevision);
+  assert.equal(JSON.stringify(demotedPending.body).includes(foreignReservation.id), false);
+
+  // Removing the remaining exact-Agent operate grant must deny the entire local view.
+  assert.equal(
+    (await request("DELETE", `${iam}/access-bindings/${operatorBinding.data.id}`)).status,
+    204,
+  );
+  assert.equal(
+    (await request("GET", `${base}?view=pending`, { session: guestSession })).status,
+    403,
+  );
+  const restoredOperate = await request("POST", `${iam}/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: guest.principal.id,
+      roleId: operatorRole.data.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+    },
+  });
+  assert.equal(restoredOperate.status, 201);
+  binding = await request("POST", `${iam}/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: guest.principal.id,
+      roleId: role.data.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+    },
+  });
+  assert.equal(binding.status, 201);
+
+  // A session revoked during the same final ownership read cannot receive any projection.
+  const signedOut = await stallFinalPendingRead(guestSession);
+  try {
+    assert.equal(
+      (await request("POST", "/api/auth/sign-out", { body: {}, session: guestSession })).status,
+      200,
+    );
+  } finally {
+    await signedOut.release();
+  }
+  const revokedSession = await signedOut.response;
+  assert.equal(revokedSession.status, 401, JSON.stringify(revokedSession.body));
+  assert.equal(JSON.stringify(revokedSession.body).includes(foreignReservation.id), false);
+  guestSession = await f.signIn(guest.credentials);
+
+  const adminPending = await request("GET", `${base}?view=pending`, { session: guestSession });
+  assert.deepEqual(
+    adminPending.data.pendingReservations.map((entry: { id: string }) => entry.id),
+    [foreignReservation.id],
+  );
+  const updatesBeforeForeignCancellation = nativeUpdates;
+  assert.equal(
+    (
+      await request(
+        "DELETE",
+        `${base}/${foreignReservation.id}?expectedConfigRevision=${encodeURIComponent(foreignReservation.configRevision)}`,
+        {
+          session: guestSession,
+        },
+      )
+    ).status,
+    204,
+    "an exact-Agent administrator can cancel a foreign pending reservation",
+  );
+  await finishCancelled(delayedForeign, foreignReservation.id, updatesBeforeForeignCancellation);
   const adminView = await request("GET", `${base}?limit=1`, { session: guestSession });
   assert.equal(adminView.status, 200);
   assert.equal(adminView.data.total, 4);
@@ -736,6 +987,26 @@ try {
   assert.equal(afterDemotion.data.total, 0);
   assert.equal(afterDemotion.data.nextOffset, null);
   assert.equal(afterDemotion.data.snapshotRevision, guestList.data.snapshotRevision);
+
+  const delayedOwned = await delayCreate(guestSession, "Delayed operator create");
+  const ownedPending = await request("GET", `${base}?view=pending`, { session: guestSession });
+  assert.equal(ownedPending.data.pendingReservations.length, 1);
+  const ownReservation = ownedPending.data.pendingReservations[0];
+  const updatesBeforeOwnedCancellation = nativeUpdates;
+  assert.equal(
+    (
+      await request(
+        "DELETE",
+        `${base}/${ownReservation.id}?expectedConfigRevision=${encodeURIComponent(ownReservation.configRevision)}`,
+        {
+          session: guestSession,
+        },
+      )
+    ).status,
+    204,
+    "the creator can cancel its own reservation while it can operate the Agent",
+  );
+  await finishCancelled(delayedOwned, ownReservation.id, updatesBeforeOwnedCancellation);
 
   // Lose a real OCC create reply after native commit. It must remain disabled,
   // recover through its reservation and never replay or activate during reads.
@@ -967,6 +1238,9 @@ try {
   assert.ok(auditSink.events.filter((event) => event.action.endsWith(".unknown")).length >= 3);
   assert.equal(JSON.stringify(auditSink.events).includes(input.prompt), false);
 } finally {
+  for (const release of pendingCreateReleases) {
+    release();
+  }
   await worker?.stop();
   for (const cleanup of cleanups) {
     await cleanup();
@@ -979,6 +1253,7 @@ try {
     proxy.close((error) => (error ? reject(error) : resolve())),
   );
   await platformPool.end();
+  await barrierPool.end();
 }
 process.stdout.write(
   "OCC_AUTOMATION_PROTOCOL_PROOF " +
@@ -989,6 +1264,7 @@ process.stdout.write(
       modelOnlyReadback: true,
       clientToolPolicyRefused: true,
       rejectedCreateCleanup: true,
+      pendingReservationCancellation: true,
       bindingBeforeActivation: true,
       unsupportedCapsRefused: true,
       adminDemotionProtected: true,

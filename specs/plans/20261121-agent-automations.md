@@ -1,12 +1,13 @@
 ---
-status: In progress
+status: Completed
 rfc: ../rfcs/20261121-agent-automations.md
 ---
 
 # Implementation plan: OCC automation broker
 
 - **ID:** RFC-20261121-agent-automations
-- **Delivery status:** In progress
+- **Delivery status:** Completed for review; merge requires exact-head proof and independent review.
+- **Current reference:** [Agent automations](../../docs/reference/agent-automations.md)
 - **Owner:** Kevin Lin
 - **Authority:** [Agent automations RFC](../rfcs/20261121-agent-automations.md), PR #6850
 - **Source baseline:** `c9c925bac8a8865e568e239f814c4356e6ace183`
@@ -14,22 +15,19 @@ rfc: ../rfcs/20261121-agent-automations.md
 ## Outcome and status
 
 Implement the [submitted Driver contract](https://github.com/openclaw/openclaw-enterprise/pull/6850/commits/849eca56e1f68336fb394065db1495f02d96565f)
-for embedded OpenClaw and ordinary dedicated Codex. Both must qualify Agent-shared
-static MCP operations over operator-attested anonymous HTTPS. Keep the six OCC
-operations, exact-Agent human `operate` for creation, creator/admin management,
-CSRF, native normalization, deletion and history, revision checks and
-`UNKNOWN_OUTCOME`. Clients cannot select tools. No eligible operations yields
-an explicit empty cap. Managed MCP Sandbox, stdio and Codex apps are outside scope.
+for embedded OpenClaw and ordinary dedicated Codex with Agent-shared MCP over
+attested anonymous HTTPS. Preserve six OCC operations, exact-Agent human `operate`
+creation, creator/admin management, CSRF, native normalization, deletion and history,
+revision checks and `UNKNOWN_OUTCOME`. OCC selects tools; a qualified empty cap
+is `[]`. Managed MCP Sandbox, stdio and Codex apps remain outside scope.
 
-The implementation may qualify embedded OpenClaw MCP grants. Dedicated Codex
-refuses nonempty grants with `AUTOMATIONS_UNQUALIFIED`, without silently falling
-back to `[]`; qualified model-only scheduling remains available. This limit does
-not complete the accepted both-Harness MCP scope.
+Both Harnesses use the same finite approved MCP grant. Unsupported qualification
+returns `AUTOMATIONS_UNQUALIFIED` without fallback; qualified model-only scheduling
+remains available.
 
-**Qualification is incomplete.** The historical checkpoints below establish broker
-behavior and empty-cap results on their named revisions. They do not qualify the
-approved MCP path. Keep the implementation publication and merge hold until
-both packaged Harnesses pass on the final candidate.
+**Merge gate.** Synthetic diagnostics and historical empty-cap checkpoints do not
+qualify MCP. Both packaged Harnesses must pass genuine allowed/denied execution
+on the final candidate, and independent review must pass before merge.
 
 ## Implementation and proof owners
 
@@ -47,21 +45,26 @@ both packaged Harnesses pass on the final candidate.
    Pin the socket through read and write. On rollover, close without reconnect
    or replay. Before each Gateway spawn, supervisor respawn or container restart,
    the launcher checks plugin allowlist, origins, package digests and effective
-   Node/tool switches. Reject tracked installs, mutable extension roots and
+   Node/tool switches, including canonical `agents.entries`; refuse `agents.list`.
+   Reject tracked installs, mutable extension roots and
    unqualified overrides before loading plugins or starting scheduler catch-up.
 2. **Kubernetes networking.** Validate each approved URL, exact /32 or /128
    destinations and optional public PEM CA. Grant only the URL port and approved
    IPs from the relevant workloads. Keep default-deny and TLS hostname verification.
    Project Gateway Node and dedicated Codex CA trust within the workload. Keep
    model credentials out of the dedicated Gateway.
-3. **Gateway adapter and OCC.** Match bounded plugin, catalog and effective
-   ordinary-session evidence to explicit literal provisioning, approval and
-   Gateway policy. Disable Code Mode and discovery for nonempty caps. Persist the
+3. **Gateway adapter and OCC.** Match standing Agent provisioning, approval and
+   Gateway policy. Inspect plugin origins and catalog collisions; dedicated checks
+   all included aliases before filtering. Reject own-server alias selectors and
+   synthesized resource/prompt utilities; embedded corroborates ordinary
+   effective-session evidence. Dedicated performs no session or history reads. Disable
+   Code Mode and discovery for nonempty caps. Persist the
    immutable cap and binding identity atomically in the PostgreSQL reservation.
    Deployment admission and the worker must verify all saved grants, including
    paused jobs and uncertain reservations, remain a subset of the successor's
    eligible bindings with unchanged identities before startup or catch-up.
-   Never shrink a saved grant silently. Creator demotion leaves the standing
+   Expose paged pending reservations and local conditional cancellation without
+   replaying uncertain creates. Never shrink a saved grant silently. Creator demotion leaves the standing
    grant intact. Retire the job or deny at the service to withdraw a running
    grant. A call already issued can finish.
 4. **Verification.** Extend the real `agent-automations` QA scenario on both
@@ -77,13 +80,12 @@ both packaged Harnesses pass on the final candidate.
    receipts and refusal evidence without secrets. Fixtures alone cannot qualify
    the pilot.
 
-The [automation flow](../../docs/flows/agent-automations.md) owns the runtime
-sequence. The [API reference](../../docs/reference/agent-automations.md),
-[Compute interface](../../docs/reference/drivers/compute.md) and
-[Kubernetes Driver reference](../../docs/reference/drivers/kubernetes-compute.md)
-own their respective contracts. Use the existing [Kubernetes QA](../../docs/testing/kubernetes.md)
-and [PostgreSQL procedures](../../docs/testing/postgresql.md). Recheck the final
-candidate before claiming release readiness.
+See the [flow](../../docs/flows/agent-automations.md), [API](../../docs/reference/agent-automations.md),
+[Compute](../../docs/reference/drivers/compute.md) and
+[Kubernetes](../../docs/reference/drivers/kubernetes-compute.md) contracts, and the
+[Kubernetes QA](../../docs/testing/kubernetes.md) and
+[PostgreSQL](../../docs/testing/postgresql.md) procedures. Recheck the final candidate
+before claiming release readiness.
 
 ## Verification
 
@@ -266,6 +268,8 @@ Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4 for the new qualification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22: Require genuine dedicated HTTPS MCP qualification before admission (authoring-run/7fb7cb15-5b9d-496d-b268-bba1a49025fd; uncommitted above dc328404).
 
 - 2026-11-22: Record dedicated MCP refusal without changing both-Harness acceptance (01a1fc52-9d88-7223-b8a1-3c98595d3fbe; uncommitted above 269ecf6b).
 

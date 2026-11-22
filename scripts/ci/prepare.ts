@@ -2415,6 +2415,12 @@ async function prepareFileWithState({
       env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE = database.name;
       env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
+    if (
+      name === "images-runtime-startup" &&
+      relativeFile === "tests/integration/workspace-files-native.test.ts"
+    ) {
+      env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
     if (relativeFile === "tests/integration/occ-metrics.test.ts") {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
     }

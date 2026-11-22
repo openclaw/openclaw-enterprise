@@ -65,6 +65,13 @@ export const AgentAutomationPageQuery = Type.Object(
   },
   { additionalProperties: false },
 );
+export const AgentAutomationListQuery = Type.Object(
+  {
+    ...AgentAutomationPageQuery.properties,
+    view: Type.Optional(Type.Literal("pending")),
+  },
+  { additionalProperties: false },
+);
 
 const nativeSchedule = Type.Union([
   schedule.anyOf[0],
@@ -124,11 +131,24 @@ export const AgentAutomationResponse = Type.Object(
   { data: AgentAutomationSchema, meta: Meta },
   { additionalProperties: false },
 );
+export const AgentAutomationPendingReservationSchema = Type.Object(
+  {
+    id: AgentAutomationParams.properties.automationId,
+    status: Type.Literal("pending"),
+    createdAt: Type.String({ format: "date-time" }),
+    configRevision: Type.String({
+      pattern:
+        "^reservation:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    }),
+  },
+  { additionalProperties: false },
+);
 export const AgentAutomationListResponse = Type.Object(
   {
     data: Type.Object(
       {
         jobs: Type.Array(summary),
+        pendingReservations: Type.Array(AgentAutomationPendingReservationSchema, { maxItems: 100 }),
         total: Type.Integer({ minimum: 0 }),
         nextOffset: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
         snapshotRevision: Type.String({ minLength: 1, maxLength: 128 }),
@@ -180,4 +200,7 @@ export type AgentAutomationCreateInput = Type.Static<typeof CreateAgentAutomatio
 export type AgentAutomationUpdateInput = Type.Static<typeof UpdateAgentAutomationBody>;
 export type AgentAutomationData = Type.Static<typeof AgentAutomationSchema>;
 export type AgentAutomationSummary = Type.Static<typeof summary>;
+export type AgentAutomationPendingReservation = Type.Static<
+  typeof AgentAutomationPendingReservationSchema
+>;
 export type AgentAutomationRunsPage = Type.Static<typeof AgentAutomationRunsPageSchema>;

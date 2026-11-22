@@ -367,6 +367,8 @@ test(
                     OCC_AUTOMATION_PROOF_CERT: join(directory, "cert.pem"),
                     OCC_AUTOMATION_PROOF_TLS_KEY: join(directory, "key.pem"),
                     OCC_TEST_DATABASE_URL: process.env.OCC_TEST_DATABASE_URL,
+                    OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL:
+                      process.env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL,
                   },
                   timeout: 180_000,
                 },
@@ -383,11 +385,12 @@ test(
                 JSON.parse(records[0]!.slice("OCC_AUTOMATION_PROTOCOL_PROOF ".length)),
                 {
                   automationProtocol: true,
-                  nativeCreateRequests: 8,
+                  nativeCreateRequests: 10,
                   modelOnlyWrites: true,
                   modelOnlyReadback: true,
                   clientToolPolicyRefused: true,
                   rejectedCreateCleanup: true,
+                  pendingReservationCancellation: true,
                   bindingBeforeActivation: true,
                   unsupportedCapsRefused: true,
                   adminDemotionProtected: true,

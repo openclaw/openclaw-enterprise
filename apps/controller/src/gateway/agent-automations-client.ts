@@ -39,6 +39,128 @@ type Method =
   | "plugins.inspect"
   | "system.info";
 type GatewayHello = Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0];
+const ordinarySessionClassifications = new Set([
+  "main",
+  "dashboard",
+  "direct",
+  "group",
+  "channel",
+  "thread",
+  "tui",
+  "explicit",
+  "custom",
+]);
+const ordinaryCreationOrigins = new Set(["operator", "channel", "talk"]);
+// Reviewed Codex native and Gateway-local dynamic names for the pinned runtime.
+const codexNativeToolNames = new Set([
+  "ls",
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+  "exec",
+  "process",
+  "update_plan",
+  "tool_call",
+  "dispatch_action",
+  "tool_describe",
+  "tool_search",
+  "bash",
+  "apply-patch",
+  "gateway_exec",
+  "gateway_process",
+  "terminal",
+  "portal",
+  "openclaw",
+  "plugins",
+  "gateway",
+]);
+
+const syntheticMcpOperations = new Set([
+  "resources_list",
+  "resources_read",
+  "prompts_list",
+  "prompts_get",
+]);
+const mcpNameFragment = /^[A-Za-z][A-Za-z0-9_-]*$/u;
+
+function configuredMcpCandidateAliases(revision: Readonly<AgentRevision>): Set<string> | undefined {
+  const servers = asRecord(asRecord(revision.configuration.mcp)?.servers);
+  if (!servers) {
+    return undefined;
+  }
+  const aliases = new Set<string>();
+  const serverNames = new Set<string>();
+  for (const [serverName, value] of Object.entries(servers)) {
+    const server = asRecord(value);
+    if (
+      !server ||
+      !mcpNameFragment.test(serverName) ||
+      serverName.length > 30 ||
+      serverNames.has(serverName.toLowerCase())
+    ) {
+      return undefined;
+    }
+    serverNames.add(serverName.toLowerCase());
+    if (server.enabled === false) {
+      continue;
+    }
+    const include = asRecord(server.toolFilter)?.include;
+    if (!Array.isArray(include) || include.length === 0) {
+      return undefined;
+    }
+    for (const raw of include) {
+      if (
+        typeof raw !== "string" ||
+        !mcpNameFragment.test(raw) ||
+        raw.toLowerCase().startsWith(`${serverName.toLowerCase()}__`) ||
+        syntheticMcpOperations.has(raw.toLowerCase())
+      ) {
+        return undefined;
+      }
+      const alias = `${serverName}__${raw}`.toLowerCase();
+      if (alias.length > 64 || alias.startsWith("mcp__") || aliases.has(alias)) {
+        return undefined;
+      }
+      aliases.add(alias);
+    }
+  }
+  return aliases;
+}
+
+function isOrdinaryAgentSession(row: Record<string, unknown>, nativeAgentId: string): boolean {
+  const createdActor = asRecord(row.createdActor);
+  if (
+    row.rowMode !== "compact" ||
+    row.agentId !== nativeAgentId ||
+    typeof row.key !== "string" ||
+    row.key.trim() !== row.key ||
+    (row.kind !== "direct" && row.kind !== "group") ||
+    typeof row.classification !== "string" ||
+    !ordinarySessionClassifications.has(row.classification) ||
+    row.isDock !== false ||
+    row.isBackground !== false ||
+    row.createdSurface !== undefined ||
+    row.spawnedBy !== undefined ||
+    row.parentSessionKey !== undefined ||
+    typeof row.createdVia !== "string" ||
+    !ordinaryCreationOrigins.has(row.createdVia) ||
+    (row.createdActor !== undefined && (!createdActor || createdActor.type !== "human"))
+  ) {
+    return false;
+  }
+  const match = /^agent:([^:]+):(.+)$/iu.exec(row.key);
+  if (
+    !match ||
+    match[1]?.toLowerCase() !== nativeAgentId.toLowerCase() ||
+    match[2]?.startsWith(":")
+  ) {
+    return false;
+  }
+  return !/^(?:(?:subagent|cron|acp|hook|harness|boot|internal-session-effects):|boot$|dreaming-narrative-)/iu.test(
+    match[2]!,
+  );
+}
 export type AutomationGatewayErrorCode =
   "unavailable" | "unqualified" | "invalid" | "missing" | "conflict" | "unsupported" | "unknown";
 export class AutomationGatewayError extends Error {
@@ -440,11 +562,13 @@ export function createNativeAgentAutomationsAccess(
           if (policy.bindings.length === 0) {
             return policy.grant;
           }
+          const dedicated = revision.harness.mode === "dedicated";
           if (
-            !hello.features.methods.includes("sessions.list") ||
             !hello.features.methods.includes("tools.catalog") ||
-            !hello.features.methods.includes("tools.effective") ||
-            !hello.features.methods.includes("plugins.inspect")
+            !hello.features.methods.includes("plugins.inspect") ||
+            (!dedicated &&
+              (!hello.features.methods.includes("sessions.list") ||
+                !hello.features.methods.includes("tools.effective")))
           ) {
             throw new AutomationGatewayError("unavailable");
           }
@@ -495,7 +619,14 @@ export function createNativeAgentAutomationsAccess(
           if (catalog?.agentId !== nativeAgentId || !Array.isArray(catalog.groups)) {
             throw new AutomationGatewayError("unavailable");
           }
-          const aliases = new Set(policy.bindings.map(({ name }) => name.toLowerCase()));
+          // Codex allocates aliases for all included tools before Agent/Gateway policy filtering.
+          // Any earlier collision can suffix one raw tool into another approved alias.
+          const aliases = dedicated
+            ? configuredMcpCandidateAliases(revision)
+            : new Set(policy.bindings.map(({ name }) => name.toLowerCase()));
+          if (!aliases) {
+            throw new AutomationGatewayError("unqualified");
+          }
           for (const value of catalog.groups) {
             const group = asRecord(value);
             if (
@@ -514,19 +645,48 @@ export function createNativeAgentAutomationsAccess(
                 typeof tool.id !== "string" ||
                 !tool.id ||
                 tool.source !== group.source ||
-                (group.source === "plugin" && tool.pluginId !== group.pluginId) ||
-                aliases.has(tool.id.toLowerCase())
+                (group.source === "plugin" && tool.pluginId !== group.pluginId)
               ) {
                 throw new AutomationGatewayError("unavailable");
               }
+              if (aliases.has(tool.id.toLowerCase())) {
+                throw new AutomationGatewayError("unqualified");
+              }
             }
+          }
+          if (dedicated) {
+            const codex = asRecord(asRecord(asRecord(plugins?.entries)?.codex)?.config);
+            const excluded = codex?.codexDynamicToolsExclude;
+            if (
+              (excluded !== undefined &&
+                (!Array.isArray(excluded) ||
+                  excluded.some((name) => typeof name !== "string" || !name.trim()))) ||
+              [...aliases].some((name) => codexNativeToolNames.has(name)) ||
+              policy.bindings.some(
+                ({ name, binding }) =>
+                  !aliases.has(name.toLowerCase()) ||
+                  (Array.isArray(excluded) &&
+                    excluded.some((entry) => entry.trim().toLowerCase() === name.toLowerCase())) ||
+                  !policy.grant.tools.some(
+                    (tool) => tool.name === name && tool.binding === binding,
+                  ),
+              ) ||
+              policy.grant.tools.length !== policy.bindings.length
+            ) {
+              throw new AutomationGatewayError("unqualified");
+            }
+            return policy.grant;
           }
           const rows = asRecord(
             await request("sessions.list", {
               agentId: nativeAgentId,
               limit: 100,
+              includeGlobal: false,
+              includeUnknown: false,
+              excludeSubagents: true,
               excludeCron: true,
               excludeSystem: true,
+              excludeDock: true,
               rowMode: "compact",
             }),
           );
@@ -535,7 +695,7 @@ export function createNativeAgentAutomationsAccess(
           }
           for (const value of rows.sessions.slice(0, 20)) {
             const row = asRecord(value);
-            if (row?.agentId !== nativeAgentId || typeof row.key !== "string" || !row.key) {
+            if (!row || !isOrdinaryAgentSession(row, nativeAgentId)) {
               continue;
             }
             let inventory: Record<string, unknown> | undefined;

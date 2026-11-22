@@ -21,6 +21,7 @@ test(
       label: "automation-ownership",
       authSecret: "automation-ownership-postgres-session-secret",
       controllerOptions: { recordOperations: true },
+      appOptions: { publicOrigin: "https://console.oce.localhost" },
     });
     const grant = { tools: [{ name: "reports__read", binding: "a".repeat(64) }] };
     let candidateGrant: import("../../packages/contracts/src/index.ts").AgentAutomationToolGrant =
@@ -184,6 +185,91 @@ test(
     let ownership = await f.controller.reserveAgentAutomation(f.principal.id, input, (record) =>
       audit(record.id),
     );
+    // A lost create response must not strand an admitted reservation. The local pending
+    // view remains available without a native Gateway and issues the DELETE precondition.
+    const pending = await f.controller.reserveAgentAutomation(f.principal.id, input, (record) =>
+      audit(record.id),
+    );
+    const firstPending = await f.inject("GET", `${path}?view=pending&limit=1`);
+    assert.equal(firstPending.statusCode, 200, firstPending.body);
+    const firstPage = firstPending.json().data;
+    assert.deepEqual(firstPage.jobs, []);
+    assert.equal(firstPage.pendingReservations.length, 1);
+    assert.equal(firstPage.total, 2);
+    assert.equal(firstPage.nextOffset, 1);
+    const secondPending = await f.inject("GET", `${path}?view=pending&offset=1&limit=1`);
+    assert.equal(secondPending.statusCode, 200, secondPending.body);
+    const secondPage = secondPending.json().data;
+    assert.equal(secondPage.snapshotRevision, firstPage.snapshotRevision);
+    assert.equal(secondPage.nextOffset, null);
+    const publicPending = [...firstPage.pendingReservations, ...secondPage.pendingReservations];
+    assert.deepEqual(
+      publicPending.map(({ id }: { id: string }) => id).sort(),
+      [ownership.id, pending.id].sort(),
+    );
+    const recovery = publicPending.find(({ id }: { id: string }) => id === pending.id);
+    assert.deepEqual(recovery, {
+      id: pending.id,
+      status: "pending",
+      createdAt: pending.createdAt,
+      configRevision: `reservation:${pending.id}`,
+    });
+    const wrongToken = await f.inject(
+      "DELETE",
+      `${path}/${pending.id}?expectedConfigRevision=reservation%3A${ownership.id}`,
+    );
+    assert.equal(wrongToken.statusCode, 409, wrongToken.body);
+    // Cancellation and its attributable audit event commit together. An audit construction
+    // failure must leave the reservation available for a later authorized retry.
+    await assert.rejects(
+      f.controller.cancelUnboundAgentAutomation(
+        f.principal.id,
+        { namespaceId: namespace.id, agentId: agent.id, id: pending.id },
+        () => {
+          throw new Error("cancellation audit failed");
+        },
+      ),
+      /cancellation audit failed/u,
+    );
+    assert.ok(
+      await f.state.read((unit) => unit.agentAutomations.find(namespace.id, agent.id, pending.id)),
+    );
+    const cancelled = await f.inject(
+      "DELETE",
+      `${path}/${pending.id}?expectedConfigRevision=${encodeURIComponent(recovery.configRevision)}`,
+    );
+    assert.equal(cancelled.statusCode, 204, cancelled.body);
+    const cancellationAudit = await f.pool.query(
+      "SELECT actor_id,action,outcome,resource_id FROM occ.audit_events WHERE details->>'jobId'=$1 AND action='openclaw.agents.automations.delete.cancelled'",
+      [pending.id],
+    );
+    assert.deepEqual(cancellationAudit.rows, [
+      {
+        actor_id: f.principal.id,
+        action: "openclaw.agents.automations.delete.cancelled",
+        outcome: "success",
+        resource_id: agent.id,
+      },
+    ]);
+    assert.equal(
+      await f.state.read((unit) => unit.agentAutomations.find(namespace.id, agent.id, pending.id)),
+      undefined,
+      "cancellation must remove the reservation before a delayed bind can activate native work",
+    );
+    await assert.rejects(
+      f.controller.bindAgentAutomation(
+        f.principal.id,
+        {
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          id: pending.id,
+          nativeJobId: randomUUID(),
+          requireOperate: true,
+        },
+        (record) => audit(record.id),
+      ),
+      { name: "ScopeViolationError" },
+    );
     const observer = testPool(t, { connectionString: databaseUrl });
     const reopened = new PostgresPlatformState(observer);
     assert.deepEqual(
@@ -341,7 +427,7 @@ test(
       await release.promise;
     });
     await held.promise;
-    const discardRace = f.controller.discardUnboundAgentAutomation(
+    const discardRace = f.controller.cancelUnboundAgentAutomation(
       f.principal.id,
       { namespaceId: namespace.id, agentId: agent.id, id: raced.id },
       () => discardAudit(raced.id),
@@ -357,7 +443,7 @@ test(
       release.resolve();
     }
     await bindingRace;
-    assert.equal(await discardRace, false);
+    await assert.rejects(discardRace, { name: "ResourceStateConflictError" });
     assert.equal(
       (await reopened.read((unit) => unit.agentAutomations.find(namespace.id, agent.id, raced.id)))
         ?.nativeJobId,

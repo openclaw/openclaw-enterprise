@@ -11,6 +11,7 @@ import {
   WORKSPACE_NODE_BINDING_PATH,
 } from "../helpers/plugin-runtime.mjs";
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
+import { AGENT_AUTOMATIONS_OPENCLAW_SOURCE } from "../../apps/controller/src/gateway/agent-automations-runtime.ts";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
@@ -418,7 +419,7 @@ test("Kubernetes peer Pod selectors and node selectors reject labels the API ref
   }
 });
 
-test("automation qualification accepts only the server-admitted exec defaults without granting exec", async () => {
+test("automation qualification narrows Gateway tools to the main Agent and accepts only admitted exec defaults", async () => {
   const image = `example.test/runtime@sha256:${"a".repeat(64)}`;
   const endpoint = { url: "https://mcp.example.test/approved", egressCidrs: ["192.0.2.10/32"] };
   const driver = new KubernetesComputeDriver(
@@ -428,17 +429,26 @@ test("automation qualification accepts only the server-admitted exec defaults wi
     }),
   );
   const draft = {
-    agents: { defaults: { model: "openai/gpt-5" } },
+    agents: {
+      defaults: { model: "openai/gpt-5" },
+      entries: {
+        main: { identity: { name: "Automation Agent" }, tools: { allow: ["qa__probe"] } },
+      },
+    },
     gateway: { nodes: { pluginTools: { enabled: false }, allowSkills: false } },
     mcp: {
       servers: {
-        qa: { transport: "streamable-http", url: endpoint.url, toolFilter: { include: ["probe"] } },
+        qa: {
+          transport: "streamable-http",
+          url: endpoint.url,
+          toolFilter: { include: ["probe", "sibling"] },
+        },
       },
     },
     plugins: { allow: ["openai", "memory-core"] },
     tools: {
       profile: "full",
-      gatewayPolicy: { allow: ["qa__probe"] },
+      gatewayPolicy: { allow: ["qa__probe", "qa__sibling"] },
       codeMode: false,
       toolSearch: false,
     },
@@ -454,12 +464,112 @@ test("automation qualification accepts only the server-admitted exec defaults wi
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     configuration,
   });
+  // The Gateway can expose a sibling tool, but the main Agent's narrower
+  // approved allowlist must remain the automation grant boundary.
   const qualified = await driver.evaluateAgentAutomationPolicy(revision);
   assert.deepEqual(
     qualified?.grant.tools.map(({ name }) => name),
     ["qa__probe"],
   );
   assert.match(qualified.grant.tools[0].binding, /^[a-f0-9]{64}$/u);
+
+  // A double underscore in an unrelated raw tool name is still a tool name,
+  // and its captured binding belongs to the selected server-qualified alias.
+  const unrelatedSource = structuredClone(configuration);
+  unrelatedSource.mcp.servers.qa.toolFilter.include.push("other__raw");
+  unrelatedSource.tools.gatewayPolicy.allow.push("qa__other__raw");
+  unrelatedSource.agents.entries.main.tools.allow.push("qa__other__raw");
+  const unrelated = await driver.evaluateAgentAutomationPolicy({
+    ...revision,
+    configuration: unrelatedSource,
+  });
+  assert.deepEqual(unrelated?.grant.tools.map(({ name }) => name).sort(), [
+    "qa__other__raw",
+    "qa__probe",
+  ]);
+  const rawBinding = unrelated.grant.tools.find(({ name }) => name === "qa__other__raw").binding;
+  assert.match(rawBinding, /^[a-f0-9]{64}$/u);
+  assert.notEqual(rawBinding, qualified.grant.tools[0].binding);
+
+  // An include that names this server's own selector is not a raw tool, even
+  // when its claimed alias is explicitly selected by the Agent and Gateway.
+  const ownSelectorSource = structuredClone(configuration);
+  ownSelectorSource.mcp.servers.qa.toolFilter.include.push("Qa__probe");
+  ownSelectorSource.tools.gatewayPolicy.allow.push("qa__Qa__probe");
+  ownSelectorSource.agents.entries.main.tools.allow.push("qa__Qa__probe");
+  assert.equal(
+    await driver.evaluateAgentAutomationPolicy({ ...revision, configuration: ownSelectorSource }),
+    undefined,
+  );
+
+  // An explicitly selected synthetic MCP operation is not a callable tool,
+  // even when its alias appears in every allowlist and casing differs.
+  const utilitySource = structuredClone(configuration);
+  utilitySource.mcp.servers.qa.toolFilter.include.push("ReSoUrCeS_LiSt");
+  utilitySource.tools.gatewayPolicy.allow.push("qa__ReSoUrCeS_LiSt");
+  utilitySource.agents.entries.main.tools.allow.push("qa__ReSoUrCeS_LiSt");
+  assert.equal(
+    await driver.evaluateAgentAutomationPolicy({ ...revision, configuration: utilitySource }),
+    undefined,
+  );
+
+  // OCC admits the main Agent's display identity even when it has no tool
+  // override. That presentation field must not suppress the default grant.
+  const identityOnly = await driver.evaluateAgentAutomationPolicy({
+    ...revision,
+    configuration: {
+      ...configuration,
+      agents: {
+        ...configuration.agents,
+        entries: { main: { identity: { name: "Automation Agent" } } },
+      },
+    },
+  });
+  assert.deepEqual(
+    identityOnly?.grant.tools.map(({ name }) => name),
+    ["qa__probe", "qa__sibling"],
+  );
+
+  // A changed public identity invalidates an earlier captured grant. Extra
+  // authority-bearing identity settings are not presentation metadata.
+  const withMain = (main) => ({
+    ...revision,
+    configuration: {
+      ...configuration,
+      agents: { ...configuration.agents, entries: { main } },
+    },
+  });
+  // A public Name can contain 200 Unicode code points even when those code
+  // points need more than 200 UTF-16 units.
+  const renamed = await driver.evaluateAgentAutomationPolicy(
+    withMain({ identity: { name: "🦀".repeat(200) }, tools: { allow: ["qa__probe"] } }),
+  );
+  assert.ok(renamed, "a valid renamed identity must still qualify");
+  assert.notEqual(renamed.grant.tools[0]?.binding, qualified.grant.tools[0].binding);
+  for (const identity of [
+    { name: "" },
+    { name: "Automation Agent", agentId: "other" },
+    { name: "Automation Agent", workspace: "/tmp/other" },
+  ]) {
+    assert.equal(
+      await driver.evaluateAgentAutomationPolicy(
+        withMain({ identity, tools: { allow: ["qa__probe"] } }),
+      ),
+      undefined,
+    );
+  }
+
+  // Retired roster configuration must not bypass the canonical Agent policy.
+  assert.equal(
+    await driver.evaluateAgentAutomationPolicy({
+      ...revision,
+      configuration: {
+        ...configuration,
+        agents: { ...configuration.agents, list: [{ id: "main" }] },
+      },
+    }),
+    undefined,
+  );
 
   // An altered or extended exec policy is not the server-owned descriptor and must fail closed.
   for (const exec of [
@@ -653,11 +763,14 @@ function dedicatedFirstDeployFixture({
   credentialDeliveryRegistration,
   context,
   splitCluster = false,
+  computeOptions = {},
+  gatewayNodes,
   revision: revisionOverrides = {},
 } = {}) {
   const { state, nodeEnrollment } = createDedicatedDeployEnrollmentFixture(clock);
   const driver = new KubernetesComputeDriver(
     routedOptions({
+      ...computeOptions,
       ...(splitCluster ? { executionCluster: twoClusterOptions().executionCluster } : {}),
       runtime: {
         transportSecretPrefix: "transport",
@@ -709,6 +822,7 @@ function dedicatedFirstDeployFixture({
     gateway: {
       bind: "lan",
       auth: { trustedProxy: { requiredHeaders: ["x-real-ip"], allowLoopback: false } },
+      ...(gatewayNodes === undefined ? {} : { nodes: gatewayNodes }),
     },
   };
   revision.configuration = admitLoggingConfiguration(operatorSuppliedConfiguration, "info");
@@ -805,6 +919,180 @@ function dedicatedFirstDeployFixture({
     },
   };
 }
+
+test("automation transport refuses a Gateway with changed identity or configuration origin", async () => {
+  const image = `example.test/runtime@sha256:${"a".repeat(64)}`;
+  const endpoint = { url: "https://mcp.example.test/approved", egressCidrs: ["192.0.2.10/32"] };
+  const nodes = { pluginTools: { enabled: false }, allowSkills: false };
+  const configuration = admitGatewaySecurityDefaults({
+    agents: {
+      defaults: { model: "openai/gpt-5" },
+      entries: {
+        main: { identity: { name: "Automation Agent" }, tools: { allow: ["qa__probe"] } },
+      },
+    },
+    gateway: { nodes },
+    mcp: {
+      servers: {
+        qa: { transport: "streamable-http", url: endpoint.url, toolFilter: { include: ["probe"] } },
+      },
+    },
+    plugins: { allow: ["openai", "memory-core"] },
+    tools: {
+      profile: "full",
+      gatewayPolicy: { allow: ["qa__probe"] },
+      codeMode: false,
+      toolSearch: false,
+    },
+  });
+  const fixture = dedicatedFirstDeployFixture({
+    computeOptions: {
+      images: { gateway: image, agent: image, requireImmutableDigest: true },
+      automations: { trustedAnonymousMcpEndpoints: [endpoint] },
+      servicePrincipalCredentials: {
+        mode: "projectedServiceAccountToken",
+        audience: "openclaw-controller",
+        expirationSeconds: 900,
+      },
+    },
+    gatewayNodes: nodes,
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      configuration,
+      plugins: undefined,
+    },
+  });
+  await fixture.prepare();
+  const deployment = fixture.read("Deployment", fixture.gatewayName);
+  const template = deployment.spec.template;
+  const pod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      ...structuredClone(template.metadata),
+      name: "gateway-pod",
+      namespace: fixture.gatewayNamespace,
+      uid: "gateway-uid",
+    },
+    spec: structuredClone(template.spec),
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.12",
+      containerStatuses: [{ name: "gateway", containerID: "containerd://gateway", imageID: image }],
+    },
+  };
+  // Kubernetes creates Pods from the recorded Deployment template and endpoint
+  // slices from the recorded Service. These are protocol observations, not a
+  // replacement for Compute's transport eligibility decision.
+  fixture.clients.core.listNamespacedPod = async ({ labelSelector }) => ({
+    items: selectorMatches({ matchLabels: labelSelectorLabels(labelSelector) }, pod.metadata.labels)
+      ? [structuredClone(pod)]
+      : [],
+  });
+  fixture.clients.discovery.listNamespacedEndpointSlice = async ({ labelSelector }) => {
+    const name = labelSelectorLabels(labelSelector)["kubernetes.io/service-name"];
+    const service = fixture.read("Service", name);
+    return {
+      items: [
+        {
+          metadata: {
+            namespace: fixture.gatewayNamespace,
+            labels: { "kubernetes.io/service-name": name },
+            ownerReferences: [{ kind: "Service", name, uid: service.metadata.uid }],
+          },
+          endpoints: [
+            {
+              conditions: { ready: true },
+              targetRef: {
+                kind: "Pod",
+                namespace: fixture.gatewayNamespace,
+                name: pod.metadata.name,
+                uid: pod.metadata.uid,
+              },
+            },
+          ],
+        },
+      ],
+    };
+  };
+  fixture.clients.core.connectGetNamespacedPodProxyWithPath = async ({ path }) => {
+    assert.equal(path, "openclaw/runtime/image");
+    return { openclawCommit: AGENT_AUTOMATIONS_OPENCLAW_SOURCE };
+  };
+  const qualification = await fixture.driver.evaluateAgentAutomationPolicy(fixture.revision);
+  assert.equal(qualification?.grant.tools.length, 1);
+  const open = () => fixture.driver.openAgentAutomationTransport(fixture.revision, qualification);
+  const available = await open();
+  assert.ok(available, "the generated workload and immutable configuration must qualify");
+  await available.close();
+
+  const originalPod = structuredClone(pod);
+  async function refusePodChange(reason, change) {
+    change(pod);
+    assert.equal(await open(), undefined, reason);
+    Object.assign(pod, structuredClone(originalPod));
+  }
+  await refusePodChange("a different Gateway service account must refuse transport", (value) => {
+    value.spec.serviceAccountName = "other-service-account";
+  });
+  await refusePodChange("a different embedded service principal must refuse transport", (value) => {
+    value.metadata.labels["openclaw.dev/service-principal"] = "other-principal";
+  });
+  await refusePodChange("a different projected audience must refuse transport", (value) => {
+    const volume = value.spec.volumes.find(({ name }) => name === "openclaw-service-principal");
+    volume.projected.sources[0].serviceAccountToken.audience = "other-audience";
+  });
+  await refusePodChange("an alternate projected token must refuse transport", (value) => {
+    const extra = structuredClone(
+      value.spec.volumes.find(({ name }) => name === "openclaw-service-principal"),
+    );
+    extra.name = "alternate-principal";
+    extra.projected.sources[0].serviceAccountToken.audience = "other-audience";
+    value.spec.volumes.push(extra);
+    value.spec.containers
+      .find(({ name }) => name === "gateway")
+      .volumeMounts.push({
+        name: extra.name,
+        mountPath: "/var/run/secrets/alternate-principal",
+        readOnly: true,
+      });
+  });
+
+  const configVolume = pod.spec.volumes.find(({ name }) => name === "openclaw-configuration");
+  const configName = configVolume.configMap.name;
+  const originalConfig = fixture.read("ConfigMap", configName);
+  const alternate = structuredClone(originalConfig);
+  alternate.metadata.name = `${configName}-other`;
+  alternate.metadata.uid = "alternate-config-uid";
+  fixture.save(alternate);
+  await refusePodChange("a different mounted ConfigMap must refuse transport", (value) => {
+    value.spec.volumes.find(({ name }) => name === "openclaw-configuration").configMap.name =
+      alternate.metadata.name;
+  });
+
+  // Immutable ConfigMaps can only change by deletion and recreation. A same-name
+  // replacement has a new UID; changing the Pod annotation cannot make altered
+  // endpoint content match the revision renderer.
+  const replacement = structuredClone(originalConfig);
+  replacement.metadata.uid = "replacement-config-uid";
+  replacement.metadata.resourceVersion = "1";
+  fixture.save(replacement);
+  assert.equal(await open(), undefined, "a recreated ConfigMap UID must refuse transport");
+  const altered = structuredClone(originalConfig);
+  altered.metadata.uid = "altered-config-uid";
+  altered.metadata.resourceVersion = "1";
+  pod.metadata.annotations["openclaw.dev/automation-configuration-uid"] = altered.metadata.uid;
+  const document = JSON.parse(altered.data["openclaw.json"]);
+  document.mcp.servers.qa.url = "https://mcp.example.test/other";
+  altered.data["openclaw.json"] = JSON.stringify(document);
+  fixture.save(altered);
+  assert.equal(await open(), undefined, "changed endpoint content must refuse transport");
+  fixture.save(originalConfig);
+  Object.assign(pod, structuredClone(originalPod));
+  const restored = await open();
+  assert.ok(restored);
+  await restored.close();
+});
 
 test("staged Compute prepares an idle target, activates the Harness, and publishes only after readiness", async () => {
   // The real Compute path uses controlled Sandbox and Proxy Drivers; these observations do not

@@ -235,11 +235,11 @@
 ### Agent automations
 
 - [`listAgentAutomationRuns`](../api.md#get-namespacesnamespaceidagentsagentidautomationsautomationidruns): Read authorized Agent automation history.
-- [`listAgentAutomations`](../api.md#get-namespacesnamespaceidagentsagentidautomations): List authorized Agent automations.
+- [`listAgentAutomations`](../api.md#get-namespacesnamespaceidagentsagentidautomations): List authorized Agent automations or pending reservations.
 - [`getAgentAutomation`](../api.md#get-namespacesnamespaceidagentsagentidautomationsautomationid): Read a managed Agent automation.
 - [`createAgentAutomation`](../api.md#post-namespacesnamespaceidagentsagentidautomations): Create a scheduled Agent automation.
 - [`updateAgentAutomation`](../api.md#patch-namespacesnamespaceidagentsagentidautomationsautomationid): Update an Agent automation.
-- [`deleteAgentAutomation`](../api.md#delete-namespacesnamespaceidagentsagentidautomationsautomationid): Delete an Agent automation.
+- [`deleteAgentAutomation`](../api.md#delete-namespacesnamespaceidagentsagentidautomationsautomationid): Delete an Agent automation or cancel a pending reservation.
 
 ### Credential sources
 

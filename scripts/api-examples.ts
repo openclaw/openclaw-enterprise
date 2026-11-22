@@ -317,6 +317,7 @@ const savedAccount = {
 export const parameterExamples = {
   automationId: "7ed6c814-7412-46e7-9aae-12b13ec16d34",
   expectedConfigRevision: "observed-native-revision",
+  view: "pending",
   offset: "0",
   modelProviderId: modelProvider.id,
   "x-occ-session-key": "s".repeat(43),
@@ -523,6 +524,7 @@ export const responseExamples = {
   updateAgentAutomation: { ...automation, enabled: false, nextRunAtMs: null },
   listAgentAutomations: {
     jobs: [automationSummary],
+    pendingReservations: [],
     total: 1,
     nextOffset: null,
     snapshotRevision: "example-inventory-revision",

@@ -227,15 +227,25 @@ no sibling-operation, second-server or file-write effect. They also exercise
 service denial, missing or changed endpoint records, replacement of the deployed
 guard binding, and refusal of unsupported tool sources. A paused automation keeps
 its immutable grant: incompatible narrowing or binding changes must remain blocked
-until the automation is deleted and its grant is retired. See
+until the automation is deleted and its grant is retired. Recovery proof must
+also cover the paged `view=pending` response and reservation cancellation while
+the native runtime is unavailable, creator and administrator isolation, the
+bind/cancel race, and a delayed add that remains disabled. See
 [grant retirement](../reference/agent-automations.md#policy-changes-and-retained-grants).
 
-Genuine HTTPS MCP qualification remains incomplete. Report embedded execution
-and dedicated model-only/refusal outcomes separately. Dedicated Codex refuses
-nonempty MCP grants; refusal does not satisfy MCP parity acceptance. Historical
-model-only results and the earlier ordinary stdio smoke do not qualify this scenario. Record the
-final tested source, image digests, both Harness outcomes, collector evidence and
-cleanup. Pod metadata or a guard label alone does not prove that the broker's
+To qualify genuine HTTPS MCP, each packaged Harness needs
+ordinary and scheduled permitted HTTPS calls, negative peer-effect checks and
+unsafe canonical `agents.entries` override refusal. Dedicated admission must make
+no prior session, effective-tool or history read and must refuse included-alias
+collisions and reserved `mcp__` prefixes even outside the granted subset. Both
+Harnesses must refuse enabled
+include filters with `resources_list`, `resources_read`, `prompts_list` or
+`prompts_get`, including case variants. Both must refuse raw own-server prefix
+selectors before subsets while preserving unrelated `foo__bar` raw operations.
+Embedded must refuse a warm
+dock/subagent-only session inventory. Historical model-only results,
+dedicated refusal and synthetic bridge diagnostics do not qualify MCP. Record
+the final source, image digests, both Harness outcomes, collector evidence and cleanup. Pod metadata or a guard label alone does not prove that the broker's
 connection reached that runtime instance; destination verification also remains
 part of the pending qualification.
 

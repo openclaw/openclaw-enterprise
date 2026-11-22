@@ -98,6 +98,11 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
   const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}/automations`;
   const pending = new Map<string, string>();
   const originalInstallation = structuredClone(f.configuration);
+  const configurationPath = `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`;
+  const originalAgentConfiguration =
+    agent.preset === "Codex"
+      ? structuredClone((await f.api("GET", configurationPath)).values)
+      : undefined;
   let changedInstallation = false;
   async function request(
     method: string,
@@ -151,6 +156,15 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       codeMode: false,
       toolSearch: false,
     };
+    if (agent.preset === "Codex") {
+      // Codex projects configured MCP as dynamic tools only under an explicit Agent policy.
+      // Keep that policy finite and equal to the Gateway-approved alias.
+      const main = values.agents.entries?.main ?? {};
+      values.agents.entries = {
+        ...values.agents.entries,
+        main: { ...main, tools: { ...main.tools, allow: ["approved__parity_probe"] } },
+      };
+    }
     const safe =
       agent.preset === "Codex"
         ? ["codex", "file-transfer", "memory-core"]
@@ -321,47 +335,6 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
   const failures: unknown[] = [];
   async function workflow() {
     await configure();
-    if (agent.preset === "Codex") {
-      assert.ok(networkPeer);
-      native = await observer();
-      const inventory = async () => {
-        const page = await native!.client.request<{ jobs: unknown[] }>("cron.list", {
-          includeDisabled: true,
-          includeDeliveryPreviews: false,
-          limit: 200,
-          offset: 0,
-        });
-        return page.jobs
-          .map((value) => {
-            const job = asRecord(value);
-            assert.equal(typeof job?.id, "string");
-            return { id: job!.id as string, declarationKey: job?.declarationKey ?? null };
-          })
-          .sort((left, right) => left.id.localeCompare(right.id));
-      };
-      // Dedicated model-only scheduling is proved by the preceding matrix stage. A
-      // configured nonempty MCP grant must fail explicitly before native mutation.
-      const jobsBefore = await inventory();
-      const callsBefore = (await networkPeer.read()).length;
-      const refused = await request("POST", "", input("Dedicated MCP must not silently downgrade"));
-      assert.equal(refused.status, 503, "dedicated MCP creation must fail closed");
-      assert.equal(refused.errorCode, "AUTOMATIONS_UNQUALIFIED");
-      assert.equal(refused.data, undefined, "a refused grant cannot return a downgraded job");
-      assert.deepEqual(await inventory(), jobsBefore, "refusal must not create a native cron job");
-      assert.equal(
-        (await networkPeer.read()).length,
-        callsBefore,
-        "refusal must not call the peer",
-      );
-      await f.record(`automations-${agent.id}-dedicated-mcp-refused`, {
-        status: refused.status,
-        errorCode: refused.errorCode,
-        nativeInventoryUnchanged: true,
-        peerCallsUnchanged: true,
-        silentDowngrade: false,
-      });
-      return;
-    }
     if (agent.preset === "OpenClaw") {
       assert.ok(networkPeer);
       const configPath = `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`;
@@ -386,16 +359,325 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       await f.deployAndWait(agent);
     }
     assert.ok(networkPeer);
+    let dockCalls = 0;
+    if (agent.preset === "OpenClaw") {
+      // A plugin dock can discover the same MCP tool, but it is not an ordinary Agent session.
+      // It must not authorize an automation before the first ordinary chat exists.
+      native = await observer();
+      const dockKey = `agent:main:dashboard:${randomUUID()}`;
+      const dockNonce = `dock-${randomUUID()}`;
+      let dockCreated = false;
+      try {
+        const createdDock = asRecord(
+          await native.client.request("sessions.create", {
+            key: dockKey,
+            agentId: "main",
+            surface: "plugin-dock",
+            displayName: "Automation dock qualification control",
+          }),
+        );
+        dockCreated = true;
+        assert.equal(createdDock?.key, dockKey);
+        assert.equal(typeof createdDock?.sessionId, "string");
+        const described = asRecord(
+          await native.client.request("sessions.describe", { key: dockKey, agentId: "main" }),
+        );
+        const dock = asRecord(described?.session);
+        assert.equal(dock?.key, dockKey);
+        assert.equal(dock?.sessionId, createdDock.sessionId);
+        assert.equal(dock?.isDock, true);
+        assert.equal(dock?.createdSurface, "plugin-dock");
+        // Preview does not connect to MCP. A real turn on the persisted dock establishes
+        // its catalog without changing the immutable dock surface or creating ordinary chat.
+        await agent.native.normalGatewayTurn({
+          agent,
+          sessionKey: dockKey,
+          prompt: `Call approved__parity_probe exactly once with nonce ${dockNonce}. Return MCP_EFFECT_${dockNonce}.`,
+          expectedPatterns: [`MCP_EFFECT_${dockNonce}`],
+        });
+        const observedDockCalls = await networkPeer.read();
+        assert.equal(observedDockCalls.length, 1, "the dock must make one genuine MCP call");
+        assert.deepEqual(
+          {
+            server: observedDockCalls[0]!.server,
+            tool: observedDockCalls[0]!.tool,
+            nonce: observedDockCalls[0]!.nonce,
+            authorization: observedDockCalls[0]!.authorization,
+          },
+          { server: "approved", tool: "parity_probe", nonce: dockNonce, authorization: false },
+        );
+        dockCalls = observedDockCalls.length;
+        const afterTurn = asRecord(
+          await native.client.request("sessions.describe", { key: dockKey, agentId: "main" }),
+        );
+        const warmedDock = asRecord(afterTurn?.session);
+        assert.equal(warmedDock?.key, dockKey);
+        assert.equal(warmedDock?.sessionId, createdDock.sessionId);
+        assert.equal(warmedDock?.isDock, true);
+        assert.equal(warmedDock?.createdSurface, "plugin-dock");
+        const dockPage = asRecord(
+          await native.client.request("sessions.list", {
+            agentId: "main",
+            limit: 100,
+            includeGlobal: false,
+            includeUnknown: false,
+            rowMode: "compact",
+          }),
+        );
+        assert.ok(Array.isArray(dockPage?.sessions));
+        const scopedDock = dockPage.sessions.map(asRecord).find((value) => value?.key === dockKey);
+        assert.equal(scopedDock?.agentId, "main");
+        assert.equal(scopedDock?.sessionId, createdDock.sessionId);
+        assert.equal(scopedDock?.isDock, true);
+        const ordinaryPage = asRecord(
+          await native.client.request("sessions.list", {
+            agentId: "main",
+            limit: 100,
+            includeGlobal: false,
+            includeUnknown: false,
+            excludeSubagents: true,
+            excludeCron: true,
+            excludeSystem: true,
+            excludeDock: true,
+            rowMode: "compact",
+          }),
+        );
+        assert.ok(Array.isArray(ordinaryPage?.sessions));
+        assert.equal(ordinaryPage.sessions.length, 0, "the dock control needs no ordinary session");
+        const effective = asRecord(
+          await native.client.request("tools.effective", { agentId: "main", sessionKey: dockKey }),
+        );
+        assert.ok(Array.isArray(effective?.groups));
+        const descriptors = effective.groups.flatMap((value) => {
+          const group = asRecord(value);
+          return Array.isArray(group?.tools) ? group.tools.map(asRecord).filter(Boolean) : [];
+        });
+        const matches = descriptors.filter((tool) => tool?.id === "approved__parity_probe");
+        assert.equal(
+          matches.length,
+          1,
+          "the dock must actually expose the approved MCP descriptor",
+        );
+        assert.equal(matches[0]?.source, "mcp");
+        assert.equal(matches[0]?.mcpServer, "approved");
+        assert.equal(matches[0]?.mcpToolName, "parity_probe");
+        await assertRefusedWithoutMutation(
+          () =>
+            request("POST", "", { ...input("A dock cannot authorize scheduling"), enabled: false }),
+          [503],
+          "dock-only MCP evidence",
+        );
+        await f.record(`automations-${agent.id}-dock-only-refused`, {
+          status: 503,
+          dockDescriptorVerified: true,
+          genuineDockCallVerified: true,
+          sameDockSessionVerified: true,
+          dockNonceHash: createHash("sha256").update(dockNonce).digest("hex"),
+          ordinarySessions: 0,
+          nativeInventoryUnchanged: true,
+          peerCallsUnchanged: true,
+        });
+      } finally {
+        if (dockCreated) {
+          await native.client.request("sessions.delete", { key: dockKey, agentId: "main" });
+        }
+        await native.close();
+        native = undefined;
+      }
+    } else {
+      async function refuseDedicatedCandidate(
+        label: string,
+        mutate: (values: typeof agent.configuration.values) => void,
+      ) {
+        assert.ok(networkPeer);
+        const baseline = await f.api("GET", configurationPath);
+        const suspect = structuredClone(baseline.values);
+        mutate(suspect);
+        agent.configuration = await f.api("PATCH", configurationPath, { values: suspect });
+        try {
+          try {
+            await f.deployAndWait(agent);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "";
+            const match = /: HTTP ([0-9]{3}) \(([A-Z][A-Z0-9_]{0,79})\)$/u.exec(message);
+            await f.record(`automations-${agent.id}-${label}-deployment`, {
+              postAttempted: false,
+              status: match ? Number(match[1]) : undefined,
+              errorCode: match?.[2],
+              category: match ? "deployment-refused" : "deployment-incomplete",
+            });
+            throw error;
+          }
+          const suspectRevisionId = agent.revision.id;
+          const suspectRevisionNumber = agent.revision.revision;
+          native = await observer();
+          const sessions = asRecord(
+            await native.client.request("sessions.list", {
+              agentId: "main",
+              limit: 100,
+              includeGlobal: false,
+              includeUnknown: false,
+              rowMode: "compact",
+            }),
+          );
+          assert.ok(Array.isArray(sessions?.sessions));
+          assert.equal(sessions.sessions.length, 0);
+          const jobsBefore = await nativeJobs();
+          const callsBefore = (await networkPeer.read()).length;
+          assert.equal(callsBefore, 0);
+          const refused = await request("POST", "", {
+            ...input("An unsafe configured MCP namespace must refuse scheduling"),
+            enabled: false,
+          });
+          if (refused.status === 201 && Check(AgentAutomationSchema, refused.data)) {
+            const unexpected = refused.data as AgentAutomationData;
+            pending.set(unexpected.id, unexpected.configRevision);
+            await deletePaused(unexpected);
+          }
+          assert.equal(refused.status, 503);
+          assert.equal(refused.errorCode, "AUTOMATIONS_UNQUALIFIED");
+          assert.deepEqual(await nativeJobs(), jobsBefore, `${label} changed native jobs`);
+          assert.equal((await networkPeer.read()).length, callsBefore);
+          await f.record(`automations-${agent.id}-${label}-refused`, {
+            revisionId: suspectRevisionId,
+            revisionNumber: suspectRevisionNumber,
+            status: refused.status,
+            errorCode: refused.errorCode,
+            preexistingSessions: 0,
+            nativeInventoryUnchanged: true,
+            peerCallsUnchanged: true,
+          });
+        } finally {
+          await native?.close();
+          native = undefined;
+          assert.equal(pending.size, 0, "a grant must not remain before restoring the baseline");
+          agent.configuration = await f.api("PATCH", configurationPath, {
+            values: baseline.values,
+          });
+          await f.deployAndWait(agent);
+        }
+      }
+      // Source filters run before Gateway/Agent subsets. The peer really exposes blocked_probe;
+      // its own prefixed selector must not select that operation under another alias.
+      await refuseDedicatedCandidate("source-selector", (values) => {
+        values.mcp.servers.blocked.toolFilter.include.push("BlOcKeD__blocked_probe");
+      });
+      // Codex also reserves the complete mcp__ allocation namespace before those subsets.
+      await refuseDedicatedCandidate("reserved-namespace", (values) => {
+        values.mcp.servers.McP = structuredClone(values.mcp.servers.approved);
+      });
+      native = await observer();
+      try {
+        const sessions = asRecord(
+          await native.client.request("sessions.list", {
+            agentId: "main",
+            limit: 100,
+            includeGlobal: false,
+            includeUnknown: false,
+            rowMode: "compact",
+          }),
+        );
+        assert.ok(Array.isArray(sessions?.sessions));
+        assert.equal(
+          sessions.sessions.length,
+          0,
+          "the first dedicated grant needs no prior session",
+        );
+        const jobsBefore = await nativeJobs();
+        const callsBefore = (await networkPeer.read()).length;
+        assert.equal(callsBefore, 0);
+        const first = await create("First dedicated standing grant", {
+          enabled: false,
+          schedule: { kind: "every", everyMs: 86_400_000 },
+        });
+        const page = await native.client.request<{ jobs: unknown[] }>("cron.list", {
+          includeDisabled: true,
+          includeDeliveryPreviews: false,
+          limit: 200,
+          offset: 0,
+        });
+        const matches = page.jobs
+          .map(asRecord)
+          .filter((value) => value?.declarationKey === `occ-automation:${first.id}`);
+        assert.equal(matches.length, 1);
+        assert.deepEqual(asRecord(matches[0]!.payload)?.toolsAllow, ["approved__parity_probe"]);
+        assert.equal(
+          (await networkPeer.read()).length,
+          callsBefore,
+          "paused admission must not call MCP",
+        );
+        await assertRefusedWithoutMutation(
+          () =>
+            request("POST", "", {
+              ...input("Caller-selected dedicated MCP tools must be refused"),
+              enabled: false,
+              toolsAllow: ["blocked__blocked_probe", "unknown__missing"],
+            }),
+          [400],
+          "caller-selected dedicated unapproved and unknown MCP aliases",
+        );
+        await deletePaused(first);
+        assert.deepEqual(
+          await nativeJobs(),
+          jobsBefore,
+          "retirement must remove the paused native job",
+        );
+        assert.equal((await networkPeer.read()).length, callsBefore);
+        await f.record(`automations-${agent.id}-standing-grant`, {
+          status: 201,
+          preexistingSessions: 0,
+          exactCap: ["approved__parity_probe"],
+          pausedAdmissionPeerCalls: 0,
+          callerSelectedCapsRejected: true,
+          nativeInventoryRestored: true,
+        });
+      } finally {
+        await native.close();
+        native = undefined;
+      }
+    }
+    async function createOrdinarySession(key: string) {
+      assert.ok(native);
+      await native.client.request("sessions.create", { key, agentId: "main" });
+      const page = asRecord(
+        await native.client.request("sessions.list", {
+          agentId: "main",
+          limit: 100,
+          includeGlobal: false,
+          includeUnknown: false,
+          excludeSubagents: true,
+          excludeCron: true,
+          excludeSystem: true,
+          excludeDock: true,
+          rowMode: "compact",
+        }),
+      );
+      assert.ok(Array.isArray(page?.sessions));
+      const row = page.sessions.map(asRecord).find((value) => value?.key === key);
+      assert.equal(row?.kind, "direct");
+      assert.equal(row?.classification, "custom");
+      assert.equal(row?.agentId, "main");
+      assert.equal(row?.createdVia, "operator");
+      assert.equal(row?.isDock, false);
+      assert.equal(row?.isBackground, false);
+    }
+    // The operator creates a normal session before the genuine model turn. This preserves
+    // explicit ordinary provenance instead of relying on an ambiguous run-created session.
+    const staleSession = `agent:main:automation-mcp-stale-${token}`;
+    native = await observer();
+    await createOrdinarySession(staleSession);
+    await native.close();
+    native = undefined;
     // A genuine ordinary call proves this revision is otherwise eligible before the operator
     // changes the canonical endpoint grant. The unchanged Pod must then fail provenance.
     const staleControl = `stale-control-${randomUUID()}`;
     await agent.native.normalGatewayTurn({
       agent,
-      sessionKey: `agent:main:automation-mcp-stale-${token}`,
+      sessionKey: staleSession,
       prompt: `Call approved__parity_probe exactly once with nonce ${staleControl}. Return MCP_EFFECT_${staleControl}.`,
       expectedPatterns: [`MCP_EFFECT_${staleControl}`],
     });
-    const initialCalls = await networkPeer.read();
+    const initialCalls = (await networkPeer.read()).slice(dockCalls);
     assert.equal(initialCalls.length, 1);
     assert.deepEqual(
       {
@@ -420,7 +702,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       oldGuard,
       "the refused Pod still carries its old grant binding",
     );
-    assert.equal((await networkPeer.read()).length, initialCalls.length);
+    assert.equal((await networkPeer.read()).length, dockCalls + initialCalls.length);
     await f.deployAndWait(agent);
     assert.notEqual(agent.revision.id, staleRevisionId);
     const newGuard = await gatewayGuardBinding();
@@ -431,8 +713,10 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       "the replacement Pod must bind the changed canonical grant",
     );
     await verifyEndpointPolicies();
-    priorControlCalls = initialCalls.length;
+    priorControlCalls = dockCalls + initialCalls.length;
     const grantRevisionId = agent.revision.id;
+    const grantRevisionNumber = agent.revision.revision;
+    const grantConfigurationGeneration = agent.revision.configurationGeneration;
     const workloadAuthority = [];
     for (const role of roles) {
       const pod = await f.pod(agent, role);
@@ -461,9 +745,11 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     await roleFiles("precheck");
     native = await observer();
     const ordinary = `ordinary-${randomUUID()}`;
+    const ordinarySession = `agent:main:automation-mcp-${token}`;
+    await createOrdinarySession(ordinarySession);
     await agent.native.normalGatewayTurn({
       agent,
-      sessionKey: `agent:main:automation-mcp-${token}`,
+      sessionKey: ordinarySession,
       prompt: `Call approved__parity_probe exactly once with nonce ${ordinary}. Return the exact MCP_EFFECT_${ordinary} result. Do not call any other tool.`,
       expectedPatterns: [`MCP_EFFECT_${ordinary}`],
     });
@@ -534,6 +820,19 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       enabled: false,
       schedule: { kind: "every", everyMs: 86_400_000 },
     });
+
+    // The caller cannot replace the server-derived cap with an unapproved or unknown alias.
+    if (agent.preset === "OpenClaw") {
+      await assertRefusedWithoutMutation(
+        () =>
+          request("POST", "", {
+            ...pausedInput("Caller-selected MCP tools must be refused"),
+            toolsAllow: ["blocked__blocked_probe", "unknown__missing"],
+          }),
+        [400],
+        "caller-selected unapproved and unknown MCP aliases",
+      );
+    }
 
     // A real human receives only operate on this exact Agent. Removing the binding or signing
     // out must stop fresh admission before any native job or MCP effect exists.
@@ -976,13 +1275,21 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       [
         "agent-tools-code-mode",
         (values) => {
-          values.agents.list = [{ id: "main", tools: { codeMode: true } }];
+          const main = values.agents.entries?.main ?? {};
+          values.agents.entries = {
+            ...values.agents.entries,
+            main: { ...main, tools: { ...main.tools, codeMode: true } },
+          };
         },
       ],
       [
         "agent-model-code-mode",
         (values) => {
-          values.agents.list = [{ id: "main", models: { [modelReference]: { codeMode: true } } }];
+          const main = values.agents.entries?.main ?? {};
+          values.agents.entries = {
+            ...values.agents.entries,
+            main: { ...main, models: { ...main.models, [modelReference]: { codeMode: true } } },
+          };
         },
       ],
       [
@@ -992,8 +1299,39 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         },
       ],
     ];
+    if (agent.preset === "OpenClaw") {
+      invalid.unshift([
+        "server-filter-alias-selector",
+        (values) => {
+          // Embedded deployment must preserve an active grant when the candidate source
+          // filter contains its own alias selector, even though that server is disallowed.
+          values.mcp.servers.blocked.toolFilter.include.push("BlOcKeD__blocked_probe");
+        },
+      ]);
+    }
+    // Native MCP can synthesize resource and prompt utilities. Reject them even on
+    // an enabled server that the Gateway and Agent policies do not allow.
+    for (const utility of ["ReSoUrCeS_LiSt", "resources_read", "prompts_list", "prompts_get"]) {
+      invalid.push([
+        `reserved-${utility.toLowerCase()}`,
+        (values) => {
+          values.mcp.servers.blocked.toolFilter.include.push(utility);
+        },
+      ]);
+    }
+    if (agent.preset === "Codex") {
+      invalid.push([
+        "interactive-mcp-approval",
+        (values) => {
+          values.mcp.servers.approved.codex.defaultToolsApprovalMode = "prompt";
+        },
+      ]);
+    }
     const deployPath = `/namespaces/${agent.namespaceId}/agents/${agent.id}/deploy`;
     for (const [name, mutate] of invalid) {
+      const sourceSelector = name === "server-filter-alias-selector";
+      const jobsBefore = sourceSelector ? await nativeJobs() : undefined;
+      const callsBefore = sourceSelector ? (await collect()).length : undefined;
       const values = structuredClone(currentConfig.values);
       mutate(values);
       const patch = await transport.rawRequest("PATCH", configPath, {
@@ -1002,6 +1340,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         timeout: 40_000,
       });
       if (patch.response.status === 400) {
+        assert.equal(sourceSelector, false, "the source selector must reach deployment admission");
         admissionRefusals[name] = 400;
         continue;
       }
@@ -1019,11 +1358,18 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         409,
         `${name} must not replace a revision with an active captured grant`,
       );
+      if (sourceSelector) {
+        assert.deepEqual(await nativeJobs(), jobsBefore, "source selector changed native jobs");
+        assert.equal((await collect()).length, callsBefore, "source selector reached the MCP peer");
+      }
       admissionRefusals[name] = deployment.response.status;
     }
     const wider = structuredClone(currentConfig.values);
     wider.mcp.servers.approved.toolFilter.include.push("sibling_probe");
     wider.tools.gatewayPolicy.allow.push("approved__sibling_probe");
+    if (agent.preset === "Codex") {
+      wider.agents.entries.main.tools.allow.push("approved__sibling_probe");
+    }
     agent.configuration = await f.api("PATCH", configPath, { values: wider });
     await native.close();
     native = undefined;
@@ -1072,10 +1418,17 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     await f.record(`automations-${agent.id}-mcp-parity`, {
       agentId: agent.id,
       revisionId: grantRevisionId,
+      revisionNumber: grantRevisionNumber,
+      configurationGeneration: grantConfigurationGeneration,
       replacementRevisionId: agent.revision.id,
       transcript,
       jobId: job.id,
+      nativeJobId: nativeJob.id,
+      nativeAgentId: nativeJob.agentId,
       runId: run.runId,
+      sessionId: entry.sessionId,
+      sessionKey: entry.sessionKey,
+      scheduledNonceHash: createHash("sha256").update(scheduled).digest("hex"),
       staleControl: {
         revisionId: staleRevisionId,
         source: initialCalls[0]!.source,
@@ -1088,6 +1441,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       ordinaryCalls: 1,
       scheduledCalls: 1,
       forbiddenCalls: 0,
+      callerSelectedCapsRejected: true,
       exactCap: ["approved__parity_probe"],
       sameAuthority: true,
       observedPrincipal: networkPeer ? "anonymous" : `uid:${calls[0]!.uid}`,
@@ -1098,6 +1452,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       inheritedEnvironmentNames: calls[0]!.envNames ?? [],
       workloadAuthority,
       admissionRefusals,
+      sourceFilterAliasSelectorNoEffect: true,
       forbiddenFileEffectAbsent: true,
       serviceRevocationDeniedCalls: deniedCalls.length,
       deletedJobNoDispatch: true,
@@ -1146,6 +1501,17 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     }
   } catch (error) {
     failures.push(error);
+  }
+  if (originalAgentConfiguration && failures.length === 0) {
+    try {
+      assert.equal(pending.size, 0, "all MCP grants must be retired before restoring the preset");
+      agent.configuration = await f.api("PATCH", configurationPath, {
+        values: originalAgentConfiguration,
+      });
+      await f.deployAndWait(agent);
+    } catch (error) {
+      failures.push(error);
+    }
   }
   if (failures.length === 1) {
     throw failures[0];

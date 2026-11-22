@@ -192,6 +192,13 @@ the same disposable database as `OCC_TEST_DATABASE_URL`. It uses that role to
 install temporary audit-rejection constraints; application operations use the
 limited application role.
 
+Native IAM and automation disclosure-race tests use
+`OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL` for the migrator role on the
+same disposable database as `OCC_TEST_DATABASE_URL`. The selected CI preparation
+supplies it only to the native IAM barrier and workspace native integration files.
+The test uses that role to hold a temporary table lock; application requests still
+use the limited application role.
+
 ## Canonical migration compatibility
 
 Fresh installation, populated canonical upgrades, and logical restore checks

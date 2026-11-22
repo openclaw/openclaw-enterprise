@@ -13720,9 +13720,9 @@ Example response
 
 | Operation | Summary |
 | --- | --- |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations`](#get-namespacesnamespaceidagentsagentidautomations) | List authorized Agent automations |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations`](#get-namespacesnamespaceidagentsagentidautomations) | List authorized Agent automations or pending reservations |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/automations`](#post-namespacesnamespaceidagentsagentidautomations) | Create a scheduled Agent automation |
-| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#delete-namespacesnamespaceidagentsagentidautomationsautomationid) | Delete an Agent automation |
+| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#delete-namespacesnamespaceidagentsagentidautomationsautomationid) | Delete an Agent automation or cancel a pending reservation |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#get-namespacesnamespaceidagentsagentidautomationsautomationid) | Read a managed Agent automation |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#patch-namespacesnamespaceidagentsagentidautomationsautomationid) | Update an Agent automation |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`](#get-namespacesnamespaceidagentsagentidautomationsautomationidruns) | Read authorized Agent automation history |
@@ -13731,7 +13731,7 @@ Example response
 
 <span id="get-namespacesnamespaceidagentsagentidautomations"></span>
 
-List authorized Agent automations
+List authorized Agent automations or pending reservations
 
 **Operation ID:** `listAgentAutomations`
 
@@ -13748,6 +13748,7 @@ List authorized Agent automations
 | --- | --- | --- | --- | --- | --- |
 | `offset` | query | `string` | No | pattern: `^(0\|[1-9][0-9]{0,8})$` | "0" |
 | `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
+| `view` | query | `"pending"` | No | — | "pending" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
@@ -13771,6 +13772,11 @@ List authorized Agent automations
 | `data` | `object` | Yes | — |
 | `data.jobs` | `array<object or object>` | Yes | — |
 | `data.nextOffset` | `integer or null` | Yes | — |
+| `data.pendingReservations` | `array<object>` | Yes | max items: 100 |
+| `data.pendingReservations[].configRevision` | `string` | Yes | pattern: `^reservation:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$` |
+| `data.pendingReservations[].createdAt` | `string (date-time)` | Yes | — |
+| `data.pendingReservations[].id` | `string (uuid)` | Yes | — |
+| `data.pendingReservations[].status` | `"pending"` | Yes | — |
 | `data.snapshotRevision` | `string` | Yes | min length: 1; max length: 128 |
 | `data.total` | `integer` | Yes | minimum: 0 |
 | `meta` | `object` | Yes | — |
@@ -13797,6 +13803,7 @@ Example response
       }
     ],
     "nextOffset": null,
+    "pendingReservations": [],
     "snapshotRevision": "example-inventory-revision",
     "total": 1
   },
@@ -13913,7 +13920,7 @@ Example response
 
 <span id="delete-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
 
-Delete an Agent automation
+Delete an Agent automation or cancel a pending reservation
 
 **Operation ID:** `deleteAgentAutomation`
 

@@ -1,3 +1,10 @@
+import { NAME_MAX_CHARACTERS, Name } from "@openclaw-enterprise/contracts";
+
+const automationNamePattern: unknown = Reflect.get(Name, "pattern");
+if (typeof automationNamePattern !== "string") {
+  throw new Error("The Name schema has no automation identity pattern.");
+}
+
 // These bundled plugins contain no MCP declarations at the qualified OpenClaw source.
 export const AUTOMATION_NO_MCP_PLUGIN_IDS = Object.freeze([
   "openai",
@@ -11,6 +18,8 @@ export const AGENT_AUTOMATION_GUARD_VERSION = "oce-automation-origin-v1";
 /** Runs in the Gateway wrapper before every native spawn, including respawns. */
 export const AGENT_AUTOMATION_ORIGIN_GUARD = String.raw`
 const AUTOMATION_GUARD_VERSION = ${JSON.stringify(AGENT_AUTOMATION_GUARD_VERSION)};
+const AUTOMATION_NAME_MAX_CHARACTERS = ${NAME_MAX_CHARACTERS};
+const AUTOMATION_NAME_PATTERN = new RegExp(${JSON.stringify(automationNamePattern)}, "u");
 const AUTOMATION_BUNDLED_PLUGIN_ROOT = "/app/node_modules/openclaw/dist/extensions";
 const AUTOMATION_BUNDLED_PLUGIN_IDS = ${JSON.stringify(AUTOMATION_NO_MCP_PLUGIN_IDS)};
 function assertCleanAutomationOrigins(env) {
@@ -53,22 +62,47 @@ function assertCleanAutomationOrigins(env) {
   if (!record(config) || !record(config.plugins) || config.plugins.load !== undefined || config.plugins.installs !== undefined || config.plugins.bundledDiscovery !== undefined) fail();
   if (config.tools?.codeMode !== false || config.tools?.toolSearch !== false || config.gateway?.nodes?.pluginTools?.enabled !== false || config.gateway?.nodes?.allowSkills !== false) fail();
   const overridesOff = (models) => models === undefined || (record(models) && Object.values(models).every((model) => record(model) && (model.codeMode === undefined || model.codeMode === false) && (model.toolSearch === undefined || model.toolSearch === false)));
-  if (!overridesOff(config.agents?.defaults?.models) || (config.agents?.list !== undefined && !Array.isArray(config.agents.list))) fail();
-  for (const agent of config.agents?.list ?? []) {
-    if (!record(agent) || (agent.tools !== undefined && !record(agent.tools)) || (agent.tools?.codeMode !== undefined && agent.tools.codeMode !== false) || (agent.tools?.toolSearch !== undefined && agent.tools.toolSearch !== false) || !overridesOff(agent.models)) fail();
+  const agents = config.agents;
+  if ((agents !== undefined && !record(agents)) || agents?.list !== undefined || (agents?.defaults !== undefined && !record(agents.defaults)) || !overridesOff(agents?.defaults?.models)) fail();
+  const dedicated = gatewayToolPolicyInput !== undefined;
+  if (dedicated && (!env.APP_SERVER_URL || env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined || (env.OPENCLAW_REMOTE_WORKSPACE_ROOT !== undefined && env.OPENCLAW_REMOTE_WORKSPACE_ROOT !== "/home/node/workspace"))) fail();
+  const mcp = config.mcp;
+  if (!record(mcp) || !record(mcp.servers) || Object.keys(mcp).some((key) => key !== "servers" && !(dedicated && key === "apps"))) fail();
+  const entries = agents?.entries;
+  const main = record(entries) ? entries.main : undefined;
+  const identity = record(main) ? main.identity : undefined;
+  if (!record(entries) || Object.keys(entries).length !== 1 || !record(main) || Object.keys(main).some((key) => key !== "identity" && key !== "tools" && !(dedicated && key === "workspace")) || !record(identity) || Object.keys(identity).length !== 1 || typeof identity.name !== "string" || !AUTOMATION_NAME_PATTERN.test(identity.name) || /\p{Cs}/u.test(identity.name) || Array.from(identity.name).length > AUTOMATION_NAME_MAX_CHARACTERS || (dedicated ? main.workspace !== "/home/node/workspace" : main.workspace !== undefined)) fail();
+  const tools = main.tools;
+  if (tools !== undefined) {
+    const allow = record(tools) ? tools.allow : undefined;
+    if (!record(tools) || Object.keys(tools).some((key) => key !== "allow") || !Array.isArray(allow) || allow.length === 0 || allow.some((name) => typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9_-]*__[A-Za-z][A-Za-z0-9_-]*$/u.test(name)) || new Set(allow.map((name) => name.toLowerCase())).size !== allow.length) fail();
+    const gatewayAllow = config.tools.gatewayPolicy?.allow;
+    if (!Array.isArray(gatewayAllow) || allow.some((name) => !(gatewayAllow.includes(name) || (dedicated && gatewayAllow.includes(name.toLowerCase()))) || !Object.entries(mcp.servers).some(([serverName, server]) => record(server) && Array.isArray(server.toolFilter?.include) && server.toolFilter.include.some((tool) => serverName + "__" + tool === name)))) fail();
+  } else if (dedicated) fail();
+  const deepEqual = require("node:util").isDeepStrictEqual;
+  let admitted = gatewayToolPolicyInput;
+  if (!dedicated) {
+    const admittedPath = initialConfigPath === writableOpenClawConfigPath() ? "/etc/openclaw-managed/openclaw.json" : initialConfigPath;
+    if (admittedPath !== "/etc/openclaw/openclaw.json" && admittedPath !== "/etc/openclaw-managed/openclaw.json") fail();
+    try { admitted = JSON.parse(fs.readFileSync(admittedPath, "utf8")); } catch { fail(); }
+  }
+  if (!record(admitted) || !deepEqual(entries, admitted.agents?.entries) || !deepEqual(mcp, admitted.mcp)) fail();
+  if (dedicated) {
+    const expected = structuredClone(admitted);
+    if (env.OPENCLAW_WORKSPACE_NODE_ID === undefined && workspaceNodeBindingPath === undefined) fail();
+    const workspaceNodeId = env.OPENCLAW_WORKSPACE_NODE_ID ?? readWorkspaceNodeBinding();
+    configureWorkspaceNodePlugins(expected, workspaceNodeId);
+    const codex = expected.plugins?.entries?.codex;
+    if (!record(codex) || !record(codex.config) || !Array.isArray(codex.config.codexDynamicToolsExclude ?? [])) fail();
+    codex.config.codexDynamicToolsExclude = [...new Set([...(codex.config.codexDynamicToolsExclude ?? []), ...GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS])];
+    if (!deepEqual(config.plugins, expected.plugins)) fail();
   }
   const configDir = stateDir; // Native resolveConfigDir gives OPENCLAW_STATE_DIR first priority.
   for (const name of ["extensions", "npm", "git"]) emptyRoot(path.join(configDir, name));
   absent(path.join(stateDir, "plugins", "installs.json"));
   const workspaces = new Set([path.join(stateDir, "workspace")]);
-  const agents = config.agents;
-  if (agents !== undefined && !record(agents)) fail();
   if (agents?.defaults?.workspace !== undefined) workspaces.add(agents.defaults.workspace);
-  if (agents?.list !== undefined && !Array.isArray(agents.list)) fail();
-  for (const agent of agents?.list ?? []) {
-    if (!record(agent)) fail();
-    if (agent.workspace !== undefined) workspaces.add(agent.workspace);
-  }
+  if (entries?.main?.workspace !== undefined) workspaces.add(entries.main.workspace);
   for (const workspace of workspaces) {
     if (typeof workspace !== "string" || !path.isAbsolute(workspace) || path.normalize(workspace) !== workspace) fail();
     emptyRoot(path.join(workspace, ".openclaw", "extensions"));
