@@ -148,7 +148,38 @@ function firstRecord(value: unknown) {
 }
 
 // The caller owns the disposable namespace and registers its cleanup before installation.
-export async function prepareProductionHelmControlPlane({
+export async function prepareProductionHelmControlPlane(options: PrepareOptions) {
+  return prepareProductionHelmFixture(options);
+}
+
+async function buildOcc(run: FixtureRun, occ: string) {
+  await run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
+}
+
+async function prepareProductionHelmFixture(options: PrepareOptions, occ?: string) {
+  const { databaseName = "openclaw_enterprise", databaseTLS, run } = options;
+  assert.match(databaseName, /^[a-z][a-z0-9_]+$/);
+  if (databaseTLS) {
+    assert.match(databaseTLS.caSecretName, /^[a-z0-9-]+$/);
+    assert.match(databaseTLS.serverSecretName, /^[a-z0-9-]+$/);
+    assert.notEqual(databaseTLS.caSecretName, databaseTLS.serverSecretName);
+  }
+  const preparation = preparePostgresAndValues({ ...options, databaseName });
+  if (occ === undefined) {
+    return preparation;
+  }
+  // Both operations must settle before the caller can clean up the fixture.
+  const [prepared, built] = await Promise.allSettled([preparation, buildOcc(run, occ)]);
+  if (prepared.status === "rejected") {
+    throw prepared.reason;
+  }
+  if (built.status === "rejected") {
+    throw built.reason;
+  }
+  return prepared.value;
+}
+
+async function preparePostgresAndValues({
   selection,
   images,
   namespace: system,
@@ -167,14 +198,14 @@ export async function prepareProductionHelmControlPlane({
   controlPlane,
   executionCluster,
   metrics,
-  databaseName = "openclaw_enterprise",
+  databaseName,
   databaseUpgradeMigration,
   databaseTLS,
   run,
   kubernetes,
   createSecretValue,
   bootstrapCredentials = "existing",
-}: PrepareOptions) {
+}: PrepareOptions & { databaseName: string }) {
   // The values this installation creates, so a failure diagnostic can redact them.
   const secretValues: string[] = [];
   const secret = () => {
@@ -182,12 +213,6 @@ export async function prepareProductionHelmControlPlane({
     secretValues.push(value);
     return value;
   };
-  assert.match(databaseName, /^[a-z][a-z0-9_]+$/);
-  if (databaseTLS) {
-    assert.match(databaseTLS.caSecretName, /^[a-z0-9-]+$/);
-    assert.match(databaseTLS.serverSecretName, /^[a-z0-9-]+$/);
-    assert.notEqual(databaseTLS.caSecretName, databaseTLS.serverSecretName);
-  }
   const { kubectl } = kubernetes;
   const apply = (object: FixtureResource) =>
     run("kubectl", kubernetes.kubectlArguments(["apply", "-f", "-"]), {
@@ -494,15 +519,14 @@ export async function installProductionHelmControlPlane(
     record,
   } = options;
   const mode = options.bootstrapCredentials ?? "generate";
-  const prepared = await prepareProductionHelmControlPlane({
-    ...options,
-    bootstrapCredentials: mode,
-  });
-  if (mode === "generate") {
-    const occ = join(options.directory, "occ");
+  const occ = mode === "generate" ? join(options.directory, "occ") : undefined;
+  const prepared = await prepareProductionHelmFixture(
+    { ...options, bootstrapCredentials: mode },
+    occ,
+  );
+  if (occ !== undefined) {
     const receipt = join(options.directory, "install-receipt");
     const state = join(options.directory, "installer-state");
-    await run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
     async function retainedInputs() {
       const record: unknown = JSON.parse(
         await readFile(join(receipt, "bootstrap-secret.json"), "utf8"),

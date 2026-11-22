@@ -173,6 +173,7 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
       | "POLICY_MIDDLEWARE_VALIDATION"
       | "PVC_ADMISSION_LABELS"
       | "CLASS_ADMISSION_LABELS"
+      | "CALLER_DRIVER_CONFIG_DISABLED"
       | "RESOURCE_METADATA_FORBIDDEN"
       | "UNKNOWN";
   };
@@ -1257,6 +1258,8 @@ export class SandboxRevisionUnsupportedError extends Error {
   readonly code:
     | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
     | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_RECREATION_REQUIRED"
+    | "SANDBOX_WORKLOAD_IMMUTABLE"
     | "SANDBOX_POD_LABELS_NOT_PERMITTED"
     | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
@@ -1292,6 +1295,19 @@ export class SandboxWorkspaceSetupRefusedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SandboxWorkspaceSetupRefusedError";
+  }
+}
+
+/**
+ * A Sandbox Driver's temporary workspace preparation could not create its Pod because a
+ * Namespace ResourceQuota has no Pods left. Compute keeps the revision pending with its
+ * `NAMESPACE_POD_QUOTA_EXCEEDED` reason, as for its own refused Pods, until a Pod is free or
+ * the convergence deadline passes.
+ */
+export class SandboxPodQuotaExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxPodQuotaExceededError";
   }
 }
 

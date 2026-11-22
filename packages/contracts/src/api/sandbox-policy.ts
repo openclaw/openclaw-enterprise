@@ -94,6 +94,11 @@ export const SandboxPolicyViewResponse = Type.Object(
             "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
+        repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkGrantSchema, {
+          description:
+            "Installation repository grants that the current repository policy owner allows for this Agent's Namespace.",
+          maxItems: maxRepositoryNetworkGrants,
+        }),
         repositoryNetworkPolicySaveSupported: Type.Boolean({
           description:
             "Whether the state adapter can save a withdrawal of this Agent's existing repository grants.",

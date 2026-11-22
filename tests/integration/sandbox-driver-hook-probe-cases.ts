@@ -33,6 +33,7 @@ import { backendFor, openShellDriver } from "./sandbox-driver-openshell-fixture.
 import { registerSandboxDriverOperatorKubernetesCases } from "./sandbox-driver-operator-kubernetes-cases.ts";
 import { createOrphanedNativePreparation } from "./sandbox-driver-preparation-cases.ts";
 import { registerSandboxDriverPreparerCleanupCases } from "./sandbox-driver-preparer-cleanup-cases.ts";
+import { registerSandboxDriverPreparerQuotaCases } from "./sandbox-driver-preparer-quota-cases.ts";
 import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts";
 import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import {
@@ -365,6 +366,8 @@ export function registerSandboxDriverHookProbeCases(): void {
     orphanedNativePreparation,
     labelSelectorLabels,
   });
+
+  registerSandboxDriverPreparerQuotaCases(orphanedNativePreparation);
 
   registerSandboxDriverOperatorKubernetesCases();
 }

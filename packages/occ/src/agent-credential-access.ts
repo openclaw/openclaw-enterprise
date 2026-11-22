@@ -1,3 +1,6 @@
+import type { CredentialSourceDrivers } from "./credential-source-drivers.ts";
+import { validatePluginCredentialSources } from "./agent-plugin-validation.ts";
+import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import {
   MAX_AGENT_CREDENTIAL_SOURCES,
   isSecretHarnessAuth,
@@ -5,14 +8,10 @@ import {
   type Agent,
   type AgentCredentialSourceBinding,
   type ComputeDriver,
-  type CredentialGatewayDriver,
-  type CredentialProxyDriver,
   type CredentialSource,
   type CredentialSourceReference,
   type CredentialSourceSnapshot,
-  type CredentialSourceType,
   type HarnessAuthBinding,
-  type PluginDesiredState,
   type PluginDriver,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
@@ -45,31 +44,12 @@ interface AgentCredentialAccessDependencies {
   readonly drivers: Pick<DriverRegistry, "hasSelection">;
   readonly installationId: string;
   readonly timestamp: () => string;
-  readonly isManagedTokenServiceSource: (
-    source: Readonly<CredentialSource> | undefined,
-  ) => source is Readonly<
-    Extract<CredentialSource, { ownerCapability: "token_service" }> & {
-      tokenServiceInstanceId: string;
-    }
+  readonly sourceDrivers: Pick<
+    CredentialSourceDrivers,
+    "assertCredentialSourceOwnerSelected" | "credentialSourceOwner" | "credentialSourceType"
   >;
-  readonly assertCredentialSourceOwnerSelected: () => void;
   readonly requireTokenServiceOwner: (instanceId?: string) => void;
-  readonly credentialSourceOwner: (
-    source: CredentialSource,
-  ) =>
-    | { readonly kind: "proxy"; readonly driver: Pick<CredentialProxyDriver, "id"> }
-    | { readonly kind: "gateway"; readonly driver: CredentialGatewayDriver };
   readonly offersProtectedType: (type: string) => boolean;
-  readonly credentialSourceType: (
-    driver: CredentialGatewayDriver,
-    type: string,
-  ) => Promise<CredentialSourceType>;
-  readonly validatePluginCredentialSources: (
-    driver: PluginDriver | undefined,
-    plugins: PluginDesiredState | undefined,
-    sources: readonly CredentialSource[],
-    harnessAuth?: HarnessAuthBinding | null,
-  ) => Promise<void>;
 }
 
 export function parseAgentCredentialSources(
@@ -138,13 +118,9 @@ export function createAgentCredentialAccess({
   drivers,
   installationId,
   timestamp,
-  isManagedTokenServiceSource,
-  assertCredentialSourceOwnerSelected,
+  sourceDrivers,
   requireTokenServiceOwner,
-  credentialSourceOwner,
   offersProtectedType,
-  credentialSourceType,
-  validatePluginCredentialSources,
 }: AgentCredentialAccessDependencies) {
   function authorizeSourceOperate(principalId: string, namespaceId: string, sourceId: string) {
     return authority.authorize(principalId, "operate", {
@@ -185,7 +161,7 @@ export function createAgentCredentialAccess({
       await authorizeSourceOperate(principalId, namespaceId, sourceId);
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (!isManagedTokenServiceSource(source)) {
-        assertCredentialSourceOwnerSelected();
+        sourceDrivers.assertCredentialSourceOwnerSelected();
       }
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError(
@@ -211,7 +187,7 @@ export function createAgentCredentialAccess({
         if (source.ownerCapability === "token_service") {
           throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
         }
-        credentialSourceOwner(source);
+        sourceDrivers.credentialSourceOwner(source);
       }
       sources.push(source);
     }
@@ -266,14 +242,14 @@ export function createAgentCredentialAccess({
         throw new ScopeViolationError("The credential source is unavailable.");
       }
       compute.validateHarnessCredentialSources?.(harness, [source]);
-      const owner = credentialSourceOwner(source);
+      const owner = sourceDrivers.credentialSourceOwner(source);
       if (owner.kind === "proxy") {
         if (!offersProtectedType(source.type)) {
           throw new CredentialSourceTypeNotOfferedError("proxy");
         }
         snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
       } else {
-        await credentialSourceType(owner.driver, source.type);
+        await sourceDrivers.credentialSourceType(owner.driver, source.type);
         snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
       }
     }

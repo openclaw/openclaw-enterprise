@@ -165,6 +165,11 @@ export {
   validateSandboxNetworkGrants,
 } from "./sandbox-policy.ts";
 export {
+  maxRepositoryNetworkGrants,
+  repositoryNetworkGrantPattern,
+  parseRepositoryNetworkPolicyCeiling,
+  RepositoryNetworkPolicyAdmissionError,
+  type RepositoryNetworkPolicyCeiling,
   isCanonicalRepositoryGrantList,
   type RepositoryNetworkGrant,
   type RepositoryNetworkPolicy,
@@ -1251,6 +1256,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
       ? {}
       : { egressPlan: immutableCopy(revision.egressPlan) }),
     configuration: immutableCopy(revision.configuration),
+    ...(revision.sandboxPolicy === undefined
+      ? {}
+      : { sandboxPolicy: immutableCopy(revision.sandboxPolicy) }),
     ...(revision.secretBindings === undefined
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),
@@ -1561,6 +1569,7 @@ export type {
 export type {
   HarnessExecutionModeSupport,
   SandboxDriver,
+  ProtectedRepositoryNetworkPolicyContext,
   SandboxRepositoryAccess,
   KubernetesNamespacedResource,
   SandboxWorkspaceMount,
@@ -1788,3 +1797,6 @@ export type {
   HarnessStartupRef,
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
+
+export { admitRepositoryNetworkPolicy } from "./repository-network-policy.ts";
+export { admitSandboxRepositoryNetworkPolicy } from "./sandbox-policy.ts";

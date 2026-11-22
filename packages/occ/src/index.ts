@@ -195,6 +195,7 @@ export {
   ProtectedExecutionNetworkPolicyError,
   SandboxNetworkPolicyConflictError,
   SandboxRevisionUnsupportedError,
+  SandboxPodQuotaExceededError,
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
   RepositorySessionWithdrawnError,
@@ -419,3 +420,5 @@ export type {
 } from "./credential-source-operations.ts";
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
+
+export { hasOnlyScopedRepositoryRevisions } from "./repository-network-policy.ts";

@@ -5,7 +5,6 @@ import type {
   AuthorizationEvidence,
   ComputeDriver,
   IAMDriver,
-  OccApiRoute,
 } from "@openclaw-enterprise/contracts";
 import {
   NoActiveAgentRevisionError,
@@ -130,15 +129,14 @@ export const nativeAdminStatusOperation = {
   authorizationTarget: "agent",
   summary: "Resolve native admin UI launch availability for one Agent",
   tags: ["Agents"],
-  schema: {},
-} as unknown as OccApiRoute;
+} as const;
 export const nativeAdminReturnOperation = {
   ...nativeAdminStatusOperation,
   operationId: "resolveAgentNativeAdminReturn",
   path: "/native-admin/return/:agentKey",
   action: "openclaw.agents.native_admin.return",
   summary: "Resolve an authorized Agent from a copied native chat link",
-} as unknown as OccApiRoute;
+} as const;
 
 const nativeAdminParamsSchema = {
   type: "object",
@@ -337,14 +335,14 @@ export const nativeAdminLaunchOperation = {
   path: `${nativeAdminStatusOperation.path}/launch`,
   action: "openclaw.agents.native_admin.launch",
   summary: "Create a browser-bound native Agent launch",
-} as unknown as OccApiRoute;
+} as const;
 export const nativeAdminConfirmOperation = {
   ...nativeAdminLaunchOperation,
   operationId: "confirmAgentNativeAdmin",
   path: `${nativeAdminStatusOperation.path}/confirm`,
   action: "openclaw.agents.native_admin.confirm",
   summary: "Confirm a native Agent browser challenge",
-} as unknown as OccApiRoute;
+} as const;
 export function nativeAdminLaunchSchema(confirm: boolean): FastifySchema {
   return {
     operationId: confirm

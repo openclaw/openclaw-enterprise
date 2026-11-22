@@ -19,6 +19,7 @@ import {
   type SandboxDriver,
   type SandboxFacet,
   type SandboxNetworkGrant,
+  type RepositoryNetworkPolicyCeiling,
   type SandboxPolicy,
   type SandboxPolicyRecommendations,
   type SandboxPolicySnapshot,
@@ -40,6 +41,7 @@ import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { exactNamespace, lockNamespace } from "./resource-scope.ts";
 
 interface SandboxPolicyDependencies {
+  readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
   readonly ceiling: readonly SandboxNetworkGrant[];
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
@@ -437,6 +439,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         capability: revision === null ? null : (driver?.networkPolicy ?? null),
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
+        repositoryNetworkPolicyCeiling: dependencies.repositoryCeiling(namespaceId),
         repositoryNetworkPolicySaveSupported:
           state.sandboxPolicies.supportsRepositoryNetworkPolicy === true &&
           policy.repositoryNetworkPolicy !== undefined,
@@ -998,14 +1001,11 @@ export async function deploymentSandboxPolicy(
 ): Promise<Readonly<SandboxPolicy> | undefined> {
   const policy = await state.sandboxPolicies.find(namespaceId, agentId);
   if (policy?.repositoryNetworkPolicy !== undefined) {
-    await authority.authorize(principalId, "read", {
-      kind: "sandbox_policy",
-      id: policy.id,
-      namespaceId,
-    });
-    throw new ResourceStateConflictError(
-      "This Installation cannot enforce the saved repository network policy. Deploy with an Installation that supports it.",
-    );
+    const target = { kind: "agent", id: agentId, namespaceId } as const;
+    const resource = policyResource(namespaceId, agentId);
+    await authority.authorize(principalId, "read", resource);
+    await authority.authorize(principalId, "manage_policy", target);
+    await authority.authorize(principalId, "update", resource);
   }
   return policy;
 }
