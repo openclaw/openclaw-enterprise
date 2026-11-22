@@ -1523,8 +1523,8 @@ Example response
 | [`POST /connection-templates/discover`](#post-connectiontemplatesdiscover) | Read public MCP resource and authorization server metadata |
 | [`DELETE /connection-templates/{connectionTemplateId}`](#delete-connectiontemplatesconnectiontemplateid) | Delete a connection template |
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
-| [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template, or create a version with new approved values |
-| [`GET /namespaces/{namespaceId}/connection-templates`](#get-namespacesnamespaceidconnectiontemplates) | List connection templates the caller may connect in this Namespace |
+| [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template or create a version with updated settings |
+| [`GET /namespaces/{namespaceId}/connection-templates`](#get-namespacesnamespaceidconnectiontemplates) | List connection templates available in this Namespace |
 | [`GET /namespaces/{namespaceId}/connections`](#get-namespacesnamespaceidconnections) | List completed connections the caller can read in this Namespace |
 | [`POST /namespaces/{namespaceId}/connections`](#post-namespacesnamespaceidconnections) | Start consent for a reusable account in this Namespace |
 | [`DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidconnectionscredentialsourceid) | Disconnect a saved account and retire its OAuth grant |
@@ -2114,7 +2114,7 @@ Example response
 
 <span id="patch-connectiontemplatesconnectiontemplateid"></span>
 
-Rename a connection template, or create a version with new approved values
+Rename a connection template or create a version with updated settings
 
 **Operation ID:** `updateConnectionTemplate`
 
@@ -2302,7 +2302,7 @@ Example response
 
 <span id="get-namespacesnamespaceidconnectiontemplates"></span>
 
-List connection templates the caller may connect in this Namespace
+List connection templates available in this Namespace
 
 **Operation ID:** `listUsableConnectionTemplates`
 
