@@ -165,6 +165,11 @@ export {
   validateSandboxNetworkGrants,
 } from "./sandbox-policy.ts";
 export {
+  maxRepositoryNetworkGrants,
+  repositoryNetworkGrantPattern,
+  parseRepositoryNetworkPolicyCeiling,
+  RepositoryNetworkPolicyAdmissionError,
+  type RepositoryNetworkPolicyCeiling,
   isCanonicalRepositoryGrantList,
   type RepositoryNetworkGrant,
   type RepositoryNetworkPolicy,
