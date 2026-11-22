@@ -10,8 +10,7 @@ export type OpenShellGitNetworkTarget =
   | { readonly repository?: never; readonly installationId?: never; readonly tokenSource: string };
 
 /** Installation and token Providers bound by a Sandbox rule; the name is derived, never chosen. */
-export const openShellBoundGitProviderPattern =
-  /^oce-github-(?:installation|token)-[a-f0-9]{32}$/;
+export const openShellBoundGitProviderPattern = /^oce-github-(?:installation|token)-[a-f0-9]{32}$/;
 
 const binaries = Object.freeze([
   "/usr/bin/git",
