@@ -35,6 +35,17 @@ type LifecycleFixtureOptions = {
 type PreparationProcess = { pid: number; pgid: number };
 type DetachedProcess = PreparationProcess & { ppid: number; start: string };
 
+function writeLifecycleManifest(
+  root: string,
+  file: { path: string; expectedTests?: readonly string[] },
+) {
+  return writeRunnerManifest(
+    root,
+    { lanes: { lifecycle: { files: [file] } } },
+    "scripts/ci/test-suites.json",
+  );
+}
+
 function fixturePaths(root: string) {
   const attempt = join(root, "attempt");
   return {
@@ -174,7 +185,7 @@ async function lifecycleFixture(
     { mode: 0o700 },
   );
   await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
+    join(root, "scripts/ci/prepare.ts"),
     [
       'import { spawn } from "node:child_process";',
       'import { randomBytes } from "node:crypto";',
@@ -266,11 +277,7 @@ async function lifecycleFixture(
       "",
     ].join("\n"),
   );
-  await writeRunnerManifest(
-    root,
-    { lanes: { lifecycle: { files: [{ path: "tests/integration/lifecycle.test.mjs" }] } } },
-    "scripts/ci/test-suites.json",
-  );
+  await writeLifecycleManifest(root, { path: "tests/integration/lifecycle.test.mjs" });
   return {
     root,
     ...paths,
@@ -437,18 +444,10 @@ export function registerCompleteLifecycleCases() {
               'test("unselected lifecycle case", () => { throw new Error("unselected case executed"); });\n',
               { flag: "a" },
             );
-            await writeRunnerManifest(
-              fixture.root,
-              {
-                lanes: {
-                  lifecycle: {
-                    files: [{ path, expectedTests: [name, "unselected lifecycle case"] }],
-                  },
-                },
-                groups: { ci: ["lifecycle"] },
-              },
-              "scripts/ci/test-suites.json",
-            );
+            await writeLifecycleManifest(fixture.root, {
+              path,
+              expectedTests: [name, "unselected lifecycle case"],
+            });
             const result = await runRunnerAsync(
               [...fixture.args, "--file", path, "--test-name", name],
               {},
@@ -496,11 +495,7 @@ import test from "node:test";
 test(${JSON.stringify(name)}, () => writeFile("ran", "ran"));
 `,
         );
-        await writeRunnerManifest(
-          root,
-          { lanes: { lifecycle: { files: [{ path: file, expectedTests: [name] }] } } },
-          "scripts/ci/test-suites.json",
-        );
+        await writeLifecycleManifest(root, { path: file, expectedTests: [name] });
 
         // Start the real phase child to exercise values the public CLI cannot serialize.
         // A bad selection must still publish its receipt. A bad result path is
@@ -739,13 +734,10 @@ test(${JSON.stringify(name)}, () => writeFile("ran", "ran"));
           } else if (condition === "missing file") {
             await rm(join(fixture.root, file));
           } else if (condition === "duplicate") {
-            await writeRunnerManifest(
-              fixture.root,
-              {
-                lanes: { lifecycle: { files: [{ path: file, expectedTests: [registeredName] }] } },
-              },
-              "scripts/ci/test-suites.json",
-            );
+            await writeLifecycleManifest(fixture.root, {
+              path: file,
+              expectedTests: [registeredName],
+            });
           }
           const args = buildArgs(fixture);
           const result = await runRunnerAsync(args, {}, { timeout: 30_000 });

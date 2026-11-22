@@ -1,5 +1,20 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { codexLaunchEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import {
+  modelProbeReliabilityCases,
+  probeFailure,
+  probeTimeout,
+  transientProbeRetryCases,
+} from "./codex-native-startup-retry-cases.ts";
+import { startSupervisor } from "./workspace-node-supervisor-fixture.ts";
 import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import {
   checkCodexStartup,
@@ -34,20 +49,6 @@ const ready = {
 function loginFailure(code = "LOGIN_FAILED") {
   return { phases: [["codex-login", "failed"]], check: "login", code };
 }
-function probeFailure(cause, provider) {
-  return {
-    phases: [
-      ["codex-login", "ok"],
-      ["model-probe", "failed"],
-    ],
-    check: "model-probe",
-    code: "MODEL_PROBE_FAILED",
-    cause,
-    provider,
-  };
-}
-
-const probeTimeout = { ...probeFailure(), code: "MODEL_PROBE_TIMEOUT" };
 const probeAuthenticationFailure = { ...probeFailure(), code: "AUTHENTICATION_FAILED" };
 
 const { errorEvent, failedTurn } = codexProbeEvents;
@@ -764,506 +765,201 @@ test("Codex app-server gives sandboxed commands the Pod's CA path, never the hoo
   }
 });
 
-test("Codex runtime retries a transient startup model probe failure once", async (t) => {
-  const started = { type: "turn.started" };
-  const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
-  const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
-  const success = probe([started, assistant, completed]);
-  const failedWith = (message, elapsed) =>
-    probe([started, failedTurn(message)], { status: 1 }, undefined, elapsed);
-  const erroredWith = (message) => probe([started, errorEvent(message)], { status: 1 });
-  const killed = probe([], { status: null, signal: "SIGKILL" });
-  const recoveredNotice = errorEvent("Reconnecting... 1/3 stream disconnected before completion");
-  // Finding 1618: the pinned Codex build prints this for a provider it cannot connect to
-  // (refused, unresolvable or failed TLS alike) and keeps waiting until the probe times out.
-  // Finding 1621: only this exact text is transient; any other cause is held.
-  const networkWait = (cause = "Connection failed: error sending request") =>
-    errorEvent(`Reconnecting... waiting for network (${cause})`);
-  const unreachable = probe([started, networkWait(), networkWait()], timedOut, 30000);
-  // Each transient class, by the one marker that makes it transient.
-  const transient = [
+// A Sandbox whose egress is an explicit proxy (loopback only, HTTPS_PROXY in the Harness
+// environment) can reach the model only through it, so the program Compute renders for a
+// provider-owned Sandbox other than OpenShell carries the standard proxy settings into the
+// authentication probe when they are set. OpenShell's egress is transparent and its admitted
+// commands keep their bytes, so its programs never carry them.
+test("Codex authentication probe carries proxy settings only for an explicit-proxy launch", (t) => {
+  const readyTurn = probe([
+    { type: "turn.started" },
+    { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+    { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+  ]);
+  const proxy = {
+    HTTPS_PROXY: "http://127.0.0.1:3128",
+    https_proxy: "http://127.0.0.1:3129",
+    HTTP_PROXY: "http://127.0.0.1:3130",
+    http_proxy: "http://127.0.0.1:3131",
+    ALL_PROXY: "socks5://127.0.0.1:1080",
+    all_proxy: "socks5://127.0.0.1:1081",
+    NO_PROXY: "127.0.0.1,.fixture-no-proxy.test",
+    no_proxy: ".fixture-lower-no-proxy.test",
+  };
+  const fixed = ["CODEX_HOME", "HOME", "PATH", "RUST_LOG"];
+  const unrelated = { FTP_PROXY: "http://127.0.0.1:2121", OPENCLAW_UNRELATED: "1" };
+  const openShellCa = { SSL_CERT_FILE: "/run/openshell/ca-bundle.crt" };
+  const explicitProxy = codexLaunchEntrypoint({
+    providerOwned: true,
+    protected: false,
+    explicitProxy: true,
+  });
+  for (const [name, entrypoint, environment, expected] of [
     [
-      "a provider 5xx",
-      failedWith("unexpected status 502: upstream"),
-      "turn-failed",
-      { status: 502 },
-    ],
-    [
-      "the lowest provider 5xx",
-      failedWith("unexpected status 500"),
-      "turn-failed",
-      { status: 500 },
-    ],
-    [
-      "a provider server error",
-      erroredWith('{"error":{"type":"server_error"}}'),
-      "error-event",
-      { code: "server_error" },
-    ],
-    [
-      "an overloaded provider",
-      erroredWith('{"error":{"type":"overloaded_error"}}'),
-      "error-event",
-      { code: "overloaded_error" },
-    ],
-    ["a model at capacity", failedWith("Selected model is at capacity."), "turn-failed"],
-    [
-      "provider high demand",
-      failedWith("We're currently experiencing high demand, which may cause temporary errors."),
-      "turn-failed",
-    ],
-    [
-      "a dropped stream",
-      failedWith("stream disconnected before completion: response ended early"),
-      "turn-failed",
-    ],
-    [
-      "a transport error",
-      erroredWith("error sending request for url (https://api.openai.com/v1/responses)"),
-      "error-event",
-    ],
-    ["a failed connection", erroredWith("connection refused"), "error-event"],
-    // Codex's HTTP client names no cause for a failed connection, so a DNS or TLS
-    // failure reported this way cannot be told from a transient one.
-    [
-      "a failed connection that names no cause",
-      erroredWith("Connection failed: error sending request"),
-      "error-event",
-    ],
-    [
-      "a DNS lookup that may recover",
-      failedWith(
-        "stream disconnected before completion: failed to lookup address information: Try again",
-      ),
-      "turn-failed",
-    ],
-    ["a broken pipe", erroredWith("broken pipe"), "error-event"],
-    ["a reset connection", erroredWith("Connection reset by peer (os error 104)"), "error-event"],
-    [
-      "a closed connection",
-      erroredWith("connection closed before message completed"),
-      "error-event",
-    ],
-    [
-      "a failed connection that names its cause",
-      erroredWith("Connection failed: tcp connect error"),
-      "error-event",
-    ],
-    ["an unreachable provider", unreachable, "error-event"],
-    ["a killed probe", killed, "signal-SIGKILL", undefined, "PROCESS_EXIT"],
-    [
-      "a terminated probe",
-      probe([], { status: null, signal: "SIGTERM" }),
-      "signal-SIGTERM",
+      "an OpenShell launch keeps its probe environment",
       undefined,
-      "PROCESS_EXIT",
-    ],
-  ];
-  // Findings 1601 and 1602: each of these fails the same way again, even with a
-  // transient word in its text, so it is held at once without a second model call.
-  // The messages follow what the pinned Codex build prints for each failure.
-  const heldAtOnce = [
-    [
-      "a provider 404 that says overloaded",
-      failedWith(
-        "unexpected status 404 Not Found: overloaded, url: https://provider.example/v1/responses",
-      ),
-      "turn-failed",
-      { status: 404 },
+      { ...openShellCa, ...proxy, ...unrelated },
+      openShellCa,
     ],
     [
-      "a provider 402 with a server error body",
-      failedWith(
-        'unexpected status 402 Payment Required: {"error":{"type":"server_error"}}, url: https://provider.example/v1/responses',
-      ),
-      "turn-failed",
-      { status: 402, code: "server_error" },
+      "an explicit-proxy launch without proxy settings keeps the same environment",
+      explicitProxy,
+      { ...openShellCa, ...unrelated },
+      openShellCa,
     ],
+    ["an explicit proxy reaches the probe", explicitProxy, { ...proxy, ...unrelated }, proxy],
     [
-      // Codex prints a 400 as its bare body, without the status.
-      "a provider 400 body that says overloaded",
-      failedWith(
-        '{"error":{"message":"the server is overloaded","type":"invalid_request_error","code":"server_error"}}',
-      ),
-      "turn-failed",
-      { code: "server_error" },
+      "empty proxy settings stay out",
+      explicitProxy,
+      Object.fromEntries(Object.keys(proxy).map((key) => [key, ""])),
+      {},
     ],
-    [
-      "a content-filter stop",
-      failedWith(
-        "stream disconnected before completion: Incomplete response returned, reason: content_filter",
-      ),
-      "turn-failed",
+  ]) {
+    const runtime = createCodexStartup(t, { native: [login(), readyTurn], environment });
+    runtime.start(entrypoint);
+    runtime.assertNativeScriptConsumed();
+    assert.equal(runtime.probeSpawns.length, 1, name);
+    const [{ env }] = runtime.probeSpawns;
+    assert.deepEqual(Object.keys(env).sort(), [...fixed, ...Object.keys(expected)].sort(), name);
+    for (const [key, value] of Object.entries(expected)) {
+      assert.equal(env[key], value, name);
+    }
+    // The serving app-server inherits the Harness environment as before.
+    assert.equal(runtime.appServerSpawns.length, 1, name);
+    for (const [key, value] of Object.entries(environment)) {
+      assert.equal(runtime.appServerSpawns[0].env[key], value, name);
+    }
+    // No proxy value reaches a diagnostic line.
+    for (const value of Object.values(proxy)) {
+      assert.ok(!runtime.diagnostics.some((line) => line.includes(value)), name);
+    }
+  }
+});
+
+test("Compute preserves admitted Codex commands and forwards proxy settings on new provider launches", async (t) => {
+  const environment = {
+    HTTPS_PROXY: "http://127.0.0.1:3128",
+    https_proxy: "http://127.0.0.1:3129",
+    FTP_PROXY: "ignored",
+  };
+  for (const [label, implementation, legacy, forwards] of [
+    ["existing non-OpenShell Sandbox", "fixture-provider", true, false],
+    ["new non-OpenShell Sandbox", "fixture-provider", false, true],
+    ["new OpenShell Sandbox", "openshell", false, false],
+  ]) {
+    await t.test(label, async (t) => {
+      const fixture = providerEndpointFixture();
+      // The fixture's original revision was admitted for OpenShell. Its pre-marker
+      // provider snapshot is the same one non-OpenShell revisions used before this change.
+      const prior = fixture.revision.compute.admission;
+      assert.ok(prior?.endsWith("openshell-codex-launch:v1:"));
+      const legacyAdmission = prior.slice(0, -"openshell-codex-launch:v1:".length);
+      Object.assign(fixture.sandbox, { implementation });
+      const revision = {
+        ...fixture.revision,
+        compute: {
+          ...fixture.revision.compute,
+          admission: legacy ? legacyAdmission : fixture.driver.admitRevision(fixture.revision),
+        },
+      };
+      await fixture.prepare(revision);
+      fixture.setGatewayServing();
+      await fixture.prepare(revision);
+      assert.equal(fixture.provisions.length, 1);
+      const { command } = fixture.provisions[0].requirements;
+      if (legacy) {
+        // Retry must replay the entire old command, not merely omit a proxy.
+        // Full command captured from the same fixture on pre-proxy main (5563280bd8); it
+        // embeds the startup schema thresholds, so it moves with the pin.
+        assert.equal(
+          createHash("sha256").update(JSON.stringify(command)).digest("hex"),
+          "a7412cefc1b7f4cfa68243b92e3f9ea789376c9182e4291e1af2872c2bb216a0",
+          "a stored Sandbox must keep its admitted command byte for byte",
+        );
+      }
+      const { supervisor, codex } = inspectOpenShellCodexCommand(t, command, {
+        compact: false,
+        current: false,
+      });
+      const runtime = createCodexStartup(t, {
+        environment,
+        native: [
+          login(),
+          probe([
+            { type: "turn.started" },
+            { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+            { type: "turn.completed" },
+          ]),
+        ],
+      });
+      runtime.start(codex);
+      runtime.assertNativeScriptConsumed();
+      assert.equal(runtime.appServerStarts, 1);
+      const [{ env }] = runtime.probeSpawns;
+      assert.equal(env.HTTPS_PROXY, forwards ? environment.HTTPS_PROXY : undefined);
+      assert.equal(env.https_proxy, forwards ? environment.https_proxy : undefined);
+      assert.equal(env.FTP_PROXY, undefined);
+      if (forwards) {
+        // Observe both children of the delivered supervisor, before native code
+        // runs. Only Codex should inherit the provider's proxy, not the file worker.
+        const directory = await mkdtemp(join(tmpdir(), "codex-proxy-supervisor-"));
+        const observed = await startSupervisor(t, directory, {
+          entrypoint: supervisor,
+          env: { ...environment, OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup" },
+          child: [
+            "const [events, kind] = process.argv.slice(2);",
+            "const args = Object.keys(process.env).filter(key => /_proxy$/i.test(key)).sort();",
+            'require("node:fs").appendFileSync(events, JSON.stringify({ kind, args, pid: process.pid }) + "\\n");',
+            "setInterval(() => {}, 60_000);",
+          ],
+        });
+        const rows = await observed.waitFor("Codex and file worker reported proxy keys", (events) =>
+          ["codex", "node"].every((kind) => events.some((event) => event.kind === kind)),
+        );
+        assert.deepEqual(rows.find((row) => row.kind === "node")?.args, []);
+        assert.deepEqual(
+          rows.find((row) => row.kind === "codex")?.args,
+          Object.keys(environment).sort(),
+        );
+      }
+    });
+  }
+});
+
+test("a rejected Codex proxy credential stays out of diagnostics and the held failure", (t) => {
+  const sentinel = ["invented", "proxy", "password"].join("-");
+  const url = syntheticCredentialUrl({
+    protocol: "http",
+    username: "fixture",
+    password: sentinel,
+    host: "127.0.0.1",
+    port: 3128,
+    pathname: "/",
+  });
+  const message = "unexpected status 407 Proxy Authentication Required: " + url;
+  const runtime = createCodexStartup(t, {
+    environment: { HTTPS_PROXY: url },
+    native: [
+      login(),
+      probe([{ type: "turn.started" }, failedTurn(message)], { status: 1, stderr: message }),
     ],
-    [
-      "a rejected provider certificate",
-      erroredWith(
-        "stream disconnected before completion: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))",
-      ),
-      "error-event",
-    ],
-    [
-      "a provider host name that does not resolve",
-      erroredWith(
-        "stream disconnected before completion: failed to lookup address information: Name does not resolve",
-      ),
-      "error-event",
-    ],
-    [
-      "a provider host name with no address",
-      erroredWith(
-        "stream disconnected before completion: failed to lookup address information: Name has no usable address",
-      ),
-      "error-event",
-    ],
-    // The 4xx guard's bounds; a compatible endpoint may print the status.
-    [
-      "a provider 400 with its status that says overloaded",
-      failedWith(
-        "unexpected status 400 Bad Request: the server is overloaded, url: https://provider.example/v1/responses",
-      ),
-      "turn-failed",
-      { status: 400 },
-    ],
-    [
-      "the highest provider 4xx",
-      failedWith("unexpected status 499: overloaded"),
-      "turn-failed",
-      { status: 499 },
-    ],
-    // A credential marker vetoes a transient one, each on its own.
-    [
-      "a dropped stream naming auth",
-      erroredWith("stream disconnected before completion: auth token expired"),
-      "error-event",
-    ],
-    [
-      "a server error naming a forbidden request",
-      erroredWith("server_error: forbidden by the workspace policy"),
-      "error-event",
-      { code: "server_error" },
-    ],
-    [
-      "an overload naming a credential",
-      erroredWith("overloaded: the credential was revoked"),
-      "error-event",
-    ],
-    [
-      "a dropped stream naming a 403 without its status",
-      erroredWith("stream disconnected before completion: upstream answered 403"),
-      "error-event",
-    ],
-    [
-      "a dropped stream naming the API key in any case",
-      erroredWith("stream disconnected before completion: Incorrect API key provided"),
-      "error-event",
-    ],
-    // Only a network wait for a failed connection is transient; any other Reconnecting
-    // notice the recovered-stream rule refused is held, even with a transient cause. These
-    // are boundary shapes the pinned build does not print, so a looser match fails here.
-    [
-      "a network wait for a provider 503",
-      erroredWith("Reconnecting... waiting for network (unexpected status 503)"),
-      "error-event",
-      { status: 503 },
-    ],
-    [
-      "a network wait that does not start the notice",
-      erroredWith(`Error: ${networkWait().message}`),
-      "error-event",
-    ],
-    [
-      "a network wait with text after its cause",
-      erroredWith(`${networkWait().message} after 3 tries`),
-      "error-event",
-    ],
-    [
-      "a network wait for a failed connection naming a credential",
-      erroredWith(networkWait("Connection failed: invalid credential").message),
-      "error-event",
-    ],
-    // Finding 1621: a cause other than the pinned text may be permanent, so it is held.
-    ...[
-      "Connection failed: invalid URL, scheme is not http",
-      "Connection failed: builder error",
-      "Connection failed: error sending request for url (https://provider.example/v1/responses)",
-      "Connection failed: blocked by policy",
-    ].map((cause) => [
-      `a network wait for "${cause}"`,
-      erroredWith(networkWait(cause).message),
-      "error-event",
-    ]),
-  ];
+  });
+  runtime.start(
+    codexLaunchEntrypoint({ providerOwned: true, protected: false, explicitProxy: true }),
+  );
+  runtime.assertNativeScriptConsumed();
+  assert.equal(runtime.appServerStarts, 0);
+  assert.equal(runtime.probeSpawns[0].env.HTTPS_PROXY, url);
+  const failure = runtime.status().runtimeFailure;
+  assert.equal(failure?.code, "MODEL_PROBE_FAILED");
+  assert.deepEqual(failure.cause, { kind: "PROBE_STATUS", detail: "turn-failed" });
+  assert.ok(!(JSON.stringify(failure) + runtime.diagnostics.join("\n")).includes(sentinel));
+});
+
+test("Codex runtime retries a transient startup model probe failure once", async (t) => {
+  const killed = probe([], { status: null, signal: "SIGKILL" });
   const scenarios = [
-    ...heldAtOnce.map(([description, first, detail, provider]) => ({
-      name: `${description} is held at once, with no second probe`,
-      native: [login(), first],
-      expect: probeFailure({ kind: "PROBE_STATUS", detail }, provider),
-    })),
-    ...transient.map(([description, first]) => ({
-      name: `${description} recovers on the second attempt`,
-      native: [login(), first, success],
-      retryAfterMs: 1000,
-      expect: ready,
-      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
-    })),
-    ...transient.map(([description, first, detail, provider, kind = "PROBE_STATUS"]) => ({
-      name: `${description} twice holds the second cause, marked as retried`,
-      native: [login(), first, first],
-      retryAfterMs: 1000,
-      expect: probeFailure({ kind, detail: `${detail}-attempt2` }, provider),
-      lastProbeCause: { kind, detail },
-      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
-    })),
-    {
-      name: "a deterministic second attempt holds its own cause, marked as retried",
-      native: [
-        login(),
-        failedWith("unexpected status 503"),
-        probe([started, { type: "item.completed", item: { type: "command_execution" } }]),
-      ],
-      retryAfterMs: 1000,
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event-attempt2" }),
-      lastProbeCause: { kind: "PROBE_STATUS", detail: "tool-event" },
-      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
-    },
-    {
-      name: "a transient failure then a credential rejection is an authentication failure",
-      native: [
-        login(),
-        killed,
-        probe([started, failedTurn("unexpected status 401 Unauthorized: Incorrect API key")], {
-          status: 1,
-        }),
-      ],
-      retryAfterMs: 1000,
-      expect: { ...probeFailure(), code: "AUTHENTICATION_FAILED" },
-      probeCodes: ["MODEL_PROBE_FAILED", "AUTHENTICATION_FAILED"],
-    },
-    // Within one attempt, a later deterministic failure vetoes an earlier transient one.
-    {
-      name: "a transient error then a tool event in the same attempt holds the tool event",
-      native: [
-        login(),
-        probe([
-          started,
-          errorEvent("unexpected status 503"),
-          { type: "item.completed", item: { type: "command_execution" } },
-        ]),
-      ],
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event" }),
-    },
-    {
-      name: "a transient error then a rate limit in the same attempt holds the rate limit",
-      native: [
-        login(),
-        probe(
-          [
-            started,
-            errorEvent("unexpected status 503"),
-            failedTurn("exceeded retry limit, last status: 429 Too Many Requests"),
-          ],
-          { status: 1 },
-        ),
-      ],
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "rate_limit" }, { status: 429 }),
-    },
-    {
-      name: "a transient error then a credential rejection in the same attempt is an authentication failure",
-      native: [
-        login(),
-        probe(
-          [
-            started,
-            errorEvent("unexpected status 503"),
-            failedTurn("unexpected status 401 Unauthorized: Incorrect API key"),
-          ],
-          { status: 1 },
-        ),
-      ],
-      expect: { ...probeFailure(), code: "AUTHENTICATION_FAILED" },
-    },
-    {
-      name: "a transient error then a completed reply in the same attempt is still retried",
-      native: [
-        login(),
-        probe([started, errorEvent("unexpected status 503"), assistant, completed]),
-        success,
-      ],
-      retryAfterMs: 1000,
-      expect: ready,
-      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
-    },
-    // Finding 1622: Codex reconnects after a network wait on its own, so a wait inside the
-    // turn of an attempt that exits answered passes, like a recovered stream notice.
-    {
-      name: "network waits then a completed reply in the same attempt pass",
-      native: [login(), probe([started, networkWait(), networkWait(), assistant, completed])],
-      expect: ready,
-    },
-    ...[
-      ["a network wait before the turn", [networkWait(), started, assistant, completed]],
-      [
-        "a failed turn with the network wait text",
-        [started, failedTurn(networkWait().message), assistant, completed],
-        undefined,
-        "turn-failed",
-      ],
-      [
-        // A made-up shape: only an error event's own text is a network wait.
-        "a failed turn naming the network wait beside a transient error",
-        [
-          started,
-          { ...failedTurn("unexpected status 503"), message: networkWait().message },
-          assistant,
-          completed,
-        ],
-        undefined,
-        "turn-failed",
-      ],
-      [
-        "a network wait and a transient error",
-        [started, errorEvent("unexpected status 503"), networkWait(), assistant, completed],
-      ],
-      ["a network wait then a completed turn with no reply", [started, networkWait(), completed]],
-      [
-        "a network wait then a blank reply",
-        [
-          started,
-          networkWait(),
-          { type: "item.completed", item: { type: "agent_message", text: "  " } },
-          completed,
-        ],
-      ],
-      [
-        // A made-up shape: one turn reported complete twice is not an answer.
-        "a network wait then a turn completed twice",
-        [started, networkWait(), assistant, completed, completed],
-      ],
-      [
-        "a network wait then a reply after the turn",
-        [started, networkWait(), completed, assistant],
-      ],
-      [
-        "a network wait then a reply from a failed process",
-        [started, networkWait(), assistant, completed],
-        { status: 1 },
-      ],
-      [
-        // Held as the network wait, not as the kill that ended the process.
-        "a network wait then a reply from a terminated process",
-        [started, networkWait(), assistant, completed],
-        { status: null, signal: "SIGTERM" },
-      ],
-      [
-        "a network wait then a reply from a probe that overflowed its output",
-        [started, networkWait(), assistant, completed],
-        { error: { code: "ENOBUFS" } },
-      ],
-    ].map(([description, events, result, detail = "error-event"]) => ({
-      name: `${description} in one attempt is still retried`,
-      native: [login(), probe(events, result), success],
-      retryAfterMs: 1000,
-      expect: ready,
-      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
-      probeCauses: [{ kind: "PROBE_STATUS", detail }, undefined],
-    })),
-    {
-      name: "two transient failures in one attempt still get one retry",
-      native: [
-        login(),
-        probe([started, errorEvent("unexpected status 502"), failedTurn("broken pipe")], {
-          status: 1,
-        }),
-        failedWith("unexpected status 503"),
-      ],
-      retryAfterMs: 1000,
-      expect: probeFailure(
-        { kind: "PROBE_STATUS", detail: "turn-failed-attempt2" },
-        { status: 503 },
-      ),
-      lastProbeCause: { kind: "PROBE_STATUS", detail: "turn-failed" },
-      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
-      // The first attempt reports its first transient failure.
-      probeCauses: [
-        { kind: "PROBE_STATUS", detail: "error-event" },
-        { kind: "PROBE_STATUS", detail: "turn-failed" },
-      ],
-    },
-    {
-      name: "two transient failures then a tool event in one attempt hold the tool event",
-      native: [
-        login(),
-        probe([
-          started,
-          errorEvent("unexpected status 502"),
-          errorEvent("broken pipe"),
-          { type: "item.completed", item: { type: "command_execution" } },
-        ]),
-      ],
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event" }),
-    },
-    // A recovered stream notice is never a transient failure, before or after one.
-    ...[
-      ["before", [recoveredNotice, errorEvent("unexpected status 503")]],
-      ["after", [errorEvent("unexpected status 503"), recoveredNotice]],
-    ].map(([order, events]) => ({
-      name: `a recovered stream notice ${order} a transient error is still retried`,
-      native: [login(), probe([started, ...events, assistant, completed]), success],
-      retryAfterMs: 1000,
-      expect: ready,
-      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
-      probeCauses: [{ kind: "PROBE_STATUS", detail: "error-event" }, undefined],
-    })),
-    {
-      name: "a transient failure then a timeout holds the timeout",
-      native: [login(), failedWith("unexpected status 503"), probe([], timedOut, 30000)],
-      retryAfterMs: 1000,
-      expect: { ...probeFailure(), code: "MODEL_PROBE_TIMEOUT" },
-      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_TIMEOUT"],
-    },
-    {
-      // The one retry is shared: a timeout spends it, so a transient failure after it holds.
-      name: "a timeout then a transient failure holds without a second retry",
-      native: [login(), probe([], timedOut, 30000), failedWith("unexpected status 503")],
-      retryAfterMs: 1000,
-      expect: probeFailure(
-        { kind: "PROBE_STATUS", detail: "turn-failed-attempt2" },
-        { status: 503 },
-      ),
-      lastProbeCause: { kind: "PROBE_STATUS", detail: "turn-failed" },
-      probeCodes: ["MODEL_PROBE_TIMEOUT", "MODEL_PROBE_FAILED"],
-    },
-    {
-      name: "a transient retry gets only the remaining budget",
-      native: [login(), failedWith("unexpected status 503", 40000), probe([], timedOut, 20000)],
-      retryAfterMs: 1000,
-      expect: { ...probeFailure(), code: "MODEL_PROBE_TIMEOUT" },
-      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_TIMEOUT"],
-    },
-    {
-      name: "a transient failure with no budget left for a retry holds at once",
-      native: [login(), failedWith("unexpected status 503", 60500)],
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
-    },
-    {
-      // The retry waits one second, so exactly one second left is not enough.
-      name: "a transient failure with exactly the retry delay left holds at once",
-      native: [login(), failedWith("unexpected status 503", 60000)],
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
-    },
-    {
-      // A transient event the attempt saw is its failure, even when the attempt then timed out.
-      name: "a transient error then a timeout in the same attempt is retried as transient",
-      native: [
-        login(),
-        probe([started, errorEvent("unexpected status 503")], timedOut, 30000),
-        success,
-      ],
-      retryAfterMs: 1000,
-      expect: ready,
-      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
-    },
+    ...transientProbeRetryCases({ killed, ready, probeFailure }),
     {
       // Only a detail token is marked as retried; a cause with no detail keeps none.
       name: "a wrapper error after a transient failure holds a cause with no detail",
@@ -1288,154 +984,14 @@ test("Codex runtime retries a reliability failure of its login or model check, n
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
   const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
   const success = probe([started, assistant, completed]);
-  // Codex exits 1 before printing any event: the 2017 model check shape.
-  const exited = (stderr, result) => probe([], { status: 1, stderr, ...result });
-  const exitCause = (detail) => ({ kind: "PROCESS_EXIT", detail });
-  const exitFailure = (detail) => probeFailure(exitCause(detail));
   await registerCodexPatLoginRetryCases(t, { success, ready, loginFailure });
-  const probeScenarios = [
-    {
-      name: "a model check that exits with a network failure then succeeds retries once",
-      native: [login(), exited("Error: error sending request for url"), success],
-      retryAfterMs: 1000,
-      expect: ready,
-      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
-      probeFailureClasses: ["network", undefined],
-    },
-    {
-      name: "a model check that exits with a 5xx then succeeds retries once",
-      native: [login(), exited("Error: unexpected status 503 Service Unavailable"), success],
-      retryAfterMs: 1000,
-      expect: ready,
-      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
-      probeFailureClasses: ["http_5xx", undefined],
-    },
-    {
-      name: "a model check that exits with a network failure twice holds the second exit",
-      native: [login(), exited("connection refused"), exited("connection refused")],
-      retryAfterMs: 1000,
-      expect: exitFailure("exit-1-attempt2"),
-      lastProbeCause: exitCause("exit-1"),
-      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
-      probeFailureClasses: ["network", "network"],
-    },
-    {
-      name: "a model check retry waits at most half again its base delay",
-      random: 0.999,
-      native: [login(), exited("connection reset by peer"), success],
-      retryAfterMs: 1500,
-      retryDelayMs: 1500,
-      expect: ready,
-      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
-    },
-    {
-      // The jittered delay must fit in the 61 s budget too.
-      name: "a model check without a second left after its jittered delay is held at once",
-      random: 0.999,
-      native: [login(), probe([], { status: 1, stderr: "connection refused" }, undefined, 58600)],
-      expect: exitFailure("exit-1"),
-    },
-    ...[
-      ["a 401", "Error: unexpected status 401 Unauthorized", "http_401_403"],
-      ["a 403", "Error: unexpected status 403 Forbidden", "http_401_403"],
-      ["a rate limit", "Error: last status: 429 Too Many Requests", "http_other"],
-      ["a TLS failure", "invalid peer certificate: UnknownIssuer", "tls"],
-      ["a TLS failure beside network text", "error sending request: tls handshake eof", "tls"],
-      [
-        "a proxy 5xx naming a certificate",
-        "Error: unexpected status 502 Bad Gateway: upstream certificate verify failed",
-        "http_5xx",
-      ],
-      [
-        "a proxy 5xx naming a TLS handshake",
-        "unexpected status 503: tls handshake eof",
-        "http_5xx",
-      ],
-      ["a proxy 5xx naming an unknown issuer", "status 502: unknown issuer", "http_5xx"],
-      [
-        "a quoted credential rejection beside network text",
-        'error sending request: "status 401 Unauthorized"',
-        "network",
-      ],
-      [
-        "an unresolvable host",
-        "failed to lookup address information: Name does not resolve",
-        "network",
-      ],
-      ["unrecognized output", "something else went wrong", "unknown"],
-      ["no output", "", "empty"],
-    ].map(([description, stderr, failureClass]) => ({
-      name: `a model check that exits with ${description} is held at once`,
-      native: [login(), exited(stderr)],
-      expect: exitFailure("exit-1"),
-      probeFailureClasses: [failureClass],
-    })),
-    {
-      // Only a Codex exit is classified this way; a wrapper-side process error is not.
-      name: "a model check whose output overflowed is held at once, whatever its class",
-      native: [login(), exited("connection refused", { status: null, error: { code: "ENOBUFS" } })],
-      expect: exitFailure("error-ENOBUFS"),
-      probeFailureClasses: ["network"],
-    },
-    // A security class vetoes the timeout and transient retries too.
-    {
-      name: "a model check timeout whose output names a 401 is held at once",
-      native: [
-        login(),
-        probe([], { ...timedOut, stderr: "unexpected status 401 Unauthorized" }, 30000),
-      ],
-      expect: probeTimeout,
-      probeFailureClasses: ["http_401_403"],
-    },
-    {
-      name: "a transient model check failure whose output names a 403 is held at once",
-      native: [
-        login(),
-        probe([started, failedTurn("unexpected status 502: upstream")], {
-          status: 1,
-          stderr: "unexpected status 403 Forbidden",
-        }),
-      ],
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 502 }),
-      probeFailureClasses: ["http_401_403"],
-    },
-    {
-      name: "a transient model check failure whose output names a usage limit is held at once",
-      native: [
-        login(),
-        probe([started, failedTurn("unexpected status 503")], {
-          status: 1,
-          stderr: "usage limit reached",
-        }),
-      ],
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
-      probeFailureClasses: ["http_5xx"],
-    },
-    {
-      // The second attempt must get at least a second after the delay.
-      name: "a model check with less than a second left after its delay is held at once",
-      native: [login(), probe([], { status: 1, stderr: "connection refused" }, undefined, 59100)],
-      expect: exitFailure("exit-1"),
-    },
-    {
-      // Finding 1599: a protected profile retries nothing, including a Codex exit whose
-      // output names a reliability class.
-      name: "a protected model check that exits with a network failure is held at once",
-      protectedInference: "signed",
-      native: [login(), exited("Error: error sending request for url")],
-      expect: exitFailure("exit-1"),
-      probeCodes: ["MODEL_PROBE_FAILED"],
-      probeFailureClasses: ["network"],
-    },
-    {
-      name: "a model check timeout then a network exit holds without a second retry",
-      native: [login(), probe([], timedOut, 30000), exited("connection refused")],
-      retryAfterMs: 1000,
-      expect: exitFailure("exit-1-attempt2"),
-      lastProbeCause: exitCause("exit-1"),
-      probeCodes: ["MODEL_PROBE_TIMEOUT", "MODEL_PROBE_FAILED"],
-    },
-  ];
+  const probeScenarios = modelProbeReliabilityCases({
+    started,
+    success,
+    ready,
+    probeFailure,
+    probeTimeout,
+  });
   for (const scenario of probeScenarios) {
     // checkCodexStartup is async since protected startup awaits its release.
     await t.test(scenario.name, (t) => checkCodexStartup(t, scenario));

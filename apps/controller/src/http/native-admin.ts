@@ -5,7 +5,6 @@ import type {
   AuthorizationEvidence,
   ComputeDriver,
   IAMDriver,
-  OccApiRoute,
 } from "@openclaw-enterprise/contracts";
 import {
   NoActiveAgentRevisionError,
@@ -93,6 +92,8 @@ interface NativeAdminProxyResolution {
   readonly revisionId: string;
   readonly target: NativeAdminTarget;
   readonly gatewayBase: string;
+  readonly trustedHeaders: Readonly<Record<string, string>>;
+  readonly nativeSubject: string;
 }
 
 interface NativeAdminProxyDenial {
@@ -109,6 +110,8 @@ interface NativeAdminProxyDenial {
   // The signed-in person has no platform identity, so no grant was checked: the JSON refusal
   // stays generic. It is decided before the host, so it tells nothing about the Agent.
   readonly unprovisioned?: true;
+  // The caller's Agent access was established before its stopped or unsupported state was read.
+  readonly accessEstablished?: true;
   readonly evidence?: AuthorizationEvidence;
   readonly authorization?: NonNullable<AuthorizationDeniedError["authorization"]>;
 }
@@ -126,15 +129,14 @@ export const nativeAdminStatusOperation = {
   authorizationTarget: "agent",
   summary: "Resolve native admin UI launch availability for one Agent",
   tags: ["Agents"],
-  schema: {},
-} as unknown as OccApiRoute;
+} as const;
 export const nativeAdminReturnOperation = {
   ...nativeAdminStatusOperation,
   operationId: "resolveAgentNativeAdminReturn",
   path: "/native-admin/return/:agentKey",
   action: "openclaw.agents.native_admin.return",
   summary: "Resolve an authorized Agent from a copied native chat link",
-} as unknown as OccApiRoute;
+} as const;
 
 const nativeAdminParamsSchema = {
   type: "object",
@@ -291,6 +293,7 @@ function sendNativeAdminHtmlRefusal(
   reply: FastifyReply,
   title: string,
   body: string,
+  status = 403,
 ): void {
   reply
     .header("cache-control", "no-store")
@@ -298,7 +301,7 @@ function sendNativeAdminHtmlRefusal(
     .header("x-content-type-options", "nosniff")
     .header("referrer-policy", "no-referrer")
     .header("x-request-id", request.id)
-    .code(403)
+    .code(status)
     .type("text/html; charset=utf-8")
     .send(
       `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`,
@@ -332,14 +335,14 @@ export const nativeAdminLaunchOperation = {
   path: `${nativeAdminStatusOperation.path}/launch`,
   action: "openclaw.agents.native_admin.launch",
   summary: "Create a browser-bound native Agent launch",
-} as unknown as OccApiRoute;
+} as const;
 export const nativeAdminConfirmOperation = {
   ...nativeAdminLaunchOperation,
   operationId: "confirmAgentNativeAdmin",
   path: `${nativeAdminStatusOperation.path}/confirm`,
   action: "openclaw.agents.native_admin.confirm",
   summary: "Confirm a native Agent browser challenge",
-} as unknown as OccApiRoute;
+} as const;
 export function nativeAdminLaunchSchema(confirm: boolean): FastifySchema {
   return {
     operationId: confirm
@@ -417,11 +420,6 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   } = options;
   const exchangeMode = options.nativeAdmin?.sessionMode === "host-only-exchange";
   const nativeBrowser = options.auth?.nativeBrowser;
-  if (options.nativeAdmin && Object.hasOwn(options.nativeAdmin, "sharedCookieDomain")) {
-    throw new Error(
-      "nativeAdmin.sharedCookieDomain was removed; the shared cookie domain is derived from the Console and Agent domains.",
-    );
-  }
   const nativeAdminDomain = normalizeNativeAdminDomain(options.nativeAdmin?.domain);
   if (options.nativeAdmin?.enabled === true) {
     if (publicOrigin === undefined) {
@@ -581,6 +579,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
               ? {}
               : { closeReason: socketEvent.closeReason }),
             parentSessionId: resolution.parentSessionId,
+            subject: resolution.nativeSubject,
             mode: resolution.mode,
             revisionId: resolution.revisionId,
             host: resolution.target.host,
@@ -830,6 +829,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         gatewayBase: resolution.gatewayBase,
         agentOrigin: resolution.target.origin,
         apiKey,
+        trustedHeaders: resolution.trustedHeaders,
       };
     } catch {
       return undefined;
@@ -852,7 +852,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         readonly status: "unsupported";
         readonly reason: "not-enabled" | "configuration" | "compute";
       } & NativeAdminTargetStatus)
-    | ({ readonly status: "available"; readonly gatewayBase: string } & NativeAdminTargetStatus);
+    | ({
+        readonly status: "available";
+        readonly gatewayBase: string;
+        readonly trustedHeaders: Readonly<Record<string, string>>;
+        readonly nativeSubject: string;
+      } & NativeAdminTargetStatus);
 
   // An exclusive Compute Driver stops the active revision's workload before a newer
   // revision starts, so nothing serves until that revision activates. If it fails, the
@@ -949,15 +954,25 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       warnComputeOwnerMismatch(revision, compute);
       throw dependencyUnavailable();
     }
-    const endpoint =
-      mode === "admin"
-        ? compute.getGatewayEndpoint?.(revision)
-        : compute.getGatewayChatEndpoint?.(revision);
-    const gatewayBase = nativeAdminGatewayHttpBase(endpoint ?? "");
-    if (gatewayBase === undefined) {
+    const transport = await compute.getGatewayBrowserRequest?.(
+      revision,
+      { installationId, principalId: input.actorId, mode },
+      AbortSignal.timeout(NATIVE_ADMIN_PROXY_ADMISSION_TIMEOUT_MS),
+    );
+    const gatewayBase = nativeAdminGatewayHttpBase(transport?.endpoint ?? "");
+    if (transport === undefined || gatewayBase === undefined) {
       return { status: "unsupported", reason: "compute", agent, revision, target, mode };
     }
-    return { status: "available", agent, revision, target, gatewayBase, mode };
+    return {
+      status: "available",
+      agent,
+      revision,
+      target,
+      gatewayBase,
+      mode,
+      trustedHeaders: transport.headers,
+      nativeSubject: transport.subject,
+    };
   }
 
   async function resolveNativeAdminAgentHost(
@@ -1006,7 +1021,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (!controller) {
       throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
-    const availability = await resolveNativeAdminAvailability(input);
+    return requireAvailable(await resolveNativeAdminAvailability(input), input);
+  }
+
+  function requireAvailable(
+    availability: NativeAdminAvailability,
+    input: { readonly expectedHost?: string; readonly expectedRevisionId?: string },
+  ) {
     if (availability.status === "disabled") {
       throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
@@ -1582,13 +1603,29 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return nativeAdminProxyDenial("revision_changed");
     }
     try {
-      const resolved = await requireAvailableNativeAdminTarget({
+      const target = {
         actorId: currentActor,
         namespaceId: agent.namespaceId,
         agentId: agent.id,
         expectedHost: hostname,
         ...(requiredRevisionId === undefined ? {} : { expectedRevisionId: requiredRevisionId }),
-      });
+      };
+      // Resolution authorizes first, so only an authorized caller learns that a deployment is
+      // replacing or activating the version. Stopped and unsupported Agents keep agent_unavailable.
+      const availability = await resolveNativeAdminAvailability(target);
+      if (availability.status === "unavailable") {
+        return nativeAdminProxyDenial("agent_transition");
+      }
+      let resolved: ReturnType<typeof requireAvailable>;
+      try {
+        resolved = requireAvailable(availability, target);
+      } catch (error) {
+        const reason = nativeAdminFailureReason(error);
+        return nativeAdminProxyDenial(
+          reason,
+          reason === "agent_unavailable" ? { accessEstablished: true } : {},
+        );
+      }
       const requestAuthority = nativeAdminAuthority(request.headers.host);
       if (requestAuthority !== new URL(resolved.target.origin).host.toLowerCase()) {
         return nativeAdminProxyDenial("session_invalid");
@@ -1604,6 +1641,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         revisionId: resolved.revision.id,
         target: resolved.target,
         gatewayBase: resolved.gatewayBase,
+        trustedHeaders: resolved.trustedHeaders,
+        nativeSubject: resolved.nativeSubject,
       };
     } catch (error) {
       // A dependency outage (IAM or State) is not a denial, though its error class extends
@@ -1658,9 +1697,24 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
     const operation = startNativeAdminAdmission(request.raw, hostname, "http");
     const admission = await boundedNativeAdminAdmission(operation.result);
+    const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
+    const documentNavigation = browserDocumentNavigation(request, nativeAdminPathname(request.url));
+    // The console opens this host's Agent again from its key, after sign-in when needed.
+    const consoleUrl =
+      agentKey !== undefined &&
+      hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
+      publicOrigin !== undefined &&
+      documentNavigation
+        ? new URL(`/console/#native-agent=${agentKey}`, publicOrigin)
+        : undefined;
     if (!isNativeAdminProxyResolution(admission)) {
       httpAdmissionReasons.set(request, admission?.reason ?? "admission_unavailable");
-      if (admission === undefined || admission.reason === "dependency_failure") {
+      // A deployment in progress is temporary, like an outage: the Agent UI keeps reconnecting.
+      if (
+        admission === undefined ||
+        admission.reason === "dependency_failure" ||
+        admission.reason === "agent_transition"
+      ) {
         canonicalFailure(reply, dependencyUnavailable());
         return true;
       }
@@ -1669,21 +1723,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         canonicalFailure(reply, dependencyUnavailable());
         return true;
       }
-      const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
-      const documentNavigation = browserDocumentNavigation(
-        request,
-        nativeAdminPathname(request.url),
-      );
       if (
-        agentKey !== undefined &&
-        hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
-        admission?.reason === "session_invalid" &&
-        options.nativeAdmin?.enabled === true &&
-        publicOrigin !== undefined &&
-        documentNavigation
+        consoleUrl !== undefined &&
+        admission.reason === "session_invalid" &&
+        options.nativeAdmin?.enabled === true
       ) {
-        const consoleUrl = new URL("/console/", publicOrigin);
-        consoleUrl.hash = `native-agent=${agentKey}`;
         if (userActivated(request)) {
           reply
             .header("cache-control", "no-store")
@@ -1701,20 +1745,26 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         );
         return true;
       }
-      if (
-        agentKey !== undefined &&
-        hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
-        admission?.reason === "revision_changed" &&
-        publicOrigin !== undefined &&
-        documentNavigation
-      ) {
-        const consoleUrl = new URL("/console/", publicOrigin);
-        consoleUrl.hash = `native-agent=${agentKey}`;
+      // Only a caller whose Agent access was established learns that it is unavailable. The
+      // sentence is the same whether it is stopped, being deleted or unsupported.
+      const agentPage =
+        admission.reason === "revision_changed"
+          ? {
+              title: "Agent version changed",
+              text: "This Agent has a new version. Open it again from the console.",
+            }
+          : admission.reason === "agent_unavailable" && admission.accessEstablished === true
+            ? {
+                title: "Agent unavailable",
+                text: "This Agent is not available right now. Open it from the console.",
+              }
+            : undefined;
+      if (consoleUrl !== undefined && agentPage !== undefined) {
         sendNativeAdminHtmlRefusal(
           request,
           reply,
-          "Agent version changed",
-          `<p>This Agent has a new version. Open it again from the console.</p><p><a href="${escapeHtml(consoleUrl.href)}">Return to console</a></p>`,
+          agentPage.title,
+          `<p>${agentPage.text}</p><p><a href="${escapeHtml(consoleUrl.href)}">Return to console</a></p>`,
         );
         return true;
       }
@@ -1722,7 +1772,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       // accounts) stays on 403. The page names no Agent and links to their Agents list.
       // API reads keep the JSON refusal.
       if (
-        admission?.reason === "authorization_denied" &&
+        admission.reason === "authorization_denied" &&
         publicOrigin !== undefined &&
         documentNavigation
       ) {
@@ -1759,7 +1809,20 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       canonicalFailure(reply, dependencyUnavailable());
       return true;
     }
-    await streamNativeAdminHttp({ request, reply, context });
+    if ((await streamNativeAdminHttp({ request, reply, context })) === "gateway_unavailable") {
+      // Admitted, but the Gateway gave no answer: it refused or reset the connection, or timed out.
+      if (consoleUrl === undefined) {
+        canonicalFailure(reply, dependencyUnavailable());
+      } else {
+        sendNativeAdminHtmlRefusal(
+          request,
+          reply,
+          "Agent not responding",
+          `<p>This Agent is not responding right now. Try again in a moment, or open it from the console.</p><p><a href="${escapeHtml(consoleUrl.href)}">Return to console</a></p>`,
+          503,
+        );
+      }
+    }
     return true;
   }
 

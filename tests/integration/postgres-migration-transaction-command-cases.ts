@@ -1,4 +1,9 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import test, { type TestContext, type TestOptions } from "node:test";
 import type { Client, Pool } from "pg";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
@@ -15,6 +20,7 @@ export type MigrationCommandResult =
         | "MIGRATION_HISTORY_PENDING"
         | "MIGRATION_HISTORY_UNSUPPORTED"
         | "MIGRATION_HISTORY_NOT_EMPTY"
+        | "MIGRATION_REGISTRATION_PENDING"
         | "MIGRATION_FAILED";
     };
 
@@ -198,6 +204,116 @@ export function registerPostgresMigrationTransactionCommandCases({
         }
       }
       assert.deepEqual(await historySnapshot(db), snapshot);
+    },
+  );
+
+  test(
+    "The operator migration check rejects a misplaced separator without applying",
+    requiresHistoryPostgres,
+    async (context) => {
+      const fixture = await migrationHistoryFixture();
+      const db = await historyDatabase(context, fixture, "check_args");
+      const before = await historySnapshot(db);
+      const run = promisify(execFile);
+      const options = {
+        env: {
+          ...process.env,
+          NODE_ENV: "production",
+          OCC_MIGRATION_DATABASE_URL: db.migrationUrl,
+        },
+      };
+      // The documented direct invocation receives --check as its own argument.
+      const checked = await run(
+        process.execPath,
+        [...selectedImageMigrationEntry, "--check"],
+        options,
+      );
+      assert.match(checked.stdout, /"event":"migration.checked","history":"empty"/);
+      // An operator who adds the old task-runner separator must get a refusal, never an apply.
+      await assert.rejects(
+        run(process.execPath, [...selectedImageMigrationEntry, "--", "--check"], options),
+        (error: unknown) =>
+          error instanceof Error &&
+          "code" in error &&
+          error.code === 1 &&
+          "stderr" in error &&
+          typeof error.stderr === "string" &&
+          error.stderr.includes('"code":"MIGRATION_FAILED"'),
+      );
+      assert.deepEqual(await historySnapshot(db), before);
+    },
+  );
+
+  test(
+    "Cancelling the production migration process releases its database session",
+    requiresHistoryPostgres,
+    async (context) => {
+      const fixture = await migrationHistoryFixture();
+      const db = await historyDatabase(context, fixture, "cancel");
+      const url = new URL(db.migrationUrl);
+      await db.migrator.query("SELECT pg_advisory_lock(1868785005, 1835624306)");
+      // Hold the real migration lock until the command has a waiting PostgreSQL session.
+      const child = spawn(process.execPath, selectedImageMigrationEntry, {
+        stdio: "ignore",
+        env: { ...process.env, NODE_ENV: "production", OCC_MIGRATION_DATABASE_URL: url.toString() },
+      });
+      const exited = once(child, "exit");
+      const sessions = async () =>
+        (
+          await db.migrator.query(
+            "SELECT wait_event_type FROM pg_stat_activity WHERE datname = current_database() AND application_name LIKE $1",
+            ["oce-migration-%"],
+          )
+        ).rows;
+      async function until(predicate: () => Promise<boolean>, timeout: number) {
+        const deadline = Date.now() + timeout;
+        do {
+          if (await predicate()) {
+            return true;
+          }
+          await delay(25);
+        } while (Date.now() < deadline);
+        return false;
+      }
+      let exitTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        assert.equal(
+          await until(
+            async () =>
+              (await sessions()).some(({ wait_event_type }) => wait_event_type === "Lock"),
+            15_000,
+          ),
+          true,
+          "migration did not wait for the advisory lock",
+        );
+        child.kill("SIGTERM");
+        await delay(5);
+        child.kill("SIGTERM");
+        const exitDeadline = new Promise<never>((_, reject) => {
+          exitTimer = setTimeout(
+            () => reject(new Error("migration did not exit within 10 seconds after SIGTERM")),
+            10_000,
+          );
+        });
+        const [code, signal] = await Promise.race([exited, exitDeadline]);
+        assert.equal(code, 143);
+        assert.equal(signal, null);
+        assert.equal(
+          await until(async () => (await sessions()).length === 0, 2_000),
+          true,
+          "migration session survived caller cancellation",
+        );
+      } finally {
+        clearTimeout(exitTimer);
+        try {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+            await exited;
+          }
+        } finally {
+          await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
+        }
+      }
     },
   );
 

@@ -7,6 +7,7 @@ import { describe, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { formatBaselineRuntimeBuildNotice } from "../../scripts/ci/image-build-cache.ts";
 import {
   assertStderrMatch,
   fixtureImageCommands,
@@ -453,13 +454,31 @@ process.exit(73);
   // Finding 2103: a cold image build probe ran to a fixed 20 min, the build after it took 4 more
   // and the tests got 40 s. In a lane with a deadline the build keeps the reserve for the tests
   // and otherwise stops preparation with a message saying why.
-  for (const { scenario, aheadMs, probes, outcome } of [
+  for (const { scenario, aheadMs, probes, outcome, title } of [
     // The probe (a full build on a cache miss) outlasts the budget: no second build starts.
-    { scenario: "image-probe-hung", aheadMs: 6_000, probes: 1, outcome: "out-of-time" },
+    {
+      scenario: "image-probe-hung",
+      aheadMs: 6_000,
+      probes: 1,
+      outcome: "out-of-time",
+      title: "Current runtime image cache probe timed out",
+    },
     // The probe resolves an image the engine lacks, and the loading build outlasts the budget.
-    { scenario: "image-build-hung", aheadMs: 10_000, probes: 1, outcome: "absent" },
-    // Nothing is left of the budget when the build would start.
-    { scenario: "image-out-of-time", aheadMs: 0, probes: 0, outcome: "out-of-time" },
+    {
+      scenario: "image-build-hung",
+      aheadMs: 10_000,
+      probes: 1,
+      outcome: "absent",
+      title: "Current runtime image build timed out",
+    },
+    // Nothing is left of the budget when the probe would start.
+    {
+      scenario: "image-out-of-time",
+      aheadMs: 0,
+      probes: 0,
+      outcome: "out-of-time",
+      title: "Insufficient lane time to start the current runtime image cache probe",
+    },
   ] as const) {
     test(`image lanes stop when the image build runs out of the lane's time: ${scenario}`, async (t) => {
       const reserveMs = 2_000;
@@ -479,10 +498,7 @@ process.exit(73);
         prepared.stderr,
         /The runtime image did not finish building within this lane's time.*keeps 2 s before its deadline for the rest of preparation and its tests/,
       );
-      assert.match(
-        prepared.stdout,
-        /^::error title=Image build out of lane time::The runtime image /m,
-      );
+      assert.match(prepared.stdout, new RegExp(`^::error title=${title}::The runtime image `, "m"));
       assertStderrMatch(
         prepared.stderr,
         new RegExp(`"stage":"runtime-image-reuse","outcome":"${outcome}"`),
@@ -516,6 +532,13 @@ process.exit(73);
       await commands.cleanupSuccessfully();
     });
   }
+
+  test("formats the elapsed baseline runtime image build time", () => {
+    assert.equal(
+      formatBaselineRuntimeBuildNotice(3210),
+      "::notice title=Baseline runtime image build 3.2s::Elapsed time for the pinned upgrade image.\n",
+    );
+  });
 
   const warmCacheEnv = {
     GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
@@ -1047,7 +1070,7 @@ process.exit(73);
     assert.deepEqual(uncovered, []);
     for (const input of [
       ".dockerignore",
-      "scripts/ci/prepare.mjs",
+      "scripts/ci/prepare.ts",
       "scripts/ci/warm-image-cache.ts",
       "scripts/ci/image-build-cache.ts",
       "scripts/ci/fixture-support-images.ts",

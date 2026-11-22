@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { createServer as createSecureServer } from "node:https";
 import { createServer as createTcpServer, Socket } from "node:net";
 import { Writable } from "node:stream";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import type { TLSSocket } from "node:tls";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -24,7 +24,11 @@ import { selfSigned } from "../helpers/certificates.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 import {
+  type HarnessCall,
   close,
+  readHarnessRecord,
+  readRuntimeFailure,
+  type HarnessServer,
   listen,
   loadWebSocketPeer,
   upgradedSocket,
@@ -187,9 +191,9 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
     });
     const driver = new OpenShellSandboxDriver(
       {
-        gateway: { workspaceMode: "operator" },
+        integrationMode: "legacy",
+        gateway: {},
         kubernetes: {
-          runtimeClassName: "openshell-sandbox",
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {
             subPath: "workspace",
@@ -250,6 +254,7 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
         loginMode: harnessAuth.loginMode,
         image: "fixture-codex:0.164.0",
         command: ["codex", "app-server"],
+        retainedDirectories: [],
         workspaceMounts: [],
         environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
         files: [],
@@ -590,5 +595,215 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
       (error) => error === reason,
     );
     await Promise.all([rejected, ended]);
+  });
+}
+
+export interface CodexProcessResult {
+  status: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+export function codexProbeResult(failure?: string): CodexProcessResult {
+  const terminalEvents =
+    failure === undefined
+      ? [
+          { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+          { type: "turn.completed" },
+        ]
+      : [{ type: "turn.failed", error: { message: failure } }];
+  return {
+    status: failure === undefined ? 0 : 1,
+    stdout: [
+      { type: "thread.started", thread_id: "thread" },
+      { type: "turn.started" },
+      ...terminalEvents,
+    ]
+      .map((event) => JSON.stringify(event))
+      .join("\n"),
+  };
+}
+
+type CodexHeldExpected = {
+  check: "model-probe" | "login";
+  code: "MODEL_PROBE_FAILED" | "AUTHENTICATION_FAILED" | "LOGIN_FAILED";
+  cause?: { kind: "PROBE_STATUS"; detail: "turn-failed" };
+};
+
+type CodexHeldCase = readonly [
+  name: string,
+  options: { probe?: CodexProcessResult; login?: CodexProcessResult },
+  expected: CodexHeldExpected,
+];
+
+export function codexHeldCases(
+  failedModelProbe: CodexProcessResult,
+  rejectedModelProbe: CodexProcessResult,
+): readonly CodexHeldCase[] {
+  return [
+    [
+      "failed model probe",
+      { probe: failedModelProbe },
+      {
+        check: "model-probe",
+        code: "MODEL_PROBE_FAILED",
+        cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+      },
+    ],
+    [
+      "rejected model key",
+      { probe: rejectedModelProbe },
+      { check: "model-probe", code: "AUTHENTICATION_FAILED" },
+    ],
+    [
+      "failed login",
+      { login: { status: 1, stderr: "login failed" } },
+      { check: "login", code: "LOGIN_FAILED" },
+    ],
+  ];
+}
+
+export function assertCodexHeldFailure(
+  {
+    servers,
+    diagnostics,
+    appServerStarts,
+  }: {
+    servers: HarnessServer[];
+    diagnostics: string[];
+    appServerStarts: number;
+  },
+  expected: CodexHeldExpected,
+  token: string,
+  verifier: string,
+  call: HarnessCall,
+): void {
+  assert.equal(appServerStarts, 0, "a held failure never starts the app-server");
+  assert.ok(diagnostics.includes("Harness model authentication probe failed."));
+  const listening = servers.filter((server) => server.listening !== undefined);
+  assert.equal(listening.length, 1);
+  assert.ok(listening[0]);
+  assert.deepEqual(listening[0].listening, { port: 4500, host: "0.0.0.0" });
+  const { handler } = listening[0];
+  // A listen error is logged by code only and the wrapper keeps holding.
+  assert.ok(listening[0].onError);
+  listening[0].onError(
+    Object.assign(new Error("listen EADDRINUSE 0.0.0.0:4500"), {
+      code: "EADDRINUSE",
+    }),
+  );
+  assert.equal(diagnostics.at(-1), "Held runtime failure server failed: EADDRINUSE");
+
+  const answer = call(handler, { authorization: `Bearer ${token}` });
+  assert.equal(answer.status, 200);
+  assert.equal(answer.headers?.["cache-control"], "no-store");
+  const { checkedAt, ...failure } = readRuntimeFailure(answer.body);
+  assert.ok(typeof checkedAt === "string");
+  assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+  assert.deepEqual(failure, { component: "agent", ...expected });
+  assert.deepEqual(Object.keys(answer.body), ["runtimeFailure"]);
+  // Lower-case scheme is the same credential.
+  assert.equal(call(handler, { authorization: `bearer ${token}` }).status, 200);
+
+  for (const authorization of [
+    undefined,
+    "",
+    `Bearer ${token}x`,
+    `Bearer ${verifier}`,
+    `Basic ${token}`,
+    `Bearer  ${token}`,
+    `Bearer ${token} extra`,
+  ]) {
+    const refused = call(handler, { authorization });
+    assert.equal(refused.status, 401, String(authorization));
+    assert.deepEqual(refused.body, { error: "unauthorized" });
+  }
+  // The token is checked first: without it every other path and method is the same 401.
+  // With it, anything but the status read (such as the Agent Gateway's app-server
+  // upgrade on /) is told the Harness is unavailable and the held code, nothing more.
+  for (const request of [
+    { url: "/" },
+    { url: "/openclaw/runtime/diagnostics" },
+    { url: "/openclaw/plugin-runtime/status" },
+    { method: "POST" },
+  ]) {
+    const refused = call(handler, request);
+    assert.equal(refused.status, 401, JSON.stringify(request));
+    assert.deepEqual(refused.body, { error: "unauthorized" });
+    const unavailable = call(handler, { ...request, authorization: `Bearer ${token}` });
+    assert.equal(unavailable.status, 503, JSON.stringify(request));
+    assert.equal(unavailable.headers?.["cache-control"], "no-store");
+    assert.deepEqual(unavailable.body, { error: "runtime_failure_held", code: expected.code });
+  }
+}
+
+export async function assertHeldServiceHost(
+  t: TestContext,
+  held: HarnessServer | undefined,
+  token: string,
+  serviceUrl: string,
+): Promise<void> {
+  assert.ok(held?.real, "expected the real held failure server");
+  const real = held.real;
+  t.after(() => close(real));
+  if (!real.listening) {
+    await new Promise<void>((resolve) => real.once("listening", () => resolve()));
+  }
+  const address = real.address();
+  assert.ok(address !== null && typeof address !== "string", "expected a bound TCP server");
+  const heldPort = address.port;
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${heldPort}` });
+  const signal = AbortSignal.timeout(5_000);
+  const document = await client.getServiceDocument(
+    serviceUrl,
+    "/openclaw/runtime/status",
+    token,
+    signal,
+  );
+  assert.equal(document.status, 200);
+  assert.equal(readRuntimeFailure(readHarnessRecord(document.json)).code, "MODEL_PROBE_FAILED");
+  assert.deepEqual(
+    await client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", "other", signal),
+    { status: 401, json: { error: "unauthorized" } },
+  );
+  // The held wrapper is not a Codex app-server: no WebSocket handshake completes.
+  assert.equal(await client.serviceWebSocketHandshake(serviceUrl, token, signal), false);
+  // The Agent Gateway's own upgrade gets 503 naming the held code, not a missing route.
+  const upgrade = await new Promise<{ status: number | undefined; body: string }>(
+    (resolve, reject: (error: Error) => void) => {
+      const request = httpRequest({
+        host: "127.0.0.1",
+        port: heldPort,
+        path: "/",
+        headers: {
+          authorization: `Bearer ${token}`,
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-version": "13",
+          "sec-websocket-key": "AAAAAAAAAAAAAAAAAAAAAA==",
+        },
+        signal,
+      });
+      request.on("upgrade", (_response, socket) => {
+        socket.destroy();
+        reject(new Error("the held wrapper must not upgrade"));
+      });
+      request.on("response", (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: unknown) => {
+          assert.ok(Buffer.isBuffer(chunk), "expected an HTTP response buffer");
+          chunks.push(chunk);
+        });
+        response.on("end", () =>
+          resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }),
+        );
+      });
+      request.on("error", reject);
+      request.end();
+    },
+  );
+  assert.deepEqual(upgrade, {
+    status: 503,
+    body: JSON.stringify({ error: "runtime_failure_held", code: "MODEL_PROBE_FAILED" }),
   });
 }

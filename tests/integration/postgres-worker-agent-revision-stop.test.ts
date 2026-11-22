@@ -1921,7 +1921,8 @@ test(
     const siblingRevision = await fixture.revision(sibling, 1);
     let unavailable = true;
     let retirementAttempts = 0;
-    await fixture.start({
+    const events: WorkerEvent[] = [];
+    const compute: ComputeDriver = {
       ...fixture.compute,
       async retireRevision(target) {
         assert.equal(target.id, revision.id);
@@ -1931,13 +1932,21 @@ test(
         }
         await retirement.promise;
       },
-    });
+    };
+    await fixture.start(compute, { emit: (event) => events.push(checkedWorkerEvent(event)) });
     await Promise.all([
       fixture.work(revision, "succeeded"),
       fixture.work(siblingRevision, "succeeded"),
     ]);
     const deletion = await fixture.requestDeletion(owner);
     await fixture.work(deletion, "failed_permanent");
+    const completed = await completion(
+      events,
+      "the exhausted Agent deletion to log completion",
+      ({ event, workId }) => event === "worker.completed" && workId === deletion.idempotencyKey,
+    );
+    assert.equal(completed.result, "retry", "exhausted deletion completion result");
+    assert.equal(completed.outcome, "permanent", "exhausted deletion completion outcome");
     const observe = () =>
       fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
     const exhausted = required(await observe());
@@ -3137,6 +3146,75 @@ revisionTest(
         code === "REVISION_MAINTENANCE_SUPERSEDED" &&
         revisionId === revision.id,
     );
+  },
+);
+
+// The runtime resumes an interrupted turn only under the revision ID it was interrupted
+// under (finding 3347). That holds only if a stopped revision never runs again: its stale
+// maintenance must not prepare it, and the next start must be a new revision.
+revisionTest(
+  "a stopped revision never starts again under its own ID; the next start is a new revision",
+  async (fixture) => {
+    const owner = await fixture.agent("stop-no-same-revision");
+    const first = await fixture.revision(owner, 1);
+    const prepared: string[] = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, deploymentContext) {
+        if (revision.namespaceId === fixture.namespace.id) {
+          prepared.push(revision.id);
+        }
+        return fixture.compute.prepareRevision(revision, deploymentContext);
+      },
+    });
+    await fixture.work(first, "succeeded");
+    const stop = await fixture.requestStop(owner);
+    await fixture.work(stop, "succeeded");
+    const stopped = required(await fixture.currentAgent(owner));
+    assert.equal(stopped.desiredRuntimeState, "stopped");
+    assert.equal(stopped.activeRevisionId, undefined);
+    const preparedBeforeStop = [...prepared];
+
+    // Maintenance of the stopped revision, as a delayed or redelivered item would run it.
+    const staleMaintenance = async () => {
+      const item = {
+        id: first.id,
+        idempotencyKey: `agent_revision:${first.id}:maintenance:${randomUUID()}`,
+      };
+      await fixture.state.transactWithQueue((_unit, queue) =>
+        queue.enqueue({
+          idempotencyKey: item.idempotencyKey,
+          namespaceId: fixture.namespace.id,
+          agentId: owner.id,
+          revisionId: first.id,
+          actorId: fixture.actor.id,
+          availableAt: new Date(0),
+        }),
+      );
+      await fixture.work(item, "succeeded");
+      return required((await fixture.workResult(item)).rows[0]).reason_code;
+    };
+    // The observation the running revision had queued, if Stop left one, ends there too.
+    for (const row of (await fixture.advanceMaintenance(first)).rows) {
+      await fixture.work({ id: first.id, idempotencyKey: row.idempotency_key }, "succeeded");
+    }
+    assert.equal(await staleMaintenance(), "REVISION_MAINTENANCE_SUPERSEDED");
+    assert.deepEqual(prepared, preparedBeforeStop, "stopped maintenance never prepares");
+
+    const second = await fixture.revision(owner, 2);
+    await fixture.work(second, "succeeded");
+    assert.notEqual(second.id, first.id);
+    const running = required(await fixture.currentAgent(owner));
+    assert.equal(running.desiredRuntimeState, "running");
+    assert.equal(running.activeRevisionId, second.id);
+    assert.ok(!prepared.slice(preparedBeforeStop.length).includes(first.id));
+    assert.ok(prepared.slice(preparedBeforeStop.length).includes(second.id));
+
+    // Running again under the new revision does not revive the stopped one either.
+    const preparedAfterStart = [...prepared];
+    await staleMaintenance();
+    assert.ok(!prepared.slice(preparedAfterStart.length).includes(first.id));
+    assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, second.id);
   },
 );
 

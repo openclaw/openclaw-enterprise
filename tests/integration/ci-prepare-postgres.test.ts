@@ -10,7 +10,7 @@ import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
-const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
+const preparePath = join(repositoryRoot, "scripts/ci/prepare.ts");
 
 async function readJson(path: string): Promise<unknown> {
   const decoded: unknown = JSON.parse(await readFile(path, "utf8"));
@@ -43,6 +43,43 @@ function runPrepare(args: string[], env: NodeJS.ProcessEnv) {
     env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
   });
 }
+
+// These engine fixtures exercise stages after dependency admission.
+function allowDependencyPreflight(root: string) {
+  return writeCommand(root, "corepack", '[ "$*" = "pnpm exec node --version" ]');
+}
+
+test("PostgreSQL preparation rejects stale pnpm dependencies before starting a database", async (t) => {
+  const root = await temporaryDirectory(t, "ci-prepare-postgres-");
+  const statePath = join(root, "state.json");
+  const corepackLog = join(root, "corepack.log");
+  const dockerLog = join(root, "docker.log");
+  // Simulate pnpm refusing the checkout while permitting only the read-only probe.
+  const corepack = await writeCommand(
+    root,
+    "corepack",
+    `[ "$#" -eq 4 ] && [ "$1" = pnpm ] && [ "$2" = exec ] &&
+  [ "$3" = node ] && [ "$4" = --version ] || exit 99
+printf '%s\\n' 'ERR_PNPM_VERIFY_DEPS_BEFORE_RUN' 'Run "pnpm install"' >&2
+exit 1`,
+    { log: corepackLog },
+  );
+  const docker = await writeCommand(root, "docker", "exit 98", { log: dockerLog });
+
+  const result = await spawnResult(
+    process.execPath,
+    [preparePath, "--lane", "postgres-auth", "--state", statePath],
+    { env: { PATH: root, OCC_DOCKER_BIN: docker, OPENCLAW_CI_COREPACK_BIN: corepack } },
+  );
+
+  assert.ifError(result.error);
+  assert.equal(result.status, 1, result.stderr);
+  assert.deepEqual(await commandCalls(dockerLog), [], result.stderr);
+  assert.deepEqual(await commandCalls(corepackLog), ["pnpm exec node --version"]);
+  assert.match(result.stderr, /ERR_PNPM_VERIFY_DEPS_BEFORE_RUN/);
+  assert.match(result.stderr, /pnpm install/);
+  assert.deepEqual(await readResources(statePath), []);
+});
 
 const container = "a".repeat(64);
 const malformedPortResponse = "private-invalid-json";
@@ -86,6 +123,7 @@ esac`,
     const env = {
       ...process.env,
       OCC_DOCKER_BIN: engine,
+      OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
       TEST_BOOTSTRAP_ROOT: root,
       TEST_PODMAN_IDS_SET: podmanIds === undefined ? "0" : "1",
       TEST_PODMAN_IDS: podmanIds,
@@ -133,7 +171,7 @@ esac`,
         "--state",
         statePath,
         "--file",
-        "tests/integration/native-admin-session-postgres.test.mjs",
+        "tests/integration/native-admin-session-postgres.test.ts",
       ],
       { cwd: repositoryRoot, encoding: "utf8", env, timeout: 30_000 },
     );
@@ -176,7 +214,12 @@ for (const [failure, subnetExhaustion] of [
 esac`,
       { log },
     );
-    const env = { ...process.env, OCC_DOCKER_BIN: docker, TEST_DOCKER_FAILURE: failure };
+    const env = {
+      ...process.env,
+      OCC_DOCKER_BIN: docker,
+      OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
+      TEST_DOCKER_FAILURE: failure,
+    };
     const prepared = spawnSync(
       process.execPath,
       [preparePath, "--lane", "postgres-auth", "--state", statePath],
@@ -248,6 +291,7 @@ console.log("29.9.2");
     try {
       result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
         OCC_DOCKER_BIN: docker,
+        OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
         RUNNER_TEMP: runnerTemp,
         CI_TEST_STATE_DIRECTORY: stateDirectory,
       });
@@ -310,6 +354,7 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
       try {
         result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
           OCC_DOCKER_BIN: docker,
+          OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
           NODE_OPTIONS: `--import=${preload}`,
         });
       } finally {
@@ -394,6 +439,7 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
       try {
         result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
           OCC_DOCKER_BIN: docker,
+          OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
           NODE_OPTIONS: `--import=${preload}`,
         });
       } finally {

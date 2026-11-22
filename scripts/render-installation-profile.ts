@@ -1,4 +1,5 @@
 /// <reference lib="es2024.string" />
+import type { ChannelEgressOptions } from "../apps/controller/src/drivers/compute/kubernetes/channel-egress-policy.ts";
 import { oidcEnrollmentPolicy } from "../apps/controller/src/auth/oidc-enrollment.ts";
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
@@ -78,6 +79,7 @@ interface ChatGptValues {
   providerCidr: string;
 }
 interface SecretValues {
+  bootstrap: { adminEmail: string; credentials: { secretName: string } };
   database: { caSecretName?: string; caMountPath?: string };
   repositoryCredentials: RepositoryValues;
   backend?: { chatgpt: ChatGptValues };
@@ -104,11 +106,9 @@ interface ProfileValues extends SecretValues {
   installation: { name: string };
   auth: ExternalSignInValues & { baseUrl: string };
   agentNativeAdmin: { enabled: boolean; domain: string; sessionMode?: string };
-  bootstrap: { adminEmail: string; password: { claimName: string } };
   database: { cidrs: unknown[]; caSecretName?: string; caKey?: string; caMountPath?: string };
   api: {
     clients: { namespace: string; podLabels: InputRecord }[];
-    channelDirectoryProxyUrl?: string;
     modelDiscoveryCidrs: unknown[];
     trustedProxy?: { preset: string; cidrs: unknown[]; clientAddressHeader?: string };
   };
@@ -127,7 +127,8 @@ interface ProfileValues extends SecretValues {
     scraperPodLabels?: InputRecord;
   };
   logging: { collector: { enabled: boolean; exporter?: CollectorExporter } };
-  slackProxy?: { enabled: boolean };
+  channelEgress?:
+    (ChannelEgressOptions & { enabled: true; gatewayClassName: string }) | { enabled: false };
   publicGithubRead?: { enabled: boolean; clusterIP: string; upstreamCidrs: unknown[] };
 }
 interface KubernetesDriver {
@@ -163,7 +164,7 @@ interface ComputeConfiguration {
     transportSecretPrefix: string;
     modelProvider?: { protocol: unknown; baseUrl: string; supportsStandaloneWebSearch?: boolean };
     codexSeccompProfile?: string;
-    channels?: { proxyUrl: string; managedProxy?: NetworkPeer & { hostname: string } };
+    channelEgress?: ChannelEgressOptions;
   };
 }
 interface RenderedInstallation {
@@ -243,8 +244,7 @@ const secretKeyRule = {
   description: "a Kubernetes Secret key of at most 253 characters",
 };
 // Every image field takes a reference Kubernetes can pull, pinned to a lowercase SHA-256
-// digest. controllerImage and repository.image reach the chart, and the controller image
-// also feeds prepare-bootstrap-volume; runtime.image reaches only
+// digest. controllerImage and repository.image reach the chart; runtime.image reaches only
 // KubernetesComputeDriver (installation.yaml images.gateway and images.agent). The chart,
 // Compute and the image tools apply the same imageReferenceProblem rule.
 const digestImage = /@sha256:[a-f0-9]{64}$/;
@@ -260,30 +260,8 @@ function pullableImageReference(value: string) {
 }
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
-function isLiteralIpv4ProxyUrl(value: string) {
-  const match =
-    /^https?:\/\/((?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}):([1-9][0-9]{0,4})$/.exec(
-      value,
-    );
-  if (!match) {
-    return false;
-  }
-  if (match[1]!.split(".").some((octet) => Number(octet) > 255)) {
-    return false;
-  }
-  const port = Number(match[2]);
-  return Number.isInteger(port) && port <= 65535;
-}
 // Compute and the API's Slack directory also refuse the unspecified address, which names
 // no proxy.
-function channelProxyUrl(value: string) {
-  if (!isLiteralIpv4ProxyUrl(value)) {
-    return false;
-  }
-  return /^https?:\/\/0\.0\.0\.0:/.test(value)
-    ? "must not use host 0.0.0.0, which names no proxy address."
-    : true;
-}
 const dnsHostname =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 // Google hosted domains in the shape the API's domainPattern and the chart accept after
@@ -745,7 +723,7 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
   const reserved = new Set([
     "/etc/openclaw/installation",
     "/run/openclaw-worker",
-    "/var/lib/openclaw/bootstrap",
+    "/run/openclaw-bootstrap",
     "/etc/openclaw/gateway-api-key",
     "/etc/openclaw/gateway-ca",
   ]);
@@ -881,7 +859,7 @@ function labelSyntax(
   return labels;
 }
 
-// Kubernetes node selector labels: the chart and prepare-bootstrap-volume apply this rule to
+// Kubernetes node selector labels: the chart applies this rule to
 // controlPlane.nodeSelector, and Kubernetes applies it to every Pod's nodeSelector, so the
 // runtime selectors in Installation configuration follow it too. Kubernetes allows empty
 // label values, as in `node-role.kubernetes.io/infra: ""`.
@@ -1171,11 +1149,10 @@ function renderOidc(source: InputRecord, diagnostics: Errors) {
       "an https URL on port 443 with a DNS host name and no query or fragment, written without a port",
   });
   rendered.issuer = issuer;
-  const host = oidcEndpointHost(issuer, { issuer: true });
   for (const key of ["authorizationUrl", "tokenUrl", "jwksUrl"] as const) {
     rendered[key] = asString(source, [...path, key], diagnostics, {
-      validate: (value) => host === undefined || oidcEndpointHost(value) === host,
-      description: "an https URL on port 443 on the issuer's host, with no query or fragment",
+      validate: (value) => oidcEndpointHost(value) !== undefined,
+      description: "an https URL on port 443 with a DNS host name and no query or fragment",
     });
   }
   const tokenAuth = optionalString(source, [...path, "tokenAuth"], diagnostics, {
@@ -1366,7 +1343,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
     diagnostics,
   );
   const presets = section(input, "presets", diagnostics, false);
-  closed(presets, "presets", ["files"], diagnostics);
+  closed(presets, "presets", ["includeDefaults", "files"], diagnostics);
   closed(
     controlPlane,
     "controlPlane",
@@ -1377,10 +1354,11 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
       "controllerImage",
       "authBaseUrl",
       "adminEmail",
-      "bootstrapPasswordClaimName",
+      "bootstrapCredentialsSecretName",
       "apiClients",
       "databaseCidrs",
       "clusterCidrs",
+      "clusterPort",
       "dns",
       "gatewayClassName",
       "gatewayApiKeySecretName",
@@ -1416,12 +1394,7 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
     ],
     diagnostics,
   );
-  closed(
-    channels,
-    "channels",
-    ["runtimeProxyUrl", "directoryProxyUrl", "managedSlackProxy"],
-    diagnostics,
-  );
+  closed(channels, "channels", ["managedEgress", "excludedCidrs"], diagnostics);
   closed(codex, "codex", ["managedServiceAccounts", "modelDiscoveryCidrs"], diagnostics);
   closed(
     repository,
@@ -1574,6 +1547,7 @@ function dedicatedSecrets(
   ]);
   const repository = values.repositoryCredentials;
   const fields: (readonly [string, string | undefined, string?])[] = [
+    ["controlPlane.bootstrapCredentialsSecretName", values.bootstrap.credentials.secretName],
     ...(values.backend?.chatgpt?.enabled
       ? [
           [
@@ -1798,12 +1772,28 @@ function buildRendered(
     optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??
     "envoy-gateway-system";
   const repositoryEnabled = asBoolean(repository, ["repository", "enabled"], diagnostics, false);
-  const managedSlackProxyEnabled = asBoolean(
+  const managedEgressEnabled = asBoolean(
     channels,
-    ["channels", "managedSlackProxy"],
+    ["channels", "managedEgress"],
     diagnostics,
+    true,
   );
-  const managedSlackProxyHost = `openclaw-enterprise-slack-proxy.${namespace}.svc`;
+  const channelEgress: ChannelEgressOptions | undefined = managedEgressEnabled
+    ? {
+        gatewayName: "openclaw-channel-egress",
+        gatewayNamespace: namespace,
+        envoyNamespace,
+        serviceName: "openclaw-channel-egress",
+        listenerPortStart: 10001,
+        listenerPortEnd: 10062,
+        occListenerPort: 10000,
+        inspectionPort: 19004,
+        excludedCidrs: stringArray(channels, ["channels", "excludedCidrs"], diagnostics, {
+          validate: isCidr,
+          description: "a canonical installation network CIDR",
+        }) as string[],
+      }
+    : undefined;
   if (profile.name === "openclaw" && Object.keys(codex).length > 0) {
     diagnostics.errors.push("codex inputs are only consumed by the codex profile.");
   }
@@ -1815,16 +1805,6 @@ function buildRendered(
   if (!repositoryEnabled && Object.keys(repository).some((key) => key !== "enabled")) {
     diagnostics.errors.push(
       "repository fields other than enabled are only consumed when repository.enabled is true.",
-    );
-  }
-  if (managedSlackProxyEnabled && channels.directoryProxyUrl !== undefined) {
-    diagnostics.errors.push(
-      "channels.directoryProxyUrl is not consumed when channels.managedSlackProxy enables the chart-managed Slack proxy.",
-    );
-  }
-  if (managedSlackProxyEnabled && channels.runtimeProxyUrl !== undefined) {
-    diagnostics.errors.push(
-      "channels.runtimeProxyUrl is not consumed when channels.managedSlackProxy enables the chart-managed Slack proxy.",
     );
   }
   if (
@@ -1840,6 +1820,13 @@ function buildRendered(
       "controlPlane.metrics requires both scraperNamespaceLabels and scraperPodLabels, or neither.",
     );
   }
+
+  const clusterPort = optionalPositiveInteger(
+    controlPlane,
+    ["controlPlane", "clusterPort"],
+    diagnostics,
+    { max: 65535 },
+  );
 
   // Same rule the controller applies to Installation observability.url at startup, including
   // its refusal of any @ before the host (http://@host).
@@ -1914,14 +1901,14 @@ function buildRendered(
         validate: administratorEmail,
         description: "a valid administrator email",
       }),
-      password: {
-        claimName: asString(
+      credentials: {
+        secretName: asString(
           controlPlane,
-          ["controlPlane", "bootstrapPasswordClaimName"],
+          ["controlPlane", "bootstrapCredentialsSecretName"],
           diagnostics,
           {
             validate: isKubernetesResourceName,
-            description: "a PVC name: a DNS subdomain of at most 253 characters",
+            description: "a precreated Secret name: a DNS subdomain of at most 253 characters",
           },
         ),
       },
@@ -1957,19 +1944,6 @@ function buildRendered(
     },
     api: {
       clients: clientSelectors(controlPlane, diagnostics),
-      ...(managedSlackProxyEnabled || channels.directoryProxyUrl === undefined
-        ? {}
-        : {
-            channelDirectoryProxyUrl: asString(
-              channels,
-              ["channels", "directoryProxyUrl"],
-              diagnostics,
-              {
-                validate: channelProxyUrl,
-                description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
-              },
-            ),
-          }),
       modelDiscoveryCidrs:
         profile.name === "codex" && codex.modelDiscoveryCidrs !== undefined
           ? stringArray(codex, ["codex", "modelDiscoveryCidrs"], diagnostics, {
@@ -1987,6 +1961,7 @@ function buildRendered(
         validate: (value) => isIpv4Cidr(value, 32),
         description: "an IPv4 /32 CIDR",
       }),
+      ...(clusterPort === undefined ? {} : { port: clusterPort }),
     },
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined
@@ -2045,13 +2020,19 @@ function buildRendered(
     repositoryCredentials: {
       enabled: repositoryEnabled,
     },
-    ...(managedSlackProxyEnabled
-      ? {
-          slackProxy: {
+    ...(channelEgress === undefined
+      ? { channelEgress: { enabled: false } }
+      : {
+          channelEgress: {
+            ...channelEgress,
             enabled: true,
+            gatewayClassName: asString(
+              controlPlane,
+              ["controlPlane", "gatewayClassName"],
+              diagnostics,
+            ),
           },
-        }
-      : {}),
+        }),
   };
 
   const installation: RenderedInstallation = {
@@ -2061,7 +2042,7 @@ function buildRendered(
     ...(observabilityUrl === undefined ? {} : { observability: { url: observabilityUrl } }),
     backend: [],
     presets: {
-      includeDefaults: true,
+      includeDefaults: asBoolean(presets, ["presets", "includeDefaults"], diagnostics, true),
       ...(presets.files === undefined
         ? {}
         : { files: stringArray(presets, ["presets", "files"], diagnostics, { nonempty: false }) }),
@@ -2112,7 +2093,7 @@ function buildRendered(
               limits: { cpu: "4", memory: "6Gi" },
             },
             namespace: {
-              quota: { pods: "10" },
+              quota: { pods: "20" },
               containerDefaults: {
                 requests: { cpu: "100m", memory: "128Mi" },
                 limits: { cpu: "4", memory: "2Gi" },
@@ -2188,32 +2169,7 @@ function buildRendered(
                   ),
                 }
               : {}),
-            ...(managedSlackProxyEnabled
-              ? {
-                  channels: {
-                    proxyUrl: `http://${managedSlackProxyHost}:3128`,
-                    managedProxy: {
-                      hostname: managedSlackProxyHost,
-                      namespace,
-                      podLabels: {
-                        "app.kubernetes.io/name": "openclaw-enterprise",
-                        "app.kubernetes.io/instance": releaseName,
-                        "app.kubernetes.io/component": "slack-proxy",
-                      },
-                      port: 3128,
-                    },
-                  },
-                }
-              : channels.runtimeProxyUrl === undefined
-                ? {}
-                : {
-                    channels: {
-                      proxyUrl: asString(channels, ["channels", "runtimeProxyUrl"], diagnostics, {
-                        validate: channelProxyUrl,
-                        description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
-                      }),
-                    },
-                  }),
+            ...(channelEgress === undefined ? {} : { channelEgress }),
           },
         },
       },
@@ -2447,21 +2403,12 @@ function buildRendered(
       );
     }
   }
-  if (
-    channels.runtimeProxyUrl !== undefined ||
-    channels.directoryProxyUrl !== undefined ||
-    managedSlackProxyEnabled
-  ) {
+  if (managedEgressEnabled) {
     diagnostics.prerequisites.push(
-      "Slack consumers remain inactive until Agent channel configuration and credentials are supplied.",
-    );
-  }
-  if (managedSlackProxyEnabled) {
-    diagnostics.prerequisites.push(
-      "The managed Slack proxy permits Slack hostnames on HTTPS and public IPv4 egress, excluding private and reserved ranges.",
+      "Enable Envoy Gateway EnvoyPatchPolicy support and qualify the dedicated channel egress fleet before activating channels.",
     );
     diagnostics.nextSteps.push(
-      `The managed Slack proxy Service is openclaw-enterprise-slack-proxy.${namespace}.svc:3128; keep Agent Slack channel consumers disabled until credentials and channel policy are configured.`,
+      `Channel Gateways receive their assigned Envoy listener; OCC uses openclaw-channel-egress.${envoyNamespace}.svc:10000.`,
     );
   }
   if (repositoryEnabled) {
@@ -2475,8 +2422,9 @@ function buildRendered(
 
   diagnostics.nextSteps.push(
     `Create or update the ${namespace}/occ-installation-startup Secret from installation.yaml.`,
+    `Precreate the ${namespace}/${values.bootstrap.credentials.secretName} Secret with admin-password and admin-service-key before installing Helm.`,
     `Run helm upgrade --install ${releaseName} deploy/helm/openclaw-enterprise --namespace ${namespace} --values values.yaml.`,
-    "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
+    "Verify authenticated OCC access with the retained service key after initialization.",
   );
 
   const backendIds = new Set();

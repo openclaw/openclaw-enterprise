@@ -4,12 +4,15 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/conformance/strands-box-transport.test.ts",
     "tests/integration/prepared-refresh-enrollment.test.ts",
     "tests/integration/staging-upgrade-return.test.ts",
+    "tests/integration/controller-endpoint-observation.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.ts",
     "tests/integration/ci-prepare-image-cache.test.ts",
-    "tests/integration/ci-prepare.test.mjs",
+    "tests/integration/migration-source-refusal.test.ts",
+    "tests/integration/ci-prepare.test.ts",
     "tests/integration/ci-prepare-lane-action.test.ts",
     "tests/conformance/repository-credentials-source-boundary.test.ts",
     "tests/conformance/startup-environment-boundary.test.ts",
@@ -18,7 +21,7 @@
     "tests/conformance/ssh-compute.test.ts",
     "tests/conformance/module-boundaries.test.ts",
     "tests/integration/repository-credentials-router.test.ts",
-    "tests/conformance/module-policy.test.mjs",
+    "tests/conformance/module-policy.test.ts",
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.ts",
     "tests/integration/cli-release.test.ts",
@@ -27,7 +30,7 @@
     "tests/integration/repository-credentials-control.test.ts",
     "tests/integration/repository-credential-operator-recovery.test.ts",
     "tests/integration/repository-receipt-observation.test.ts",
-    "tests/integration/codex-plugin-startup-reads.test.mjs",
+    "tests/integration/codex-plugin-startup-reads.test.ts",
     "tests/integration/codex-plugin-preparation.test.ts",
     "tests/integration/container-release.test.ts",
     "tests/integration/password-sign-in-audit.test.ts",
@@ -35,11 +38,11 @@
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
     "tests/integration/console-storybook-workflow.test.ts",
-    "tests/integration/workspace-setup-api.test.mjs",
+    "tests/integration/workspace-setup-api.test.ts",
     "tests/integration/agent-create-validate-api.test.ts",
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
-    "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner.test.ts",
     "tests/integration/ci-runner-native-child.test.ts",
     "tests/integration/ci-runner-process-ownership.test.ts",
     "tests/integration/ci-runner-openshell-progress.test.ts",
@@ -73,7 +76,7 @@
     "tests/integration/ci-image-reconciliation.test.ts",
     "tests/conformance/repository-runtime-material.test.ts",
     "tests/integration/repository-credentials-server-timeout.test.ts",
-    "tests/integration/protected-repository-metadata-read.test.mjs",
+    "tests/integration/protected-repository-metadata-read.test.ts",
     "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
@@ -82,9 +85,9 @@
     "tests/integration/ci-image-pull.test.ts",
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
-    "tests/conformance/slack-proxy-tunnel.test.mjs",
-    "tests/conformance/slack-proxy-backpressure.test.ts",
     "tests/conformance/native-admin-websocket-relay.test.ts",
+    "tests/integration/qa-fixture-credentials-diagnostics.test.ts",
+    "tests/integration/qa-fixture-results.test.ts",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
@@ -106,10 +109,10 @@
     "tests/conformance/runtime-model-probe-settlement.test.ts",
     "tests/conformance/hosted-plugin-discovery.test.ts",
     "tests/integration/plugin-driver-real-preflight.test.ts",
-    "tests/conformance/postgres-transaction-commit.test.mjs",
+    "tests/conformance/postgres-transaction-commit.test.ts",
     "tests/conformance/plugin-runtime-policy.test.ts",
     "tests/integration/password-sign-in-policy.test.ts",
-    "tests/integration/compute-singleton-worker.test.mjs",
+    "tests/integration/compute-singleton-worker.test.ts",
     "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.ts",
     "tests/integration/oidc-id-token.test.ts",
@@ -132,13 +135,11 @@
     "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.ts",
     "tests/integration/ci-go-test.test.ts",
-    "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.ts",
     "tests/conformance/repository-credentials-receive-pack.test.ts",
     "tests/integration/runtime-assets.test.ts",
     "tests/integration/runtime-ai-package-relocation.test.ts",
-    "tests/integration/runtime-node-build-jobs.test.ts",
     "tests/integration/openclaw-source.test.ts",
     "tests/conformance/repository-credentials-tool-evidence.test.ts",
     "tests/integration/client-address.test.ts",
@@ -154,11 +155,13 @@
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/egress-connected-lifecycle-preflight.test.ts",
     "tests/integration/credential-proxy-configuration.test.ts",
+    "tests/helpers/password-hasher.test.ts",
     "tests/helpers/socket-relay.test.ts",
     "tests/integration/gateway-workspace-readiness.test.ts",
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
+    "tests/integration/first-agent-sandbox-policy.test.ts",
     "tests/integration/staged-signin-proof.test.ts",
     "tests/integration/shared-session-cookie.test.ts",
     "tests/integration/workspace-gateway-host-route.test.ts"
@@ -168,6 +171,24 @@
     "tests/conformance/schema-auth-boundary-v1.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    {
+      "path": "tests/conformance/strands-box-transport.test.ts",
+      "expectedTests": [
+        "Strands rejected half-open clients release listener capacity without Harness I/O",
+        "the worker port allows readiness but refuses native upgrades with the same valid bearer",
+        "Strands shutdown closes clients still reading headers and refuses queued Gateway opens",
+        "Strands supervisor refuses a racing channel without disconnecting admitted clients",
+        "Strands contained receiver refuses capacity overflow and retains native connections",
+        "Strands slow downstream closes only its channel and retains the shared transport",
+        "Strands large stream pauses for shared pipe pressure without truncation",
+        "Strands malformed or oversized IPC fails closed exactly once",
+        "Strands disconnected channel releases its pending drain and a fresh channel works",
+        "Strands routing keeps explicit connection factories on the provider proxy",
+        "a loopback readiness probe retains capacity when all session channels are busy",
+        "a terminal frame flushes queued TCP output",
+        "the policy proxy delivers the complete response to a slow reader at EOF"
+      ]
+    },
     {
       "path": "tests/integration/prepared-refresh-enrollment.test.ts",
       "expectedTests": [
@@ -195,13 +216,25 @@
       ]
     },
     {
+      "path": "tests/integration/controller-endpoint-observation.test.ts"
+    },
+    {
       "path": "tests/integration/controlled-tls-origin.test.ts"
     },
     {
       "path": "tests/integration/tls-peer-certificate.test.ts"
     },
     {
+      "path": "tests/helpers/password-hasher.test.ts"
+    },
+    {
       "path": "tests/helpers/socket-relay.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-credentials-diagnostics.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-results.test.ts"
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
@@ -238,7 +271,8 @@
         "first-Agent requires dedicated Codex for OpenShell before external calls",
         "first-Agent admits dedicated Codex Control UI with OpenShell development state",
         "first-Agent validates launcher-owned HTTPS endpoints before external calls",
-        "first-Agent runs psql through the k3d PostgreSQL StatefulSet"
+        "first-Agent runs psql through the k3d PostgreSQL StatefulSet",
+        "first-Agent refuses missing or mismatched confirmed Installation state"
       ]
     },
     {
@@ -263,7 +297,7 @@
       ]
     },
     {
-      "path": "tests/integration/compute-singleton-worker.test.mjs",
+      "path": "tests/integration/compute-singleton-worker.test.ts",
       "expectedTests": [
         "before-commit Compute Drivers must expose an activation operation",
         "Compute Driver maintenance intervals must be positive safe integers"
@@ -276,7 +310,7 @@
       "path": "tests/integration/local-first-agent-session-identity.test.ts"
     },
     {
-      "path": "tests/integration/ci-runner.test.mjs",
+      "path": "tests/integration/ci-runner.test.ts",
       "expectedTests": [
         "complete lifecycle preserves phase failures and performs owned cleanup",
         "complete lifecycle drains interrupted preparation before cleanup and never starts tests",
@@ -312,7 +346,9 @@
       "expectedTests": [
         "CI streams safe OpenShell failures before cleanup and retains the original error",
         "run reports bounded OpenShell progress before the test file finishes",
-        "CI retains the unfinished upstream stage without changing the failed case"
+        "CI retains the unfinished upstream stage without changing the failed case",
+        "CI records only observed upstream replacement checkpoints on failure",
+        "CI binds upstream replacement progress to the case cutoff"
       ]
     },
     {
@@ -417,7 +453,10 @@
       "path": "tests/integration/ci-prepare-image-cache.test.ts"
     },
     {
-      "path": "tests/integration/ci-prepare.test.mjs"
+      "path": "tests/integration/migration-source-refusal.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-prepare.test.ts"
     },
     {
       "path": "tests/integration/ci-prepare-lane-action.test.ts",
@@ -511,16 +550,7 @@
       "path": "tests/conformance/bounded-response-reads.test.ts"
     },
     {
-      "path": "tests/conformance/slack-proxy-reset.test.mjs"
-    },
-    {
       "path": "tests/conformance/native-admin-upgrade-reset.test.mjs"
-    },
-    {
-      "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
-    },
-    {
-      "path": "tests/conformance/slack-proxy-backpressure.test.ts"
     },
     {
       "path": "tests/conformance/native-admin-websocket-relay.test.ts"
@@ -541,7 +571,7 @@
       "path": "tests/conformance/repository-transactions.test.ts"
     },
     {
-      "path": "tests/conformance/postgres-transaction-commit.test.mjs"
+      "path": "tests/conformance/postgres-transaction-commit.test.ts"
     },
     {
       "path": "tests/conformance/postgres-transaction-unknown-commit.test.ts",
@@ -573,7 +603,23 @@
       "path": "tests/integration/console-storybook-workflow.test.ts"
     },
     {
-      "path": "tests/integration/workspace-setup-api.test.mjs"
+      "path": "tests/integration/workspace-setup-api.test.ts",
+      "expectedTests": [
+        "Agent create stages exact partial workspace bytes privately and rejects replay without changing them",
+        "omitted and empty workspace maps retain native setup while an explicit empty file is staged",
+        "invalid workspace content and stale defaults reject the complete create without an Agent",
+        "Agent create accepts four maximum UTF-8 files even when JSON escape expansion exceeds the ordinary body limit",
+        "workspace setup creation requires exact Namespace permission, Configuration ownership, and same-site session writes",
+        "Agent save and deployment refuse initial workspace files the Configuration's main Agent cannot read",
+        "Agent save accepts initial workspace files for a main roster entry in any letter case",
+        "Agent save refuses initial workspace files in a Sandbox with a 409 that names the Sandbox",
+        "Agent create admits private workspace files through the OpenShell initializer contract",
+        "Agent admission refuses projected identity only for OpenShell-owned Harnesses",
+        "Credential-source deployment refuses OpenShell projected identity before creating a revision",
+        "Agent create refuses dedicated OpenClaw on OpenShell settings its workspace preparation refuses",
+        "Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place",
+        "Create Agent's preflight refuses a planned Harness authentication that Agent save refuses"
+      ]
     },
     {
       "path": "tests/integration/agent-create-validate-api.test.ts"
@@ -632,7 +678,7 @@
       "path": "tests/integration/repository-credentials-config.test.ts"
     },
     {
-      "path": "tests/integration/protected-repository-metadata-read.test.mjs"
+      "path": "tests/integration/protected-repository-metadata-read.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-http.test.ts"
@@ -725,7 +771,7 @@
       "path": "tests/integration/repository-runtime-materialization.test.ts"
     },
     {
-      "path": "tests/integration/codex-plugin-startup-reads.test.mjs"
+      "path": "tests/integration/codex-plugin-startup-reads.test.ts"
     },
     {
       "path": "tests/integration/codex-plugin-preparation.test.ts",
@@ -749,21 +795,13 @@
       ]
     },
     {
-      "path": "tests/integration/runtime-node-build-jobs.test.ts",
-      "expectedTests": [
-        "auto Node compile jobs follow the builder's CPUs and memory within fixed bounds",
-        "explicit Node compile jobs are used as given and invalid values fail",
-        "the runtime Dockerfile defaults the Node compile to auto jobs"
-      ]
-    },
-    {
       "path": "tests/integration/openclaw-source.test.ts"
     },
     {
       "path": "tests/conformance/module-boundaries.test.ts"
     },
     {
-      "path": "tests/conformance/module-policy.test.mjs",
+      "path": "tests/conformance/module-policy.test.ts",
       "expectedTests": [
         "repository source obeys its dependency policy with exact current exceptions",
         "repository policy allows a public root and rejects a new HTTP Driver import"
@@ -845,6 +883,7 @@
         "external-repository-fixture registers its real structured validator and rejects malformed input safely",
         "github registers its real structured validator and rejects malformed input safely",
         "openshell registers its real structured validator and rejects malformed input safely",
+        "the external protected factory closes a registration it refuses",
         "OpenShell direct construction and policy rendering still enforce configuration validation",
         "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
@@ -857,6 +896,13 @@
     },
     {
       "path": "tests/integration/openshell-full-integration.test.ts"
+    },
+    {
+      "path": "tests/integration/openshell-stock-destination-ca.test.ts",
+      "expectedTests": [
+        "OpenShell destination CA fixture accepts a single CA and refuses a substituted ConfigMap",
+        "OpenShell stock Supervisor fixture refuses a substituted imported image"
+      ]
     },
     {
       "path": "tests/integration/oidc-provider.test.ts"
@@ -878,6 +924,20 @@
       ]
     },
     {
+      "path": "tests/integration/first-agent-sandbox-policy.test.ts",
+      "expectedTests": [
+        "cancelled installer identity preparation cannot launch a port-forward",
+        "the installer reads policy through the child port announced on a complete line",
+        "a Sandbox returned after the policy deadline cannot satisfy the assertion",
+        "parent abort reaches an in-flight Sandbox read and rejects its late result",
+        "parent cancellation closes the forward before lazy gRPC setup settles and closes its late transport",
+        "the shared policy timer closes the forward while a read stays pending",
+        "parent abort during Sandbox retry sleep preserves the abort reason",
+        "the installer reports fixed forward startup errors and closes each child",
+        "policy failure remains the cause when Gateway client cleanup fails"
+      ]
+    },
+    {
       "path": "tests/integration/staged-signin-proof.test.ts",
       "expectedTests": [
         "sign-in proof reader accepts complete observations for both protocols and return branches",
@@ -893,6 +953,7 @@
       "path": "tests/integration/workspace-gateway-host-route.test.ts",
       "expectedTests": [
         "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
+        "Gateway TLS readiness fails when its forwarder exits after loopback readiness",
         "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure",
         "Gateway relay rejects a malformed HTTPS Service target before starting a forwarder"
       ]

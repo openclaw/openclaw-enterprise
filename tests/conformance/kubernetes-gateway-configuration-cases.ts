@@ -1,3 +1,5 @@
+import { createChannelTestCompute as createKubernetesComputeDriver } from "../helpers/channel-egress.ts";
+import { channelEgressOptions, slackChannelDrivers } from "../helpers/channel-egress.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   ComputeGatewaySettingError,
@@ -15,10 +17,7 @@ import { unexpectedNodeEnrollment } from "./kubernetes-namespace-placement-cases
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
-import {
-  createKubernetesComputeDriver,
-  KubernetesComputeDriver,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -29,11 +28,13 @@ import {
   dedicatedCodexVariableRefusal,
   pluginEntryKeyVariantRefusal,
   unboundPluginSecretRefusal,
+} from "../helpers/refusal-text.mjs";
+import {
   unreadablePluginSecretRefusal,
   unboundUnreadablePluginSecretRefusal,
   appServerUnreadablePluginSecretRefusal,
   unreadableGatewayPasswordRefusal,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-diagnostics.ts";
 import {
   tenant,
   apiKeyAuth as routedApiKeyAuth,
@@ -60,6 +61,17 @@ export function enforceDedicatedGatewayToolAllowlist() {
   assert.deepEqual(tools.alsoAllow, ["diffs", "oce_mcp_docs_listitems"]);
   const gatewayAllow = asRecord(tools.gatewayPolicy)?.allow;
   assert.ok(Array.isArray(gatewayAllow) && gatewayAllow.includes("oce_mcp_docs_listitems"));
+
+  // A dedicated Codex Harness cannot open Gateway-only skill files, such as pinned
+  // Skill Library revisions; the default reads approved skills through the Gateway.
+  const codex = managedGatewayConfiguration(standard, standard, true);
+  const codexAllow = asRecord(asRecord(codex.tools)?.gatewayPolicy)?.allow;
+  const codexConfig = asRecord(asRecord(asRecord(codex.plugins)?.entries)?.codex)?.config;
+  const excluded = asRecord(codexConfig)?.codexDynamicToolsExclude;
+  for (const skillTool of ["skills_search", "skills_read"]) {
+    assert.ok(Array.isArray(codexAllow) && codexAllow.includes(skillTool), skillTool);
+    assert.ok(Array.isArray(excluded) && !excluded.includes(skillTool), skillTool);
+  }
 
   const explicit = { tools: { allow: ["exec"], deny: ["oce_mcp_docs_listitems"] } };
   const configured = asRecord(
@@ -119,7 +131,10 @@ export function refuseGatewayBreakersBeforeDedicatedCutover() {
   // Refuse configurations that would fail preparation or crash-loop the new Gateway.
   // An Installation with runtime storage, gateway routing and node enrollment: every dedicated
   // Gateway hosts the Agent's workspace node.
-  const enrollment = { nodeEnrollment: unexpectedNodeEnrollment() };
+  const enrollment = {
+    nodeEnrollment: unexpectedNodeEnrollment(),
+    channelDrivers: slackChannelDrivers,
+  };
   const routed = new KubernetesComputeDriver(
     routedOptions({ runtime: gatewayRuntime }),
     enrollment,
@@ -128,7 +143,7 @@ export function refuseGatewayBreakersBeforeDedicatedCutover() {
     ...enrollment,
     sandboxDriver: admissionSandboxDriver(),
   });
-  const unrouted = new KubernetesComputeDriver(options());
+  const unrouted = new KubernetesComputeDriver(options(), { channelDrivers: slackChannelDrivers });
   // Without runtime storage no Gateway hosts a workspace node. (Runtime storage without node
   // enrollment refuses every dedicated deployment at admission.)
   const withoutNode = [unrouted, new KubernetesComputeDriver(routedOptions(), enrollment)];
@@ -353,7 +368,7 @@ function checkDedicatedGatewaySettings(routed: KubernetesComputeDriver) {
     source: "env",
     ...(allowlist ? { allowlist } : {}),
   });
-  for (const [configuration, reason, ...details] of [
+  for (const [configuration, ...diagnostic] of [
     [passwordRef(), "providerless"],
     [passwordRef(undefined, { defaults: { env: "custom" } }), "providerless", "env", "custom"],
     [passwordRef(null), "providerless"],
@@ -375,7 +390,7 @@ function checkDedicatedGatewaySettings(routed: KubernetesComputeDriver) {
       "vault",
     ],
   ] as const) {
-    assertGatewayRefusal(configuration, unreadableGatewayPasswordRefusal(reason, ...details));
+    assertGatewayRefusal(configuration, unreadableGatewayPasswordRefusal(...diagnostic));
   }
   for (const configuration of [
     withPolicy("never"),
@@ -405,7 +420,7 @@ function checkChannelAdmission(unrouted: KubernetesComputeDriver) {
   assert.throws(
     () => unrouted.validateHarnessAuth(codex, apiKeyAuth, { ...codexBase, ...slack }),
     channelRefusal(
-      "is enabled, but this Installation has no channel runtime: enabled channels require isolated credentials and a reviewed proxy",
+      "is enabled, but this Installation has no channel runtime: enabled channels require isolated credentials and managed per-Agent routing",
     ),
   );
   const embeddedChannelsRefusal = channelRefusal(
@@ -413,9 +428,9 @@ function checkChannelAdmission(unrouted: KubernetesComputeDriver) {
   );
   const withChannels = new KubernetesComputeDriver(
     routedOptions({
-      runtime: { ...gatewayRuntime, channels: { proxyUrl: "http://10.42.0.15:3128" } },
+      runtime: { ...gatewayRuntime, channelEgress: channelEgressOptions },
     }),
-    { nodeEnrollment: unexpectedNodeEnrollment() },
+    { nodeEnrollment: unexpectedNodeEnrollment(), channelDrivers: slackChannelDrivers },
   );
   assert.throws(
     () => withChannels.validateHarnessAuth(embedded, apiKeyAuth, { ...openClawBase, ...slack }),
@@ -684,7 +699,7 @@ export function validatePluginSecretInputs() {
   });
   const codexDriverAdmission = admission(driver, codex);
   const codexBase = createHarnessConfiguration("codex", "gpt-5");
-  for (const [configuration, setting, plugin, held, ...shown] of [
+  for (const [configuration, setting, plugin, ...diagnostic] of [
     [
       withCodex({ config: { appServer: { authToken: { source: "env", id: "RELAY_TOKEN" } } } }),
       authToken,
@@ -793,7 +808,7 @@ export function validatePluginSecretInputs() {
       "RELAY_TOKEN",
     ],
   ] as const) {
-    const expected = refusal(unreadablePluginSecretRefusal(setting, plugin, held, ...shown));
+    const expected = refusal(unreadablePluginSecretRefusal(setting, plugin, ...diagnostic));
     const label = JSON.stringify(configuration);
     refusedByMode(embeddedAdmission, configuration, expected, label);
     assert.throws(() => driver.validateConfiguration(configuration), expected, label);
@@ -826,7 +841,7 @@ export function validatePluginSecretInputs() {
     ...withSearchHeader({ ...envRef("RELAY_TOKEN"), ...reference }),
     secrets: { defaults: { env: longAlias }, ...secrets },
   });
-  for (const [configuration, held, ...shown] of [
+  for (const [configuration, ...diagnostic] of [
     [withLongNames({ provider: longProvider }), "provider", cut(longProvider), "env", null],
     [withLongNames({}), "defaultAlias", cut(longAlias), "env", null],
     [withLongNames({ provider: "P".repeat(64) }), "providerAlias", cut("P".repeat(64)), null],
@@ -845,7 +860,7 @@ export function validatePluginSecretInputs() {
       cut(longProvider),
     ],
   ] as const) {
-    const [, expected] = unreadablePluginSecretRefusal("<path>", "google", held, ...shown).split(
+    const [, expected] = unreadablePluginSecretRefusal("<path>", "google", ...diagnostic).split(
       "<path>",
     );
     assert.ok(expected);
@@ -856,7 +871,7 @@ export function validatePluginSecretInputs() {
         Array.from(error.message).length <= 256 &&
         error.message.startsWith("Configuration setting plugins.") &&
         error.message.endsWith(expected),
-      held,
+      diagnostic[0],
     );
   }
   // OpenClaw reads each of these, so the binding alone decides: an env SecretRef on the default

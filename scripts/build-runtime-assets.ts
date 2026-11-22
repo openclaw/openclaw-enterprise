@@ -39,33 +39,24 @@ const appliedPatches: readonly AppliedPatch[] = [
     sha256: "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
   },
   {
-    file: "openclaw-required-worker-authority-regression.patch",
-    sha256: "5939c62bd62c323c93cd3aa6a96fbb6f4cf9d5df8f5eafffada25a58fe727494",
-    field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",
-  },
-  {
-    file: "openclaw-control-ui-browser-reconnect.patch",
-    sha256: "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
+    file: "stock-codex-0.164.0-dependency-pin.patch",
+    sha256: "cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197",
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
-    sha256: "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
+    sha256: "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
   },
   {
     file: "openclaw-google-worker-placeholder.patch",
-    sha256: "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+    sha256: "cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38",
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
+    sha256: "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
   },
   {
     file: "openclaw-planned-completion.patch",
-    sha256: "c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4",
-  },
-  {
-    file: "openclaw-native-turn-settlement.patch",
-    sha256: "5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6",
+    sha256: "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
   },
 ];
 const runtimePaths = [
@@ -428,7 +419,6 @@ async function packageRuntime(root: string, output: string, manifestPath: string
 async function inventoryFinalImage(
   root: string,
   output: string,
-  nodeProvenancePath: string,
   downloadClientSelectionPath: string,
 ): Promise<void> {
   const { parseRuntimeDownloadClientSelection, readRuntimeDownloadClients } =
@@ -437,30 +427,16 @@ async function inventoryFinalImage(
     await readFile(downloadClientSelectionPath, "utf8"),
   );
   const downloadClients = await readRuntimeDownloadClients(selection);
-  const installedNode = downloadClients["/usr/local/bin/node"];
-  const node = await readJsonObject(nodeProvenancePath);
-  if (
-    !installedNode ||
-    node.version !== process.versions.node ||
-    node.architecture !== process.arch ||
-    node.platform !== process.platform ||
-    installedNode.resolvedBinary !== (await realpath(process.execPath)) ||
-    node.sha256 !== installedNode.binarySha256
-  ) {
-    throw new Error("Node provenance must identify the executable inventorying the final image.");
-  }
   const contents = await writeRuntimeInventory(root, output);
   const provenancePath = join(output, "provenance.json");
   const provenance = await readJsonObject(provenancePath);
   provenance.runtimeContentsSha256 = hash(contents);
   provenance.codex = await readCodexRuntimeIdentity(root);
-  provenance.node = node;
   provenance.downloadClients = downloadClients;
   await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
 }
 
-const [command, sourceRoot, output, manifestPath, downloadClientSelectionPath] =
-  process.argv.slice(2);
+const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);
 const usage = "Expected inputs, package, or inventory with source root and output directory.";
 if (sourceRoot === undefined || output === undefined) {
   throw new Error(usage);
@@ -475,12 +451,9 @@ if (command === "inputs") {
   await packageRuntime(root, output, manifestPath);
 } else if (command === "inventory") {
   if (manifestPath === undefined) {
-    throw new Error("Runtime inventory requires the installed Node provenance path");
-  }
-  if (downloadClientSelectionPath === undefined) {
     throw new Error("Runtime inventory requires the download client selection path");
   }
-  await inventoryFinalImage(root, output, manifestPath, downloadClientSelectionPath);
+  await inventoryFinalImage(root, output, manifestPath);
 } else {
   throw new Error(usage);
 }

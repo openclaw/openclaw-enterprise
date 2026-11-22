@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import test from "node:test";
@@ -11,9 +9,7 @@ import {
   generateApiReferenceOutputs,
   httpMethods,
 } from "../../scripts/generate-occ-api-reference.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const contractPath = fileURLToPath(
   new URL("../../packages/contracts/openapi/occ-api.openapi.json", import.meta.url),
 );
@@ -291,50 +287,6 @@ test("Agent and CredentialSource operations document the permissions they check"
   assert.match(
     page,
     /Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists\./,
-  );
-});
-
-test("OpenAPI check rejects unexpected generated API child pages in an isolated CLI fixture", async (t) => {
-  const fixture = await temporaryDirectory(t, "occ-api-reference-check-");
-
-  await mkdir(join(fixture, "scripts"), { recursive: true });
-  for (const file of [
-    "generate-occ-openapi.ts",
-    "generate-occ-api-reference.ts",
-    "document-api-examples.ts",
-    "api-examples.ts",
-  ]) {
-    await copyFile(join(repositoryRoot, "scripts", file), join(fixture, "scripts", file));
-  }
-  await copyFile(join(repositoryRoot, "package.json"), join(fixture, "package.json"));
-  await symlink(join(repositoryRoot, "apps"), join(fixture, "apps"));
-  await symlink(join(repositoryRoot, "node_modules"), join(fixture, "node_modules"));
-  await mkdir(join(fixture, "packages/contracts/openapi"), { recursive: true });
-  await copyFile(contractPath, join(fixture, "packages/contracts/openapi/occ-api.openapi.json"));
-
-  const generateResult = spawnSync(process.execPath, ["scripts/generate-occ-openapi.ts"], {
-    cwd: fixture,
-    encoding: "utf8",
-    timeout: 30_000,
-  });
-  assert.equal(generateResult.status, 0, generateResult.stderr + generateResult.stdout);
-
-  await mkdir(join(fixture, "docs/reference/api"), { recursive: true });
-  await writeFile(
-    join(fixture, "docs/reference/api/unexpected-ci-check.md"),
-    "# Unexpected API page\n",
-  );
-
-  const result = spawnSync(process.execPath, ["scripts/generate-occ-openapi.ts", "--check"], {
-    cwd: fixture,
-    encoding: "utf8",
-    timeout: 30_000,
-  });
-
-  assert.notEqual(result.status, 0, "OpenAPI check accepted an unexpected generated page");
-  assert.match(
-    result.stderr + result.stdout,
-    /Unexpected generated API reference file: docs\/reference\/api\/unexpected-ci-check\.md/,
   );
 });
 

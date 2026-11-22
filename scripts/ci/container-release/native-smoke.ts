@@ -47,7 +47,7 @@ export async function smoke(directory: string | undefined, env: NodeJS.ProcessEn
   assert.equal(env.PLATFORM, `linux/${arch}`, "Smoke requires the target's native runner.");
   assert.ok(directory !== undefined, "An OCI layout directory is required.");
   // Resolve native runtime tooling before loading an image that would need cleanup.
-  const runtimePreparation = env.IMAGE === "runtime" ? await import("../prepare.mjs") : undefined;
+  const runtimePreparation = env.IMAGE === "runtime" ? await import("../prepare.ts") : undefined;
   assert.equal(inspectDigest(`oci:${directory}`), env.IMAGE_DIGEST);
   const root: unknown = JSON.parse(await readFile(join(directory, "index.json"), "utf8"));
   function singleDescriptor(index: unknown): unknown {
@@ -77,7 +77,7 @@ export async function smoke(directory: string | undefined, env: NodeJS.ProcessEn
   const tag = `localhost/enterprise-${env.IMAGE}:prepared-${arch}`;
   skopeo(["copy", `oci:${directory}`, `docker-daemon:${tag}`], { stdio: "inherit" });
   let prepared:
-    Awaited<ReturnType<(typeof import("../prepare.mjs"))["prepareRuntimeImageSmoke"]>> | undefined;
+    Awaited<ReturnType<(typeof import("../prepare.ts"))["prepareRuntimeImageSmoke"]>> | undefined;
   try {
     const inspected: unknown = JSON.parse(
       execFileSync("docker", ["image", "inspect", tag], { encoding: "utf8" }),

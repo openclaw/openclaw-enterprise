@@ -3,7 +3,7 @@ import {
   projectOpenShellGitRetention,
 } from "./openshell-git-retention.mjs";
 import { openShellProgress } from "./openshell-progress.mjs";
-import { isRecord } from "./reporter-diagnostics.ts";
+import { isRecord } from "./records.ts";
 
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
 // allowlisted shape below is retained in ordinary results.
@@ -126,6 +126,41 @@ function isSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
 }
 
+// These forms describe the Gateway HTTP response. Multiple failure paths share the same JSON.
+export function openShellGatewayErrorForm(response: Response, body: string) {
+  if (response.status !== 500) {
+    return undefined;
+  }
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (
+    mediaType === "text/plain" &&
+    response.headers.get("cache-control") === "no-store" &&
+    body === "Internal Server Error"
+  ) {
+    return "plain-internal-error";
+  }
+  if (mediaType !== "application/json") {
+    return undefined;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(value) || !isRecord(value.error) || value.error.type !== "api_error") {
+    return undefined;
+  }
+  const { code, message } = value.error;
+  if (code === "incomplete_turn" && typeof message === "string") {
+    return "incomplete-turn";
+  }
+  if (code === undefined && message === "internal error") {
+    return "json-internal-error";
+  }
+  return undefined;
+}
+
 function isChoice<T extends string | number>(value: unknown, choices: readonly T[]): value is T {
   return choices.some((choice) => choice === value);
 }
@@ -209,6 +244,12 @@ function safeMeasurement(value: unknown): object | undefined {
       !validStatus
     ) {
       return undefined;
+    }
+    if (
+      status === 500 &&
+      isChoice(value.replyForm, ["plain-internal-error", "incomplete-turn", "json-internal-error"])
+    ) {
+      return { kind, checkpoint, turn, status, replyForm: value.replyForm };
     }
     return { kind, checkpoint, turn, status };
   }
@@ -308,6 +349,7 @@ function safeMeasurement(value: unknown): object | undefined {
         "canceled",
         "deadline",
         "controller-image-import",
+        "codex-sandbox-preparation",
         "routing",
         "network-verification",
         "network-cleanup",
@@ -422,7 +464,6 @@ function safeMeasurement(value: unknown): object | undefined {
         "openshell-charts",
         "openshell-agent-sandbox-manifest",
         "openshell-agent-sandbox-image",
-        "openshell-runtime-class",
         "openshell-agent-sandbox-apply",
         "openshell-agent-sandbox-rollout",
         "openshell-workspace-render",

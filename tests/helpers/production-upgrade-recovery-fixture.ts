@@ -19,6 +19,7 @@ import {
   requireRecoveryPreflight,
   type CapabilityProbe,
   type PreflightFault,
+  type RecoveryState,
 } from "./production-upgrade-recovery-state.ts";
 import {
   controller,
@@ -36,7 +37,14 @@ type FakePostgres = Awaited<ReturnType<typeof startFakePostgres>>;
 type DatabaseAnswer = NonNullable<NonNullable<Parameters<typeof startFakePostgres>[0]>["onQuery"]>;
 type PreflightDatabase = NonNullable<Parameters<typeof runPreflight>[4]>;
 
-type RecoveryNamespace = { metadata: { name: string; labels?: Record<string, string> } };
+type RecoveryNamespace = {
+  metadata: {
+    name: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  };
+  status?: { phase: "Active" | "Terminating" };
+};
 
 type ExecutionCluster = {
   namespaces: readonly RecoveryNamespace[];
@@ -77,7 +85,9 @@ export type RecoveryFixtureOptions = {
   agent?: boolean;
   release?: string;
   candidates?: boolean;
+  valuesExtension?: "json" | "yaml";
   controllerOnly?: boolean;
+  channelTransition?: boolean;
   continuity?: { before: object; after: object } | null;
   repositoryCredentials?: boolean;
   simulatePair?: boolean;
@@ -91,8 +101,10 @@ export type RecoveryFixtureOptions = {
   preflightPolicy?: boolean;
   certificate?: boolean;
   preflightFault?: PreflightFault | null;
+  failBeforeHelmIntent?: boolean;
   kubernetesNamespaces?: readonly RecoveryNamespace[];
   kubernetesDenied?: boolean;
+  kubernetesNetworkPolicies?: Readonly<Record<string, readonly object[]>>;
   executionCluster?: ExecutionCluster | null;
   installationName?: string | null;
   inventoryNamespaces?: readonly unknown[] | null;
@@ -106,6 +118,7 @@ export type RecoveryFixtureOptions = {
   olderDraftRules?: boolean;
   unavailableDraftResolver?: boolean;
   databaseAnswer?: DatabaseAnswer;
+  migrationSecrets?: boolean;
   afterDeploy?: () => Promise<void>;
   environment?: NodeJS.ProcessEnv;
 };
@@ -149,6 +162,7 @@ type RecoverySeed = {
 > & {
     collectorSecret: Awaited<ReturnType<typeof collectorConfigSecret>>;
     secret: { apiVersion: string; kind: string; metadata: object; data: Record<string, string> };
+    preflight?: RecoveryState;
     recoveryCandidateResources?: readonly object[];
     themeConfigMaps: NonNullable<RecoveryChart["configMaps"]>;
   };
@@ -233,6 +247,7 @@ async function kubernetesApi(
   directory: string,
   namespaces: readonly RecoveryNamespace[],
   denied: boolean,
+  networkPolicies: Readonly<Record<string, readonly object[]>>,
   execution: ExecutionCluster | null,
 ) {
   const certificate = join(directory, "kubernetes-api.crt");
@@ -310,12 +325,49 @@ async function kubernetesApi(
           metadata: { name: "kube-system", uid },
         });
       } else if (url.pathname === "/api/v1/namespaces") {
-        // Only label-existence selectors, which is what Compute preflight sends.
-        const keys = (url.searchParams.get("labelSelector") ?? "").split(",").filter(Boolean);
-        const items = namespaces.filter((namespace) =>
-          keys.every((label) => label in (namespace.metadata.labels ?? {})),
+        const selectors = (url.searchParams.get("labelSelector") ?? "").split(",").filter(Boolean);
+        const items = namespaces.filter(({ metadata }) =>
+          selectors.every((selector) => {
+            const [label, value] = selector.split("=");
+            return value === undefined
+              ? label! in (metadata.labels ?? {})
+              : metadata.labels?.[label!] === value;
+          }),
         );
         reply(200, { kind: "NamespaceList", apiVersion: "v1", metadata: {}, items });
+      } else if (url.pathname.startsWith("/api/v1/namespaces/")) {
+        const namespace = namespaces.find(
+          ({ metadata }) => url.pathname === `/api/v1/namespaces/${metadata.name}`,
+        );
+        if (namespace) {
+          reply(200, { apiVersion: "v1", kind: "Namespace", ...namespace });
+        } else {
+          reply(404, { kind: "Status", apiVersion: "v1", status: "Failure", code: 404 });
+        }
+      } else if (url.pathname === "/apis/networking.k8s.io/v1") {
+        reply(200, {
+          apiVersion: "v1",
+          kind: "APIResourceList",
+          groupVersion: "networking.k8s.io/v1",
+          resources: [
+            { kind: "NetworkPolicy", name: "networkpolicies", namespaced: true, verbs: ["list"] },
+          ],
+        });
+      } else if (
+        url.pathname.startsWith("/apis/networking.k8s.io/v1/namespaces/") &&
+        url.pathname.endsWith("/networkpolicies")
+      ) {
+        const items = networkPolicies[url.pathname.split("/")[5]!];
+        if (!items) {
+          reply(403, { kind: "Status", apiVersion: "v1", status: "Failure", code: 403 });
+          return;
+        }
+        reply(200, {
+          kind: "NetworkPolicyList",
+          apiVersion: "networking.k8s.io/v1",
+          metadata: {},
+          items,
+        });
       } else {
         reply(404, { kind: "Status", apiVersion: "v1", status: "Failure", code: 404 });
       }
@@ -376,7 +428,9 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       agent = false,
       release = "oce",
       candidates = false,
+      valuesExtension = "json",
       controllerOnly = false,
+      channelTransition = false,
       continuity = null,
       repositoryCredentials = false,
       simulatePair = false,
@@ -390,8 +444,10 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       preflightPolicy = false,
       certificate = false,
       preflightFault = null,
+      failBeforeHelmIntent = false,
       kubernetesNamespaces = [],
       kubernetesDenied = false,
+      kubernetesNetworkPolicies = {},
       executionCluster = null,
       installationName = "Production",
       inventoryNamespaces = null,
@@ -405,22 +461,49 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       olderDraftRules = false,
       unavailableDraftResolver = false,
       databaseAnswer = () => ({ rows: [{ id: "ins_test" }] }),
+      migrationSecrets = false,
       afterDeploy,
       environment = {},
     }: RecoveryFixtureOptions = {},
   ) {
     const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
+    const valuesFile = `values.${valuesExtension}`;
+    const candidateValuesFile = `candidate-${valuesFile}`;
     const bin = join(directory, "bin");
     await mkdir(bin);
     const commands: string[] = [];
+    const stopRequests: (readonly string[])[] = [];
     let upgradeProcess: ChildProcess | undefined;
     let interrupted = false;
     let database: (FakePostgres & PreflightDatabase) | undefined;
+    let databaseSecretNames: string[] = [];
     const server = await startCommandServer({
       forwardedEnv: [],
       handle: (request) => {
         const { command, args } = request;
         commands.push(command);
+        if (channelTransition && command === "occ" && args.includes("agent")) {
+          if (args.includes("stop")) {
+            // End the accepted control at the real helper's guarded Stop submission.
+            stopRequests.push(args);
+            request.io.stderr("fixture reached guarded Agent Stop\n");
+            return request.io.exit(1);
+          }
+          if (args.includes("get")) {
+            request.io.stdout(
+              JSON.stringify({
+                id: "agt_test",
+                namespaceId: "ns_test",
+                name: "Mail triage",
+                status: "active",
+                configurationId: "cfg_agt_test",
+                activeRevisionId: "rev_old",
+                desiredRuntimeState: "running",
+              }),
+            );
+            return request.io.exit(0);
+          }
+        }
         if (
           (preflightFault?.mode === "interrupt" || preflightFault?.mode === "interrupt-hard") &&
           !interrupted &&
@@ -444,6 +527,31 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       await writeFile(
         join(bin, command),
         commandShim({ ...shimTools, port, clientToken, serverToken, command, forwardedEnv: [] }),
+        { mode: 0o700 },
+      );
+    }
+    if (channelTransition || failBeforeHelmIntent) {
+      // Preserve fd 3 for preflight Python calls that the command server cannot forward.
+      // The worker Job still reads policies through the Kubernetes SDK against the fixture API.
+      const skipEnvoyProbe = channelTransition
+        ? `if [[ "$1" == scripts/setup-channel-egress && "$2" == check ]]; then
+  exit 0
+fi
+`
+        : "";
+      const marker = bashString(join(directory, "fail-before-helm-intent"));
+      const failIntentRecord = failBeforeHelmIntent
+        ? `if [[ "$1" == scripts/upgrade-helm-state.py && "$2" == record && -f ${marker} ]]; then
+  rm -f ${marker}
+  exit 9
+fi
+`
+        : "";
+      await writeFile(
+        join(bin, "python3"),
+        `#!${shimTools.bash}
+${skipEnvoyProbe}${failIntentRecord}exec ${bashString(tools.realPython)} "$@"
+`,
         { mode: 0o700 },
       );
     }
@@ -521,6 +629,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
         },
       },
     });
+    let installationKey = "installation.yaml";
     let api: Awaited<ReturnType<typeof kubernetesApi>> | null = null;
     if (chart) {
       // The release's example values and Installation, rendered by the real chart.
@@ -552,6 +661,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
         directory,
         kubernetesNamespaces,
         kubernetesDenied,
+        kubernetesNetworkPolicies,
         executionCluster,
       );
       // The example's Gateway namespace must follow this fixture's Helm release.
@@ -583,7 +693,12 @@ export function createRecoveryFixture(tools: RecoveryTools) {
         };
       }
       // Apply case-specific changes after constructing a consistent release baseline.
-      values = JSON.stringify(chart.values ? chart.values(exampleValues) : exampleValues);
+      const chartValues = chart.values ? chart.values(exampleValues) : exampleValues;
+      const key = asRecord(chartValues.installation)?.key;
+      if (typeof key === "string") {
+        installationKey = key;
+      }
+      values = JSON.stringify(chartValues);
       installation = JSON.stringify(chart.installation(exampleInstallation));
       // Protocol-only dependency: it supplies rows, never decides identity or
       // enforces SQL. Real PostgreSQL and packaged-image qualification are separate.
@@ -598,6 +713,10 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       const secretName = databaseValues.secretName ?? "occ-database";
       const appUrlKey = databaseValues.appUrlKey ?? "application-url";
       assert.ok(typeof secretName === "string" && typeof appUrlKey === "string");
+      databaseSecretNames = [secretName];
+      if (typeof databaseValues.caSecretName === "string" && databaseValues.caSecretName) {
+        databaseSecretNames.push(databaseValues.caSecretName);
+      }
       database = {
         ...postgres,
         secretName,
@@ -624,6 +743,27 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       initializationResources,
       preflightPolicy,
       preflightFault,
+      ...(migrationSecrets && {
+        preflight: {
+          pods: {},
+          jobs: {},
+          networkpolicies: {},
+          deleted: [],
+          secrets: Object.fromEntries(
+            databaseSecretNames.map((name) => [
+              name,
+              {
+                metadata: {
+                  name,
+                  namespace: "system",
+                  uid: `migration-secret-${name}`,
+                  resourceVersion: "1",
+                },
+              },
+            ]),
+          ),
+        },
+      }),
       installationName,
       inventoryNamespaces,
       inventoryResponses,
@@ -659,7 +799,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
           annotations: { "openclaw.dev/installation-id": "ins_test", retained: "yes" },
         },
         data: {
-          "installation.yaml": Buffer.from(installation).toString("base64"),
+          [installationKey]: Buffer.from(installation).toString("base64"),
           retained: "cHJlc2VydmVk",
         },
       },
@@ -670,7 +810,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     for (const [name, content] of Object.entries({
       kubeconfig: "cluster-config",
       key: "key",
-      "values.json": values,
+      [valuesFile]: values,
       "installation.json": installation,
     })) {
       await writeFile(join(directory, name), content, { mode: 0o600 });
@@ -678,10 +818,6 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     if (candidates) {
       const candidateValues = asRecord(JSON.parse(values));
       assert.ok(candidateValues);
-      candidateValues.api = {
-        ...asRecord(candidateValues.api),
-        channelDirectoryProxyUrl: "http://198.51.100.25:3128",
-      };
       const candidateInstallation = asRecord(JSON.parse(installation));
       const drivers = asRecord(candidateInstallation?.drivers);
       assert.ok(drivers);
@@ -694,7 +830,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
           { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
         ];
       }
-      await writeFile(join(directory, "candidate-values.json"), JSON.stringify(candidateValues), {
+      await writeFile(join(directory, candidateValuesFile), JSON.stringify(candidateValues), {
         mode: 0o600,
       });
       await writeFile(
@@ -714,7 +850,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       "--release",
       release,
       "--values",
-      join(directory, "values.json"),
+      join(directory, valuesFile),
       "--installation",
       join(directory, "installation.json"),
       ...(controllerOnly ? ["--controller-image", newController] : ["--runtime-image", runtime]),
@@ -723,7 +859,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       ...(candidates
         ? [
             "--candidate-values",
-            join(directory, "candidate-values.json"),
+            join(directory, candidateValuesFile),
             "--candidate-installation",
             join(directory, "candidate-installation.json"),
           ]
@@ -738,6 +874,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
+      KUBERC: "off",
       OCC_URL: "https://occ.example.invalid",
       OCC_SERVICE_KEY_FILE: join(directory, "key"),
     };
@@ -752,11 +889,13 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       directory,
       ...evidenceFiles(evidence),
       commands,
+      stopRequests,
       databaseSessions: database?.sessions ?? [],
       runIdentityCheck: async (
         component: "api" | "worker",
         action: "identity-job" | "job" = "identity-job",
-        protocol?: string,
+        // Rewrites the candidate database URL the Pod receives, such as its scheme or port.
+        databaseUrl?: (url: string) => string,
         fixtureFiles?: readonly string[],
       ) => {
         const { stdout } = await execute(
@@ -796,8 +935,8 @@ export function createRecoveryFixture(tools: RecoveryTools) {
         };
         assert.ok(database, "the identity check needs a chart fixture database");
         const connection = { ...database };
-        if (protocol) {
-          connection.url = database.url.replace(/^[^:]+:/, protocol);
+        if (databaseUrl) {
+          connection.url = databaseUrl(database.url);
         }
         const result = await runPreflight(
           directory,
@@ -822,7 +961,11 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       executionReads: api?.executionReads ?? [],
       accessReviews: api?.reviews ?? [],
       run: (...extra: string[]) => {
-        const result = execute(script, [...args, ...extra], {
+        const entrypoint = channelTransition
+          ? join(repository, "scripts/upgrade-channel-egress")
+          : script;
+        const invocation = channelTransition ? ["run", ...args, ...extra] : [...args, ...extra];
+        const result = execute(entrypoint, invocation, {
           cwd: repository,
           env: { ...env, ...environment },
         });

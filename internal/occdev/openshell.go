@@ -21,7 +21,6 @@ import (
 )
 
 const (
-	openShellRuntimeClass           = "openshell-sandbox"
 	openShellGatewayService         = "openshell-gateway"
 	openShellGatewayNamespace       = "openshell-system"
 	openShellOperatorNamespaceLabel = "openshell.ai/openclaw-workspace"
@@ -32,13 +31,17 @@ const (
 	openShellSupervisorRole         = "supervisor"
 	openShellNodePort               = 30051
 	openShellK3sImage               = "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657"
-	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:0.1.8@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4"
-	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.8@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b"
-	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.8@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1"
-	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
+	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:0.1.9@sha256:1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5"
+	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.9@sha256:e57d07cd6cc1fc314b80368d6b51ec6fbf825fb62cd8f081312941180846866f"
+	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.9@sha256:f1ec231b5dbe5b6a40c33acb2ac847995aabb959a56134ef6d7d7aa4f43199d3"
 	// Keep in step with OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST in the OpenShell Sandbox Driver;
 	// TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP compares them.
 	openShellAllowedPodLabelsValue = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
+	// OCC is one Gateway caller for every Namespace and a redeploy holds about three durable
+	// admissions for 24 hours, so OpenShell's default of 1000 is reached in ordinary use. Keep in
+	// step with docs/snippets/openshell-quickstart/kubernetes/openshell-values.jq. OpenShell 0.1.8
+	// rejects this key.
+	openShellMutationAdmissionLimitValue = `--set=gatewayConfig.openshell\.gateway.mutation_admission_limit_per_caller=5000`
 )
 
 type openShellDevelopmentAssets struct {
@@ -115,39 +118,6 @@ func (r *runner) validateOpenShellImageRevisions(ctx context.Context, images ope
 	return nil
 }
 
-func openShellAdmissionConfiguration() []byte {
-	return []byte(strings.Join([]string{
-		"apiVersion: apiserver.config.k8s.io/v1",
-		"kind: AdmissionConfiguration",
-		"plugins:",
-		"  - name: PodSecurity",
-		"    configuration:",
-		"      apiVersion: pod-security.admission.config.k8s.io/v1",
-		"      kind: PodSecurityConfiguration",
-		"      defaults:",
-		"        enforce: privileged",
-		"        enforce-version: latest",
-		"        audit: privileged",
-		"        audit-version: latest",
-		"        warn: privileged",
-		"        warn-version: latest",
-		"      exemptions:",
-		"        usernames: []",
-		"        runtimeClasses:",
-		"          - " + openShellRuntimeClass,
-		"        namespaces: []",
-		"",
-	}, "\n"))
-}
-
-func prepareOpenShellAdmission(directory string) (string, error) {
-	path := filepath.Join(directory, "openshell-pod-security-admission.yaml")
-	if err := exclusiveWrite(path, openShellAdmissionConfiguration(), 0600); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
 func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, timeout time.Duration) (_ *openShellDevelopmentAssets, resultErr error) {
 	started := time.Now()
 	operationStarted := started
@@ -195,21 +165,6 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	advance("openshell-agent-sandbox-image")
 	manifest, err = r.preloadAgentSandboxController(ctx, state, root, manifest)
 	if err != nil {
-		return nil, err
-	}
-	advance("openshell-runtime-class")
-	runtimeClass := filepath.Join(root, "runtime-class.yaml")
-	if err := exclusiveWrite(runtimeClass, []byte(strings.Join([]string{
-		"apiVersion: node.k8s.io/v1",
-		"kind: RuntimeClass",
-		"metadata:",
-		"  name: " + openShellRuntimeClass,
-		"handler: runc",
-		"",
-	}, "\n")), 0600); err != nil {
-		return nil, err
-	}
-	if err := r.run(ctx, "kubectl", "apply", "-f", runtimeClass); err != nil {
 		return nil, err
 	}
 	advance("openshell-agent-sandbox-apply")
@@ -474,11 +429,11 @@ func openShellGatewayValues(state *developmentState, assets *openShellDevelopmen
 		// The gateway rejects every Sandbox template label it does not allow.
 		// Harness Pods carry OCE selector labels for NetworkPolicies and Services.
 		openShellAllowedPodLabelsValue,
+		openShellMutationAdmissionLimitValue,
 		"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 		"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 		"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=" + openShellOperatorNamespaceLabel + "=" + openShellOperatorNamespaceValue,
 		"--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-		"--set-string=server.defaultRuntimeClassName=" + openShellRuntimeClass,
 		"--set=gateway.image.pullPolicy=Never",
 		"--set=sandboxRuntime.image.pullPolicy=Never",
 		"--set=supervisor.image.pullPolicy=Never",

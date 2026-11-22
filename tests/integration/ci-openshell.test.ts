@@ -4,8 +4,8 @@ import { createServer, request, type IncomingMessage, type Server } from "node:h
 import type { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
 import { createRequire } from "node:module";
-import { join } from "node:path";
-import test from "node:test";
+import { dirname, join } from "node:path";
+import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -15,7 +15,7 @@ import {
   redactOutputLine,
   redactFailureDetail,
 } from "../../scripts/ci/failure-redaction.ts";
-import { withEnvironment } from "../helpers/environment.ts";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { prependPath } from "../helpers/fake-commands.ts";
 import {
   assertGatewayPolicyRunSucceeded,
@@ -737,9 +737,11 @@ function hasWebSocketServer(value: unknown): value is PeerModule {
   );
 }
 
-function probeWebSocketServer() {
+function probeWebSocketServer(t: TestContext) {
   const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
   const fromKubernetesClient = createRequire(controller.resolve("@kubernetes/client-node"));
+  // The kubectl stand-in runs the in-Pod client locally using the peer dependency.
+  setEnvironment(t, { NODE_PATH: dirname(dirname(fromKubernetesClient.resolve("ws"))) });
   const websocket: unknown = fromKubernetesClient("ws");
   assert.ok(hasWebSocketServer(websocket), "the Kubernetes client must provide a WebSocket server");
   return websocket.WebSocketServer;
@@ -811,7 +813,7 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   // Run the actual in-Pod client and probe decision. Only kubectl transport and the
   // app-server peer are fixtures. WebSocket message order, not a sleep, creates the boundary.
   const server = createServer();
-  const WebSocketServer = probeWebSocketServer();
+  const WebSocketServer = probeWebSocketServer(t);
   const peer = new WebSocketServer({ noServer: true });
   server.on("upgrade", (request, stream, head) => {
     peer.handleUpgrade(request, stream, head, (socket) => peer.emit("connection", socket, stream));
@@ -1043,7 +1045,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   // turn while the command still runs. The in-Pod client waits for that command's completion
   // event up to the fixture's bound, and reports the command's timing when the bound expires.
   const server = createServer();
-  const WebSocketServer = probeWebSocketServer();
+  const WebSocketServer = probeWebSocketServer(t);
   const peer = new WebSocketServer({ server });
   const port = await listen(t, server);
   const directory = await openShellTestDirectory(t);
@@ -1218,7 +1220,7 @@ test("a turn the model answered at capacity runs again only for its own final er
   // before the at-capacity answer leaves the outcome unknown, so no second thread starts. Only
   // the client's exit status and exact stdout receipt allow another turn; stderr never does.
   const server = createServer();
-  const WebSocketServer = probeWebSocketServer();
+  const WebSocketServer = probeWebSocketServer(t);
   const peer = new WebSocketServer({ server });
   const port = await listen(t, server);
   const directory = await openShellTestDirectory(t);
@@ -1324,6 +1326,16 @@ test("a turn the model answered at capacity runs again only for its own final er
         method: "item/completed",
         params: { ...at, item: { ...command, status, exitCode } },
       });
+      const agentReply = (turnId: string, text: string) => ({
+        method: "item/completed",
+        params: { threadId, turnId, item: { id: `reply-${turnId}`, type: "agentMessage", text } },
+      });
+      const reply = agentReply(turn.id, "OCC-TURN-OK");
+      const foreignReply = agentReply("other-turn", "OCC-FOREIGN-REPLY");
+      const finished = {
+        method: "turn/completed",
+        params: { threadId, turn: { ...turn, status: "completed" } },
+      };
       const eventsByScript: Record<string, readonly (object | "close")[]> = {
         capacity: [atCapacity(at)],
         // Our own turn's final error before any action, but not the at-capacity answer.
@@ -1382,16 +1394,9 @@ test("a turn the model answered at capacity runs again only for its own final er
             },
           }),
         ],
-        reply: [
-          {
-            method: "item/completed",
-            params: { ...at, item: { id: "reply", type: "agentMessage", text: "OCC-TURN-OK" } },
-          },
-          {
-            method: "turn/completed",
-            params: { threadId, turn: { ...turn, status: "completed" } },
-          },
-        ],
+        "foreign reply only": [foreignReply, finished],
+        reply: [reply, finished],
+        "reply followed by a foreign reply": [reply, foreignReply, finished],
       };
       assert.ok(script);
       const events = eventsByScript[script];
@@ -1427,6 +1432,12 @@ test("a turn the model answered at capacity runs again only for its own final er
     nativeExecutionSummary(error.stderr);
   const notRetried =
     'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt 1/3).';
+
+  await t.test("Gateway replies come from the acknowledged turn", async () => {
+    // A matching terminal can arrive with no reply of its own, and another turn may speak last.
+    assert.equal((await turn(["foreign reply only"])).assistant, "");
+    assert.equal((await turn(["reply followed by a foreign reply"])).assistant, "OCC-TURN-OK");
+  });
 
   // Our turn's final error at capacity before any action: the same turn runs again.
   for (const script of ["capacity", "capacity after a message"]) {

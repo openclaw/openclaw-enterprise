@@ -43,13 +43,17 @@ test("full coverage receipts require real case evidence and retain approved same
   const installers = readSuiteLane(full, "openshell-installers");
   const installerPaths = files(installers).map(({ path }) => path);
   assert.deepEqual(installers.requiredEnv, ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]);
+  for (const { raw: file } of files(installers)) {
+    assert.ok(!array(file.requiredEnv ?? []).includes("CODEX_ACCESS_TOKEN"));
+  }
   for (const { raw: file, path } of files(readSuiteLane(full, "openshell-policy"))) {
     assert.equal(
-      array(file.requiredEnv).includes("CODEX_ACCESS_TOKEN"),
+      array(file.requiredEnv ?? []).includes("CODEX_ACCESS_TOKEN"),
       ![
         "tests/integration/openshell-refresh-real.test.ts",
         "tests/integration/openshell-withdrawal-real.test.ts",
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+        "tests/integration/openshell-git-retention-real.test.ts",
       ].includes(path),
     );
   }
@@ -144,7 +148,7 @@ test("full coverage receipts require real case evidence and retain approved same
   await mkdir(join(fixtureRoot, "scripts/ci"), { recursive: true });
   const ownedFile = join(fixtureRoot, "owned-prepare-file");
   await writeFile(
-    join(fixtureRoot, "scripts/ci/prepare.mjs"),
+    join(fixtureRoot, "scripts/ci/prepare.ts"),
     [
       'import { writeFile, rm } from "node:fs/promises";',
       'const ownedFile = new URL("../../owned-prepare-file", import.meta.url);',

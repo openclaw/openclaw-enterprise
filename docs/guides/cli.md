@@ -149,7 +149,9 @@ whom a key was issued for, so start each key's `--name` with the person's name, 
 
 ## Connection and credential boundaries
 
-The key file is the full JSON response from bootstrap or key issuance, not a
+The key file is JSON containing `data.key`, either prepared locally for
+[bootstrap](../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key)
+or saved from key issuance, not a
 file containing only the raw key. Keep it owner-readable; never put the key in
 command arguments, logs, or source control. For HTTPS signed by a private
 certificate authority, set `OCC_CA_BUNDLE` to its PEM bundle. See

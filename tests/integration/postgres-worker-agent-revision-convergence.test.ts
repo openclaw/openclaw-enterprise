@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after, type TestContext } from "node:test";
-import pg from "pg";
+import pg, { type QueryResult } from "pg";
+import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type {
   Agent,
@@ -27,12 +28,20 @@ import type {
   WorkIdentity,
 } from "../helpers/postgres-worker-refused-candidate.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { advanceCleanupRetries, makeWorkDue } from "../helpers/postgres-worker-revision-queue.ts";
+import {
+  advanceCleanupRetries,
+  completion,
+  makeWorkDue,
+} from "../helpers/postgres-worker-revision-queue.ts";
 import {
   assertFailedDeployment,
   runPreparationFailureCase,
   type WorkResultRow,
 } from "../helpers/postgres-worker-revision-scenarios.ts";
+import {
+  repositoryAttempts,
+  repositoryBoundary,
+} from "../helpers/postgres-worker-revision-support.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 
 type AgentIdentity = Pick<Agent, "id">;
@@ -41,6 +50,7 @@ type ConvergenceFixture = Pick<
   RevisionFixture,
   | "actor"
   | "admitInitialRevision"
+  | "advanceMaintenance"
   | "compute"
   | "controller"
   | "currentAgent"
@@ -48,12 +58,15 @@ type ConvergenceFixture = Pick<
   | "namespace"
   | "observerPool"
   | "PostgresWorkQueue"
+  | "requestStop"
+  | "revision"
   | "start"
   | "state"
   | "stop"
   | "work"
   | "workResult"
 > & {
+  activePointer(owner: AgentIdentity): Promise<QueryResult<ActiveRevisionRow>>;
   deploymentStatus(
     owner: AgentIdentity,
     revision: RevisionIdentity,
@@ -78,7 +91,7 @@ const {
 }: {
   setup(
     context: Pick<TestContext, "after">,
-    options?: Pick<SetupOptions, "maxAttempts">,
+    options?: Pick<SetupOptions, "maxAttempts" | "repoDriver">,
   ): Promise<ConvergenceFixture>;
   cleanup: ReturnType<typeof createWorkerRevisionFixtures>["cleanup"];
 } = createWorkerRevisionFixtures(import.meta.url);
@@ -96,6 +109,17 @@ function revisionTest(
 type WorkStateRow = { state: ControllerWorkState };
 type ActiveRevisionRow = { active_revision_id: string | null };
 type PendingAttempt = NonNullable<DeploymentStatusResult["progress"]>["lastAttempt"];
+type RepositoryGitMaterialState = Awaited<
+  ReturnType<NonNullable<ControllerWorkerOptions["repositoryGitMaterial"]>>
+>;
+type FirstTokenScenario = {
+  agent: "new" | "existing" | "stopped-before-activation";
+  material: RepositoryGitMaterialState;
+};
+type DeadlineScenario = {
+  wait: ConstructorParameters<typeof ActivationPendingError>[0];
+  material: RepositoryGitMaterialState;
+};
 
 async function retirementStates(
   fixture: Pick<ConvergenceFixture, "observerPool">,
@@ -297,7 +321,10 @@ revisionTest(
 revisionTest(
   "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
   async (fixture) => {
-    const { owner, candidate } = await fixture.admitInitialRevision("cleanup-status");
+    const repository = repositoryBoundary().snapshot;
+    const { owner, candidate } = await fixture.admitInitialRevision("cleanup-status", {
+      revision: { repositoryCredentials: repository },
+    });
     const queue = new fixture.PostgresWorkQueue(fixture.observerPool);
     const readStatus = () => fixture.deploymentStatus(owner, candidate);
 
@@ -311,11 +338,27 @@ revisionTest(
     const deploy = await queue.claim();
     assert.ok(deploy, "expected a claim for the due work");
     assert.equal(deploy.idempotencyKey, candidate.idempotencyKey);
-    await queue.enqueueRepositoryCleanup(
-      deploy,
-      { namespaceId: fixture.namespace.id, agentId: owner.id, revisionId: candidate.id },
-      "failed-preparation",
-    );
+    const revisionOwner = {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      revisionId: candidate.id,
+    };
+    await queue.enqueueRepositoryCleanup(deploy, revisionOwner, "failed-preparation");
+    const binding = repository.bindings[0];
+    assert.ok(binding);
+    // Deployment failure transfers a still-unconfirmed opening to retirement.
+    await fixture.state.transact(async ({ repositorySessions }) => {
+      const now = new Date();
+      await repositorySessions.createAttempt({
+        ...revisionOwner,
+        admissionId: `${now.getTime()}-${randomUUID()}`,
+        repositoryRef: binding.repositoryRef,
+        durationSeconds: 60,
+        deadlineWallMs: repository.deadlineWallMs,
+        createdAt: now.toISOString(),
+        brokerProtocol: 3,
+      });
+    });
     await queue.fail(deploy, { code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" });
 
     // No worker has claimed the cleanup yet: it waits, whatever its deployment recorded
@@ -332,9 +375,22 @@ revisionTest(
     assert.equal(claim.revisionId, candidate.id);
     assert.deepEqual((await readStatus()).cleanup, { status: "running", nextAttemptAt: null });
 
+    // A deferral refunds the count, but exact-work evidence keeps terminal retirement running.
+    await queue.defer(claim, { code: "DEPENDENCY_UNAVAILABLE" }, { delayMs: 60_000 });
+    const deferred = await queue.findWork(claim.idempotencyKey);
+    assert.equal(deferred?.attemptCount, 0);
+    assert.deepEqual((await readStatus()).cleanup, {
+      status: "running",
+      nextAttemptAt: deferred.availableAt.toISOString(),
+    });
+
     // A retry counts the attempt and queues the cleanup again. It stays running between
     // attempts and still reports no result.
-    await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
+    await makeWorkDue(fixture.observerPool, claim.idempotencyKey);
+    const retry = await queue.claim();
+    assert.ok(retry);
+    assert.equal(retry.idempotencyKey, claim.idempotencyKey);
+    await queue.retry(retry, { code: "DEPENDENCY_UNAVAILABLE" });
     const retried = await queue.findWork(claim.idempotencyKey);
     assert.ok(retried, "missing retried cleanup work");
     assert.equal(retried.attemptCount, 1);
@@ -349,6 +405,35 @@ revisionTest(
     assert.equal(last.idempotencyKey, claim.idempotencyKey);
     assert.equal((await readStatus()).cleanup?.status, "running");
     await queue.complete(last, { code: "REPOSITORY_CLEANUP_COMPLETE" });
+    assert.deepEqual((await readStatus()).cleanup, { status: "succeeded", nextAttemptAt: null });
+
+    // A later Stop can transfer its own cleanup obligation for the same revision.
+    // The already-completed retirement must not mask that independent work.
+    await fixture.controller.stopAgent(fixture.actor.id, fixture.namespace.id, owner.id);
+    const stop = await queue.claim();
+    assert.ok(stop);
+    assert.equal(stop.agentTarget, "stopped");
+    const sessions = await queue.enqueueRepositoryCleanup(stop, revisionOwner);
+    assert.ok(sessions);
+    await queue.complete(stop, { code: "AGENT_STOPPED" });
+    const pending = await readStatus();
+
+    const disposal = await queue.claim();
+    assert.ok(disposal);
+    assert.equal(disposal.idempotencyKey, sessions.idempotencyKey);
+    const running = await readStatus();
+
+    assert.deepEqual(
+      [pending.cleanup, running.cleanup],
+      [
+        { status: "queued", nextAttemptAt: sessions.availableAt.toISOString() },
+        { status: "running", nextAttemptAt: null },
+      ],
+      "completed retirement must not mask pending or running session disposal",
+    );
+    assert.deepEqual([pending.status, running.status], ["failed", "failed"]);
+
+    await queue.complete(disposal, { code: "REPOSITORY_CLEANUP_COMPLETE" });
     assert.deepEqual((await readStatus()).cleanup, { status: "succeeded", nextAttemptAt: null });
   },
 );
@@ -1137,3 +1222,331 @@ for (const { label, failure, code, message } of [
     },
   );
 }
+
+// Finding 2415: native prepared Git issues a version's first token only after its active pointer
+// is published, so a ready runtime reported success while every Git request answered 503. The
+// deployment now waits for the token. Owner decision 2026-10-28 (finding 2425) for a version
+// whose token GitHub's answer quarantined: a new Agent's deployment fails and its version is
+// retired; an existing Agent's deployment fails but the version keeps running without Git, so
+// the Agent can still chat and report it. A token still pending at the convergence deadline
+// (finding 2894: no attempt finished, for example an unreadable App key) ends the same way: a new
+// Agent's version is retired, an existing Agent's is kept and gets Git if the token arrives.
+for (const { agent, material } of [
+  { agent: "new", material: "ready" },
+  { agent: "new", material: "quarantined" },
+  { agent: "new", material: "pending" },
+  { agent: "existing", material: "quarantined" },
+  { agent: "existing", material: "pending" },
+  // The earlier version's deployment completed without activation: still a new Agent.
+  { agent: "stopped-before-activation", material: "quarantined" },
+] satisfies FirstTokenScenario[]) {
+  test(
+    `a ${agent} Agent's native repository deployment waits for its first GitHub token, ` +
+      `then handles a ${material} token`,
+    requiresPostgres,
+    async (context) => {
+      const repository = repositoryBoundary();
+      const fixture = await setup(context, { repoDriver: repository.driver });
+      const revisionOptions = { repositoryCredentials: repository.snapshot };
+      // A stopped repository version fails its deployment (REPOSITORY_REVISION_STOPPED), so the
+      // version stopped before activation binds no repository.
+      const { owner, candidate: first } = await fixture.admitInitialRevision(
+        `repository-token-${agent}-${material}`,
+        { revision: agent === "stopped-before-activation" ? {} : revisionOptions },
+      );
+      const ready = async (): Promise<RepositoryGitMaterialState> => "ready";
+      if (agent === "existing") {
+        await fixture.start(fixture.compute, { repositoryGitMaterial: ready });
+        await fixture.work(first, "succeeded");
+        await fixture.stop();
+      } else if (agent === "stopped-before-activation") {
+        // The Agent is stopped while its first version prepares: that deployment completes
+        // REVISION_STOPPED, a succeeded work row that never activated anything.
+        const { promise: released, resolve: release } = Promise.withResolvers<void>();
+        const { promise: started, resolve: preparing } = Promise.withResolvers<void>();
+        await fixture.start(
+          {
+            ...fixture.compute,
+            async prepareRevision(revision) {
+              preparing();
+              await released;
+              return fixture.compute.prepareRevision(revision);
+            },
+          },
+          { repositoryGitMaterial: ready },
+        );
+        await started;
+        const stop = await fixture.requestStop(owner);
+        release();
+        await fixture.work(first, "succeeded");
+        await fixture.work(stop, "succeeded");
+        await fixture.stop();
+        const {
+          rows: [result],
+        } = await fixture.workResult(first);
+        assert.ok(result, "the stopped deployment has a persisted work result");
+        assert.equal(result.reason_code, "REVISION_STOPPED");
+      }
+      const candidate = agent === "new" ? first : await fixture.revision(owner, 2, revisionOptions);
+      const checked: string[] = [];
+      const stopped: string[] = [];
+      const retired: string[] = [];
+      let published = 0;
+      let waiting: DeploymentStatusResult | undefined;
+      const compute: ComputeDriver = {
+        ...fixture.compute,
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          return fixture.compute.stopRevision(revision);
+        },
+        async retireRevision(revision) {
+          retired.push(revision.id);
+          return fixture.compute.retireRevision(revision);
+        },
+      };
+      const events: WorkerEvent[] = [];
+      await fixture.start(compute, {
+        emit: (event) => events.push(event),
+        // A pending token ends at the convergence deadline.
+        ...(material === "pending" ? { convergenceTimeoutMs: 3_000 } : {}),
+        async repositoryGitMaterial(revisionId) {
+          // A later version (below) gets its token at once.
+          if (revisionId !== candidate.id) {
+            return "ready";
+          }
+          checked.push(revisionId);
+          // In production the worker's prepared owner reports the token state; this returns the
+          // states its store returns (postgres-prepared-github-git-use test). Like the owner,
+          // nothing is issued before the pointer is published. The first check after it
+          // records the wait; GitHub answers before the next one.
+          const pointer = (await fixture.activePointer(owner)).rows[0]?.active_revision_id;
+          if (pointer !== candidate.id || published++ === 0) {
+            return "pending";
+          }
+          waiting ??= await fixture.deploymentStatus(owner, candidate);
+          return material;
+        },
+      });
+      await fixture.work(candidate, material === "ready" ? "succeeded" : "failed_permanent");
+      assert.ok(checked.length >= 2 && checked.every((id) => id === candidate.id), checked.join());
+      // The wait is visible as progress, never as success.
+      assert.ok(waiting, "the deployment reported its token wait");
+      assert.notEqual(waiting.status, "succeeded");
+      assert.equal(waiting.progress?.lastAttempt?.code, "REPOSITORY_GIT_MATERIAL_PENDING");
+      const status = await fixture.deploymentStatus(owner, candidate);
+      const pointer = () => activeRevisionId(fixture, owner);
+      if (material === "ready") {
+        assert.equal(status.status, "succeeded");
+        assert.equal(status.error, null);
+        assert.equal(await pointer(), candidate.id);
+        assert.deepEqual(stopped, []);
+        return;
+      }
+      // A quarantined version is never prepared again, so its deployment fails at once instead
+      // of at the convergence deadline, and names the cause and the recovery. A token still
+      // pending ends at the deadline: a new Agent's deployment names the deadline, an existing
+      // Agent's names the missing token and keeps the version.
+      assert.equal(status.status, "failed");
+      assert.ok(status.error, "the failed deployment reports an error");
+      let expectedCode = "CONVERGENCE_DEADLINE_EXCEEDED";
+      if (material === "quarantined") {
+        expectedCode = "REPOSITORY_GIT_TOKEN_QUARANTINED";
+      } else if (agent === "existing") {
+        expectedCode = "REPOSITORY_GIT_TOKEN_PENDING";
+      }
+      assert.equal(status.error.code, expectedCode);
+      assert.match(status.error.message, /deploy a new version\.$/);
+      const retirement = () =>
+        fixture.observerPool.query<WorkStateRow, [string, string]>(
+          `SELECT state FROM occ.controller_work
+           WHERE revision_id = $1 AND idempotency_key LIKE $2`,
+          [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
+        );
+      if (agent !== "existing") {
+        // A new Agent fails: like any repository version that failed for good, its version is
+        // retired, so the Agent has no running version until a deployment succeeds.
+        await waitFor("the failed version's runtime retirement", async () =>
+          (await retirement()).rows[0]?.state === "succeeded" ? true : undefined,
+        );
+        assert.deepEqual(stopped, [candidate.id]);
+        assert.equal(await pointer(), null);
+        return;
+      }
+      // An existing Agent keeps this version serving without Git and says so. Its predecessor
+      // stopped serving when the pointer moved; this deployment neither stops its own version
+      // nor retires the predecessor.
+      assert.match(status.error.message, /keeps this version running without Git/);
+      // The pass ends with its completion event, after any Compute call it makes. A pass that
+      // throws after the failure committed (for example a Compute call for a claim it no longer
+      // holds) logs worker.error instead.
+      const ended = await completion(
+        events,
+        "the failed deployment's completion",
+        ({ event, workId, outcome }) =>
+          event === "worker.error" ||
+          (event === "worker.completed" &&
+            workId === candidate.idempotencyKey &&
+            outcome === "permanent"),
+      );
+      assert.equal(ended.event, "worker.completed", JSON.stringify(ended));
+      assert.equal(await pointer(), candidate.id);
+      const active = await fixture.currentAgent(owner);
+      assert.ok(active, "the existing Agent remains persisted");
+      assert.equal(active.desiredRuntimeState, "running");
+      assert.equal((await retirement()).rowCount, 0);
+      assert.deepEqual(stopped, []);
+      assert.deepEqual([...retired], []);
+      // A pending token can still commit after the deadline and give the kept version Git: the
+      // prepared owner issues a token for an open session of the running Agent's active version
+      // (postgres-prepared-github-git-use test), and this version keeps its session open.
+      const openSessions = async () => [
+        ...new Set(
+          (await repositoryAttempts(fixture, candidate)).map(({ phase }) => phase === "open"),
+        ),
+      ];
+      assert.deepEqual(await openSessions(), [true]);
+      // The failure starts the version's maintenance chain in the same transaction; its next
+      // pass keeps the version active (and retires the superseded predecessor, as any does).
+      const [maintenance] = (await fixture.advanceMaintenance(candidate)).rows;
+      assert.ok(maintenance, "the failed deployment queued the version's maintenance");
+      const passed = await waitFor("the version's maintenance pass", async () => {
+        const { rows } = await fixture.observerPool.query<
+          WorkStateRow & { reason_code: string | null },
+          [string]
+        >("SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1", [
+          maintenance.idempotency_key,
+        ]);
+        return rows[0]?.state === "succeeded" ? rows[0] : undefined;
+      });
+      assert.equal(passed.reason_code, "REVISION_ALREADY_ACTIVE");
+      assert.equal(await pointer(), candidate.id);
+      assert.deepEqual(stopped, []);
+      assert.deepEqual(retired, [first.id]);
+      assert.deepEqual(await openSessions(), [true]);
+      // A later version whose token GitHub issues replaces the kept one as usual: its deployment
+      // succeeds, takes the pointer and retires the version that ran without Git.
+      const fixed = await fixture.revision(owner, 3, revisionOptions);
+      await fixture.work(fixed, "succeeded");
+      assert.equal((await fixture.deploymentStatus(owner, fixed)).status, "succeeded");
+      assert.equal(await pointer(), fixed.id);
+      assert.ok(retired.includes(candidate.id), retired.join());
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+    },
+  );
+}
+
+// Finding 2894 keeps an existing Agent's version only when the deadline ended its wait for the
+// first Git token. A published version whose runtime never activated is a convergence failure
+// even when its token is pending, and so is Compute's Sandbox install, which shares the token
+// wait's code, once the token is committed: both retire the version as before.
+for (const { wait, material } of [
+  { wait: "WORKSPACE_NODE_PENDING", material: "pending" },
+  { wait: "REPOSITORY_GIT_MATERIAL_PENDING", material: "ready" },
+] satisfies DeadlineScenario[]) {
+  test(
+    `an existing Agent's native repository version that waits at ${wait} with a ${material} ` +
+      "token fails at the convergence deadline and is retired",
+    requiresPostgres,
+    async (context) => {
+      const repository = repositoryBoundary();
+      const fixture = await setup(context, { repoDriver: repository.driver });
+      const revisionOptions = { repositoryCredentials: repository.snapshot };
+      const { owner, candidate: first } = await fixture.admitInitialRevision(
+        `repository-deadline-${wait.toLowerCase()}`,
+        { revision: revisionOptions },
+      );
+      await fixture.start(fixture.compute, { repositoryGitMaterial: async () => "ready" });
+      await fixture.work(first, "succeeded");
+      await fixture.stop();
+      const candidate = await fixture.revision(owner, 2, revisionOptions);
+      const stopped: string[] = [];
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async activateRevision(revision, revisionContext) {
+            // The published version's activation never completes before the deadline.
+            if (revision.id === candidate.id) {
+              throw new ActivationPendingError(wait, "The test runtime is not ready.");
+            }
+            return fixture.compute.activateRevision?.(revision, revisionContext);
+          },
+          async stopRevision(revision) {
+            stopped.push(revision.id);
+            return fixture.compute.stopRevision(revision);
+          },
+        },
+        {
+          convergenceTimeoutMs: 3_000,
+          repositoryGitMaterial: async (revisionId) =>
+            revisionId === candidate.id ? material : "ready",
+        },
+      );
+      await fixture.work(candidate, "failed_permanent");
+      const status = await fixture.deploymentStatus(owner, candidate);
+      assert.equal(status.status, "failed");
+      assert.ok(status.error, "the failed deployment reports an error");
+      assert.equal(status.error.code, "CONVERGENCE_DEADLINE_EXCEEDED");
+      await waitFor("the failed version's runtime retirement", async () => {
+        const { rows } = await fixture.observerPool.query<WorkStateRow, [string, string]>(
+          `SELECT state FROM occ.controller_work
+           WHERE revision_id = $1 AND idempotency_key LIKE $2`,
+          [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
+        );
+        return rows[0]?.state === "succeeded" ? true : undefined;
+      });
+      assert.deepEqual(stopped, [candidate.id]);
+      assert.equal(await activeRevisionId(fixture, owner), null);
+    },
+  );
+}
+
+test(
+  "a running native repository version's maintenance ignores a quarantined token renewal",
+  requiresPostgres,
+  async (context) => {
+    // Finding 2415: only a deployment waits for its version's token. A running version whose
+    // renewal GitHub refused keeps its maintenance chain: failing that pass would fail a version
+    // nobody deployed just now, and its renewal failure is reported in the worker log instead.
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const { owner, candidate } = await fixture.admitInitialRevision("repository-token-renewal", {
+      revision: { repositoryCredentials: repository.snapshot },
+    });
+    const events: WorkerEvent[] = [];
+    let state: RepositoryGitMaterialState = "ready";
+    await fixture.start(
+      { ...fixture.compute, maintenanceIntervalMs: 200 },
+      {
+        emit: (event) => events.push(event),
+        repositoryGitMaterial: async () => state,
+      },
+    );
+    await fixture.work(candidate, "succeeded");
+    // The running version's renewal is quarantined from now on.
+    state = "quarantined";
+    const quarantinedAt = events.length;
+    const maintenance = `agent_revision:${candidate.id}:maintenance:`;
+    const passes = () =>
+      events
+        .slice(quarantinedAt)
+        .filter(
+          (event) =>
+            event.event === "worker.completed" &&
+            typeof event.workId === "string" &&
+            event.workId.startsWith(maintenance),
+        );
+    // Two passes, so at least one began after the quarantine.
+    await waitFor("two maintenance passes after the quarantine", async () =>
+      passes().length >= 2 ? true : undefined,
+    );
+    const completed = passes();
+    assert.ok(
+      completed.every(({ outcome }) => outcome === "success"),
+      completed.map(({ outcome, code }) => `${outcome}:${code}`).join(),
+    );
+    assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "succeeded");
+    const active = await fixture.currentAgent(owner);
+    assert.ok(active, "the running Agent remains persisted");
+    assert.equal(active.activeRevisionId, candidate.id);
+  },
+);

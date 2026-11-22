@@ -1,14 +1,12 @@
 package occcli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occdev"
@@ -78,25 +76,11 @@ func developmentCommand() *cobra.Command {
 					arguments = append(arguments, "--")
 					arguments = append(arguments, args...)
 					process := exec.CommandContext(cmd.Context(), "bash", arguments...)
-					process.Dir, process.Stdin = repository, cmd.InOrStdin()
+					process.Dir = repository
 					// Name the selection the script would otherwise default, so a
 					// change to either default cannot send it back here.
 					process.Env = append(os.Environ(), "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker")
-					process.Stdout, process.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
-					// On interrupt, terminate rather than kill the script so its EXIT
-					// trap removes the temporary directory with the rendered Compose
-					// configuration; kill it only if it does not stop in time.
-					process.Cancel = func() error { return process.Process.Signal(syscall.SIGTERM) }
-					process.WaitDelay = 10 * time.Second
-					err := process.Run()
-					// The script prints its own diagnostic; pass its status on
-					// (usage errors exit 2) instead of collapsing it to 1. An
-					// interrupt keeps the generic error.
-					var exited *exec.ExitError
-					if errors.As(err, &exited) && exited.ExitCode() > 0 && cmd.Context().Err() == nil {
-						return &ExitStatusError{Code: exited.ExitCode()}
-					}
-					return err
+					return runStreamingProcess(cmd, process, 10*time.Second)
 				default:
 					return profile.CheckComputeDriver()
 				}
@@ -140,6 +124,21 @@ func developmentCommand() *cobra.Command {
 			return nil
 		},
 	})
+	var bootstrapDirectory string
+	prepareBootstrap := &cobra.Command{
+		Use:    "prepare-bootstrap-mounts --directory PATH [-- COMPOSE_GLOBAL_OPTIONS...]",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			return occdev.PrepareBootstrapMounts(cmd.Context(), occdev.Options{Repository: repository, ComposeArgs: args, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}, bootstrapDirectory)
+		},
+	}
+	prepareBootstrap.Flags().StringVar(&bootstrapDirectory, "directory", "", "Private credential directory")
+	_ = prepareBootstrap.MarkFlagRequired("directory")
+	command.AddCommand(prepareBootstrap)
 	var profile string
 	analyze := &cobra.Command{
 		Use:    "analyze-compose",
@@ -163,50 +162,6 @@ func developmentCommand() *cobra.Command {
 	return command
 }
 
-// ExitStatusError asks the caller to exit with Code without printing anything
-// more: the child process that failed has already reported why.
-type ExitStatusError struct{ Code int }
-
-func (err *ExitStatusError) Error() string { return fmt.Sprintf("exit status %d", err.Code) }
-
 func developmentRepository() (string, error) {
-	directory, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	const declaration = "module github.com/openclaw/openclaw-enterprise"
-	for {
-		modulePath := filepath.Join(directory, "go.mod")
-		module, err := os.ReadFile(modulePath)
-		content := string(module)
-		line, _, hasNewline := strings.Cut(content, "\n")
-		if err == nil && hasNewline && strings.TrimSuffix(line, "\r") == declaration {
-			composePath := filepath.Join(directory, "compose.yaml")
-			info, err := os.Lstat(composePath)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return "", fmt.Errorf("inspect %q: %w", composePath, err)
-			}
-			if err == nil {
-				if info.Mode()&os.ModeSymlink != 0 {
-					info, err = os.Stat(composePath)
-					if err != nil {
-						return "", fmt.Errorf("inspect %q: %w", composePath, err)
-					}
-				}
-				if !info.Mode().IsRegular() {
-					return "", fmt.Errorf("%q must be a regular file", composePath)
-				}
-				if !strings.Contains(content, "\r\n") {
-					return directory, nil
-				}
-				return "", fmt.Errorf("%q uses CRLF line endings; convert it to LF before running occ dev", modulePath)
-			}
-		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			break
-		}
-		directory = parent
-	}
-	return "", fmt.Errorf("run occ dev from an OpenClaw Enterprise source checkout")
+	return checkoutRepository("occ dev", "compose.yaml")
 }
