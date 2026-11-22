@@ -920,16 +920,10 @@ void test("A list left again during its rows' rereads is reused on the next retu
   await assertCompletedDeployments(page, agents);
 });
 
-// On a phone the Agents table scrolled sideways: 5 columns, the deployment one a fixed 14 rem, so
-// 2.5 columns showed and IDs broke after every character (UX plan C5). Under 760 px each Agent is
-// a stacked row: name and ID, then each cell beside its column's name. A dozen Agents with
-// 60-character names fit down to 320 px, every column name shows, IDs break only after a hyphen
-// or underscore, and the row still opens its Agent. At 1440 the table is unchanged.
-// Two names are the longest allowed with no break in them (200 characters, one joined by no-break
-// spaces): each wraps inside its row at every width, and above 760 px within its ID's 310 px, so
-// it does not widen the table. The other names wrap as before, only between words (findings 1955,
-// 1956).
-void test("On a phone the Agents list stacks each row, fits the screen and still opens the Agent", async (t) => {
+// Labelled rows keep each Agent's identity and details in view at split desktop and phone
+// widths. A dozen Agents fit down to 320 px, even with long names and IDs. On wide screens
+// the longest names without break opportunities wrap within the ID width.
+void test("The Agents list fits labelled rows on split desktops and phones and still opens the Agent", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Phone Agents list");
   const agents = [];
   for (let index = 1; index <= AGENTS; index += 1) {
@@ -975,11 +969,11 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
     "Created",
     "Actions",
   ];
-  for (const width of [390, 360, 320, 600, 760, 761, 1024, 1440]) {
-    const desktop = width > 760;
+  for (const width of [390, 360, 320, 600, 760, 761, 920, 1024, 1100, 1440]) {
+    const wideTable = width > 1100;
     const { page } = await newPage(t, fixture, {
       browser,
-      context: { viewport: { width, height: desktop ? 900 : 844 } },
+      context: { viewport: { width, height: width > 760 ? 900 : 844 } },
     });
     // Each row keeps its height when its deployment read lands (finding 1488).
     const rows = await holdRowReads(t, page, namespace);
@@ -1068,7 +1062,11 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
           labels: cells.slice(1).map((cell) => {
             const before = globalThis.getComputedStyle(cell, "::before");
             const range = document.createRange();
-            range.selectNodeContents(cell);
+            range.selectNodeContents(
+              globalThis.innerWidth > 760 && globalThis.innerWidth <= 1100
+                ? (cell.querySelector(".resource-row-actions") ?? cell)
+                : cell,
+            );
             const content = range.getBoundingClientRect();
             const box = cell.getBoundingClientRect();
             return {
@@ -1077,7 +1075,6 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
                 before.display !== "none" &&
                 before.visibility === "visible" &&
                 before.content.startsWith(JSON.stringify(cell.dataset.label)),
-              // The value starts beside its label (760 px and under) or below it (520 and under).
               beside: content.left - box.left > 40,
               below: content.top - box.top >= 12,
             };
@@ -1146,11 +1143,7 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
       };
     });
     assert.equal(layout.pageFits, true, `${width}: the page scrolls sideways`);
-    // At 761 and 1024 px these rows' six columns still scroll inside their card (finding 1907),
-    // but the unbroken name makes the table no wider than its other rows do.
-    if (width !== 761 && width !== 1024) {
-      assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
-    }
+    assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
     assert.ok(
       layout.width <= layout.ordinaryWidth + 2,
       `${width}: the unbroken name widens the table from ${layout.ordinaryWidth} to ${layout.width} px`,
@@ -1164,18 +1157,18 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
     for (const [index, row] of layout.rows.entries()) {
       assert.equal(row.overflows, false, `${width}: row ${index} overflows the table`);
       assert.equal(row.name.inside, true, `${width}: row ${index} name overflows its cell`);
-      if (desktop && row.unbroken) {
+      if (wideTable && row.unbroken) {
         assert.ok(row.name.width <= 310.5, `${width}: the unbroken name is ${row.name.width} px`);
       }
       // A stacked row gives every name its full width.
-      if (width >= 600 && !desktop && row.unbroken) {
+      if (width >= 600 && !wideTable && row.unbroken) {
         assert.ok(row.name.width > 400, `${width}: the unbroken name is ${row.name.width} px`);
       }
       // Ordinary names wrap as they did before, only between words.
       if (!row.unbroken) {
         assert.equal(
           row.name.wrap,
-          desktop ? "inline normal" : "inline anywhere",
+          wideTable ? "inline normal" : "inline anywhere",
           `${width}: row ${index} name wrap`,
         );
         for (const character of row.name.breaks) {
@@ -1188,14 +1181,16 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
         `${width}: row ${index} labels`,
       );
       for (const { label, shown, beside, below } of row.labels) {
-        if (desktop) {
+        if (wideTable) {
           // The desktop table names its columns in the header row instead.
           assert.equal(shown, false, `${width}: ${label} labelled in the cell`);
         } else {
           assert.equal(shown, true, `${width}: row ${index} hides ${label}`);
+          const inlineLabel =
+            width > 520 && (width <= 760 || label === "Actions" || label === "Created");
           assert.deepEqual(
             { beside, below },
-            width > 520 ? { beside: true, below: false } : { beside: false, below: true },
+            { beside: inlineLabel, below: !inlineLabel },
             `${width}: row ${index} ${label} value overlaps its label`,
           );
         }
@@ -1217,9 +1212,9 @@ void test("On a phone the Agents list stacks each row, fits the screen and still
           `${width}: row ${index} revision colour`,
         );
       }
-      assert.equal(row.display, desktop ? "table-row" : "grid", `${width}: row display`);
+      assert.equal(row.display, wideTable ? "table-row" : "grid", `${width}: row display`);
     }
-    assert.equal(layout.headerShown, desktop, `${width}: header row`);
+    assert.equal(layout.headerShown, wideTable, `${width}: header row`);
     // The row's name still opens its Agent.
     const target = required(agents[1]);
     await table.getByRole("link", { name: target.name, exact: true }).click();
@@ -1455,7 +1450,7 @@ void test("Agents list marks names with no break opportunity, hyphen and dash ru
       assert.ok(shown);
       assert.equal(shown.marked, entry.unbroken, `${label} marked`);
       assert.equal(shown.longest >= 21, entry.unbroken, `${label} longest run ${shown.longest}`);
-      if (entry.unbroken) {
+      if (width === 1440 && entry.unbroken) {
         assert.ok(shown.width <= 310.5, `${label} the unbroken name is ${shown.width} px`);
       }
     }

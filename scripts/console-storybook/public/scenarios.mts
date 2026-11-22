@@ -596,6 +596,7 @@ const authoredScenarios = {
     description:
       "One Agent has unreadable saved plugin selections. Both Agents remain in the list, and the affected row shows a warning. This is simulated API data, not database recovery proof.",
     steps: [
+      "At a split desktop width, check that the warning stays with the Agent name. Tab through its version and deployment links, then Shift+Tab back.",
       "Open Research assistant and select Open draft. Its saved settings show a repair banner without editing or deployment controls.",
       "Select v1 to inspect the readable admitted snapshot. Return to Agents and open Documentation assistant to check that its draft remains editable.",
     ],
@@ -753,8 +754,8 @@ const authoredScenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
-      "Narrow the desktop view until Actions is off screen. Scroll the table sideways to reach it. The sidebar and page heading stay in place.",
-      "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's whole reason without the short grant line, and Enter, Space or a click opens no confirmation.",
+      "At a split desktop width, find each Agent's labelled details and Actions under its name without scrolling sideways.",
+      "Tab to Stop and Delete, then Shift+Tab back. Each icon takes focus with its Agent name and grant note in view. Its accessible description gives the whole reason, and Enter, Space or a click opens no confirmation.",
       "Find Needs operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
     ],
@@ -1223,11 +1224,11 @@ const authoredScenarios = {
     bootstrapFailure: true,
     path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
     description:
-      "The list shows the newest visible failure beside the current version, without asserting serving health. The failure keeps to one line, so the row keeps its height when the read lands; its title and the Agent page give the whole text.",
+      "The list shows the newest visible failure beside the current version, without asserting serving health. At split desktop widths the failure can wrap. Its title and the Agent page also give the whole text.",
     steps: [
       'Current version reads "v6", not an ID, and the latest deployment reads "v7 · Failed": the words the Agent page uses.',
       "Compare the current version with the failed deployment. The failure reason uses the error color. Hover it to read the full message.",
-      "Tab between the Agent and version links. Check the highlight follows the row and the focused link has its own outline.",
+      "At a split desktop width, use Tab and Shift+Tab between the Agent, version links and row actions. Check that the name and focus outline stay in view.",
       "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
     ],
   } satisfies LocalScenario,

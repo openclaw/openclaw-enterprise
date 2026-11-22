@@ -3759,9 +3759,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     font: var(--text-md) / var(--text-md--line-height) var(--font-mono);
   }
 }
-/* Phone: each Agent is a stacked row, its name and ID first, then each cell beside its column's
-   name (`data-label`), so nothing scrolls sideways. The header row stays for screen readers. */
-@media (max-width: 760px) {
+/* Keep each Agent's identity and labelled details together where the table has less room.
+   The header row stays for screen readers. */
+@media (max-width: 1100px) {
   .agent-table,
   .agent-table tbody {
     display: block;
@@ -3776,7 +3776,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   }
   .agent-table tbody tr {
     display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
     gap: var(--space-2) var(--space-3);
     padding: var(--space-4);
     border-bottom: 1px solid var(--color-border);
@@ -3785,19 +3784,13 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     border-bottom: 0;
   }
   .agent-table td {
-    grid-column: 1 / -1;
     min-width: 0;
     padding: 0;
     border-bottom: 0;
     overflow-wrap: anywhere;
   }
-  .agent-table td[data-label] {
-    display: grid;
-    grid-template-columns: subgrid;
-    align-items: baseline;
-    row-gap: var(--space-1);
-  }
   .agent-table td[data-label]::before {
+    display: block;
     content: attr(data-label);
     /* The hidden header row already names the column for screen readers. */
     content: attr(data-label) / "";
@@ -3805,6 +3798,74 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     color: var(--color-text-muted);
     font-size: var(--text-sm);
     font-weight: var(--weight-medium);
+  }
+  .agent-table .resource-id {
+    max-width: none;
+  }
+  .agent-table .agent-name-unbroken {
+    display: inline;
+    overflow-wrap: inherit;
+  }
+}
+@media (760px < width <= 1100px) {
+  .agent-table tbody tr {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: var(--space-1) var(--space-4);
+    padding-block: var(--space-2);
+  }
+  .agent-table td:first-child {
+    grid-column: 1 / -1;
+  }
+  /* Let the full deployment reason wrap. Keep room for two lines while the read is pending. */
+  .agent-table .agent-deployment {
+    display: grid;
+    grid-column: 1;
+    grid-template-rows: auto auto minmax(
+        calc(2 * var(--text-sm) * var(--text-sm--line-height)),
+        auto
+      );
+  }
+  .agent-table .agent-deployment > a {
+    justify-self: start;
+  }
+  .agent-table .agent-deployment-note {
+    overflow: visible;
+    white-space: normal;
+    margin-top: 0;
+  }
+  .agent-table td[data-label="Created"]::before {
+    display: inline;
+    margin-inline-end: var(--space-2);
+  }
+  .agent-table .agent-row-actions-cell {
+    display: grid;
+    grid-column: 2;
+    grid-row: 3 / span 2;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    align-content: start;
+    column-gap: var(--space-2);
+  }
+  .agent-table .row-action-note {
+    grid-column: 1 / -1;
+    height: auto;
+    min-height: 1lh;
+    white-space: normal;
+  }
+}
+/* On phones, put each field beside its label and give both the full row. */
+@media (max-width: 760px) {
+  .agent-table tbody tr {
+    grid-template-columns: max-content minmax(0, 1fr);
+  }
+  .agent-table td {
+    grid-column: 1 / -1;
+  }
+  .agent-table td[data-label] {
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    row-gap: var(--space-1);
   }
   /* The outcome link and its note line keep two lines reserved while the read is pending, so a
      landing read does not grow the row (finding 1488). */
@@ -3823,11 +3884,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   }
   .agent-table .resource-id {
     margin-top: var(--space-2);
-    max-width: none;
-  }
-  .agent-table .agent-name-unbroken {
-    display: inline;
-    overflow-wrap: inherit;
   }
   .agent-table .agent-deployment-note {
     margin-top: 0;
