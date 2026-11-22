@@ -485,7 +485,12 @@ RUN --mount=type=secret,id=build-ca,required=false \
     install -d -m 0755 /etc/claude-code; \
     rm -rf claude-code.tgz package; \
     claude_config="$(mktemp -d)"; \
-    test "$(CLAUDE_CONFIG_DIR="$claude_config" DISABLE_AUTOUPDATER=1 /opt/oce/claude-code/bin/claude --version)" = "${OCE_CLAUDE_CODE_VERSION} (Claude Code)"; \
+    test "$(CLAUDE_CONFIG_DIR="$claude_config" DISABLE_AUTOUPDATER=1 \
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
+      DISABLE_GROWTHBOOK=1 DO_NOT_TRACK=1 CLAUDE_CODE_ENABLE_TELEMETRY=0 \
+      CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=0 OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none \
+      OTEL_TRACES_EXPORTER=none OTEL_LOG_USER_PROMPTS=0 \
+      /opt/oce/claude-code/bin/claude --version)" = "${OCE_CLAUDE_CODE_VERSION} (Claude Code)"; \
     if command -v claude; then exit 1; fi; \
     rm -rf "$claude_config"
 

@@ -1511,11 +1511,6 @@ const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
   // The library database lives in state/openclaw.sqlite; keep its immutable bundle trees with it.
   ["skill-library", "/home/node/.openclaw/skill-library"],
 ] as const);
-// Claude Code keeps each session's transcript under its configuration directory, and
-// OpenClaw resumes a conversation by that session ID (`claude --resume`). That directory
-// is the only writable path in it: the rest is the read-only skeleton from
-// CLAUDE_CODE_SETTINGS_VOLUME (finding 3178), as are the managed settings that carry the
-// credential.
 // The node command that runs a session's Claude Code turn on a paired node. A session whose
 // exec host is node (an authorized sender's `/exec host=node node=<id>`, which no Configuration
 // setting governs) places Claude Code there, and the pinned OpenClaw skips tool mediation for it
@@ -1554,6 +1549,11 @@ function denyNodeClaudeCodeRuns(
   } as OpenClawConfigurationValue;
 }
 
+// Claude Code keeps each session's transcript under its configuration directory, and
+// OpenClaw resumes a conversation by that session ID (`claude --resume`). That directory
+// is the only writable path in it: the rest is the read-only skeleton from
+// CLAUDE_CODE_SETTINGS_VOLUME (finding 3178), as are the managed settings that carry the
+// credential.
 const CLAUDE_CODE_PROJECTS_STATE = Object.freeze([
   "claude-projects",
   `${CLAUDE_CODE_CONFIG_DIRECTORY}/${CLAUDE_CODE_TRANSCRIPT_DIRECTORY}`,
