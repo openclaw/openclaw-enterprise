@@ -70,7 +70,6 @@ import {
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
   RESOURCE_CONFLICT,
-  SANDBOX_POLICY_READ_DENIED,
   STOP_REPEAT_CONFIRMATION,
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
@@ -78,9 +77,9 @@ import {
   BOUND_SECRET_UNLISTED,
   notIncluded,
   deleteRefused,
-  NAMESPACE_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
+import { SANDBOX_POLICY_READ_DENIED, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
@@ -1103,30 +1102,285 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
   });
 
-  test("Agent link without a Namespace opens the Agent in the Namespace that holds it", async (t) => {
+  async function agentLinkFixture(t: TestContext) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
-    // Sorted first, so it is the default selection for a link without a Namespace.
-    const selected = await fixture.createNamespace("A link default", { ready: true });
-    const holder = await fixture.createNamespace("Z link holder", { ready: true });
-    const agent = await fixture.createAgent(holder.id, "Linked Agent", nativeValues("link"));
+    // The first Namespace by name is the default for unscoped links.
+    const selected = await fixture.createNamespace("A history default", { ready: true });
+    const other = await fixture.createNamespace("Z history alternative", { ready: true });
     const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
     await trackSettledFetches(page);
-    const missed = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}/namespaces/${selected.id}/agents/${agent.id}` &&
-        response.request().method() === "GET",
-    );
+    async function expectAgentRead(path: string, status: number, action: () => Promise<unknown>) {
+      const [response] = await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.url() === fixture.origin + path && response.request().method() === "GET",
+        ),
+        action(),
+      ]);
+      assert.equal(response.status(), status, "GET " + path);
+      return response;
+    }
+    return { fixture, selected, other, page, requests, expectAgentRead };
+  }
 
-    await login(page, fixture, `/console/agents/${agent.id}`);
-    assert.equal((await missed).status(), 404);
+  test("Agent link without a Namespace opens the Agent in the Namespace that holds it", async (t) => {
+    const { fixture, selected, other, page, expectAgentRead } = await agentLinkFixture(t);
+    const agent = await fixture.createAgent(other.id, "Linked Agent", nativeValues("link"));
+    const path = `/namespaces/${selected.id}/agents/${agent.id}`;
+    await expectAgentRead(path, 404, () => login(page, fixture, `/console/agents/${agent.id}`));
     await page.waitForURL(
       (url) =>
         url.pathname === `/console/agents/${agent.id}` &&
-        url.searchParams.get("namespace") === holder.id,
+        url.searchParams.get("namespace") === other.id,
     );
     await page.getByRole("heading", { name: "Linked Agent" }).first().waitFor();
     await expectNoText(page, "may have been deleted", () => waitForIdleFetches(page));
+  });
+
+  test("Back restores an unscoped Agent revision after leaving its Namespace lookup", async (t) => {
+    const { holdRequests } = await import("./console-agents-browser-helpers.ts");
+    const { fixture, selected, other, page, requests, expectAgentRead } = await agentLinkFixture(t);
+    const agent = await fixture.createAgent(other.id, "History Agent", nativeValues("history"));
+    const { revision } = await fixture.seedActiveAgentRevision(other.id, agent.id, undefined);
+    await fixture.seedActiveAgentRevision(other.id, agent.id, revision.id);
+    const wrongNamespace = detailUrl(fixture, selected.id, agent.id, revision.id, "deployment");
+    const unscoped = new URL(wrongNamespace);
+    unscoped.searchParams.delete("namespace");
+    const path = `/namespaces/${other.id}/agents/${agent.id}`;
+    const unavailable = page.getByRole("heading", { name: "Resource unavailable", exact: true });
+
+    // An explicitly scoped link must never look for this Agent in another Namespace.
+    const wrongPath = `/namespaces/${selected.id}/agents/${agent.id}`;
+    await expectAgentRead(wrongPath, 404, () => login(page, fixture, wrongNamespace));
+    await unavailable.waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), wrongNamespace.href);
+    assert.equal(pathRequests(requests, "GET", path).length, 0);
+
+    // Let the holder read complete on the server while the user leaves the lookup.
+    const lookup = await holdRequests(t, page, fixture.origin + path, {
+      method: "GET",
+      afterServer: true,
+      once: true,
+    });
+    await page.goto(unscoped.href);
+    await page.getByText("Looking for this Agent in your other Namespaces.").waitFor();
+    const held = await lookup.requested;
+    assert.ok(held);
+    assert.equal(held.status(), 200);
+    assert.equal(resourceId(responseData(await held.json())), agent.id);
+
+    await page.getByRole("link", { name: "← Agents", exact: true }).click();
+    const list = page.getByRole("heading", { name: "No Agents yet", exact: true });
+    await list.waitFor();
+    const listUrl = page.url();
+    assert.equal(new URL(listUrl).pathname, "/console/agents");
+    lookup.release();
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), listUrl, "The stale lookup must leave the Agents list in place");
+    assert.equal(await list.isVisible(), true);
+
+    const backRequestStart = requests.length;
+    const backResponses = new Map<string, number>();
+    page.on("response", (response) => {
+      if (response.request().method() === "GET") {
+        backResponses.set(response.url(), response.status());
+      }
+    });
+    await page.goBack();
+    const deployment = page.getByRole("tab", { name: "Deployment", exact: true, selected: true });
+    await deployment.or(unavailable).first().waitFor();
+    const restored = new URL(page.url());
+    assert.equal(
+      restored.searchParams.get("namespace"),
+      other.id,
+      `Back must restore the Agent's Namespace (${restored.href}, Resource unavailable: ${await unavailable.isVisible()})`,
+    );
+    assert.equal(restored.pathname, unscoped.pathname);
+    assert.equal(restored.searchParams.get("revision"), revision.id);
+    assert.equal(restored.searchParams.get("tab"), "deployment");
+    assert.equal(backResponses.get(fixture.origin + wrongPath), 404);
+    assert.equal(backResponses.get(fixture.origin + path), 200);
+    await page.getByRole("heading", { name: "History Agent", exact: true }).first().waitFor();
+    await page
+      .getByRole("tabpanel", { name: "Deployment", exact: true })
+      .getByRole("heading", { name: "This version’s deployment record", exact: true })
+      .waitFor();
+    assert.ok(
+      pathRequests(requests.slice(backRequestStart), "GET", `${path}/revisions/${revision.id}`)
+        .length > 0,
+      "Back must read the linked historical revision",
+    );
+
+    await page.goForward();
+    await list.waitFor();
+    assert.equal(page.url(), listUrl);
+  });
+
+  test("Agent in the default Namespace scopes the existing history entry", async (t) => {
+    const { fixture, selected, other, page, requests, expectAgentRead } = await agentLinkFixture(t);
+    const agent = await fixture.createAgent(selected.id, "Default Agent", nativeValues("default"));
+    const { revision } = await fixture.seedActiveAgentRevision(selected.id, agent.id, undefined);
+    const target = detailUrl(fixture, selected.id, agent.id, revision.id, "deployment");
+    target.searchParams.delete("namespace");
+    await login(page, fixture, "/console/namespaces");
+    const namespaces = page.getByRole("heading", { name: "Namespaces", exact: true }).first();
+    await namespaces.waitFor();
+    await waitForIdleFetches(page);
+    const previousUrl = page.url();
+    const historyLength = await page.evaluate(() => history.length);
+
+    const path = `/namespaces/${selected.id}/agents/${agent.id}`;
+    await expectAgentRead(path, 200, () => page.goto(target.href));
+    await page.getByRole("tab", { name: "Deployment", exact: true, selected: true }).waitFor();
+    await waitForIdleFetches(page);
+    target.searchParams.set("namespace", selected.id);
+    assert.equal(page.url(), target.href);
+    const otherPath = `/namespaces/${other.id}/agents/${agent.id}`;
+    assert.equal(pathRequests(requests, "GET", otherPath).length, 0);
+    assert.equal(await page.evaluate(() => history.length), historyLength + 1);
+
+    await page.goBack();
+    await page.waitForURL(previousUrl);
+    await namespaces.waitFor();
+  });
+
+  test("Retry after a different Agent response preserves the link's Namespace scope", async (t) => {
+    const { fixture, selected, other, page, requests, expectAgentRead } = await agentLinkFixture(t);
+    const different = await fixture.createAgent(
+      selected.id,
+      "Different Agent",
+      nativeValues("other"),
+    );
+    const agent = await fixture.createAgent(other.id, "Retry Agent", nativeValues("retry"));
+    const selectedPath = `/namespaces/${selected.id}/agents/${agent.id}`;
+    const holderPath = `/namespaces/${other.id}/agents/${agent.id}`;
+    const differentPath = `/namespaces/${selected.id}/agents/${different.id}`;
+    const explicit = detailUrl(fixture, selected.id, agent.id);
+    const unscoped = new URL(explicit);
+    unscoped.searchParams.delete("namespace");
+    await login(page, fixture, "/console/namespaces");
+
+    for (const target of [explicit, unscoped]) {
+      await page.route(
+        fixture.origin + selectedPath,
+        async (route) => {
+          const response = await route.fetch({ url: fixture.origin + differentPath });
+          assert.equal(response.status(), 200);
+          const data = responseData(await response.json());
+          assert.equal(data.id, different.id);
+          assert.equal(data.namespaceId, selected.id);
+          assert.equal(data.configurationId, different.configurationId);
+          await route.fulfill({ response });
+        },
+        { times: 1 },
+      );
+      await expectAgentRead(selectedPath, 200, () => page.goto(target.href));
+      await page.getByRole("heading", { name: "Request unavailable", exact: true }).waitFor();
+      await waitForIdleFetches(page);
+      assert.equal(page.url(), target.href);
+      assert.equal(pathRequests(requests, "GET", holderPath).length, 0);
+
+      const retry = page.getByRole("button", { name: "Retry", exact: true });
+      await expectAgentRead(selectedPath, 404, () => retry.click());
+      if (target === explicit) {
+        await page.getByRole("heading", { name: "Resource unavailable", exact: true }).waitFor();
+        await waitForIdleFetches(page);
+        assert.equal(page.url(), explicit.href);
+        assert.equal(pathRequests(requests, "GET", holderPath).length, 0);
+      } else {
+        await page.getByRole("heading", { name: "Retry Agent", exact: true }).first().waitFor();
+        assert.equal(page.url(), detailUrl(fixture, other.id, agent.id).href);
+      }
+    }
+  });
+
+  test("A secondary Agent response for a different Namespace leaves the link unscoped", async (t) => {
+    const { fixture, selected, other, page, requests, expectAgentRead } = await agentLinkFixture(t);
+    const wrong = await fixture.createNamespace("M history wrong", { ready: true });
+    const agentName = "Misrouted Agent";
+    const agent = await fixture.createAgent(other.id, agentName, nativeValues("misrouted"));
+    const unscoped = new URL(`/console/agents/${agent.id}`, fixture.origin);
+    const selectedPath = `/namespaces/${selected.id}/agents/${agent.id}`;
+    const holderPath = `/namespaces/${other.id}/agents/${agent.id}`;
+    const wrongPath = `/namespaces/${wrong.id}/agents/${agent.id}`;
+    const holderUrl = fixture.origin + holderPath;
+    const wrongUrl = fixture.origin + wrongPath;
+
+    // Make the holder's probe a settled 404, leaving the mismatched reply as the
+    // only reason discovery is incomplete.
+    await page.route(holderUrl, async (route) => {
+      const missingUrl = fixture.origin + selectedPath;
+      const response = await route.fetch({ url: missingUrl, maxRedirects: 0, maxRetries: 0 });
+      assert.equal(response.url(), missingUrl);
+      assert.equal(response.status(), 404);
+      await route.fulfill({ response });
+    });
+    let holderBody: Buffer | undefined;
+    await page.route(wrongUrl, async (route) => {
+      if (holderBody) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch({ url: holderUrl, maxRedirects: 0, maxRetries: 0 });
+      assert.equal(response.url(), holderUrl);
+      assert.equal(response.status(), 200);
+      const data = responseData(await response.json());
+      assert.equal(data.id, agent.id);
+      assert.equal(data.namespaceId, other.id);
+      assert.equal(data.configurationId, agent.configurationId);
+      assert.equal(data.name, agentName);
+      holderBody = await response.body();
+      await route.fulfill({ response, body: holderBody });
+    });
+    const replay = await expectAgentRead(wrongPath, 200, () =>
+      expectAgentRead(holderPath, 404, () =>
+        expectAgentRead(selectedPath, 404, () => login(page, fixture, unscoped)),
+      ),
+    );
+    assert.ok(holderBody);
+    assert.deepEqual(await replay.body(), holderBody);
+
+    const incomplete = page.getByRole("heading", {
+      name: "Agent not in this Namespace",
+      exact: true,
+    });
+    const unavailable = page.getByRole("heading", { name: "Resource unavailable", exact: true });
+    await incomplete.or(unavailable).first().waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), unscoped.href, "A mismatched probe must leave the Agent URL unscoped");
+    await incomplete.waitFor();
+    await page.getByText("not in the A history default Namespace", { exact: false }).waitFor();
+    const selector = page.locator("#namespace-selector");
+    assert.equal(await selector.inputValue(), selected.id);
+    assert.equal(await page.getByText(agentName, { exact: true }).count(), 0);
+    assert.equal(pathRequests(requests, "GET", wrongPath).length, 1);
+    assert.equal(pathRequests(requests, "GET", holderPath).length, 1);
+    const probePaths = [selectedPath, holderPath, wrongPath];
+    const followupReads = requests.filter(
+      ({ method, path }) =>
+        method === "GET" &&
+        (probePaths.some((probePath) => path.startsWith(probePath + "/")) ||
+          path.includes(`/configurations/${agent.configurationId}`)),
+    );
+    assert.deepEqual(followupReads, []);
+    await page.getByRole("button", { name: "Switch Namespace", exact: true }).click();
+    assert.equal(
+      await selector.evaluate((node) => node === node.ownerDocument.activeElement),
+      true,
+    );
+
+    await page.unroute(holderUrl);
+    await page.unroute(wrongUrl);
+    await expectAgentRead(holderPath, 200, () =>
+      expectAgentRead(wrongPath, 404, () =>
+        expectAgentRead(selectedPath, 404, () => page.reload()),
+      ),
+    );
+    await page.getByRole("heading", { name: agentName, exact: true }).first().waitFor();
+    assert.equal(page.url(), detailUrl(fixture, other.id, agent.id).href);
   });
 
   test("Agent link without a Namespace says when no readable Namespace has the Agent", async (t) => {

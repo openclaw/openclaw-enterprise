@@ -65,13 +65,6 @@ else
 fi
 ```
 
-The runtime build sizes its Node.js compile to the builder with
-[`NODE_BUILD_JOBS=auto`](../../../deploy/runtime/node/README.md). It reads only
-the build step's own CPU and memory limits; limits set on a parent cgroup are
-invisible to it. On a builder host where a parent cgroup caps CPU or memory,
-add `--build-arg NODE_BUILD_JOBS=<n>` to the runtime `docker buildx build`
-command, sized to those limits.
-
 If a build fails certificate verification when downloading a package behind an HTTPS proxy or from a private package registry, add `--secret "id=build-ca,src=$CA_BUNDLE"` to both `docker buildx build` commands above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy or registry CA certificate. Both Dockerfiles mount this file only during the download steps. Keep TLS verification enabled. Image registry TLS uses the builder's own trust configuration.
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
@@ -104,6 +97,38 @@ npmrc. The runtime's permitted dependency lifecycle scripts can read this file.
 The build mounts it only during dependency installation and mounts
 `corepack-env` only during bootstrap. Omitting `corepack-env` keeps Corepack's
 default registry selection.
+
+## Use a Terraform-managed EKS cluster
+
+For a dedicated Amazon Elastic Kubernetes Service (EKS) cluster, complete the
+[AWS EKS Terraform target](https://github.com/freeqaz-openai/oce-terraform/tree/main/targets/aws-eks)
+through its foundation check and kubeconfig staging. Continue in the same Bash
+session from the matching OCE checkout. Keep the checked `KUBECONFIG_FILE`,
+`OCC_INPUT_DIRECTORY`, `CONTEXT`, and `TF_TARGET_DIR` values from that handoff. `TF_TARGET_DIR` must identify the
+`targets/aws-eks` directory in the Terraform checkout.
+
+Use the checked kubeconfig for the linked EKS commands, then refresh the
+[API and webhook addresses](eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join):
+
+```bash
+export KUBECONFIG="${KUBECONFIG_FILE:?Use the checked Terraform kubeconfig}"
+: "${CONTEXT:?Use the Terraform context}"
+cluster=$(terraform -chdir="${TF_TARGET_DIR:?Use the AWS EKS Terraform target directory}" output -json oce_cluster)
+EKS_CLUSTER_ARN=$(jq -er '.arn' <<<"$cluster")
+AWS_REGION=$(jq -er '.region' <<<"$cluster")
+EKS_CLUSTER=$(jq -er '.name' <<<"$cluster")
+export EKS_CLUSTER_ARN AWS_REGION EKS_CLUSTER
+```
+
+Inspect the target's placement fields, then use them when generating the profile.
+Set `controlPlane.clusterCidrs` separately from the refreshed `API_CIDRS`.
+
+```bash
+terraform -chdir="$TF_TARGET_DIR" output -json oce_placement
+```
+
+Continue with [configuration](#configure-the-installation).
+Run prerequisite diagnosis after [creating the controller Namespace](#prepare-workspace-access).
 
 ## Configure the Installation
 
@@ -235,8 +260,8 @@ before the checks:
 
 For `logging.level`, see [Choose the log level](../observability.md#1-choose-the-log-level).
 [Configure native admin domains](native-admin.md#steps).
-For Slack Agents, configure both proxy paths in the
-[Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
+For Slack Agents, prepare the [managed channel egress fleet](channel-egress.md)
+and matching Helm and Installation settings before deployment. For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 
 `images.controller` must be an approved immutable image reference with a lowercase
@@ -407,6 +432,12 @@ Create the controller Namespace (`--namespace`: DNS-1123 label, maximum 63 chara
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
 ```
+
+For EKS, run [prerequisite diagnosis](prerequisite-diagnosis.md) now. Set the plan's
+`namespace` to `openclaw-system`, select the same kubeconfig and context, use
+`EKS_CLUSTER_ARN` for `eks.clusterArn`, and set `peakAdditional` from the
+candidate chart and concurrent rollouts. Use the reviewed API and webhook CIDRs.
+Resolve failed or unknown checks before installing.
 
 Complete [Configure private routing](workspace-routing.md#configure-private-routing):
 create `occ-private-gateway-key` and match the Helm and Installation routing

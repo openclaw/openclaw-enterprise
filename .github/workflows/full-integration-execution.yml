@@ -634,9 +634,8 @@ jobs:
     # The First Agent Smoke runner supports the packaged Codex sandbox and k3d policy.
     # Only synthetic, job-local model and private Git credentials enter this installation.
     runs-on: ubuntu-22.04
-    # Cold runtime assembly has 180 min, followed by repository images and
-    # the installed proof. Ordinary artifact-backed smoke keeps its short job.
-    timeout-minutes: 240
+    # Image builds and the installed proof share this job budget.
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
@@ -724,6 +723,7 @@ jobs:
           SKIPPER_GATEWAY_CATEGORY: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_category }}
           SKIPPER_GATEWAY_FETCH_ELAPSED_MS: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_fetch_elapsed_ms }}
           SKIPPER_GATEWAY_TRANSPORT_CAUSE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_transport_cause }}
+          SKIPPER_GATEWAY_LISTENER: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_listener }}
           SKIPPER_RUNTIME_SIGNAL: ${{ steps.installed-skipper-proof.outputs.skipper_runtime_signal }}
           SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS: ${{ steps.installed-skipper-proof.outputs.skipper_model_fixture_selected_terminal_success }}
           SKIPPER_MODEL_REQUEST_OBSERVATION: ${{ steps.installed-skipper-proof.outputs.skipper_model_request_observation }}

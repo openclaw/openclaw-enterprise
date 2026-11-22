@@ -47,7 +47,7 @@ kind: reference/driver
   - [`requiresStoppedPredecessors`](#method-requires-stopped-predecessors)
   - [`describePrepareRevisionFailure`](#method-describe-prepare-revision-failure)
   - [`getGatewayEndpoint`](#method-get-gateway-endpoint)
-  - [`getGatewayChatEndpoint`](#method-get-gateway-chat-endpoint)
+  - [`getGatewayBrowserRequest`](#method-get-gateway-browser-request)
   - [`getChatCompletionsEndpoint`](#method-get-chat-completions-endpoint)
   - [`getAgentRuntimeCredentialStatus`](#method-get-agent-runtime-credential-status)
   - [`provisionAgentRuntimeCredentials`](#method-provision-agent-runtime-credentials)
@@ -125,8 +125,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
 | <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing a replacement. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                          |
 | <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
-| <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private WSS address for workspace-file access and native administration, or `undefined`.                                                                                                                                                                                                                                                                  |
-| <a id="method-get-gateway-chat-endpoint"></a>`getGatewayChatEndpoint`                                                | Optional    | Revision's WSS chat endpoint and equivalent HTTPS UI. Enforce [`operator.sessions.write`](../agent-native-admin.md#native-authority-and-drift) across HTTP, WebSocket, and device grants. Omission/`undefined` means unsupported; never fall back to `getGatewayEndpoint`.                                                                                |
+| <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private machine workspace WSS address, or `undefined`.                                                                                                                                                                                                                                                                                                    |
+| <a id="method-get-gateway-browser-request"></a>`getGatewayBrowserRequest`                                            | Optional    | Resolve authorized per-human browser transport. Keep credential headers private. Unsupported transport or missing credentials fails closed, without machine fallback.                                                                                                                                                                                     |
 | <a id="method-get-chat-completions-endpoint"></a>`getChatCompletionsEndpoint`                                        | Optional    | [HTTP completions](../agent-http-chat.md).                                                                                                                                                                                                                                                                                                                |
 | <a id="method-get-agent-runtime-credential-status"></a>`getAgentRuntimeCredentialStatus`                             | Optional    | Report whether the Agent's generated transport credentials are stored. Missing support prevents the status read.                                                                                                                                                                                                                                          |
 | <a id="method-provision-agent-runtime-credentials"></a>`provisionAgentRuntimeCredentials`                            | Optional    | Create initial transport credentials for the approved Agent. Missing support prevents provisioning.                                                                                                                                                                                                                                                       |
@@ -163,6 +163,8 @@ Worker-log failure reasons allow up to 256 characters: letters, digits, spaces, 
 
 Derive [gateway endpoints](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
 from trusted settings and approved resource IDs, independently of readiness and authorization.
+
+Keep headers private. Admission cannot provision credentials or use machine authentication.
 
 ### Optional initial runtime credential provisioning
 
@@ -368,4 +370,4 @@ for topology, deletion support, and private gateway access.
 - [Driver selection](selection.md) and [Harness execution](../harness-execution.md)
 - [Agent lifecycle](../agents.md) and [controller reconciliation](../controller/reconciliation.md)
 - [Deployment diagnostics flow](../../flows/agent-deployment-diagnostics.md)
-- [Worker source](../../../apps/controller/src/worker.ts) and [OCC source](../../../packages/occ/src/index.ts)
+- [Worker source](../../../apps/controller/src/worker.ts) and [OCC source](../../../packages/occ/src/agent-deployment-admission.ts)

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { globSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, copyFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,17 @@ import { fileURLToPath } from "node:url";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
+
+test("the journal lists every SQL migration shipped in the controller image exactly once", async () => {
+  const directory = join(repository, "migrations");
+  const { entries }: { entries: { tag: string }[] } = JSON.parse(
+    await readFile(join(directory, "meta/_journal.json"), "utf8"),
+  );
+  // Match the Dockerfile's COPY of migrations/[0-9]*.sql.
+  const shipped = globSync("[0-9]*.sql", { cwd: directory });
+  const journaled = entries.map(({ tag }) => `${tag}.sql`);
+  assert.deepEqual(journaled.sort(), shipped.sort());
+});
 
 test("the migration command reports malformed release metadata before connecting", async (context) => {
   const fixture = await mkdtemp(join(tmpdir(), "oce-migration-source-"));

@@ -101,7 +101,7 @@ Use an exclusive fixture cluster with `oce-system` and `envoy-gateway-system` av
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
 OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
-  node --test tests/integration/production-network-access.test.mjs
+  node --test tests/integration/production-network-access.test.ts
 ```
 
 Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
@@ -253,30 +253,27 @@ recovery and rollback. It uses its own CA and does not edit `/etc/hosts`.
 
 ## Private gateway routing
 
-This suite tests private workspace routing through real Envoy Gateway and
-cert-manager in a disposable k3d cluster. It verifies file access, model
-consumption after Gateway replacement, authentication denial, key rotation,
-certificate renewal, and the dedicated node route. It does not prove a full
-Helm installation or Harness node credential persistence.
+This k3d suite checks private file access through Envoy Gateway, model reads
+after Gateway replacement, authentication denial, key rotation, certificate
+renewal, and dedicated node routing. It excludes full Helm installation and
+Harness node credential persistence.
 
 ### Run private gateway routing
 
-Install the [k3d helper prerequisites](#develop-with-local-containers-and-k3d)
-and provide an authorized `OPENAI_API_KEY` privately:
+Install the [k3d prerequisites](#develop-with-local-containers-and-k3d)
+and supply an authorized `OPENAI_API_KEY` privately.
 
 ```sh
 ./scripts/k3d test
 ./scripts/k3d down
 ```
 
-The helper prepares a cluster, database, images, Envoy Gateway, cert-manager,
-and test CA. Direct execution also requires `OCC_TEST_GATEWAY_ROUTING_REAL=1`,
+Direct execution requires the runtime setup above, `OCC_TEST_GATEWAY_ROUTING_REAL=1`,
 `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`, `OCC_TEST_GATEWAY_CA_CERT_PATH`,
-`OCC_TEST_GATEWAY_CA_KEY_PATH`, `NODE_EXTRA_CA_CERTS`, and the runtime setup above.
-Keep the CA key private.
+`OCC_TEST_GATEWAY_CA_KEY_PATH`, and `NODE_EXTRA_CA_CERTS`. Keep the CA key private.
 
-For CI-shaped setup, supply `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and
-`NODE_BASE_IMAGE` in the environment. In a GitHub Actions runner, execute:
+On GitHub Actions, set `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and
+`NODE_BASE_IMAGE`.
 
 ```sh
 node scripts/ci/prepare.ts \
@@ -288,8 +285,14 @@ node scripts/ci/run-tests.ts run gateway-routing \
   --results "$RUNNER_TEMP/results/gateway-routing.json"
 ```
 
-Use `scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/gateway-routing.json"`
-to remove the lane's resources.
+Run `node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/gateway-routing.json"`
+after success or failure.
+
+If cert-manager or Envoy Gateway manifest downloads fail with
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE` and the system certificate store
+trusts the issuer, clean up and retry preparation with
+`node --use-system-ca scripts/ci/prepare.ts` and the same arguments.
+TLS and SHA-256 checks stay enabled.
 
 ### Native workspace identity
 

@@ -694,8 +694,8 @@ export function createOpenShellInstallationConfiguration({
   configuration.drivers.sandbox = {
     id: "sandbox-openshell-kubernetes",
     configuration: {
+      integrationMode: "legacy",
       gateway: {
-        workspaceMode: "operator",
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },
@@ -1810,6 +1810,7 @@ export function createOpenShellKubernetesFixture({
     // so Node's own startup diagnostics cannot accidentally contain a valid frame.
     const nativeTag = gatewayTurn && commandTimeoutMs !== undefined ? randomUUID() : undefined;
     const script = String.raw`
+      const WebSocket = require("ws");
       const nativeTag = ${JSON.stringify(nativeTag)};
       let timeout, socket;
       let urlShape = "unknown", tokenPresent = null;
@@ -2132,7 +2133,12 @@ export function createOpenShellKubernetesFixture({
             entry.resolve(message.result);
           }
         } else if (method === "item/completed") {
-          if (item?.type === "agentMessage") assistant = item.text ?? "";
+          if (item?.type === "agentMessage" && (!${gatewayTurn} ||
+              (message.id === undefined && typeof threadId === "string" && threadId &&
+               turnId && lastAcknowledged === "turn/start" &&
+               params.threadId === threadId && params.turnId === turnId))) {
+            assistant = item.text ?? "";
+          }
         } else if (message.method === "turn/completed") {
           if (${gatewayTurn && observeFailure} &&
               (message.id !== undefined || typeof threadId !== "string" || !threadId ||
@@ -2184,7 +2190,7 @@ export function createOpenShellKubernetesFixture({
           fail(error);
         }
       });
-      socket.addEventListener("error", () => {
+      socket.addEventListener("error", (event) => {
         if (finished) return;
         if (commandDeadline) return unknownCommandOutcome("websocket-error");
         fail(new Error("Codex harness connection failed"), "websocket-error");

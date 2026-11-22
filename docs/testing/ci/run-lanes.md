@@ -29,7 +29,7 @@ the check pages distinguish ordinary CI, manual/advisory workflows, and lanes
 with [no GitHub workflow](../manual-tests.md). Each manifest is the exact file and selector inventory.
 
 On eligible pull requests and main pushes, Checks and Conformance 2 emits a test-graph
-advisory after the required workspace typecheck. It reports TypeScript owner hints,
+advisory after the required workspace typecheck. It reports owner hints for indexed TypeScript and runtime changes in ordinary and Full Integration-only lanes,
 index coverage, fallback reasons, and zero test omissions. The notice is untrusted
 evidence from the tested checkout. Type-only edges can overselect; JavaScript and
 runtime relationships remain incomplete. CI Impact still selects actual checks. If
@@ -97,7 +97,7 @@ artifact from the same workflow run and source. If that artifact has expired,
 rerun the producer as well. Local runs without an artifact selection keep their
 source-building path.
 
-The producer's build has a provisional 180-minute limit within a 240-minute job.
+The producer's build has a 40-minute limit within a 60-minute job.
 These limits allow measurement of cold builds; they are not expected build times.
 The **CI runtime image timing** notice measures source argument preparation,
 the Buildx build and OCI export. Local image verification follows the notice.

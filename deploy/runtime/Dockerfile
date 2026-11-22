@@ -10,20 +10,6 @@ FROM ${NODE_BASE_IMAGE} AS node-build-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
-FROM node-build-base AS node-source
-COPY deploy/runtime/node/source.json deploy/runtime/node/*.sh deploy/runtime/node/*.patch /node-repair/
-RUN --mount=type=secret,id=build-ca,required=false \
-    set -eu; \
-    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
-    sh /node-repair/fetch.sh
-
-FROM node-source AS node-compiled
-ARG NODE_BUILD_JOBS=auto
-RUN --network=none sh /node-repair/build.sh
-
-FROM node-build-base AS node-repaired-build-base
-COPY --from=node-compiled /out/ /
-
 FROM node-build-base AS curl-packages
 COPY deploy/runtime/curl /tmp/curl
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -134,7 +120,7 @@ RUN chmod -R a=rX /app
 USER node
 ENTRYPOINT ["node", "/app/dist/repository-credentials.js"]
 
-FROM node-repaired-build-base AS openclaw-source
+FROM node-build-base AS openclaw-source
 
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
@@ -177,7 +163,7 @@ RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
 # @matrix-org/matrix-sdk-crypto-nodejs downloads its native library from GitHub during
 # install, with no retry or checksum. Fetch the pinned library with the retrying,
 # checksum-verifying helper; both installs below get it from a loopback server.
-FROM node-repaired-build-base AS matrix-sdk-crypto
+FROM node-build-base AS matrix-sdk-crypto
 COPY scripts/ci/download-pinned.sh /tmp/download-pinned.sh
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
@@ -192,7 +178,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
       "https://github.com/matrix-org/matrix-rust-sdk-crypto-nodejs/releases/download/v0.6.6/${library}" \
       "/out/v0.6.6/${library}" "$sha256"
 
-FROM node-repaired-build-base AS openclaw-dependency-inputs
+FROM node-build-base AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
 ARG OPENCLAW_BUILD_TIMESTAMP
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
@@ -250,7 +236,7 @@ RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
-# Run exactly the tests that exercise a kept carried patch; upstream CI covers the rest.
+# Verify carried patches and independent browser/profile and node identity contracts.
 # One main runner invocation for the Node test files: the runner compiles the whole
 # source tree for its workers first (about a minute), and a second invocation on
 # a fresh .artifacts directory would compile it again. Keep generated files on
@@ -264,10 +250,15 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
     src/cli/update-cli/update-command-service-drain.native.test.ts \
     src/gateway/server-methods.suspension-admission.test.ts \
+    src/gateway/server.auth.delegation.test.ts src/gateway/trusted-proxy-delegation.test.ts \
+    src/state/user-profile-delegation.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     extensions/codex/src/app-server/thread-policy.test.ts extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts \
     extensions/codex/src/app-server/config.test.ts extensions/codex/src/app-server/config-network-proxy.test.ts \
     src/node-host/runner.test.ts \
+    src/node-host/openclaw-id-transport.test.ts \
+    src/node-host/openclaw-id-enrollment.test.ts src/node-host/openclaw-id-target.test.ts \
+    src/node-host/openclaw-id-connection.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
     src/node-host/runner-lifecycle-lock.test.ts \
     src/cli/node-cli/register.test.ts \
@@ -419,12 +410,6 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
 
 FROM node-runtime-base AS runtime
 
-RUN --mount=type=bind,source=deploy/runtime/node/source.json,target=/tmp/node-source.json \
-    set -eu; . /etc/os-release; \
-    test "${VERSION_CODENAME:-}" = bookworm || { echo "The Node termination repair requires a Bookworm runtime base." >&2; exit 1; }; \
-    node -e 'if (process.versions.node !== require("/tmp/node-source.json").version) throw new Error("Select matching Node bases for the reviewed termination repair; do not silently downgrade a newer override.")'
-COPY --from=node-compiled /out/ /
-
 ARG TARGETARCH
 ENV OPENAI_CODEX_VERSION=0.164.0
 
@@ -448,14 +433,6 @@ RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
     && mkdir -p /usr/share/doc/curl/oce \
     && cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/ \
     && rm -rf /var/lib/apt/lists/*
-RUN --network=none \
-    --mount=type=bind,from=node-source,source=/build/node,target=/verification/node \
-    --mount=type=bind,source=deploy/runtime/node,target=/verification/repair \
-    ldd /usr/local/bin/node > /tmp/node-linkage \
-    && ! grep 'not found' /tmp/node-linkage \
-    && rm /tmp/node-linkage \
-    && node /verification/repair/verify.mts \
-    && sh /verification/repair/test.sh /usr/local/bin/node /verification/node
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.
 # Retry partial transfers too. -O lets curl reset partial files before retrying;
@@ -493,6 +470,9 @@ COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
 COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
+COPY --chmod=0444 deploy/runtime/openshell-bootstrap.cjs /opt/oce/runtime/openshell-bootstrap.cjs
+# OpenShell selects the workload UID. Its private child directory stays on the workload filesystem.
+RUN install -d -m 1777 -o root -g root /opt/oce/managed
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.
 RUN mkdir -p node_modules/.bin \
@@ -531,10 +511,14 @@ RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp
   && rm -rf "$codex_home" \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
   && test -f /app/dist/extensions/slack/openclaw.plugin.json \
-  && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json /tmp/additional-download-clients.json \
+  && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /tmp/additional-download-clients.json \
   && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
-RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
+RUN --mount=type=bind,source=deploy/runtime/repository-credentials/github-repository-rest/SKILL.md,target=/tmp/github-repository-rest.md \
+    /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig \
+    && skill=/etc/codex/skills/github-repository-rest \
+    && install -D -m 0444 /tmp/github-repository-rest.md "$skill/SKILL.md" \
+    && touch -d @0 "$skill/SKILL.md" "$skill"
 
 ARG OPENCLAW_COMMIT
 ARG OCC_BUILD_REVISION=""

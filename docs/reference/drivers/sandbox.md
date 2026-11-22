@@ -161,10 +161,11 @@ describes how that provider maps its phases to these states.
 
 ### Provisioning inputs
 
-Compute supplies the Namespace, Kubernetes client, and cancellation signal.
-For Harness provisioning it also supplies the Agent revision and
-[`HarnessWorkloadRequirements`](../../../packages/contracts/src/drivers/sandbox/index.ts).
-Use the identity, mounts, login mode, and credential references Compute selected.
+Use Compute's [context and launch requirements](../../../packages/contracts/src/drivers/sandbox/index.ts)
+without changing identity, login mode or credentials.
+`retainedDirectories` describes storage-independent paths and environment bindings.
+`workspaceMounts` supplies approved PVC subpaths/modes; provider-owned storage
+(`workspaceStorage: "provider"`) leaves it empty.
 
 If `workspaceSetup` is present, read only the specified key of the Agent-owned
 Secret in the same Namespace. Initialize the approved workspace and verify its
@@ -182,9 +183,11 @@ provider. Compute waits for the gateway to report every attachment
 
 ### Sandbox resource identity
 
-`SandboxResourceRef` contains `namespaceName`, `resourceName`, `agentId`, and
-`revisionId`. It stays stable when a controller replaces the underlying Pod;
-retirement must find the provider resource even if that Pod is already gone.
+`SandboxResourceRef` retains `namespaceName`, `resourceName`, `agentId` and
+`revisionId` across Pod replacement/removal.
+
+[Managed OpenShell](kubernetes-openshell-compute.md) uses the authenticated Envoy
+node route without Kubernetes namespace or Pod selectors for its Sandboxes.
 
 ### Optional network policy operations
 
@@ -348,5 +351,5 @@ inputs as Sandbox startup fields.
 ## Related
 
 - [Kubernetes ComputeDriver](kubernetes-compute.md) and [Compute Sandbox coordination](compute.md#sandboxdriver-coordination)
-- [OCC deployment admission](../../../packages/occ/src/index.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
+- [OCC deployment admission](../../../packages/occ/src/agent-deployment-admission.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 - [OpenShell verification guide](../../testing/openshell.md)

@@ -6,18 +6,17 @@ kind: reference/driver
 
 ## Overview
 
-`CredentialProxyDriver` connects a selected enforcing transport to OpenClaw
-Control Plane (OCC). Implement it with the paired Sandbox capability in one
-Driver registration. Start with the [implementation walkthrough](../../contributing/credential-proxy-driver.md)
-and [selection rules](selection.md#select-a-protected-sender).
+`CredentialProxyDriver` defines staged delivery of TokenService-owned credentials for an Agent deployment. It shares one Driver registration with the selected Sandbox.
 
-OCC owns authorization, access bindings, execution identity, access expiry and
+`LegacyEgressProxyDriver` serves existing protected-egress deployments. See the [legacy implementation walkthrough](../../contributing/credential-proxy-driver.md) and [selection rules](selection.md#select-a-protected-sender).
+
+OpenClaw Control Plane (OCC) owns authorization, access bindings, execution identity, access expiry and
 withdrawal. Token Service owns credential acquisition, freshness, renewal, material
 custody and retirement. Provider adapters own provider-specific scope, injection
 and response rules. The proxy enforces requests and obtains eligible material;
 it does not run a credential renewal loop.
 
-Ordinary sources remain Gateway-owned. When static protection is required, neither
+Legacy Gateway sources remain Gateway-owned; new Source custody belongs to [TokenService](../../flows/token-service-static-custody.md). When static protection is required, neither
 the Gateway nor the Proxy may declare refresh, device authorization or managed
 login tokens. Capabilities omit incompatible types. If OCC detects a mismatch
 before the Secret read, creation and adoption return 409 without reading material.
@@ -30,11 +29,16 @@ plan. An unavailable Proxy never permits Gateway fallback for a protected source
 ## Interface
 
 The public [contracts entry point](../../../packages/contracts/src/index.ts)
-exports `CredentialProxyDriver`, `DriverRegistration`, the
+exports `CredentialProxyDriver`, `LegacyEgressProxyDriver`, `DriverRegistration`, the
 [exchange types](../../../packages/contracts/src/credential-proxy-exchange.ts)
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
-The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines
-these operations:
+The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines both contracts.
+
+`CredentialProxyDriver` temporarily uses `credential_proxy_delivery`. Its required `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` operations receive a trusted Namespace, Agent revision, and signal; they reject a mismatched deployment or target. Optional `notifyCredentialUpdated` is source-scoped and receives no revision. OpenShell supports first-use Provider delivery and target checks. Status fails closed; target-bound removal and update notification are unavailable. The regular Agent workflow does not call this capability. See the [source lifecycle flow](../../flows/credential-source-lifecycle.md#pending-native-integration) and [worker configuration amendment](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md#amendment-select-native-delivery-independently).
+
+## Legacy protected egress
+
+`LegacyEgressProxyDriver` retains the `credential_proxy` selection until legacy serving is removed. Its operations are:
 
 | Member                                      | Caller, inputs and result                                                                                                                                               | Requirement                                                                                              |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -47,7 +51,7 @@ these operations:
 | `removeRevision(context)`                   | Revision cleanup removes the owned installation and returns a boolean completion result.                                                                                | Required; failure must not be reported as completed cleanup.                                             |
 | `policyReduction`                           | Withdrawal uses versioned `apply(context, reduction)`, then independent `observe(context, reduction)`.                                                                  | Optional on the interface; required when the plan records that capability.                               |
 
-There is no `withdrawBinding` member in the current interface. Use OCC withdrawal
+There is no `withdrawBinding` member in the legacy interface. Use OCC withdrawal
 and the admitted `policyReduction` capability, or runtime retirement, rather than
 adding a call under that older name. A reduction compares the registration,
 execution, recipient and policy generation. It cannot create, replace or expand
@@ -84,7 +88,7 @@ support with `assertAvailable`. Admission can then combine repository Git with
 independently admitted routes. Reduction can remove Git while preserving the exact
 recipient and other bindings. It does not convert v5 online authorization or v6
 observed hooks to exact dispatch. Existing v3–v6 admissions keep their semantics.
-The [admission source](../../../packages/occ/src/index.ts) and
+The [admission source](../../../packages/occ/src/deployment-revision.ts) and
 [version checks](../../../packages/contracts/src/drivers/credential-proxy/index.ts) implement
 this support; they do not qualify stock OpenShell or any installed deployment.
 
@@ -130,6 +134,10 @@ and the same recipient may sign the startup release.
 
 Evidence includes the exact execution and plan, sender, Sandbox, enforcement
 instance, configuration and policy hash, with `authorityScope: "execution"`.
+An online Git recipient may bind the ongoing Sandbox execution and Provider
+attachment without pinning process and network IDs. Its Driver must verify current
+runtime readiness before use or startup release. Exact-dispatch and observed-hook
+recipients still require both IDs.
 For protected static inference, the principal is the whole admitted execution,
 including sibling processes; another execution of the same Agent cannot inherit it.
 Exact-dispatch profiles require a peer key; online repository profiles instead
@@ -296,7 +304,7 @@ qualification.
 
 ## Related
 
-- [Implement a Credential Proxy Driver](../../contributing/credential-proxy-driver.md)
+- [Implement a legacy egress Proxy Driver](../../contributing/credential-proxy-driver.md)
 - [Protected credential request flow](../../flows/credential-source-egress.md)
 - [Static exchange verification](../../testing/static-egress.md)
 - [Repository and response custody qualification](../../testing/protected-repository-custody.md)

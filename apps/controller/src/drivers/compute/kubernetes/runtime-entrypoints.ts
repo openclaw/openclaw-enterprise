@@ -689,7 +689,18 @@ function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
 
 `;
 
-function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
+function pluginRuntimeHelpers(
+  includeOpenClawInstaller: boolean,
+  includeWorkspaceProbeTransport = false,
+): string {
+  // Keep the shared OpenShell launcher within its command size limit.
+  const transport = includeWorkspaceProbeTransport
+    ? {
+        parameter: ", transport",
+        options: "...transport?.options, ",
+        client: "...transport?.client,\n        ",
+      }
+    : { parameter: "", options: "", client: "" };
   return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
@@ -989,7 +1000,7 @@ function gatewayRefusedUnknownChannel(gatewayRuntime, error, channel) {
 // Query the running Gateway through OpenClaw's public SDK. Starting a CLI here
 // also starts its launcher/respawn lifecycle; killing that launcher cannot bound
 // a probe whose descendant still owns stdout.
-function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65536) {
+function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65536${transport.parameter}) {
   return new Promise((resolve) => {
     const controller = new AbortController();
     let settled = false;
@@ -1015,8 +1026,8 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
     Promise.resolve().then(async () => {
       if (settled) return;
       gatewayRuntime = require("openclaw/plugin-sdk/gateway-runtime");
-      const value = await gatewayRuntime.callGatewayFromCli(method, { json: true, timeout: String(timeoutMs) }, params, {
-        progress: false,
+      const value = await gatewayRuntime.callGatewayFromCli(method, { ${transport.options}json: true, timeout: String(timeoutMs) }, params, {
+        ${transport.client}progress: false,
         // Status probes must not initialize shared state alongside Gateway startup.
         sharedStateMode: "read-only",
         signal: controller.signal,
@@ -2667,7 +2678,7 @@ if (countsUnexplainedExits) {
   countUnexplainedExits(previous + 1);
 }
 
-${PLUGIN_RUNTIME_HELPERS}
+${pluginRuntimeHelpers(true, true)}
 ${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
@@ -3192,14 +3203,29 @@ function replaceOpenClawConfig(config) {
 // The running Gateway's own view of file-transfer: its runtime state in the
 // live plugin registry ("active", "service-failed", "disabled", "unloaded")
 // and that registry's generation, which every plugin reload replaces. A Gateway
-// that refused this CLI's credentials answers { refused: true, reason }.
+// that refused its local probe's credentials answers { refused: true, reason }.
 async function openClawFileTransferState() {
+  const port = process.env.OPENCLAW_GATEWAY_PORT;
+  const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
+  // The SDK's port option targets the child Gateway and ignores URL overrides.
+  // Trusted-proxy Gateway auth accepts its provisioned password on loopback.
+  // Without this managed connection, keep the SDK's existing paired-client path.
+  const transport = port?.trim() && password?.trim() ? {
+    options: { port, password },
+    client: {
+      clientName: "gateway-client",
+      mode: "backend",
+      deviceIdentity: null,
+      scopes: ["operator.read"],
+    },
+  } : undefined;
   const result = await callNativeGateway(
     "plugins.list",
     {},
     8000,
     undefined,
     4 * 1024 * 1024,
+    transport,
   );
   if (result.authenticationRefused === true) {
     return { refused: true, reason: result.authenticationRefusalReason };
@@ -3677,7 +3703,7 @@ if (workspaceNodeBindingPath !== undefined) {
     const after = await openClawFileTransferState();
     if (superseded()) return;
     if (after?.refused) {
-      // The Gateway refuses its own CLI: it cannot confirm this node, now or later.
+      // The Gateway refuses its local probe: it cannot confirm this node, now or later.
       reportFailure("GATEWAY_UNAUTHORIZED", after.reason);
       return;
     }

@@ -1,18 +1,18 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-19"
-last_updated_session: "authoring-run/175f2356-f027-463a-b193-9c54d1b4d5f5"
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute provisions OpenShell Harnesses.
+See [managed service provisioning](openshell-managed-workload.md).
 
 ## Entry Points
 
-- Trigger: worker reconciles an OpenShell/Kubernetes Agent revision.
+- Trigger: worker reconciliation with OpenShell Sandbox and Kubernetes Compute.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
@@ -25,9 +25,9 @@ Kubernetes Compute provisions OpenShell Harnesses.
 graph TD
   %%{init: {"flowchart": {"htmlLabels": true}}}%%
   A["<b>Reconcile Namespace</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
-  B --> C{"<b>Workspace mode</b><br/>Installation setting"}
-  C -- "managed" --> X["<b>Reject configuration</b><br/>Before mutation"]
-  C -- "operator" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
+  B --> C{"<b>Integration mode</b><br/>Installation setting"}
+  C -- "service" --> X["<b>Reject configuration</b><br/>Before mutation"]
+  C -- "legacy" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
   D --> G0["<b>Ensure configured gateway</b><br/>Owned resources and health"]
   G0 --> E["<b>Own Workspace</b><br/>Create or adopt"]
   E --> A0["<b>Namespace ready</b><br/>Deployment permitted"]
@@ -118,7 +118,7 @@ share controller readiness diagnostics.
 UID-linked ReplicaSets/Pods and Warning reasons once, preserving rollback errors. It excludes
 messages, environment, full labels and logs, marking unavailable/malformed/oversized results.
 Limits: 15 seconds total, three seconds/256 KiB per command, 32 KiB per record, no retries.
-The 200 ms pipe drain cannot terminate descendants.
+The 200 ms drain cannot terminate descendants.
 
 `network.providerHarness` identifies the Gateway ClusterIP and Pod selector.
 Agent Gateways retain the HTTP Host and connect only to those Pods on TCP/8080.
@@ -130,14 +130,14 @@ Failed discovery aborts. Uninstall removes recorded policies.
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
 persisted policies (maximum 1 MiB) before adding them to generated rules.
-Cleanup checks ownership before deleting the cluster, project and volumes.
+Cleanup verifies cluster, project and volume ownership.
 See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
 
 ### 0.1. Check Harness mode support
 
-Before Agent writes transform Configuration, `packages/occ/src/index.ts:admitsOpenClawExecutionMode`
-checks `supportsHarnessExecutionMode` from `apps/controller/src/drivers/sandbox/openshell.ts:constructor`,
-native-worker support and provisioning requirements. Status reads the deployed revision's stored result.
+Agent saves check Sandbox mode in `packages/occ/src/agent-harness-topology.ts:validateSavedAgentTopology`.
+Provisioning and deployment call `packages/occ/src/agent-harness-topology.ts:requireDedicatedNativeSupport`.
+Status reads the stored revision result.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
@@ -159,32 +159,38 @@ matching name, OCC Namespace ID, managed-by labels and active phase. Conflicts f
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-`provisionHarness` derives the Harness from Compute's Deployment. The Agent Service stays inactive
-and Gateway transport fails closed. Attachments and provider/Sandbox creation await Gateway
-readiness and its Agent-owned setup Secret reference. `validateHarnessAuth` rejects dedicated
-OpenShell projected identity at `servicePrincipalCredentials.mode` because OpenShell cannot preserve
-the Agent ServiceAccount/token.
+`harnessLaunch` prepares inputs; `sandboxRequirements` adds operator-mode PVC
+mounts. The Agent Service remains inactive; Gateway transport fails closed.
+Attachments and provider/Sandbox creation await Gateway readiness and the Agent-owned
+setup Secret. `validateHarnessAuth` rejects projected identity at
+`servicePrincipalCredentials.mode`: OpenShell cannot preserve the Agent ServiceAccount/token.
 
-For `credential_source`, Compute renders catalog login without a model Secret and puts version
-and `attachForRevision` provider names in `requirements.credentialAttachments`.
-`chatgptAuthTokens` retains account metadata and omits static `CODEX_ACCESS_TOKEN`.
-Codex receives only `APP_TOKEN_SHA` from its exact transport Secret. Compute converts the admitted
-plugin snapshot to `runtime.json`/`config.toml` workload files, removing ConfigMap environment paths.
+For `credential_source`, Compute uses the catalog login mode without a model
+Secret; `requirements.credentialAttachments` carries version and
+`attachForRevision` provider names. `chatgptAuthTokens` omits static
+`CODEX_ACCESS_TOKEN` but retains account metadata. Codex gets only `APP_TOKEN_SHA`
+from its Agent transport Secret. Compute renders the admitted plugin snapshot as
+`runtime.json` and `config.toml`, removing their ConfigMap environment paths.
 
-`OpenShellSandboxDriver.configureAgent` sets full access/user review for every login
-mode and removes `appServer.networkProxy`.
-`deploy/runtime/openclaw-codex-full-access-profile.patch` sends `:danger-full-access`
-for threads/turns; constrained threads fail before a turn. First Agent warns that
-prior PAT `workspace-write` versions break shell tools; `--replace-key` deploys
-current policy. OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
+`configureAgent` sets full access/user review across login modes and removes `appServer.networkProxy`.
+`deploy/runtime/openclaw-codex-full-access-profile.patch` sends the endpoint's
+`:danger-full-access` profile for threads/turns; constrained threads fail
+before a turn. First Agent warns that PAT `workspace-write` breaks shell tools; `--replace-key` deploys current policy.
+OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
-`KubernetesComputeDriver.admitRevision` pins commands. New unprotected source-backed
-OAuth revisions select `openshell-codex-oauth-launch:v1:`; existing revisions retain
-their encoding.
-PAT and new OAuth launchers share `openShellPatRecovery`: exact upgrade refusals,
-a later same-thread HTTPS advisory, a nonempty tool-free answer, turn completion and
-exit 0. HTTPS 401/403 keeps `AUTHENTICATION_FAILED`. Credential custody and endpoint
-policy are unchanged.
+`KubernetesComputeDriver.admitRevision` persists the launch selection.
+`codexLaunchEntrypoint` selects by revision, authentication, protection and workspace node.
+Existing revisions retain encoding; new PAT/workspace setup children are packed on first use.
+
+For a [PAT source](../reference/drivers/openshell-credential-gateway.md#source-type-catalog),
+`prepareHarnessAuth` selects native login. Startup verifies login using a placeholder in private `auth.json`.
+
+New unprotected source-backed OAuth revisions use
+`openshell-codex-oauth-launch:v1:`. The PAT and new OAuth programs use
+`openShellPatRecovery` to check the upgrade refusal, an HTTPS fallback advisory
+from the same thread, a nonempty answer, tool-free turn completion, and exit
+status 0. A terminal HTTPS 401 or 403 leaves the Harness unready with
+`AUTHENTICATION_FAILED`.
 `requireModelSourceDestination` checks immutable `config.authorized_base_url` before binding
 the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
 URL plus `/**`, preserving `/api/v1` prefixes. `attachForRevision` translates native
@@ -400,7 +406,7 @@ ClusterIP, advertised `ws://*.openshell.localhost:8080/` route, and inactive
 direct Service. Native model proof requires Landlock.
 
 `tests/integration/runtime-image-node-state-permissions.test.ts` checks packaged
-setup, retry and restart under setgid parents.
+setup, retry and restart under setgid parents. It excludes Kubernetes and model execution.
 
 ## Related docs
 
@@ -417,6 +423,8 @@ setup, retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 
 - 2026-11-19 16:30: Trace OAuth recovery and preserve prior commands. (authoring-run/175f2356-f027-463a-b193-9c54d1b4d5f5 - d2c15aacb40dcd5fcb91e1a1a9ffc047314dfdeb)
 

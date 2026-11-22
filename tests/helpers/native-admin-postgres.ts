@@ -34,7 +34,7 @@ import { createFixtureResponse } from "./console-fixture-response.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
-import { injectJson } from "./inject-json.mjs";
+import { injectJson as inject } from "./inject-json.ts";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
@@ -48,14 +48,6 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
 import { waitUntil } from "./wait-for.ts";
 
 type NativeApp = ReturnType<typeof createFastifyApp>;
-
-// The JavaScript helper does not infer its optional body and session properties.
-const inject: (
-  app: NativeApp,
-  method: "GET" | "POST" | "PATCH",
-  url: string,
-  options: { body?: unknown; session?: NativeSession; headers?: Record<string, string> },
-) => ReturnType<NativeApp["inject"]> = injectJson;
 
 interface NativeSession {
   origin: string;
@@ -119,10 +111,16 @@ function nativeComputeDriver(upstreamPort: number): ComputeDriver {
     {
       implementation: "native-admin-postgres-test-upstream",
       validateHarnessAuth() {},
-      getGatewayChatEndpoint(
-        revision: Parameters<NonNullable<ComputeDriver["getGatewayChatEndpoint"]>>[0],
-      ) {
-        return `wss://localhost:${upstreamPort}/native-chat/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
+      async getGatewayBrowserRequest(revision, { principalId, mode }) {
+        return {
+          endpoint: `wss://localhost:${upstreamPort}/native-browser/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`,
+          subject: `test:${principalId}`,
+          headers: {
+            "x-occ-identity": `test:${principalId}`,
+            "x-occ-browser-key": "server-browser-credential",
+            "x-openclaw-scopes": mode === "admin" ? "operator.admin" : "operator.sessions.write",
+          },
+        };
       },
       getGatewayEndpoint(
         revision: Parameters<NonNullable<ComputeDriver["getGatewayEndpoint"]>>[0],

@@ -41,10 +41,14 @@ field selects the matching CLI file. Omit it to use `occ` on `PATH`.
 ## Run the image upgrade
 
 `plan` checks `HELM_DRIVER` offline and requires it to be unset or `secret`.
-Apply, preflight, migration check, and resume read Helm release history from
-Kubernetes Secrets in the selected cluster. If your release uses SQL or
-ConfigMaps, stop here and keep the existing store. `status` reads local evidence.
-Preflight cleanup uses Kubernetes directly.
+Apply, preflight, migration check, migration apply, and resume read Helm history
+from Kubernetes Secrets in the selected cluster. If your release uses SQL or
+ConfigMaps, stop here and keep the existing store. For these commands, unset
+`HELM_KUBETOKEN`, `HELM_KUBEASUSER`, and `HELM_KUBEASGROUPS`. Configure
+credentials and any required impersonation in the selected kubeconfig so Helm
+and kubectl use the same settings.
+
+`status` reads local evidence. Preflight cleanup uses Kubernetes directly.
 
 Review the selected kubeconfig, context, release, and image digests:
 
@@ -83,8 +87,18 @@ Confirm that preflight checks and cleanup succeeded. Preflight leaves writers
 running. If it reports that retained Agent revisions require their original
 worker and exits 1, resolve the blocker through the
 [maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window).
-Follow that handoff before applying. Use fresh evidence and the same reviewed
-inputs and expert options for `apply`:
+Follow that handoff before applying.
+
+If preparation needs different data in an immutable Installation Secret,
+[stage a successor](immutable-installation-upgrade.md) and select it with
+`--candidate-values`. If a prepared attempt still needs to write to the
+recorded immutable Secret, [keep the maintenance freeze and stop](#stop-when-the-recorded-installation-secret-is-immutable).
+
+If Certificate admission fails, inspect `preflight-certificates.err` in the
+attempt's protected evidence. For a webhook timeout, check the cert-manager
+webhook Service, its endpoints, and reachability from the Kubernetes API server.
+
+Use fresh evidence and the same reviewed inputs and expert options for `apply`:
 
 ```bash
 occ installation upgrade apply --profile /secure/occ/upgrade.json
@@ -96,9 +110,9 @@ automation or redirected output, pass `--auto-approve`. The upgrade checks
 startup and migration compatibility and confirms preflight cleanup before it
 stops writers.
 Profiled commands use a private kubeconfig copy for Kubernetes requests.
-Apply and resume recheck the kubeconfig and any explicit CA after approval.
+Apply, migration apply, and resume recheck the kubeconfig and any explicit CA after approval.
 The CLI embeds the checked bytes from a CA file in the copy. Client credential
-references and commands use their original locations. Resume and cleanup bind
+references and commands use their original locations. Migration apply, resume, and cleanup bind
 the recorded kubeconfig and explicit CA bytes. When the context uses system roots,
 changes to the host trust store can affect later recovery commands.
 
@@ -118,12 +132,19 @@ If `apply` reports a separate database migration pause and exits with status
 migration history. Keep the maintenance window active, other writers and
 autoscalers fenced, and the original evidence in place.
 
-[Deploy and verify the database](separate-database-upgrade.md#deploy-the-database)
-with the selected controller image and the dedicated migrator credential.
-Require a successful `--require-current` check that reports `migration.checked`
-with history `completed`. After the Jobs and their Pods are gone, use
-[the original run to resume](#recover-an-interrupted-run). Repeat the original
-expert options after `--` and add `--migration-history-checked`.
+Use [migration apply](separate-database-upgrade.md#apply-and-verify-the-prepared-migration)
+with the original run and profile:
+
+```bash
+occ installation upgrade migration apply /path/to/original/evidence \
+  --profile /secure/occ/upgrade.json
+```
+
+Repeat the original expert options after `--`. Review the original run and
+the warning about irreversible SQL. Type `yes` at a terminal or pass
+`--auto-approve` before `--`. After verification and Job cleanup,
+[resume the original run](#recover-an-interrupted-run) with the same expert
+options and `--migration-history-checked`.
 
 ## Check database migration compatibility
 
@@ -211,3 +232,15 @@ recovery. Before returning to an earlier controller, check its compatibility
 with committed database and authentication state.
 Follow [stopped authentication maintenance](auth-maintenance.md) for
 authentication changes.
+
+### Stop when the recorded Installation Secret is immutable
+
+If a prepared upgrade still needs to write different data to the recorded
+Installation Secret and that Secret is now immutable, stop. Resume requires the
+original candidate and recorded Secret UID, so replacing the Secret or changing
+the candidate cannot resolve the refusal.
+
+Keep the maintenance freeze and preserve the original inputs and evidence.
+The API or worker may already be stopped. Have the release owner reconcile
+the state of the writers, the Helm release, and the database migration before
+choosing a separate recovery.

@@ -275,10 +275,11 @@ async function verifyLayerDiffId(
   expected: string,
   signal?: AbortSignal,
 ) {
+  const options = { chunkSize: 256 * 1024 };
   const decoder = layer.mediaType.endsWith("+gzip")
-    ? createGunzip()
+    ? createGunzip(options)
     : layer.mediaType.endsWith("+zstd")
-      ? createZstdDecompress()
+      ? createZstdDecompress(options)
       : undefined;
   if (!decoder) {
     assert.equal(layer.digest, expected, "OCI layer diff ID mismatch.");
@@ -682,7 +683,7 @@ async function build(directory: string) {
       "deploy/runtime/Dockerfile",
       ".",
     ],
-    180 * 60_000,
+    40 * 60_000,
   );
   if (process.env.GITHUB_ACTIONS === "true") {
     console.log(

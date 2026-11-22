@@ -16,8 +16,8 @@ import {
   text,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import type { NativeIAMState } from "../../packages/iam/src/index.ts";
-import type { signInToControllerApp } from "../helpers/auth-session.mjs";
-import type { injectJson as injectJsonRequest } from "../helpers/inject-json.mjs";
+import type { signInToControllerApp } from "../helpers/auth-session.ts";
+import type { injectJson as injectJsonRequest } from "../helpers/inject-json.ts";
 import type { InjectedResponse } from "../helpers/postgres-sign-in-test-boundaries.ts";
 
 type App = Awaited<ReturnType<typeof composePostgresDevelopment>>;
@@ -28,7 +28,7 @@ type AccountFixture = {
   assertApiError: (result: InjectedResponse, status: number, code: string, label?: string) => void;
   injectJson: (
     app: App,
-    method: string,
+    method: Parameters<typeof injectJsonRequest>[1],
     url: string,
     options?: Parameters<typeof injectJsonRequest>[3],
   ) => Promise<InjectedResponse>;
