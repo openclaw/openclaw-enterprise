@@ -774,8 +774,14 @@ test(
       selectedRepositoryIds: ["73"],
       permissions: { contents: "write", metadata: "read" },
     });
-    // The same registration with the token authority in place of the App fields.
-    const { appId: _appId, githubInstallationId: _installationId, ...fields } = peer.registry;
+    // The same registration with the token authority in place of every App field.
+    const {
+      appId: _appId,
+      githubInstallationId: _installationId,
+      allowStandingApprovals: _standing,
+      installationAccess: _installation,
+      ...fields
+    } = peer.registry;
     const registry = {
       ...fields,
       backendId: f.registry.backendId,
@@ -837,7 +843,9 @@ test(
     assert.equal(first.sessionId, sessionId);
     assert.equal(first.tokenSource, registry.providerInstanceId);
     assert.equal("installationId" in first, false);
-    assert.deepEqual(first.repositories, [{ repositoryId: "73", repository: "fixture/repository" }]);
+    assert.deepEqual(first.repositories, [
+      { repositoryId: "73", repository: "fixture/repository" },
+    ]);
     assert.ok(Date.parse(first.expiresAt) - Date.now() <= 3_600_000, "a loan ends within 1 h");
     await owner.maintain();
     assert.equal(peer.gh.issuesOfTokens.length, 0, "a token source never asks an App to issue");

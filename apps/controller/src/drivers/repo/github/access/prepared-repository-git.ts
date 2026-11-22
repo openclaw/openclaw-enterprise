@@ -366,7 +366,9 @@ export interface PreparedRepositoryGitSource {
   readonly draftPullLimit?: "none";
 }
 type Policy = (session: PreparedRepositorySession) => PreparedRepositoryGitSource | undefined;
-type AppSource = PreparedRepositoryGitSource & { readonly grant: GitHubPreparationAdmission["grant"] };
+type AppSource = PreparedRepositoryGitSource & {
+  readonly grant: GitHubPreparationAdmission["grant"];
+};
 /** App material has a family row; a lent token source has none. */
 const appSource = (source: PreparedRepositoryGitSource): source is AppSource =>
   !("tokenSource" in source.grant);
@@ -1016,11 +1018,11 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
                   providerInstanceId: current.session.binding.grant.providerInstanceId,
                 }
               : {
-                ...current.session.binding.grant,
-                repository: grant.repository,
-                pushRef: grant.pushRef,
-                ...(grant.pullRequestBase ? { pullRequestBase: grant.pullRequestBase } : {}),
-              }),
+                  ...current.session.binding.grant,
+                  repository: grant.repository,
+                  pushRef: grant.pushRef,
+                  ...(grant.pullRequestBase ? { pullRequestBase: grant.pullRequestBase } : {}),
+                }),
         };
       });
       signal.throwIfAborted();

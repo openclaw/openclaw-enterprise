@@ -460,14 +460,17 @@ test("a selected token grant names its source and carries no App identity", () =
     namespaceId: "namespace-a",
     repositoryRef: "a",
   });
-  assert.deepEqual(resolveSelectedRepositoryGrant(registry, "namespace-a", "rev_token", [binding]), {
-    id: binding.grant.grantId,
-    isolationId: "rev_token",
-    tokenSource: "github-com-primary",
-    profile: "github-repository",
-    repositories: [{ repositoryId: "101", repository: "fixture/a" }],
-    permissions: { metadata: "read", contents: "write" },
-  });
+  assert.deepEqual(
+    resolveSelectedRepositoryGrant(registry, "namespace-a", "rev_token", [binding]),
+    {
+      id: binding.grant.grantId,
+      isolationId: "rev_token",
+      tokenSource: "github-com-primary",
+      profile: "github-repository",
+      repositories: [{ repositoryId: "101", repository: "fixture/a" }],
+      permissions: { metadata: "read", contents: "write" },
+    },
+  );
 });
 
 test("the Worker mounts exactly one authority and refuses one the registry does not name", async () => {
@@ -477,7 +480,10 @@ test("the Worker mounts exactly one authority and refuses one the registry does 
     tokenPath: "/etc/openclaw/prepared-repository/token",
   };
   assert.deepEqual(
-    preparedGitHubConfiguration({ custodyKeyPath: paths.custodyKeyPath, tokenPath: paths.tokenPath }, true),
+    preparedGitHubConfiguration(
+      { custodyKeyPath: paths.custodyKeyPath, tokenPath: paths.tokenPath },
+      true,
+    ),
     { custodyKeyPath: paths.custodyKeyPath, tokenPath: paths.tokenPath },
   );
   for (const input of [paths, { custodyKeyPath: paths.custodyKeyPath }]) {
