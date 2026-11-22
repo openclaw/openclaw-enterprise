@@ -13,7 +13,6 @@ import {
   readFile,
   rename,
   rm,
-  stat,
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -66,7 +65,6 @@ import {
   imageCacheLanes,
   imageCacheObservation,
   laneImageCommand,
-  localImageBuildArgs,
   observesImageCache,
   reuseEngineImage,
   warmImageBuildCache,
@@ -87,6 +85,14 @@ import {
 } from "./repository-credentials.ts";
 import { prepareCodexSeccompProfile } from "../lib/codex-seccomp-k3d.ts";
 import { prepareOpenShell, validateOpenShellSelection } from "./openshell.ts";
+import {
+  nativeProfileBaseline,
+  nativeProfileCandidateSource,
+  nativeProfileSourceReceipt,
+  nativeProfileUpgradeFile,
+  selectsNativeProfileUpgrade,
+  withNativeProfileBaseline,
+} from "./native-profile-upgrade.ts";
 import { runPreparationCli } from "./prepare-cli.ts";
 import {
   assertLane,
@@ -519,6 +525,8 @@ async function buildRuntimeImages(
     buildConcurrency,
     registryOutput,
     runtimeArtifact,
+    sourceRoot = repositoryRoot,
+    tagSuffix = "",
   }: {
     controller?: boolean;
     runtime?: boolean;
@@ -532,8 +540,11 @@ async function buildRuntimeImages(
     buildConcurrency?: number;
     registryOutput?: string;
     runtimeArtifact?: ReturnType<typeof runtimeArtifactSelection>;
+    sourceRoot?: string;
+    tagSuffix?: string;
   } = {},
 ) {
+  const sourceRuntimeDockerfile = join(sourceRoot, "deploy/runtime/Dockerfile");
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
   // prints it per image and command once that ends (parallel builds stay
   // readable), also when it fails or overruns its own deadline inside the job's.
@@ -558,7 +569,12 @@ async function buildRuntimeImages(
     if (cacheWarm) {
       await warmImageBuildCache(role, args, requireCacheExport, progress);
     } else {
-      const result = await laneImageCommand(role, args);
+      const result = await laneImageCommand(
+        role,
+        args,
+        imageBuildBudgetMs(),
+        sourceRoot === repositoryRoot ? "current-build" : "baseline-build",
+      );
       imageCacheObservation(state.lane, role, "load", result.stderr, progress);
     }
   };
@@ -586,21 +602,13 @@ async function buildRuntimeImages(
           .slice(0, 17)
       : state.prefix;
   const tagBase =
-    registryOutput ?? `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
-  const openclawSource = runtime ? process.env.OCC_K3D_OPENCLAW_SOURCE : undefined;
-  if (runtimeArtifact && (!runtime || registryOutput || cacheWarm || openclawSource)) {
+    registryOutput ??
+    `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}${tagSuffix}`;
+  if (runtimeArtifact && (!runtime || registryOutput || cacheWarm)) {
     throw new Error("A selected runtime artifact requires ordinary runtime image preparation.");
   }
   if (controller) {
     assertNodeBaseImage(nodeBaseImage);
-  }
-  if (openclawSource !== undefined) {
-    if (!isAbsolute(openclawSource) || !(await stat(join(openclawSource, "Dockerfile"))).isFile()) {
-      throw new Error("OCC_K3D_OPENCLAW_SOURCE must select an absolute OpenClaw source checkout");
-    }
-    if (!/^[a-f0-9]{40,64}$/u.test(process.env.OCC_K3D_OPENCLAW_COMMIT ?? "")) {
-      throw new Error("OCC_K3D_OPENCLAW_COMMIT must identify the selected OpenClaw source");
-    }
   }
   type Build = {
     role: "controller" | "runtime";
@@ -627,7 +635,7 @@ async function buildRuntimeImages(
         `NODE_BASE_IMAGE=${nodeBaseImage}`,
         "-t",
         tag,
-        ".",
+        sourceRoot === repositoryRoot ? "." : sourceRoot,
       ],
       env: { OCC_TEST_PRODUCTION_IMAGE: tag, OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: tag },
     });
@@ -640,9 +648,6 @@ async function buildRuntimeImages(
       OCC_DOCKER_GATEWAY_IMAGE: tag,
       OCC_DOCKER_AGENT_IMAGE: tag,
       OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag,
-      ...(openclawSource === undefined
-        ? {}
-        : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT! }),
     };
     if (runtimeArtifact) {
       assertRuntimeArtifactTagAvailable(tag, importDeadlineMs);
@@ -657,34 +662,24 @@ async function buildRuntimeImages(
         await loaded.cleanup();
       }
     } else {
-      const sourceArguments =
-        openclawSource === undefined ? openclawBuildArguments(await readOpenclawSource()) : [];
+      const sourceArguments = openclawBuildArguments(
+        await readOpenclawSource(join(sourceRoot, "deploy/runtime/openclaw-source.json")),
+      );
       builds.push({
         role: "runtime",
         tag,
-        args:
-          openclawSource === undefined
-            ? [
-                ...imageBuildArgs(state.lane, "runtime", localStore),
-                ...plainProgress,
-                ...revisionArgs,
-                ...sourceArguments,
-                "--pull=false",
-                "-f",
-                runtimeDockerfile,
-                "-t",
-                tag,
-                repositoryRoot,
-              ]
-            : [
-                ...localImageBuildArgs(localStore),
-                ...plainProgress,
-                "--build-arg",
-                "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
-                "-t",
-                tag,
-                openclawSource,
-              ],
+        args: [
+          ...imageBuildArgs(state.lane, "runtime", localStore),
+          ...plainProgress,
+          ...revisionArgs,
+          ...sourceArguments,
+          "--pull=false",
+          "-f",
+          sourceRuntimeDockerfile,
+          "-t",
+          tag,
+          sourceRoot,
+        ],
         env: runtimeEnv,
       });
     }
@@ -753,9 +748,6 @@ async function prepareFirstAgentImages(
   file: string | undefined,
 ) {
   imageBuildArgs(state.lane, "runtime", false); // Validate the hosted cache boundary before resources.
-  if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
-    throw new Error("First-Agent image preparation requires the checkout's pinned runtime source.");
-  }
   const builder = process.env.OCC_CI_FIRST_AGENT_BUILDER;
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(builder ?? "")) {
     throw new Error("First-Agent image preparation requires its selected job builder.");
@@ -907,7 +899,7 @@ const { ensurePostgresServer, createAndMigrateDatabase } = createPostgresPrepara
   repositoryRoot,
   preparationJournal,
 );
-const { ensureK3dCluster, k3dStage } = createK3dPreparation({
+const { ensureK3dCluster, k3dStage, prepareSlackHelmPluginStatusProxy } = createK3dPreparation({
   ...preparationJournal,
   progress,
   fixtureLanes,
@@ -1028,10 +1020,17 @@ async function retainRuntimeProvenance(
             "containerd",
           )
         ).stdout;
-      const selection = parseJson(
-        await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
-      );
-      const selected: unknown = Array.isArray(selection) ? selection[0] : undefined;
+      // Classic stores return the config ID directly. Docker 28.0.4 rejects
+      // --platform on image inspect, even for an immutable local image ID.
+      let selected: unknown = inspected;
+      if (inspected.Descriptor !== undefined) {
+        const selection = parseJson(
+          await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
+        );
+        selected = Array.isArray(selection) ? selection[0] : undefined;
+      } else if (inspected.Id !== image.hostImageId) {
+        return;
+      }
       if (!configInspection(selected)) {
         return;
       }
@@ -1124,11 +1123,7 @@ async function prepareK3dRuntimeImages(
   if (needsController || needsRuntime) {
     const images = [
       needsController ? "controller" : undefined,
-      needsRuntime
-        ? process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
-          ? "gateway and Codex runtime"
-          : "gateway and native OpenClaw runtime"
-        : undefined,
+      needsRuntime ? "gateway and Codex runtime" : undefined,
     ]
       .filter(Boolean)
       .join(", ");
@@ -1165,12 +1160,7 @@ async function prepareK3dRuntimeImages(
       env.OCC_TEST_KUBERNETES_AGENT_IMAGE ?? process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE,
   };
   requireEnv(Object.keys(inputs), inputs);
-  progress(
-    state.lane,
-    process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
-      ? "Importing the gateway and Codex runtime images into k3d."
-      : "Importing the native OpenClaw runtime image into k3d.",
-  );
+  progress(state.lane, "Importing the gateway and Codex runtime images into k3d.");
   for (const [name, value] of Object.entries(inputs)) {
     const image = await registerImageInK3d(statePath, state, cluster, value!, name);
     env[name] = image.reference;
@@ -1198,11 +1188,7 @@ async function prepareK3dRuntimeImages(
   const embeddedOidcOnly =
     state.lane === "gateway-routing" &&
     state.selectedFile === "tests/integration/oidc-agent-chat-k3d-real.test.ts";
-  if (
-    lanePrepare(state.lane).codexSeccomp &&
-    !embeddedOidcOnly &&
-    process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
-  ) {
+  if (lanePrepare(state.lane).codexSeccomp && !embeddedOidcOnly) {
     progress(state.lane, "Deriving and installing the dedicated Codex seccomp profile.");
     const seccomp = await prepareCodexSeccompProfile({
       cluster,
@@ -1478,9 +1464,6 @@ async function prepareLane({
       throw new Error(
         "A runtime artifact cannot be combined with selected Gateway or TUI upgrade images.",
       );
-    }
-    if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
-      throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
     }
   }
   validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
@@ -1839,11 +1822,60 @@ async function prepareLane({
     case "k3d-otel":
     case "gateway-routing": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
+      let baseline;
+      if (selectsNativeProfileUpgrade(name, relativeFile)) {
+        // Build the real old source before creating a cluster or using a model.
+        baseline = await withNativeProfileBaseline(repositoryRoot, async (sourceRoot, receipt) => {
+          const built = await buildRuntimeImages(resolvedStatePath, state, {
+            controller: true,
+            runtime: true,
+            nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
+            sourceRoot,
+            tagSuffix: "-native-baseline",
+            revision: receipt.revision,
+            reuseEngineImages: false,
+          });
+          for (const image of [
+            built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
+            built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
+          ]) {
+            if (!image) {
+              throw new Error("The baseline build did not return both owned image tags.");
+            }
+            const inspected = await boundedImageCommand([
+              "image",
+              "inspect",
+              "--format",
+              '{{index .Config.Labels "org.opencontainers.image.revision"}}',
+              image,
+            ]);
+            if (inspected.stdout.trim() !== receipt.revision) {
+              throw new Error("Baseline image revision does not match its frozen build context.");
+            }
+          }
+          return { env: built.env, receipt };
+        });
+      }
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
         buildController: true,
         buildRuntime: true,
         runtimeArtifact,
       });
+      if (baseline) {
+        for (const [target, source] of Object.entries({
+          OCC_TEST_NATIVE_BASELINE_CONTROLLER_IMAGE: "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+          OCC_TEST_NATIVE_BASELINE_RUNTIME_IMAGE: "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
+        })) {
+          const sourceImage = baseline.env[source];
+          if (!sourceImage) {
+            throw new Error("The baseline build did not return both owned image tags.");
+          }
+          env[target] = (
+            await registerImageInK3d(resolvedStatePath, state, cluster, sourceImage, target)
+          ).reference;
+        }
+        env.OCC_TEST_NATIVE_BASELINE_SOURCE = JSON.stringify(baseline.receipt);
+      }
       const routing = await timedK3dModelPreparation(name, "gateway-routing", () =>
         prepareGatewayRouting({ cluster, execFile }),
       );
@@ -2147,6 +2179,91 @@ async function prepareFile({
   );
 }
 
+// Both the standalone wrapper and QA's direct second stage allocate here. The
+// current fresh-install case's database is never used as an upgrade baseline.
+export async function prepareNativeProfileUpgradeDatabase(statePath: string | undefined) {
+  const path = normalizeStatePath(statePath);
+  return withStateLock(path, async () => {
+    const state = await readState(path);
+    if (
+      state?.lane !== "gateway-routing" ||
+      (state.selectedFile !== undefined && state.selectedFile !== nativeProfileUpgradeFile)
+    ) {
+      throw new Error(
+        "Native upgrade requires its full or focused prepared Gateway Routing state and fixed baseline pair.",
+      );
+    }
+    const source = state.env?.OCC_TEST_NATIVE_BASELINE_SOURCE;
+    const sourceValue = parseJson(source ?? "null");
+    const baselineController = state?.env?.OCC_TEST_NATIVE_BASELINE_CONTROLLER_IMAGE;
+    const baselineRuntime = state.env?.OCC_TEST_NATIVE_BASELINE_RUNTIME_IMAGE;
+    const candidateController = state.env?.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+    if (
+      asRecord(sourceValue)?.revision !== nativeProfileBaseline.revision ||
+      !baselineController ||
+      !baselineRuntime
+    ) {
+      throw new Error(
+        "Native upgrade requires its full or focused prepared Gateway Routing state and fixed baseline pair.",
+      );
+    }
+    const sourceReceipt = nativeProfileSourceReceipt(sourceValue);
+    for (const image of [baselineController, baselineRuntime, candidateController]) {
+      assertImmutableImageReference(image, "native upgrade prepared image");
+      if (
+        !state.resources.some(
+          (resource) =>
+            resource.kind === "k3d-image" &&
+            resource.status === "ready" &&
+            asRecord(resource)?.reference === image,
+        )
+      ) {
+        throw new Error("Native upgrade images must belong to the prepared lane journal.");
+      }
+    }
+    const candidateSource = await nativeProfileCandidateSource(repositoryRoot);
+    const candidateRevision = candidateSource.revision;
+    const initializerImage = (name: string, image: string | undefined) => {
+      const resource = state.resources.find(
+        (entry) =>
+          entry.kind === "k3d-image" &&
+          asRecord(entry)?.reference === image &&
+          entry.status === "ready",
+      );
+      const hostImageId = asRecord(resource)?.hostImageId;
+      assertDockerImageId(hostImageId, "native upgrade " + name + " initializer");
+      return hostImageId;
+    };
+    const initializerImages = {
+      baseline: initializerImage("baseline", baselineController),
+      candidate: initializerImage("candidate", candidateController),
+    };
+    if (initializerImages.baseline === initializerImages.candidate) {
+      throw new Error("The candidate controller must differ from the pre-feature image.");
+    }
+    const database = await createAndMigrateDatabase(path, state, {
+      kind: "k8s",
+      label: "native_profile_upgrade",
+      requireExistingServer: true,
+      initialization: "schema-only",
+    });
+    await writeState(path, state);
+    return {
+      databaseUrl: database.appUrl,
+      migrationUrl: database.migrationUrl,
+      sourceReceipt,
+      candidateRevision,
+      candidateSource,
+      initializerImages,
+      baseline: {
+        controller: baselineController,
+        runtime: baselineRuntime,
+      },
+      cleanup: () => cleanupResourceIds(path, [database.resourceId]),
+    };
+  });
+}
+
 async function prepareFileWithState({
   name,
   relativeFile,
@@ -2182,6 +2299,13 @@ async function prepareFileWithState({
   const effectiveState = state ?? baseState(name, resolvedStatePath);
   const env = baseEnv(resolvedStatePath, effectiveState);
   const resourceIds: string[] = [];
+
+  if (name === "slack" && relativeFile === "tests/integration/channel-egress-helm-real.test.ts") {
+    env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS = await prepareSlackHelmPluginStatusProxy(
+      effectiveState,
+      env,
+    );
+  }
 
   if (name === "production-tui" && state) {
     const inputs = effectiveLaneEnv(name);
@@ -2279,6 +2403,9 @@ async function prepareFileWithState({
     }
     if (relativeFile === "tests/integration/postgres-api-request-audit.test.ts") {
       env.OCC_TEST_API_REQUEST_AUDIT_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
+    if (relativeFile === "tests/integration/postgres-static-token-service-lifecycle.test.ts") {
+      env.OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (relativeFile === "tests/integration/postgres-agent-audit-read.test.ts") {
       env.OCC_TEST_AGENT_AUDIT_READ_MIGRATION_DATABASE_URL = database.migrationUrl;

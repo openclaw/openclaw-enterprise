@@ -9,7 +9,7 @@ import { AgentDeploymentStatusSchema } from "../../packages/contracts/src/api/re
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
-} from "../../packages/occ/src/state/controller-work.ts";
+} from "../../packages/occ/src/deployment-work-status.ts";
 
 import type {
   AgentRevisionWire,
@@ -481,7 +481,9 @@ export async function login(
   } else {
     const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
       data: { email: credentials.email, password: credentials.password },
-      headers: { origin: origin.origin },
+      // A later route.fetch() shares this request context. Retire the sign-in
+      // socket before an intercepted write can race the ingress idle timeout.
+      headers: { origin: origin.origin, connection: "close" },
     });
     assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
   }

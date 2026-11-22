@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-first-deployment-guarded.test.ts",
     "tests/integration/occ-api-deployment-work.test.ts",
     "tests/integration/occ-api-mutation-refusals.test.ts",
     "tests/integration/managed-mcp-tool-discovery.test.ts",
@@ -30,9 +31,11 @@
     "tests/conformance/occ-runtime-logs-security.test.ts",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
+    "tests/integration/installation-preflight-render.test.ts",
     "tests/conformance/kubernetes-secret-driver.test.ts",
     "tests/docs/docs-site.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/external-sandbox-registration.test.ts",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
@@ -56,9 +59,9 @@
     "tests/conformance/runtime-logs-sandbox.test.ts",
     "tests/integration/device-authorization-api.test.ts",
     "tests/integration/device-authorization-denial-audit.test.ts",
-    "tests/integration/openshell-device-authorization-api.test.mjs",
+    "tests/integration/openshell-device-authorization-api.test.ts",
     "tests/integration/dependency-unavailable-log.test.ts",
-    "tests/integration/git-hooks.test.mjs",
+    "tests/integration/git-hooks.test.ts",
     "tests/integration/profile-renderer.test.ts",
     "tests/integration/production-keycloak-profile.test.ts",
     "tests/integration/database-snapshot-ordering.test.ts",
@@ -74,6 +77,7 @@
     "tests/conformance/workspace-files-configuration.test.ts",
     "tests/integration/common-logging.test.ts",
     "tests/docs/docs-length.test.mjs",
+    "tests/integration/eks-address-inventory.test.ts",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.ts",
@@ -83,9 +87,10 @@
     "tests/integration/production-controller-security.test.ts",
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
     "tests/conformance/openshell-gateway-wire.test.ts",
+    "tests/conformance/openshell-staged-credential-proxy.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
-    "tests/conformance/openshell-managed-bootstrap.test.mjs",
+    "tests/conformance/openshell-managed-bootstrap.test.ts",
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
@@ -272,6 +277,13 @@
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
     },
     {
+      "path": "tests/conformance/external-sandbox-registration.test.ts",
+      "expectedTests": [
+        "production startup selects an installed external Sandbox package",
+        "production startup refuses malformed installed Sandbox declarations"
+      ]
+    },
+    {
       "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"
     },
     {
@@ -355,6 +367,9 @@
       "path": "tests/conformance/openshell-gateway-wire.test.ts"
     },
     {
+      "path": "tests/conformance/openshell-staged-credential-proxy.test.ts"
+    },
+    {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
       "expectedTests": ["provider profile wire defaults preserve Git overlap enforcement"]
     },
@@ -362,7 +377,7 @@
       "path": "tests/conformance/oauth-connection.test.mjs"
     },
     {
-      "path": "tests/conformance/openshell-managed-bootstrap.test.mjs"
+      "path": "tests/conformance/openshell-managed-bootstrap.test.ts"
     },
     {
       "path": "tests/conformance/openshell-oauth-wire.test.mjs"
@@ -489,6 +504,10 @@
       "path": "tests/integration/installation-change-preflight.test.mjs"
     },
     {
+      "path": "tests/integration/installation-preflight-render.test.ts",
+      "expectedTests": ["a separate database deployment requires current history only on upgrade"]
+    },
+    {
       "path": "tests/integration/console-api.test.ts"
     },
     {
@@ -504,10 +523,26 @@
       "path": "tests/integration/driver-plugin-installation.test.ts"
     },
     {
-      "path": "tests/integration/git-hooks.test.mjs"
+      "path": "tests/integration/git-hooks.test.ts"
     },
     {
       "path": "tests/integration/occ-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/occ-api-first-deployment-guarded.test.ts",
+      "expectedTests": [
+        "guarded first deployment with the bundled Slack selection recovers without writes",
+        "guarded first deployment isolates actors and requires current exact authority",
+        "guarded first deployment rejects stale binding and generation before credential work",
+        "guarded first deployment serializes fresh Slack contenders after concurrent preparation",
+        "guarded first deployment supports trusted registered validators and hides unknown failures",
+        "guarded first deployment rechecks configuration after outside-transaction validation",
+        "guarded first deployment rechecks Agent and Configuration authority before credential effects",
+        "guarded first deployment refuses deleting Agents before validation",
+        "matching first deployments recover between the initial snapshot and lock despite fresh failures",
+        "first deployment recovery generation has an exact decimal wire bound over real HTTP",
+        "guarded deployment rejects dot keys and unrecognized intent fields without writes"
+      ]
     },
     {
       "path": "tests/integration/occ-api-deployment-work.test.ts",
@@ -603,6 +638,9 @@
       "path": "tests/integration/production-healthcheck.test.ts"
     },
     {
+      "path": "tests/integration/eks-address-inventory.test.ts"
+    },
+    {
       "path": "tests/integration/production-image-upgrade.test.ts"
     },
     {
@@ -636,7 +674,7 @@
       "path": "tests/integration/device-authorization-denial-audit.test.ts"
     },
     {
-      "path": "tests/integration/openshell-device-authorization-api.test.mjs"
+      "path": "tests/integration/openshell-device-authorization-api.test.ts"
     },
     {
       "path": "tests/integration/dependency-unavailable-log.test.ts"
@@ -645,7 +683,10 @@
       "path": "tests/integration/runtime-credentials-api.test.ts"
     },
     {
-      "path": "tests/integration/secret-driver-startup.test.ts"
+      "path": "tests/integration/secret-driver-startup.test.ts",
+      "expectedTests": [
+        "TokenService startup keeps marker ownership with the selected private Secret Driver"
+      ]
     },
     {
       "path": "tests/integration/service-api-keys.test.ts"

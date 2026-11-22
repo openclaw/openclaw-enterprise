@@ -3,18 +3,7 @@ import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmod,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  utimes,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
@@ -36,15 +25,9 @@ import {
   protectedRepositoryValues,
   render,
   repositoryCredentialValues,
-  stringNameMessage,
   tooling,
 } from "../helpers/production-chart-network-fixture.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
-import {
-  initialUpgradeChart,
-  inspectWorkerProbe,
-  stageSigninChart,
-} from "../helpers/production-worker-chart.ts";
 import {
   productionChartPath,
   productionValuesTemplateArgs,
@@ -58,13 +41,33 @@ import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 
 import {
+  checkGatewayServiceTypes,
+  checkRemoteNodeCidrs,
   registerExecutionGatewayHostnameCase,
+  registerExecutionPortAndDnsCase,
   registerExternalGatewayTrustCase,
   registerProductionGatewayHostnameCase,
+  registerProductionGatewayNameCase,
   registerTenantGatewayPortCase,
 } from "./production-kubernetes-gateway-contract-cases.ts";
 import {
+  assertConsoleThemeMounts,
+  checkBootstrapKeyYamlScalars,
+  checkImageSelectedMigration,
+  checkInitializationHookNames,
+  checkInstallationNameValues,
+  checkNamedYamlScalarValues,
+  checkPackagedProductionChart,
+  checkProductionExamples,
+  checkProductionImageWorkerProbes,
+  checkRetiredBootstrapOutputs,
+  checkStagedWorkerProbes,
+  controlPlaneWorkloads,
+  findResourceByComponent,
+  registerConsoleThemeValuesCase,
+  registerControlPlaneSelectorValuesCase,
   registerNativeAdminAndRuntimeLogCases,
+  registerOptionalControlPlaneSelectorsCase,
   registerSandboxIngressCase,
 } from "./production-kubernetes-native-access-cases.ts";
 import {
@@ -85,37 +88,7 @@ test("console themes mount only on the API and restart it when the checksum chan
       })
     ).stdout,
   );
-  for (const objects of [defaults, themed]) {
-    for (const component of ["api", "worker"]) {
-      const deployment = findResource(objects, "Deployment", `openclaw-enterprise-${component}`);
-      const enabled = objects === themed && component === "api";
-      const pod = deployment.spec.template;
-      const container = [...(pod.spec.initContainers ?? []), ...pod.spec.containers].find(
-        (item) => item.name === component,
-      );
-      assert.equal(
-        container.env.some((item) => item.name === "OCC_CONSOLE_THEME_DIR"),
-        enabled,
-      );
-      assert.equal(
-        pod.spec.volumes.some((item) => item.name === "console-theme"),
-        enabled,
-      );
-      assert.equal(
-        pod.metadata.annotations?.["openclaw.dev/console-theme-checksum"],
-        enabled ? "revision-two" : undefined,
-      );
-      if (enabled) {
-        assert.deepEqual(pod.spec.volumes.find((item) => item.name === "console-theme").configMap, {
-          name: "console-branding",
-        });
-        assert.deepEqual(
-          container.volumeMounts.find((item) => item.name === "console-theme"),
-          { name: "console-theme", mountPath: "/etc/openclaw/console-theme", readOnly: true },
-        );
-      }
-    }
-  }
+  assertConsoleThemeMounts(defaults, themed);
 });
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const controllerRequire = createRequire(
@@ -176,85 +149,7 @@ async function renderObjects(overrides = {}, options = {}) {
   return resources((await render(overrides, options)).stdout);
 }
 
-function findResourceByComponent(objects, kind, component) {
-  return objects.find(
-    (object) =>
-      object.kind === kind && object.metadata.labels?.["app.kubernetes.io/component"] === component,
-  );
-}
-
-function controlPlaneWorkloads(objects) {
-  return {
-    initialization: findResourceByComponent(objects, "Job", "initialization"),
-    api: findResourceByComponent(objects, "Deployment", "api"),
-    worker: findResourceByComponent(objects, "Deployment", "worker"),
-  };
-}
-
-test(
-  "console theme settings reject YAML booleans and invalid ConfigMap names",
-  tooling,
-  async (t) => {
-    const directory = await temporaryDirectory(t, "oce-console-theme-");
-    const writeValues = async (name, body) => {
-      const path = join(directory, name);
-      await writeFile(path, body);
-      return path;
-    };
-    for (const [name, body, refusal] of [
-      [
-        "yes.yaml",
-        "api:\n  consoleTheme:\n    configMapName: yes\n    checksum: rev\n",
-        /api\.consoleTheme\.configMapName must be a string/,
-      ],
-      [
-        "no.yaml",
-        "api:\n  consoleTheme:\n    configMapName: no\n",
-        /api\.consoleTheme\.configMapName must be a string/,
-      ],
-      [
-        "checksum.yaml",
-        'api:\n  consoleTheme:\n    configMapName: "console-branding"\n    checksum: yes\n',
-        /api\.consoleTheme\.checksum must be a string/,
-      ],
-    ]) {
-      const path = await writeValues(name, body);
-      await assert.rejects(render({}, { valuesFiles: [path] }), refusal);
-    }
-    const quoted = await writeValues(
-      "quoted.yaml",
-      'api:\n  consoleTheme:\n    configMapName: "no"\n    checksum: "rev"\n',
-    );
-    const objects = await renderObjects({}, { valuesFiles: [quoted] });
-    const api = findResource(objects, "Deployment", "openclaw-enterprise-api");
-    assert.equal(
-      api.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap.name,
-      "no",
-    );
-    assert.equal(
-      api.spec.template.metadata.annotations["openclaw.dev/console-theme-checksum"],
-      "rev",
-    );
-    await assert.rejects(
-      render({ "api.consoleTheme.configMapName": "false" }),
-      /api\.consoleTheme\.configMapName must be a string/,
-    );
-    await assert.rejects(
-      render({ "api.consoleTheme.configMapName": "Not_Valid" }),
-      /api\.consoleTheme\.configMapName must be a Kubernetes resource name/,
-    );
-    const named = await renderObjects(
-      { "api.consoleTheme.checksum": "revision-two" },
-      { strings: { "api.consoleTheme.configMapName": "false" } },
-    );
-    const deployment = findResource(named, "Deployment", "openclaw-enterprise-api");
-    assert.equal(
-      deployment.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap
-        .name,
-      "false",
-    );
-  },
-);
+registerConsoleThemeValuesCase();
 
 const stringNameDatabaseCa = {
   "database.caSecretName": "occ-database-ca-test",
@@ -290,53 +185,7 @@ test(
   "operator-named Secrets, keys and namespaces reject YAML booleans and numbers",
   tooling,
   async () => {
-    // --set reads true or 1 as a boolean or number, as YAML does for yes/on/1. Rendered as "true"
-    // or "1", the name would pass the name pattern and the Pod would wait for a Secret, key or
-    // Namespace that does not exist.
-    for (const [field, value, enabled = {}] of [
-      ["installation.secretName", "true"],
-      ["installation.key", "true"],
-      ["database.secretName", "123"],
-      ["database.caSecretName", "true"],
-      ["auth.secretKey", "true"],
-      ["dns.namespace", "true"],
-      ["api.clients[0].namespace", "1"],
-      ["database.appUrlKey", "2"],
-      ["bootstrap.credentials.secretName", "true"],
-      ["gatewayRouting.envoyNamespace", "true", gatewayRoutingValues],
-      ["gatewayRouting.gatewayName", "2024", gatewayRoutingValues],
-      ["gatewayRouting.tlsSecretName", "true", gatewayRoutingValues],
-      ["api.consoleTheme.configMapName", "true"],
-      ["api.consoleTheme.checksum", "1"],
-      ["controlPlane.installationChecksum", "1"],
-      // Finding 2321: these fields meet an eq comparison first, which cannot compare a string
-      // with a number or boolean and used to fail with a Go template type error instead.
-      ["database.caKey", "1", stringNameCaValues.database],
-      ["auth.oidc.secretName", "2024", stringNameCaValues.oidc],
-      ["auth.oidc.secretName", "false", stringNameCaValues.oidc],
-      ["database.caSecretName", "2024", stringNameCaValues.oidc],
-      ["auth.oidc.caSecretName", "2024", stringNameCaValues.oidc],
-      ["executionCluster.apiKubeconfigSecretName", "2024", stringNameCaValues.execution],
-      ["executionCluster.workerKubeconfigSecretName", "true", stringNameCaValues.execution],
-    ]) {
-      await assert.rejects(
-        render({ ...enabled, [field]: value }),
-        (error) => error.message.includes(`${field} ${stringNameMessage}`),
-        field,
-      );
-    }
-    // An optional name that reads as false or 0 is still unset, as the notice says.
-    for (const [value, mounted] of [
-      ["occ-database-ca-test", true],
-      ["false", false],
-      ["0", false],
-    ]) {
-      const { stdout } = await render({
-        ...stringNameCaValues.database,
-        "database.caSecretName": value,
-      });
-      assert.equal(stdout.includes("/etc/openclaw/database-ca"), mounted, value);
-    }
+    await checkNamedYamlScalarValues(stringNameCaValues);
   },
 );
 
@@ -587,95 +436,7 @@ const runtimeLogRules = [
 ];
 
 test("production native examples satisfy the current Helm, Installation, and PVC schemas", async (t) => {
-  const { loadInstallationConfiguration } =
-    await import("../../apps/controller/src/composition/installation-config.ts");
-  // Operators must replace the trust placeholder with their observed proxy source.
-  // A documentation-only address is never a runnable trust default.
-  const directory = await temporaryDirectory(t, "occ-production-example-");
-  const example = await readFile(new URL("installation.yaml", productionExamples), "utf8");
-  assert.match(example, /<actual-proxy-source-cidr>/);
-  const installationPath = join(directory, "installation.yaml");
-  await writeFile(installationPath, example.replace("<actual-proxy-source-cidr>", "192.0.2.10/32"));
-  const drivers = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: installationPath },
-  });
-  assert.equal(drivers.installation.occ.cluster, "production-west");
-  assert.deepEqual(drivers.installation.backend, []);
-  assert.equal(drivers.installation.presets.includeDefaults, true);
-  assert.deepEqual(drivers.defaultPresets.map(({ name }) => name).sort(), [
-    "Standard Codex",
-    "Standard OpenClaw",
-    "default-codex",
-  ]);
-  assert.equal(drivers.pluginDrivers[0].id, "codex-plugin");
-  assert.equal(drivers.pluginDrivers[0].discoveryCredential, "none");
-  const catalog = await drivers.pluginDrivers[0].discoverCatalog({ q: "Linear" });
-  assert.ok(catalog.plugins.some(({ name }) => name === "Linear"));
-  assert.equal(drivers.computeDriver.id, "compute-kubernetes");
-  const compute = drivers.installation.drivers.compute.configuration;
-  assert.equal(compute.network.gatewayClients, undefined);
-  assert.equal(compute.resources.gateway.limits.cpu, "4");
-  assert.equal(compute.resources.agent.limits.cpu, "4");
-  assert.equal(compute.resources.gateway.requests.cpu, "100m");
-  // An unquoted YAML quantity is a number; startup names the field it rejects.
-  const unquotedPath = join(directory, "unquoted-cpu.yaml");
-  await writeFile(
-    unquotedPath,
-    example
-      .replace("<actual-proxy-source-cidr>", "192.0.2.10/32")
-      .replace(/^( {10}limits:\n {12}cpu: )"4"$/m, (_, prefix) => `${prefix}4`),
-  );
-  await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: unquotedPath },
-    }),
-    (error) => {
-      assert.ok(error instanceof ConfigurationValidationError);
-      assert.deepEqual(error.error.details, [
-        {
-          path: "/resources/gateway/limits/cpu",
-          code: "INVALID_TYPE",
-          message: "Configuration does not satisfy type.",
-        },
-      ]);
-      return true;
-    },
-  );
-  // Trusted Installation startup must reject a validly spelled request that
-  // Kubernetes refuses against its smaller limit, before any cluster operation.
-  const impossible = loadYaml(example.replace("<actual-proxy-source-cidr>", "192.0.2.10/32"));
-  impossible.drivers.compute.configuration.resources.gateway.requests.cpu = "5";
-  const impossiblePath = join(directory, "request-over-limit.yaml");
-  await writeFile(impossiblePath, JSON.stringify(impossible));
-  await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: impossiblePath },
-    }),
-    (error) => {
-      assert.ok(error instanceof ConfigurationValidationError);
-      assert.equal(error.error.details[0].path, "/resources/gateway/requests/cpu");
-      assert.equal(error.error.details[0].code, "INVALID_RANGE");
-      assert.match(
-        error.error.details[0].message,
-        /Gateway CPU request .* cannot exceed its limit/,
-      );
-      return true;
-    },
-  );
-  const values = loadYaml(await readFile(new URL("values.yaml", productionExamples), "utf8"));
-  assert.equal(values.gatewayRouting.enabled, true);
-  assert.equal(compute.gatewayRouting.gatewayName, "oce-agent-gateways");
-  assert.equal(compute.gatewayRouting.gatewayNamespace, "openclaw-system");
-  assert.equal(drivers.configurationDriver.id, "config-kubernetes");
-  assert.equal(drivers.secretDriver.id, "secret-kubernetes");
-  assert.equal(Object.hasOwn(drivers.installation.drivers, "service_account"), false);
-
-  assert.equal(values.bootstrap.credentials.secretName, "occ-bootstrap-credentials");
-  assert.equal(Object.hasOwn(values.bootstrap, "password"), false);
-  assert.equal(Object.hasOwn(values.bootstrap, "serviceKey"), false);
+  await checkProductionExamples(t, productionExamples, ConfigurationValidationError);
 });
 
 registerProductionGatewayHostnameCase(sandboxValues);
@@ -688,25 +449,7 @@ function renderProductionValuesExample(extraArgs, options = {}) {
   });
 }
 
-test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
-  for (const [flag, gatewayName] of [
-    ["--set", "Bad_Name"],
-    ["--set-string", " oce-agent-gateways "],
-    ["--set-string", "a".repeat(64)],
-  ]) {
-    await assert.rejects(
-      renderProductionValuesExample([flag, `gatewayRouting.gatewayName=${gatewayName}`]),
-      /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
-    );
-  }
-  const sixtyThree = "a".repeat(63);
-  const { stdout } = await renderProductionValuesExample(
-    ["--set-string", `gatewayRouting.gatewayName=${sixtyThree}`],
-    { maxBuffer: 2_000_000 },
-  );
-  const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
-  assert.equal(gateway?.metadata.name, sixtyThree);
-});
+registerProductionGatewayNameCase(renderProductionValuesExample);
 
 test(
   "the execution chart refuses a harness Gateway name or Envoy namespace Compute refuses",
@@ -777,42 +520,7 @@ test(
   "initialization hooks fit Kubernetes Job names for valid Helm release names",
   tooling,
   async (t) => {
-    const names = new Set();
-    for (const release of [
-      "oce",
-      "a".repeat(48),
-      "a".repeat(49),
-      "a".repeat(53),
-      "a".repeat(52) + "b",
-    ]) {
-      await t.test(`release ${release.length} characters, ending ${release.at(-1)}`, async () => {
-        let installedName;
-        for (const isUpgrade of [false, true]) {
-          const objects = await renderObjects({}, { release, isUpgrade });
-          const job = objects.find(({ kind }) => kind === "Job");
-          // The real Helm hook must survive admission before migration/bootstrap can run.
-          assert.ok(
-            job.metadata.name.length <= 63,
-            `Job name exceeds 63 characters: ${job.metadata.name}`,
-          );
-          assert.match(job.metadata.name, /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/);
-          assert.ok(job.metadata.name.startsWith(release));
-          assert.equal(job.metadata.labels["app.kubernetes.io/instance"], release);
-          assert.equal(job.spec.template.metadata.labels["app.kubernetes.io/instance"], release);
-          assert.equal(job.metadata.annotations["helm.sh/hook"], "pre-install,pre-upgrade");
-          if (isUpgrade) {
-            assert.equal(job.metadata.name, installedName);
-          } else {
-            installedName = job.metadata.name;
-            assert.ok(!names.has(installedName), "Distinct releases must keep distinct hook names");
-            names.add(installedName);
-          }
-          if (release.length <= 48) {
-            assert.equal(job.metadata.name, `${release}-initialization`);
-          }
-        }
-      });
-    }
+    await checkInitializationHookNames(t);
   },
 );
 
@@ -898,69 +606,18 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
 });
 
 test("upgrades ignore the bootstrap output settings earlier charts required", tooling, async () => {
-  // Earlier charts refused to render without bootstrap.password.claimName, so an existing
-  // installation's own values still carry these keys when it upgrades.
-  const retired = {
-    "bootstrap.credentials.secretName": "",
-    "bootstrap.password.claimName": "bootstrap-password",
-    "bootstrap.serviceKey.fileName": "initial-admin-service-key.json",
-  };
-  const objects = await renderObjects(retired, { isUpgrade: true });
-  const initializerPod = objects.find(({ kind }) => kind === "Job").spec.template.spec;
-  assert.ok(!initializerPod.volumes.some(({ persistentVolumeClaim }) => persistentVolumeClaim));
-  // A fresh install still has to name the precreated credentials Secret.
-  await assert.rejects(render(retired), ({ stderr }) =>
-    /bootstrap\.credentials\.secretName must reference a precreated Secret/.test(stderr),
-  );
+  await checkRetiredBootstrapOutputs();
 });
 
 test(
   "packaged production chart keeps the OCE version and rendered resources",
   tooling,
   async () => {
-    const directory = await mkdtemp(join(tmpdir(), "oce-chart-package-"));
-    try {
-      const release = JSON.parse(
-        await readFile(new URL("../../package.json", import.meta.url), "utf8"),
-      );
-      const archive = join(directory, `openclaw-enterprise-${release.version}.tgz`);
-      await execute(helm, ["package", productionChartPath, "--destination", directory], {
-        cwd: repository,
-        env: goToolEnvironment(),
-      });
-      const { stdout: metadata } = await execute(helm, ["show", "chart", archive], {
-        cwd: repository,
-        env: goToolEnvironment(),
-      });
-      const chart = loadYaml(metadata);
-      assert.equal(chart.name, "openclaw-enterprise");
-      assert.equal(chart.version, release.version);
-      assert.equal(chart.appVersion, release.version);
-
-      // A registry consumer receives the archive, so it must render the same resources as source.
-      const source = await execute(helm, productionValuesTemplateArgs(productionChartPath), {
-        cwd: repository,
-        env: goToolEnvironment(),
-        maxBuffer: 2_000_000,
-      });
-      const packaged = await execute(helm, productionValuesTemplateArgs(archive), {
-        cwd: repository,
-        env: goToolEnvironment(),
-        maxBuffer: 2_000_000,
-      });
-      assert.equal(packaged.stdout, source.stdout);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
+    await checkPackagedProductionChart();
   },
 );
 
-test("control-plane node selectors are optional unless configured", tooling, async () => {
-  const { initialization, api, worker } = controlPlaneWorkloads(await renderObjects());
-  for (const workload of [initialization, api, worker]) {
-    assert.equal(workload.spec.template.spec.nodeSelector, undefined);
-  }
-});
+registerOptionalControlPlaneSelectorsCase();
 
 test("Installation checksum rolls only its consumers", tooling, async () => {
   const checksum = "c".repeat(64);
@@ -1917,149 +1574,14 @@ test("the chart validates scalar and literal repository backend IDs", tooling, a
 });
 
 test("the chart refuses installation names the bootstrap Job refuses", tooling, async () => {
-  const message =
-    /installation\.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators/;
-  for (const name of [
-    "",
-    " ",
-    " name",
-    "name ",
-    "name\nmore",
-    "a".repeat(201),
-    "名".repeat(201),
-    "\uFEFFname",
-    "name\u00A0",
-  ]) {
-    await assert.rejects(
-      render({ "installation.name": name }),
-      ({ code, stderr }) => code !== 0 && message.test(stderr),
-      JSON.stringify(name),
-    );
-  }
-  for (const name of [
-    "openclaw-enterprise",
-    "OpenClaw Local Development",
-    "a".repeat(200),
-    "名".repeat(200),
-    "a\uFEFFb",
-  ]) {
-    const objects = await renderObjects({ "installation.name": name });
-    const bootstrap = objects.find(
-      ({ kind, metadata }) => kind === "Job" && metadata.name.endsWith("-initialization"),
-    );
-    assert.ok(
-      bootstrap.spec.template.spec.containers[0].env.some(
-        ({ name: envName, value }) =>
-          envName === "OCC_BOOTSTRAP_INSTALLATION_NAME" && value === name,
-      ),
-      JSON.stringify(name),
-    );
-  }
+  await checkInstallationNameValues();
 });
 
 test(
   "the chart runs the migration selected by each controller image in the same process",
   tooling,
   async (t) => {
-    const objects = await resources((await renderProductionChart()).stdout);
-    const migration = findResourceByComponent(
-      objects,
-      "Job",
-      "initialization",
-    ).spec.template.spec.initContainers.find(({ name }) => name === "migration");
-    assert.equal(migration.args.at(-1), "--expect-empty");
-    const invocation = migration.args.slice(0, -1);
-    async function layout(entry, command, source) {
-      const directory = await temporaryDirectory(t, "occ-migration-layout-");
-      await mkdir(join(directory, "scripts"));
-      await writeFile(
-        join(directory, "package.json"),
-        JSON.stringify({
-          type: "module",
-          scripts: { "db:migrate:production": command },
-        }),
-      );
-      // Each isolated layout contains only its own generation's executable.
-      await writeFile(join(directory, entry), source);
-      return directory;
-    }
-
-    // The first strict .mjs command supports --check. Newer commands also
-    // support the first-install and separate-migration guards.
-    for (const [extension, supported] of [
-      ["mjs", ["--check"]],
-      ["ts", ["--check", "--expect-empty", "--require-current"]],
-    ]) {
-      const entry = `scripts/migrate-production.${extension}`;
-      const directory = await layout(
-        entry,
-        `NODE_ENV=production node ${entry}`,
-        `const args = process.argv.slice(2);
-         if (args.length > 1 || (args.length === 1 && !${JSON.stringify(supported)}.includes(args[0]))) {
-           throw new Error("Unsupported migration argument.");
-         }
-         process.stdout.write(JSON.stringify({pid: process.pid, args}));`,
-      );
-      for (const args of [[], ...supported.map((option) => [option])]) {
-        const processResult = execute(process.execPath, [...invocation, ...args], {
-          cwd: directory,
-        });
-        assert.deepEqual(JSON.parse((await processResult).stdout), {
-          pid: processResult.child.pid,
-          args,
-        });
-      }
-      await assert.rejects(
-        execute(process.execPath, [...invocation, "--unsupported-mode"], { cwd: directory }),
-        { code: 1, stdout: "", stderr: /Unsupported migration argument/ },
-      );
-    }
-
-    // The oldest package ignores argv. The sentinel proves import itself is
-    // refused for a guarded invocation, even if the executable would exit zero.
-    const legacyEntry = "scripts/migrate-production.mjs";
-    const unguarded =
-      'import { writeFileSync } from "node:fs";\n' +
-      'writeFileSync(new URL("../imported", import.meta.url), "entered");';
-    const legacy = await layout(legacyEntry, `node ${legacyEntry}`, unguarded);
-    const imported = join(legacy, "imported");
-    for (const args of [
-      ["--check"],
-      ["--expect-empty"],
-      ["--require-current"],
-      ["--expect-installation", "ins_fixture"],
-    ]) {
-      await assert.rejects(execute(process.execPath, [...invocation, ...args], { cwd: legacy }), {
-        code: 1,
-        stdout: "",
-        stderr: /does not declare support for production migration mode arguments/,
-      });
-      await assert.rejects(readFile(imported, "utf8"), { code: "ENOENT" });
-    }
-    // Omitting Node's separator must fail before a legacy apply can start.
-    await assert.rejects(
-      execute(process.execPath, [...invocation.slice(0, -1), "--check"], { cwd: legacy }),
-      { code: 9, stdout: "" },
-    );
-    await assert.rejects(readFile(imported, "utf8"), { code: "ENOENT" });
-    await execute(process.execPath, invocation, { cwd: legacy });
-    assert.equal(await readFile(imported, "utf8"), "entered");
-
-    // A JSON array cannot declare guarded support by coercing to a command string.
-    const malformed = await layout(
-      legacyEntry,
-      [`NODE_ENV=production node ${legacyEntry}`],
-      unguarded,
-    );
-    await assert.rejects(
-      execute(process.execPath, [...invocation, "--check"], { cwd: malformed }),
-      {
-        code: 1,
-        stdout: "",
-        stderr: /does not declare a supported production migration command/,
-      },
-    );
-    await assert.rejects(lstat(join(malformed, "imported")), { code: "ENOENT" });
+    await checkImageSelectedMigration(t);
   },
 );
 
@@ -2067,45 +1589,7 @@ test(
   "the staged sign-in chart preserves the historical worker probes for both Helm operations",
   tooling,
   async (t) => {
-    const directory = await temporaryDirectory(t, "occ-signin-chart-");
-    const reviewed = { reviewedSource: "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb" };
-    const chartDirectory = await stageSigninChart({
-      harnessRoot: repository,
-      directory,
-      plan: { fixture: "v3-to-v3", previous: reviewed, candidate: reviewed },
-    });
-    const liveness = ["node", "scripts/production-healthcheck.mjs", "worker"];
-    const readiness = [...liveness, "ready"];
-
-    // The OIDC upgrade re-renders the chart before the first controller image cut.
-    for (const isUpgrade of [false, true]) {
-      const current = await renderProductionChart({}, { isUpgrade });
-      const staged = await renderProductionChart({}, { chartDirectory, isUpgrade });
-      const expected = await resources(
-        current.stdout.replaceAll(
-          "scripts/production-healthcheck.ts",
-          "scripts/production-healthcheck.mjs",
-        ),
-      );
-      const rendered = await resources(staged.stdout);
-      assert.deepEqual(rendered, expected);
-      const job = findResourceByComponent(rendered, "Job", "initialization");
-      const migration = job.spec.template.spec.initContainers.find(
-        ({ name }) => name === "migration",
-      );
-      assert.deepEqual(migration.args, [
-        ...selectedImageMigrationEntry,
-        ...(isUpgrade ? [] : ["--expect-empty"]),
-      ]);
-      const worker = findResourceByComponent(
-        rendered,
-        "Deployment",
-        "worker",
-      ).spec.template.spec.containers.find(({ name }) => name === "worker");
-      assert.deepEqual(worker.readinessProbe.exec.command, readiness);
-      assert.deepEqual(worker.livenessProbe.exec.command, liveness);
-      assert.deepEqual(worker.startupProbe.exec.command, liveness);
-    }
+    await checkStagedWorkerProbes(t);
   },
 );
 
@@ -2115,83 +1599,7 @@ test(
     skip: tooling.skip || !process.env.OCC_TEST_PRODUCTION_IMAGE,
   },
   async (t) => {
-    const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
-    const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-    const directory = await temporaryDirectory(t, "occ-image-health-");
-    const [inspectionCommand, ...inspectionArgs] = inspectWorkerProbe;
-    const { stdout } = await execute(docker, [
-      "run",
-      "--rm",
-      "--network",
-      "none",
-      "--read-only",
-      "--user",
-      "1000:1000",
-      "--entrypoint",
-      inspectionCommand,
-      image,
-      ...inspectionArgs,
-    ]);
-    // The image built from this checkout must serve the unmodified release chart.
-    assert.equal(stdout.trim(), "ts");
-    const chartDirectory = await initialUpgradeChart(repository, directory, stdout.trim());
-    const objects = await resources((await renderProductionChart({}, { chartDirectory })).stdout);
-    const worker = findResourceByComponent(
-      objects,
-      "Deployment",
-      "worker",
-    ).spec.template.spec.containers.find(({ name }) => name === "worker");
-    const marker = (key) => worker.env.find(({ name }) => name === key).value;
-    const readiness = marker("OCC_WORKER_READINESS_PATH");
-    const liveness = marker("OCC_WORKER_LIVENESS_PATH");
-    const mountPath = worker.volumeMounts.find(({ name }) => name === "worker-readiness").mountPath;
-    const ready = join(directory, "ready");
-    const alive = join(directory, "alive");
-    await chmod(directory, 0o755);
-    await writeFile(ready, "ready\n");
-    await writeFile(alive, "alive\n");
-    const probe = ([entrypoint, ...args]) =>
-      execute(docker, [
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "--read-only",
-        "--user",
-        "1000:1000",
-        "--mount",
-        `type=bind,src=${directory},dst=${mountPath},readonly`,
-        "-e",
-        `OCC_WORKER_READINESS_PATH=${readiness}`,
-        "-e",
-        `OCC_WORKER_LIVENESS_PATH=${liveness}`,
-        "--entrypoint",
-        entrypoint,
-        image,
-        ...args,
-      ]);
-    const readyCommand = worker.readinessProbe.exec.command;
-    const liveCommand = worker.livenessProbe.exec.command;
-    const startupCommand = worker.startupProbe.exec.command;
-    for (const command of [readyCommand, liveCommand, startupCommand]) {
-      assert.deepEqual(await probe(command), { stdout: "", stderr: "" });
-    }
-
-    // A database outage leaves loop progress fresh while readiness expires.
-    const stale = new Date(Date.now() - 60_000);
-    await utimes(ready, stale, stale);
-    await assert.rejects(probe(readyCommand), {
-      code: 1,
-      stdout: "",
-      stderr: "The worker has not reported a recent healthy database observation.\n",
-    });
-    await rm(ready);
-    await assert.rejects(probe(readyCommand), {
-      code: 1,
-      stdout: "",
-      stderr: `ENOENT: no such file or directory, stat '${readiness}'\n`,
-    });
-    assert.deepEqual(await probe(liveCommand), { stdout: "", stderr: "" });
+    await checkProductionImageWorkerProbes(t);
   },
 );
 
@@ -2659,25 +2067,7 @@ test(
 test(
   "gatewayRouting.remoteNodeCidrs rejects invalid and every-address ranges",
   tooling,
-  async () => {
-    for (const override of [
-      { "gatewayRouting.remoteNodeCidrs[0]": "not-a-cidr" },
-      { "gatewayRouting.remoteNodeCidrs[0]": "010.0.0.1/32" },
-      { "gatewayRouting.remoteNodeCidrs[0]": "12345::/64" },
-      { "gatewayRouting.remoteNodeCidrs[0]": "::ffff:999.1.2.3/32" },
-      // A /0 prefix would remove the source restriction on the private listener.
-      { "gatewayRouting.remoteNodeCidrs[0]": "0.0.0.0/0" },
-      { "gatewayRouting.remoteNodeCidrs[0]": "::/0" },
-    ]) {
-      await assert.rejects(
-        render({ ...gatewayRoutingValues, ...override }),
-        /gatewayRouting\.remoteNodeCidrs/,
-      );
-    }
-    for (const cidr of ["10.0.0.1/32", "10.0.0.0/8", "::/64", "::ffff:10.0.0.0/120"]) {
-      await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": cidr });
-    }
-  },
+  checkRemoteNodeCidrs,
 );
 
 registerDatabaseCaCases({
@@ -3378,14 +2768,7 @@ test(
 );
 
 test("bootstrap credential Secret keys reject YAML booleans and numbers", tooling, async () => {
-  for (const field of ["passwordKey", "serviceKeyKey"]) {
-    for (const value of ["true", "2024"]) {
-      await assert.rejects(
-        render({ [`bootstrap.credentials.${field}`]: value }),
-        /bootstrap credential key must be a string/,
-      );
-    }
-  }
+  await checkBootstrapKeyYamlScalars();
 });
 
 test(
@@ -3876,105 +3259,11 @@ test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", too
   );
 });
 
-test(
-  "the chart validates control-plane node selectors against Kubernetes label rules",
-  tooling,
-  async (t) => {
-    const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
-    const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
-    for (const [key, value, message] of [
-      ["oce-role", "not valid", valueMessage],
-      ["oce-role", "-control", valueMessage],
-      ["oce-role", "control.", valueMessage],
-      ["oce-role", "a".repeat(64), valueMessage],
-      ["a-", "control", keyMessage],
-      ["bad key", "control", keyMessage],
-    ]) {
-      await assert.rejects(
-        render({}, { strings: { [`controlPlane.nodeSelector.${key}`]: value } }),
-        ({ code, stderr }) => code !== 0 && message.test(stderr),
-        `${key}=${value}`,
-      );
-    }
-    const directory = await temporaryDirectory(t, "openclaw-node-selector-");
-    const selectorValues = join(directory, "selector.yaml");
-    await writeFile(
-      selectorValues,
-      "controlPlane:\n  nodeSelector:\n    Example.com/role: control\n",
-    );
-    await assert.rejects(
-      render({}, { valuesFiles: [selectorValues] }),
-      ({ code, stderr }) => code !== 0 && keyMessage.test(stderr),
-    );
-    const { stdout } = await render(
-      {},
-      {
-        strings: {
-          "controlPlane.nodeSelector.oce-role": "control",
-          "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
-          "controlPlane.nodeSelector.node-role\\.kubernetes\\.io/infra": "",
-          "controlPlane.nodeSelector.edge": "a_b.c-d",
-          [`controlPlane.nodeSelector.${"a".repeat(253)}/pool`]: "control",
-        },
-      },
-    );
-    assert.match(stdout, /oce-role: control/);
-    assert.match(stdout, /topology\.kubernetes\.io\/zone: east/);
-    // Kubernetes allows empty label values; charts before #1848 rendered them.
-    assert.match(stdout, /node-role\.kubernetes\.io\/infra: ""/);
-    assert.match(stdout, /edge: a_b\.c-d/);
-    const objects = await resources(stdout);
-    const api = objects.find(
-      (object) =>
-        object.kind === "Deployment" &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === "api",
-    );
-    assert.equal(api.spec.template.spec.nodeSelector[`${"a".repeat(253)}/pool`], "control");
-  },
-);
+registerControlPlaneSelectorValuesCase();
 
 registerExecutionGatewayHostnameCase();
 
-test(
-  "execution chart refuses an Envoy HTTPS port or DNS namespace the cluster refuses",
-  tooling,
-  async () => {
-    const template = renderExecutionChart;
-    const proxyPolicy = async (stdout) =>
-      findResource(await resources(stdout), "NetworkPolicy", "oce-harness-proxy");
-    // Compute validatePort takes integers from 1 to 65535; Sprig int would truncate 10443.5.
-    // Sprig int turns a value too big for 64 bits into 0, which the lower bound catches.
-    for (const port of ["0", "65536", "10443.5", "-1", "true", "99999999999999999999"]) {
-      await assert.rejects(
-        template("--set", `routing.envoyHttpsTargetPort=${port}`),
-        /routing\.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535/,
-        port,
-      );
-    }
-    for (const port of [1, 65535]) {
-      const policy = await proxyPolicy(
-        (await template("--set", `routing.envoyHttpsTargetPort=${port}`)).stdout,
-      );
-      assert.equal(policy?.spec.ingress[0].ports[0].port, port);
-    }
-    // The DNS egress rule selects kubernetes.io/metadata.name, which holds a Namespace name.
-    for (const namespace of ["Kube-System", "kube.system", "-dns", "a".repeat(64)]) {
-      await assert.rejects(
-        template("--set-string", `dns.namespace=${namespace}`),
-        /dns\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
-        namespace,
-      );
-    }
-    const namespace = "a".repeat(63);
-    const policy = await proxyPolicy(
-      (await template("--set-string", `dns.namespace=${namespace}`)).stdout,
-    );
-    assert.equal(
-      policy?.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
-      namespace,
-    );
-  },
-);
+registerExecutionPortAndDnsCase();
 
 test(
   "the plugin request guard installs beside OpenShell without control-plane access",
@@ -4491,25 +3780,7 @@ test(
 test(
   "gateway routing service type is limited to the EnvoyProxy service types",
   tooling,
-  async () => {
-    // EnvoyProxy envoyService.type accepts only these three. Any other value rendered, and the
-    // apply failed after the pre-install hooks had migrated and bootstrapped the Installation.
-    for (const serviceType of ["clusterIP", "ExternalName"]) {
-      await assert.rejects(
-        render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }),
-        /gatewayRouting\.serviceType must be ClusterIP, LoadBalancer or NodePort/,
-        serviceType,
-      );
-    }
-    for (const serviceType of ["LoadBalancer", "NodePort"]) {
-      const objects = await renderObjects({
-        ...gatewayRoutingValues,
-        "gatewayRouting.serviceType": serviceType,
-      });
-      const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
-      assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
-    }
-  },
+  checkGatewayServiceTypes,
 );
 
 test("OpenShell Envoy cleanup reports rejected deletes and continues remaining cleanup", async (t) => {

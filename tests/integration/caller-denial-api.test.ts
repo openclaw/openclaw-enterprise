@@ -2,20 +2,30 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import type {
+  PlatformOperation,
+  PlatformStateStore,
+  PlatformUnitOfWork,
+} from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   agentPrincipalDenied,
   callerDenied,
+  currentHarnessAuthDenied,
+} from "../helpers/refusal-text.mjs";
+import {
   createDenied,
   createRestricted,
-  currentHarnessAuthDenied,
   INSTALLATION_ADMINISTER_DENIED,
   NAMESPACE_CREATE_DENIED,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 type Body = Record<string, unknown> | undefined;
@@ -274,6 +284,101 @@ test("an Agent principal's deploy refusal names its bound Secret only to a calle
     ["read", "agent"],
   ]);
   assert.equal(named, agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${secretId}`));
+});
+
+test("a staged credential source refuses an ungranted Agent principal before revision delivery", async (t) => {
+  let sourceState: PlatformStateStore | undefined;
+  const fixture = await createConsoleAppFixture(t, {
+    recordOperations: true,
+    wrapState: (state: PlatformStateStore) => {
+      sourceState = state;
+      return state;
+    },
+  });
+  await fixture.bootstrap();
+  assert.ok(sourceState);
+  const namespace = await fixture.createNamespace("Staged principal denial", { ready: true });
+  const { driver } = useInstallationSecretDriver(fixture.controller);
+  assert.ok(driver.installationSecrets);
+  const instanceId = await fixture.controller.activateTokenServiceInstance(
+    "selected-owner",
+    randomUUID(),
+  );
+  const owner = new OCCTokenServiceDriver(
+    "selected-owner",
+    fixture.controller.installation.id,
+    driver.installationSecrets,
+    instanceId,
+    sourceState,
+  );
+  fixture.controller.registerDriver(owner);
+  fixture.controller.selectDriver("token_service", owner.id);
+  const event = (ref: CredentialSourceReference, phase?: "registration_started"): AuditEvent => ({
+    id: `aud_${randomUUID()}`,
+    installationId: fixture.controller.installation.id,
+    namespaceId: namespace.id,
+    occurredAt: new Date().toISOString(),
+    kind: "mutation",
+    actorId: fixture.principal.id,
+    source: "occ",
+    action: phase
+      ? "openclaw.credential_sources.create.started"
+      : "openclaw.credential_sources.create",
+    resource: ref,
+    outcome: "success",
+    ...(phase ? { details: { phase } } : {}),
+  });
+  const source = await fixture.controller.createManagedCredentialSource(
+    fixture.principal.id,
+    namespace.id,
+    {
+      name: "Staged source",
+      lifecycleConfig: { type: "static", settings: {} },
+      secret: { opaque: randomUUID() },
+    },
+    event,
+  );
+  const configuration = await fixture.createConfiguration(
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const base = `/namespaces/${namespace.id}/agents`;
+  const created = await fixture.request("POST", base, {
+    body: {
+      name: "Staged Agent",
+      configurationId: configuration.id,
+      harnessAuth: { method: "credential_source", sourceId: source.id },
+      credentialSources: [{ sourceId: source.id }],
+    },
+  });
+  assert.equal(created.status, 201);
+  const agent = created.data;
+  // This selected Native IAM evaluator reads the fixture's separate policy state. OCC cannot
+  // safely write an automatic grant into that authority, so the Agent's real denial must surface.
+  const denied = await fixture.request("POST", `${base}/${agent.id}/deploy`);
+  assertApiError(denied, 403, "FORBIDDEN", "Agent principal");
+  const denial = fixture.auditSink.events.findLast(
+    (entry: AuditEvent) => entry.kind === "authorization_denial",
+  );
+  assert.ok(denial);
+  assert.equal(denial.reasonCode, "AGENT_PRINCIPAL_NOT_AUTHORIZED");
+  assert.equal(denial.details?.servicePrincipalId, agent.servicePrincipalId);
+  assert.deepEqual(denial.details?.resource, {
+    kind: "credential_source",
+    id: source.id,
+    namespaceId: namespace.id,
+  });
+  const revisions = await fixture.request("GET", `${base}/${agent.id}/revisions`);
+  assert.deepEqual(revisions.data, []);
+  const operations: readonly PlatformOperation[] = await fixture.controller.transact(
+    (unit: PlatformUnitOfWork) => unit.operations.list(),
+  );
+  assert.equal(
+    operations.some(
+      (operation) => operation.kind === "agent_revision" && operation.namespaceId === namespace.id,
+    ),
+    false,
+  );
 });
 
 // Finding 2614: saving a Configuration or credential source without new bindings checks Secret

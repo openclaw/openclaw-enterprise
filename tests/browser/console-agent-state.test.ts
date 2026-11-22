@@ -64,25 +64,29 @@ import {
   AGENT_STOP_AND_DELETE_DENIED,
   AGENT_STOP_DENIED,
   askForGrant,
-  BACKENDS_DENIED,
-  BOUND_SECRET_METADATA,
-  BOUND_SECRET_READ_REFUSED,
   BOUND_SECRET_UNLISTED,
-  DIAGNOSTICS_RUNTIME_UNAVAILABLE,
-  diagnosticsRecordedFailure,
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
-  NAMESPACE_UNAVAILABLE,
-  NO_PERSISTED_STARTUP_FAILURE,
   RESOURCE_CONFLICT,
   requestedVersionUnavailable,
   stopRefused,
-  NEW_VERSIONS_READ,
-  PLUGINS_READ_ONLY,
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
+import {
+  DIAGNOSTICS_RUNTIME_UNAVAILABLE,
+  diagnosticsRecordedFailure,
+  NO_PERSISTED_STARTUP_FAILURE,
+} from "../helpers/refusal-configuration-runtime.ts";
+import {
+  BACKENDS_DENIED,
+  BOUND_SECRET_METADATA,
+  BOUND_SECRET_READ_REFUSED,
+  NAMESPACE_UNAVAILABLE,
+  NEW_VERSIONS_READ,
+  PLUGINS_READ_ONLY,
+} from "../helpers/refusal-access.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";

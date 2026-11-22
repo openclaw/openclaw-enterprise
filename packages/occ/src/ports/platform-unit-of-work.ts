@@ -1,6 +1,60 @@
+import type { EgressSendReceiptRepository } from "../egress-send-receipts.ts";
+import type { AgentProvisioningRepository } from "./agent-provisioning.ts";
+import type {
+  AgentRepository,
+  AgentRevisionRepository,
+  SandboxPolicyRepository,
+  WorkspaceSetupRepository,
+} from "./agents.ts";
+import type { AuthenticationStateRepository } from "./authentication-states.ts";
+import type { ConfigurationRepository } from "./configurations.ts";
+import type { ConnectionTemplateRepository } from "./connection-templates.ts";
+import type { CredentialSourceRepository } from "./credential-sources.ts";
+import type { InstallationRepository } from "./installations.ts";
+import type { NamespaceRepository } from "./namespaces.ts";
+import type { PlatformOperationRepository } from "./platform-operations.ts";
+import type { PlatformReadView } from "./platform-read-view.ts";
+import type { PresetRepository } from "./presets.ts";
+import type { RepositorySessionRepository } from "./repository-sessions.ts";
+import type { SavedConnectionRepository } from "./saved-connections.ts";
+import type { SecretRepository } from "./secrets.ts";
+import type { ServiceAccountRepository } from "./service-accounts.ts";
+import type {
+  AuditEvent,
+  IAMPolicyRepository,
+  PreparedTokenCurrentProof,
+} from "@openclaw-enterprise/contracts";
 import { bindRepository } from "./repository-factory.ts";
 import type { RepositoryTransactionLifetime } from "./transaction.ts";
-import type { PlatformUnitOfWork } from "../state/platform-state.ts";
+
+export interface PlatformAuditRepository {
+  append(event: AuditEvent): Promise<void>;
+  list(): Promise<readonly Readonly<AuditEvent>[]>;
+}
+
+export interface PlatformUnitOfWork extends PlatformReadView {
+  readonly preparedTokenProof: PreparedTokenCurrentProof;
+  readonly egressSendReceipts: EgressSendReceiptRepository;
+  readonly sandboxPolicies: SandboxPolicyRepository;
+  readonly installations: InstallationRepository;
+  readonly namespaces: NamespaceRepository;
+  readonly configurations: ConfigurationRepository;
+  readonly connectionTemplates: ConnectionTemplateRepository;
+  readonly savedConnections: SavedConnectionRepository;
+  readonly presets: PresetRepository;
+  readonly authenticationStates: AuthenticationStateRepository;
+  readonly secrets: SecretRepository;
+  readonly credentialSources: CredentialSourceRepository;
+  readonly serviceAccounts: ServiceAccountRepository;
+  readonly agents: AgentRepository;
+  readonly workspaceSetups: WorkspaceSetupRepository;
+  readonly revisions: AgentRevisionRepository;
+  readonly iamPolicy: IAMPolicyRepository;
+  readonly repositorySessions: RepositorySessionRepository;
+  readonly provisioning: AgentProvisioningRepository;
+  readonly audit: PlatformAuditRepository;
+  readonly operations: PlatformOperationRepository;
+}
 
 /** The explicit outward projection shares one transaction lifetime. */
 export function bindPlatformUnitOfWork(
@@ -20,6 +74,7 @@ export function bindPlatformUnitOfWork(
       "findInstallation",
       "getInstallation",
       "createInstallation",
+      "selectTokenServiceInstance",
       "holdPrincipalAccount",
       "holdAuthenticationSession",
       "holdIAMConfiguration",
@@ -115,6 +170,7 @@ export function bindPlatformUnitOfWork(
       "createCredentialSource",
       "markCredentialSourceDeleting",
       "markCredentialSourceReady",
+      "updateCredentialSourceConfig",
       "replaceCredentialSourceSecrets",
       "recordEgressInstallation",
       "retireEgressInstallation",

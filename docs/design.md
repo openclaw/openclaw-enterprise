@@ -59,11 +59,7 @@ OpenClaw gateway multi-tenant.
 The platform supports global Namespace settings. Resource references follow the
 scope and authorization rules of each resource type.
 
-OCC owns platform resources. At deployment, it records the selected configuration
-and execution settings in an Agent revision. Later edits leave that revision unchanged.
-External systems retain ownership of infrastructure, provider accounts, credentials, and model
-sources. Drivers operate those systems through interfaces with defined responsibilities; they cannot
-grant themselves authorization or change platform-resource ownership.
+OCC governs platform resource authorization and composition. The selected TokenService owns [CredentialSource lifecycle](reference/credential-sources/managed-static.md); OCC owns its IAM, policy, and Agent bindings. At deployment, OCC records the selected configuration and execution settings in an Agent revision. Later edits leave that revision unchanged. External systems retain ownership of infrastructure, provider accounts, credentials, and model sources. Drivers operate their resources through defined contracts and cannot grant themselves authorization.
 
 <a id="non-goals"></a>
 
@@ -237,12 +233,12 @@ release cannot enforce this path; qualify the exact pair before rollout.
 
 Human sessions with exact-Agent `operate` can enter native chat; `administer`
 selects the [stock OpenClaw admin UI](reference/agent-native-admin.md). OCC checks
-admission and session retention and selects an administrative route or a chat
-route capped at `operator.sessions.write` under the shared native identity.
-The runtime enforces that ceiling; OCC does not authorize or audit
-each native command. Users share the selected gateway’s exposed conversations,
-including channel conversations; this grants no access to another Agent or
-platform IAM.
+admission and session retention, then Compute delegates the OCE Principal and
+selected scope over a private browser route. The Gateway binds that identity to
+a native profile and applies native roles within the delegated ceiling.
+OCC does not authorize or audit each native command. Profiles do not isolate
+execution or data. Native session rules govern the Gateway’s exposed conversations,
+including channel conversations; access grants no authority over another Agent or platform IAM.
 
 Operators can provide a separate [human access path](reference/drivers/kubernetes-compute/gateway-authentication.md)
 to the shared Agent. This path does not grant OCC access.

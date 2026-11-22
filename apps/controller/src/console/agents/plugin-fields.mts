@@ -47,6 +47,7 @@ export type PluginFieldCatalog = (
   pageNumber?: number;
   hasPrevious?: boolean;
   canLoad?: boolean;
+  reloadRequired?: boolean;
   message?: string;
 };
 
@@ -1056,6 +1057,7 @@ export function createPluginFields({
     const focusedHeading = active?.matches(".plugin-detail h3");
     const values = selections();
     const catalogLoading = !configuredOnly && catalog?.status === "loading";
+    const reloadRequired = catalog?.reloadRequired === true;
     // Live regions are written only when their text changes, so a redraw (tool details arriving)
     // does not make screen readers announce the same words again (finding 1890).
     setText(
@@ -1102,13 +1104,13 @@ export function createPluginFields({
       catalog?.message ??
       "Enter a service account token with the Codex harness to discover plugins. Existing selections remain in JSON.";
     status.classList.toggle("plugin-loading", catalogLoading);
-    if (catalogLoading) {
+    if (catalogLoading || (reloadRequired && catalog?.status === "loading")) {
       statusText = tabs[0].query.trim() ? "Searching plugins…" : "Loading available plugins…";
     } else if (catalog?.status === "ready") {
       statusText = `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
     }
     loadPlugins.textContent = catalog?.status === "loading" ? "Loading plugins…" : "Load plugins";
-    loadPlugins.hidden = configuredOnly || !onLoadPlugins;
+    loadPlugins.hidden = (configuredOnly && !reloadRequired) || !onLoadPlugins;
     pagination.hidden = configuredOnly || !onLoadPlugins;
     available.setAttribute("aria-pressed", String(!configuredOnly));
     configured.setAttribute("aria-pressed", String(configuredOnly));
@@ -1123,7 +1125,7 @@ export function createPluginFields({
     summary.textContent = `${count} plugin${count === 1 ? "" : "s"} configured. Select plugins and set their tool policies.`;
     searchLabel.textContent = configuredOnly ? "Filter configured plugins" : "Search plugins";
     search.placeholder = searchLabel.textContent;
-    if (configuredOnly) {
+    if (configuredOnly && !reloadRequired) {
       statusText = `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
     setText(status, statusText);
@@ -1273,7 +1275,8 @@ export function createPluginFields({
             details.append(element("p", { className: "hint" }, "Select an account to load tools."));
           }
           if (slot.toolDiscovery && typeof current === "string") {
-            const canDiscover = !stale && slot.sources.some(({ id }) => id === current);
+            const canDiscover =
+              !reloadRequired && !stale && slot.sources.some(({ id }) => id === current);
             const discovery = managedToolPicker(entry, slot, current, selected, canDiscover);
             details.append(discovery.picker);
             managedTools = discovery.managed;
@@ -1498,7 +1501,7 @@ export function createPluginFields({
       } else if (!enablementOnly && !hasManagedTools && tools.size === 0) {
         details.append(element("p", { className: "hint" }, "No tools listed for this plugin."));
       }
-      if (entry.toolError) {
+      if (entry.toolError && entry.toolStatus !== "loading") {
         details.append(
           element(
             "p",

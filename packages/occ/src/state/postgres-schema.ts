@@ -1,4 +1,5 @@
-import type { CredentialPolicyReductionState, PredecessorReplacement } from "./platform-state.ts";
+import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type {
   InitialWorkspaceFiles,
   ProtectedEgressSource,
@@ -76,6 +77,32 @@ export const installation = occSchema.table(
       sql`${table.name} = btrim(${table.name}) AND ${table.name} !~ '[[:cntrl:]]'`,
     ),
     uniqueIndex("installation_one_row").on(sql`true`),
+  ],
+);
+
+export const tokenServiceInstances = occSchema.table(
+  "token_service_instances",
+  {
+    installationId: text("installation_id")
+      .primaryKey()
+      .references(() => installation.id, { onDelete: "restrict", onUpdate: "restrict" }),
+    id: text("id").notNull().unique(),
+    driverId: text("driver_id").notNull(),
+    storeIdentity: text("store_identity").notNull(),
+  },
+  (table) => [
+    check(
+      "token_service_instances_id_valid",
+      sql`${table.id} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
+    ),
+    check(
+      "token_service_instances_driver_valid",
+      sql`char_length(${table.driverId}) BETWEEN 1 AND 200 AND ${table.driverId} = btrim(${table.driverId})`,
+    ),
+    check(
+      "token_service_instances_store_valid",
+      sql`char_length(${table.storeIdentity}) BETWEEN 1 AND 200 AND ${table.storeIdentity} = btrim(${table.storeIdentity})`,
+    ),
   ],
 );
 
@@ -507,6 +534,10 @@ export const credentialSources = occSchema.table(
     egress: jsonb("egress").$type<ProtectedEgressSource>(),
     driverId: text("driver_id"),
     ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
+    tokenServiceInstanceId: text("token_service_instance_id").references(
+      () => tokenServiceInstances.id,
+      { onDelete: "restrict", onUpdate: "restrict" },
+    ),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
@@ -538,7 +569,11 @@ export const credentialSources = occSchema.table(
     ),
     check(
       "credential_sources_owner_capability_valid",
-      sql`(${table.driverId} IS NOT NULL AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL))) OR (${table.ownerCapability} = 'token_service' AND ${table.driverId} IS NULL AND ${table.type} = 'oauth2-refresh-token' AND ${table.egress} IS NULL)`,
+      sql`CASE WHEN ${table.ownerCapability} = 'token_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND (
+      (${table.type} = 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NULL)
+      OR (${table.type} <> 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.state} IN ('ready', 'deleting'))
+    ) ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL
+      AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL)) END IS TRUE`,
     ),
     check(
       "credential_sources_driver_id_valid",

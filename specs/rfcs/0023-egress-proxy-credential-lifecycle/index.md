@@ -12,7 +12,9 @@ This proposal requires human review and merge.
 
 The proposed [Installation credential ownership amendment](installation-credential-ownership.md) revises the v1 custody, delivery and deployment decisions below.
 The later proposed [TokenService instance and update amendment](token-service-instance-and-updates.md) revises source ownership records and proxy delivery notifications.
+The proposed [CredentialSource ownership amendment](credential-source-ownership.md) moves Source creation and lifecycle to TokenService.
 The proposed [OAuth client selection amendment](oauth-client-associations.md) separates templates from client selection and defines scope admission.
+The proposed [worker credential configuration amendment](worker-credential-configuration.md) defines the Driver entry points needed to configure a staged target without giving Compute a credential resolver.
 
 ## Decision
 
@@ -27,7 +29,7 @@ The validated bundled `repository.openShell` Git-only installation retains a sco
 [Diagram source](assets/overview.mmd)
 
 [GitHub installation-wide access](github-installation-access.md) describes an opt-in authority for ordinary Git and GitHub API work through the same online sender.
-A [GitHub App template policy](github-app-template-policy.md) proposes issuing the installation's token without downscoping while enforcing the Agent's approved repository and URL restrictions at the Sandbox and Credential Proxy.
+The [GitHub App credential proposal](github-app-template-policy.md) separates inherited installation-token delivery with per-Agent repository policy from scoped TokenService issuance.
 A team can separately [approve Git access until it removes that approval](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval).
 OCE renews short-lived installation tokens so the team can keep working in the same Agent and conversation.
 
