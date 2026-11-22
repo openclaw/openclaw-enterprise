@@ -2088,15 +2088,18 @@ export class ControllerWorker {
       const dispatch = AsyncLocalStorage.bind(async () => effect());
       let pending: Promise<T> | undefined;
       try {
-        await this.state.transactWithQueue(async (unit, queue) => {
-          await this.fenceScopedDeployment(unit, claim, revision);
-          requireClaimRenewal(await queue.heartbeat(claim));
-          signal.throwIfAborted();
-          this.untouchedCandidate = undefined;
-          pending = dispatch();
-          // The Driver can reject while the transaction is finishing.
-          void pending.catch(() => {});
-        }, this.queueOptions);
+        await this.state.transactWithQueue(
+          async (unit, queue) => {
+            await this.fenceScopedDeployment(unit, claim, revision);
+            requireClaimRenewal(await queue.heartbeat(claim));
+            signal.throwIfAborted();
+            this.untouchedCandidate = undefined;
+            pending = dispatch();
+            // The Driver can reject while the transaction is finishing.
+            void pending.catch(() => {});
+          },
+          { ...this.queueOptions, readCommitted: true },
+        );
       } catch (error) {
         await pending?.catch(() => {});
         throw error;
@@ -2402,6 +2405,11 @@ export class ControllerWorker {
         view.revisions.findRevision(listed.namespaceId, listed.agentId, listed.id),
       ),
   ): Promise<void> {
+    const scopedCandidate =
+      candidate && isScopedDeployment(claim, candidate) ? candidate : undefined;
+    const queueOptions = scopedCandidate
+      ? { ...this.queueOptions, readCommitted: true }
+      : this.queueOptions;
     for (const listed of earlier) {
       const record = this.stoppedPredecessors.get(listed.id);
       if (this.stoppedRecently(listed.id)) {
@@ -2415,10 +2423,9 @@ export class ControllerWorker {
         continue;
       }
       const retargeted = await this.state.transactWithQueue(async (unit, queue) => {
-        const agent =
-          candidate && isScopedDeployment(claim, candidate)
-            ? await this.fenceScopedDeployment(unit, claim, candidate)
-            : await this.lockClaimAgent(unit, claim);
+        const agent = scopedCandidate
+          ? await this.fenceScopedDeployment(unit, claim, scopedCandidate)
+          : await this.lockClaimAgent(unit, claim);
         if ((await queue.heartbeat(claim)) === undefined) {
           throw new WorkClaimLostError();
         }
@@ -2444,7 +2451,7 @@ export class ControllerWorker {
           candidateRevisionId: claim.revisionId,
           phase: "stopping",
         });
-      }, this.queueOptions);
+      }, queueOptions);
       if (retargeted) {
         // The transaction already released this claim and refunded its attempt.
         throw new WorkClaimLostError();

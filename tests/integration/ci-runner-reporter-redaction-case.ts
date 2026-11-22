@@ -687,6 +687,19 @@ export async function checkReporterRedaction(t: TestContext) {
             reason: "timeout",
           },
         },
+        {
+          name: "retains safe observability installation probe evidence",
+          diagnostic: {
+            kind: "observability-installation-probe",
+            phase: "fetch",
+            reason: "ECONNREFUSED",
+            detail: secret,
+          },
+        },
+        {
+          name: "rejects unsafe observability installation probe phase",
+          diagnostic: { kind: "observability-installation-probe", phase: secret },
+        },
         ...repositorySetupCases.map(({ name, diagnostic }) => ({ name, diagnostic })),
       ])}) {`,
       "  test(name, () => {",
@@ -790,6 +803,12 @@ export async function checkReporterRedaction(t: TestContext) {
     expectedStatus: 401,
   });
   assertNoDiagnostic("rejects unsafe observability installation status diagnostic");
+  assertDiagnostic("retains safe observability installation probe evidence", {
+    kind: "observability-installation-probe",
+    phase: "fetch",
+    reason: "ECONNREFUSED",
+  } satisfies ReturnType<typeof projectFailureDiagnostic>);
+  assertNoDiagnostic("rejects unsafe observability installation probe phase");
   assertDiagnostic("allowlisted observability log export diagnostic", {
     kind: "observability-log-export",
     api: true,

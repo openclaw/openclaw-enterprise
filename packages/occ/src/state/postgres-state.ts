@@ -1929,16 +1929,20 @@ export class PostgresPlatformState implements PlatformStateStore {
     });
   }
 
+  /** Select Read Committed when protected reads must see commits made while waiting for locks. */
   async transactWithQueue<T>(
     work: (
       state: PlatformUnitOfWork,
       queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
     ) => Promise<T>,
-    options: PostgresWorkQueueOptions = {},
+    options: PostgresWorkQueueOptions & { readonly readCommitted?: boolean } = {},
   ): Promise<T> {
-    const queueOptions = { ...this.queueOptions, ...options };
-    return this.execute(false, async (state, context) =>
-      work(state, this.bindQueue(context, queueOptions)),
+    const { readCommitted, ...queueOverrides } = options;
+    const queueOptions = { ...this.queueOptions, ...queueOverrides };
+    return this.execute(
+      false,
+      async (state, context) => work(state, this.bindQueue(context, queueOptions)),
+      readCommitted,
     );
   }
 

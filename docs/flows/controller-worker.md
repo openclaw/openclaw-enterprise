@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-21
-last_updated_session: authoring-run/3f3abf26-0aec-43e5-aa36-3aa72b38cf4a
+updated: 2026-11-22
+last_updated_session: authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576
 ---
 
 # Controller Worker Flow
@@ -180,24 +180,24 @@ and rejects ownership or Compute-Driver mismatches before teardown.
 Namespace dispatch uses `OpenClawController.observeNamespaceLifecycle` and
 `packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle` for
 [ordered, claim-cancelled setup and cleanup](../reference/drivers/namespace-lifecycle.md).
-Results join claim-protected audit evidence. Version dispatch binds the Agent
-when supported, then passes its immutable snapshot to `prepareRevision`. Invalid
-observations fail; pending observations defer convergence.
+Results join claim-protected audit evidence. Version dispatch can bind the Agent
+before passing its snapshot to `prepareRevision`. Invalid observations fail.
+Pending observations defer convergence.
 
-`ControllerWorker.withRevisionDispatch` fences each scoped deployment handoff:
-it holds IAM configuration, Namespace and Agent locks, rechecks current policy
-authority and running state, renews the claim, and starts the Driver call inside
-the transaction. It awaits the call after releasing the locks. Binding, preparation
-and activation use this fence; the Driver owns downstream effects, which the
+`ControllerWorker.withRevisionDispatch` locks IAM configuration, the Namespace
+and Agent for scoped binding, preparation and activation. PostgreSQL Read
+Committed lets the worker see IAM changes committed during the lock wait. It
+rechecks authority and running state, renews the claim, and starts the Driver
+call. It awaits the call after releasing the locks. The Driver owns effects the
 transaction cannot roll back.
 
-When Compute's `requiresStoppedPredecessors` capability is set,
-`apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
-[exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
-under the live claim, it commits the stop boundary, closes credentials and stops
-earlier revisions, including failed candidates. Stop failure blocks preparation.
-Drains yield `PREDECESSOR_STOP_YIELDED`; failing, superseded and stopped Work must
-finish that stop. Maintenance cannot recreate a stopped predecessor.
+For [exclusive replacement](../reference/drivers/compute.md#production-revision-stages)
+(`requiresStoppedPredecessors`), `apps/controller/src/worker.ts:ControllerWorker.prepareRevision`
+checks scoped authority under Read Committed before recording the stop under the
+live claim. It closes credentials and stops earlier revisions, including failed
+candidates, before preparation. `PREDECESSOR_STOP_YIELDED` defers stops. Failing,
+superseded and stopped Work must finish them. Maintenance cannot recreate stopped
+predecessors.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable version; the
@@ -429,6 +429,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-22 09:29: Trace Read Committed for scoped deployment. (authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576 - db0227da135c6bf5e437038ec1fdbbfcc46ba548)
 - 2026-11-21 10:28: Trace scoped dispatch admission and recovery in the accompanying change. (authoring-run/3f3abf26-0aec-43e5-aa36-3aa72b38cf4a - a450dc92242a9d2e9f87da7e4fe8f8ea9dcd5e30)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-19 14:03: Trace stopped revision cleanup in the accompanying change. (authoring-run/49c681f2-4814-4313-b061-284d2b23891c - 4bfefb4bf60b43dfb2e6fcc010be60270474e726)

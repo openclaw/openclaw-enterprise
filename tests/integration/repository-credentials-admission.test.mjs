@@ -270,7 +270,7 @@ async function fixture(
     controllerOptions = {},
     extraRepositories = [],
     installationAccess = false,
-    bindRepositoryAdmission = false,
+    repositoryAdmission,
   } = {},
 ) {
   const installation = {
@@ -323,17 +323,18 @@ async function fixture(
     };
     const repository = registry === undefined ? undefined : repositoryDriver(registry, Driver);
     const controller =
-      bindRepositoryAdmission && repository !== undefined
+      repositoryAdmission !== undefined && repository !== undefined
         ? OpenClawController.forInstallation(installation, options, {
             policy: repository,
             backendId,
+            ...(repositoryAdmission === "built-in" && { policyMode: "built-in" }),
           })
         : new OpenClawController(installation, options);
     for (const driver of [iam, compute, configurationDriver, secretDriver]) {
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
     }
-    if (repository !== undefined) {
+    if (repository !== undefined && repositoryAdmission !== "built-in") {
       controller.registerDriver(repository);
       controller.selectDriver(repository.capability, repository.id);
     }
@@ -355,7 +356,7 @@ async function fixture(
     t.after(() => app.close());
     /** @type {AdmissionRequest} */
     const request = await createAuthenticatedControllerRequest(app, auth);
-    return { controller, request, app };
+    return { controller, request, app, repository };
   }
 
   const initial = await compose();
@@ -888,7 +889,7 @@ test("the SandboxPolicy read shows only current Namespace repository approvals",
   assert.ok(loaded);
   const f = await fixture(t, {
     harness: "codex",
-    bindRepositoryAdmission: true,
+    repositoryAdmission: "selected",
     extraRepositories: ["manual"],
     controllerOptions: {
       ...installationControllerOptions(loaded.installation),
@@ -960,6 +961,14 @@ test("the SandboxPolicy read shows only current Namespace repository approvals",
     assert.equal(rejected.status, 200, JSON.stringify(rejected));
     assert.deepEqual(rejected.data.repositoryNetworkPolicyCeiling, [], "async rejection");
 
+    approval.mock.mockImplementation(() => {
+      throw new Error("synthetic private approval diagnostic");
+    });
+    const failed = await f.request("GET", policyPath);
+    assert.equal(failed.status, 200);
+    assert.deepEqual(failed.data.repositoryNetworkPolicyCeiling, [], "synchronous exception");
+    assert.equal(JSON.stringify(failed).includes("synthetic private approval diagnostic"), false);
+
     // Discard approvals if the selected policy replaces the method while filtering the ceiling.
     approval.mock.mockImplementation(() => {
       Object.defineProperty(repository, "repositoryNetworkPolicyAllows", {
@@ -972,6 +981,48 @@ test("the SandboxPolicy read shows only current Namespace repository approvals",
     assert.deepEqual(replaced.data.repositoryNetworkPolicyCeiling, [], "method replacement");
   } finally {
     restoreApproval();
+  }
+});
+
+test("the SandboxPolicy read preserves saved grants when the built-in repository owner fails", async (t) => {
+  const savedGrants = [{ repository: "example/project", access: "read" }];
+  for (const ceiling of [savedGrants, []]) {
+    await t.test(ceiling.length ? "configured ceiling" : "empty ceiling", async (t) => {
+      const f = await fixture(t, {
+        repositoryAdmission: "built-in",
+        controllerOptions: { repositoryNetworkPolicyCeiling: ceiling },
+      });
+      const agent = await f.createAgent();
+      const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+      // This controller can read saved grants from a compatible writer but cannot create them.
+      await f.state.transact(async (unit) => {
+        const policy = await unit.sandboxPolicies.find(f.namespace.id, agent.id);
+        assert.ok(policy);
+        const saved = {
+          ...policy,
+          version: policy.version + 1,
+          repositoryNetworkPolicy: savedGrants,
+        };
+        assert.deepEqual(await unit.sandboxPolicies.save(saved, policy.version), saved);
+      });
+      const initial = await f.request("GET", policyPath);
+      assert.equal(initial.status, 200, JSON.stringify(initial));
+      assert.deepEqual(initial.data.repositoryNetworkPolicyCeiling, ceiling);
+      assert.deepEqual(initial.data.policy.repositoryNetworkPolicy, savedGrants);
+      assert.equal(initial.data.repositoryNetworkPolicySaveSupported, true);
+
+      const privateDiagnostic = "synthetic private repository owner diagnostic";
+      const resolve = t.mock.fn(() => {
+        throw new Error(privateDiagnostic);
+      });
+      // Break contract introspection after the actual owner has been bound and validated.
+      Object.defineProperty(f.repository, "resolve", { get: resolve });
+      const current = await f.request("GET", policyPath);
+      assert.equal(current.status, 200, JSON.stringify(current));
+      assert.deepEqual(current.data, { ...initial.data, repositoryNetworkPolicyCeiling: [] });
+      assert.equal(JSON.stringify(current).includes(privateDiagnostic), false);
+      assert.equal(resolve.mock.callCount(), ceiling.length ? 1 : 0);
+    });
   }
 });
 
