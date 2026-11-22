@@ -87,6 +87,17 @@ export function assertSourceRef(ref: string | undefined) {
 
 export function assertNetworkProxyAcceptance(env: NodeJS.ProcessEnv): void {
   const selection = env.INPUT_NETWORK_PROXY_ACCEPTANCE;
+  const clearance = env.INPUT_NETWORK_PROXY_CLEARANCE_RUN ?? "";
+  const attempt = env.INPUT_NETWORK_PROXY_CLEARANCE_ATTEMPT ?? "1";
+  if (clearance && !/^[1-9][0-9]*$/.test(attempt)) {
+    throw new Error("Network proxy clearance requires an exact attempt.");
+  }
+  if (
+    clearance &&
+    (env.INPUT_NETWORK_PROXY_ACCEPTANCE !== "true" || !/^[1-9][0-9]*$/.test(clearance))
+  ) {
+    throw new Error("Network proxy clearance requires acceptance mode and an exact run ID.");
+  }
   if (selection === undefined || selection === "" || selection === "false") {
     return;
   }

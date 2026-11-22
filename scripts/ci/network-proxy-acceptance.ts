@@ -24,10 +24,28 @@ export const networkProxyAcceptance = Object.freeze({
   channel: "C0C4WH5RGHW",
   runtime:
     "ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:05247b40b16fd6f1154198d783f35b06c7313444858dc7603802e7f62365e2f8",
-  expiresAt: "2026-11-29T00:00:00Z",
+  startsAt: "2026-11-22T09:30:00Z",
+  expiresAt: "2026-11-22T15:30:00Z",
+  quarantineUntil: "2026-11-23T15:30:00Z",
 });
 
 type Reader = (url: string, init?: RequestInit) => Promise<Response>;
+function budgetedReader(read: Reader): Reader {
+  const deadline = Date.now() + 45_000;
+  let requests = 0;
+  let statuses = 0;
+  return async (url, init) => {
+    requests++;
+    if (/\/deployments\/[0-9]+\/statuses/.test(url)) {
+      statuses++;
+    }
+    assert.ok(
+      requests <= 128 && statuses <= 32 && Date.now() < deadline,
+      "Acceptance metadata request budget exhausted",
+    );
+    return read(url, init);
+  };
+}
 
 async function json(response: Response, operation: string): Promise<Record<string, unknown>> {
   if (!response.ok) {
@@ -42,9 +60,20 @@ async function json(response: Response, operation: string): Promise<Record<strin
   }
 }
 
-export async function verifySlackQuarantine(token: string, read: Reader = fetch): Promise<void> {
+type AcceptanceHistory = {
+  acceptance: Array<Record<string, unknown>>;
+  orphaned: string[];
+  clearances: Array<{
+    run: Record<string, unknown>;
+    target: string;
+    targetAttempt: string;
+    job: Record<string, unknown>;
+  }>;
+};
+
+function quarantineApi(token: string, read: Reader) {
   assert.ok(token, "GitHub artifact reader is required");
-  const request = async (path: string) =>
+  return async (path: string) =>
     json(
       await read(`https://api.github.com/repos/${networkProxyAcceptance.repository}${path}`, {
         headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
@@ -53,25 +82,362 @@ export async function verifySlackQuarantine(token: string, read: Reader = fetch)
       }),
       "Slack acceptance quarantine check",
     );
-  const artifacts = async (name: string) => {
-    const result = await request(`/actions/artifacts?name=${name}&per_page=100`);
-    assert.ok(
-      Array.isArray(result.artifacts) && result.total_count === result.artifacts.length,
-      "Slack acceptance artifact inventory is incomplete",
+}
+
+type QuarantineRequest = ReturnType<typeof quarantineApi>;
+async function inventory(
+  request: QuarantineRequest,
+  path: string,
+  key: string,
+): Promise<Array<Record<string, unknown>>> {
+  const all: Array<Record<string, unknown>> = [];
+  let expected: number | undefined;
+  for (let page = 1; page <= 10; page++) {
+    const result = await request(
+      `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`,
     );
-    return result.artifacts as Array<Record<string, unknown>>;
+    const items = result[key];
+    if (
+      key === "workflow_runs" &&
+      typeof result.total_count === "number" &&
+      result.total_count > 1000
+    ) {
+      throw new RangeError("Workflow run history requires a smaller time partition");
+    }
+    assert.ok(
+      Array.isArray(items) &&
+        typeof result.total_count === "number" &&
+        Number.isSafeInteger(result.total_count) &&
+        result.total_count >= 0 &&
+        result.total_count <= 1000,
+      "Slack acceptance history inventory is incomplete",
+    );
+    expected ??= result.total_count;
+    assert.equal(
+      result.total_count,
+      expected,
+      "Slack acceptance history changed during pagination",
+    );
+    all.push(...(items as Array<Record<string, unknown>>));
+    assert.ok(all.length <= expected, "Slack acceptance history is inconsistent");
+    if (all.length === expected) {
+      return all;
+    }
+    assert.equal(items.length, 100, "Slack acceptance history pagination is incomplete");
+  }
+  throw new Error("Slack acceptance history exceeds its bounded inventory");
+}
+
+async function workflowRuns(
+  request: QuarantineRequest,
+  start: number,
+  end: number,
+): Promise<Array<Record<string, unknown>>> {
+  const iso = (time: number) => new Date(time).toISOString().replace(/\.000Z$/, "Z");
+  try {
+    return await inventory(
+      request,
+      `/actions/workflows/full-integration.yml/runs?event=workflow_dispatch&branch=main&created=${iso(start)}..${iso(end)}`,
+      "workflow_runs",
+    );
+  } catch (error) {
+    if (!(error instanceof RangeError)) {
+      throw error;
+    }
+    assert.ok(end - start >= 1000, "Workflow run history cannot be partitioned further");
+    const middle = Math.floor((start + end) / 2000) * 1000;
+    return [
+      ...(await workflowRuns(request, start, middle)),
+      ...(await workflowRuns(request, middle + 1000, end)),
+    ];
+  }
+}
+
+async function approvalDeploymentRuns(token: string, read: Reader): Promise<Set<string>> {
+  const runs = new Set<string>();
+  let previous = Number.POSITIVE_INFINITY;
+  for (let page = 1; page <= 100; page++) {
+    const response = await read(
+      `https://api.github.com/repos/${networkProxyAcceptance.repository}/deployments?environment=integration-main-approval&per_page=100&page=${page}`,
+      {
+        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    assert.ok(response.ok, "Protected approval deployment history is unavailable");
+    const entries = await response.json();
+    assert.ok(
+      Array.isArray(entries) && entries.length <= 100,
+      "Protected approval deployment history is invalid",
+    );
+    for (const deployment of entries) {
+      const created = Date.parse(String(deployment.created_at));
+      assert.ok(
+        Number.isFinite(created) && created <= previous,
+        "Protected approval deployments are not ordered",
+      );
+      previous = created;
+      if (created < Date.parse(networkProxyAcceptance.startsAt)) {
+        return runs;
+      }
+      if (created >= Date.parse(networkProxyAcceptance.expiresAt)) {
+        continue;
+      }
+      assert.ok(
+        Number.isSafeInteger(deployment.id) &&
+          deployment.environment === "integration-main-approval" &&
+          deployment.ref === "main",
+        "Protected approval deployment scope is invalid",
+      );
+      const status = await read(
+        `https://api.github.com/repos/${networkProxyAcceptance.repository}/deployments/${deployment.id}/statuses?per_page=100`,
+        {
+          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
+          redirect: "error",
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      assert.ok(
+        status.ok && !/rel="next"/.test(status.headers.get("link") ?? ""),
+        "Protected approval status history is incomplete",
+      );
+      const statuses = await status.json();
+      assert.ok(
+        Array.isArray(statuses) && statuses.length < 100,
+        "Protected approval status history is invalid",
+      );
+      // A deployment with no status, or only pending statuses, cannot have admitted its dependent acceptance job.
+      if (
+        statuses.length === 0 ||
+        statuses.every((item) => ["waiting", "pending", "queued"].includes(item.state))
+      ) {
+        continue;
+      }
+      const ids = new Set<string>();
+      for (const item of statuses) {
+        const match =
+          typeof item.log_url === "string"
+            ? item.log_url.match(
+                /^https:\/\/github\.com\/openclaw\/openclaw-enterprise\/actions\/runs\/([1-9][0-9]*)\/job\/[1-9][0-9]*$/,
+              )
+            : null;
+        if (match) {
+          ids.add(match[1]!);
+        }
+      }
+      assert.equal(ids.size, 1, "Approved or unknown deployment cannot be bound to a workflow run");
+      runs.add([...ids][0]!);
+    }
+    const next = /rel="next"/.test(response.headers.get("link") ?? "");
+    assert.ok(
+      !next || entries.length === 100,
+      "Protected approval deployment pagination is incomplete",
+    );
+    if (entries.length < 100) {
+      return runs;
+    }
+  }
+  throw new Error("Protected approval deployment history exceeds its bound");
+}
+
+export async function acceptanceHistory(
+  token: string,
+  read: Reader = budgetedReader(fetch),
+  includeClearances = false,
+): Promise<AcceptanceHistory> {
+  const request = quarantineApi(token, read);
+  const source = networkProxyAcceptance.source;
+  const activation = await workflowRuns(
+    request,
+    Date.parse(networkProxyAcceptance.startsAt),
+    Date.parse(networkProxyAcceptance.expiresAt) - 1000,
+  );
+  const history: AcceptanceHistory = { acceptance: [], orphaned: [], clearances: [] };
+  const ids = new Set<string>();
+  const acceptanceTitle = `Network Proxy Acceptance ${source}`;
+  const clearanceTitle = `Network Proxy Clearance ${source} run `;
+  const acceptanceName = `Execute approved network proxy acceptance / Slack Live Network Proxy Acceptance ${source}`;
+  const clearancePrefix = `Execute approved network proxy acceptance / Slack Live Network Proxy Clearance ${source} run `;
+  const selectedJobs = async (run: Record<string, unknown>, kind: "acceptance" | "clearance") => {
+    assert.ok(
+      Number.isSafeInteger(run.id) &&
+        run.path === ".github/workflows/full-integration.yml" &&
+        run.event === "workflow_dispatch" &&
+        run.head_branch === "main" &&
+        typeof run.head_sha === "string" &&
+        /^[a-f0-9]{40}$/.test(run.head_sha) &&
+        typeof run.run_attempt === "number" &&
+        run.run_attempt >= 1 &&
+        run.run_attempt <= 10,
+      "Selected workflow run provenance is invalid",
+    );
+    for (let attempt = 1; attempt <= run.run_attempt; attempt++) {
+      const jobs = await inventory(
+        request,
+        `/actions/runs/${run.id}/attempts/${attempt}/jobs`,
+        "jobs",
+      );
+      for (const job of jobs) {
+        if (job.conclusion === "skipped") {
+          continue;
+        }
+        if (kind === "acceptance" && job.name === acceptanceName) {
+          history.acceptance.push({
+            ...run,
+            acceptanceAttempt: attempt,
+            acceptanceStatus: job.status,
+            acceptanceConclusion: job.conclusion,
+          });
+        }
+        if (
+          kind === "clearance" &&
+          typeof job.name === "string" &&
+          job.name.startsWith(clearancePrefix)
+        ) {
+          const match = job.name
+            .slice(clearancePrefix.length)
+            .match(/^([1-9][0-9]*) attempt ([1-9][0-9]*)$/);
+          assert.ok(
+            match && run.display_title === `${clearanceTitle}${match[1]} attempt ${match[2]}`,
+            "Clearance target, attempt or source is invalid",
+          );
+          history.clearances.push({
+            run,
+            target: match[1]!,
+            targetAttempt: match[2]!,
+            job: { ...job, attempt },
+          });
+        }
+      }
+    }
   };
-  const markerName = `network-proxy-acceptance-posts-${networkProxyAcceptance.source}`;
-  const markers = await artifacts(markerName);
-  if (markers.length === 0) {
+  for (const run of activation) {
+    assert.ok(
+      Number.isSafeInteger(run.id) && !ids.has(String(run.id)),
+      "Activation run inventory is invalid",
+    );
+    ids.add(String(run.id));
+    if (run.display_title === acceptanceTitle) {
+      await selectedJobs(run, "acceptance");
+    }
+  }
+  const approvalRuns = await approvalDeploymentRuns(token, read);
+  for (const selected of history.acceptance) {
+    assert.ok(
+      approvalRuns.has(String(selected.id)),
+      "Acceptance job is missing its protected approval deployment",
+    );
+  }
+  for (const id of approvalRuns) {
+    if (!ids.has(id)) {
+      history.orphaned.push(id);
+    }
+  }
+  if (includeClearances && (history.acceptance.length > 0 || history.orphaned.length > 0)) {
+    const runs = await workflowRuns(
+      request,
+      Date.parse(networkProxyAcceptance.startsAt),
+      Date.parse(networkProxyAcceptance.quarantineUntil) - 1000,
+    );
+    for (const run of runs) {
+      if (typeof run.display_title === "string" && run.display_title.startsWith(clearanceTitle)) {
+        await selectedJobs(run, "clearance");
+      }
+    }
+  }
+  return history;
+}
+
+export async function verifySlackQuarantine(
+  token: string,
+  read: Reader = fetch,
+  now = Date.now(),
+): Promise<void> {
+  if (
+    now < Date.parse(networkProxyAcceptance.startsAt) ||
+    now >= Date.parse(networkProxyAcceptance.quarantineUntil)
+  ) {
     return;
   }
-  assert.equal(markers.length, 1, "Slack acceptance marker is ambiguous");
-  const marker = markers[0]!;
+  read = budgetedReader(read);
+  const request = quarantineApi(token, read);
+  const history = await acceptanceHistory(token, read, true);
+  const artifacts = (name: string) =>
+    inventory(request, `/actions/artifacts?name=${name}`, "artifacts");
+  const markerName = `network-proxy-acceptance-posts-${networkProxyAcceptance.source}`;
+  const markers = await artifacts(markerName);
+  const cleared = (target: string, targetAttempt?: string) =>
+    history.clearances.filter(
+      ({ target: selected, targetAttempt: selectedAttempt, job, run }) =>
+        selected === target &&
+        (!targetAttempt || selectedAttempt === targetAttempt) &&
+        job.attempt === 1 &&
+        run.run_attempt === 1 &&
+        run.status === "completed" &&
+        run.conclusion === "success" &&
+        job.status === "completed" &&
+        job.conclusion === "success" &&
+        Number(run.id) > Number(target),
+    );
+  for (const orphan of history.orphaned) {
+    const approvals = cleared(orphan);
+    const attempts = new Set(approvals.map((item) => item.targetAttempt));
+    assert.ok(
+      approvals.length > 0 && attempts.size === approvals.length,
+      "Slack fixture is quarantined: a protected dispatch is missing from workflow history",
+    );
+  }
+  const known = new Set(history.acceptance.map((run) => String(run.id)));
+  for (const marker of markers) {
+    assert.ok(
+      known.has(String((marker.workflow_run as Record<string, unknown> | undefined)?.id)),
+      "Slack acceptance marker has no trusted job history",
+    );
+  }
+  for (const acceptedRun of history.acceptance) {
+    const clearances = cleared(String(acceptedRun.id), String(acceptedRun.acceptanceAttempt));
+    assert.ok(clearances.length <= 1, "Slack acceptance clearance is ambiguous");
+    if (clearances.length === 1) {
+      continue;
+    }
+    const runMarkers = markers.filter(
+      (item) => (item.workflow_run as Record<string, unknown> | undefined)?.id === acceptedRun.id,
+    );
+    await verifyRunCleanup(token, read, request, artifacts, acceptedRun, runMarkers, markerName);
+  }
+}
+
+async function verifyRunCleanup(
+  token: string,
+  read: Reader,
+  request: QuarantineRequest,
+  artifacts: (name: string) => Promise<Array<Record<string, unknown>>>,
+  acceptedRun: Record<string, unknown>,
+  runMarkers: Array<Record<string, unknown>>,
+  markerName: string,
+): Promise<void> {
+  assert.ok(
+    acceptedRun.acceptanceAttempt === 1 &&
+      acceptedRun.run_attempt === 1 &&
+      acceptedRun.status === "completed" &&
+      acceptedRun.acceptanceStatus === "completed" &&
+      !["cancelled", "timed_out"].includes(String(acceptedRun.acceptanceConclusion)) &&
+      !["cancelled", "timed_out"].includes(String(acceptedRun.conclusion)),
+    "Slack fixture is quarantined: acceptance is active, cancelled, timed out, or retried",
+  );
+  assert.equal(
+    runMarkers.length,
+    1,
+    "Slack fixture is quarantined: acceptance marker is missing or ambiguous",
+  );
+  const marker = runMarkers[0]!;
   const markedRun = marker.workflow_run as Record<string, unknown> | undefined;
   assert.ok(
     marker.name === markerName &&
       marker.expired === false &&
+      markedRun?.id === acceptedRun.id &&
+      markedRun?.head_sha === acceptedRun.head_sha &&
       Number.isSafeInteger(markedRun?.id) &&
       markedRun?.head_branch === "main" &&
       typeof markedRun?.head_sha === "string" &&
@@ -79,7 +445,9 @@ export async function verifySlackQuarantine(token: string, read: Reader = fetch)
     "Slack acceptance marker is invalid or expired",
   );
   const cleanupName = `network-proxy-acceptance-cleanup-${networkProxyAcceptance.source}`;
-  const cleanups = await artifacts(cleanupName);
+  const cleanups = (await artifacts(cleanupName)).filter(
+    (item) => (item.workflow_run as Record<string, unknown> | undefined)?.id === acceptedRun.id,
+  );
   assert.equal(
     cleanups.length,
     1,
@@ -504,14 +872,49 @@ export async function verifyAcceptanceIdentities(
   await slackRead("conversations.history", senderToken, { channel: channelId, limit: "1" }, read);
 }
 
-export async function admitAcceptance(): Promise<void> {
+export function assertAcceptanceWindow(now = Date.now()): void {
   assert.ok(
-    Date.now() < Date.parse(networkProxyAcceptance.expiresAt),
-    "The one-off acceptance window expired",
+    now >= Date.parse(networkProxyAcceptance.startsAt) &&
+      now < Date.parse(networkProxyAcceptance.expiresAt),
+    "The one-off acceptance dispatch is outside its activation interval",
   );
+}
+
+export async function admitAcceptance(): Promise<void> {
+  assertAcceptanceWindow();
   const result = await validateFullIntegrationPreflight();
   assert.ok(result.selectedLane === "slack" && !result.runAll, "Acceptance must select only Slack");
   await verifyAcceptanceSource(process.env.GITHUB_TOKEN ?? "");
+}
+
+export function validateClearanceEvidence(comment: unknown, target: string, attempt = "1"): void {
+  const lines = typeof comment === "string" ? comment.trim().split(/\r?\n/) : [];
+  assert.equal(
+    lines[0],
+    `run=${target} attempt=${attempt} source=${networkProxyAcceptance.source}`,
+    "Clearance approval must bind the exact run, attempt and source",
+  );
+  for (const [index, kind] of [
+    [1, "vm"],
+    [2, "socket"],
+  ] as const) {
+    const value = lines[index];
+    assert.ok(
+      typeof value === "string" && value.startsWith(`${kind}=`),
+      "Clearance requires independent VM and Socket teardown evidence",
+    );
+    const proof = new URL(value.slice(kind.length + 1));
+    assert.ok(
+      proof.protocol === "https:" &&
+        !proof.username &&
+        !proof.password &&
+        !proof.search &&
+        !proof.hash &&
+        proof.href.length <= 2048,
+      "Clearance evidence must be a credential-free HTTPS reference",
+    );
+  }
+  assert.equal(lines.length, 3, "Clearance approval evidence has unexpected fields");
 }
 
 async function main() {
@@ -535,6 +938,62 @@ async function main() {
         team: networkProxyAcceptance.team,
         channel: networkProxyAcceptance.channel,
       }),
+    );
+    return;
+  }
+  if (mode === "clearance") {
+    const target = process.env.INPUT_NETWORK_PROXY_CLEARANCE_RUN ?? "";
+    const targetAttempt = process.env.INPUT_NETWORK_PROXY_CLEARANCE_ATTEMPT ?? "1";
+    assert.ok(
+      /^[1-9][0-9]*$/.test(targetAttempt),
+      "A clearance requires an exact acceptance attempt",
+    );
+    assert.ok(/^[1-9][0-9]*$/.test(target), "A clearance requires an exact acceptance run ID");
+    assert.ok(
+      Date.now() < Date.parse(networkProxyAcceptance.quarantineUntil),
+      "The clearance window expired",
+    );
+    const selected = await validateFullIntegrationPreflight();
+    assert.ok(
+      selected.selectedLane === "slack" && !selected.runAll,
+      "Clearance must select only Slack",
+    );
+    const response = await fetch(
+      `https://api.github.com/repos/${networkProxyAcceptance.repository}/actions/runs/${process.env.GITHUB_RUN_ID}/approvals`,
+      {
+        headers: {
+          authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+          accept: "application/vnd.github+json",
+        },
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    assert.ok(response.ok, "Clearance approval evidence is unavailable");
+    const reviews = await response.json();
+    assert.ok(Array.isArray(reviews), "Clearance approval evidence is invalid");
+    const review = reviews.find(
+      (item) =>
+        item.state === "approved" &&
+        item.user?.login === process.env.GITHUB_ACTOR &&
+        item.environments?.some(
+          (environment: Record<string, unknown>) =>
+            environment.name === "integration-main-approval",
+        ),
+    );
+    validateClearanceEvidence(review?.comment, target, targetAttempt);
+    const history = await acceptanceHistory(process.env.GITHUB_TOKEN ?? "");
+    const targets = history.acceptance.filter(
+      (run) => String(run.id) === target && String(run.acceptanceAttempt) === targetAttempt,
+    );
+    assert.ok(
+      ((targets.length === 1 && targets[0]!.status === "completed") ||
+        history.orphaned.includes(target)) &&
+        Number(target) < Number(process.env.GITHUB_RUN_ID),
+      "Clearance target is not a completed acceptance job or an orphaned protected dispatch",
+    );
+    console.log(
+      "Protected approval recorded independent fixture teardown verification for the selected acceptance run.",
     );
     return;
   }

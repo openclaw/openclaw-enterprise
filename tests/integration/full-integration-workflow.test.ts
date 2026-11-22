@@ -147,6 +147,8 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
       inputs: {
         lane: { type: "string", default: "" },
         network_proxy_acceptance: { type: "boolean", default: false },
+        network_proxy_clearance_run: { type: "string", default: "" },
+        network_proxy_clearance_attempt: { type: "string", default: "1" },
       },
     },
   });
@@ -294,6 +296,32 @@ test("one-off proxy acceptance preserves normal Slack and scopes extra read perm
   assert.equal(record(slack.env).OCC_TEST_SLACK_SENDER_BOT_TOKEN, undefined);
   assert.equal(record(slackSteps[lane]!.env).SLACK_APP_TOKEN, "${{ secrets.SLACK_APP_TOKEN }}");
   assert.equal(acceptance.environment, "integration-main");
+  const clearance = present(execution.jobs["slack-network-proxy-clearance"]);
+  assert.deepEqual(record(clearance.concurrency), group);
+  assert.equal(clearance.environment, undefined);
+  assert.equal(clearance.env, undefined);
+  assert.deepEqual(record(clearance.permissions), {
+    contents: "read",
+    actions: "read",
+    deployments: "read",
+  });
+  const clearanceSteps = array(clearance.steps).map(record);
+  const clearanceStep = present(
+    clearanceSteps.find(
+      (step) => step.run === "node scripts/ci/network-proxy-acceptance.ts clearance",
+    ),
+  );
+  assert.deepEqual(
+    Object.keys(record(clearanceStep.env)).sort(),
+    [
+      "GITHUB_TOKEN",
+      "INPUT_LANE",
+      "INPUT_NETWORK_PROXY_ACCEPTANCE",
+      "INPUT_NETWORK_PROXY_CLEARANCE_RUN",
+      "INPUT_NETWORK_PROXY_CLEARANCE_ATTEMPT",
+    ].sort(),
+  );
+  assert.ok(clearanceSteps.every((step) => !JSON.stringify(step).includes("secrets.")));
   assert.equal(
     acceptance.env,
     undefined,
@@ -335,9 +363,16 @@ test("one-off proxy acceptance preserves normal Slack and scopes extra read perm
       event_name: "workflow_dispatch",
       run_attempt: "1",
     },
-    inputs: { lane: "slack", network_proxy_acceptance: true },
+    inputs: { lane: "slack", network_proxy_acceptance: true, network_proxy_clearance_run: "" },
     needs: { preflight: { result: "success", outputs: { selected_lane: "slack" } } },
   };
+  assert.equal(workflowCondition(clearance.if, acceptanceContext), false);
+  const clearanceContext = {
+    ...acceptanceContext,
+    inputs: { ...acceptanceContext.inputs, network_proxy_clearance_run: "42" },
+  };
+  assert.equal(workflowCondition(clearance.if, clearanceContext), true);
+  assert.equal(workflowCondition(acceptance.if, clearanceContext), false);
   for (const job of [present(dispatcher.jobs["execute-network-proxy-acceptance"]), acceptance]) {
     assert.equal(workflowCondition(job.if, acceptanceContext), true);
     for (const patch of [
@@ -502,6 +537,7 @@ function assertLaneAdmission(workflow: Workflow, execution: Workflow) {
         "reject-selection",
         "execute-network-proxy-acceptance",
         "slack-network-proxy-acceptance",
+        "slack-network-proxy-clearance",
         "network-proxy-acceptance-aggregate",
       ].includes(name),
   );
@@ -763,7 +799,12 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     .map(([lane]) => lane);
   assert.deepEqual(
     jobsWithQueue.sort(),
-    ["preflight", ...queuedLanes, "slack-network-proxy-acceptance"].sort(),
+    [
+      "preflight",
+      ...queuedLanes,
+      "slack-network-proxy-acceptance",
+      "slack-network-proxy-clearance",
+    ].sort(),
   );
   const resourceQueues = new Set<string>();
   for (const lane of queuedLanes) {

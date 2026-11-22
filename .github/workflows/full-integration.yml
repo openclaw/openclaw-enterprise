@@ -1,4 +1,5 @@
 name: Full Integration
+run-name: ${{ inputs.network_proxy_acceptance && inputs.network_proxy_clearance_run != '' && format('Network Proxy Clearance 9ffc8947c06954644ceb08da25164adbc8a184ab run {0} attempt {1}', inputs.network_proxy_clearance_run, inputs.network_proxy_clearance_attempt) || inputs.network_proxy_acceptance && 'Network Proxy Acceptance 9ffc8947c06954644ceb08da25164adbc8a184ab' || github.workflow }}
 
 on:
   schedule:
@@ -29,6 +30,16 @@ on:
         required: false
         default: false
         type: boolean
+      network_proxy_clearance_run:
+        description: Independently verified teardown clearance for an earlier acceptance run (requires acceptance mode).
+        required: false
+        default: ""
+        type: string
+      network_proxy_clearance_attempt:
+        description: Exact attempt of the acceptance run being cleared.
+        required: false
+        default: "1"
+        type: string
 
 permissions:
   contents: read
@@ -41,7 +52,7 @@ env:
 
 jobs:
   manual-approval:
-    name: ${{ inputs.network_proxy_acceptance && 'Approve PR 6856 9ffc8947 acceptance (subscriptions unknown; off-channel risk)' || 'Approve manual integration' }}
+    name: ${{ inputs.network_proxy_clearance_run != '' && format('Approve teardown run {0} attempt {1} source 9ffc8947c06954644ceb08da25164adbc8a184ab', inputs.network_proxy_clearance_run, inputs.network_proxy_clearance_attempt) || inputs.network_proxy_acceptance && 'Approve PR 6856 9ffc8947 acceptance (subscriptions unknown; off-channel risk)' || 'Approve manual integration' }}
     if: ${{ github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -51,7 +62,7 @@ jobs:
       - name: Record required team approval
         run: echo "Required team approval received; preflight verifies the dispatcher."
       - name: Record accepted subscription uncertainty
-        if: ${{ inputs.network_proxy_acceptance }}
+        if: ${{ inputs.network_proxy_acceptance && inputs.network_proxy_clearance_run == '' }}
         run: echo "Protected approval binds the exact green PR 6856 candidate as fully privileged trusted same-UID code. The user gave informed authorization for the intended seven-post budget. Receiver subscriptions, off-channel writes, and transient between-poll posts/deletions are unobservable; the ledger is observational and is not a Slack-side hard cap."
 
   preflight:
@@ -79,6 +90,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           INPUT_LANE: ${{ inputs.lane }}
           INPUT_NETWORK_PROXY_ACCEPTANCE: ${{ inputs.network_proxy_acceptance }}
+          INPUT_NETWORK_PROXY_CLEARANCE_RUN: ${{ inputs.network_proxy_clearance_run }}
+          INPUT_NETWORK_PROXY_CLEARANCE_ATTEMPT: ${{ inputs.network_proxy_clearance_attempt }}
         run: |
           node scripts/ci/full-integration-preflight.ts
       - name: Scheduled preflight diagnostic (${{ steps.select.outputs.failure_stage || 'unknown' }})
@@ -112,6 +125,8 @@ jobs:
     with:
       lane: slack
       network_proxy_acceptance: true
+      network_proxy_clearance_run: ${{ inputs.network_proxy_clearance_run }}
+      network_proxy_clearance_attempt: ${{ inputs.network_proxy_clearance_attempt }}
     secrets: inherit
 
   reject-selection:

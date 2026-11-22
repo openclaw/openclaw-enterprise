@@ -13,8 +13,10 @@ import {
 } from "../../scripts/ci/full-integration-preflight.ts";
 import {
   networkProxyAcceptance,
+  assertAcceptanceWindow,
   slackRead,
   validateAcceptanceHello,
+  validateClearanceEvidence,
   verifyAcceptanceIdentities,
   verifyAcceptanceSource,
   verifySlackQuarantine,
@@ -61,6 +63,39 @@ test("network proxy acceptance is limited to the approved Slack dispatch boundar
   assert.doesNotThrow(() =>
     assertNetworkProxyAcceptance({ INPUT_NETWORK_PROXY_ACCEPTANCE: "false" }),
   );
+  assert.throws(
+    () =>
+      assertNetworkProxyAcceptance({
+        INPUT_NETWORK_PROXY_ACCEPTANCE: "false",
+        INPUT_NETWORK_PROXY_CLEARANCE_RUN: "42",
+      }),
+    /clearance requires/,
+  );
+  assert.doesNotThrow(() =>
+    assertNetworkProxyAcceptance({ ...allowed, INPUT_NETWORK_PROXY_CLEARANCE_RUN: "42" }),
+  );
+});
+
+test("acceptance dispatch admits only its immutable UTC activation interval", () => {
+  const start = Date.parse(networkProxyAcceptance.startsAt);
+  const end = Date.parse(networkProxyAcceptance.expiresAt);
+  assert.throws(() => assertAcceptanceWindow(start - 1), /outside/);
+  assert.doesNotThrow(() => assertAcceptanceWindow(start));
+  assert.throws(() => assertAcceptanceWindow(end), /outside/);
+});
+
+test("clearance approval binds independent VM and Socket evidence to the exact run and source", () => {
+  const comment = `run=42 attempt=1 source=${networkProxyAcceptance.source}\nvm=https://github.com/openclaw/openclaw-enterprise/issues/1\nsocket=https://github.com/openclaw/openclaw-enterprise/issues/2`;
+  assert.doesNotThrow(() => validateClearanceEvidence(comment, "42"));
+  assert.throws(() => validateClearanceEvidence(comment, "43"), /exact run/);
+  assert.throws(
+    () => validateClearanceEvidence(comment.replace("socket=https", "other=https"), "42"),
+    /independent VM and Socket/,
+  );
+  assert.throws(
+    () => validateClearanceEvidence(comment + "?token=synthetic", "42"),
+    /credential-free/,
+  );
 });
 
 test("ordinary Slack refuses unresolved or unknown acceptance cleanup before fixture use", async () => {
@@ -97,7 +132,16 @@ test("ordinary Slack refuses unresolved or unknown acceptance cleanup before fix
     path: ".github/workflows/full-integration.yml",
     event: "workflow_dispatch",
     run_attempt: 1,
+    status: "completed",
+    conclusion: "success",
+    display_title: `Network Proxy Acceptance ${source}`,
   };
+  let runs: (typeof run)[] = [];
+  let acceptanceConclusion = "success";
+  let deploymentRuns: number[] = [];
+  let pendingId = 0;
+  let jobReads = 0;
+  const acceptanceName = `Execute approved network proxy acceptance / Slack Live Network Proxy Acceptance ${source}`;
   const read = async (url: string) => {
     if (url.endsWith("/artifacts/123/zip")) {
       return new Response(null, {
@@ -108,35 +152,133 @@ test("ordinary Slack refuses unresolved or unknown acceptance cleanup before fix
     if (url === "https://fixture.blob.core.windows.net/receipt") {
       return new Response(archive);
     }
+    if (url.includes("/deployments?environment=")) {
+      return Response.json(
+        deploymentRuns.map((id) => ({
+          id: id + 1000,
+          environment: "integration-main-approval",
+          ref: "main",
+          created_at: "2026-11-22T10:00:00Z",
+        })),
+      );
+    }
+    if (url.includes("/deployments/") && url.includes("/statuses")) {
+      const id = Number(url.match(/deployments\/(\d+)/)?.[1]) - 1000;
+      return Response.json(
+        id === pendingId
+          ? []
+          : [
+              {
+                log_url: `https://github.com/openclaw/openclaw-enterprise/actions/runs/${id}/job/123`,
+              },
+            ],
+      );
+    }
+    if (url.includes("/actions/workflows/full-integration.yml/runs")) {
+      return Response.json({ total_count: runs.length, workflow_runs: runs });
+    }
+    if (url.includes("/attempts/")) {
+      const id = Number(url.match(/runs\/(\d+)/)?.[1]);
+      jobReads++;
+      const selected = runs.find((item) => item.id === id);
+      const target = selected?.display_title.match(/run ([0-9]+) attempt ([0-9]+)$/);
+      const jobs = target
+        ? [
+            {
+              name: `Execute approved network proxy acceptance / Slack Live Network Proxy Clearance ${source} run ${target[1]} attempt ${target[2]}`,
+              status: "completed",
+              conclusion: "success",
+            },
+          ]
+        : [{ name: acceptanceName, status: "completed", conclusion: acceptanceConclusion }];
+      return Response.json({ total_count: jobs.length, jobs });
+    }
     if (url.includes("/actions/runs/")) {
       return Response.json(run);
     }
     const artifacts = url.includes("name=network-proxy-acceptance-posts-") ? markers : cleanups;
     return Response.json({ total_count: artifacts.length, artifacts });
   };
-  await verifySlackQuarantine("reader", read);
+  const now = Date.parse(networkProxyAcceptance.startsAt) + 1000;
+  const check = () => verifySlackQuarantine("reader", read, now);
+  await check();
+  runs = [{ ...run, id: 99, display_title: "Full Integration", status: "waiting" }];
+  deploymentRuns = [99];
+  pendingId = 99;
+  await check();
+  assert.equal(jobReads, 0, "Unrelated pending approvals must not trigger job history reads");
+  pendingId = 0;
+  runs = [run];
+  deploymentRuns = [42];
+  acceptanceConclusion = "skipped";
+  await check();
+  acceptanceConclusion = "success";
+  await assert.rejects(check(), /acceptance marker is missing/);
   markers = [marker];
-  await assert.rejects(
-    verifySlackQuarantine("reader", read),
-    /verified acceptance cleanup is missing/,
-  );
+  await assert.rejects(check(), /verified acceptance cleanup is missing/);
   cleanups = [{ ...cleanup, workflow_run: { ...provenance, id: 43 } }];
-  await assert.rejects(verifySlackQuarantine("reader", read), /cleanup does not match/);
+  await assert.rejects(check(), /verified acceptance cleanup is missing/);
   cleanups = [{ ...cleanup, digest: `sha256:${"0".repeat(64)}` }];
-  await assert.rejects(verifySlackQuarantine("reader", read), /digest does not match/);
+  await assert.rejects(check(), /digest does not match/);
   cleanups = [cleanup];
-  await verifySlackQuarantine("reader", read);
+  await check();
+  acceptanceConclusion = "cancelled";
+  await assert.rejects(check(), /active, cancelled/);
+  markers = [];
+  runs = [
+    run,
+    { ...run, id: 43, display_title: `Network Proxy Clearance ${source} run 42 attempt 1` },
+  ];
+  deploymentRuns = [42, 43];
+  await check();
+  runs = [{ ...run, id: 43, display_title: `Network Proxy Clearance ${source} run 42 attempt 1` }];
+  await check();
+  runs = [];
+  await assert.rejects(check(), /protected dispatch is missing/);
+  runs = [
+    run,
+    { ...run, id: 44 },
+    { ...run, id: 45, display_title: `Network Proxy Clearance ${source} run 42 attempt 1` },
+  ];
+  deploymentRuns = [42, 44, 45];
+  acceptanceConclusion = "success";
+  await assert.rejects(check(), /acceptance marker is missing/);
+  runs.push({
+    ...run,
+    id: 46,
+    display_title: `Network Proxy Clearance ${source} run 44 attempt 1`,
+  });
+  deploymentRuns.push(46);
+  await check();
+  runs = [
+    { ...run, run_attempt: 2 },
+    { ...run, id: 45, display_title: `Network Proxy Clearance ${source} run 42 attempt 1` },
+  ];
+  deploymentRuns = [42, 45];
+  await assert.rejects(check(), /active, cancelled, timed out, or retried/);
+  runs.push({
+    ...run,
+    id: 46,
+    display_title: `Network Proxy Clearance ${source} run 42 attempt 2`,
+  });
+  deploymentRuns.push(46);
+  await check();
+
+  runs = [run];
+  deploymentRuns = [42];
+  acceptanceConclusion = "success";
   run = { ...run, event: "push" };
-  await assert.rejects(verifySlackQuarantine("reader", read), /run provenance is invalid/);
+  runs = [run];
+  await assert.rejects(check(), /workflow run provenance is invalid/);
   await assert.rejects(
-    verifySlackQuarantine("reader", async () => new Response(null, { status: 503 })),
+    verifySlackQuarantine("reader", async () => new Response(null, { status: 503 }), now),
     /HTTP 503/,
   );
 });
 
 test("network proxy acceptance refuses a changed PR head or missing exact-head green checks", async () => {
   const source = networkProxyAcceptance.source;
-  let head = source;
+  let head: string = source;
   let smoke = "success";
   const read = async (url: string) => {
     if (url.includes("/pulls/")) {

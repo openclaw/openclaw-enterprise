@@ -39,8 +39,8 @@ gh workflow run full-integration.yml --ref main -f lane=slack -F network_proxy_a
 ```
 
 The protected approval binds that exact green candidate as fully privileged
-trusted code. The mode expires on 2026-11-29 and cannot select another ref or
-lane. It uses the existing protected Slack concurrency group and fixture
+trusted code. The mode admits dispatches only from 2026-11-22 09:30 through
+15:30 UTC and cannot select another ref or lane. It uses the existing protected Slack concurrency group and fixture
 reservation. Before a Gateway starts, identity checks must match the approved
 receiver, sender, team and public channel; the isolated hello must report one
 connection and close. The integration API key and canonical protected
@@ -55,14 +55,35 @@ activity are not observable. The user accepted those risks. A durable marker is
 created before write-capable credentials are used. Do not rerun or redispatch
 after the marker or an uncertain send; cleanup and the separate acceptance
 receipt must complete before releasing the fixture reservation. The ordinary Slack
-lane checks the marker before it receives fixture credentials. It fails closed
-unless the same approved run has a nonexpired, digest-verified cleanup receipt.
-An API error, incomplete inventory, missing receipt, or mismatched run keeps the
-fixture quarantined. For manual recovery, independently verify that the owned
-Gateway, cluster, and Socket Mode connection have retired. Preserve the incident
-evidence and wait until the acceptance mode expires before a maintainer manually
-removes an unresolved marker. Never remove it to retry an uncertain send or
-cancel an unrelated run. This mode does
+lane checks paginated trusted-main run metadata before it receives fixture
+credentials. It reads job and attempt history only for acceptance-specific run
+titles; ordinary pending approvals do not block the lane. Each check permits at most 128
+metadata requests, 32 approval-status reads, and 45 seconds; uncertainty fails closed. Protected approval deployments independently identify deleted
+runs. A selected acceptance job requires its one-shot marker and a
+matching digest-verified cleanup receipt. Active, cancelled, retried, missing,
+expired, or uncertain evidence quarantines the fixture. Skipped jobs do not arm it.
+
+For recovery, independently verify the hosted VM and Socket Mode teardown. Start a
+new protected main dispatch with `lane=slack`, `network_proxy_acceptance=true`, and
+`network_proxy_clearance_run=<run ID>`, and `network_proxy_clearance_attempt=<attempt>`. Enter this exact approval comment, using
+credential-free HTTPS evidence references:
+
+```text
+run=<run ID> attempt=<attempt> source=9ffc8947c06954644ceb08da25164adbc8a184ab
+vm=https://<independent VM teardown evidence>
+socket=https://<independent Socket Mode teardown evidence>
+```
+
+The clearance acquires the same group, uses no fixture credentials, and records
+an audited successful job. It cannot authorize an acceptance retry. Never delete
+markers or cancel unrelated runs for recovery. The quarantine ends on 2026-11-23 at 15:30 UTC, 24 hours after acceptance expires. All owned containers and consumers use the VM-local
+Docker socket or run in the hosted VM. [Blacksmith states that it destroys the VM
+after the job](https://www.blacksmith.sh/security), but gives no numeric teardown SLA.
+The 24-hour margin is a conservative policy inference, not a proven maximum delay.
+GitHub does not guarantee that run deletion preserves its generated deployment;
+the guard treats either missing record as uncertainty when the other remains.
+The release relies on the hosted lifecycle, not on absent artifacts. Remove this
+one-off mode and guard promptly after the acceptance and any recovery finish. This mode does
 not merge the implementation or bypass the RFC human-review/manual-merge hold.
 See the [protected acceptance flow](../../flows/github-actions-testing/network-proxy-acceptance.md)
 for source execution and ownership.

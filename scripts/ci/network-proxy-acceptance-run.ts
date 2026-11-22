@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { chmod, copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseEnv, promisify } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -306,6 +306,19 @@ async function setup(): Promise<void> {
   await admitAcceptance();
   await verifyTrustedCode();
   await candidateSource();
+  const selectedDocker = process.env.DOCKER_HOST;
+  assert.ok(
+    !selectedDocker || selectedDocker.startsWith("unix:///"),
+    "Acceptance requires a VM-local Docker socket",
+  );
+  const context = JSON.parse(await trustedCommand("docker", ["context", "inspect"]));
+  const endpoint = selectedDocker || context[0]?.Endpoints?.docker?.Host;
+  assert.ok(
+    typeof endpoint === "string" && endpoint.startsWith("unix:///"),
+    "Acceptance cannot use a remote Docker daemon",
+  );
+  const socket = await lstat(endpoint.slice("unix://".length));
+  assert.ok(socket.isSocket(), "Acceptance Docker endpoint is not a local socket");
   const state = await loadState();
   const observer = process.env.SLACK_BOT_TOKEN ?? "";
   requireActivity(await reconcile(state, 0, observer), 0);
@@ -713,6 +726,13 @@ async function artifactList(): Promise<Artifact[]> {
 
 async function arm(): Promise<void> {
   await admitAcceptance();
+  const { acceptanceHistory } = await import("./network-proxy-acceptance.ts");
+  const history = await acceptanceHistory(process.env.GITHUB_TOKEN ?? "");
+  assert.ok(
+    history.orphaned.length === 0 &&
+      history.acceptance.every((run) => String(run.id) === process.env.GITHUB_RUN_ID),
+    "A prior acceptance job exists; redispatch is forbidden even if its marker was deleted",
+  );
   assert.equal(
     (await artifactList()).length,
     0,

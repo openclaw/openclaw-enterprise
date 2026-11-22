@@ -9,6 +9,12 @@ on:
       network_proxy_acceptance:
         type: boolean
         default: false
+      network_proxy_clearance_run:
+        type: string
+        default: ""
+      network_proxy_clearance_attempt:
+        type: string
+        default: "1"
 
 permissions:
   contents: read
@@ -51,6 +57,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           INPUT_LANE: ${{ inputs.lane }}
           INPUT_NETWORK_PROXY_ACCEPTANCE: ${{ inputs.network_proxy_acceptance }}
+          INPUT_NETWORK_PROXY_CLEARANCE_RUN: ${{ inputs.network_proxy_clearance_run }}
+          INPUT_NETWORK_PROXY_CLEARANCE_ATTEMPT: ${{ inputs.network_proxy_clearance_attempt }}
         run: |
           node scripts/ci/full-integration-preflight.ts
       - name: Prepare fresh lane fallback
@@ -473,10 +481,10 @@ jobs:
           job-timeout-minutes: 50
 
   slack-network-proxy-acceptance:
-    name: Slack Live Network Proxy Acceptance
+    name: Slack Live Network Proxy Acceptance 9ffc8947c06954644ceb08da25164adbc8a184ab
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: preflight
-    if: ${{ !cancelled() && inputs.network_proxy_acceptance == true && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && inputs.lane == 'slack' && needs.preflight.result == 'success' && needs.preflight.outputs.selected_lane == 'slack' }}
+    if: ${{ !cancelled() && inputs.network_proxy_acceptance == true && inputs.network_proxy_clearance_run == '' && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && inputs.lane == 'slack' && needs.preflight.result == 'success' && needs.preflight.outputs.selected_lane == 'slack' }}
     permissions:
       contents: read
       actions: read
@@ -506,6 +514,37 @@ jobs:
           model: ${{ vars.OCC_TEST_OPENAI_MODEL }}
           codex-model: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
           node-base-image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+
+  slack-network-proxy-clearance:
+    name: ${{ format('Slack Live Network Proxy Clearance 9ffc8947c06954644ceb08da25164adbc8a184ab run {0} attempt {1}', inputs.network_proxy_clearance_run, inputs.network_proxy_clearance_attempt) }}
+    runs-on: ubuntu-24.04
+    needs: preflight
+    if: ${{ !cancelled() && inputs.network_proxy_acceptance == true && inputs.network_proxy_clearance_run != '' && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && inputs.lane == 'slack' && needs.preflight.result == 'success' && needs.preflight.outputs.selected_lane == 'slack' }}
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    concurrency:
+      group: full-integration-slack-live
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Record protected clearance after independent fixture teardown verification
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_LANE: slack
+          INPUT_NETWORK_PROXY_ACCEPTANCE: "true"
+          INPUT_NETWORK_PROXY_CLEARANCE_RUN: ${{ inputs.network_proxy_clearance_run }}
+          INPUT_NETWORK_PROXY_CLEARANCE_ATTEMPT: ${{ inputs.network_proxy_clearance_attempt }}
+        run: node scripts/ci/network-proxy-acceptance.ts clearance
 
   openshell-build-inputs:
     name: OpenShell Build Inputs
@@ -801,7 +840,7 @@ jobs:
   network-proxy-acceptance-aggregate:
     name: Network Proxy Acceptance Result
     needs: [preflight, slack-network-proxy-acceptance]
-    if: ${{ always() && inputs.network_proxy_acceptance == true && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && inputs.lane == 'slack' && needs.preflight.result == 'success' }}
+    if: ${{ always() && inputs.network_proxy_acceptance == true && inputs.network_proxy_clearance_run == '' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && inputs.lane == 'slack' && needs.preflight.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
