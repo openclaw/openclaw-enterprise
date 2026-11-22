@@ -1595,6 +1595,9 @@ export type {
 export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  AgentAutomationPolicyQualification,
+  AgentAutomationTransport,
+  AgentAutomationPolicyBinding,
   AgentChatCompletionsEndpoint,
   AgentChatCompletionsResolution,
   ComputeRevisionContext,
@@ -1798,7 +1801,7 @@ export type {
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
 
-export type { AgentAutomationOwnership } from "./agent-automations.ts";
+export type { AgentAutomationOwnership, AgentAutomationToolGrant } from "./agent-automations.ts";
 
 export {
   AgentAutomationSchema,

@@ -131,7 +131,7 @@ try {
     "ordinary dispatch requires a correlated tool result",
   );
   const scheduled = await rpc("cron.add", {
-    name: "Supplemental model-only dispatch",
+    name: input.nonemptyCap ? "Supplemental MCP-cap dispatch" : "Supplemental model-only dispatch",
     enabled: true,
     agentId: "main",
     declarationKey: `occ-dispatch-${nonce}`,
@@ -141,7 +141,7 @@ try {
     payload: {
       kind: "agentTurn",
       message: `${provider.markerFor("negative")} Execute the same local dispatch probe once.`,
-      toolsAllow: [],
+      toolsAllow: input.nonemptyCap ? ["qa__allowed_probe"] : [],
     },
     delivery: { mode: "none" },
   });
@@ -161,10 +161,27 @@ try {
     (record) => record.event === "model-request" && record.phase === "negative",
   );
   assert.ok(requests.length > 0);
-  assert.ok(
-    requests.every((request) => request.tools.length === 0),
-    "every scheduled request must advertise zero tools",
-  );
+  if (input.nonemptyCap) {
+    assert.ok(
+      requests.every(
+        (request) =>
+          request.tools.length > 0 &&
+          request.tools.every(
+            (tool) =>
+              typeof tool.name === "string" &&
+              (tool.name === "qa__allowed_probe" ||
+                tool.name.endsWith("__qa__allowed_probe") ||
+                (tool.name === "allowed_probe" && ["qa", "mcp__qa"].includes(tool.namespace))),
+          ),
+      ),
+      "each scheduled request must advertise only the configured MCP operation",
+    );
+  } else {
+    assert.ok(
+      requests.every((request) => request.tools.length === 0),
+      "every scheduled request must advertise zero tools",
+    );
+  }
   const runs = await until("native run history", async () => {
     const history = await rpc("cron.runs", { id: job.id, limit: 10 });
     return history.entries?.length ? history : undefined;
@@ -203,7 +220,8 @@ try {
       realRuntime: true,
       realProvider: false,
       positiveCorrelatedDispatchResult: true,
-      negativeToolsEmpty: true,
+      negativeToolsEmpty: !input.nonemptyCap,
+      negativeMcpOnly: Boolean(input.nonemptyCap),
       negativeCorrelatedRejection: true,
       nativeRunRecorded: runs.entries.length > 0,
       nativeRunStatus: runs.entries[0].status,

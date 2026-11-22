@@ -14,6 +14,7 @@ import { execute } from "../helpers/runtime-image-docker.ts";
 import {
   assertDispatchReport,
   dispatchEffectsScript,
+  dispatchPeerEffectScript,
   prepareDispatchInputs,
   type DispatchProbe,
 } from "./automation-model-only-dispatch-inputs.ts";
@@ -26,12 +27,14 @@ export async function runKubernetesAutomationDispatchProbe(
     agentImage,
     seccompProfile,
     probe,
+    nonemptyCap = false,
   }: {
     selection: { kubeconfigPath: string; kubernetesContext: string };
     gatewayImage: string;
     agentImage: string;
     seccompProfile: string;
     probe: Exclude<DispatchProbe, "write">;
+    nonemptyCap?: boolean;
   },
 ) {
   await validateExplicitK3dLoopbackContext(selection);
@@ -80,7 +83,12 @@ export async function runKubernetesAutomationDispatchProbe(
     // Preserve certificate/input material if namespace cleanup fails.
     await rm(directory, { recursive: true, force: true });
   });
-  const input = await prepareDispatchInputs(directory, { nonce, harness: "codex", probe });
+  const input = await prepareDispatchInputs(directory, {
+    nonce,
+    harness: "codex",
+    probe,
+    nonemptyCap,
+  });
   const data: Record<string, string> = {};
   for (const file of [
     "ca.pem",
@@ -233,7 +241,25 @@ export async function runKubernetesAutomationDispatchProbe(
     }
     await delay(1500);
   }
-  assertDispatchReport(report, "codex", probe);
+  assertDispatchReport(report, "codex", probe, nonemptyCap);
+  if (nonemptyCap) {
+    for (const role of ["gateway", "agent"]) {
+      const peer = await kubectl(
+        "exec",
+        "-n",
+        namespace,
+        "dispatch",
+        "-c",
+        role,
+        "--",
+        "node",
+        "-e",
+        dispatchPeerEffectScript,
+        nonce,
+      );
+      assert.deepEqual(JSON.parse(peer), { peerEffectAbsent: true }, JSON.stringify(report));
+    }
+  }
   if (probe === "exec_command" || probe === "exec") {
     const effects = await kubectl(
       "exec",

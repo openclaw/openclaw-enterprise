@@ -1801,6 +1801,11 @@ test(
     // Real broker reservations must follow Agent deletion through the worker and
     // database finalizer; deleting one Agent must retain the sibling's ownership.
     const automationAudit = new AuditEventFactory();
+    Object.assign(fixture.controller.selectedDriver("compute"), {
+      async evaluateAgentAutomationPolicy() {
+        return { grant: { tools: [] }, bindings: [] };
+      },
+    });
     const automationOwnership = [];
     for (const [agent, revision] of [
       [owner, targetRevision],
@@ -1814,6 +1819,7 @@ test(
             agentId: agent.id,
             revisionId: revision.id,
             nativeAgentId: "main",
+            toolGrant: { tools: [] },
           },
           (record) =>
             automationAudit.create({

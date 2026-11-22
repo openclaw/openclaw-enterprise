@@ -28,9 +28,10 @@ export function createAgentAutomationsAccess(compute: ComputeDriver, apiKeyPath:
     ) {
       return undefined;
     }
-    const url = compute.getGatewayEndpoint?.(revision);
-    return url === undefined
+    const policy = await compute.evaluateAgentAutomationPolicy?.(revision);
+    const transport = await compute.openAgentAutomationTransport?.(revision, policy);
+    return transport === undefined
       ? undefined
-      : { url, apiKey: await readWorkspaceFilesApiKey(apiKeyPath) };
+      : { transport, apiKey: await readWorkspaceFilesApiKey(apiKeyPath), policy };
   });
 }

@@ -99,6 +99,9 @@ export function createAgentAutomationHandlers(options: {
       );
       record = access.record;
       ownershipAdminister = access.administer;
+      if (record.retiredAt !== null && operation !== "listAgentAutomationRuns") {
+        throw failure(404, "NOT_FOUND", "The automation was not found.");
+      }
     }
     if (
       options.nativeAdmin?.enabled !== true ||
@@ -179,7 +182,7 @@ export function createAgentAutomationHandlers(options: {
       }
     }
     function audit(
-      outcome: "admitted" | "bound" | "success" | "unknown" | "discarded",
+      outcome: "admitted" | "bound" | "retired" | "success" | "unknown" | "discarded",
       ownership = record,
       action: "operate" | "administer" = create || selection.mode !== "admin"
         ? "operate"
@@ -248,6 +251,7 @@ export function createAgentAutomationHandlers(options: {
       });
       const session = native;
       if (create) {
+        const toolGrant = await session.captureToolGrant();
         record = await controller.reserveAgentAutomation(
           context.actorId,
           {
@@ -255,6 +259,7 @@ export function createAgentAutomationHandlers(options: {
             agentId,
             revisionId: selection.revision.id,
             nativeAgentId: session.nativeAgentId,
+            toolGrant,
           },
           (reserved) => audit("admitted", reserved),
         );
@@ -288,7 +293,7 @@ export function createAgentAutomationHandlers(options: {
       const result = await match(operation)
         .with("createAgentAutomation", async () => {
           const input = body as unknown as AgentAutomationCreateInput;
-          const created = await session.create(record!.id, input);
+          const created = await session.create(record!.id, input, record!.toolGrant);
           committed = true;
           const bound = await bind(record!, created.nativeJobId);
           record = bound;
@@ -304,9 +309,15 @@ export function createAgentAutomationHandlers(options: {
         .with("updateAgentAutomation", async () =>
           session.update(await resolved(), body as unknown as AgentAutomationUpdateInput),
         )
-        .with("deleteAgentAutomation", async () =>
-          session.remove(await resolved(), query.expectedConfigRevision!, administer),
-        )
+        .with("deleteAgentAutomation", async () => {
+          await session.remove(await resolved(), query.expectedConfigRevision!, administer);
+          committed = true;
+          record = await controller.retireAgentAutomation(
+            context.actorId,
+            { namespaceId, agentId, id: record!.id },
+            (retired, action) => audit("retired", retired, action),
+          );
+        })
         .with("listAgentAutomationRuns", async () => session.runs(await resolved(), offset, limit))
         .with("listAgentAutomations", async () => {
           const inventory = await session.list(owned);
@@ -374,6 +385,20 @@ export function createAgentAutomationHandlers(options: {
           503,
           "UNKNOWN_OUTCOME",
           "The automation mutation outcome is unknown. Refresh the automation inventory before deciding whether to retry.",
+        );
+      }
+      if (
+        operation === "deleteAgentAutomation" &&
+        record?.nativeJobId &&
+        error instanceof AutomationGatewayError &&
+        error.code === "missing"
+      ) {
+        // Native one-shot deletion can precede an OCC delete. Retire the grant
+        // after definite absence so retained history cannot block deployment.
+        await controller.retireAgentAutomation(
+          context.actorId,
+          { namespaceId, agentId, id: record.id },
+          (retired, action) => audit("retired", retired, action),
         );
       }
       if (error instanceof AutomationGatewayError) {

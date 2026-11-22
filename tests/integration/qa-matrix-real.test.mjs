@@ -430,6 +430,11 @@ test(
                         "OCC model-only scheduling, observed no-tool behavior, history and replacement",
                         () => verifyQaAgentAutomations(f, agent),
                       );
+                      const { verifyQaAgentAutomationMcp } =
+                        await import("../helpers/qa-agent-automation-mcp.ts");
+                      await step("approved MCP ordinary and scheduled authority parity", () =>
+                        verifyQaAgentAutomationMcp(f, agent),
+                      );
                     },
                   ],
                   [

@@ -40,6 +40,19 @@ import type {
 } from "../../runtime-logs.ts";
 import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
+import type { AgentAutomationToolGrant } from "../../agent-automations.ts";
+
+export interface AgentAutomationPolicyBinding {
+  readonly name: string;
+  readonly server: string;
+  readonly tool: string;
+  readonly binding: string;
+}
+
+export interface AgentAutomationPolicyQualification {
+  readonly grant: AgentAutomationToolGrant;
+  readonly bindings: readonly AgentAutomationPolicyBinding[];
+}
 
 export interface AgentChatCompletionsEndpoint {
   readonly url: string;
@@ -216,6 +229,13 @@ export interface ComputePreflightResult {
 export type RepositoryWorkerRestartDisposition =
   "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
 
+export interface AgentAutomationTransport {
+  readonly url: string;
+  readonly expectedHostname: string;
+  assertCurrent(): Promise<boolean>;
+  close(): Promise<void>;
+}
+
 export interface ComputeDriver extends Driver {
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
@@ -270,6 +290,15 @@ export interface ComputeDriver extends Driver {
    */
   requiresStoppedPredecessors?(revision: AgentRevision): boolean;
   getRuntimeImages?(revision: AgentRevision): Promise<readonly RuntimeImage[]>;
+  /** Driver-owned, side-effect-free qualification of standing automation authority. */
+  evaluateAgentAutomationPolicy?(
+    revision: Readonly<AgentRevision>,
+  ): Promise<AgentAutomationPolicyQualification | undefined>;
+  /** Open an instance-pinned private automation transport; undefined qualification permits recovery reads and conservative writes only. */
+  openAgentAutomationTransport?(
+    revision: Readonly<AgentRevision>,
+    qualification: AgentAutomationPolicyQualification | undefined,
+  ): Promise<AgentAutomationTransport | undefined>;
   /** Read-only native model discovery; supplied credentials must never be persisted. */
   discoverHarnessModels?(input: {
     readonly authMethod: "api_key" | "codex_pat";

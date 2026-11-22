@@ -37,7 +37,13 @@
         "model-only openclaw: supplemental delegation blocks child creation",
         "model-only codex: supplemental delegation blocks child creation",
         "model-only openclaw: supplemental messaging blocks a local Slack sink",
-        "model-only codex: supplemental messaging blocks a local Slack sink"
+        "model-only codex: supplemental messaging blocks a local Slack sink",
+        "MCP-cap openclaw: forced write is rejected without an MCP peer effect",
+        "MCP-cap openclaw: forced delegation is rejected without an MCP peer effect",
+        "MCP-cap openclaw: forced messaging is rejected without an MCP peer effect",
+        "MCP-cap codex: forced exec_command is rejected without an MCP peer effect",
+        "MCP-cap codex: forced delegation is rejected without an MCP peer effect",
+        "MCP-cap codex: forced messaging is rejected without an MCP peer effect"
       ]
     },
     {

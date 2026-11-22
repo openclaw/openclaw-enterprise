@@ -20,8 +20,14 @@ export interface AgentAutomationRepository extends AgentAutomationReadRepository
     id: string,
     creatorPrincipalId: string,
   ): Promise<boolean>;
+  retire(
+    namespaceId: string,
+    agentId: string,
+    id: string,
+    retiredAt: string,
+  ): Promise<Readonly<AgentAutomationOwnership> | undefined>;
   create(
-    record: Omit<AgentAutomationOwnership, "nativeJobId">,
+    record: Omit<AgentAutomationOwnership, "nativeJobId" | "retiredAt">,
   ): Promise<Readonly<AgentAutomationOwnership>>;
   /** A native ID can be bound once; a matching read is an idempotent observation. */
   bind(

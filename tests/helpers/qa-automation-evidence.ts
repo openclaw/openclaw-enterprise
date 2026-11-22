@@ -35,7 +35,7 @@ try {
   observationStage="gateway-transcript-read";
   const rows = db.prepare("SELECT event_json,event_zstd,event_utf8_bytes FROM transcript_events WHERE session_id=? ORDER BY seq").all(input.sessionId);
   if (rows.length > 20000) throw new Error("transcript exceeds proof limit");
-  let promptSeen=false, answerSeen=false, toolCalls=0, toolResults=0;
+  let promptSeen=false, answerSeen=false, toolCalls=0, toolResults=0;const calledToolNames=[];
   for (const row of rows) {
     observationStage="gateway-transcript-decode";
     const text = row.event_json ?? zstdDecompressSync(row.event_zstd, {maxOutputLength:8388608}).toString("utf8");
@@ -49,11 +49,11 @@ try {
     const textContent = typeof message.content === "string" ? message.content : blocks.filter(b=>b.type==="text").map(b=>b.text??"").join("\n");
     if (message.role === "user" && textContent.includes(input.marker)) promptSeen=true;
     if (message.role === "assistant" && textContent.includes(input.marker)) answerSeen=true;
-    toolCalls += blocks.filter(b=>["toolCall","tool_use","function_call","custom_tool_call"].includes(b.type)).length;
+    for(const block of blocks.filter(b=>["toolCall","tool_use","function_call","custom_tool_call"].includes(b.type))){toolCalls++;calledToolNames.push(block.name??block.toolName??block.tool_name??"unknown")}
     if (message.role === "toolResult" || message.role === "tool") toolResults++;
   }
   console.log(JSON.stringify({sessionId:input.sessionId, historySessionKey:input.sessionKey, retainedSessionKey:input.retainedSessionKey, reportSource:report.source,
-    directToolNames:direct, deferredToolCount:deferred.length, promptSeen,answerSeen,toolCalls,toolResults}));
+    directToolNames:direct, deferredToolCount:deferred.length, promptSeen,answerSeen,toolCalls,toolResults,calledToolNames}));
 } finally { db.close(); }
 `;
 
@@ -82,14 +82,14 @@ function findNativeRun() {
       if (!meta || typeof meta.id!=="string") continue;
       const dynamic=meta.dynamic_tools ?? [];
       if (!Array.isArray(dynamic)) throw new Error("native dynamic tool metadata invalid");
-      let promptSeen=false,answerSeen=false,toolCalls=0;
+      let promptSeen=false,answerSeen=false,toolCalls=0;const calledToolNames=[];
       const turns=new Set();
       for (const row of rows) {
         const p=row.payload;
         if (!p || typeof p!=="object") continue;
         if (row.type==="turn_context" && typeof p.turn_id==="string") turns.add(p.turn_id);
         if (row.type==="response_item") {
-          if (["function_call","custom_tool_call","local_shell_call","web_search_call","mcp_call","computer_call","image_generation_call","code_interpreter_call"].includes(p.type)) toolCalls++;
+          if (["function_call","custom_tool_call","local_shell_call","web_search_call","mcp_call","computer_call","image_generation_call","code_interpreter_call"].includes(p.type)){toolCalls++;calledToolNames.push(p.name??p.tool_name??p.tool??p.type)}
           if (p.type==="message" && Array.isArray(p.content)) {
             const text=p.content.map(b=>b.text??"").join("\n");
             if (p.role==="user" && text.includes(input.marker)) promptSeen=true;
@@ -98,7 +98,7 @@ function findNativeRun() {
         }
         if (row.type==="event_msg" && p.type==="agent_message" && typeof p.message==="string" && p.message.includes(input.marker)) answerSeen=true;
       }
-      if (promptSeen) found.set(meta.id,{threadId:meta.id,turnIds:[...turns],dynamicToolCount:dynamic.length,promptSeen,answerSeen,toolCalls});
+      if (promptSeen) found.set(meta.id,{threadId:meta.id,turnIds:[...turns],dynamicToolCount:dynamic.length,promptSeen,answerSeen,toolCalls,calledToolNames});
     }
   }
   visit(path.join(home,"sessions")); visit(path.join(home,"archived_sessions"));
@@ -280,4 +280,54 @@ export function qaCodexObservationLimits(
     );
   }
   return limits;
+}
+
+/** Inspect the exact completed run and reject calls outside its captured MCP cap. */
+export async function readQaAutomationMcpRunEvidence(
+  f: Fixture,
+  agent: Agent,
+  input: { sessionKey: string; retainedSessionKey: string; sessionId: string; marker: string },
+  approved: string,
+) {
+  const gateway = await observe(
+    f,
+    agent,
+    "gateway",
+    program(input, `let observationStage="gateway-module";${gatewayProgram}`),
+  );
+  assert.equal(gateway.reportSource, "run");
+  assert.equal(gateway.promptSeen, true);
+  assert.equal(gateway.answerSeen, true);
+  assert.ok(Array.isArray(gateway.directToolNames));
+  assert.ok(
+    gateway.directToolNames.every((name) => name === approved),
+    "the run must not expose unrelated Gateway tools",
+  );
+  assert.equal(gateway.deferredToolCount, 0);
+  assert.ok(Array.isArray(gateway.calledToolNames));
+  assert.ok(
+    gateway.calledToolNames.every((name) => name === approved),
+    "the Gateway transcript must not contain a forbidden call",
+  );
+  if (agent.preset !== "Codex") {
+    assert.equal(gateway.toolCalls, 1);
+    return { gateway };
+  }
+  const native = await observe(
+    f,
+    agent,
+    "agent",
+    program(input, `${codexRolloutProgram}\nconsole.log(JSON.stringify(findNativeRun()??{}));`),
+  );
+  assert.equal(native.promptSeen, true);
+  assert.equal(native.answerSeen, true);
+  assert.ok(Array.isArray(native.calledToolNames));
+  assert.equal(native.calledToolNames.length, 1);
+  assert.ok(
+    native.calledToolNames.every(
+      (name) => typeof name === "string" && (name === approved || name.endsWith(`__${approved}`)),
+    ),
+    "the native transcript must not contain shell, session, app, delegation, or other forbidden calls",
+  );
+  return { gateway, native };
 }

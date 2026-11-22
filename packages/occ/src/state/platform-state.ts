@@ -1,3 +1,4 @@
+import { validAgentAutomationToolGrant } from "../agent-automation-policy.ts";
 import type { AgentAutomationOwnership } from "@openclaw-enterprise/contracts";
 import type { AgentAutomationRepository } from "../ports/agent-automations.ts";
 import type {
@@ -1826,6 +1827,26 @@ function repositories(
       snapshot.agentAutomations.set(id, record);
       return { record, changed: true };
     },
+    async retire(namespaceId, agentId, id, retiredAt) {
+      const current = snapshot.agentAutomations.get(id);
+      if (
+        !current ||
+        current.namespaceId !== namespaceId ||
+        current.agentId !== agentId ||
+        current.nativeJobId === null
+      ) {
+        return undefined;
+      }
+      if (current.retiredAt !== null) {
+        return immutableCopy(current);
+      }
+      if (!Number.isFinite(Date.parse(retiredAt))) {
+        throw new ScopeViolationError("The automation retirement time is invalid.");
+      }
+      const record = immutableCopy({ ...current, retiredAt });
+      snapshot.agentAutomations.set(id, record);
+      return record;
+    },
     async create(record) {
       assertInitialized(snapshot);
       if (
@@ -1836,6 +1857,7 @@ function repositories(
         record.creatorPrincipalId.length > 200 ||
         record.creatorPrincipalId.trim() !== record.creatorPrincipalId ||
         /\p{Cc}/u.test(record.creatorPrincipalId) ||
+        !validAgentAutomationToolGrant(record.toolGrant) ||
         !Number.isFinite(Date.parse(record.createdAt))
       ) {
         throw new ScopeViolationError("The automation ownership record is invalid.");
@@ -1843,7 +1865,7 @@ function repositories(
       if (snapshot.agentAutomations.has(record.id)) {
         throw new ResourceConflictError("The automation identity is already reserved.");
       }
-      const saved = immutableCopy({ ...record, nativeJobId: null });
+      const saved = immutableCopy({ ...record, nativeJobId: null, retiredAt: null });
       snapshot.agentAutomations.set(record.id, saved);
       return saved;
     },

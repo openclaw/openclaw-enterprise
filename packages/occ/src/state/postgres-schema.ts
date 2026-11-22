@@ -1,6 +1,7 @@
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type {
+  AgentAutomationToolGrant,
   InitialWorkspaceFiles,
   ProtectedEgressSource,
   EgressInstallation,
@@ -2897,6 +2898,8 @@ export const agentAutomations = occSchema.table(
     creatorPrincipalId: text("creator_principal_id").notNull(),
     nativeAgentId: text("native_agent_id").notNull(),
     nativeJobId: text("native_job_id"),
+    toolGrant: jsonb("tool_grant").$type<AgentAutomationToolGrant>().notNull(),
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
@@ -2907,6 +2910,14 @@ export const agentAutomations = occSchema.table(
     })
       .onDelete("cascade")
       .onUpdate("restrict"),
+    check(
+      "agent_automations_retirement_valid",
+      sql`${table.retiredAt} IS NULL OR ${table.nativeJobId} IS NOT NULL`,
+    ),
+    check(
+      "agent_automations_tool_grant_valid",
+      sql`occ.valid_agent_automation_tool_grant(${table.toolGrant})`,
+    ),
     check(
       "agent_automations_creator_valid",
       sql`char_length(${table.creatorPrincipalId}) BETWEEN 1 AND 200 AND ${table.creatorPrincipalId} = btrim(${table.creatorPrincipalId}) AND ${table.creatorPrincipalId} !~ '[[:cntrl:]]'`,

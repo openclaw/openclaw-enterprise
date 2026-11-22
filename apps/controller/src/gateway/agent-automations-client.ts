@@ -10,6 +10,9 @@ import {
   AgentAutomationUnsupportedSummary,
   type AgentRevision,
   type AgentAutomationOwnership,
+  type AgentAutomationToolGrant,
+  type AgentAutomationPolicyQualification,
+  type AgentAutomationTransport,
   type AgentAutomationCreateInput,
   type AgentAutomationUpdateInput,
   type AgentAutomationData,
@@ -18,6 +21,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { Check } from "typebox/value";
+import { AUTOMATION_NO_MCP_PLUGIN_IDS } from "../drivers/compute/agent-automations-policy.ts";
 
 const methods = [
   "cron.add",
@@ -27,7 +31,13 @@ const methods = [
   "cron.remove",
   "cron.runs",
 ] as const;
-type Method = (typeof methods)[number];
+type Method =
+  | (typeof methods)[number]
+  | "sessions.list"
+  | "tools.catalog"
+  | "tools.effective"
+  | "plugins.inspect"
+  | "system.info";
 type GatewayHello = Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0];
 export type AutomationGatewayErrorCode =
   "unavailable" | "invalid" | "missing" | "conflict" | "unsupported" | "unknown";
@@ -46,7 +56,10 @@ export class AutomationCreateNotCommittedError extends Error {
     this.name = "AutomationCreateNotCommittedError";
   }
 }
-type OwnedAutomation = Pick<AgentAutomationOwnership, "id" | "nativeAgentId" | "nativeJobId">;
+type OwnedAutomation = Pick<
+  AgentAutomationOwnership,
+  "id" | "nativeAgentId" | "nativeJobId" | "toolGrant"
+>;
 export type BoundAutomation = OwnedAutomation & { readonly nativeJobId: string };
 export interface NativeAutomationInventoryEntry {
   readonly id: string;
@@ -55,10 +68,12 @@ export interface NativeAutomationInventoryEntry {
 }
 export interface AgentAutomationGatewaySession {
   readonly nativeAgentId: string;
+  captureToolGrant(): Promise<AgentAutomationToolGrant>;
   /** Always creates disabled; OCC must persist the native identity before activation. */
   create(
     id: string,
     input: AgentAutomationCreateInput,
+    grant: AgentAutomationToolGrant,
   ): Promise<{ nativeJobId: string; job: AgentAutomationData }>;
   list(
     owned: readonly OwnedAutomation[],
@@ -85,9 +100,14 @@ export interface AgentAutomationsAccess {
 
 /** Native protocol belongs to the Gateway adapter; the controller retains human ownership. */
 export function createNativeAgentAutomationsAccess(
-  resolveTarget: (
-    revision: Readonly<AgentRevision>,
-  ) => Promise<{ url: string; apiKey: string } | undefined>,
+  resolveTarget: (revision: Readonly<AgentRevision>) => Promise<
+    | {
+        transport: AgentAutomationTransport;
+        apiKey: string;
+        policy: AgentAutomationPolicyQualification | undefined;
+      }
+    | undefined
+  >,
 ): AgentAutomationsAccess {
   return {
     async open({ revision, signal, deadline, assertCurrent }) {
@@ -95,8 +115,9 @@ export function createNativeAgentAutomationsAccess(
       if (!target) {
         throw new AutomationGatewayError("unavailable");
       }
+      const transport = target.transport;
       try {
-        const url = new URL(target.url);
+        const url = new URL(transport.url);
         if (
           url.protocol !== "wss:" ||
           url.username ||
@@ -119,7 +140,7 @@ export function createNativeAgentAutomationsAccess(
       void connected.catch(() => {});
       let closed = false;
       const client = new GatewayClient({
-        url: target.url,
+        url: transport.url,
         clientName: "gateway-client",
         mode: "backend",
         role: "operator",
@@ -153,6 +174,7 @@ export function createNativeAgentAutomationsAccess(
         signal.removeEventListener("abort", stop);
         client.stop();
         await client.stopAndWait({ timeoutMs: 1000 }).catch(() => undefined);
+        await transport.close().catch(() => undefined);
       }
       let hello: GatewayHello;
       try {
@@ -166,6 +188,10 @@ export function createNativeAgentAutomationsAccess(
           hello.auth?.role !== "operator" ||
           !hello.auth.scopes.includes("operator.admin") ||
           !methods.every((method) => hello.features.methods.includes(method)) ||
+          !hello.features.methods.includes("system.info") ||
+          typeof hello.server?.bootId !== "string" ||
+          hello.server.bootId.length === 0 ||
+          hello.server.bootId.length > 128 ||
           defaults?.ownership !== "sole" ||
           defaults.selectionRequired !== false ||
           typeof defaults.defaultAgentId !== "string" ||
@@ -180,16 +206,26 @@ export function createNativeAgentAutomationsAccess(
           : new AutomationGatewayError("unavailable");
       }
       const nativeAgentId = hello.snapshot.sessionDefaults!.defaultAgentId!;
+      let processIdentity:
+        { bootId: string; processInstanceId: string; hostname: string; pid: number } | undefined;
       async function request(
         method: Method,
         params: Record<string, unknown>,
         mutation = false,
         onSent?: () => void,
       ): Promise<unknown> {
-        if (closed || signal.aborted || Date.now() >= deadline.getTime()) {
+        if (
+          closed ||
+          signal.aborted ||
+          Date.now() >= deadline.getTime() ||
+          (mutation && (!processIdentity || processIdentity.bootId !== hello.server.bootId))
+        ) {
           throw new AutomationGatewayError("unavailable");
         }
         await assertCurrent();
+        if (!(await transport.assertCurrent())) {
+          throw new AutomationGatewayError("unavailable");
+        }
         let sent = false;
         try {
           return await client.request(method, params, {
@@ -222,6 +258,29 @@ export function createNativeAgentAutomationsAccess(
           throw new AutomationGatewayError("unavailable");
         }
       }
+      try {
+        const info = asRecord(await request("system.info", {}));
+        if (
+          info?.hostname !== transport.expectedHostname ||
+          typeof info.processInstanceId !== "string" ||
+          info.processInstanceId.length === 0 ||
+          info.processInstanceId.length > 128 ||
+          !Number.isSafeInteger(info.pid) ||
+          (info.pid as number) <= 0 ||
+          !(await transport.assertCurrent())
+        ) {
+          throw new AutomationGatewayError("unavailable");
+        }
+        processIdentity = {
+          bootId: hello.server.bootId,
+          processInstanceId: info.processInstanceId,
+          hostname: info.hostname as string,
+          pid: info.pid as number,
+        };
+      } catch {
+        await close();
+        throw new AutomationGatewayError("unavailable");
+      }
       const declarationPrefix = "occ-automation:";
       function inspect(value: unknown, record: BoundAutomation) {
         const job = asRecord(value);
@@ -253,7 +312,8 @@ export function createNativeAgentAutomationsAccess(
           job.trigger === undefined &&
           payload?.kind === "agentTurn" &&
           Array.isArray(payload.toolsAllow) &&
-          payload.toolsAllow.length === 0 &&
+          JSON.stringify(payload.toolsAllow) ===
+            JSON.stringify(record.toolGrant.tools.map(({ name }) => name)) &&
           (payload.toolsAllowIsDefault === undefined || payload.toolsAllowIsDefault === false) &&
           delivery?.mode === "none" &&
           Check(AgentAutomationSchema, data);
@@ -349,9 +409,149 @@ export function createNativeAgentAutomationsAccess(
           offset = page.nextOffset as number;
         }
       }
-      return {
+      const session: AgentAutomationGatewaySession = {
         nativeAgentId,
         close,
+        async captureToolGrant() {
+          const policy = target.policy;
+          if (!policy) {
+            throw new AutomationGatewayError("unavailable");
+          }
+          if (policy.bindings.length === 0) {
+            return policy.grant;
+          }
+          if (
+            !hello.features.methods.includes("sessions.list") ||
+            !hello.features.methods.includes("tools.catalog") ||
+            !hello.features.methods.includes("tools.effective") ||
+            !hello.features.methods.includes("plugins.inspect")
+          ) {
+            throw new AutomationGatewayError("unavailable");
+          }
+          const plugins = asRecord(revision.configuration.plugins);
+          const slots = asRecord(plugins?.slots);
+          const pluginIds = new Set<string>(Array.isArray(plugins?.allow) ? plugins.allow : []);
+          if (slots?.memory !== "none") {
+            pluginIds.add("memory-core");
+          }
+          if (revision.harness.mode === "dedicated") {
+            pluginIds.add("file-transfer");
+          }
+          const trustedOwners = new Set<string>(AUTOMATION_NO_MCP_PLUGIN_IDS);
+          for (const pluginId of pluginIds) {
+            if (!trustedOwners.has(pluginId)) {
+              throw new AutomationGatewayError("unavailable");
+            }
+            const inspected = asRecord(await request("plugins.inspect", { pluginId }));
+            const plugin = asRecord(inspected?.plugin);
+            const source = asRecord(inspected?.source);
+            const declared = asRecord(inspected?.declared);
+            const components = asRecord(inspected?.components);
+            const unavailable = asRecord(components?.unavailable);
+            if (
+              inspected?.ok !== true ||
+              plugin?.id !== pluginId ||
+              plugin.installed !== true ||
+              plugin.enabled !== true ||
+              plugin.origin !== "bundled" ||
+              source?.kind !== "bundled" ||
+              !Array.isArray(declared?.mcpServers) ||
+              declared.mcpServers.length !== 0 ||
+              !Array.isArray(components?.mcpServers) ||
+              components.mcpServers.length !== 0 ||
+              !Array.isArray(unavailable?.mcpServers) ||
+              unavailable.mcpServers.length !== 0 ||
+              inspected.declaredSurfaceStatus === "partial" ||
+              inspected.declaredSurfaceStatus === "unavailable"
+            ) {
+              throw new AutomationGatewayError("unavailable");
+            }
+          }
+          // This catalog has no ordinary-session overrides. A session preview
+          // cannot prove absence of a conflicting core or plugin tool.
+          const catalog = asRecord(
+            await request("tools.catalog", { agentId: nativeAgentId, includePlugins: true }),
+          );
+          if (catalog?.agentId !== nativeAgentId || !Array.isArray(catalog.groups)) {
+            throw new AutomationGatewayError("unavailable");
+          }
+          const aliases = new Set(policy.bindings.map(({ name }) => name.toLowerCase()));
+          for (const value of catalog.groups) {
+            const group = asRecord(value);
+            if (
+              !group ||
+              !["core", "plugin"].includes(String(group.source)) ||
+              !Array.isArray(group.tools) ||
+              (group.source === "plugin" &&
+                (typeof group.pluginId !== "string" || !trustedOwners.has(group.pluginId)))
+            ) {
+              throw new AutomationGatewayError("unavailable");
+            }
+            for (const item of group.tools) {
+              const tool = asRecord(item);
+              if (
+                !tool ||
+                typeof tool.id !== "string" ||
+                !tool.id ||
+                tool.source !== group.source ||
+                (group.source === "plugin" && tool.pluginId !== group.pluginId) ||
+                aliases.has(tool.id.toLowerCase())
+              ) {
+                throw new AutomationGatewayError("unavailable");
+              }
+            }
+          }
+          const rows = asRecord(
+            await request("sessions.list", {
+              agentId: nativeAgentId,
+              limit: 100,
+              excludeCron: true,
+              excludeSystem: true,
+              rowMode: "compact",
+            }),
+          );
+          if (!Array.isArray(rows?.sessions)) {
+            throw new AutomationGatewayError("unavailable");
+          }
+          for (const value of rows.sessions.slice(0, 20)) {
+            const row = asRecord(value);
+            if (row?.agentId !== nativeAgentId || typeof row.key !== "string" || !row.key) {
+              continue;
+            }
+            let inventory: Record<string, unknown> | undefined;
+            try {
+              inventory = asRecord(
+                await request("tools.effective", { agentId: nativeAgentId, sessionKey: row.key }),
+              );
+            } catch {
+              continue;
+            }
+            if (inventory?.agentId !== nativeAgentId || !Array.isArray(inventory.groups)) {
+              continue;
+            }
+            const entries = inventory.groups
+              .flatMap((group) => {
+                const item = asRecord(group);
+                return item?.source === "mcp" && Array.isArray(item.tools) ? item.tools : [];
+              })
+              .map(asRecord)
+              .filter((entry) => entry !== undefined);
+            const valid = policy.bindings.every((binding) => {
+              const matches = entries.filter((entry) => entry?.id === binding.name);
+              return (
+                matches.length === 1 &&
+                matches[0]?.source === "mcp" &&
+                matches[0]?.mcpServer === binding.server &&
+                matches[0]?.mcpToolName === binding.tool &&
+                matches[0]?.deniedBySession !== true
+              );
+            });
+            if (valid) {
+              return policy.grant;
+            }
+          }
+          throw new AutomationGatewayError("unavailable");
+        },
         list: inventory,
         async resolve(record) {
           if (record.nativeJobId !== null) {
@@ -363,7 +563,7 @@ export function createNativeAgentAutomationsAccess(
           }
           return entries[0]!.nativeJobId;
         },
-        async create(id, input) {
+        async create(id, input, grant) {
           let sent = false;
           let response: unknown;
           try {
@@ -377,7 +577,11 @@ export function createNativeAgentAutomationsAccess(
                 schedule: input.schedule,
                 sessionTarget: "isolated",
                 wakeMode: "now",
-                payload: { kind: "agentTurn", message: input.prompt, toolsAllow: [] },
+                payload: {
+                  kind: "agentTurn",
+                  message: input.prompt,
+                  toolsAllow: grant.tools.map(({ name }) => name),
+                },
                 delivery: { mode: "none" },
               },
               true,
@@ -392,8 +596,8 @@ export function createNativeAgentAutomationsAccess(
               // the disabled job is absent before discarding its recovery identity.
               try {
                 rejectedWithoutJob =
-                  (await inventory([{ id, nativeAgentId, nativeJobId: null }])).entries.length ===
-                  0;
+                  (await inventory([{ id, nativeAgentId, nativeJobId: null, toolGrant: grant }]))
+                    .entries.length === 0;
               } catch {
                 throw new AutomationGatewayError("unknown");
               }
@@ -414,7 +618,12 @@ export function createNativeAgentAutomationsAccess(
           if (result?.created !== true || typeof native?.id !== "string" || !native.id) {
             throw new AutomationGatewayError("unknown");
           }
-          const job = acknowledgement(native, { id, nativeAgentId, nativeJobId: native.id });
+          const job = acknowledgement(native, {
+            id,
+            nativeAgentId,
+            nativeJobId: native.id,
+            toolGrant: grant,
+          });
           if (job.enabled) {
             throw new AutomationGatewayError("unknown");
           }
@@ -428,12 +637,46 @@ export function createNativeAgentAutomationsAccess(
           if (current.configRevision !== input.expectedConfigRevision) {
             throw new AutomationGatewayError("conflict");
           }
+          const disableOnly =
+            input.enabled === false &&
+            input.name === undefined &&
+            input.prompt === undefined &&
+            input.schedule === undefined;
+          const qualified = target.policy?.grant.tools;
+          const grantStillApproved =
+            qualified !== undefined &&
+            record.toolGrant.tools.every((captured) =>
+              qualified.some(
+                (candidate) =>
+                  candidate.name === captured.name && candidate.binding === captured.binding,
+              ),
+            );
+          if (!disableOnly && !grantStillApproved) {
+            throw new AutomationGatewayError("unavailable");
+          }
+          if (!disableOnly && record.toolGrant.tools.length > 0) {
+            const live = await session.captureToolGrant();
+            if (
+              !record.toolGrant.tools.every((captured) =>
+                live.tools.some(
+                  (candidate) =>
+                    candidate.name === captured.name && candidate.binding === captured.binding,
+                ),
+              )
+            ) {
+              throw new AutomationGatewayError("unavailable");
+            }
+          }
           const patch = {
             ...(input.name === undefined ? {} : { name: input.name }),
             ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
             ...(input.schedule === undefined ? {} : { schedule: input.schedule }),
-            // Reassert the model-only cap even when only scheduling or metadata changes.
-            payload: { kind: "agentTurn", message: input.prompt ?? current.prompt, toolsAllow: [] },
+            // Reassert the immutable admitted cap on every update.
+            payload: {
+              kind: "agentTurn",
+              message: input.prompt ?? current.prompt,
+              toolsAllow: record.toolGrant.tools.map(({ name }) => name),
+            },
           };
           return acknowledgement(
             await request(
@@ -490,6 +733,7 @@ export function createNativeAgentAutomationsAccess(
           return result;
         },
       };
+      return session;
     },
   };
 }

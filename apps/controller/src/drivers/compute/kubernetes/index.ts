@@ -139,6 +139,8 @@ import type {
   AgentRuntimeCredentialStatus,
   ComputeAgentProvisioningInput,
   ComputeDriver,
+  AgentAutomationPolicyQualification,
+  AgentAutomationTransport,
   AgentChatCompletionsResolution,
   ComputeAgentBinding,
   ComputeAgentRevisionBinding,
@@ -265,7 +267,15 @@ import {
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
 import { managedGatewayConfiguration, validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
+import { nativeAutomationPolicy } from "../agent-automations-policy.ts";
+import { AGENT_AUTOMATIONS_OPENCLAW_SOURCE } from "../../../gateway/agent-automations-runtime.ts";
+import {
+  type TrustedAnonymousMcpEndpoint,
+  trustedAnonymousMcpEndpointDescriptor,
+  validateTrustedAnonymousMcpEndpoint,
+} from "../agent-automation-endpoints.ts";
 import { nodeProgramArguments } from "../node-program.ts";
+import { verifyAgentAutomationProgram } from "../agent-automation-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
 import {
   modelProviderBaseUrl,
@@ -586,6 +596,11 @@ export interface KubernetesComputeDriverOptions {
     };
     readonly caBundle?: string;
   };
+  /** Operator attestation that these exact endpoints use the same anonymous
+   * principal and action rights from every supported runtime path. */
+  readonly automations?: {
+    readonly trustedAnonymousMcpEndpoints: readonly TrustedAnonymousMcpEndpoint[];
+  };
   readonly images: {
     readonly gateway: string;
     readonly agent: string;
@@ -670,10 +685,13 @@ interface GatewayConfigurationSnapshot {
   readonly revision: number;
   readonly revisionId: string;
   readonly gatewayManagedMode: boolean;
+  readonly automationGuard: string | undefined;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
   readonly loggingLevel: LoggingLevel;
+  readonly automationTrust?: boolean;
+  readonly automationTrustBundle?: string;
   readonly workspaceNodeId?: string;
   /** Agent-scoped ConfigMap that delivers workspaceNodeId to a dedicated Codex Gateway. */
   readonly workspaceNodeBinding?: string;
@@ -1207,6 +1225,10 @@ const CONFIGURATION_VOLUME = "openclaw-configuration";
 const HARNESS_TRUST_VOLUME = "harness-trust";
 const HARNESS_TRUST_DIRECTORY = "/etc/openclaw-harness-trust";
 const HARNESS_TRUST_FILE = "ca-bundle.pem";
+const AUTOMATION_TRUST_FILE = "automation-ca.pem";
+const AUTOMATION_TRUST_VOLUME = "automation-trust";
+const AUTOMATION_TRUST_DIRECTORY = "/etc/openclaw-automation-trust";
+const AUTOMATION_TRUST_ANNOTATION = "openclaw.dev/automation-trust-sha256";
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
 const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
   "OPENCLAW_AGENT_REVISION_ID",
@@ -3365,6 +3387,307 @@ function preparedTokenReadiness(
 export class KubernetesComputeDriver implements ComputeDriver {
   readonly discoverHarnessModels = discoverHarnessModels;
 
+  private automationPolicy(revision: Readonly<AgentRevision>) {
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      return undefined;
+    }
+    return nativeAutomationPolicy(
+      revision,
+      this.options.automations?.trustedAnonymousMcpEndpoints ?? [],
+      revision.harness.mode === "dedicated"
+        ? {
+            gateway: this.workloadImages(revision, "gateway").runtime,
+            agent: this.workloadImages(revision, "agent").runtime,
+          }
+        : { gateway: this.workloadImages(revision, "gateway").runtime },
+    );
+  }
+
+  async evaluateAgentAutomationPolicy(revision: Readonly<AgentRevision>) {
+    return this.automationPolicy(revision);
+  }
+
+  private agentAutomationGuardBinding(revision: Readonly<AgentRevision>): string | undefined {
+    const policy = this.automationPolicy(revision);
+    return policy && policy.grant.tools.length > 0
+      ? sha256Hex(JSON.stringify(policy.grant))
+      : undefined;
+  }
+
+  private async verifyAutomationRouteInstance(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    pod: KubernetesRecord,
+  ): Promise<boolean> {
+    const name = this.automationRouteName(revision);
+    const ownership = this.automationRouteOwnership(revision);
+    const service = await this.getOwned("Service", name, namespace, ownership);
+    const route = await this.getOwned("HTTPRoute", name, namespace, ownership);
+    const podMetadata = asRecord(pod.metadata);
+    const selector = asRecord(service?.spec?.selector);
+    const expectedSelector = {
+      ...this.gatewayServiceSelector(revision, this.gatewayRouteName(revision.agentId)),
+      "openclaw.dev/revision": revision.id,
+    };
+    const expectedService = this.service(name, ownership, namespace, expectedSelector);
+    const ports = (value: unknown) =>
+      Array.isArray(value)
+        ? value.map((item) => {
+            const port = asRecord(item);
+            return port
+              ? {
+                  name: port.name,
+                  port: port.port,
+                  targetPort: port.targetPort,
+                  protocol: port.protocol ?? "TCP",
+                }
+              : undefined;
+          })
+        : undefined;
+    if (
+      !service ||
+      !route ||
+      !isNonEmptyString(service.metadata.uid) ||
+      !isNonEmptyString(podMetadata?.uid) ||
+      !isNonEmptyString(podMetadata.name) ||
+      !isDeepStrictEqual(selector, expectedSelector) ||
+      service.spec?.type !== "ClusterIP" ||
+      !isDeepStrictEqual(ports(service.spec?.ports), ports(expectedService.spec?.ports)) ||
+      route.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id ||
+      !isDeepStrictEqual(route.spec, this.automationRoute(revision, namespace, service).spec)
+    ) {
+      return false;
+    }
+    const clients = await this.clients(namespace.plane);
+    const slices = asRecord(
+      await this.request(() =>
+        clients.discovery.listNamespacedEndpointSlice({
+          namespace: namespace.name,
+          labelSelector: `kubernetes.io/service-name=${name}`,
+          timeoutSeconds: Math.ceil(REQUEST_TIMEOUT_MS / 1000),
+        }),
+      ),
+    );
+    const listMetadata = asRecord(slices?.metadata);
+    if (
+      !Array.isArray(slices?.items) ||
+      slices.items.length > 32 ||
+      listMetadata?.continue ||
+      listMetadata?._continue ||
+      (listMetadata?.remainingItemCount !== undefined && listMetadata.remainingItemCount !== 0)
+    ) {
+      return false;
+    }
+    let ready = 0;
+    for (const value of slices.items) {
+      const slice = asRecord(value);
+      const metadata = asRecord(slice?.metadata);
+      const refs = Array.isArray(metadata?.ownerReferences)
+        ? metadata.ownerReferences.map(asRecord)
+        : [];
+      if (
+        metadata?.namespace !== namespace.name ||
+        asRecord(metadata.labels)?.["kubernetes.io/service-name"] !== name ||
+        !refs.some(
+          (ref) => ref?.kind === "Service" && ref.name === name && ref.uid === service.metadata.uid,
+        ) ||
+        !Array.isArray(slice?.endpoints) ||
+        slice.endpoints.length > 256
+      ) {
+        return false;
+      }
+      for (const value of slice.endpoints) {
+        const endpoint = asRecord(value);
+        const conditions = asRecord(endpoint?.conditions);
+        if (!endpoint || !conditions || typeof conditions.ready !== "boolean") {
+          return false;
+        }
+        if (!conditions.ready) {
+          continue;
+        }
+        const target = asRecord(endpoint.targetRef);
+        if (
+          target?.kind !== "Pod" ||
+          target.namespace !== namespace.name ||
+          target.name !== podMetadata.name ||
+          target.uid !== podMetadata.uid
+        ) {
+          return false;
+        }
+        ready++;
+      }
+    }
+    return ready > 0;
+  }
+
+  private async verifyAgentAutomationRuntime(revision: Readonly<AgentRevision>): Promise<boolean> {
+    const binding = this.agentAutomationGuardBinding(revision);
+    if (!binding) {
+      return false;
+    }
+    try {
+      const { name: baseNamespace } = await this.resolveNamespace(revision.namespaceId);
+      const namespace = this.gatewayNamespace(revision, baseNamespace);
+      const pods = (
+        await this.revisionPods(revision as AgentRevision, namespace, "gateway")
+      ).filter((pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined);
+      if (pods.length !== 1) {
+        return false;
+      }
+      const pod = pods[0]!;
+      const metadata = asRecord(pod.metadata);
+      const spec = asRecord(pod.spec);
+      const status = asRecord(pod.status);
+      const containers = Array.isArray(spec?.containers) ? spec.containers.map(asRecord) : [];
+      const gateway = containers.filter((container) => container?.name === "gateway");
+      const observed = findContainerStatus(status?.containerStatuses, "gateway");
+      const mounts = Array.isArray(gateway[0]?.volumeMounts)
+        ? gateway[0].volumeMounts.map(asRecord)
+        : undefined;
+      if (
+        gateway.length !== 1 ||
+        asRecord(gateway[0]?.securityContext)?.readOnlyRootFilesystem !== true ||
+        !mounts ||
+        mounts.some(
+          (mount) =>
+            typeof mount?.mountPath !== "string" ||
+            mount.mountPath === "/" ||
+            mount.mountPath === "/app" ||
+            mount.mountPath.startsWith("/app/"),
+        ) ||
+        status?.phase !== "Running" ||
+        !isNonEmptyString(metadata?.uid) ||
+        !isNonEmptyString(observed?.containerID) ||
+        !isNonEmptyString(observed?.imageID) ||
+        gateway[0]?.image !== this.workloadImages(revision, "gateway").runtime ||
+        !Array.isArray(gateway[0]?.command) ||
+        JSON.stringify(gateway[0].command) !== JSON.stringify(RUNTIME_WRAPPER_COMMAND) ||
+        !verifyAgentAutomationProgram(
+          gateway[0]?.args,
+          revision,
+          gatewayRuntimeEntrypoint(revision.gatewayManagedMode === true, binding),
+        )
+      ) {
+        return false;
+      }
+      const provenance = await this.privateStatusReadback(
+        revision as AgentRevision,
+        baseNamespace,
+        "gateway",
+        RUNTIME_IMAGE_PATH,
+      );
+      return (
+        provenance?.podUid === metadata.uid &&
+        provenance.containerId === observed.containerID &&
+        asRecord(provenance.status)?.openclawCommit === AGENT_AUTOMATIONS_OPENCLAW_SOURCE &&
+        (await this.verifyAutomationEndpointAssets(revision as AgentRevision, pod))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async openAgentAutomationTransport(
+    revision: Readonly<AgentRevision>,
+    qualification: AgentAutomationPolicyQualification | undefined,
+  ): Promise<AgentAutomationTransport | undefined> {
+    const endpoint = this.getGatewayEndpoint(revision as AgentRevision);
+    if (!endpoint) {
+      return undefined;
+    }
+    const qualifies = () =>
+      qualification === undefined ||
+      isDeepStrictEqual(this.automationPolicy(revision), qualification);
+    const observe = async () => {
+      if (!qualifies()) {
+        return undefined;
+      }
+      const { name: baseNamespace } = await this.resolveNamespace(revision.namespaceId);
+      const namespace = this.gatewayNamespace(revision, baseNamespace);
+      const pods = (
+        await this.revisionPods(revision as AgentRevision, namespace, "gateway")
+      ).filter((pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined);
+      if (pods.length !== 1) {
+        return undefined;
+      }
+      const pod = pods[0]!;
+      const metadata = asRecord(pod.metadata);
+      const spec = asRecord(pod.spec);
+      const status = asRecord(pod.status);
+      const observed = findContainerStatus(status?.containerStatuses, "gateway");
+      if (
+        !isNonEmptyString(metadata?.name) ||
+        !isNonEmptyString(metadata.uid) ||
+        status?.phase !== "Running" ||
+        (spec?.hostname !== undefined && spec.hostname !== metadata.name) ||
+        spec?.setHostnameAsFQDN === true ||
+        !isNonEmptyString(observed?.containerID) ||
+        !isNonEmptyString(observed.imageID) ||
+        !(await this.verifyAutomationRouteInstance(revision as AgentRevision, namespace, pod))
+      ) {
+        return undefined;
+      }
+      const provenance = await this.privateStatusReadback(
+        revision as AgentRevision,
+        baseNamespace,
+        "gateway",
+        RUNTIME_IMAGE_PATH,
+      );
+      if (
+        provenance?.podUid !== metadata.uid ||
+        provenance.containerId !== observed.containerID ||
+        asRecord(provenance.status)?.openclawCommit !== AGENT_AUTOMATIONS_OPENCLAW_SOURCE
+      ) {
+        return undefined;
+      }
+      if (
+        qualification &&
+        qualification.grant.tools.length > 0 &&
+        !(await this.verifyAgentAutomationRuntime(revision))
+      ) {
+        return undefined;
+      }
+      return {
+        name: metadata.name,
+        uid: metadata.uid,
+        containerId: observed.containerID,
+        imageId: observed.imageID,
+      };
+    };
+    let initial;
+    try {
+      initial = await observe();
+    } catch {
+      return undefined;
+    }
+    if (!initial) {
+      return undefined;
+    }
+    const url = new URL(endpoint);
+    url.pathname = this.automationRoutePath(revision);
+    let closed = false;
+    return {
+      url: url.href,
+      expectedHostname: initial.name,
+      async assertCurrent() {
+        if (closed) {
+          return false;
+        }
+        try {
+          return isDeepStrictEqual(await observe(), initial);
+        } catch {
+          return false;
+        }
+      },
+      async close() {
+        closed = true;
+      },
+    };
+  }
+
   requiresStoppedPredecessors(revision: AgentRevision): boolean {
     return revision.harness.mode === "dedicated";
   }
@@ -3382,6 +3705,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
     required: ["authentication", "images", "resources", "network", "servicePrincipalCredentials"],
     additionalProperties: false,
     properties: {
+      automations: {
+        type: "object",
+        required: ["trustedAnonymousMcpEndpoints"],
+        additionalProperties: false,
+        properties: {
+          trustedAnonymousMcpEndpoints: {
+            type: "array",
+            maxItems: 64,
+            items: {
+              type: "object",
+              required: ["url", "egressCidrs"],
+              additionalProperties: false,
+              properties: {
+                url: { type: "string", minLength: 1 },
+                egressCidrs: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 64,
+                  uniqueItems: true,
+                  items: { type: "string" },
+                },
+                caBundle: { type: "string", minLength: 1, maxLength: 65536 },
+              },
+            },
+          },
+        },
+      },
       authentication: {
         type: "object",
         required: ["mode"],
@@ -3665,6 +4015,48 @@ export class KubernetesComputeDriver implements ComputeDriver {
     try {
       const options = configuration;
       validateKubernetesAuthentication(options.authentication, "/authentication");
+      if (options.automations !== undefined) {
+        const automations = asRecord(options.automations);
+        const endpoints = automations?.trustedAnonymousMcpEndpoints;
+        if (
+          !automations ||
+          Object.keys(automations).some((key) => key !== "trustedAnonymousMcpEndpoints") ||
+          !Array.isArray(endpoints) ||
+          endpoints.length > 64
+        ) {
+          throw configurationConstraintFailure(
+            "Automation MCP endpoints must be an explicit list of at most 64 endpoint records.",
+            "/automations/trustedAnonymousMcpEndpoints",
+          );
+        }
+        const seen = new Set<string>();
+        let caBytes = 0;
+        for (const [index, value] of endpoints.entries()) {
+          let endpoint: TrustedAnonymousMcpEndpoint;
+          try {
+            endpoint = validateTrustedAnonymousMcpEndpoint(value);
+          } catch (error) {
+            throw configurationConstraintFailure(
+              error instanceof Error ? error.message : "Automation MCP endpoint is invalid.",
+              `/automations/trustedAnonymousMcpEndpoints/${index}`,
+            );
+          }
+          if (seen.has(endpoint.url)) {
+            throw configurationConstraintFailure(
+              "Automation MCP endpoint URLs must be unique.",
+              `/automations/trustedAnonymousMcpEndpoints/${index}/url`,
+            );
+          }
+          seen.add(endpoint.url);
+          caBytes += endpoint.caBundle === undefined ? 0 : Buffer.byteLength(endpoint.caBundle);
+          if (caBytes > 65536) {
+            throw configurationConstraintFailure(
+              "Automation MCP public CA bundles must not exceed 65536 bytes in total.",
+              "/automations/trustedAnonymousMcpEndpoints",
+            );
+          }
+        }
+      }
       if (
         asRecord(options.images) === undefined ||
         typeof options.images.requireImmutableDigest !== "boolean"
@@ -7297,6 +7689,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.options.executionCluster?.caBundle === undefined
         ? {}
         : { "execution-ca.pem": this.options.executionCluster.caBundle };
+    const repositoryCa = embedded ? repositoryMaterial?.bindings[0]?.files["ca.pem"] : undefined;
+    const gatewayAutomationCa = this.automationCaBundle(revision, [
+      this.options.executionCluster?.caBundle,
+      repositoryCa,
+    ]);
+    const automationCaData =
+      gatewayAutomationCa === undefined ? {} : { [AUTOMATION_TRUST_FILE]: gatewayAutomationCa };
     await this.prepareRevisionStage("gateway_config_map", () =>
       this.reconcile(
         {
@@ -7309,6 +7708,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           data: {
             [CONFIGURATION_DOCUMENT]: document,
             ...executionCaData,
+            ...automationCaData,
           },
         },
         gatewayOwnership,
@@ -7316,9 +7716,35 @@ export class KubernetesComputeDriver implements ComputeDriver {
         undefined,
         earlierDocument === undefined
           ? []
-          : [{ [CONFIGURATION_DOCUMENT]: earlierDocument, ...executionCaData }],
+          : [
+              {
+                [CONFIGURATION_DOCUMENT]: earlierDocument,
+                ...executionCaData,
+                ...automationCaData,
+              },
+            ],
       ),
     );
+    const agentAutomationCa = embedded ? undefined : this.automationCaBundle(revision);
+    if (agentAutomationCa !== undefined) {
+      await this.prepareRevisionStage("gateway_config_map", () =>
+        this.reconcile(
+          {
+            ...this.manifest(
+              "v1",
+              "ConfigMap",
+              this.automationTrustName(revision),
+              this.pluginRuntimeOwnership(revision),
+              namespace,
+            ),
+            immutable: true,
+            data: { [AUTOMATION_TRUST_FILE]: agentAutomationCa },
+          },
+          this.pluginRuntimeOwnership(revision),
+          namespace,
+        ),
+      );
+    }
     if (pluginRuntime !== undefined) {
       await this.prepareRevisionStage("plugin_runtime", () =>
         this.reconcilePluginRuntimeConfigMap(pluginRuntime, pluginOwnership, namespace),
@@ -8113,6 +8539,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           workspaceSetup: workspaceSetup !== undefined,
         },
         this.scratchAdmission(revision).binding,
+        this.automationCaBundle(revision) === undefined
+          ? undefined
+          : {
+              name: this.automationTrustName(revision),
+              fingerprint: sha256Hex(this.automationCaBundle(revision)!),
+            },
       );
       if (node !== undefined) {
         if (nativeRuntime === undefined) {
@@ -8535,6 +8967,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
         undefined,
         { ...codexLaunch, withNode, workspaceSetup: workspaceSetup !== undefined },
         this.scratchAdmission(revision).binding,
+        this.automationCaBundle(revision) === undefined
+          ? undefined
+          : {
+              name: this.automationTrustName(revision),
+              fingerprint: sha256Hex(this.automationCaBundle(revision)!),
+            },
       );
     let providerEndpoint: SandboxHarnessEndpoint | undefined;
     const harnessRuntime = this.harnessForRevision(revision);
@@ -9567,6 +10005,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revisionId: revision.id,
     };
     if (this.options.gatewayRouting !== undefined) {
+      const automationName = this.automationRouteName(revision);
+      const automationOwnership = this.automationRouteOwnership(revision);
+      await this.deleteGatewayRoute(
+        automationName,
+        automationOwnership,
+        gatewayNamespace,
+        revision.id,
+      );
+      await this.deleteOwnedNamespacedResource(
+        "Service",
+        automationName,
+        automationOwnership,
+        gatewayNamespace,
+      );
       await this.deleteGatewayRoute(chatName, chatOwnership, gatewayNamespace, revision.id);
       await this.deleteOwnedNamespacedResource(
         "Service",
@@ -9583,6 +10035,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
       );
     }
+    for (const role of ["gateway", "agent"] as const) {
+      await this.deleteOwnedNamespacedResource(
+        "NetworkPolicy",
+        this.automationNetworkPolicyName(role, revision),
+        { namespaceId: revision.namespaceId, agentId: revision.agentId },
+        role === "gateway" ? gatewayNamespace : namespace,
+      );
+    }
+    await this.deleteOwnedNamespacedResource(
+      "ConfigMap",
+      this.automationTrustName(revision),
+      this.pluginRuntimeOwnership(revision),
+      namespace,
+    );
     await this.deleteOwnedNamespacedResource(
       "ConfigMap",
       this.harnessTrustName(revision.agentId, revision.id),
@@ -13980,11 +14446,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       asRecord(nativeConfiguration.secrets),
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
+    const automationTrustBundle = this.automationCaBundle(revision);
     return {
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
+      automationGuard: this.agentAutomationGuardBinding(revision),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -13994,6 +14462,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "openclaw.dev/configuration-generation": String(revision.configurationGeneration),
       },
       loggingLevel: admittedLoggingLevel(nativeConfiguration),
+      ...(automationTrustBundle === undefined
+        ? {}
+        : { automationTrust: true, automationTrustBundle }),
       ...(workspaceNodeId === undefined ? {} : { workspaceNodeId }),
       ...(this.usesWorkspaceNodeBinding(revision)
         ? { workspaceNodeBinding: this.workspaceNodeBindingName(revision.agentId) }
@@ -14596,6 +15067,72 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return `gateway-${sha256Hex(agentId, 12)}`;
   }
 
+  private automationRouteName(revision: Readonly<AgentRevision>): string {
+    return `automation-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+  }
+
+  private automationRoutePath(revision: Readonly<AgentRevision>): string {
+    return `/native-automation${this.gatewayRoutePath(revision as AgentRevision)}/revisions/${sha256Hex(revision.id, 12)}`;
+  }
+
+  private automationRouteOwnership(revision: Readonly<AgentRevision>): Ownership {
+    return {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    };
+  }
+
+  private automationRoute(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    service: ManagedKubernetesObject<"Service">,
+  ): ManagedKubernetesObject<"HTTPRoute"> {
+    const routing = this.options.gatewayRouting;
+    if (!routing) {
+      throw new ConfigurationFailure("Gateway routing is unavailable.");
+    }
+    const ownership = this.automationRouteOwnership(revision);
+    const route = this.manifest(
+      GATEWAY_API_VERSION,
+      "HTTPRoute",
+      this.automationRouteName(revision),
+      ownership,
+      namespace,
+    );
+    return {
+      ...route,
+      metadata: {
+        ...route.metadata,
+        annotations: {
+          ...route.metadata.annotations,
+          [AGENT_REVISION_ID_ANNOTATION]: revision.id,
+          [AGENT_REVISION_ANNOTATION]: String(revision.revision),
+        },
+      },
+      spec: {
+        hostnames: [gatewayRoutingHostname(routing)],
+        parentRefs: [
+          {
+            group: "gateway.networking.k8s.io",
+            kind: "Gateway",
+            namespace: routing.gatewayNamespace,
+            name: routing.gatewayName,
+            sectionName: GATEWAY_LISTENER_SECTION,
+          },
+        ],
+        rules: [
+          this.gatewayRootRouteRule(
+            service,
+            this.automationRoutePath(revision),
+            "operator",
+            "Exact",
+          ),
+        ],
+      },
+    };
+  }
+
   private gatewayRoutePath(revision: AgentRevision): string {
     return `/namespaces/${required(revision.namespaceId, "AgentRevision Namespace ID")}/agents/${required(
       revision.agentId,
@@ -14951,6 +15488,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (service === undefined) {
       return;
     }
+    const automationName = this.automationRouteName(revision);
+    const automationOwnership = this.automationRouteOwnership(revision);
+    const automationService = this.service(automationName, automationOwnership, namespace, {
+      ...this.gatewayServiceSelector(revision, name),
+      "openclaw.dev/revision": revision.id,
+    });
+    await this.reconcile(automationService, automationOwnership, namespace);
+    await this.reconcile(
+      this.automationRoute(
+        revision,
+        namespace,
+        automationService as ManagedKubernetesObject<"Service">,
+      ),
+      automationOwnership,
+      namespace,
+    );
     const chatEndpoint = this.getChatCompletionsEndpoint(revision);
     if (chatEndpoint.status === "available") {
       const chatName = `chat-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
@@ -15572,7 +16125,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       {
         settings,
         requireImmutableDigest: images.requireImmutableDigest,
-        gatewayEntrypoint: gatewayRuntimeEntrypoint(revision.gatewayManagedMode === true),
+        gatewayEntrypoint: gatewayRuntimeEntrypoint(
+          revision.gatewayManagedMode === true,
+          this.agentAutomationGuardBinding(revision),
+        ),
         harnessEntrypoint: COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
         harnessWithNodeEntrypoint: COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
         runtimeWrapper: RUNTIME_WRAPPER_COMMAND,
@@ -16540,6 +17096,207 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
   }
 
+  private automationEndpointRecords(
+    revision: AgentRevision,
+  ): readonly TrustedAnonymousMcpEndpoint[] {
+    const configured = this.options.automations?.trustedAnonymousMcpEndpoints ?? [];
+    const qualification = this.automationPolicy(revision);
+    if (qualification === undefined || qualification.bindings.length === 0) {
+      return [];
+    }
+    const servers = asRecord(asRecord(revision.configuration.mcp)?.servers);
+    const urls = new Set(
+      qualification.bindings.map(({ server }) => asRecord(servers?.[server])?.url),
+    );
+    return configured.filter(({ url }) => urls.has(url));
+  }
+
+  private automationCaBundle(
+    revision: AgentRevision,
+    extra: readonly (string | undefined)[] = [],
+  ): string | undefined {
+    const endpointBundles = this.automationEndpointRecords(revision).flatMap(({ caBundle }) =>
+      caBundle === undefined ? [] : [publicCaBundle(caBundle)],
+    );
+    if (endpointBundles.length === 0) {
+      return undefined;
+    }
+    return publicCaBundle(
+      [...endpointBundles, ...extra.filter((value): value is string => value !== undefined)].join(
+        "\n",
+      ),
+    );
+  }
+
+  private automationTrustName(revision: AgentRevision): string {
+    return `automation-trust-agent-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+  }
+
+  private async verifyAutomationEndpointAssets(
+    revision: AgentRevision,
+    gatewayPod: KubernetesRecord,
+  ): Promise<boolean> {
+    const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
+    const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    const owner = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const expectedPolicies = this.agentNetworkPolicies(revision, namespace).filter(
+      ({ resource }) =>
+        resource.metadata.name === this.automationNetworkPolicyName("gateway", revision) ||
+        resource.metadata.name === this.automationNetworkPolicyName("agent", revision),
+    );
+    if (expectedPolicies.length !== (revision.harness.mode === "dedicated" ? 2 : 1)) {
+      return false;
+    }
+    for (const expected of expectedPolicies) {
+      const observed = await this.getOwned(
+        "NetworkPolicy",
+        expected.resource.metadata.name!,
+        expected.namespace,
+        owner,
+      );
+      if (
+        observed === undefined ||
+        !isDeepStrictEqual(
+          networkPolicySpecToJson(observed.spec as V1NetworkPolicySpec | undefined),
+          networkPolicySpecToJson(expected.resource.spec as V1NetworkPolicySpec | undefined),
+        )
+      ) {
+        return false;
+      }
+    }
+    const endpointCa = this.automationCaBundle(revision);
+    const containerNamed = (pod: KubernetesRecord, name: string): KubernetesRecord | undefined => {
+      const containers = asRecord(pod.spec)?.containers;
+      if (!Array.isArray(containers)) {
+        return undefined;
+      }
+      const matches = containers.map(asRecord).filter((container) => container?.name === name);
+      return matches.length === 1 ? matches[0] : undefined;
+    };
+    const envValue = (container: KubernetesRecord, name: string): unknown => {
+      const env = container.env;
+      if (!Array.isArray(env)) {
+        return undefined;
+      }
+      const matches = env.map(asRecord).filter((entry) => entry?.name === name);
+      return matches.length === 1 ? matches[0]?.value : undefined;
+    };
+    const mountedConfigMap = (
+      pod: KubernetesRecord,
+      container: KubernetesRecord,
+      volumeName: string,
+      configMapName: string,
+      file: string,
+    ): string | undefined => {
+      const volumes = asRecord(pod.spec)?.volumes;
+      const mounts = container.volumeMounts;
+      if (!Array.isArray(volumes) || !Array.isArray(mounts)) {
+        return undefined;
+      }
+      const volume = volumes.map(asRecord).filter((item) => item?.name === volumeName);
+      const mount = mounts.map(asRecord).filter((item) => item?.name === volumeName);
+      if (
+        volume.length !== 1 ||
+        mount.length !== 1 ||
+        mount[0]?.readOnly !== true ||
+        typeof mount[0]?.mountPath !== "string"
+      ) {
+        return undefined;
+      }
+      const projected = asRecord(volume[0]?.configMap);
+      if (
+        projected?.name !== configMapName ||
+        !Array.isArray(projected.items) ||
+        !projected.items.some(
+          (item) => asRecord(item)?.key === file && asRecord(item)?.path === file,
+        )
+      ) {
+        return undefined;
+      }
+      return `${mount[0].mountPath}/${file}`;
+    };
+    const gateway = containerNamed(gatewayPod, "gateway");
+    if (gateway === undefined) {
+      return false;
+    }
+    const gatewayAnnotation = asRecord(asRecord(gatewayPod.metadata)?.annotations)?.[
+      AUTOMATION_TRUST_ANNOTATION
+    ];
+    if (endpointCa === undefined) {
+      return gatewayAnnotation === undefined;
+    }
+    const configuration = this.gatewayConfiguration(revision);
+    const gatewayCa = await this.getOwned("ConfigMap", configuration.name, gatewayNamespace, owner);
+    const gatewayBundle = gatewayCa?.data?.[AUTOMATION_TRUST_FILE];
+    if (
+      gatewayCa?.immutable !== true ||
+      typeof gatewayBundle !== "string" ||
+      typeof gatewayAnnotation !== "string" ||
+      sha256Hex(gatewayBundle) !== gatewayAnnotation ||
+      !gatewayBundle.startsWith(endpointCa)
+    ) {
+      return false;
+    }
+    try {
+      if (publicCaBundle(gatewayBundle) !== gatewayBundle) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+    const gatewayPath = mountedConfigMap(
+      gatewayPod,
+      gateway,
+      CONFIGURATION_VOLUME,
+      configuration.name,
+      AUTOMATION_TRUST_FILE,
+    );
+    if (gatewayPath === undefined || envValue(gateway, "NODE_EXTRA_CA_CERTS") !== gatewayPath) {
+      return false;
+    }
+    if (revision.harness.mode === "embedded") {
+      return true;
+    }
+    const pods = (await this.revisionPods(revision, namespace, "agent")).filter(
+      (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
+    );
+    if (pods.length !== 1 || asRecord(pods[0]?.status)?.phase !== "Running") {
+      return false;
+    }
+    const pod = pods[0]!;
+    const agent = containerNamed(pod, "agent");
+    if (agent === undefined || agent.image !== this.workloadImages(revision, "agent").runtime) {
+      return false;
+    }
+    const trustName = this.automationTrustName(revision);
+    const trust = await this.getOwned(
+      "ConfigMap",
+      trustName,
+      namespace,
+      this.pluginRuntimeOwnership(revision),
+    );
+    if (
+      trust?.immutable !== true ||
+      trust.data?.[AUTOMATION_TRUST_FILE] !== endpointCa ||
+      asRecord(asRecord(pod.metadata)?.annotations)?.[AUTOMATION_TRUST_ANNOTATION] !==
+        sha256Hex(endpointCa)
+    ) {
+      return false;
+    }
+    const agentPath = mountedConfigMap(
+      pod,
+      agent,
+      AUTOMATION_TRUST_VOLUME,
+      trustName,
+      AUTOMATION_TRUST_FILE,
+    );
+    return agentPath !== undefined && envValue(agent, "CODEX_CA_CERTIFICATE") === agentPath;
+  }
+
+  private automationNetworkPolicyName(role: "gateway" | "agent", revision: AgentRevision): string {
+    return `allow-automation-mcp-${role}-rev-${sha256Hex(revision.id, 12)}-${sha256Hex(revision.agentId, 12)}`;
+  }
+
   /** `workspaceNodePeers` holds the relay Pod labels that `workspaceNodePeers()`
    * resolves; without them the Gateway admits no workspace-node relay. */
   private agentNetworkPolicies(
@@ -16570,7 +17327,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       const target =
         name === "allow-gateway-agent" ||
         name === "allow-gateway-workspace-node" ||
-        name === "allow-plugin-status-gateway"
+        name === "allow-plugin-status-gateway" ||
+        name.startsWith("allow-automation-mcp-gateway-rev-")
           ? gatewayNamespace
           : namespace;
       return {
@@ -16612,6 +17370,44 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               to: [this.peer(this.options.network.repositoryCredentials!)],
               ports: [{ protocol: "TCP", port: this.options.network.repositoryCredentials!.port }],
             },
+          ];
+    const automationEgress = this.automationEndpointRecords(revision).map((endpoint) => {
+      const descriptor = trustedAnonymousMcpEndpointDescriptor(endpoint);
+      return {
+        to: descriptor.egressCidrs.map((cidr) => ({ ipBlock: { cidr } })),
+        ports: [{ protocol: "TCP", port: descriptor.port }],
+      };
+    });
+    const revisionGateway = ordinaryNetworkPolicySelector({
+      "openclaw.dev/namespace": revision.namespaceId,
+      "openclaw.dev/workload-role": "gateway",
+      "openclaw.dev/agent": revision.agentId,
+      "openclaw.dev/revision": revision.id,
+    });
+    const revisionAgent = profileNetworkPolicySelector(harnessProfile, {
+      "openclaw.dev/namespace": revision.namespaceId,
+      "openclaw.dev/workload-role": "agent",
+      "openclaw.dev/agent": revision.agentId,
+      "openclaw.dev/revision": revision.id,
+    });
+    const automationPolicies =
+      automationEgress.length === 0
+        ? []
+        : [
+            policy(`allow-automation-mcp-gateway-rev-${sha256Hex(revision.id, 12)}`, {
+              podSelector: revisionGateway,
+              policyTypes: ["Egress"],
+              egress: automationEgress,
+            }),
+            ...(revision.harness.mode === "dedicated"
+              ? [
+                  policy(`allow-automation-mcp-agent-rev-${sha256Hex(revision.id, 12)}`, {
+                    podSelector: revisionAgent,
+                    policyTypes: ["Egress"],
+                    egress: automationEgress,
+                  }),
+                ]
+              : []),
           ];
     const nativeWorker =
       revision.harness.id === "openclaw" && revision.harness.mode === "dedicated";
@@ -16678,6 +17474,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           policyTypes: ["Egress"],
           egress: [...modelEgress, ...repositoryEgress],
         }),
+        ...automationPolicies,
         ...statusPolicies,
       ];
     }
@@ -16726,6 +17523,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           ? { egress: [...modelEgress, ...repositoryEgress] }
           : {}),
       }),
+      ...automationPolicies,
       ...statusPolicies,
     ];
   }
@@ -17353,6 +18151,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     providerEndpoint?: SandboxHarnessEndpoint,
     codexLaunch?: CodexLaunch,
     scratch?: KubernetesScratchVolume,
+    automationAgentTrust?: { readonly name: string; readonly fingerprint: string },
   ): ManagedKubernetesObject {
     const image = images.runtime;
     const providerOwnsHarness = codexLaunch?.providerOwned === true;
@@ -17540,6 +18339,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           name: configuration.name,
           items: [
             { key: CONFIGURATION_DOCUMENT, path: CONFIGURATION_DOCUMENT },
+            ...(configuration.automationTrust === true
+              ? [{ key: AUTOMATION_TRUST_FILE, path: AUTOMATION_TRUST_FILE }]
+              : []),
             ...(this.options.executionCluster?.caBundle === undefined
               ? []
               : [{ key: "execution-ca.pem", path: "execution-ca.pem" }]),
@@ -18039,6 +18841,58 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (harness !== undefined) {
       variables.push(...harness.environment);
     }
+    if (role === "gateway" && configuration?.automationTrust === true) {
+      if (providerEndpoint?.tls !== undefined) {
+        throw new ConfigurationFailure(
+          "Automation trust cannot replace provider-owned Harness trust.",
+        );
+      }
+      const configurationDirectory = writableConfiguration
+        ? MANAGED_CONFIGURATION_DIRECTORY
+        : CONFIGURATION_DIRECTORY;
+      const knownCaPaths = new Set([
+        `${configurationDirectory}/execution-ca.pem`,
+        ...(repositoryMaterial === undefined
+          ? []
+          : [repositoryBrokerPublicCaPath(repositoryMaterial)].filter(
+              (value): value is string => value !== undefined,
+            )),
+      ]);
+      for (let index = variables.length - 1; index >= 0; index--) {
+        const variable = variables[index];
+        if (variable?.name === "NODE_EXTRA_CA_CERTS") {
+          if (typeof variable.value !== "string" || !knownCaPaths.has(variable.value)) {
+            throw new ConfigurationFailure(
+              "Automation trust cannot replace an unrecognized Node CA configuration.",
+            );
+          }
+          variables.splice(index, 1);
+        }
+      }
+      variables.push({
+        name: "NODE_EXTRA_CA_CERTS",
+        value: `${writableConfiguration ? MANAGED_CONFIGURATION_DIRECTORY : CONFIGURATION_DIRECTORY}/${AUTOMATION_TRUST_FILE}`,
+      });
+    }
+    if (role === "agent" && automationAgentTrust !== undefined) {
+      volumes.push({
+        name: AUTOMATION_TRUST_VOLUME,
+        configMap: {
+          name: automationAgentTrust.name,
+          items: [{ key: AUTOMATION_TRUST_FILE, path: AUTOMATION_TRUST_FILE }],
+          optional: false,
+        },
+      });
+      volumeMounts.push({
+        name: AUTOMATION_TRUST_VOLUME,
+        mountPath: AUTOMATION_TRUST_DIRECTORY,
+        readOnly: true,
+      });
+      variables.push({
+        name: "CODEX_CA_CERTIFICATE",
+        value: `${AUTOMATION_TRUST_DIRECTORY}/${AUTOMATION_TRUST_FILE}`,
+      });
+    }
     const names = new Set<string>();
     for (const variable of variables) {
       if (names.has(variable.name)) {
@@ -18091,7 +18945,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                     workspaceSetup,
                     required(configuration.workspace, "Initial workspace directory"),
                   )) +
-              gatewayRuntimeEntrypoint(configuration.gatewayManagedMode),
+              gatewayRuntimeEntrypoint(
+                configuration.gatewayManagedMode,
+                configuration.automationGuard,
+              ),
           ),
         ];
       }
@@ -18100,6 +18957,26 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         args: command.slice(RUNTIME_WRAPPER_COMMAND.length),
       };
     }
+    const gatewayTrustBundle =
+      role === "gateway" && configuration?.automationTrustBundle !== undefined
+        ? publicCaBundle(
+            [
+              configuration.automationTrustBundle,
+              this.options.executionCluster?.caBundle,
+              embedded ? repositoryMaterial?.bindings[0]?.files["ca.pem"] : undefined,
+            ]
+              .filter((bundle): bundle is string => bundle !== undefined)
+              .join("\n"),
+          )
+        : undefined;
+    const automationTrustFingerprint =
+      gatewayTrustBundle === undefined
+        ? automationAgentTrust?.fingerprint
+        : sha256Hex(gatewayTrustBundle);
+    const automationTrustAnnotations =
+      automationTrustFingerprint === undefined
+        ? {}
+        : { [AUTOMATION_TRUST_ANNOTATION]: automationTrustFingerprint };
     return {
       ...deployment,
       metadata: {
@@ -18107,6 +18984,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         annotations: {
           ...metadata.annotations,
           ...configurationAnnotations,
+          ...automationTrustAnnotations,
           ...(repositoryMaterial === undefined
             ? {}
             : { [REPOSITORY_MATERIAL_GENERATION]: repositoryMaterial.generation }),
@@ -18126,6 +19004,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             annotations: {
               ...workloadMetadata.annotations,
               ...configurationAnnotations,
+              ...automationTrustAnnotations,
               ...(repositoryMaterial === undefined
                 ? {}
                 : { [REPOSITORY_MATERIAL_GENERATION]: repositoryMaterial.generation }),

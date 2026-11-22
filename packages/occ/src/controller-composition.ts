@@ -807,6 +807,8 @@ export function createControllerComposition(
     transactions,
     authority,
     timestamp: resourceValues.timestamp,
+    policyEvaluator: async (revision) =>
+      (await selectedCompute().evaluateAgentAutomationPolicy?.(revision))?.grant,
   });
   const agentQueries = createAgentQueries({
     transactions,

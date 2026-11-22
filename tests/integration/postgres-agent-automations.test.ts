@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import pg from "pg";
+
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { AuditEventFactory } from "../../packages/audit/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
@@ -15,20 +20,46 @@ test(
     const f = await createPostgresAgentApp(t, {
       label: "automation-ownership",
       authSecret: "automation-ownership-postgres-session-secret",
+      controllerOptions: { recordOperations: true },
+    });
+    const grant = { tools: [{ name: "reports__read", binding: "a".repeat(64) }] };
+    let candidateGrant: import("../../packages/contracts/src/index.ts").AgentAutomationToolGrant =
+      grant;
+    Object.assign(f.computeDriver, {
+      async evaluateAgentAutomationPolicy(
+        candidate: import("../../packages/contracts/src/index.ts").AgentRevision,
+      ) {
+        return { grant: candidate.revision > 1 ? candidateGrant : grant, bindings: [] };
+      },
     });
     const { agent, namespace, revision } = await f.deployAgent("Automation reservation");
-    // Activate the admitted revision for this storage scenario. Compute is the existing fixture;
-    // this proves OCC ownership/persistence, not a native Gateway or model turn.
-    await f.state.transact(async (unit) => {
-      assert.ok(
-        await unit.agents.compareAndSetActiveRevision(
-          namespace.id,
-          agent.id,
-          undefined,
-          revision.id,
-        ),
-      );
+    const other = await f.deployAgent("Other automation parent");
+    // Complete the real queued deployment through the worker. A pointer alone does not prove
+    // predecessor retirement or the completed runtime cutover required for reservation.
+    const workerPool = new pg.Pool({ connectionString: databaseUrl });
+    const drivers = createBackendWorkerDrivers(f.computeDriver, [], {
+      secretDriver: f.controller.selectedDriver("secret"),
     });
+    const worker = createControllerWorker({
+      pool: workerPool,
+      drivers,
+      pollIntervalMs: 15,
+      emit() {},
+    });
+    await worker.start();
+    try {
+      await waitFor("the automation Agent deployment to complete", async () => {
+        const work = await f.state.read((unit) =>
+          unit.operations.findWork(`agent_revision:${revision.id}:reconcile`),
+        );
+        const otherWork = await f.state.read((unit) =>
+          unit.operations.findWork(`agent_revision:${other.revision.id}:reconcile`),
+        );
+        return work?.state === "succeeded" && otherWork?.state === "succeeded" ? true : undefined;
+      });
+    } finally {
+      await worker.stop();
+    }
     // Public IDs are UUIDs. Invalid text must be refused by the actual HTTP
     // schema before PostgreSQL attempts UUID coercion; valid absent IDs stay 404.
     const path = `/namespaces/${namespace.id}/agents/${agent.id}/automations`;
@@ -57,6 +88,7 @@ test(
       agentId: agent.id,
       revisionId: revision.id,
       nativeAgentId: "main",
+      toolGrant: grant,
     };
     const audit = (id: string) =>
       factory.create({
@@ -68,6 +100,87 @@ test(
         resource,
         details: { jobId: id, revisionId: revision.id },
       });
+    // Competing reservation and replacement deployment must serialize on the same Namespace
+    // and Agent locks. Exactly one may commit when the successor changes a captured binding.
+    candidateGrant = { tools: [{ name: "reports__read", binding: "b".repeat(64) }] };
+    const locked = Promise.withResolvers<void>();
+    const unlock = Promise.withResolvers<void>();
+    const lockHolder = f.state.transact(async (unit) => {
+      assert.ok(await unit.namespaces.lockNamespace(other.namespace.id));
+      assert.ok(await unit.agents.lockAgent(other.namespace.id, other.agent.id));
+      locked.resolve();
+      await unlock.promise;
+    });
+    await locked.promise;
+    const competingDeploy = f.controller.deployAgent(
+      f.principal.id,
+      { namespaceId: other.namespace.id, agentId: other.agent.id },
+      resolveApprovedHarness,
+    );
+    const competingReserve = f.controller.reserveAgentAutomation(
+      f.principal.id,
+      {
+        ...input,
+        namespaceId: other.namespace.id,
+        agentId: other.agent.id,
+        revisionId: other.revision.id,
+      },
+      (record) =>
+        factory.create({
+          installationId: f.controller.installation.id,
+          namespaceId: other.namespace.id,
+          actorId: f.principal.id,
+          kind: "mutation",
+          action: "openclaw.agents.automations.create.admitted",
+          resource: { kind: "agent", id: other.agent.id, namespaceId: other.namespace.id },
+          details: { jobId: record.id, revisionId: other.revision.id },
+        }),
+    );
+    const competingResults = Promise.allSettled([competingDeploy, competingReserve]);
+    try {
+      await waitFor("both competing operations to wait on the held lifecycle lock", async () => {
+        const result = await f.pool.query(
+          "SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock'",
+        );
+        return result.rows[0]?.waiting >= 2 ? true : undefined;
+      });
+    } finally {
+      unlock.resolve();
+    }
+    await lockHolder;
+    const [deploymentResult, reservationResult] = await competingResults;
+    assert.equal(
+      [deploymentResult, reservationResult].filter((result) => result.status === "fulfilled")
+        .length,
+      1,
+    );
+    for (const result of [deploymentResult, reservationResult]) {
+      if (result.status === "rejected") {
+        assert.equal(result.reason.name, "ResourceStateConflictError");
+      }
+    }
+    if (reservationResult.status === "fulfilled") {
+      const record = reservationResult.value;
+      assert.equal(
+        await f.controller.discardUnboundAgentAutomation(
+          f.principal.id,
+          { namespaceId: other.namespace.id, agentId: other.agent.id, id: record.id },
+          () =>
+            factory.create({
+              installationId: f.controller.installation.id,
+              namespaceId: other.namespace.id,
+              actorId: f.principal.id,
+              kind: "mutation",
+              action: "openclaw.agents.automations.create.discarded",
+              resource: { kind: "agent", id: other.agent.id, namespaceId: other.namespace.id },
+              details: { jobId: record.id },
+            }),
+        ),
+        true,
+      );
+    }
+    candidateGrant = grant;
+
     let ownership = await f.controller.reserveAgentAutomation(f.principal.id, input, (record) =>
       audit(record.id),
     );
@@ -100,6 +213,38 @@ test(
         unit.agentAutomations.list(namespace.id, agent.id, "another-creator"),
       ),
       [],
+    );
+    // The application role must reject malformed grants at the database boundary, even if a
+    // future caller bypasses OCC validation. These are independent persisted-data constraints.
+    const malformedGrants = [
+      1,
+      [],
+      { tools: [null] },
+      { tools: [{ name: "reports__read", binding: "bad" }] },
+      { tools: [{ name: "reports__read", binding: "a".repeat(64), extra: true }] },
+      { tools: [grant.tools[0], grant.tools[0]] },
+      {
+        tools: [
+          { name: "z", binding: "a".repeat(64) },
+          { name: "a", binding: "b".repeat(64) },
+        ],
+      },
+    ];
+    for (const malformed of malformedGrants) {
+      await assert.rejects(
+        f.pool.query(
+          "INSERT INTO occ.agent_automations (id,namespace_id,agent_id,creator_principal_id,native_agent_id,tool_grant,created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,now())",
+          [randomUUID(), namespace.id, agent.id, f.principal.id, "main", JSON.stringify(malformed)],
+        ),
+        { code: "23514" },
+      );
+    }
+    await assert.rejects(
+      f.pool.query("UPDATE occ.agent_automations SET tool_grant=$2::jsonb WHERE id=$1", [
+        ownership.id,
+        JSON.stringify({ tools: [] }),
+      ]),
+      { code: "42501" },
     );
     const evidence = await f.pool.query(
       "SELECT details FROM occ.audit_events WHERE action=$1 AND details->>'jobId'=$2",
@@ -328,15 +473,15 @@ test(
       f.pool.query("DELETE FROM occ.agent_automations WHERE id=$1", [ownership.id]),
       { code: "42501" },
     );
+    const { nativeJobId: _nativeJobId, retiredAt: _retiredAt, ...createInput } = ownership;
     await assert.rejects(
-      f.state.transact((unit) => unit.agentAutomations.create(ownership)),
+      f.state.transact((unit) => unit.agentAutomations.create(createInput)),
       { name: "ResourceConflictError" },
     );
-    const other = await f.deployAgent("Other automation parent");
     await assert.rejects(
       f.state.transact((unit) =>
         unit.agentAutomations.create({
-          ...ownership,
+          ...createInput,
           id: randomUUID(),
           namespaceId: other.namespace.id,
         }),
@@ -345,10 +490,95 @@ test(
     );
     await assert.rejects(
       f.state.transact((unit) =>
-        unit.agentAutomations.create({ ...ownership, id: randomUUID(), nativeAgentId: "../other" }),
+        unit.agentAutomations.create({
+          ...createInput,
+          id: randomUUID(),
+          nativeAgentId: "../other",
+        }),
       ),
       { name: "ScopeViolationError" },
     );
+
+    // Deployment admission must not drop or rebind a captured alias while any standing job
+    // can still run. The selected fixture Compute supplies policy; PostgreSQL and OCC own
+    // the reservation/deployment lock and comparison being exercised.
+    const deploySuccessor = () =>
+      f.controller.deployAgent(
+        f.principal.id,
+        { namespaceId: namespace.id, agentId: agent.id },
+        resolveApprovedHarness,
+      );
+    candidateGrant = { tools: [{ name: "reports__read", binding: "b".repeat(64) }] };
+    await assert.rejects(deploySuccessor(), { name: "ResourceStateConflictError" });
+    candidateGrant = { tools: [] };
+    await assert.rejects(deploySuccessor(), { name: "ResourceStateConflictError" });
+
+    // A native outcome that is still unknown keeps its grant active. Only a positively bound
+    // deletion can retire a record; retirement and its audit must commit together.
+    const retireInput = { namespaceId: namespace.id, agentId: agent.id, id: ownership.id };
+    const retireAudit = (id: string) =>
+      factory.create({
+        installationId: f.controller.installation.id,
+        namespaceId: namespace.id,
+        actorId: f.principal.id,
+        kind: "mutation",
+        action: "openclaw.agents.automations.delete.retired",
+        resource,
+        details: { jobId: id },
+      });
+    await assert.rejects(
+      f.controller.retireAgentAutomation(
+        f.principal.id,
+        { ...retireInput, id: otherReservation.id },
+        (record) => retireAudit(record.id),
+      ),
+      { name: "ResourceStateConflictError" },
+    );
+    await assert.rejects(
+      f.controller.retireAgentAutomation(f.principal.id, retireInput, () => {
+        throw new Error("retirement audit failed");
+      }),
+      /retirement audit failed/u,
+    );
+    assert.equal(
+      (
+        await reopened.read((unit) =>
+          unit.agentAutomations.find(namespace.id, agent.id, ownership.id),
+        )
+      )?.retiredAt,
+      null,
+    );
+    ownership = await f.controller.retireAgentAutomation(f.principal.id, retireInput, (record) =>
+      retireAudit(record.id),
+    );
+    assert.ok(ownership.retiredAt);
+    assert.deepEqual(
+      await f.controller.retireAgentAutomation(f.principal.id, retireInput, () => {
+        throw new Error("duplicate retirement audit");
+      }),
+      ownership,
+    );
+    await assert.rejects(
+      f.pool.query("UPDATE occ.agent_automations SET retired_at=NULL WHERE id=$1", [ownership.id]),
+      { code: "55000" },
+    );
+    await f.controller.retireAgentAutomation(
+      f.principal.id,
+      { ...retireInput, id: raced.id },
+      (record) => retireAudit(record.id),
+    );
+    // The unbound reservation represents an unknown native outcome and still blocks narrowing.
+    await assert.rejects(deploySuccessor(), { name: "ResourceStateConflictError" });
+    assert.equal(
+      await f.controller.discardUnboundAgentAutomation(
+        f.principal.id,
+        { ...retireInput, id: otherReservation.id },
+        () => discardAudit(otherReservation.id),
+      ),
+      true,
+    );
+    const successor = await deploySuccessor();
+    assert.equal(successor.revision, 2, "retired history must not block a narrower deployment");
 
     // A stop preserves management evidence for later history and blocks fresh reservations.
     await f.controller.stopAgent(f.principal.id, namespace.id, agent.id);

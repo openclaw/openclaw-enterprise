@@ -69,6 +69,7 @@ export function bindPlatformUnitOfWork(
       "list",
       "create",
       "bind",
+      "retire",
       "discardUnbound",
     ]),
     preparedTokenProof: bindRepository(repositories.preparedTokenProof, lifetime, ["current"]),

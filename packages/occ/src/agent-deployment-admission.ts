@@ -1,3 +1,4 @@
+import { agentAutomationGrantSupported } from "./agent-automation-policy.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   assertExecutionAdmission,
@@ -711,6 +712,21 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
       }
       const candidate = prepareComputeRevision(compute, revisionDraft);
+      const automations = (await state.agentAutomations.list(namespace.id, lockedAgent.id)).filter(
+        (automation) => automation.retiredAt === null,
+      );
+      if (automations.length > 0) {
+        const candidateGrant = (await compute.evaluateAgentAutomationPolicy?.(candidate))?.grant;
+        if (
+          automations.some(
+            (automation) => !agentAutomationGrantSupported(automation.toolGrant, candidateGrant),
+          )
+        ) {
+          throw new ResourceStateConflictError(
+            "The proposed Agent revision changes a standing automation tool binding. Delete the affected automation before deploying.",
+          );
+        }
+      }
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         dependencies.channels.assertPreparedDeploymentDrivers(prepared);

@@ -72,3 +72,36 @@ export function prependNodeProgramArguments(prelude: string, args: readonly stri
   const program = inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8");
   return nodeProgramArguments(prelude + program);
 }
+
+/** Read only a bounded, canonically compressed controller-rendered Node program. */
+export function readCanonicalNodeProgram(args: unknown): string | undefined {
+  if (
+    !Array.isArray(args) ||
+    args.length < 2 ||
+    args.length > 32 ||
+    args[0] !== NODE_PROGRAM_LOADER
+  ) {
+    return undefined;
+  }
+  const pieces = args.slice(1);
+  if (
+    pieces.some(
+      (piece) =>
+        typeof piece !== "string" ||
+        piece.length > NODE_PROGRAM_PIECE_BYTES ||
+        !/^[A-Za-z0-9+/=]+$/u.test(piece),
+    )
+  ) {
+    return undefined;
+  }
+  try {
+    const program = inflateRawSync(Buffer.from(pieces.join(""), "base64"), {
+      maxOutputLength: 2 * 1024 * 1024,
+    }).toString("utf8");
+    return JSON.stringify(nodeProgramArguments(program)) === JSON.stringify(args)
+      ? program
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}

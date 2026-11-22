@@ -1,3 +1,34 @@
+CREATE FUNCTION occ.valid_agent_automation_tool_grant(grant_value jsonb) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+  tool_value jsonb;
+  previous_name text := '';
+BEGIN
+  IF jsonb_typeof(grant_value) IS DISTINCT FROM 'object' THEN RETURN false; END IF;
+  IF (SELECT count(*) FROM jsonb_object_keys(grant_value)) <> 1
+     OR jsonb_typeof(grant_value->'tools') IS DISTINCT FROM 'array' THEN
+    RETURN false;
+  END IF;
+  IF jsonb_array_length(grant_value->'tools') > 64 THEN RETURN false; END IF;
+  FOR tool_value IN SELECT value FROM jsonb_array_elements(grant_value->'tools') LOOP
+    IF jsonb_typeof(tool_value) IS DISTINCT FROM 'object' THEN RETURN false; END IF;
+    IF (SELECT count(*) FROM jsonb_object_keys(tool_value)) <> 2
+       OR jsonb_typeof(tool_value->'name') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(tool_value->'binding') IS DISTINCT FROM 'string'
+       OR (tool_value->>'name') !~ '^[A-Za-z0-9_-]{1,128}$'
+       OR (tool_value->>'binding') !~ '^[a-f0-9]{64}$'
+       OR (tool_value->>'name') COLLATE "C" <= previous_name COLLATE "C" THEN
+      RETURN false;
+    END IF;
+    previous_name := tool_value->>'name';
+  END LOOP;
+  RETURN true;
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION occ.valid_agent_automation_tool_grant(jsonb) FROM PUBLIC;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION occ.valid_agent_automation_tool_grant(jsonb) TO occ_app;
+--> statement-breakpoint
 CREATE TABLE occ.agent_automations (
   id uuid PRIMARY KEY,
   namespace_id text NOT NULL,
@@ -5,9 +36,13 @@ CREATE TABLE occ.agent_automations (
   creator_principal_id text NOT NULL,
   native_agent_id text NOT NULL,
   native_job_id text,
+  tool_grant jsonb NOT NULL,
+  retired_at timestamptz,
   created_at timestamptz NOT NULL,
   CONSTRAINT agent_automations_agent_owner FOREIGN KEY (namespace_id, agent_id)
     REFERENCES occ.agents(namespace_id, id) ON DELETE CASCADE ON UPDATE RESTRICT,
+  CONSTRAINT agent_automations_retirement_valid CHECK (retired_at IS NULL OR native_job_id IS NOT NULL),
+  CONSTRAINT agent_automations_tool_grant_valid CHECK (occ.valid_agent_automation_tool_grant(tool_grant)),
   CONSTRAINT agent_automations_native_identity UNIQUE(namespace_id, agent_id, native_job_id),
   CONSTRAINT agent_automations_creator_valid CHECK (
     char_length(creator_principal_id) BETWEEN 1 AND 200
@@ -26,9 +61,13 @@ CREATE INDEX agent_automations_agent_creator ON occ.agent_automations(namespace_
 CREATE FUNCTION occ.guard_agent_automation_binding() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-  IF ROW(NEW.id,NEW.namespace_id,NEW.agent_id,NEW.creator_principal_id,NEW.native_agent_id,NEW.created_at)
-     IS DISTINCT FROM ROW(OLD.id,OLD.namespace_id,OLD.agent_id,OLD.creator_principal_id,OLD.native_agent_id,OLD.created_at)
-     OR OLD.native_job_id IS NOT NULL OR NEW.native_job_id IS NULL THEN
+  IF ROW(NEW.id,NEW.namespace_id,NEW.agent_id,NEW.creator_principal_id,NEW.native_agent_id,NEW.tool_grant,NEW.created_at)
+     IS DISTINCT FROM ROW(OLD.id,OLD.namespace_id,OLD.agent_id,OLD.creator_principal_id,OLD.native_agent_id,OLD.tool_grant,OLD.created_at)
+     OR (
+       (OLD.native_job_id IS NULL AND NEW.native_job_id IS NOT NULL AND NEW.retired_at IS NULL)
+       OR (OLD.native_job_id IS NOT NULL AND NEW.native_job_id = OLD.native_job_id
+           AND OLD.retired_at IS NULL AND NEW.retired_at IS NOT NULL)
+     ) IS NOT TRUE THEN
     RAISE EXCEPTION 'automation ownership and established native identity are immutable' USING ERRCODE = '55000';
   END IF;
   RETURN NEW;
@@ -43,9 +82,9 @@ REVOKE ALL ON occ.agent_automations FROM PUBLIC, occ_app;
 --> statement-breakpoint
 GRANT SELECT ON occ.agent_automations TO occ_app;
 --> statement-breakpoint
-GRANT INSERT (id,namespace_id,agent_id,creator_principal_id,native_agent_id,created_at) ON occ.agent_automations TO occ_app;
+GRANT INSERT (id,namespace_id,agent_id,creator_principal_id,native_agent_id,tool_grant,created_at) ON occ.agent_automations TO occ_app;
 --> statement-breakpoint
-GRANT UPDATE (native_job_id) ON occ.agent_automations TO occ_app;
+GRANT UPDATE (native_job_id,retired_at) ON occ.agent_automations TO occ_app;
 --> statement-breakpoint
 CREATE FUNCTION occ.discard_unbound_agent_automation(text,text,uuid,text) RETURNS boolean
 LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$

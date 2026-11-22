@@ -5,7 +5,7 @@ import type nodeTest from "node:test";
 import Type from "typebox";
 import { Check } from "typebox/value";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
-import { AuditEventFactory, InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { ErrorResponse, Meta } from "../../packages/contracts/src/api/common.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { denialsDuring } from "../helpers/console-audit-denials.ts";
@@ -52,54 +52,28 @@ export const registerAgentAutomationAdmissionCase: RegisterNativeAdminCases = (
       schedule: { kind: "every", everyMs: 60_000 },
       prompt: "Private automation prompt must never enter audit evidence",
     };
-    const existingIdentities = new Set(fixture.policy.identities.map((identity) => identity.id));
     const ownOperator = await createAgentPermissionSession(
       context,
       "automation-operator",
-      {
-        agent: ["operate"],
-      },
+      { agent: ["operate"] },
       { kind: "agent", id: agent.id },
     );
-    const operatorIdentity = fixture.policy.identities.find(
-      (identity) => !existingIdentities.has(identity.id),
-    );
-    assert.ok(operatorIdentity?.kind === "principal");
-    // A committed reservation before native dispatch is a supported state after a lost connection.
-    // Use the real controller operation so ownership and its admission audit commit together.
-    const factory = new AuditEventFactory();
-    const automation = await fixture.controller.reserveAgentAutomation(
-      operatorIdentity.id,
-      {
-        namespaceId: namespace.id,
-        agentId: agent.id,
-        revisionId: context.revision.id,
-        nativeAgentId: "main",
-      },
-      (record: import("../../packages/contracts/src/index.ts").AgentAutomationOwnership) =>
-        factory.create({
-          installationId: fixture.controller.installation.id,
-          namespaceId: namespace.id,
-          actorId: operatorIdentity.id,
-          kind: "mutation",
-          action: "openclaw.agents.automations.create.admitted",
-          resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
-          details: { jobId: record.id, revisionId: context.revision.id },
-        }),
-    );
+    // The in-memory adapter cannot complete deployment work. An absent UUID lets this
+    // refusal case cover route authorization without inventing a completed runtime.
+    const automationId = randomUUID();
     // The real HTTP app, session admission and Native IAM run here. The upstream is only
     // a tripwire: this case proves refusal, never native scheduling or authority enforcement.
     const requests = [
       { method: "POST", path: base, body },
       { method: "GET", path: `${base}?offset=0&limit=100` },
-      { method: "GET", path: `${base}/${automation.id}` },
+      { method: "GET", path: `${base}/${automationId}` },
       {
         method: "PATCH",
-        path: `${base}/${automation.id}`,
+        path: `${base}/${automationId}`,
         body: { enabled: false, expectedConfigRevision: "observed" },
       },
-      { method: "DELETE", path: `${base}/${automation.id}?expectedConfigRevision=observed` },
-      { method: "GET", path: `${base}/${automation.id}/runs?offset=0&limit=50` },
+      { method: "DELETE", path: `${base}/${automationId}?expectedConfigRevision=observed` },
+      { method: "GET", path: `${base}/${automationId}/runs?offset=0&limit=50` },
     ] as const;
     const administrator = await createExactAgentAdministerSession(context, "automation-admin");
     for (const session of [context.session, ownOperator, administrator]) {
@@ -110,13 +84,22 @@ export const registerAgentAutomationAdmissionCase: RegisterNativeAdminCases = (
         });
         // Administration manages existing jobs; only operate admits creation under the human.
         const creationDenied = session === administrator && request.method === "POST";
+        let expectedStatus = 503;
+        let expectedCode = "AUTOMATIONS_UNQUALIFIED";
+        if (creationDenied) {
+          expectedStatus = 403;
+          expectedCode = "FORBIDDEN";
+        } else if (request.path.includes(automationId)) {
+          expectedStatus = 404;
+          expectedCode = "NOT_FOUND";
+        }
         const result = fixture.fixtureResponse(
           response,
-          creationDenied ? 403 : 503,
+          expectedStatus,
           ErrorResponse,
           request.method,
         );
-        assert.equal(result.error.code, creationDenied ? "FORBIDDEN" : "AUTOMATIONS_UNQUALIFIED");
+        assert.equal(result.error.code, expectedCode);
         if (creationDenied) {
           assert.match(result.error.message, /operate/);
         }
@@ -128,10 +111,10 @@ export const registerAgentAutomationAdmissionCase: RegisterNativeAdminCases = (
       { agent: ["operate"] },
       { kind: "agent", id: agent.id },
     );
-    for (const id of [automation.id, randomUUID()]) {
-      const hidden = await fixture.request("GET", `${base}/${id}`, { session: otherCreator });
-      assert.equal(hidden.status, 404, "foreign and absent ownership remain indistinguishable");
-    }
+    const hidden = await fixture.request("GET", `${base}/${automationId}`, {
+      session: otherCreator,
+    });
+    assert.equal(hidden.status, 404, "absent ownership remains hidden");
     const outsider = await createReadOnlySession(context, "automation-reader");
     for (const request of requests) {
       const denied = await fixture.request(request.method, request.path, {
@@ -143,7 +126,7 @@ export const registerAgentAutomationAdmissionCase: RegisterNativeAdminCases = (
     // Authority must be checked on the exact Agent, including deletion with a revision.
     const wrongAgent = await fixture.request(
       "DELETE",
-      `${base.replace(agent.id, `agt_${randomUUID()}`)}/${automation.id}?expectedConfigRevision=observed`,
+      `${base.replace(agent.id, `agt_${randomUUID()}`)}/${automationId}?expectedConfigRevision=observed`,
       { session: ownOperator },
     );
     assert.equal(wrongAgent.status, 403);
@@ -179,13 +162,13 @@ export const registerAgentAutomationAdmissionCase: RegisterNativeAdminCases = (
     }
     assert.equal(
       (
-        await fixture.request("PATCH", `${base}/${automation.id}`, {
+        await fixture.request("PATCH", `${base}/${automationId}`, {
           body: { expectedConfigRevision: "observed" },
         })
       ).status,
       400,
     );
-    assert.equal((await fixture.request("DELETE", `${base}/${automation.id}`)).status, 400);
+    assert.equal((await fixture.request("DELETE", `${base}/${automationId}`)).status, 400);
     assert.equal((await fixture.request("GET", `${base}?limit=101`)).status, 400);
     assert.equal(
       (

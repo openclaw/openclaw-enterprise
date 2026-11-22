@@ -9,6 +9,7 @@ import { runDocker } from "../helpers/runtime-image-docker.ts";
 import {
   assertDispatchReport,
   dispatchEffectsScript,
+  dispatchPeerEffectScript,
   prepareDispatchInputs,
   type DispatchProbe,
 } from "./automation-model-only-dispatch-inputs.ts";
@@ -17,6 +18,7 @@ export async function runEmbeddedAutomationDispatchProbe(
   t: TestContext,
   image: string,
   probe: DispatchProbe = "write",
+  nonemptyCap = false,
 ) {
   const nonce = randomUUID();
   const name = `oce-supplemental-dispatch-openclaw-${nonce}`;
@@ -34,7 +36,7 @@ export async function runEmbeddedAutomationDispatchProbe(
     // Retain mounted input if Docker cleanup fails; never hide a running container.
     await rm(directory, { recursive: true, force: true });
   });
-  await prepareDispatchInputs(directory, { nonce, harness: "openclaw", probe });
+  await prepareDispatchInputs(directory, { nonce, harness: "openclaw", probe, nonemptyCap });
   await runDocker([
     "run",
     "--detach",
@@ -88,7 +90,11 @@ export async function runEmbeddedAutomationDispatchProbe(
   } finally {
     await logs.stop();
   }
-  assertDispatchReport(report, "openclaw", probe);
+  assertDispatchReport(report, "openclaw", probe, nonemptyCap);
+  if (nonemptyCap) {
+    const peer = await runDocker(["exec", name, "node", "-e", dispatchPeerEffectScript, nonce]);
+    assert.deepEqual(JSON.parse(peer.stdout), { peerEffectAbsent: true }, JSON.stringify(report));
+  }
   if (probe === "write") {
     const effects = await runDocker([
       "exec",

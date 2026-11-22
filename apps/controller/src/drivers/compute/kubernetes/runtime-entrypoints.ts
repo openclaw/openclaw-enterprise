@@ -6,6 +6,7 @@ import {
 } from "../../sandbox/openshell-plugin-runtime.ts";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
+import { AGENT_AUTOMATION_ORIGIN_GUARD } from "../agent-automation-guard.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import {
   EXITED_OPENCLAW_STATE_RELEASE,
@@ -2617,11 +2618,15 @@ function publishAgentPluginSkillPath() {
 
 export const GATEWAY_RUNTIME_ENTRYPOINT = gatewayRuntimeEntrypoint(false);
 
-export function gatewayRuntimeEntrypoint(managedMode: boolean): string {
+export function gatewayRuntimeEntrypoint(
+  managedMode: boolean,
+  automationGuardBinding?: string,
+): string {
   return String.raw`
 const { accessSync, constants: fsConstants, mkdirSync, rmSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const { spawn } = require("node:child_process");
+${automationGuardBinding ? `const AUTOMATION_POLICY_BINDING = ${JSON.stringify(automationGuardBinding)};\n${AGENT_AUTOMATION_ORIGIN_GUARD}` : ""}
 
 // OCE upgrades this runtime by rolling out a selected image.
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
@@ -3534,10 +3539,12 @@ function holdGatewayStartupFailure(error) {
 }
 
 function startGatewayProcess() {
+  const childEnvironment = { ...gatewayEnvironment(), ...${gatewayManagedModeEnvironment(managedMode)}, ...${gatewayNodeOptionsEnvironment()}${automationGuardBinding ? ', OPENCLAW_DISABLE_BUNDLED_SOURCE_OVERLAYS: "1"' : ""} };
+  ${automationGuardBinding ? "assertCleanAutomationOrigins(childEnvironment);" : ""}
   const spawned = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-    { stdio: "inherit", env: { ...gatewayEnvironment(), ...${gatewayManagedModeEnvironment(managedMode)}, ...${gatewayNodeOptionsEnvironment()} } },
+    { stdio: "inherit", env: childEnvironment },
   );
   child = spawned;
   childRunning = true;
