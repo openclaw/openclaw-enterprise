@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type RequestListener } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -24,10 +24,15 @@ import {
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.ts";
 import {
+  failureSecrets,
+  redactOutputLines,
+  redactedTail,
+} from "../../scripts/ci/failure-redaction.ts";
+import {
   assertAbsent,
   cutCredentials,
   cutOffsets,
-  multiLineCredentials,
+  keyBody,
   registeredCutSecret,
 } from "../fixtures/cut-credentials.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
@@ -682,34 +687,55 @@ test("cluster events print oldest to newest by observed instant, whatever field 
   ]);
 });
 
-// Output whose last `limit` characters start `offset` characters into `text`, followed by every
-// fixture credential uncut and by plain filler that fills the window.
-function cutOutput(text: string, offset: number, limit: number) {
-  const whole = cutCredentials.map((credential) => `uncut ${credential.text}`).join("\n");
-  const rest = `${text.slice(offset)} end\n${whole}\n`;
-  const filler = "filler ".repeat(Math.ceil(limit / 7)).slice(0, limit - rest.length - 1);
-  return `earlier line\nfixture prefix ${text.slice(0, offset)}${rest}${filler}\n`;
-}
+// Every fixture credential whole on its own line, between plain lines.
+const fixtureEnv = { OCE_SMOKE_FIXTURE_REGISTERED: registeredCutSecret };
+const credentialOutput = [
+  "plain first line",
+  ...cutCredentials.map((credential) => `fixture ${credential.text}`),
+  "plain last line",
+].join("\n");
 
-// The First Agent Smoke prints these tails to the public job log. Each must mask a credential
-// whole and must not show the piece left where the tail starts inside one.
-async function assertTailsRedacted(
-  t: TestContext,
-  limit: number,
-  shown: (output: string) => Promise<string>,
-) {
-  setEnvironment(t, { OCE_SMOKE_FIXTURE_REGISTERED: registeredCutSecret });
+function assertNoCredential(shown: string, label: string) {
   for (const credential of cutCredentials) {
-    for (const offset of cutOffsets(credential.text)) {
-      const text = await shown(cutOutput(credential.text, offset, limit));
-      const label = `${credential.name} cut ${offset} in`;
-      assert.match(text, /filler filler/u, `${label} keeps the rest of the tail`);
-      for (const value of cutCredentials) {
-        assertAbsent(text, value.secret, `${label}: ${value.name}`);
-      }
-    }
+    assertAbsent(shown, credential.secret, `${label}: ${credential.name}`);
   }
 }
+
+test("a redacted tail keeps whole lines, so a credential the budget cuts is not shown", () => {
+  const secrets = failureSecrets([fixtureEnv]);
+  const after = Array.from({ length: 40 }, (_, index) => `after ${index}`).join("\n");
+  // Input that is itself a tail can start inside a key: an END line with no BEGIN above it.
+  const keyEnd = keyBody.at(-1)!;
+  const credentials = [
+    ...cutCredentials,
+    { name: "a key's last lines", text: `${keyEnd}\n-----END PRIVATE KEY-----`, secret: keyEnd },
+  ];
+  for (const credential of credentials) {
+    const text = `earlier\nfixture ${credential.text}\n${after}`;
+    // Budgets that end inside the credential, as a cut of the raw text there would.
+    for (const offset of cutOffsets(credential.text)) {
+      const budget = credential.text.length - offset + 1 + after.length;
+      const shown = redactedTail(text, budget, secrets);
+      assertAbsent(shown, credential.secret, `${credential.name} cut ${offset} in`);
+      assert.ok(`\n${shown}`.endsWith(`\n${after}`), `${credential.name} keeps the rest`);
+    }
+    // Output that fits is shown whole, line for line as a failed file's output is.
+    assert.equal(
+      redactedTail(text, 10_000, secrets),
+      redactOutputLines(text.split("\n"), secrets, "", 10_000).join("\n"),
+    );
+  }
+});
+
+test("a redacted tail cuts a newest line longer than the budget after redacting it", () => {
+  const line = `fixture ${"filler ".repeat(20)}${registeredCutSecret} ${"filler ".repeat(20)}`;
+  for (const text of [line, `${line}\n`]) {
+    assert.match(
+      redactedTail(text, 200, failureSecrets([fixtureEnv])),
+      /^fixture filler .*\[env:OCE_SMOKE_FIXTURE_REGISTERED\] filler .*\.\.\. \[truncated\]$/u,
+    );
+  }
+});
 
 // Calls a smoke module's function in a new Node process, as the CI step does, and returns what
 // it wrote to the job log.
@@ -727,175 +753,59 @@ async function smokeStdout(module: string, call: string, env: NodeJS.ProcessEnv 
   return stdout;
 }
 
-// The error message of a command that writes `output` to stderr and fails.
-async function failedRunMessage(output: string) {
-  const failure = await run(
+test("a failed command's error message shows its stderr redacted", async (t) => {
+  setEnvironment(t, fixtureEnv);
+  const message = await run(
     process.execPath,
     ["-e", "process.stderr.write(require('node:fs').readFileSync(0, 'utf8')); process.exit(3)"],
-    { input: output },
+    { input: credentialOutput },
   ).then(
     () => assert.fail("the command must fail"),
-    (error: unknown) => error as Error,
+    (error: unknown) => (error as Error).message,
   );
-  assert.match(failure.message, /exited 3\n/u);
-  return failure.message;
-}
-
-test("a failed command's error message redacts its stderr tail from a whole line", async (t) => {
-  await assertTailsRedacted(t, 4_000, failedRunMessage);
+  assert.match(message, /exited 3\nplain first line\n[^]*\nplain last line$/u);
+  assertNoCredential(message, "error message");
 });
 
-test("a cut stderr tail with no whole line left prints a marker instead", async () => {
-  // One line longer than the 4,000-character tail, with and without a final line break. All
-  // that is left after the cut is part of that line, which is dropped, so the reader must see
-  // why the block is empty. The marker is fixed text: nothing of the output is in it.
-  const line = `fixture prefix ${"filler ".repeat(600)}${cutCredentials
-    .filter((credential) => !credential.text.includes("\n"))
-    .map((credential) => credential.text)
-    .join(" ")}`;
-  for (const output of [line, `${line}\n`]) {
-    const message = await failedRunMessage(output);
-    assert.equal(
-      message.slice(message.indexOf("exited 3\n") + "exited 3\n".length),
-      "[diagnostics: output cut at 4000 characters; first line dropped]",
-    );
-  }
-});
-
-test("a cut stderr tail of only structured supervisor events prints the marker", async () => {
-  // Each such line prints empty, so a cut tail of them alone would be a run of blank lines.
-  const event = `OCSF-JSON {"n":"${"e".repeat(80)}"}`;
-  const events = Array.from({ length: 60 }, (_, index) => `${index} ${event}`);
-  const shown = async (output: string) => {
-    const message = await failedRunMessage(output);
-    return message.slice(message.indexOf("exited 3\n") + "exited 3\n".length);
-  };
-  assert.equal(
-    await shown(events.join("\n")),
-    "[diagnostics: output cut at 4000 characters; first line dropped]",
-  );
-  // An uncut block keeps its blank lines.
-  assert.equal(await shown(events.slice(0, 3).join("\n")), "\n\n");
-});
-
-test("a cut stderr tail masks a key with no END whose header is whole on the cut line", async () => {
-  // The cut falls in the log prefix before the header: only redacting before the cut line is
-  // dropped masks the body, since that line holds the header that starts the key.
-  const key = multiLineCredentials.find(({ name }) => name === "a private key block with no END")!;
-  const line = `2026-11-21T08:00:00Z gateway ${key.text}`;
-  for (const offset of [1, line.indexOf("-----BEGIN") - 1]) {
-    const after = "after the key\n".repeat(300).slice(0, 4_000 - (line.length - offset) - 1);
-    const message = await failedRunMessage(`earlier line\n${line}\n${after}`);
-    for (const secret of key.secrets) {
-      assertAbsent(message, secret, `cut ${offset} in`);
-    }
-  }
-});
-
-test("diagnostics redact command output in the job log from a whole line", async (t) => {
+test("diagnostics print command output, read errors and stopped gateway logs redacted", async (t) => {
+  setEnvironment(t, fixtureEnv);
   const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-diagnostics-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const output = join(directory, "output");
-  // The stand-in provider's `docker logs` is the read diagnostics makes before any cluster exists.
-  await writeCommand(
-    directory,
-    "docker",
-    `process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(output)}, "utf8"));`,
-    { interpreter: process.execPath },
-  );
-  await assertTailsRedacted(t, 20_000, async (text) => {
-    await writeFile(output, text);
-    const printed = await smokeStdout("reader.ts", "diagnostics(undefined)", {
-      ...process.env,
-      PATH: commandPath(directory),
-    });
-    assert.match(printed, /----- stand-in provider events\n/u);
-    return printed;
+  const output = JSON.stringify(credentialOutput);
+  // `docker logs` prints the output, every kubectl read fails, and each Agent read through the
+  // CLI fails with the output as its error, thrown when the stack's origin is read.
+  await writeCommand(directory, "docker", `process.stdout.write(${output});`, {
+    interpreter: process.execPath,
   });
+  await writeCommand(directory, "kubectl", "exit 1");
+  const stack = `{
+    kubeconfig: "missing",
+    context: "missing",
+    namespaceId: "ns_missing",
+    state: { platformNamespace: "missing" },
+    api: async () => { throw new Error("no API"); },
+    get origin() { throw new Error(${output}); },
+    agents: [{ id: "agent_fixture", label: "fixture", stoppedGatewayLogs: [${output}] }],
+  }`;
+  const printed = await smokeStdout("reader.ts", `diagnostics(${stack})`, {
+    ...process.env,
+    PATH: commandPath(directory),
+  });
+  assert.match(printed, /\n----- stand-in provider events\nplain first line\n/u);
+  assert.match(printed, /\n----- fixture gateway logs unavailable: [^]*\nplain last line\n/u);
+  assert.match(printed, /\n----- fixture stopped gateway 1 logs\nplain first line\n/u);
+  assertNoCredential(printed, "diagnostics");
 });
 
-test("the cluster watch log after a failed setup is redacted from a whole line", async (t) => {
+test("the cluster watch log printed after a failed setup is redacted", async (t) => {
+  setEnvironment(t, fixtureEnv);
   const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-watch-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const log = join(directory, "cluster-watch.log");
-  await assertTailsRedacted(t, 60_000, async (text) => {
-    await writeFile(log, text);
-    return smokeStdout("setup.ts", `printWatchLog(${JSON.stringify(log)})`);
-  });
-});
-
-test("diagnostics redact the logs kept from a stopped gateway", async (t) => {
-  setEnvironment(t, { OCE_SMOKE_FIXTURE_REGISTERED: registeredCutSecret });
-  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-stopped-gateway-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  // With no cluster, every other read diagnostics makes fails at once and is reported as
-  // unavailable; the kept log is printed from the Agent record the stop filled.
-  await writeCommand(directory, "docker", "exit 1");
-  await writeCommand(directory, "kubectl", "exit 1");
-  const kept = join(directory, "stopped-gateway.log");
-  // The log follower keeps whole lines, so each credential starts on its own line.
-  await writeFile(
-    kept,
-    [
-      "gateway started",
-      ...cutCredentials.map((credential) => `gateway ${credential.text}`),
-      "gateway shutdown completed cleanly in 12ms",
-    ].join("\n"),
-  );
-  const stack = `{
-    kubeconfig: "missing",
-    context: "missing",
-    namespaceId: "ns_missing",
-    state: { platformNamespace: "missing" },
-    api: async () => { throw new Error("no API"); },
-    agents: [{
-      id: "agent_missing",
-      label: "fixture",
-      stoppedGatewayLogs: [await (await import("node:fs/promises")).readFile(${JSON.stringify(kept)}, "utf8")],
-    }],
-  }`;
-  const printed = await smokeStdout("reader.ts", `diagnostics(${stack})`, {
-    ...process.env,
-    PATH: commandPath(directory),
-  });
-  assert.match(printed, /----- fixture stopped gateway 1 logs\ngateway started\n/u);
-  assert.match(printed, /\ngateway shutdown completed cleanly in 12ms\n/u);
-  for (const value of cutCredentials) {
-    assertAbsent(printed, value.secret, `stopped gateway logs: ${value.name}`);
-  }
-});
-
-test("a failed diagnostics read prints its error redacted before the 500-character cut", async (t) => {
-  setEnvironment(t, { OCE_SMOKE_FIXTURE_REGISTERED: registeredCutSecret });
-  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-read-error-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  await writeCommand(directory, "docker", "exit 1");
-  await writeCommand(directory, "kubectl", "exit 1");
-  // Each fixture credential whole in an error message, with the cut at 500 characters inside it.
-  const messages = cutCredentials.flatMap((credential) =>
-    cutOffsets(credential.text).map(
-      (offset) => `${"filler ".repeat(80).slice(offset - 500)}${credential.text} end`,
-    ),
-  );
-  // Each Agent makes three reads through the CLI; reading the stack's origin throws the next one.
-  const stack = `{
-    kubeconfig: "missing",
-    context: "missing",
-    namespaceId: "ns_missing",
-    state: { platformNamespace: "missing" },
-    api: async () => { throw new Error("no API"); },
-    messages: ${JSON.stringify(messages)},
-    get origin() { throw new Error(this.messages.shift()); },
-    agents: Array.from({ length: ${messages.length / 3} }, (_, i) => ({ id: "agent_" + i, label: "fixture" })),
-  }`;
-  const printed = await smokeStdout("reader.ts", `diagnostics(${stack})`, {
-    ...process.env,
-    PATH: commandPath(directory),
-  });
-  assert.equal(printed.match(/^----- fixture [a-z ]+ unavailable: /gmu)?.length, messages.length);
-  for (const value of cutCredentials) {
-    assertAbsent(printed, value.secret, `failed read: ${value.name}`);
-  }
+  await writeFile(log, credentialOutput);
+  const printed = await smokeStdout("setup.ts", `printWatchLog(${JSON.stringify(log)})`);
+  assert.match(printed, /^----- cluster watch \(last 60000 bytes\)\nplain first line\n/u);
+  assertNoCredential(printed, "cluster watch");
 });
 
 registerImageCases();

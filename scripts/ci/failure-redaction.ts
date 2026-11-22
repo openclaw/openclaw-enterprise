@@ -503,22 +503,21 @@ export function redactOutputLines(
   return maskPrivateKeyLines(lines).map((line) => redactOutputLine(line, secrets, root, limit));
 }
 
-// Whole lines of a command's output, for a log anyone who can read the run may see, redacted
-// as a failed file's output is.
-export function redactedOutput(text: string, secrets: RedactionSecrets) {
-  return redactOutputLines(text.split("\n"), secrets, "", failureInputLimit).join("\n");
-}
-
-// The last `limit` characters of a command's output, redacted as redactedOutput does. When the
-// output was longer, the first line of the redacted text is dropped, since it holds what is left
-// of the cut one; a fixed marker says so when nothing but blank lines is left after it.
-export function redactedOutputTail(text: string, limit: number, secrets: RedactionSecrets) {
-  const cut = text.length > limit;
-  const shown = withoutCutLine(redactedOutput(text.slice(-limit), secrets), cut);
-  if (cut && shown.trim() === "") {
-    return `[diagnostics: output cut at ${limit} characters; first line dropped]`;
+// The newest whole lines of a command's output that fit in `budget` characters, each redacted as
+// a failed file's output is, with private keys masked across all of `text` first. The newest
+// line is always kept, cut after redaction when it alone is over `budget`.
+export function redactedTail(text: string, budget: number, secrets: RedactionSecrets) {
+  const kept: string[] = [];
+  let length = 0;
+  for (const line of maskPrivateKeyLines(text.trimEnd().split("\n")).reverse()) {
+    const shown = redactOutputLine(line, secrets, "", budget);
+    if (kept.length > 0 && length + shown.length > budget) {
+      break;
+    }
+    kept.push(shown);
+    length += shown.length + 1;
   }
-  return shown;
+  return kept.reverse().join("\n");
 }
 
 // One line of a failed file's output for the diagnostics report.
