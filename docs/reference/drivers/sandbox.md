@@ -36,24 +36,35 @@ The [exported interface](../../../packages/contracts/src/drivers/sandbox/index.t
 
 ### Harness mode support
 
-`supportsHarnessExecutionMode.openclaw` declares `embedded` and `dedicated` as `{ supported: true }` or `{ supported: false, reason?: string }`. In the constructor, freeze the support object, its `openclaw` object, and both entries. Registration checks shape and immutability.
+`supportsHarnessExecutionMode.openclaw` has `embedded` and `dedicated` entries.
+Each `HarnessExecutionModeSupport` value is either `{ supported: true }` or
+`{ supported: false, reason?: string }`. Set these values in the Driver constructor.
+Use `Object.freeze` for the support object, its `openclaw` object, and both mode
+entries. Registration checks their shape and read-only state.
 
-For Installation-setting refusals, `reason` names settings and corrective actions. OCC uses it in `openclaw.settingRefusals` and admission, or supplies a standard message if absent.
+Use `reason` for refusals caused by Installation settings. Limit the message to
+setting names and corrective actions. OCC reports it in `openclaw.settingRefusals`
+and uses the same message during admission. OCC supplies a standard refusal
+message when `reason` is absent.
 
-Installation reads also check native-worker and provisioning requirements. Sandboxes require Dedicated execution. Agent save, deployment, and provisioning writes check support before transforming Configuration values; provisioning status returns stored work. OCC validates the Configuration input, rejects a different Harness, and stores the result in the revision. Reconstruct after Installation settings change.
+Installation reads combine this declaration with native-worker support and
+provisioning requirements. A selected Sandbox still requires Dedicated execution.
+Agent save, deployment, and provisioning writes check support before transforming
+Configuration values. Provisioning status reads return stored work.
+The Configuration resource supplies the input; OCC stores the validated result in
+the Agent revision. OCC rejects a result that selects a different Harness.
+Construct a new Driver after changing Installation settings.
 
 ### Methods
 
 | Method                                       | Requirement           | Caller and behavior                                                                                                                                                                                                                                       |
 | -------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cleanup`                                    | Required              | Compute calls it with the Agent revision on Stop or retirement. Namespace cleanup omits the revision.                                                                                                                                                     |
-| `configureAgent`                             | Optional              | Synchronously transform Configuration values for the resolved Harness. OCC validates the result and stores it in the Agent revision. OCC uses the original values by default.                                                                             |
+| `cleanup`                                    | Required              | Stop or retire an Agent revision, or clean a Namespace when the revision is omitted.                                                                                                                                                                      |
+| `configureAgent`                             | Optional              | Synchronously transform the resolved Harness's Configuration values. OCC validates and stores the result in the Agent revision. Original values apply by default.                                                                                         |
 | `validateWorkspaceSetup`                     | Optional              | Synchronously checks the projected configuration. Without it, Compute rejects initial workspace files in a Sandbox. Compute still checks storage and workload identity.                                                                                   |
-| `ensureNamespace`                            | Optional              | After Compute applies baseline Namespace isolation, OCC calls it to prepare the backend.                                                                                                                                                                  |
-| `provisionHarness`                           | Optional              | Compute calls it to create a provider-owned dedicated Harness and return its [resource identity](#sandbox-resource-identity).                                                                                                                             |
-| `provisionStagedHarness`                     | Optional              | Compute calls it to create an idle Sandbox for managed credential delivery.                                                                                                                                                                               |
-| `prepareStagedHarness`                       | Optional              | Compute calls it after policy readiness to prepare the Harness launch inputs.                                                                                                                                                                             |
-| `activateStagedHarness`                      | Optional              | Compute calls it after authorization to start the prepared Harness.                                                                                                                                                                                       |
+| `ensureNamespace`                            | Optional              | Prepare the backend after baseline Namespace isolation through the OCC Namespace lifecycle.                                                                                                                                                               |
+| `provisionHarness`                           | Optional              | Create a dedicated Harness and return its [resource identity](#sandbox-resource-identity). Required for a non-staged provider-owned Harness.                                                                                                              |
+| `provisionStagedHarness`                     | Optional              | Provision an idle target. `prepareStagedHarness` prepares launch inputs after policy readiness; `activateStagedHarness` starts the Harness. All three are required for staged deployment.                                                                 |
 | `harnessEndpoint`, `harnessStatus`           | Optional              | Compute calls `harnessEndpoint` for the transport and `harnessStatus` to check startup. See [Sandbox-provided Harness transport](#harness-transport).                                                                                                     |
 | `withdrawHarnessExposure`                    | Optional              | Remove the temporary Harness status endpoint after the dedicated worker's workspace node enrolls.                                                                                                                                                         |
 | `enrollHarness`                              | Optional              | Binds the verified installation to the Harness before Compute releases startup. Protected egress needs this method plus `provisionHarness`, `harnessEndpoint`, and `harnessStatus`.                                                                       |
@@ -67,8 +78,6 @@ Installation reads also check native-worker and provisioning requirements. Sandb
 | `admitProtectedCodexArtifactPolicy`          | Composition-dependent | Qualifies declared credential-free artifact rules for protected, dedicated Codex repository execution. It acknowledges the purpose and exact rule-name subset; omission refuses this composition.                                                         |
 | `observeNetworkPolicy`, `applyNetworkPolicy` | Optional              | Read provider state or apply the snapshot against the expected version. Declaring live policy support without both methods fails startup.                                                                                                                 |
 | `readPolicyRecommendations`                  | Optional              | Return provider suggestions for review.                                                                                                                                                                                                                   |
-
-Managed delivery requires all three staged Harness methods.
 
 Protected artifact admission returns `purpose: protected-codex-artifacts`,
 `declaredRuleNames` and a `SandboxPolicySnapshot`. OCC verifies Driver identity,
