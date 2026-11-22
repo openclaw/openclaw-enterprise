@@ -17,6 +17,7 @@ if (target.protocol !== "http:") {
   process.exit(1);
 }
 const upstreamTimeoutMs = 30_000;
+const upstreamReuseHeader = "x-oce-rehearsal-upstream-reused";
 
 // Only this owned fixture mounts /operator. A restarted proxy always starts closed.
 const gate = "/operator/signin-gate";
@@ -35,7 +36,11 @@ function admitted(suffix = "") {
 
 function proxyHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   const forwarded = /^(?:forwarded|x-real-ip|x-forwarded-.+)$/i;
-  return Object.fromEntries(Object.entries(headers).filter(([name]) => !forwarded.test(name)));
+  return Object.fromEntries(
+    Object.entries(headers).filter(
+      ([name]) => name !== upstreamReuseHeader && !forwarded.test(name),
+    ),
+  );
 }
 
 function proxyPath(url: IncomingMessage["url"]): string {
@@ -70,7 +75,11 @@ createServer(
         headers: proxyHeaders(headers),
       },
       (response) => {
-        outgoing.writeHead(response.statusCode ?? 502, proxyHeaders(response.headers));
+        const headers = proxyHeaders(response.headers);
+        if (method === "GET" && url === "/installation" && response.statusCode === 200) {
+          headers[upstreamReuseHeader] = upstream.reusedSocket ? "1" : "0";
+        }
+        outgoing.writeHead(response.statusCode ?? 502, headers);
         response.pipe(outgoing);
       },
     );

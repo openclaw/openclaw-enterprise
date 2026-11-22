@@ -97,6 +97,7 @@ type AgentDetailScenario = {
   cleanupCompletes?: true;
   bootstrapRuntime?: true;
   harness?: AgentRuntimeHarnessStatus;
+  harnessAfterFirstRead?: AgentRuntimeHarnessStatus;
   agentName?: string;
   mobile?: true;
   clipboard?: "unavailable";
@@ -316,7 +317,8 @@ export function createAgentDetailScenarios({
         description:
           "Submit requested overrides and inspect the resolved settings after deployment.",
         steps: [
-          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy and inspect requested and resolved settings.",
+          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy.",
+          "In Configuration snapshot, expand View overrides and View settings. Compare the destinations in the two JSON documents.",
         ],
         gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
       },
@@ -432,6 +434,7 @@ export function createAgentDetailScenarios({
           "The permission answer denies Configuration update, so a version's Configuration tab offers Open draft instead of Edit current Configuration. The draft it opens shows the saved JSON with no editor. The API still decides.",
         steps: [
           "Find Open draft below the Configuration snapshot, and no Edit current Configuration.",
+          "Choose Draft repositories beside the snapshot heading. Check that the Repositories tab opens read-only. Use Back and check that Draft repositories has focus.",
           "Choose Open draft: the draft opens read-only, with no Edit Configuration button.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -448,6 +451,7 @@ export function createAgentDetailScenarios({
           "Choose Copy Agent ID. When the copy succeeds, “Copied” appears for two seconds. Otherwise, the entire ID is selected and “Copy selection” appears.",
           "Focus Open draft, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
           "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
+          "Beside Configuration snapshot, choose Draft credentials. Check that Credentials has focus and the draft shows the authentication source. Use Back and check that Draft credentials has focus on the snapshot. Repeat with Draft repositories.",
           "Choose Open draft to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
         ],
         nextStory: "authSaveHoldsNavigation",
@@ -1940,7 +1944,7 @@ export function createAgentDetailScenarios({
       sandboxLost: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox lost",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "lost", code: "SANDBOX_STOPPED" },
         description:
@@ -1954,16 +1958,23 @@ export function createAgentDetailScenarios({
       sandboxRunning: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox running",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "running" },
+        harnessAfterFirstRead: { state: "lost", code: "SANDBOX_STOPPED" },
         description:
-          "A healthy Sandbox carries no warning: Live serving stays Not verified, with Sandbox running under it.",
+          "Returning to the Agent refreshes the Sandbox record for the same active version.",
+        steps: [
+          "Confirm Live serving shows Not verified with Sandbox running below it.",
+          "Switch to another window and return without reloading the story.",
+          "Confirm the same Agent and version show Sandbox lost and Deploy a new version.",
+        ],
+        gap: "The Sandbox records are simulated.",
       },
       sandboxStatusUnknown: {
         group: "Pages/Agent detail",
         name: "Sandbox status unknown",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "unknown", code: "UNAVAILABLE" },
         description:

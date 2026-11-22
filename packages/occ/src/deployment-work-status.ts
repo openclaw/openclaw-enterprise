@@ -440,6 +440,10 @@ function deploymentErrorMessage(code: string, agentId: string): string {
       return "The repository credential Driver reported a session in a form the controller rejects, so it stopped the deployment. Check this version's logs, then deploy a new version; if it fails again, ask an operator to check the repository credential Driver.";
     case "INVALID_REPOSITORY_ATTEMPT_OWNER":
       return "A repository session stored for this version does not match the repository access it binds, so the controller stopped the deployment. Its runtime logs cannot show why: ask an Installation administrator to check the controller worker log.";
+    case "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE":
+      return "This Agent has deployment history without a repository network policy. Save the policy for a new Agent before its first deployment.";
+    case "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED":
+      return "The selected execution placement cannot enforce this version's repository network policy. Ask an Installation administrator for a placement that supports the policy, then deploy again.";
     case "REPOSITORY_PROXY_ADMISSION_MISMATCH":
       return "This version's repository access no longer matches the Credential Proxy delivery it was admitted with. Deploy again to admit a version with the current repository access.";
     case "REPOSITORY_PREPARED_ADMISSION_UNAVAILABLE":

@@ -452,6 +452,58 @@ cases.revisionTest(
     );
     assert.deepEqual(successorRevisions.rows, []);
     assert.deepEqual(successorWork.rows, []);
+
+    // A new Agent can save repository restrictions before its first deployment, but
+    // standalone credential admission cannot claim it can enforce those restrictions.
+    const scopedConfiguration = await controller.createConfiguration(actorId, {
+      namespaceId,
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+    });
+    const scopedOwner = await controller.createAgent(
+      actorId,
+      {
+        namespaceId,
+        name: `Scoped activation ${randomUUID()}`,
+        configurationId: scopedConfiguration.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: source.id },
+        credentialSources: [{ sourceId: source.id }],
+      },
+      resolveApprovedHarness,
+    );
+    await fixture.state.transact(async (unit) => {
+      await unit.namespaces.lockNamespace(namespaceId);
+      await unit.agents.lockAgent(namespaceId, scopedOwner.id);
+      const current = await unit.sandboxPolicies.find(namespaceId, scopedOwner.id);
+      assert.ok(current);
+      assert.ok(
+        await unit.sandboxPolicies.save(
+          { ...current, version: current.version + 1, repositoryNetworkPolicy: [] },
+          current.version,
+        ),
+      );
+    });
+    await assert.rejects(
+      controller.deployAgent(
+        actorId,
+        { namespaceId, agentId: scopedOwner.id },
+        resolveApprovedHarness,
+      ),
+      (error: unknown) =>
+        error instanceof ResourceStateConflictError &&
+        /saved repository network policy/.test(error.message),
+    );
+    const scopedRevisions = await fixture.observerPool.query(
+      "SELECT id FROM occ.agent_revisions WHERE namespace_id=$1 AND agent_id=$2",
+      [namespaceId, scopedOwner.id],
+    );
+    const scopedWork = await fixture.observerPool.query(
+      "SELECT idempotency_key FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2",
+      [namespaceId, scopedOwner.id],
+    );
+    assert.deepEqual(scopedRevisions.rows, []);
+    assert.deepEqual(scopedWork.rows, []);
   },
 );
 
