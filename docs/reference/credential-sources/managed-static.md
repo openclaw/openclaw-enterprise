@@ -21,6 +21,8 @@ If the private-store write cannot be confirmed, registration can fail while leav
 
 ## Deploy an Agent with the source
 
+Before starting, select OCC TokenService and an OpenShell Sandbox registration that also exposes `credential_proxy_delivery`; see [supported Driver selections](../drivers/selection.md#supported-selections). Selecting legacy `drivers.credential_proxy` makes the policy PUT below return `409`; omit that selection. This path admits exactly one Source and no repository credentials.
+
 1. Create a same-Namespace [Agent Configuration](../configuration.md) with `kind: "agent"`. Configure its model and explicit inference endpoint. For this example, use provider `openai`, protocol `openai-responses`, and base URL `https://api.openai.com/v1`.
 2. [Create the Agent](../agents.md#supported-operations) with `POST /namespaces/:namespaceId/agents`, using that Configuration and dedicated execution. The current API requires the Source in both fields; [the intended flow](../credential-sources.md#intended-credential-flow) selects it once:
 
@@ -34,7 +36,7 @@ If the private-store write cannot be confirmed, registration can fail while leav
    }
    ```
 
-3. Grant the Agent service principal `credential_source:operate` on that Source. The deploying caller also needs that permission and `agent:deploy`.
+3. The deploying caller needs `agent:deploy` and `credential_source:operate` on the Source. With OCC-managed transactional Native IAM, deployment creates a missing exact Agent service-principal grant when the caller can operate the Source. Otherwise, grant the Agent service principal `credential_source:operate` before deployment.
 4. Save the Agent's Sandbox networking policy. Enabling editing requires Installation and Agent `administer`; reading requires Agent and SandboxPolicy `read`; saving requires Agent `manage_policy` and SandboxPolicy `update`. See [policy authority](../sandbox-policies.md#authority-and-admission). Send `PATCH /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking/editing` with `{ "enabled": true }`. Send `GET /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking` and use `data.policy.version` as `expectedVersion` in `PUT /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking`. For example, if the current version is `1`:
 
    ```json
