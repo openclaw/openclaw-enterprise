@@ -1,3 +1,5 @@
+import { driverOperation } from "./driver-operation.ts";
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   isSourceProviderPresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
@@ -9,7 +11,6 @@ import {
   type EgressRef,
   type Namespace,
   type OAuthRefreshTokenIssuer,
-  type ResourceRef,
   type SourceProviderPresetId,
   type SourceRegistrationInput,
   type SourceUpdate,
@@ -93,24 +94,16 @@ interface ManagedCredentialSourceDependencies {
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
   readonly sourceDrivers: Pick<
     CredentialSourceDrivers,
-    "credentialNamespace" | "credentialSourceOwner" | "refreshDriverForSource"
+    | "credentialNamespace"
+    | "assertCredentialSourceOwnerSelected"
+    | "credentialSourceOwner"
+    | "refreshDriverForSource"
   >;
-  readonly assertCredentialSourceOwnerSelected: () => void;
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    resource: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
-  readonly lockNamespaceForPolicyDelete: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    resource: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<Readonly<Namespace>>;
+  readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
   readonly clock: () => Date;
   readonly timestamp: () => string;
   readonly tokenServiceTimeoutMs: number;
-  readonly driverOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly connectionTokenIssuer: () => Pick<OAuthRefreshTokenIssuer, "retire">;
   readonly preparedIssuer: (ref: EgressRef) => NonNullable<ReturnType<TokenService["issuer"]>>;
 }
@@ -203,17 +196,19 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       input.providerPreset === undefined
         ? {}
         : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: input.providerPreset };
-    const created = await dependencies.driverOperation(() =>
-      owner.createSource(
-        {
-          namespaceId,
-          name: input.name,
-          lifecycleConfig: input.lifecycleConfig,
-          secret: input.secret,
-          config,
-        },
-        AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
-      ),
+    const created = await driverOperation(
+      () =>
+        owner.createSource(
+          {
+            namespaceId,
+            name: input.name,
+            lifecycleConfig: input.lifecycleConfig,
+            secret: input.secret,
+            config,
+          },
+          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+        ),
+      "TokenService",
     );
     if (
       !isManagedTokenServiceSource(created) ||
@@ -231,7 +226,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
     }
     return dependencies.transactions.transact(async (state) => {
       const ref = credentialSourceRef(created);
-      await dependencies.bindCreator(state, principalId, ref);
+      await dependencies.iamPolicy.bindCreator(state, principalId, ref);
       const completed = audit(ref);
       await state.audit.append(
         input.providerPreset === undefined
@@ -352,12 +347,14 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       );
     }
     try {
-      const updated = await dependencies.driverOperation(() =>
-        owner.updateSource(
-          { sourceRef: resource, tokenServiceInstanceId: source.tokenServiceInstanceId },
-          update,
-          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
-        ),
+      const updated = await driverOperation(
+        () =>
+          owner.updateSource(
+            { sourceRef: resource, tokenServiceInstanceId: source.tokenServiceInstanceId },
+            update,
+            AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+          ),
+        "TokenService",
       );
       if (
         !isManagedTokenServiceSource(updated) ||
@@ -406,7 +403,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         const locked =
           connection === pendingConnection
             ? await lockNamespace(state, namespaceId)
-            : await dependencies.lockNamespaceForPolicyDelete(state, principalId, {
+            : await dependencies.iamPolicy.lockNamespaceForPolicyDelete(state, principalId, {
                 kind: "credential_source",
                 id: credentialSourceId,
                 namespaceId,
@@ -425,7 +422,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           );
         }
         if (found.ownerCapability !== "token_service") {
-          dependencies.assertCredentialSourceOwnerSelected();
+          dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
         }
         if (isManagedTokenServiceSource(found) && audit === undefined) {
           throw new ResourceStateConflictError(
@@ -489,8 +486,9 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         sourceRef: credentialSourceRef(source),
         tokenServiceInstanceId: source.tokenServiceInstanceId,
       };
-      const removed = await dependencies.driverOperation(() =>
-        owner.removeSource(identity, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
+      const removed = await driverOperation(
+        () => owner.removeSource(identity, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
+        "TokenService",
       );
       await dependencies.transactions.transact((state) =>
         state.audit.append(audit!(removed.map(removedAccessBinding))),

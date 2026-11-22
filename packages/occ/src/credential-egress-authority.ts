@@ -1,3 +1,5 @@
+import { credentialGatewayOperation } from "./credential-source-drivers.ts";
+import { lockNamespace } from "./resource-scope.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -46,10 +48,6 @@ interface EgressAuthorityDependencies {
   readonly inTransaction: () => boolean;
   readonly readSnapshot: <T>(work: (state: PlatformReadView) => Promise<T>) => Promise<T>;
   readonly transact: <T>(work: (state: PlatformUnitOfWork) => Promise<T>) => Promise<T>;
-  readonly lockNamespace: (
-    state: PlatformUnitOfWork,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
   readonly proxyDriver: () => DriverByCapability["credential_proxy"];
   readonly selectedProxyOwner: () => InstalledDriver;
   readonly secretDriver: (id: string) => SecretDriver;
@@ -59,7 +57,6 @@ interface EgressAuthorityDependencies {
     resolve: NonNullable<ComputeDriver["resolveSandboxNamespace"]>;
   };
   readonly credentialNamespace: (namespace: Readonly<Namespace>) => Promise<Readonly<Namespace>>;
-  readonly credentialGatewayOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly authorizationAuthority: (principalId: string) => IAMDriver;
   readonly authorizationDecision: (
     principalId: string,
@@ -502,7 +499,7 @@ export function createEgressAuthority(
       const { namespace, revision } = runtime;
       const verified = await Reflect.apply(verify, driver, [
         {
-          namespace: await dependencies.credentialGatewayOperation(() =>
+          namespace: await credentialGatewayOperation(() =>
             Reflect.apply(resolve, compute, [namespace]),
           ),
           revision,
@@ -535,7 +532,7 @@ export function createEgressAuthority(
         return deny("unauthorized");
       }
       return dependencies.transact(async (state) => {
-        await dependencies.lockNamespace(state, execution.namespaceId);
+        await lockNamespace(state, execution.namespaceId);
         const decision = observed ?? (await decide());
         await state.agents.lockAgent(execution.namespaceId, execution.agentId);
         const current = await checkEgressUseIn(

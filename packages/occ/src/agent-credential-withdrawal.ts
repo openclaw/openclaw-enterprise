@@ -1,9 +1,9 @@
+import { namespaceIdentity, lockNamespace, exactNamespace } from "./resource-scope.ts";
 import type {
   Agent,
   AgentRevision,
   CredentialWithdrawal,
   CredentialWithdrawalStatus,
-  Namespace,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
@@ -26,20 +26,11 @@ export interface AgentCredentialSourceInput {
 }
 
 interface WithdrawalDependencies {
-  readonly namespaceIdentity: (namespaceId: string) => void;
   readonly now: () => Date;
   readonly timestamp: () => string;
   readonly record: (state: PlatformUnitOfWork, operation: PlatformOperation) => Promise<void>;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<ControllerAuthority, "authorize">;
-  readonly lockNamespace: (
-    state: PlatformUnitOfWork,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
-  readonly exactNamespace: (
-    state: PlatformReadView,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
 }
 
 /**
@@ -134,7 +125,7 @@ export function createAgentCredentialWithdrawal(dependencies: WithdrawalDependen
     principalId: string,
     input: AgentCredentialSourceInput,
   ): Promise<Readonly<CredentialWithdrawalStatus>> {
-    dependencies.namespaceIdentity(input.namespaceId);
+    namespaceIdentity(input.namespaceId);
     if (!isNonEmptyString(input.agentId)) {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
@@ -144,7 +135,7 @@ export function createAgentCredentialWithdrawal(dependencies: WithdrawalDependen
         id: input.agentId,
         namespaceId: input.namespaceId,
       });
-      await dependencies.lockNamespace(state, input.namespaceId);
+      await lockNamespace(state, input.namespaceId);
       const agent = await state.agents.lockAgent(input.namespaceId, input.agentId);
       if (agent === undefined) {
         throw new ScopeViolationError(
@@ -276,7 +267,7 @@ export function createAgentCredentialWithdrawal(dependencies: WithdrawalDependen
       namespaceId: input.namespaceId,
     });
     return dependencies.transactions.read(async (state) => {
-      await dependencies.exactNamespace(state, input.namespaceId);
+      await exactNamespace(state, input.namespaceId);
       const agent = await state.agents.findAgent(input.namespaceId, input.agentId);
       if (agent === undefined) {
         throw new ScopeViolationError("The Agent does not belong to this Namespace.");
