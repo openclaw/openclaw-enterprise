@@ -272,7 +272,7 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
   assert.equal(workflowCondition(reject.if, manualDocs), true);
 });
 
-test("one-off proxy acceptance preserves normal Slack and scopes extra read permissions to acceptance", async () => {
+test("reusable callers satisfy nested permission maxima while normal jobs remain restricted", async () => {
   const dispatcher = await readWorkflow("full-integration");
   const execution = await readWorkflow("full-integration-execution");
   const slack = present(execution.jobs.slack);
@@ -329,6 +329,23 @@ test("one-off proxy acceptance preserves normal Slack and scopes extra read perm
   );
   assert.equal(record(acceptance.permissions)["pull-requests"], "read");
   assert.equal(record(acceptance.permissions).checks, "read");
+  const caller = record(present(dispatcher.jobs.execute).permissions);
+  for (const nested of Object.values(execution.jobs)) {
+    for (const [permission, level] of Object.entries(nested.permissions ?? {})) {
+      if (level === "read" || level === "write") {
+        assert.ok(
+          caller[permission] === level || caller[permission] === "write",
+          `${permission}: reusable caller cannot grant less than a nested job`,
+        );
+      }
+    }
+  }
+  assert.deepEqual(execution.permissions, {
+    contents: "read",
+    actions: "read",
+    deployments: "read",
+  });
+
   assert.equal(
     record(present(dispatcher.jobs["execute-network-proxy-acceptance"]).permissions)[
       "pull-requests"

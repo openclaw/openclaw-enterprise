@@ -106,6 +106,13 @@ jobs:
       # Only an eligible full tick enters the automatic execution queue.
       group: ${{ github.event_name == 'workflow_dispatch' && format('full-integration-manual-{0}', github.run_id) || 'full-integration' }}
       cancel-in-progress: false
+    # GitHub statically validates every nested job, including skipped acceptance jobs.
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+      pull-requests: read
+      checks: read
     uses: ./.github/workflows/full-integration-execution.yml
     with:
       lane: ${{ inputs.lane || '' }}
