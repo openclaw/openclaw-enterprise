@@ -39,15 +39,19 @@ updates `node_setup_json` only if the provider's resource version still matches;
 endpoint, TLS fingerprint, runtime files, CA, and identity labels must also match.
 Native startup reads the envelope; the Codex
 supervisor rereads it before node retries and retains valid setup during projection
-gaps. Once Compute records the node's device, a new Codex provider carries an empty
-`node_setup_json`, so the node starts from its saved identity instead of presenting the
-spent setup; an existing provider keeps the setup it delivered. The raw app-server token stays outside the provider. Repository broker
+gaps. Once Compute records the node's device and holds no pending setup receipt,
+a new Codex provider carries an empty `node_setup_json`, so the node starts from its saved
+identity instead of presenting the spent setup. An existing provider keeps the setup it holds
+when that setup names the same Gateway URL and TLS fingerprint as the Secret's; the token and
+expiry are not compared. A provider with an empty `node_setup_json` takes a newly issued,
+unexpired setup. The raw app-server token stays outside the provider. Repository broker
 configuration fails before creation.
 
 Agent revision cleanup deletes the Sandbox before its Git and runtime providers; Namespace
 cleanup removes leftover Git providers and unused profiles. Adoption requires matching
 Namespace, Agent, and Agent revision IDs and nonsecret configuration,
-except when renewing an expired setup envelope. Failed or timed-out Sandbox creation may complete remotely. The provider remains
+except when renewing an expired or empty setup envelope or keeping a setup issued before the
+device was recorded. Failed or timed-out Sandbox creation may complete remotely. The provider remains
 for normal Agent revision cleanup with the Sandbox.
 
 ## Codex plugin installation

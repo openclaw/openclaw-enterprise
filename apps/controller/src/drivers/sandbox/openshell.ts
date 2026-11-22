@@ -3226,8 +3226,9 @@ export function runtimeProviderSetupUpdate(
   const actualSetup = runtimeProviderSetupEnvelope(provider.config[WORKSPACE_NODE_SETUP_CONFIG]);
   const expectedSetup = runtimeProviderSetupEnvelope(expectedConfig[WORKSPACE_NODE_SETUP_CONFIG]);
   const retained = runtimeProviderSetupEnvelope(retainedSetup);
-  // A provider created before its device was recorded keeps the setup it delivered to
-  // its running Sandbox: same Gateway and trust anchor, no update and no new Sandbox.
+  // A provider created before its device was recorded keeps the setup it holds when that
+  // setup names the same Gateway URL and TLS pin as the Secret's setup; the bootstrap token
+  // and expiry are not compared. No update and no new Sandbox.
   if (
     retained !== undefined &&
     actualSetup !== undefined &&
@@ -3238,6 +3239,18 @@ export function runtimeProviderSetupUpdate(
     return undefined;
   }
   const now = Date.now();
+  // A provider holding the empty placeholder takes a newly minted setup, as an expired
+  // one does, when Compute mints a setup again (for example after the node Secret is deleted).
+  if (
+    provider.config[WORKSPACE_NODE_SETUP_CONFIG] === "{}" &&
+    exactStringMap(actualStaticConfig, expectedStaticConfig) &&
+    expectedSetup !== undefined &&
+    expectedSetup.expiresAtMs > now
+  ) {
+    return Object.freeze({
+      [WORKSPACE_NODE_SETUP_CONFIG]: expectedConfig[WORKSPACE_NODE_SETUP_CONFIG]!,
+    });
+  }
   if (
     !exactStringMap(actualStaticConfig, expectedStaticConfig) ||
     actualSetup === undefined ||

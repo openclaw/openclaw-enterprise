@@ -2,15 +2,25 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxResponse } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
 import type {
   HarnessWorkloadRequirements,
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord, type WorkspaceNodeSetupEnvelope } from "../../packages/utils/src/index.ts";
+import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
+import {
+  assertManagedSandboxRequest,
+  type ManagedSandboxPhase,
+  type ManagedSandboxRequest,
+} from "./sandbox-driver-managed-startup-rendering-cases.ts";
+import { backendFor } from "./sandbox-driver-openshell-fixture.ts";
 import {
   completeWorkspaceRevision,
   type SandboxFixtureRevision,
 } from "./sandbox-driver-revision-fixture.ts";
+import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
+import { harnessService } from "./sandbox-driver-startup-orchestration.ts";
 import {
   workspaceNodeSetupSecret,
   workspaceNodeSetupSecretData,
@@ -260,15 +270,172 @@ export function registerSandboxDriverWorkspaceRenewalCases({
     assert.equal(callCount(gatewayClient, "updateProviderConfig"), 0);
     assert.equal(sandboxesCreated(), 1);
 
-    // Keeping the delivered setup is no authority to keep one for another Gateway.
-    gatewayClient.providers.set(runtimeProviderName, {
-      ...delivered,
-      config: {
-        ...delivered.config,
-        node_setup_json: JSON.stringify({ ...nodeSetup, url: "wss://other.example.test/node" }),
-      },
-    });
-    await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+    // The keep rule compares the Gateway URL and TLS pin only: another bootstrap token is
+    // kept, another Gateway or TLS pin is refused.
+    const holding = (setup: object) =>
+      gatewayClient.providers.set(runtimeProviderName, {
+        ...delivered,
+        config: { ...delivered.config, node_setup_json: JSON.stringify(setup) },
+      });
+    holding({ ...nodeSetup, bootstrapToken: "another-node-setup" });
+    await provision();
+    for (const foreign of [
+      { url: "wss://other.example.test/node" },
+      { tlsFingerprint: "cd".repeat(32) },
+    ]) {
+      holding({ ...nodeSetup, ...foreign });
+      await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+    }
     assert.equal(callCount(gatewayClient, "updateProviderConfig"), 0);
+
+    // A kept setup that has since expired stays as it is: no update.
+    const expired = { ...nodeSetup, expiresAtMs: Date.now() - 1 };
+    context.kubernetes.read = async ({ metadata }) =>
+      workspaceNodeSetupSecret(metadata, context.namespace.id, revision.agentId, {
+        ...workspaceNodeSetupSecretData(expired),
+        deviceId: recordedDevice,
+      });
+    holding(expired);
+    await provision();
+    assert.equal(
+      gatewayClient.providers.get(runtimeProviderName)?.config.node_setup_json,
+      JSON.stringify(expired),
+    );
+    assert.equal(callCount(gatewayClient, "updateProviderConfig"), 0);
+    assert.equal(sandboxesCreated(), 1);
+  });
+
+  // A provider created after the device was recorded holds the empty placeholder. When
+  // Compute mints a setup again (the node Secret was deleted), the next pass of the same
+  // revision delivers it, as it renews an expired setup.
+  test("OpenShell gives a codex revision provider holding no setup a newly minted setup", async () => {
+    const { gatewayClient } = storingGateway("codex");
+    const driver = openShellDriver(gatewayClient);
+    const {
+      context,
+      revision: fixtureRevision,
+      requirements,
+      nodeSetup,
+    } = runtimeSandboxFixture(driver);
+    const revision = completeWorkspaceRevision(fixtureRevision, requirements);
+    const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+    let secretData: Readonly<Record<string, string>> = {
+      ...workspaceNodeSetupSecretData(nodeSetup),
+      deviceId: recordedDevice,
+    };
+    context.kubernetes.read = async ({ metadata }) =>
+      workspaceNodeSetupSecret(metadata, context.namespace.id, revision.agentId, secretData);
+    await provision();
+    const [runtimeProviderName] = [...gatewayClient.providers.keys()];
+    assert.ok(runtimeProviderName);
+    assert.equal(gatewayClient.providers.get(runtimeProviderName)?.config.node_setup_json, "{}");
+
+    const minted = { ...nodeSetup, bootstrapToken: "minted-node-setup" };
+    secretData = workspaceNodeSetupSecretData(minted);
+    await provision();
+    assert.deepEqual(
+      gatewayClient.calls.filter(([operation]) => operation === "updateProviderConfig"),
+      [
+        [
+          "updateProviderConfig",
+          runtimeProviderName,
+          { node_setup_json: JSON.stringify(minted) },
+          "1",
+        ],
+      ],
+    );
+    assert.equal(
+      gatewayClient.providers.get(runtimeProviderName)?.config.node_setup_json,
+      JSON.stringify(minted),
+    );
+  });
+
+  // The managed per-Agent provider follows the same rules across revisions.
+  test("managed OpenShell keeps, replaces and renews a codex provider around its recorded device", async () => {
+    const client = workspaceGatewayClient();
+    const configuration = sandboxInstallation().drivers.sandbox.configuration;
+    configuration.integrationMode = "service";
+    configuration.gateway = {};
+    configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+    const driver = new ManagedOpenShellSandbox(configuration, {
+      id: "openshell-sandbox",
+      backend: backendFor(client),
+    });
+    const fixture = runtimeSandboxFixture(driver);
+    const { context, nodeSetup } = fixture;
+    const revision = completeWorkspaceRevision(fixture.revision, fixture.requirements);
+    const requirements = { ...fixture.requirements, workspaceMounts: [] };
+    let request: ManagedSandboxRequest | undefined;
+    let phase: ManagedSandboxPhase = "SANDBOX_PHASE_READY";
+    const current = (): ManagedSandboxRequest => {
+      assert.ok(request, "The Gateway must have received a Sandbox workload");
+      return request;
+    };
+    client.createSandbox = async (value) => {
+      assertManagedSandboxRequest(value);
+      request = value;
+      return storedSandbox(value, { phase });
+    };
+    client.getSandbox = async () =>
+      request === undefined ? undefined : storedSandbox(request, { phase, resourceVersion: "7" });
+    client.getService = async () =>
+      harnessService(current().name, "", "http://codex.example.test:8080/");
+    client.stopSandbox = async () => {
+      phase = "SANDBOX_PHASE_STOPPED";
+      return storedSandbox(current(), { phase });
+    };
+    client.updateSandbox = async (value) => {
+      assertManagedSandboxRequest(value);
+      request = value;
+      return storedSandbox(value, { phase });
+    };
+    client.startSandbox = async () => {
+      phase = "SANDBOX_PHASE_READY";
+      return storedSandbox(current(), { phase });
+    };
+    let secretData: Readonly<Record<string, string>> = workspaceNodeSetupSecretData(nodeSetup);
+    context.kubernetes.read = async ({ metadata }) =>
+      workspaceNodeSetupSecret(metadata, context.namespace.id, revision.agentId, secretData);
+    const provider = () => {
+      const [only, ...others] = [...client.providers.values()];
+      assert.ok(only);
+      assert.equal(others.length, 0);
+      return only;
+    };
+    const updates = () => callCount(client, "updateProviderConfig");
+
+    await driver.ensureNamespace(context);
+    await driver.provisionHarness({ ...context, revision, requirements });
+    const delivered = provider();
+    assert.deepEqual(JSON.parse(delivered.config.node_setup_json ?? ""), nodeSetup);
+
+    // Once the device is recorded, the same revision's provider is kept as it stands.
+    secretData = { ...workspaceNodeSetupSecretData(nodeSetup), deviceId: recordedDevice };
+    await driver.provisionHarness({ ...context, revision, requirements });
+    assert.deepEqual(provider(), delivered);
+    assert.equal(updates(), 0);
+
+    // A new revision replaces the provider's config with the empty placeholder.
+    await driver.cleanup({ ...context, revision });
+    const successor = { ...revision, id: "rev_00000000-0000-4000-8000-000000000004" };
+    const next = {
+      ...context,
+      revision: successor,
+      requirements: {
+        ...requirements,
+        labels: { ...requirements.labels, "openclaw.dev/revision": successor.id },
+      },
+    };
+    await driver.provisionHarness(next);
+    assert.equal(provider().config.oce_revision_id, successor.id);
+    assert.equal(provider().config.node_setup_json, "{}");
+    const replaced = updates();
+
+    // Compute mints a setup again (the node Secret was deleted): the next pass delivers it.
+    const minted = { ...nodeSetup, bootstrapToken: "minted-node-setup" };
+    secretData = workspaceNodeSetupSecretData(minted);
+    await driver.provisionHarness(next);
+    assert.equal(provider().config.node_setup_json, JSON.stringify(minted));
+    assert.equal(updates(), replaced + 1);
   });
 }
