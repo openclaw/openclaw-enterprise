@@ -100,7 +100,8 @@ test("the desktop shell shows the sidebar surface, the current-page bar and the 
   });
 
   const current = page.locator('.nav a[aria-current="page"]');
-  assert.equal(await current.textContent(), "◇Agents");
+  assert.equal(await current.textContent(), "Agents");
+  assert.equal(await current.locator('svg.line-icon[aria-hidden="true"]').isVisible(), true);
   assert.deepEqual(await style(current, "backgroundColor", "color", "height"), {
     backgroundColor: selected,
     color: text,
@@ -555,7 +556,7 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   const table = page.locator(".namespace-table");
   assert.deepEqual(await style(table, "borderTopWidth", "borderTopLeftRadius"), {
     borderTopWidth: "1px",
-    borderTopLeftRadius: "14px",
+    borderTopLeftRadius: "10px",
   });
   const head = table.locator(".namespace-table-head");
   assert.equal(await head.getAttribute("aria-hidden"), "true");
@@ -567,7 +568,7 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   ]);
   assert.equal(
     (await style(head, "backgroundColor")).backgroundColor,
-    await tokenColor(page, "--color-surface-2"),
+    await tokenColor(page, "--color-collection-header"),
   );
   const columns = await head
     .locator("span")
@@ -622,6 +623,27 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
     outlineStyle: "solid",
     outlineOffset: "-3px",
   });
+
+  // Keep the record identifiable when its Delete button has focus, even without shadows.
+  await page.keyboard.press("Tab");
+  const action = row.getByRole("button", { name: `Delete ${provisioning.name}`, exact: true });
+  assert.equal(await action.evaluate((node) => node.matches(":focus-visible")), true);
+  assert.equal(
+    (await style(row, "backgroundColor")).backgroundColor,
+    await tokenColor(page, "--color-surface-hover"),
+  );
+  await page.emulateMedia({ forcedColors: "active" });
+  for (const focused of [row, action]) {
+    assert.deepEqual(await style(focused, "outlineStyle", "outlineWidth"), {
+      outlineStyle: "solid",
+      outlineWidth: "2px",
+    });
+  }
+  const other = list.getByRole("listitem").filter({ hasText: ready.id });
+  assert.equal((await style(other, "outlineStyle")).outlineStyle, "none");
+  await page.emulateMedia({ forcedColors: "none" });
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await link.evaluate((node) => node === globalThis.document.activeElement), true);
   await page.keyboard.press("Enter");
   await page.waitForURL(`**/console/agents?namespace=${provisioning.id}`);
 

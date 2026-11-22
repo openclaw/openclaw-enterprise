@@ -52,6 +52,8 @@
         "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
         "a restarted worker refuses explicit deny-all before preparing an ordinary revision",
         "a queued scoped deployment cannot replace an unscoped revision",
+        "an IAM change committed during the lock wait prevents Compute binding",
+        "an IAM change committed during the lock wait prevents exclusive predecessor stop",
         "a current claim refuses revoked policy authority before repository credential preparation",
         "a current claim refuses revoked policy authority before repository credential preparation after binding",
         "a current claim refuses revoked policy authority before binding",

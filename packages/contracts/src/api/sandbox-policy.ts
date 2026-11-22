@@ -142,7 +142,7 @@ export const SandboxPolicyUpdateBody = Type.Object(
     repositoryNetworkPolicy: Type.Optional(
       Type.Array(RepositoryNetworkGrantSchema, {
         description:
-          "Omit to preserve the saved grants. An explicit empty list requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
+          "Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
         maxItems: maxRepositoryNetworkGrants,
       }),
     ),

@@ -36,7 +36,7 @@ import {
   secretLinkUnlistedAdministrator,
   SECRET_UPDATE_DENIED,
 } from "../helpers/refusal-access.ts";
-import { restrict } from "../helpers/iam-grants.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
@@ -56,6 +56,7 @@ import {
 } from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { responseTo } from "./console-action-helpers.ts";
+import { refocusHeld } from "./console-refocus-helpers.ts";
 
 const browser = fileBrowser();
 type Namespace = Pick<NamespaceWire, "id">;
@@ -620,6 +621,56 @@ for (const outcome of ["lost", "versionless"]) {
     );
   });
 }
+
+test("refocusing a changed Secret library keeps the search and follows only readable results", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Library readers");
+  const other = await fixture.createNamespace("Second library", { ready: true });
+  await fixture.createSecret(namespace.id, "Signing key", "synthetic-signing-value");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace));
+  const search = page.getByRole("searchbox", { name: "Search Secrets" });
+  const empty = page.getByRole("heading", { name: "No matching Secrets" });
+  await search.fill("model");
+  await empty.waitFor();
+  await search.press("Shift+ArrowLeft");
+
+  // Another session adds a match while the reader is editing the query.
+  const match = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-value");
+  const result = page.getByRole("button", { name: match.name, exact: true });
+  await refocusHeld(t, page);
+  await result.waitFor();
+  assert.equal(await search.inputValue(), "model");
+  assert.equal(await hasFocus(search), true);
+  await page.keyboard.type("L");
+  assert.equal(await search.inputValue(), "modeL", "typing replaces the selected letter");
+  assert.equal(await page.getByRole("list", { name: "Secrets" }).getByRole("button").count(), 1);
+
+  // Follow the focused result across a permission change, but never restore a revoked row.
+  await result.focus();
+  restrict(fixture.policy, "create", "secret", { namespaceId: namespace.id });
+  await refocusHeld(t, page);
+  assert.equal(await page.getByRole("button", { name: "Create Secret" }).isDisabled(), true);
+  assert.equal(await hasFocus(result), true);
+  const revoked = restrict(fixture.policy, "read", "secret", {
+    namespaceId: namespace.id,
+    resourceId: match.id,
+  });
+  await refocusHeld(t, page);
+  await empty.waitFor();
+  assert.equal(await result.count(), 0);
+  assert.equal(await search.inputValue(), "modeL");
+  assert.equal(await hasFocus(search), true);
+
+  // The other Namespace starts unfiltered. Returning applies the old query to current access.
+  const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  await selector.selectOption(other.id);
+  await page.getByRole("heading", { name: "No Secrets yet" }).waitFor();
+  assert.equal(await search.inputValue(), "");
+  liftRestriction(fixture.policy, revoked);
+  await selector.selectOption(namespace.id);
+  await result.waitFor();
+  assert.equal(await search.inputValue(), "modeL");
+});
 
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
   const audit = new InMemoryAuditSink();

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-21
-last_updated_session: authoring-run/3f3abf26-0aec-43e5-aa36-3aa72b38cf4a
+updated: 2026-11-22
+last_updated_session: authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb
 ---
 
 # Controller Worker Flow
@@ -135,7 +135,7 @@ no retries. Progress probes track passes and renewals; see
 `apps/controller/src/worker.ts:ControllerWorker.authorizeRevision`
 
 Namespace work verifies the target is still `provisioning` or `deleting`.
-A changed target completes as `SUPERSEDED_TARGET`. Otherwise `authorize()`
+A changed target completes as `SUPERSEDED_TARGET`. Otherwise `authorizeNamespace()`
 rechecks the original actor. Provisioning enforces Namespace restrictions.
 Placement into an existing Kubernetes namespace requires Installation administration.
 
@@ -173,31 +173,31 @@ and rejects ownership or Compute-Driver mismatches before teardown.
 
 ### 5. Invoke Compute while renewing the live claim
 
-`apps/controller/src/worker.ts:ControllerWorker.observe`,
+`apps/controller/src/worker.ts:ControllerWorker.observeNamespace`,
 `apps/controller/src/worker.ts:ControllerWorker.observeRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.withClaimHeartbeat`
 
 Namespace dispatch uses `OpenClawController.observeNamespaceLifecycle` and
 `packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle` for
 [ordered, claim-cancelled setup and cleanup](../reference/drivers/namespace-lifecycle.md).
-Results join claim-protected audit evidence. Version dispatch binds the Agent
-when supported, then passes its immutable snapshot to `prepareRevision`. Invalid
-observations fail; pending observations defer convergence.
+Results join claim-protected audit evidence. Version dispatch can bind the Agent
+before passing its snapshot to `prepareRevision`. Invalid observations fail.
+Pending observations defer convergence.
 
-`ControllerWorker.withRevisionDispatch` fences each scoped deployment handoff:
-it holds IAM configuration, Namespace and Agent locks, rechecks current policy
-authority and running state, renews the claim, and starts the Driver call inside
-the transaction. It awaits the call after releasing the locks. Binding, preparation
-and activation use this fence; the Driver owns downstream effects, which the
+`ControllerWorker.withRevisionDispatch` locks IAM configuration, the Namespace
+and Agent for scoped binding, preparation and activation. PostgreSQL Read
+Committed lets the worker see IAM changes committed during the lock wait. It
+rechecks authority and running state, renews the claim, and starts the Driver
+call. It awaits the call after releasing the locks. The Driver owns effects the
 transaction cannot roll back.
 
-When Compute's `requiresStoppedPredecessors` capability is set,
-`apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
-[exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
-under the live claim, it commits the stop boundary, closes credentials and stops
-earlier revisions, including failed candidates. Stop failure blocks preparation.
-Drains yield `PREDECESSOR_STOP_YIELDED`; failing, superseded and stopped Work must
-finish that stop. Maintenance cannot recreate a stopped predecessor.
+For [exclusive replacement](../reference/drivers/compute.md#production-revision-stages)
+(`requiresStoppedPredecessors`), `apps/controller/src/worker.ts:ControllerWorker.prepareRevision`
+checks scoped authority under Read Committed before recording the stop under the
+live claim. It closes credentials and stops earlier revisions, including failed
+candidates, before preparation. `PREDECESSOR_STOP_YIELDED` defers stops. Failing,
+superseded and stopped Work must finish them. Maintenance cannot recreate stopped
+predecessors.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable version; the
@@ -247,45 +247,41 @@ with that code; other work keeps its attempt budget.
 ### 6. Persist the result and finish version activation
 
 `apps/controller/src/worker.ts:ControllerWorker.finalize`,
-`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision`,
+`apps/controller/src/worker.ts:ControllerWorker.commitRevisionTransition`,
+`apps/controller/src/worker.ts:ControllerWorker.finishRevisionTransition`,
 `apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
 
-`transactWithQueue()` renews the exact claim before atomically publishing
-Namespace readiness or completed deletion, lifecycle evidence and queue completion.
-Failed provisioning can transition to failed; incomplete deletion cannot publish
-successful deletion.
+After claim renewal, one transaction records Namespace readiness or deletion,
+lifecycle evidence, and queue completion. Provisioning can record failure.
+Deletion succeeds only after cleanup completes.
 
-After preparation, `activationOrder: beforeCommit` activates before the database
-pointer changes; otherwise an implemented activation stage runs, in development
-and production, after the claim-protected compare-and-set of
-`Agent.activeRevisionId`, and the first dedicated version stays inactive until
-commit. A changed pointer causes `ACTIVE_REVISION_CHANGED` and retry.
+With `activationOrder: beforeCommit`, Compute activates before selection.
+Otherwise, production deactivates the first dedicated revision before selection.
+After commit, production requires activation and development calls it when
+implemented. A failed compare-and-set records an `ACTIVE_REVISION_CHANGED` retry.
+The committed result tells the worker whether to activate, stop, or report.
 
-Committing `Agent.activeRevisionId` records selection. A v5 `online-request` or
-v6 `request-hook-observed` hold for Git material leaves the original work queued
-until that revision reports ready. The worker then activates it and retires its
+A v5 `online-request` or v6 `request-hook-observed` hold leaves work queued until
+the selected revision is ready. The worker activates it and retires its
 predecessor. In a separate transaction, `completeActivatedRevision()` rechecks
-selection and claim, appends evidence, and completes work. Retries recheck the
-active candidate before effects; claim loss cannot turn plugin failure into success.
+the claim and selection, appends evidence, and completes work. Retries recheck
+the selected revision before effects. Claim loss prevents completion.
 
-Stop finalization rechecks the live claim, Agent owner, and stopped desired state.
-After captured cleanup, it clears `activeRevisionId` only if it still identifies
-the stopped version, appends lifecycle-stop evidence, and completes the work
-without deleting version rows or persistent runtime state. A later deployment
-supersedes the stop even if it retains that pointer while preparing.
+`finalizeAgentStop()` checks the claim, Agent owner, and desired state.
+It clears `activeRevisionId` only if it points to the stopped version.
+A later deployment supersedes the stop even with that pointer. Version
+rows and persistent runtime state remain. After commit, successful stops that were
+not superseded and successful activations record
+[operation durations](../reference/metrics.md#shared-snapshots-and-outages).
 
-After commit, `completeActivatedRevision()` and `finalizeAgentStop()` record
-[operation durations](../reference/metrics.md#shared-snapshots-and-outages)
-through `apps/controller/src/metrics/index.ts:createOccMetrics`.
+`finalizeAgentDeletion()` calls a restricted database function. It validates
+the live claim, records success, and removes the Agent and its
+[lifecycle records](../reference/controller/reconciliation.md#agent-lifecycle)
+in one transaction. The application role cannot delete those records directly.
 
-Deletion finalization uses a restricted database function instead of generic
-queue completion. In one transaction it validates the live claim, records
-lifecycle-delete success, and removes the Agent with the records the
-[Agent lifecycle reference](../reference/controller/reconciliation.md#agent-lifecycle)
-lists. An expired or replaced claim removes nothing; `occ_app` has no direct
-table-level delete privilege for these records.
-`finalizeAgentDeletion()` records committed `agent_delete` outcomes for the
-same metrics contract.
+`settleAgentTeardownAttempt()` writes IAM denials and lifecycle evidence
+before it settles Stop outcomes and Delete failures. A Stop that yields
+defers without an attempt record.
 
 ### 7. Defer, retry, or stop and hand off the next iteration
 
@@ -319,10 +315,9 @@ minutes and at least four times the stop duration. Later passes retry the stop
 unless superseded or the refusal lifts. If it lifts after the deadline, the stop
 then publishes `CONVERGENCE_DEADLINE_EXCEEDED`.
 
-`ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
-Driver interval, including closing sessions and failed runtime retirement,
-releasing the claim without consuming retries. Obligations survive; lease loss
-aborts the pass.
+`settleRepositoryCleanup()` defers incomplete cleanup without consuming retries.
+Closing sessions keep the Driver interval. Other stalled cleanup slows with age.
+The worker uses the committed outcome for logs and metrics.
 
 Terminal rows store `reason_code` and optional `result_data`, shaped as the
 [terminal results reference](../reference/controller/reconciliation.md#terminal-results)
@@ -429,6 +424,10 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-22 10:47: Trace repository cleanup settlement and metrics. (authoring-run/18e09cc2-273a-4950-b512-3648f405ac27 - f31e3395fff2f025a36a31e8b7bcca31d5d45938)
+- 2026-11-22 10:32: Trace revision finalization through the committed result. (authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
+- 2026-11-22 10:30: Trace shared Agent Stop and Delete settlement. (authoring-run/e04921d4-0e64-4748-963f-ea2bdbee1215 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
+- 2026-11-22 09:29: Trace Read Committed for scoped deployment. (authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576 - db0227da135c6bf5e437038ec1fdbbfcc46ba548)
 - 2026-11-21 10:28: Trace scoped dispatch admission and recovery in the accompanying change. (authoring-run/3f3abf26-0aec-43e5-aa36-3aa72b38cf4a - a450dc92242a9d2e9f87da7e4fe8f8ea9dcd5e30)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-19 14:03: Trace stopped revision cleanup in the accompanying change. (authoring-run/49c681f2-4814-4313-b061-284d2b23891c - 4bfefb4bf60b43dfb2e6fcc010be60270474e726)
