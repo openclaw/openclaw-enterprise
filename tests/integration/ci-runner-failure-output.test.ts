@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
@@ -561,32 +561,21 @@ test("runner emits a finite channel egress failure stage", async (t) => {
   const { statePath, resultsPath } = runnerArtifactPaths(root, "slack-live");
   const { file, title } = channelEgressCase;
   const wrongFile = "tests/integration/not-channel-egress.test.ts";
-  const helper = new URL("../../scripts/ci/channel-egress-diagnostic.ts", import.meta.url);
-  const importTest = 'import test from "node:test";';
-  const exact = JSON.stringify(title);
   const diagnostic = (stage: string) => ({ kind: "channel-egress", stage });
-  const syntheticThrow = (value: unknown) =>
-    `throw Object.assign(new Error("synthetic failure"), {openclawCiDiagnostic: ${JSON.stringify(value)}});`;
-  await writeFile(
-    join(root, wrongFile),
-    [importTest, `test(${exact}, () => { ${syntheticThrow(diagnostic("active-tunnel"))} });`].join(
-      "\n",
+  await Promise.all([
+    copyFile(
+      new URL("../../scripts/ci/channel-egress-diagnostic.ts", import.meta.url),
+      join(root, "scripts/ci/channel-egress-diagnostic.ts"),
     ),
-  );
-  await writeFile(
-    join(root, file),
-    [
-      importTest,
-      `import { withChannelEgressStage } from ${JSON.stringify(helper.href)};`,
-      `test(${exact}, withChannelEgressStage(async (_t, setStage) => { setStage("connect-routing"); throw new Error("synthetic route"); }));`,
-      `test(${exact}, withChannelEgressStage(async (_t, setStage) => { setStage("active-tunnel"); throw new Error("synthetic tunnel"); }));`,
-      `test(${exact}, () => { ${syntheticThrow(diagnostic("fixture-unrecognized-stage"))} });`,
-      `test(${exact}, () => { ${syntheticThrow({ ...diagnostic("active-tunnel"), extra: "fixture-extra-field" })} });`,
-      `test("other title", () => { ${syntheticThrow(diagnostic("active-tunnel"))} });`,
-      `test("parent", async (t) => { await t.test(${exact}, () => { ${syntheticThrow(diagnostic("active-tunnel"))} }); });`,
-      `test(${exact}, () => {});`,
-    ].join("\n"),
-  );
+    copyFile(
+      new URL("../fixtures/ci-runner-channel-egress-child.ts", import.meta.url),
+      join(root, file),
+    ),
+    copyFile(
+      new URL("../fixtures/ci-runner-channel-egress-neighbor.ts", import.meta.url),
+      join(root, wrongFile),
+    ),
+  ]);
   await writeRunnerManifest(root, {
     lanes: { "slack-live": { files: [{ path: file }, { path: wrongFile }] } },
   });
