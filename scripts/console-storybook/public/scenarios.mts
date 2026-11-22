@@ -596,7 +596,7 @@ const authoredScenarios = {
     description:
       "One Agent has unreadable saved plugin selections. Both Agents remain in the list, and the affected row shows a warning. This is simulated API data, not database recovery proof.",
     steps: [
-      "At a split desktop width, check that the warning stays with the Agent name. Tab through its version and deployment links, then Shift+Tab back.",
+      "At 1101 px, tab through the Research assistant row to Stop and Delete, then Shift+Tab back. Keep the name, ID, warning and focus outline in view together. Repeat at 1100 px and phone width.",
       "Open Research assistant and select Open draft. Its saved settings show a repair banner without editing or deployment controls.",
       "Select v1 to inspect the readable admitted snapshot. Return to Agents and open Documentation assistant to check that its draft remains editable.",
     ],

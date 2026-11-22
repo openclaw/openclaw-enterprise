@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Request, Route } from "playwright";
+import { Check, Clean } from "typebox/value";
 
 import {
   AgentListResponse,
+  AgentReadSchema,
   AgentRevisionListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 
@@ -925,12 +927,14 @@ void test("A list left again during its rows' rereads is reused on the next retu
 // the longest names without break opportunities wrap within the ID width.
 void test("The Agents list fits labelled rows on split desktops and phones and still opens the Agent", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Phone Agents list");
+  // This word can overflow the identity column without qualifying for the long-name marker.
+  const longName = "Phone Agent 02 WORKFLOWORCHESTRATOR";
   const agents = [];
   for (let index = 1; index <= AGENTS; index += 1) {
     // Two names are the longest allowed with no break in them: one in a single run, one joined
     // by no-break spaces, which do not let a line wrap either.
     const unbroken = index >= AGENTS - 1;
-    const name = unbroken
+    let name = unbroken
       ? index === AGENTS
         ? "W".repeat(200)
         : `W${"WWWW\u00a0".repeat(39)}WWWW`
@@ -938,6 +942,9 @@ void test("The Agents list fits labelled rows on split desktops and phones and s
           0,
           60,
         );
+    if (index === 2) {
+      name = longName;
+    }
     // The default harness Secret is named after its Agent, so it would exceed the name limit.
     const agent = await fixture.createAgent(
       namespace.id,
@@ -961,6 +968,7 @@ void test("The Agents list fits labelled rows on split desktops and phones and s
     agents.push({ ...agent, name });
   }
   assert.equal(required(agents[0]).name.length, 60);
+  const target = required(agents[1]);
   const columns = [
     "Agent",
     "Execution mode",
@@ -969,7 +977,7 @@ void test("The Agents list fits labelled rows on split desktops and phones and s
     "Created",
     "Actions",
   ];
-  for (const width of [390, 360, 320, 600, 760, 761, 920, 1024, 1100, 1440]) {
+  for (const width of [390, 360, 320, 600, 760, 761, 920, 1024, 1100, 1101, 1440]) {
     const wideTable = width > 1100;
     const { page } = await newPage(t, fixture, {
       browser,
@@ -977,6 +985,26 @@ void test("The Agents list fits labelled rows on split desktops and phones and s
     });
     // Each row keeps its height when its deployment read lands (finding 1488).
     const rows = await holdRowReads(t, page, namespace);
+    if (width === 1101) {
+      // Exercise the warning badge, keeping the real response except for this Agent's settings.
+      await page.route(`${fixture.origin}/namespaces/${namespace.id}/agents`, (route) =>
+        fulfillPatchedJson(route, AgentListResponse, (body) => ({
+          ...body,
+          data: body.data.map((agent) => {
+            if (agent.id !== target.id) {
+              return agent;
+            }
+            const unreadable = AgentReadSchema.anyOf[1];
+            const metadata = Clean(unreadable, {
+              ...agent,
+              configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
+            });
+            assert.ok(Check(unreadable, metadata));
+            return metadata;
+          }),
+        })),
+      );
+    }
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     const table = page.locator(settledView).getByRole("table", { name: "Agents" });
     await table.getByRole("link", { name: required(agents[0]).name }).waitFor();
@@ -1039,21 +1067,30 @@ void test("The Agents list fits labelled rows on split desktops and phones and s
         }
         const breaks = lineBreaks(id.firstChild);
         const link = firstCell.querySelector("a");
-        if (!link) {
-          throw new Error("Agent link is missing");
+        const linkText = link?.firstChild;
+        if (!link || !(linkText instanceof Text)) {
+          throw new Error("Agent link text is missing");
         }
+        // Include the actual name, ID and badge text, even when it spills out of its element.
+        const contents = document.createRange();
+        contents.selectNodeContents(firstCell);
+        const identity = contents.getBoundingClientRect();
         const name = link.getBoundingClientRect();
+        const firstLetter = document.createRange();
+        firstLetter.setStart(linkText, 0);
+        firstLetter.setEnd(linkText, 1);
         const first = firstCell.getBoundingClientRect();
+        const { paddingLeft, paddingRight } = globalThis.getComputedStyle(firstCell);
         return {
           // A name with no line-breaking space (a no-break space does not count).
           unbroken: !/[ ]/.test(link.textContent),
           name: {
+            text: link.textContent,
             width: name.width,
-            inside: name.left >= first.left - 0.5 && name.right <= first.right + 0.5,
-            breaks: lineBreaks(link.firstChild),
-            wrap: (({ display, overflowWrap }) => `${display} ${overflowWrap}`)(
-              globalThis.getComputedStyle(link),
-            ),
+            inside: identity.left >= first.left - 0.5 && identity.right <= first.right + 0.5,
+            breaks: lineBreaks(linkText),
+            firstLetterWidth: firstLetter.getBoundingClientRect().width,
+            columnWidth: firstCell.clientWidth - parseFloat(paddingLeft) - parseFloat(paddingRight),
           },
           overflows: cells.some((cell) => {
             const box = cell.getBoundingClientRect();
@@ -1154,26 +1191,36 @@ void test("The Agents list fits labelled rows on split desktops and phones and s
     );
     assert.equal(layout.rows.length, AGENTS);
     assert.equal(layout.rows.filter((row) => row.unbroken).length, 2, `${width}: unbroken rows`);
+    if (width === 320 || width === 1101) {
+      assert.ok(
+        required(layout.rows[0]).name.breaks.length > 0,
+        `${width}: the ordinary name wraps`,
+      );
+    }
     for (const [index, row] of layout.rows.entries()) {
       assert.equal(row.overflows, false, `${width}: row ${index} overflows the table`);
-      assert.equal(row.name.inside, true, `${width}: row ${index} name overflows its cell`);
+      assert.equal(row.name.inside, true, `${width}: row ${index} identity overflows its cell`);
       if (wideTable && row.unbroken) {
         assert.ok(row.name.width <= 310.5, `${width}: the unbroken name is ${row.name.width} px`);
       }
       // A stacked row gives every name its full width.
       if (width >= 600 && !wideTable && row.unbroken) {
-        assert.ok(row.name.width > 400, `${width}: the unbroken name is ${row.name.width} px`);
+        assert.ok(
+          row.name.width + row.name.firstLetterWidth + 1 >= row.name.columnWidth,
+          `${width}: the ${row.name.width} px name does not use the ${row.name.columnWidth} px column`,
+        );
       }
       // Ordinary names wrap as they did before, only between words.
-      if (!row.unbroken) {
-        assert.equal(
-          row.name.wrap,
-          wideTable ? "inline normal" : "inline anywhere",
-          `${width}: row ${index} name wrap`,
-        );
+      if (!row.unbroken && row.name.text !== longName) {
         for (const character of row.name.breaks) {
           assert.equal(character, " ", `${width}: row ${index} name breaks inside a word`);
         }
+      }
+      if (row.name.text === longName && width === 1101) {
+        assert.ok(
+          row.name.breaks.some((character) => /[a-z]/i.test(character)),
+          `${width}: the long token must wrap to leave room for the other columns`,
+        );
       }
       assert.deepEqual(
         row.labels.map(({ label }) => label),
@@ -1215,9 +1262,21 @@ void test("The Agents list fits labelled rows on split desktops and phones and s
       assert.equal(row.display, wideTable ? "table-row" : "grid", `${width}: row display`);
     }
     assert.equal(layout.headerShown, wideTable, `${width}: header row`);
+    const targetLink = table.getByRole("link", { name: target.name, exact: true });
+    if (width === 1101) {
+      const targetRow = table.getByRole("row").filter({ hasText: target.name });
+      await targetRow.getByText("Saved configuration unreadable", { exact: true }).waitFor();
+      await targetLink.focus();
+      const controls = await targetRow.locator("a, button:not(:disabled)").all();
+      for (const control of controls.slice(1)) {
+        await page.keyboard.press("Tab");
+        assert.ok(await hasFocus(control));
+      }
+      assert.ok(await hasFocus(targetRow.getByRole("button", { name: `Delete ${target.name}` })));
+      assert.equal(await page.locator(".table-scroll").evaluate((node) => node.scrollLeft), 0);
+    }
     // The row's name still opens its Agent.
-    const target = required(agents[1]);
-    await table.getByRole("link", { name: target.name, exact: true }).click();
+    await targetLink.click();
     await page.waitForURL(`**/console/agents/${target.id}**`);
     await page
       .locator(settledView)

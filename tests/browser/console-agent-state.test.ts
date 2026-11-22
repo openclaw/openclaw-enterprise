@@ -4046,13 +4046,25 @@ for (const width of [1440, 390]) {
   });
 }
 
+async function scrollAgentsTable(page: Page, constrain: boolean): Promise<number> {
+  const scrolledLeft = await page.locator(".table-scroll").evaluate((node, constrain) => {
+    // A redraw replaces the scroller. Limit its parent to exercise restoring a nonzero offset.
+    if (constrain && node.parentElement) {
+      node.parentElement.style.maxInlineSize = "500px";
+    }
+    node.scrollLeft = node.scrollWidth;
+    return node.scrollLeft;
+  }, constrain);
+  assert.equal(scrolledLeft > 0, constrain, "only the constrained table should scroll");
+  return scrolledLeft;
+}
+
 test("Agents list row actions stop and delete an Agent through the real API", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Row actions", { ready: true });
   const running = await fixture.createAgent(namespace.id, "Running Agent", nativeValues("run"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, running.id);
-  // This valid name keeps the table wide enough to exercise scroll restoration at 1101 px.
   const draftName = "Draft Agent for InterdepartmentalDocumentation";
   const draft = await fixture.createAgent(namespace.id, draftName, nativeValues("draft"));
   const { page } = await newPage(t, fixture);
@@ -4074,17 +4086,8 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   assert.equal(await runningRow.getByText("Stop requested", { exact: true }).count(), 0);
   requests.length = 0;
 
-  // At the wide-table breakpoint, accepting a row action redraws a genuinely scrolled table.
   await page.setViewportSize({ width: 1101, height: 844 });
-  const scrolledLeft = await page.evaluate(() => {
-    const scroller = globalThis.document.querySelector(".table-scroll");
-    if (!scroller) {
-      throw new Error("Missing table scroller");
-    }
-    scroller.scrollLeft = scroller.scrollWidth;
-    return scroller.scrollLeft;
-  });
-  assert.ok(scrolledLeft > 0, "the wide table should scroll horizontally");
+  const scrolledLeft = await scrollAgentsTable(page, true);
   // Cancelling the confirmation sends nothing and returns focus to the same visible icon.
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
@@ -4224,15 +4227,7 @@ for (const [action, width] of [
     const invoke = targetRow.getByRole("button", { name: `${action} ${target.name}` });
     await page.setViewportSize({ width, height: 844 });
     await invoke.waitFor();
-    const scrolledLeft = await page.evaluate(() => {
-      const scroller = globalThis.document.querySelector(".table-scroll");
-      if (!scroller) {
-        throw new Error("Missing table scroller");
-      }
-      scroller.scrollLeft = scroller.scrollWidth;
-      return scroller.scrollLeft;
-    });
-    assert.equal(scrolledLeft > 0, width === 1101, "only the wide table needs sideways scrolling");
+    const scrolledLeft = await scrollAgentsTable(page, width === 1101);
     await invoke.click();
     const dialog = page.getByRole("dialog", { name: `${action} ${target.name}?` });
     await dialog
@@ -4506,7 +4501,7 @@ test("Agents list row actions explain missing access and still report a refused 
       `${width}: the focused action and Agent identity should fit together`,
     );
   };
-  for (const width of [920, 761, 800, 1024]) {
+  for (const width of [920, 761, 800, 1024, 1100, 1101, 1440]) {
     await page.setViewportSize({ width, height: 844 });
     await name.focus();
     const controls = await row.locator("a, button:not(:disabled)").all();
