@@ -190,6 +190,14 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   }
 }
 
+/** Credential custody committed, but the selected Proxy did not acknowledge delivery. */
+export class CredentialDeliveryFailedError extends DependencyUnavailableError {
+  constructor() {
+    super("The credential source was updated, but credential delivery failed.");
+    this.name = "CredentialDeliveryFailedError";
+  }
+}
+
 /** The caller cannot determine whether the storage transaction committed. */
 export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
   constructor() {

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-22
-last_updated_session: authoring-run/193bbeb9-3f9b-4d51-a11f-6f763c5a299f
+last_updated_session: authoring-run/bdd1048e-11c2-4f1f-9021-5069535f66bf
 ---
 
 # Credential source lifecycle flow
@@ -57,7 +57,7 @@ The caller binds a ready Source in the same Namespace and selects it for Harness
 
 Compute creates and records an idle Sandbox, with the model credential route withheld, and makes the authenticated Gateway operator route available for node enrollment. It asks Worker to configure the recorded target. Worker rechecks the deploying actor and Agent's access to the exact Source, confirms its TokenService instance, and gives Credential Proxy a resolver limited to that Source.
 
-The OpenShell Proxy resolves the credential and version from TokenService only when it creates an absent OpenShell Provider delivery copy. It reuses an existing owned Provider without resolving or updating its credential, then attaches the Provider to the Sandbox. The [status table](../reference/credential-sources.md#implementation-status) records the stale-copy limitation until Source-scoped push exists. The Harness receives a placeholder. Compute asks Sandbox to apply the admitted network policy and waits until that policy is applied and matches the revision and the Proxy reports ready. Sandbox then prepares the launch inputs while leaving the Harness stopped.
+The OpenShell Proxy resolves the credential and version from TokenService only when it creates an absent OpenShell Provider delivery copy. It reuses an existing owned Provider without resolving or updating its credential, then attaches the Provider to the Sandbox. The Harness receives a placeholder. Compute asks Sandbox to apply the admitted network policy and waits until that policy is applied and matches the revision and the Proxy reports ready. Sandbox then prepares the launch inputs while leaving the Harness stopped.
 
 ### 4. Activate and stop the Agent
 
@@ -74,11 +74,21 @@ On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absen
 
 `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
-OCC checks permission on the exact Source and dispatches credential changes to its TokenService owner. A provider-policy change requires an unbound Source and a separate request from credential replacement. DELETE refuses blocking references, records retirement intent, and calls TokenService to remove the Source and credential from custody. OCC records completion separately. An uncertain removal can leave `deleting` for retry. See [implementation status](../reference/credential-sources.md#implementation-status) for delivery updates, Agent withdrawal, and remaining Provider-copy retirement work.
+OCC checks permission on the exact Source and dispatches credential changes to its TokenService owner. Credential replacement is allowed while an active Agent revision uses the Source. Changing or removing the provider preset still requires an unbound Source and a separate request.
+
+#### Deliver Source updates
+
+`apps/controller/src/composition/token-service.ts:installTokenServiceDriver`, `apps/controller/src/drivers/token-service/occ.ts:updateSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
+
+API composition connects the selected native Proxy to TokenService and binds a trusted Source Namespace placement resolver. After committing replacement material, TokenService sends the exact Source reference and version, with a lazy resolver bound to that Source and TokenService instance. The Proxy returns without resolution or creation if no Provider exists. Otherwise it updates the owned Provider through conditional `UpdateProvider`. It validates the returned target receipts, waits on the same receipt while status is pending or persisted, and checks fresh admission and serving evidence before acknowledging an activated target. A never-activated target needs no serving observation. The wait does not repeat the update.
+
+If delivery fails, the replacement remains in TokenService custody. OCC audits the committed update and delivery failure separately, and PATCH returns `503 DEPENDENCY_UNAVAILABLE`. Manual retry and live rotation qualification remain pending.
+
+DELETE refuses blocking references, records retirement intent, and calls TokenService to remove the Source and credential from custody. OCC records completion separately. An uncertain removal can leave `deleting` for retry. See [implementation status](../reference/credential-sources.md#implementation-status) for Agent withdrawal and Provider-copy retirement work.
 
 ## Debugging and Verification
 
-Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment) for the managed Source and Worker integrations. They exercise the API, persistence, IAM, custody, admission, and activation authorization; controlled Compute and simulated Kubernetes transport do not establish live delivery or a model turn. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) and [implementation status](../reference/credential-sources.md#implementation-status) for the remaining boundaries.
+Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment) for the managed Source and Worker integrations. They exercise the API, persistence, IAM, custody, admission, and activation authorization. The Worker integration also sends an authenticated active-Source PATCH through the selected native Proxy and verifies its update receipt with controlled Gateway responses. Controlled Compute, the simulated attachment, and simulated Kubernetes transport do not establish live delivery or a model turn. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) and [implementation status](../reference/credential-sources.md#implementation-status) for the remaining boundaries.
 
 ## Related docs
 
@@ -91,6 +101,10 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 14:53: Combine the credential workflow with committed Source delivery updates and controlled caller proof. (authoring-run/bdd1048e-11c2-4f1f-9021-5069535f66bf - ad9964a9b2975199780000000c6ada2a2e8b376a)
+
+- 2026-11-22 12:21: Combine committed Source notification with native Provider receipt readiness. (authoring-run/52979f29-7db2-44bf-a8e4-3a7d8a6b9134 - 4df883ed81bb92632f909d76346d7874ec2761c5)
 
 - 2026-11-22 12:08: Explain first-use Provider creation and the accepted stale-copy limitation. (authoring-run/193bbeb9-3f9b-4d51-a11f-6f763c5a299f - a6b923bad)
 
