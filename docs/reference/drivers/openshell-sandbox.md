@@ -1,10 +1,10 @@
 # OpenShell SandboxDriver
 
-For development, use [OpenShell v0.1.8](https://github.com/NVIDIA/OpenShell/tree/v0.1.8),
+For development, use [OpenShell v0.1.9](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.9),
 the pinned OCE runtime, [Kubernetes Compute](kubernetes-compute.md) and dedicated
 Codex or native OpenClaw. Embedded OpenClaw is unsupported.
 OCC owns Agents, revisions, Namespaces, routing, credentials and authorization.
-The [Credential Gateway](openshell-credential-gateway.md) delivers model credentials.
+Model credentials use the [Credential Gateway](openshell-credential-gateway.md) or [Credential Proxy](credential-proxy.md).
 Revision providers supply node enrollment and Codex files.
 [Production qualification](#qualification-contract) remains open.
 
@@ -30,12 +30,8 @@ routing, and the per-Agent Gateway. Sandbox owns:
   resources, and NetworkPolicies, then owns the exact active Workspace. A
   [preprovisioned namespace](kubernetes-compute/preprovisioned-namespace.md)
   only verifies them.
-- `provisionHarness` creates one Workspace Sandbox. Dedicated Codex exposes its
-  app-server. A native OpenClaw worker connects outbound and can expose a
-  temporary status endpoint until its workspace node enrolls. The Driver adds each
-  [credential attachment](openshell-sandbox/harness-providers.md#credential-attachments) and that Agent revision's Harness runtime provider
-  to the Sandbox's providers, validates any Codex route, and returns the stable Sandbox reference.
-  Private [workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before execution.
+- `provisionHarness` creates a Sandbox with [credential attachments](openshell-sandbox/harness-providers.md#credential-attachments) and runtime Provider, validates Codex routing, and returns its reference. Codex exposes app-server; OpenClaw connects outbound with status until node enrollment. [Workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before execution.
+- Staged `provisionStagedHarness` creates an idle target; preparation installs launch inputs, and activation starts the Harness through a fresh `ExecSandbox`. See the [staged lifecycle](../../flows/credential-source-lifecycle.md#pending-native-integration).
 - OpenShell's controller creates and owns the Sandbox's Harness Pod.
 - `cleanup` derives the stable Sandbox identity during Agent revision retirement, even
   without its Pod. Namespace cleanup verifies Workspace ownership and
@@ -247,14 +243,14 @@ required; omitting runtime selection does not establish runtime compatibility.
 
 ### Gateway Kubernetes authority
 
-Stock OpenShell v0.1.8 operator mode
-[watches Sandboxes cluster-wide](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/crates/openshell-driver-kubernetes/src/driver.rs#L5819-L5831).
+Stock OpenShell v0.1.9 operator mode
+[watches Sandboxes cluster-wide](https://github.com/NVIDIA/OpenShell/blob/ce58cf8e9b953281352d98a637e41616295b1318/crates/openshell-driver-kubernetes/src/driver.rs#L5819-L5831).
 Selectors filter discovery, not RBAC. Sandbox `list`/`watch` exposes Pod templates,
 literal values and Secret references, without granting Secret payload access.
 
-The [operator ClusterRole](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/deploy/helm/openshell/templates/clusterrole.yaml#L67-L126)
+The [operator ClusterRole](https://github.com/NVIDIA/OpenShell/blob/ce58cf8e9b953281352d98a637e41616295b1318/deploy/helm/openshell/templates/clusterrole.yaml#L67-L126)
 permits cluster-wide Sandbox and Pod mutations. The
-[0.1.8 Workspace Role](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/deploy/helm/openshell-workspace/templates/role.yaml#L39-L57)
+[0.1.9 Workspace Role](https://github.com/NVIDIA/OpenShell/blob/ce58cf8e9b953281352d98a637e41616295b1318/deploy/helm/openshell-workspace/templates/role.yaml#L39-L57)
 adds Pod create/delete/list/patch/watch and Service/NetworkPolicy create/get.
 The 0.1.6 operator ClusterRole already granted these verbs cluster-wide.
 Disabling sandbox updates, namespace labels and NetworkPolicies
@@ -323,7 +319,7 @@ and `/tmp` `emptyDir` volumes limited to `1Gi` and `64Mi`.
 
 ### Remaining qualification work
 
-OpenShell's optional [supervisor application listener](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/docs/how-it-works/gateways/configuration.mdx#supervisor-application-listener)
+OpenShell's optional [supervisor application listener](https://github.com/NVIDIA/OpenShell/blob/ce58cf8e9b953281352d98a637e41616295b1318/docs/how-it-works/gateways/configuration.mdx#supervisor-application-listener)
 serves HTTP and WebSocket traffic on a separate port. OCE still needs routing to
 the owning supervisor and application authentication. Verify a real model turn
 there, deny management RPCs from Agent Gateways, and reserve control-plane
@@ -351,10 +347,11 @@ becomes `RUNTIME_LOGS_SANDBOX_NOT_FOUND`. See
   the attachment and check its provider status in OpenShell.
 - For an unavailable Gateway, check Service and Pod readiness.
 - For `SANDBOX_HARNESS_UNSUPPORTED`, select dedicated Codex or OpenClaw.
-- `OpenShell refused <method>: ... limit of 1000 durable request admissions ...`
-  reports `SANDBOX_ADMISSION_LIMIT_REACHED`. Completed records expire after 24
-  hours; unsuccessful ones have no reset API: inspect the Gateway database
-  before redeploying. Other `RESOURCE_EXHAUSTED` errors retry as usual.
+- `OpenShell refused <method>: ... limit of durable request admissions ...`
+  reports `SANDBOX_ADMISSION_LIMIT_REACHED`. Raise the
+  [configured limit](../../guides/deploy/eks-openshell-setup.md#openshell-gateway-admission-limit)
+  or, since no API resets unresolved records, inspect the Gateway database, then redeploy.
+  Other `RESOURCE_EXHAUSTED` errors retry.
 - `OpenShell dedicated Harness exposure requires one literal APP_TOKEN_SHA verifier.`
   Malformed deployment or raw app-server token.
 - `Codex plugin preparation failed before native WebSocket startup.`

@@ -2457,7 +2457,11 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     snapshotRuntimeInputs(revision: Readonly<AgentRevision>) {
       deploymentSteps.push("snapshot runtime inputs");
       assert.ok(Object.isFrozen(revision.compute));
-      return originalSnapshotRuntimeInputs?.(revision);
+      // The synthetic topology above supports ordinary ACLs. Kubernetes snapshots images
+      // only for its own supported ACL topology, protected dedicated Codex.
+      return revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+        ? originalSnapshotRuntimeInputs?.(revision)
+        : undefined;
     },
     requiresAgentRuntimeCredentials: true,
     async getAgentRuntimeCredentialStatus() {
@@ -2516,6 +2520,13 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     checkedResponse(fixture, await fixture.request("GET", url), SandboxPolicyViewResponse).data;
   const approvedPolicy = await readPolicy(policyPath);
   assert.deepEqual(approvedPolicy.repositoryNetworkPolicyCeiling, requested);
+
+  // A malformed asynchronous denial must not disclose the Installation's write grant.
+  const invalidApproval = t.mock.method(namespacePolicy, "repositoryNetworkPolicyAllows", () =>
+    Promise.resolve(false),
+  );
+  assert.deepEqual((await readPolicy(policyPath)).repositoryNetworkPolicyCeiling, []);
+  invalidApproval.mock.restore();
 
   // A formerly valid saved policy can survive a change in Namespace approval.
   // Recheck it during deployment before persisting a revision or invoking the Driver.

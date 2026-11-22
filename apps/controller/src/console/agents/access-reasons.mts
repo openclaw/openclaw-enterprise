@@ -54,11 +54,16 @@ export const SECRET_CREATE_DENIED = onlyAdministratorCreates(
   "in this Namespace",
   "create it and to give you Secret read and operate on it",
 );
-export const NAMESPACE_CREATE_DENIED = onlyAdministratorCreates(
-  "Namespaces",
-  "in this Installation",
-  "create a Namespace or to give you access to an existing one",
-);
+export function namespaceCreateDenied(installationAdmin: boolean | null) {
+  const required = "Creating a Namespace requires Namespace create in this Installation.";
+  if (installationAdmin === true) {
+    return `${required} Check whether an IAM Restriction applies.`;
+  }
+  if (installationAdmin === false) {
+    return `${required} ${askAdministratorTo("check your access")}`;
+  }
+  return `${required} Check your access and whether an IAM Restriction applies.`;
+}
 // Namespace IAM Roles grant only namespace:read on the Namespace itself, so no grant lets a member
 // delete one: the reason names who can, not a grant to ask for (finding D788).
 export const NAMESPACE_DELETE_DENIED =

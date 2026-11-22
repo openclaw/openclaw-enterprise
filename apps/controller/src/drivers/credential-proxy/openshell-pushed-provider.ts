@@ -14,7 +14,6 @@ import {
   MANAGED_BY,
   MANAGED_BY_LABEL,
   SOURCE_ID_LABEL,
-  openShellOwnedBy,
   openShellProviderName,
 } from "../../backends/openshell.ts";
 import {
@@ -25,6 +24,10 @@ import {
   type OpenShellStoredProviderProfile,
   type OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
+import {
+  openShellNetworkRouteMayOverlap,
+  sameOpenShellPolicy,
+} from "../sandbox/openshell-policy.ts";
 
 const NAMESPACE_ID = "openclaw.dev/namespace-id";
 const DELIVERY_OWNER = "openclaw.dev/credential-proxy-delivery";
@@ -121,6 +124,23 @@ function checkProfile(
   return stored.resourceVersion;
 }
 
+function ownsDeliveryProvider(
+  provider: OpenShellProviderResponse | undefined,
+  binding: DeploymentCredentialBinding,
+  workspace: string,
+): provider is OpenShellProviderResponse {
+  return (
+    !!provider &&
+    provider.name === openShellProviderName(binding.sourceRef.id) &&
+    provider.workspace === workspace &&
+    provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
+    provider.labels[SOURCE_ID_LABEL] === binding.sourceRef.id &&
+    provider.labels[NAMESPACE_ID] === binding.sourceRef.namespaceId &&
+    provider.labels[DELIVERY_OWNER] === STATIC_DELIVERY &&
+    provider.labels[TOKEN_SERVICE_OWNER] === undefined
+  );
+}
+
 function checkProvider(
   provider: OpenShellProviderResponse | undefined,
   binding: DeploymentCredentialBinding,
@@ -131,14 +151,9 @@ function checkProvider(
   const version = provider?.config[SOURCE_VERSION];
   // Native TokenService sources can use the same source-derived name. Mixed ownership is unsafe.
   if (
-    !provider ||
-    !openShellOwnedBy(provider, binding.sourceRef.id) ||
-    provider.name !== openShellProviderName(binding.sourceRef.id) ||
-    provider.workspace !== workspace ||
+    !ownsDeliveryProvider(provider, binding, workspace) ||
+    provider.type !== openShellProviderName(binding.sourceRef.id) ||
     provider.profileWorkspace !== workspace ||
-    provider.labels[NAMESPACE_ID] !== binding.sourceRef.namespaceId ||
-    provider.labels[DELIVERY_OWNER] !== STATIC_DELIVERY ||
-    provider.labels[TOKEN_SERVICE_OWNER] !== undefined ||
     !provider.id ||
     !/^[1-9]\d*$/.test(provider.resourceVersion) ||
     !version ||
@@ -157,8 +172,26 @@ function checkProvider(
   });
 }
 
-/** First-use transfer only. Reusing a delivery Provider never resolves or repairs its value. */
-export async function prepareOpenShellPushedProvider(input: {
+/** Cleanup depends on ownership, not on whether this Provider passed readiness. */
+export async function readOwnedOpenShellPushedProvider(input: {
+  readonly client: Pick<OpenShellGatewayClient, "getProvider">;
+  readonly workspace: string;
+  readonly binding: DeploymentCredentialBinding;
+  readonly signal: AbortSignal;
+}): Promise<OpenShellProviderResponse> {
+  const provider = await input.client.getProvider(
+    input.workspace,
+    openShellProviderName(input.binding.sourceRef.id),
+    input.signal,
+  );
+  if (!ownsDeliveryProvider(provider, input.binding, input.workspace)) {
+    refuse();
+  }
+  return provider;
+}
+
+/** Reuse the Proxy's Provider copy, or initialize it from an authorized OCC TokenService Source. */
+export async function prepareOccTokenServiceProviderCopy(input: {
   readonly client: Pick<
     OpenShellGatewayClient,
     | "getWorkspace"
@@ -192,16 +225,8 @@ export async function prepareOpenShellPushedProvider(input: {
   }
   const profile = profileFor(binding);
   const existing = await client.getProvider(workspace, profile.id, signal);
-  if (existing) {
-    const profileVersion = checkProfile(
-      await client.getProviderProfile(workspace, profile.id, signal),
-      profile,
-    );
-    return checkProvider(existing, binding, workspace, owner.id, profileVersion);
-  }
-
   let stored = await client.getProviderProfile(workspace, profile.id, signal);
-  if (!stored) {
+  if (!stored && !existing) {
     try {
       await client.importProviderProfile(workspace, profile, signal);
     } catch (error) {
@@ -214,9 +239,9 @@ export async function prepareOpenShellPushedProvider(input: {
   }
   const profileVersion = checkProfile(stored, profile);
   // Another deployment may have completed initialization while the profile was being imported.
-  const concurrent = await client.getProvider(workspace, profile.id, signal);
-  if (concurrent) {
-    return checkProvider(concurrent, binding, workspace, owner.id, profileVersion);
+  const prior = existing ?? (await client.getProvider(workspace, profile.id, signal));
+  if (prior) {
+    return checkProvider(prior, binding, workspace, owner.id, profileVersion);
   }
   let resolved: ResolvedCredential;
   try {
@@ -229,27 +254,25 @@ export async function prepareOpenShellPushedProvider(input: {
     refuse();
   }
   signal.throwIfAborted();
+  const transfer = {
+    workspace,
+    name: profile.id,
+    type: profile.id,
+    labels: {
+      [MANAGED_BY_LABEL]: MANAGED_BY,
+      [SOURCE_ID_LABEL]: binding.sourceRef.id,
+      [NAMESPACE_ID]: input.namespaceId,
+      [DELIVERY_OWNER]: STATIC_DELIVERY,
+    },
+    credentials: { [binding.projection.environment]: resolved.credential },
+    config: { [SOURCE_VERSION]: resolved.version },
+    ...(resolved.expiresAt && {
+      credentialExpirationTimes: { [binding.projection.environment]: resolved.expiresAt },
+    }),
+  };
   let provider: OpenShellProviderResponse | undefined;
   try {
-    provider = await client.createProvider(
-      {
-        workspace,
-        name: profile.id,
-        type: profile.id,
-        labels: {
-          [MANAGED_BY_LABEL]: MANAGED_BY,
-          [SOURCE_ID_LABEL]: binding.sourceRef.id,
-          [NAMESPACE_ID]: input.namespaceId,
-          [DELIVERY_OWNER]: STATIC_DELIVERY,
-        },
-        credentials: { [binding.projection.environment]: resolved.credential },
-        config: { [SOURCE_VERSION]: resolved.version },
-        ...(resolved.expiresAt && {
-          credentialExpirationTimes: { [binding.projection.environment]: resolved.expiresAt },
-        }),
-      },
-      signal,
-    );
+    provider = await client.createProvider(transfer, signal);
   } catch (error) {
     if (!(error instanceof OpenShellProviderAlreadyExistsError)) {
       signal.throwIfAborted();
@@ -317,16 +340,106 @@ export function assertOpenShellInjectionPolicy(
   return request;
 }
 
+// TODO(native policy): require leaf-only executable rules (#4943) and Bearer-only
+// placeholder substitution when OpenShell provides those enforcement capabilities.
+/** Check the Gateway's effective policy, including its derived credential marker. */
+export function openShellPushedPolicyMatches(
+  source: unknown,
+  effective: unknown,
+  request: DeploymentRequestMatch,
+  provider: string,
+): boolean {
+  const sourceNetworks = asRecord(asRecord(source)?.network_policies);
+  const networks = asRecord(asRecord(effective)?.network_policies);
+  const port = request.ports[0]?.from;
+  if (!sourceNetworks || !networks || !port || request.requestPolicy?.type !== "http") {
+    return false;
+  }
+  let matched: string | undefined;
+  for (const [name, value] of Object.entries(networks)) {
+    const rule = asRecord(value);
+    if (!rule) {
+      return false;
+    }
+    if (rule.endpoints === undefined) {
+      continue;
+    }
+    if (!Array.isArray(rule.endpoints)) {
+      return false;
+    }
+    for (const value of rule.endpoints) {
+      const endpoint = asRecord(value);
+      const host = typeof endpoint?.host === "string" ? endpoint.host.toLowerCase() : "";
+      const ports =
+        Array.isArray(endpoint?.ports) && endpoint.ports.length
+          ? endpoint.ports
+          : typeof endpoint?.port === "number" && endpoint.port > 0
+            ? [endpoint.port]
+            : [];
+      const binding = asRecord(endpoint?.credential_binding);
+      if (binding?.provider !== provider) {
+        continue;
+      }
+      if (
+        matched !== undefined ||
+        !endpoint ||
+        host !== request.host.toLowerCase() ||
+        !sameOpenShellPolicy(rule.binaries, [{ path: request.binary }]) ||
+        rule.name !== name ||
+        rule.endpoints.length !== 1 ||
+        !sameOpenShellPolicy(sourceNetworks[name], {
+          ...rule,
+          endpoints: [{ ...endpoint, provider_credentialed: undefined }],
+        }) ||
+        !sameOpenShellPolicy(
+          {
+            ...endpoint,
+            port: undefined,
+            ports,
+            enforcement:
+              endpoint.enforcement === 1
+                ? "NETWORK_ENFORCEMENT_MODE_ENFORCE"
+                : endpoint.enforcement,
+          },
+          {
+            host: request.host,
+            ports: [port],
+            protocol: "rest",
+            enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+            rules: [
+              { allow: { method: request.requestPolicy.method, path: request.requestPolicy.path } },
+            ],
+            credential_binding: { provider },
+            provider_credentialed: true,
+          },
+        )
+      ) {
+        return false;
+      }
+      matched = name;
+    }
+  }
+  return (
+    matched !== undefined &&
+    !openShellNetworkRouteMayOverlap(networks, { host: request.host, port }, [matched])
+  );
+}
+
 export function assertOpenShellPushedBinding(
   context: CredentialDeploymentContext,
   binding: DeploymentCredentialBinding,
   policies: readonly CredentialInjectionPolicy[],
 ): void {
+  const admitted = context.revision.credentialDeployment;
   if (
+    context.revision.executionAdmission.version !== 8 ||
+    context.revision.executionAdmission.mode !== "standalone" ||
+    !admitted ||
+    admitted.bindings.length !== 1 ||
+    !isDeepStrictEqual(admitted.bindings[0], binding) ||
+    !isDeepStrictEqual(admitted.injectionPolicies, policies) ||
     !binding.bindingRef ||
     binding.consumer.kind !== "model" ||
-    !context.revision.harness.modelProviderId ||
-    binding.consumer.providerId !== context.revision.harness.modelProviderId ||
     binding.sourceRef.kind !== "credential_source" ||
     !binding.sourceRef.id ||
     binding.sourceRef.namespaceId !== context.namespace.id ||
