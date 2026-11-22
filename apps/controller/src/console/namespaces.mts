@@ -1,6 +1,7 @@
 import type { Namespace } from "@openclaw-enterprise/contracts";
 import { type createApiClient, requestFailure, responseFields } from "./api-client.mjs";
 import {
+  bindLinkClick,
   button,
   dismissOnBackdrop,
   element,
@@ -157,13 +158,7 @@ export function renderNamespaces(
       setStatus(item.status);
       const name = element("a", { href: context.pageUrl("agents", item.id) }, item.name ?? item.id);
       name.dataset.returnFocusHref = name.href;
-      name.addEventListener("click", (event) => {
-        if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-          return;
-        }
-        event.preventDefault();
-        context.navigate("agents", item.id);
-      });
+      bindLinkClick(name, () => context.navigate("agents", item.id));
       const row = element("li", { className: "resource-linked namespace-row" });
       const deletion = createNamespaceDeletion(
         {
