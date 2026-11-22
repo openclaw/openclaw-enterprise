@@ -237,8 +237,10 @@ reads the projected Secret once.
 checks ownership and setup material for `node-setup.json`, including `bootstrapToken`.
 Provider output stays private. Failures raise `OpenShellSandboxConfigurationFailure`.
 TLS-pinned setup requires `wss://` at admission and replacement because device
-proofs sign the literal token. Renewal requires expired stored setup, later live
-expiry, and the same endpoint, TLS fingerprint, runtime, and CA. Policy binds
+proofs sign the literal token. Renewal requires expired or empty stored setup, later
+live expiry, and the same endpoint, TLS fingerprint, runtime, and CA. After pairing,
+new Codex providers get empty setup; existing ones keep theirs with the same endpoint
+and TLS fingerprint. Policy binds
 the Gateway to `/usr/local/bin/node`. Foreign ownership or drift blocks creation.
 
 State uses `/sandbox/.openclaw-runtime`; subpaths use `/sandbox/.openclaw-mounts`.
