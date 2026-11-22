@@ -3130,6 +3130,16 @@ if ((helm_complete == 0)); then
     remaining_seconds=$((deadline - SECONDS))
     ((remaining_seconds > 0)) || die "OCC quiescence timed out; migration was not started."
   }
+  check_worker_patch_access() {
+    local decision
+    quiescence_remaining
+    if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
+      [[ "$decision" == true ]] ||
+        die "Kubernetes denied patch on worker Deployment $namespace/openclaw-enterprise-worker. Obtain patch access before resuming."
+    else
+      warn "Could not verify patch access to the worker Deployment. The upgrade requires patch permission to stop it."
+    fi
+  }
   handoff="$evidence_dir/database-migration-handoff.json"
   separate_handoff=0
   if [[ "$upgrade_migration" == separate && ! -f "$evidence_dir/helm-started" ]]; then
@@ -3177,6 +3187,11 @@ if ((helm_complete == 0)); then
         --occ "$occ" --timeout-seconds "$timeout_seconds" ||
         die "The quiesced upgrade lacks confirmed Agent Stop evidence; inspect the original journal and inventory."
     else
+      # Access can change while Agents stop. Check again before scaling the writers.
+      if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+        check_worker_patch_access
+      fi
+      quiescence_remaining
       python3 scripts/upgrade-channel-egress stop --evidence-dir "$evidence_dir" \
         --occ "$occ" --timeout-seconds "$timeout_seconds" ||
         die "Agent Stop is incomplete; preserve the original journal and inspect the recorded operations."
@@ -3187,13 +3202,7 @@ if ((helm_complete == 0)); then
   # Refresh before the first stop, including resume when the worker still runs.
   # This detects changed selections; exclusive maintenance ownership is still required.
   if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
-    quiescence_remaining
-    if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
-      [[ "$decision" == true ]] ||
-        die "Kubernetes denied patch on worker Deployment $namespace/openclaw-enterprise-worker. Obtain patch access before resuming."
-    else
-      warn "Could not verify patch access to the worker Deployment. The upgrade requires patch permission to stop it."
-    fi
+    check_worker_patch_access
     read_restart_inventory "$evidence_dir/inventory/before-stop.json"
     normalize_restart_inventory "$evidence_dir/inventory/before-stop.json" >"$evidence_dir/inventory/before-stop-selection.json"
     if [[ "$channel_egress_enabled" == true ]]; then

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: 2026-11-21
-last_updated_session: authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0
+updated: 2026-11-22
+last_updated_session: authoring-run/b416457c-0666-4d48-9386-73ba2aff3ac5
 ---
 
 # Production image upgrade flow
@@ -240,14 +240,14 @@ remain operator attestations.
 ### 3. Quiesce writers and run the candidate release
 
 `scripts/upgrade-production-images:quiescence_remaining` bounds shutdown.
-Validate both Deployments. Before either stop, check named patch permission for
-running workers. Refuse denial and warn on inconclusive review.
-While the worker runs, refuse inventory drift, including on resume. Restore stopped
-API access under exclusive maintenance ownership before retry.
-Skip stopped writers. Stopped workers lack prospective checks.
-Sequential patches test UID, resource version and replicas. Conflicts can leave
-the API stopped. Verify Pod absence and original Deployments at zero. Operators
-stop other writers/autoscalers and keep nodes reachable.
+Validate both Deployments. Check named patch access for running workers before
+stopping writers. Before channel Agent Stop, check the deadline and running worker’s
+patch permission. Denial blocks. Inconclusive reviews warn.
+Reject inventory drift while workers run, including on resume. Restore API
+access under exclusive maintenance before retry.
+Skip stopped writers. Sequential patches test UID, resource version and replicas.
+Conflicts can leave the API stopped. Verify original Deployments at zero and
+Pods absent. Stop other writers/autoscalers. Keep nodes reachable.
 Separate mode rechecks Secret identities before stopping writers and again before
 recording their stopped UIDs and generations, then exits 3. `apply_database_migration`
 requires irreversible SQL approval, a verified separate render and no Helm
@@ -374,6 +374,7 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-22 14:59: Trace Worker preflight. (authoring-run/b416457c-0666-4d48-9386-73ba2aff3ac5 - 6affa13c1f222c0c4e5b3c1116dbdce7ec2c5e41)
 - 2026-11-21 09:16: Trace rendered mode and retry. (authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0 - f9fb2a1f6fed7afd4ba8e69737f611e55604f587)
 - 2026-11-21 03:11: Reconcile publication selection with current upgrade admission and recovery. (authoring-run/5e8acf3b-45b0-4fbd-801d-493e4787e9dc - e67cd3cd0357e002ccc62f410454649ea4bfefd9)
 

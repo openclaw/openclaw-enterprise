@@ -2561,6 +2561,10 @@ exec "$0.fixture" "$@"
       "the channel one-off reaches guarded Stop with the legacy proxy and unrelated policies",
     ],
     [
+      "worker-patch-denied",
+      "the channel one-off refuses a named Worker patch denial before Agent Stop",
+    ],
+    [
       "generated-binding",
       "a policy depending on a generated binding value is deferred until channel activation",
     ],
@@ -2921,6 +2925,11 @@ exec "$0.fixture" "$@"
             ],
           },
         });
+        if (scenario === "worker-patch-denied") {
+          const state = await f.state();
+          state.denyWorkerPatch = true;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        }
         const candidate = join(f.directory, "channel-candidate");
         await execute(
           "python3",
@@ -3009,6 +3018,14 @@ exec "$0.fixture" "$@"
               `Channel direct-egress guard preflight refused the candidate: ${placement} ${reason}.`,
             ),
             failure.stderr,
+          );
+          await assertStoppedBeforeWriters(f);
+        } else if (scenario === "worker-patch-denied") {
+          assert.deepEqual(f.stopRequests, []);
+          assert.equal(failure.code, 1);
+          assert.match(
+            failure.stderr,
+            /Kubernetes denied patch on worker Deployment system\/openclaw-enterprise-worker\. Obtain patch access before resuming\./,
           );
           await assertStoppedBeforeWriters(f);
         } else if (scenario === "no-result") {
