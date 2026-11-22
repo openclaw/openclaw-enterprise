@@ -23,12 +23,12 @@ import {
   type ControllerOptions,
   type InstallationIAMConfiguration,
 } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { changeAccount, fixtureOidcIssuer } from "../helpers/production-sign-in.mjs";
 

@@ -1,14 +1,15 @@
 import type { AgentRevision, HarnessWorkloadRequirements } from "@openclaw-enterprise/contracts";
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
-import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
+import { asRecord } from "@openclaw-enterprise/utils";
 import { openShellProviderName } from "../../backends/openshell.ts";
 import {
   type ManagedMcpInstall,
   managedMcpCredentialBinding,
   managedMcpInstalls,
+  managedMcpRequests,
 } from "../plugin/managed-catalog.ts";
 import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
-import { sameOpenShellPolicy } from "./openshell-policy.ts";
+import { openShellNetworkRouteMayOverlap, sameOpenShellPolicy } from "./openshell-policy.ts";
 
 function managedMcpNetworkName(install: ManagedMcpInstall): string {
   return `oce-${install.runtimeName}-mcp`;
@@ -30,9 +31,6 @@ function unsupported(message: string): never {
 }
 
 export function managedMcpNetwork(install: ManagedMcpInstall, toolNames: readonly string[]) {
-  const methods = toolNames.length
-    ? ["ping", "initialize", "notifications/initialized", "tools/list"]
-    : ["ping"];
   const { port, ...endpoint } = openShellProfileEndpoint(managedMcpProviderEndpoint(install));
   return {
     name: managedMcpNetworkName(install),
@@ -41,12 +39,12 @@ export function managedMcpNetwork(install: ManagedMcpInstall, toolNames: readonl
       {
         ...endpoint,
         ports: [port],
-        rules: [
-          ...methods.map((method) => ({ allow: { method } })),
-          ...toolNames.map((name) => ({
-            allow: { method: "tools/call", params: { name: { glob: name } } },
-          })),
-        ],
+        rules: managedMcpRequests(toolNames).map(({ method, toolName }) => ({
+          allow: {
+            method,
+            ...(toolName !== undefined && { params: { name: { glob: toolName } } }),
+          },
+        })),
       },
     ],
   };
@@ -135,49 +133,12 @@ export function assertNoManagedMcpRouteOverlap(
   if (!network) {
     unsupported("OpenShell could not verify the managed MCP network policy.");
   }
-  const { host, port } = install.endpoint;
-  for (const [name, rule] of Object.entries(network)) {
-    if (exactRoutes.includes(name)) {
-      continue;
-    }
-    if (name === managedMcpNetworkName(install)) {
-      unsupported("The managed MCP network rule name is reserved.");
-    }
-    const endpoints = asRecord(rule)?.endpoints;
-    if (endpoints === undefined) {
-      // OpenShell emits an endpointless provider for its runtime files.
-      continue;
-    }
-    if (!Array.isArray(endpoints)) {
-      unsupported("OpenShell could not verify an endpoint against the managed MCP network policy.");
-    }
-    for (const entry of endpoints) {
-      const endpoint = asRecord(entry);
-      if (typeof endpoint?.host !== "string") {
-        unsupported(
-          "OpenShell could not verify a destination against the managed MCP network policy.",
-        );
-      }
-      const ports =
-        Array.isArray(endpoint.ports) && endpoint.ports.length
-          ? endpoint.ports
-          : typeof endpoint.port === "number" && endpoint.port > 0
-            ? [endpoint.port]
-            : [port];
-      if (!ports.includes(port)) {
-        continue;
-      }
-      const candidate = endpoint.host.toLowerCase().replace(/\.$/, "");
-      const wildcard = /^\*{1,2}\.[a-z0-9.-]+$/.test(candidate);
-      if (
-        (!wildcard && !/^[a-z0-9.-]+$/.test(candidate)) ||
-        numericLastLabel(candidate) ||
-        candidate === host ||
-        (wildcard && host.endsWith(candidate.slice(candidate.indexOf("."))))
-      ) {
-        unsupported("An OpenShell network route overlaps the credentialed managed MCP endpoint.");
-      }
-    }
+  const reserved = managedMcpNetworkName(install);
+  if (Object.hasOwn(network, reserved) && !exactRoutes.includes(reserved)) {
+    unsupported("The managed MCP network rule name is reserved.");
+  }
+  if (openShellNetworkRouteMayOverlap(network, install.endpoint, exactRoutes)) {
+    unsupported("An OpenShell network route overlaps the credentialed managed MCP endpoint.");
   }
 }
 

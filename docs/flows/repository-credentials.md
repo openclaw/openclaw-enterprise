@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-11-15
-last_updated_session: authoring-run/b6f44520-bd43-4be4-abf7-ea80e0dd95af
+updated: 2026-11-21
+last_updated_session: authoring-run/b88f6822-c851-4266-9e3c-475680ad8a40
 ---
 
 # Repository credential service flow
@@ -46,6 +46,15 @@ graph TD
   Closed --> Cleanup["Join original settlement<br/>retire and finalize"]
   Cleanup -->|Resolved| Disposed["Session disposed"]
   Cleanup -->|Unresolved| Pending["Pending records within session capacity"]
+  Disposed -->|Finite native removal| NativeCustody["Check settled prepared Git custody"]
+  NativeCustody -->|Confirmed| NativeRuntime["Observe retained runtime"]
+  NativeCustody -->|Settlement outstanding| NativeWithdrawalPending["Defer Git withdrawal"]
+  NativeRuntime -->|Ready| NativeAuthority["Recheck model authority"]
+  NativeRuntime -->|Unconfirmed| NativeWithdrawalPending
+  NativeAuthority -->|Current| NativeKeep["Record withdrawal"]
+  NativeAuthority -->|Unconfirmed| NativeWithdrawalPending
+  NativeAuthority -->|Lost| NativeStop["Queue runtime retirement"]
+  NativeCustody -->|Unsafe| NativeStop
 ```
 
 ## Execution Trace
@@ -286,30 +295,26 @@ exchange. Original provider settlement and cleanup outlive requests.
 ### 6. Close locally and finish cleanup
 
 `apps/controller/src/drivers/repo/access/service.ts:createCredentialService` closes
-sessions before exchange cancellation and cleanup. Disposal awaits exchanges, original
-actions, captures, renewal state and auxiliary finalization. Before dispatch, a full provider queue makes `apps/controller/src/drivers/repo/access/lifecycle.ts` defer retirement
-and finalization, registering one waiter per session via
-`apps/controller/src/drivers/repo/access/provider-queue.ts`. Available capacity wakes
-cleanup. Queue rejection alone never marks an action uncertain.
+sessions before cancelling exchanges. Disposal joins the exchanges, original actions,
+captures, renewal and auxiliary cleanup. A full provider queue registers a waiter
+and resumes cleanup when capacity returns.
 
 `apps/controller/src/composition/repository-credentials/service.ts:runService` stops
-admission, closes sessions and independently bounds cleanup. Grace expiry reports
-unresolved obligations. The original broker journals `DISPOSED` in the worker before reporting it. Graceful exit allows ten extra seconds for terminal writes. The Helm worker’s restartable init container preserves receipts through
-broker shutdown. Both private listeners (receipt and prepared Git) disconnect
-clients and join admitted handlers before Worker pool teardown.
+admission and gives terminal writes ten seconds beyond shutdown grace. The Helm
+worker's restartable init container preserves receipts during broker shutdown.
+The private listeners join admitted handlers before Worker pool teardown.
 
-For claimed closing protocol 1/3 cleanup,
-`apps/controller/src/worker/repository-credentials.ts:consumeDisposedReceipt`
-reads the original broker's receipt. A `DISPOSED` hint starts a transaction:
-check the claim, lock and match the attempt, validate that receipt,
-recheck the claim, record disposal. Committed receipts supply missing
-session IDs. If locked reads cannot confirm it, cleanup stays pending
-without sender calls. Failed initial lookups or those without terminal receipts
-use the attempt's original sender.
+`apps/controller/src/worker/repository-credentials.ts:consumeDisposedReceipt` checks
+the claim and matches the receipt under the attempt lock. Committed receipts supply
+missing session IDs. An unconfirmed locked read stays pending. An initial lookup
+without a terminal receipt uses the original sender.
 
-Only committed observations survive restart. Uncertain provider inventory stays unknown.
-The original issuer retains token cleanup. The sender closes TLS and session material
-after shutdown disposition. Failed construction remains unpublished, undisposed and counted in `pendingAuxiliary`. Disposal wakes shutdown waiters.
+PostgreSQL fences finite native removal. The Worker checks broker disposal, token custody, draft
+outcomes, and current model authority. It records withdrawal after the same Gateway and Harness
+are ready and the bound workspace node is connected.
+
+Only committed observations survive restart. The original issuer owns unresolved
+custody. Unpublished failures count against `pendingAuxiliary` until disposed.
 
 ## Emitted packaging
 
@@ -353,6 +358,8 @@ client and alternate-adapter checks; qualify live providers separately.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 14:36: Document finite native Git withdrawal and continued Agent supervision. (authoring-run/b88f6822-c851-4266-9e3c-475680ad8a40 - 1eee26216501da34515587f597a21fa2fffeaa61)
 
 - 2026-11-15 00:24: Document claimed cleanup from committed native disposal receipts. (authoring-run/b6f44520-bd43-4be4-abf7-ea80e0dd95af - 5d61a52ed35e25b857884f684b5c5892bad5da2e)
 

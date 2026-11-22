@@ -44,13 +44,14 @@ export async function chartTooling() {
 export const productionValues = {
   // Direct-access fixture: routing cases override or omit this explicit opt-out.
   "gatewayRouting.enabled": "false",
+  "channelEgress.enabled": "false",
   "images.controller": `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
   "auth.baseUrl": "https://occ.example.invalid",
   "agentNativeAdmin.domain": "agents.example.invalid",
   "auth.secretName": "occ-auth",
   "auth.secretKey": "secret",
   "bootstrap.adminEmail": "admin@example.invalid",
-  "bootstrap.password.claimName": "occ-bootstrap-admin-password",
+  "bootstrap.credentials.secretName": "occ-bootstrap-credentials",
   "api.clients[0].namespace": "operator-tools",
   "api.clients[0].podLabels.app": "operator",
   "database.cidrs[0]": "10.45.0.12/32",

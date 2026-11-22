@@ -1,8 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type { CredentialReadLifetime, NamespaceEnsureResult } from "@openclaw-enterprise/contracts";
+import type {
+  CredentialReadLifetime,
+  NamespaceDeleteResult,
+  NamespaceEnsureResult,
+} from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
-import { MAX_TIMER_DELAY_MS } from "@openclaw-enterprise/utils";
+import { MAX_TIMER_DELAY_MS, numericErrorStatus } from "@openclaw-enterprise/utils";
 
 /**
  * Which optional wait asks whether other Work is waiting: an ordinary stop's Gateway drain, or any
@@ -25,23 +29,40 @@ const workWaitingChecks = new AsyncLocalStorage<(wait: ComputeWorkWait) => Promi
 type YieldingStop = Exclude<ComputeWorkWait, "optional"> | "refused-candidate";
 const yieldingStops = new AsyncLocalStorage<YieldingStop>();
 
-export type NamespaceEnsureHintCode = "KUBERNETES_TENANT_ACCESS_DENIED";
+export type NamespaceHintCode = "KUBERNETES_TENANT_ACCESS_DENIED";
 
-const namespaceEnsureHints = new AsyncLocalStorage<{ hintCode?: NamespaceEnsureHintCode }>();
+const namespaceHints = new AsyncLocalStorage<{ hintCode?: NamespaceHintCode }>();
 
 /** Keep log fields alongside the observation so audit and queue evidence see only the Driver result. */
-export async function captureNamespaceEnsureHint(
-  operation: () => Promise<NamespaceEnsureResult>,
-): Promise<{ observation: NamespaceEnsureResult; hintCode?: NamespaceEnsureHintCode }> {
-  const evidence: { hintCode?: NamespaceEnsureHintCode } = {};
-  const observation = await namespaceEnsureHints.run(evidence, operation);
+export async function captureNamespaceHint<
+  Result extends NamespaceEnsureResult | NamespaceDeleteResult,
+>(
+  operation: () => Promise<Result>,
+): Promise<{ observation: Result; hintCode?: NamespaceHintCode }> {
+  const evidence: { hintCode?: NamespaceHintCode } = {};
+  const observation = await namespaceHints.run(evidence, operation);
   return { observation, ...evidence };
 }
 
-export function recordNamespaceEnsureHint(hintCode: NamespaceEnsureHintCode): void {
-  const evidence = namespaceEnsureHints.getStore();
+function recordNamespaceHint(hintCode: NamespaceHintCode): void {
+  const evidence = namespaceHints.getStore();
   if (evidence !== undefined) {
     evidence.hintCode = hintCode;
+  }
+}
+
+/** Run tenant-resource work and log a hint if Kubernetes answers HTTP 403, a missing tenant grant. */
+export async function withTenantAccessHint<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (
+      numericErrorStatus(error) === 403 &&
+      error instanceof (await import("@kubernetes/client-node")).ApiException
+    ) {
+      recordNamespaceHint("KUBERNETES_TENANT_ACCESS_DENIED");
+    }
+    throw error;
   }
 }
 
@@ -152,13 +173,27 @@ export function isYieldingComputeStop(): boolean {
   return yieldingStops.getStore() === "refused-candidate";
 }
 
+/** Whether this operation is an ordinary stop, whose waits before the Harness is deleted yield. */
+export function isGatewayDrainStop(): boolean {
+  return yieldingStops.getStore() === "gateway-drain";
+}
+
 /**
- * Whether a stop's termination wait for `role`'s Pods should end now because other Work is
- * waiting. Other stops keep their full bounded waits.
+ * Whether a stop's wait should end now because other Work is waiting: the termination wait for
+ * `role`'s Pods, or the wait for a starting Harness (`harness-startup`). An ordinary stop yields
+ * only in the waits before it deletes the Harness. Other stops keep their full bounded waits.
  */
-export async function computeStopShouldYield(role?: "agent" | "gateway"): Promise<boolean> {
+export async function computeStopShouldYield(
+  role?: "agent" | "gateway" | "harness-startup",
+): Promise<boolean> {
   const mode = yieldingStops.getStore();
-  if (mode === "gateway-drain" || mode === "predecessor-completion") {
+  if (mode === "gateway-drain") {
+    return (
+      (role === "gateway" || role === "harness-startup") &&
+      (await computeWorkWaiting("gateway-drain"))
+    );
+  }
+  if (mode === "predecessor-completion") {
     return role === "gateway" && (await computeWorkWaiting(mode));
   }
   return mode === "refused-candidate" && (await computeWorkWaiting("optional"));

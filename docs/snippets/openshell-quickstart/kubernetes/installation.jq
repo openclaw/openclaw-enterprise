@@ -80,7 +80,7 @@
           },
           "namespace": {
             "quota": {
-              "pods": "10"
+              "pods": "20"
             },
             "containerDefaults": {
               "requests": {
@@ -146,8 +146,8 @@
     "sandbox": {
       "id": "openshell-sandbox",
       "configuration": {
+        "integrationMode": "legacy",
         "gateway": {
-          "workspaceMode": "operator",
           "operatorNamespaceLabels": {
             "openshell.ai/openclaw-workspace": "true"
           },
@@ -157,10 +157,10 @@
               "kind": "NetworkPolicy",
               "metadata": {
                 "labels": {
-                  "helm.sh/chart": "openshell-workspace-0.1.8",
+                  "helm.sh/chart": "openshell-workspace-0.1.9",
                   "app.kubernetes.io/name": "openshell-workspace",
                   "app.kubernetes.io/instance": "openshell-workspace",
-                  "app.kubernetes.io/version": "0.1.8",
+                  "app.kubernetes.io/version": "0.1.9",
                   "app.kubernetes.io/managed-by": "Helm"
                 },
                 "name": "openshell-workspace-sandbox-ssh"
@@ -206,10 +206,10 @@
               "kind": "ServiceAccount",
               "metadata": {
                 "labels": {
-                  "helm.sh/chart": "openshell-workspace-0.1.8",
+                  "helm.sh/chart": "openshell-workspace-0.1.9",
                   "app.kubernetes.io/name": "openshell-workspace",
                   "app.kubernetes.io/instance": "openshell-workspace",
-                  "app.kubernetes.io/version": "0.1.8",
+                  "app.kubernetes.io/version": "0.1.9",
                   "app.kubernetes.io/managed-by": "Helm"
                 },
                 "name": "openshell-sandbox"
@@ -220,10 +220,10 @@
               "kind": "Role",
               "metadata": {
                 "labels": {
-                  "helm.sh/chart": "openshell-workspace-0.1.8",
+                  "helm.sh/chart": "openshell-workspace-0.1.9",
                   "app.kubernetes.io/name": "openshell-workspace",
                   "app.kubernetes.io/instance": "openshell-workspace",
-                  "app.kubernetes.io/version": "0.1.8",
+                  "app.kubernetes.io/version": "0.1.9",
                   "app.kubernetes.io/managed-by": "Helm"
                 },
                 "name": "openshell-workspace-sandbox"
@@ -330,10 +330,10 @@
               "kind": "RoleBinding",
               "metadata": {
                 "labels": {
-                  "helm.sh/chart": "openshell-workspace-0.1.8",
+                  "helm.sh/chart": "openshell-workspace-0.1.9",
                   "app.kubernetes.io/name": "openshell-workspace",
                   "app.kubernetes.io/instance": "openshell-workspace",
-                  "app.kubernetes.io/version": "0.1.8",
+                  "app.kubernetes.io/version": "0.1.9",
                   "app.kubernetes.io/managed-by": "Helm"
                 },
                 "name": "openshell-workspace-sandbox"

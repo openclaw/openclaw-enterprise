@@ -90,8 +90,8 @@ OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 Checks named-Job access, replacement, interrupted Helm dispatch, CRDs/controllers,
 quota headroom, address drift and denials. EKS connectivity and Envoy acceptance
 remain unproved. The [production observability lane](local.md#kubernetes-observability-acceptance)
-runs `installation-receipt-k3d-real.test.ts` with PostgreSQL to check bootstrap
-after interruption before and after UID capture.
+checks PostgreSQL bootstrap after interrupted Job capture and lost Secret-create
+acknowledgements through `installation-receipt-k3d-real.test.ts`.
 
 ### Production workload network access
 
@@ -101,7 +101,7 @@ Use an exclusive fixture cluster with `oce-system` and `envoy-gateway-system` av
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
 OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
-  node --test tests/integration/production-network-access.test.mjs
+  node --test tests/integration/production-network-access.test.ts
 ```
 
 Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
@@ -112,10 +112,11 @@ are required.
 
 ## Kubernetes model turns and Secrets
 
-The real-runtime suite needs an authorized model credential, real gateway and
-Codex images, a disposable cluster with enforcing NetworkPolicies, and a
-migrated `openclaw_k8s_*` database. A fixture pass is not a model turn. Follow
-[Codex sandbox setup](../guides/deploy/codex-sandbox.md) for seccomp prerequisites.
+Use authorized model credentials, real Gateway/Codex images, enforcing
+NetworkPolicies, and a migrated `openclaw_k8s_*` database in a disposable cluster.
+A fixture pass is not a model turn. See
+[Codex seccomp setup](../guides/deploy/codex-sandbox.md) and
+[restart qualification](harness-restart-recovery.md).
 
 ### Develop with local containers and k3d
 
@@ -226,7 +227,7 @@ and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
 
 ```sh
 state="$PWD/.ci-state/keycloak-oidc.json"
-node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
+node scripts/ci/prepare.ts --lane keycloak-oidc --state "$state" &&
   node scripts/ci/run-tests.ts run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
 node scripts/ci/cleanup.ts --state "$state"
 ```
@@ -252,33 +253,30 @@ recovery and rollback. It uses its own CA and does not edit `/etc/hosts`.
 
 ## Private gateway routing
 
-This suite tests private workspace routing through real Envoy Gateway and
-cert-manager in a disposable k3d cluster. It verifies file access, model
-consumption after Gateway replacement, authentication denial, key rotation,
-certificate renewal, and the dedicated node route. It does not prove a full
-Helm installation or Harness node credential persistence.
+This k3d suite checks private file access through Envoy Gateway, model reads
+after Gateway replacement, authentication denial, key rotation, certificate
+renewal, and dedicated node routing. It excludes full Helm installation and
+Harness node credential persistence.
 
 ### Run private gateway routing
 
-Install the [k3d helper prerequisites](#develop-with-local-containers-and-k3d)
-and provide an authorized `OPENAI_API_KEY` privately:
+Install the [k3d prerequisites](#develop-with-local-containers-and-k3d)
+and supply an authorized `OPENAI_API_KEY` privately.
 
 ```sh
 ./scripts/k3d test
 ./scripts/k3d down
 ```
 
-The helper prepares a cluster, database, images, Envoy Gateway, cert-manager,
-and test CA. Direct execution also requires `OCC_TEST_GATEWAY_ROUTING_REAL=1`,
+Direct execution requires the runtime setup above, `OCC_TEST_GATEWAY_ROUTING_REAL=1`,
 `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`, `OCC_TEST_GATEWAY_CA_CERT_PATH`,
-`OCC_TEST_GATEWAY_CA_KEY_PATH`, `NODE_EXTRA_CA_CERTS`, and the runtime setup above.
-Keep the CA key private.
+`OCC_TEST_GATEWAY_CA_KEY_PATH`, and `NODE_EXTRA_CA_CERTS`. Keep the CA key private.
 
-For CI-shaped setup, supply `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and
-`NODE_BASE_IMAGE` in the environment. In a GitHub Actions runner, execute:
+On GitHub Actions, set `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and
+`NODE_BASE_IMAGE`.
 
 ```sh
-node scripts/ci/prepare.mjs \
+node scripts/ci/prepare.ts \
   --lane gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --github-env "$GITHUB_ENV" &&
@@ -287,8 +285,14 @@ node scripts/ci/run-tests.ts run gateway-routing \
   --results "$RUNNER_TEMP/results/gateway-routing.json"
 ```
 
-Use `scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/gateway-routing.json"`
-to remove the lane's resources.
+Run `node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/gateway-routing.json"`
+after success or failure.
+
+If cert-manager or Envoy Gateway manifest downloads fail with
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE` and the system certificate store
+trusts the issuer, clean up and retry preparation with
+`node --use-system-ca scripts/ci/prepare.ts` and the same arguments.
+TLS and SHA-256 checks stay enabled.
 
 ### Native workspace identity
 
@@ -351,7 +355,7 @@ chart. Install Docker, k3d, kubectl, Helm, yq, and Go.
 
 ```sh
 run_dir="$(mktemp -d)"
-node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --state "$run_dir/state.json" && \
+node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.ts --lane production-tui --state "$run_dir/state.json" && \
   TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
     --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
@@ -481,10 +485,10 @@ from controller and runtime Pods before creating Agents.
 ### Install and exercise the platform
 
 Follow [production installation](../guides/deploy/production-installation.md)
-for PostgreSQL, restricted roles, bootstrap and the CP Helm release. Prepare
-bootstrap PVC ownership before initialization. If initialization fails, check
+for PostgreSQL, restricted roles, bootstrap and the CP Helm release. Precreate
+the bootstrap Secret before initialization. If initialization fails, check
 commit state and follow bootstrap recovery; do not reset the database or delete
-protected output automatically.
+protected inputs automatically.
 
 Grant the DP tenant worker and API bindings and the three CP bindings in
 [Agent preparation](../guides/deploy/production-agents.md#grant-tenant-rolebindings).

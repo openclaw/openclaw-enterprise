@@ -57,7 +57,6 @@ export type LoginFixtureOptions = {
   providers: Omit<HumanLoginProviders, "recoveryUserId">;
   state?: Partial<PostgresHumanAuthentication>;
   trustedClientAddress?: boolean;
-  recoveryEmail?: string;
   providerDeadlineMs?: number;
 };
 
@@ -174,7 +173,6 @@ export function createLoginFixture({
   providers,
   state: stateOverrides = {},
   trustedClientAddress = true,
-  recoveryEmail,
   providerDeadlineMs,
 }: LoginFixtureOptions) {
   const attempts: (
@@ -250,9 +248,6 @@ export function createLoginFixture({
       onUnmatchedCallback: (name) => unmatched.push(name),
     },
   );
-  if (recoveryEmail !== undefined) {
-    login.designateRecovery(recoveryEmail);
-  }
   const db: TransportDatabase = {
     user: [],
     session: [],

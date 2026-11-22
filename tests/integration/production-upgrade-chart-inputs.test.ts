@@ -43,6 +43,8 @@ test("production upgrades check the stock chart before recording evidence or con
     "scripts/upgrade-node-platform.py",
     "scripts/upgrade-deployment-identity.py",
     "scripts/upgrade-startup-preflight.ts",
+    "scripts/lib/selected-image-migration.ts",
+    "deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs",
     "scripts/upgrade-preflight-state.py",
     "scripts/lib/upgrade-preflight-cleanup.sh",
     "scripts/upgrade-evidence.py",
@@ -65,6 +67,7 @@ test("production upgrades check the stock chart before recording evidence or con
   await writeFile(join(checkout, "unrelated.md"), "Outside the chart\n");
   const env = {
     PATH: commandPath(bin, dirname(process.execPath)),
+    KUBERC: "off",
     ORIGINAL_TOOL_PATH: process.env.PATH,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
@@ -224,7 +227,7 @@ test("production upgrades check the stock chart before recording evidence or con
         code: 1,
         stdout: "",
         stderr:
-          "upgrade-production-images: cannot inspect preprovisioned Namespace values; see preprovisioned-namespace.err in the evidence directory.\n",
+          /(?:^|\n)upgrade-production-images: cannot inspect preprovisioned Namespace values; see preprovisioned-namespace\.err in the evidence directory\.\n$/u,
       });
       assert.deepEqual(await commandCalls(callLog), []);
       const errors = await readFile(join(evidence, "preprovisioned-namespace.err"), "utf8");

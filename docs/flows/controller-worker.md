@@ -1,16 +1,16 @@
 ---
 created: 2026-08-28
-updated: "2026-11-16"
-last_updated_session: "authoring-run/8226412c-dab2-4991-8e9a-5ecd9677f5d2"
+updated: 2026-11-22
+last_updated_session: authoring-run/3f2ad42e-76e0-4b80-949b-491c5b03c4b3
 ---
 
 # Controller Worker Flow
 
 ## Overview
 
-The worker claims PostgreSQL work, reauthorizes, calls Compute, and saves
-Namespace, Agent lifecycle, and revision results under its claim. See the
-[controller reference](../reference/controller.md) and [deployment guide](../guides/deploy.md).
+The worker claims PostgreSQL work, reauthorizes, calls Compute, and saves Namespace, Agent stop/deletion and revision results under the claim.
+See the [controller reference](../reference/controller.md) and
+[deployment guide](../guides/deploy.md).
 
 ## Entry Points
 
@@ -36,8 +36,11 @@ graph TD
         D -->|claim saved| E["Reload exact resources and current IAM state"]
         D -->|claim audit insert fails| D
         E --> F{"Authorized and valid?"}
-        F -->|yes| G["Invoke Compute while renewing the claim lease"]
-        F -->|no| H["Persist permanent failure under the live claim"]
+        F -->|scoped deployment| S{"Dispatch fence passes?"}
+        S -->|yes| G["Invoke Compute under the claim"]
+        S -->|no| H["Persist refusal and audit"]
+        F -->|other work| G
+        F -->|no| H
         G --> I{"Observed result"}
         G -->|rejected| R["Emit validated Driver diagnostic"]
     end
@@ -60,68 +63,41 @@ graph TD
 `apps/controller/src/worker.mjs:configuration`,
 `apps/controller/src/worker.ts:ControllerWorker.start`
 
-The [entrypoint](../../apps/controller/src/worker.mjs) clears stale readiness and
-configures an application-role pool. Production requires explicit configuration;
-development without `OCC_CONFIG_PATH` preflights Docker. `start()` loads the
-Installation, validates IAM, and attaches Compute workload and OCC Namespace hooks.
-Unsupported selections stop startup. After Compute preflight, the worker emits
-`worker.started` and enters `run()`.
+The [entrypoint](../../apps/controller/src/worker.mjs) validates configuration, clears readiness and creates `ControllerWorker` with an application-role pool. Without `OCC_CONFIG_PATH`, development preflights Docker. Production requires explicit configuration.
 
-Metrics read lifecycle and backlog state without runtime probes or dependence on
-logging. [Snapshot collection](../../packages/occ/src/state/postgres-metrics.ts)
-retains its error listener through connection release; transport loss rejects the
-snapshot. See [outage behavior](../reference/metrics.md#shared-snapshots-and-outages).
+`start()` loads the Installation, validates IAM, attaches lifecycle hooks and preflights Compute before `worker.started`. Unsupported selections stop startup.
+
+`packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`
+reads lifecycle and backlog metrics without runtime probes. The
+[metrics contract](../reference/metrics.md#shared-snapshots-and-outages) defines
+connection and outage handling.
 
 <span id="2-commit-api-admission-and-the-durable-work-record" class="anchor-alias"></span>
 
 ### 2. Save the admission decision and queue the operation
 
 `apps/controller/src/http/agents.ts:createAgentHandlers`,
-`packages/occ/src/index.ts:OpenClawController`,
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
-`operations.append` checks ownership before `PostgresWorkQueue.enqueue`.
-With audit enabled, one transaction commits the mutation, work, and
-`controller_work.queued` event linking request and work IDs. The API returns
-before Compute runs.
+`operations.append` checks ownership and calls `PostgresWorkQueue.enqueue`. With audit enabled, resource change, work and `controller_work.queued` commit together with request and work IDs.
 
-Deployment saves the validated request and decision with the version. Even if IAM
-selection changes, audit uses that decision's Driver, principal, exact Agent target,
-and evidence without reauthorization. Audit failure rolls back the version, desired
-runtime state, and work. An unknown commit outcome is never retried.
+Deployment saves the validated request and decision. Audit preserves Driver, principal, exact Agent target and evidence across IAM changes. Audit failure rolls back the version, desired state and work. An unknown commit is not retried.
 
-Revision jobs name the original actor, Namespace owner, Agent, lifecycle target,
-and revision; stop and deletion jobs omit the revision. An idempotency key cannot
-be reused for a different actor, owner, or target.
+The queue records actor, owner and target. Revision work adds Agent and revision IDs. Lifecycle work adds the Agent and `stopped` or `deleted` target. Idempotency cannot change actor, owner or target. The API returns before Compute dispatch.
 
-For an already-deleting Agent, `OpenClawController.deleteAgent` leaves active
-work unchanged. After terminal failure, `operations.retryFailedAgentDeletion`
-checks delete permission and resets only the stopped, deleting Agent's terminal
-work, keeping prior audits ([who can retry](../reference/agents.md#deletion)); a
-takeover becomes the work's actor, audited as `takeover`, and the worker
-reauthorizes normally.
-`deleteNamespace` recovers Namespace teardown the same way via
-`retryFailedNamespaceDeletion`.
+For an already-deleting Agent, `packages/occ/src/agent-termination.ts:deleteAgent` leaves active work unchanged. After terminal failure, `operations.retryFailedAgentDeletion` checks delete permission and resets only that stopped, deleting Agent's work, preserving audits ([who can retry](../reference/agents.md#deletion)). A takeover becomes the actor, audited as `takeover` and reauthorized. `deleteNamespace` uses `retryFailedNamespaceDeletion` for equivalent recovery.
 
 ### 3. Recover expired claims and claim one eligible operation
 
 `apps/controller/src/worker.ts:ControllerWorker.run`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.claim`
 
-Each pass calls `recoverStale()`. When idle and every five claims,
-`withdrawHarnessExposure` sweeps one active-at-start or failed version with
-five logged attempts. On shutdown, interrupted claims follow lease recovery.
+Each pass calls `recoverStale()`. Idle passes and every five claims run `withdrawHarnessExposure` on one active-at-start or failed version with five logged attempts. Interrupted claims use lease recovery.
 
-`FOR UPDATE SKIP LOCKED` protects each claim. With audit enabled, PostgreSQL
-saves the claim and `controller_work.claimed` record together. The worker starts
-after commit. An insert failure leaves work queued. Each attempt has a new ID,
-even when the count repeats. The lease token stays in the queue.
+`FOR UPDATE SKIP LOCKED` protects claims. With audit enabled, claim and `controller_work.claimed` commit together before work starts. Insert failure leaves work queued. Attempt IDs change even when counts repeat. The queue retains the lease token.
 
-`health()` queries work, calls `onHealthy`, and emits `worker.health`. Serialized
-`HEALTH_UNAVAILABLE` failures consume no retries.
-
-`onProgress` marks pass start and renewal. Probes restart stalled workers. See
-[worker settings](../reference/settings/operations.md#controller-worker-environment).
+`health()` queries work and emits `worker.health`. `HEALTH_UNAVAILABLE` costs no retries. Probes track passes and renewals. See [worker settings](../reference/settings/operations.md#controller-worker-environment).
 
 ### 4. Reload ownership and reauthorize before infrastructure effects
 
@@ -129,162 +105,69 @@ even when the count repeats. The lease token stays in the queue.
 `apps/controller/src/worker.ts:ControllerWorker.processRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.authorizeRevision`
 
-Namespace work verifies the target is still `provisioning` or `deleting`.
-A changed target completes as `SUPERSEDED_TARGET`. Otherwise `authorize()`
-rechecks the original actor. Provisioning enforces Namespace restrictions.
-Placement into an existing Kubernetes namespace requires Installation administration.
+Namespace work completes as `SUPERSEDED_TARGET` unless the target remains `provisioning` or `deleting`. `authorizeNamespace()` rechecks the original actor. Provisioning enforces Namespace restrictions, and existing Kubernetes namespace placement requires Installation administration.
 
-Version work reloads its Namespace, Agent, saved version, and selected version.
-`processRevision()` rejects mismatched owners, an unready Namespace, an invalid
-Agent Principal, a changed Harness descriptor, or a different Compute Driver.
-`authorizeRevision()` rechecks current `deploy` and, for a ServiceAccount
-snapshot, `read` on that exact ServiceAccount. Before Compute effects, the worker
-rechecks each managed credential's frozen Backend binding; the
-[Backend-managed credential delivery flow](service-account-driver-credential-delivery.md#5-recheck-metadata-and-project-the-account-secret)
-owns these checks.
+Version work reloads the Namespace, Agent, saved and selected versions. `processRevision()` rejects mismatched owners, an unready Namespace, invalid Agent Principal, changed Harness descriptor, or different Compute Driver. `authorizeRevision()` rechecks current `deploy` and, for a snapshot, `read` on that exact ServiceAccount. Before Compute effects, it rechecks each managed credential's frozen Backend binding per the [Backend-managed credential delivery flow](service-account-driver-credential-delivery.md#5-recheck-metadata-and-project-the-account-secret).
 
-Revocation and denial fail permanently before Compute. Selected versions enter
-finalization or maintenance. Older versions end superseded, also once the newest,
-without Git, has a held runtime failure. During
-[exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
-the [stop boundary](../reference/agents/planned-replacement.md) governs native access
-and maintenance. Neither redeploy after explicit Stop nor a new replacement mode
-reopens a stopped predecessor. Retargeting refunds the old claim. Superseded inactive
-versions stop with `SUPERSEDED_STOP_YIELDED`; deploy again to recover.
+For an explicit [repository network policy](../reference/sandbox-policies.md#repository-network-policy), including `[]`, the worker rechecks the original actor’s `read` and `update` on the exact SandboxPolicy and `manage_policy` on the Agent, then validates stored execution admission through Compute. Any unscoped revision in candidate history fails recovery as `REPOSITORY_POLICY_HISTORY_INCOMPATIBLE` before new dispatch or predecessor stop. Stop and credential withdrawal retain separate paths.
+
+Revocation and denial fail permanently. Selected versions enter maintenance or finalization. Older versions are superseded. During [exclusive replacement](../reference/drivers/compute.md#production-revision-stages), the [stop boundary](../reference/agents/planned-replacement.md) governs native access and maintenance. Redeploy after explicit Stop or a new replacement mode cannot reopen a stopped predecessor. Retargeting refunds the old claim. Superseded inactive versions stop with `SUPERSEDED_STOP_YIELDED`. Deploy again to recover.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
 
-Agent-deletion work requires the Agent to remain `deleting` and stopped, then
-rechecks the original actor's exact-Agent `delete`. It loads every owned version
-and rejects ownership or Compute-Driver mismatches before teardown.
+Agent deletion requires a stopped, `deleting` Agent, current exact-Agent `delete` for the original actor, and matching ownership and Compute Driver for every owned version.
 
 ### 5. Invoke Compute while renewing the live claim
 
-`apps/controller/src/worker.ts:ControllerWorker.observe`,
+`apps/controller/src/worker.ts:ControllerWorker.observeNamespace`,
 `apps/controller/src/worker.ts:ControllerWorker.observeRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.withClaimHeartbeat`
 
-Namespace dispatch uses `OpenClawController.observeNamespaceLifecycle` and
-`packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle` for
-[ordered, claim-cancelled setup and cleanup](../reference/drivers/namespace-lifecycle.md),
-with claim-protected audit evidence. Version dispatch may bind the Agent before
-`prepareRevision` uses its immutable snapshot. Wrong ownership or invalid
-observations fail permanently; pending observations defer convergence.
+`OpenClawController.observeNamespaceLifecycle` and `packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle` perform [ordered, claim-cancelled setup and cleanup](../reference/drivers/namespace-lifecycle.md) with claim-protected audit evidence. Version dispatch can bind the Agent before `prepareRevision` receives its snapshot. Invalid observations fail.
 
-When Compute's `requiresStoppedPredecessors` capability is set,
-`apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
-[exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
-under the live claim, it commits the stop boundary, closes credentials and stops
-earlier revisions. Stop failure blocks preparation. After the sweep, the worker
-rechecks lifecycle and deploy authority. Yielded stops resume before Work ends.
-Maintenance cannot recreate a stopped predecessor.
+`ControllerWorker.withRevisionDispatch` locks IAM configuration, Namespace and Agent for scoped binding, preparation and activation. Read Committed exposes IAM changes committed during the wait. The worker rechecks authority and running state, renews the claim, starts the Driver call, and awaits it after releasing locks. Scoped renewal and new predecessor stops share the commit-time authorization fence, live claim, target identity and claim-window checks. Driver effects cannot be rolled back.
 
-The worker validates Compute's startup plugin warning codes and selection keys
-against the immutable version; the
-[plugin startup warnings contract](../reference/drivers/compute.md#plugin-startup-warnings)
-defines when warnings permit deployment.
+For [exclusive replacement](../reference/drivers/compute.md#production-revision-stages) (`requiresStoppedPredecessors`), `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` checks scoped authority under Read Committed before recording the stop under the live claim. It closes credentials, stops earlier revisions including failed candidates, and rechecks lifecycle and deploy authority before preparation. `PREDECESSOR_STOP_YIELDED` defers stops. Failing, superseded and stopped Work must finish them. Maintenance cannot recreate stopped predecessors.
 
-Agent-stop checks desired state before each stop, starting with the selected
-revision (if any), then all other owned revisions, even failed candidates and
-incompletely retired predecessors. A selected revision on another Compute Driver
-fails the operation; other revisions on foreign Drivers are skipped. Retries repeat
-the same stops without changing later admissions, the selected pointer, or workspace data.
+The worker validates Compute warning codes and selection keys against the immutable version under the [plugin startup warnings contract](../reference/drivers/compute.md#plugin-startup-warnings).
 
-Before the convergence deadline, `withYieldingGatewayDrain` lets a Gateway drain
-yield to due Work as `AGENT_STOP_YIELDED` and refunds the attempt. Drains ignore
-yielded stops. Other waits ignore them except for predecessor stops.
+Agent stop validates captured versions on current Compute and stops selected version, terminal candidates and predecessors in order. An active version on another Compute fails closed. Shutdown rechecks ownership and stopped desired state. Partial failures retry idempotently with pointer and workspace retained. Before the deadline, Gateway drains yield to due work as `AGENT_STOP_YIELDED` and refund the attempt.
 
-During an overdue Gateway drain, `ControllerWorker.renewWaitingPredecessor` claims
-one due [renewal](../reference/agents/planned-replacement.md#bounded-predecessor-completion).
-Before suspension, Kubernetes Compute requires the Gateway Service to route only
-to the sole predecessor Gateway Pod and the connected Gateway to report that Pod's
-hostname.
-Otherwise, the revision-scoped stop remains in charge. Before the first stop, the
-worker rechecks candidate deploy authority and Backend binding; PostgreSQL checks
-the claim, predecessor, candidate, process identity, and cutoff.
+During an overdue Gateway drain, `ControllerWorker.renewWaitingPredecessor` claims a due [renewal](../reference/agents/planned-replacement.md#bounded-predecessor-completion). Kubernetes Compute suspends only when the Service selects the sole predecessor Gateway Pod and the connected Gateway reports its hostname. Otherwise stopping continues. The worker rechecks deploy authority and Backend binding. PostgreSQL checks claim, revisions, process identity and cutoff.
 
-A committed stop finishes even if the candidate loses access. The worker resolves
-credentials again before preparation. A newer candidate prevents the old candidate
-from becoming active. The convergence deadline excludes only time that candidate spent in the
-original completion window.
+After candidate access revocation, recovery may finish only the committed stop for the exact predecessor and runtime identity. It cannot start a stop or prepare the candidate. Preparation resolves credentials again, and a newer candidate blocks activation. The drain and convergence clock exclude only that candidate’s time in the original completion window.
 
-Before shutdown or retirement, including stopped-version recovery, the worker
-binds the server-owned Namespace and Agent after IAM and exact-resource checks.
-Preparation and maintenance recheck `desiredRuntimeState`; a candidate that
-overlaps stop is shut down instead of activated.
+Shutdown and retirement, including stopped-version recovery, bind the server-owned Namespace and Agent after IAM and exact-resource checks. Preparation and maintenance recheck `desiredRuntimeState` and shut down a candidate overlapping stop.
 
-Deletion rebinds Driver-local ownership after restart, retires every owned
-version, then deletes Agent credentials if supported. A Driver that provisions
-credentials but cannot delete them fails permanently before binding or retirement.
-Compute retirement alone terminates workloads and cleans up the Sandbox.
+Agent deletion binds to rebuild Driver-local ownership after restart, retires owned versions, then invokes optional credential deletion. A Driver unable to delete provisioned credentials fails permanently before binding or retirement. Compute retirement terminates workloads and cleans up Sandboxes.
 
-`withClaimHeartbeat()` renews before each effect and every third of a lease.
-Shutdown, lease loss, or renewal failure aborts Compute with `WorkClaimLostError`. An unanswered
-renewal does not extend the last confirmed lease, measured from its send time:
-Compute aborts before another worker can recover the claim. In-flight requests
-may finish, but expired or replaced claims cannot publish. Renewals request
-throttled health updates asynchronously.
+`withClaimHeartbeat()` renews before effects and every third of the lease. Lease loss, heartbeat failure or shutdown aborts Compute. Stale tokens cannot publish. Unanswered renewal does not extend the lease but may complete. Health updates never delay renewal, and health failure alone is not lease loss.
 
-The [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
-and [Docker execution flow](docker-compose-development.md) own infrastructure and
-Sandbox dispatch. Namespace deletion checks Compute eligibility before provider
-hooks; an unclaimed external namespace skips those hooks and is retained by Compute.
+The [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts) and [Docker execution flow](docker-compose-development.md) own infrastructure and Sandbox dispatch. Namespace deletion checks Compute eligibility before provider hooks. Compute retains unclaimed external namespaces without those hooks.
 
-If `prepareRevision` rejects, the worker requests an optional validated Compute
-failure description, emits `worker.compute-prepare-failed`, and preserves retries.
-Kubernetes reports the stage and only reviewed classifications, status codes, and
-messages. An unreachable Sandbox gateway during preparation or predecessor stop
-defers as `SANDBOX_GATEWAY_UNAVAILABLE` and refunds the attempt until the deadline
-fails with that code; other work retains its attempt budget.
+If `prepareRevision` rejects, the worker requests an optional validated Compute failure description, emits `worker.compute-prepare-failed`, and preserves retries. Kubernetes reports stage and reviewed classifications, status codes and messages. Sandbox gateway unreachability during preparation or predecessor stop defers as `SANDBOX_GATEWAY_UNAVAILABLE`, refunding attempts until the deadline fails with that code. Other work keeps its attempt budget.
 
 <a id="6-persist-the-result-and-finish-revision-activation" class="anchor-alias"></a>
 
 ### 6. Persist the result and finish version activation
 
 `apps/controller/src/worker.ts:ControllerWorker.finalize`,
-`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision`,
+`apps/controller/src/worker.ts:ControllerWorker.commitRevisionTransition`,
+`apps/controller/src/worker.ts:ControllerWorker.finishRevisionTransition`,
 `apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
 
-`transactWithQueue()` renews the exact claim before atomically publishing
-Namespace readiness or completed deletion, lifecycle evidence and queue completion.
-Failed provisioning can transition to failed; incomplete deletion cannot publish
-successful deletion.
+After renewal, one transaction records Namespace readiness, failure or completed deletion, lifecycle evidence and queue completion. Deletion requires completed cleanup.
 
-After preparation, `activationOrder: beforeCommit` activates before the database
-pointer changes; otherwise an implemented activation stage runs, in development
-and production, after the claim-protected compare-and-set of
-`Agent.activeRevisionId`, and the first dedicated version stays inactive until
-commit. A changed pointer causes `ACTIVE_REVISION_CHANGED` and retry. Under the
-same lock, the worker defers activation if the serving version's replacement
-record names a later admitted version. An older record left by a refused deploy
-does not block a newer version that can start without stopping its predecessor.
+With `activationOrder: beforeCommit`, Compute activates before selection. Otherwise production deactivates the first dedicated revision before selection, then requires activation after commit. Development calls activation when implemented. Failed compare-and-set retries as `ACTIVE_REVISION_CHANGED`. The committed result selects activation, stop or reporting. Before changing `Agent.activeRevisionId`, the worker checks the serving revision's replacement record under the Agent lock. A later admitted revision defers the prepared revision’s work as `PREDECESSOR_STOP_RETARGETED`. Newer revisions needing no predecessor stop can pass older refusal records.
 
-Committing `Agent.activeRevisionId` records selection. A v5 `online-request` or
-v6 `request-hook-observed` hold for Git material leaves the original work queued
-until that revision reports ready. The worker then activates it and retires its
-predecessor. In a separate transaction, `completeActivatedRevision()` rechecks
-selection and claim, appends evidence, and completes work. Retries recheck the
-active candidate before effects; claim loss cannot turn plugin failure into success.
+A v5 `online-request` or v6 `request-hook-observed` hold queues work until the selected revision is ready. The worker activates it, retires its predecessor, then `completeActivatedRevision()` separately rechecks claim and selection, appends evidence and completes work. Retries recheck selection before effects.
 
-Stop finalization rechecks the live claim, Agent owner, and stopped desired state.
-After captured cleanup, it clears `activeRevisionId` only if it still identifies
-the stopped version, appends lifecycle-stop evidence, and completes the work
-without deleting version rows or persistent runtime state. A later deployment
-supersedes the stop even if it retains that pointer while preparing.
+`finalizeAgentStop()` checks claim, owner and desired state, clearing `activeRevisionId` only when it points to the stopped version. Later deployment supersedes the stop even then. Version rows and runtime state remain. After commit, successful activations and unsuperseded stops record [operation durations](../reference/metrics.md#shared-snapshots-and-outages).
 
-After commit, `completeActivatedRevision()` and `finalizeAgentStop()` record
-[operation durations](../reference/metrics.md#shared-snapshots-and-outages) via
-`apps/controller/src/metrics/index.ts:createOccMetrics`.
+`finalizeAgentDeletion()` uses a restricted database function to validate the live claim, record success and atomically remove the Agent and [lifecycle records](../reference/controller/reconciliation.md#agent-lifecycle). The application role cannot delete them directly.
 
-Deletion finalization uses a restricted database function instead of generic
-queue completion. In one transaction it validates the live claim, records
-lifecycle-delete success, and removes the Agent with the records the
-[Agent lifecycle reference](../reference/controller/reconciliation.md#agent-lifecycle)
-lists. An expired or replaced claim removes nothing; `occ_app` has no direct
-table-level delete privilege for these records.
-`finalizeAgentDeletion()` records committed `agent_delete` outcomes for the
-same metrics contract.
+`settleAgentTeardownAttempt()` writes IAM denials and lifecycle evidence before settling Stop outcomes and Delete failures. A yielding Stop defers without an attempt record.
 
 ### 7. Defer, retry, or stop and hand off the next iteration
 
@@ -292,96 +175,36 @@ same metrics contract.
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.defer`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.retry`
 
-Pending convergence refunds the attempt. Unready versions follow the
-[progress cadence](../reference/agents/deployment.md#pending-deployment-progress)
-and use Compute's `pendingReason`. Other pending work backs off.
-`PostgresWorkQueue.defer` records changed outcomes or codes. Retries consume
-attempts. Permanent failures, exhaustion, deadlines and `AUTHENTICATION_FAILED`
-end work. See [outcomes](../reference/controller.md) and
-[timing controls](../reference/settings/operations.md#controller-worker-environment).
+Pending convergence refunds attempts. Unready versions use Compute's `pendingReason` and [progress cadence](../reference/agents/deployment.md#pending-deployment-progress), while other work backs off. `PostgresWorkQueue.defer` records outcome or code changes. Retries consume attempts. Permanent failure, exhaustion, deadline or `AUTHENTICATION_FAILED` ends work. See [outcomes](../reference/controller.md) and [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
-Before publishing a permanent refusal (not a held runtime failure, the deadline
-or exhausted retries), `ControllerWorker.stopRefusedCandidate` stops, under the
-claim heartbeat, an inactive candidate that is exclusive or was prepared with no
-selected version, so a rejected deployment never serves. Kubernetes
-deletes the Harness before awaiting Gateway Pods; Pod waits yield to due work
-(`withYieldingComputeStop`).
+`ControllerWorker.readRefusalWait` marks a scoped candidate untouched only on its original first claim without prior attempt evidence or rescheduling, clearing that state before potential effects. Only explicit permanent admission refusal records `candidateNotStarted` with the matching terminal code. Deferred, recovered or dispatched claims cannot supply it.
 
-An unfinished stop publishes nothing: the work defers as
-`REFUSED_CANDIDATE_STOP_PENDING` until the stop succeeds, past the attempt
-budget, deadline, in-lease shutdowns and, once recorded, lost claims. The
-recheck doubles the readiness cadence per failed (not `stopYielded`) stop in
-evidence, up to 5 minutes, but is at least four times the stop's duration.
-Each deferral records the refusal (`repeatEvidence`) for deployment status and
-`worker.completed`. Later passes retry only that stop, and outages keep waiting,
-unless superseded or an authorization or backend refusal lifted (past the
-deadline, the stop then publishes `CONVERGENCE_DEADLINE_EXCEEDED`).
+Otherwise, `ControllerWorker.stopRefusedCandidate` stops an inactive exclusive candidate or one prepared without selection before publishing permanent refusal, except for held runtime failure, deadline or exhausted retries. Pod waits yield to due work.
 
-`ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
-Driver interval, including closing sessions and failed runtime retirement,
-releasing the claim without consuming retries. Obligations survive; lease loss
-aborts the pass.
+Unfinished stops defer as `REFUSED_CANDIDATE_STOP_PENDING`, preserving refusal across retries, deadlines and recovery. Rechecks back off to five minutes and at least four times the stop duration. They retry unless superseded or refusal lifts. If it lifts after the deadline, the stop publishes `CONVERGENCE_DEADLINE_EXCEEDED`.
 
-Terminal rows store `reason_code` and optional `result_data`, shaped as the
-[terminal results reference](../reference/controller/reconciliation.md#terminal-results)
-and [deployment status](../reference/agents.md#deployment-status) define. For
-`runtimeFailure`, Compute reads cached startup results from its private status
-path, including unready Harnesses without plugins, and verifies runtime
-incarnation without repeating the model probe. Missing or invalid evidence
-leaves the cause unspecified.
+`settleRepositoryCleanup()` defers incomplete cleanup without spending retries. Closing sessions keep the Driver interval. Other stalled cleanup slows with age. Logs and metrics use committed outcomes.
 
-`packages/occ/src/state/controller-work.ts:validateFailureData` validates reads
-and writes and rejects data for other failure reasons; the PostgreSQL constraint
-enforces the persisted shape.
-`PostgresWorkQueue.complete` and `PostgresWorkQueue.fail` publish only under the
-live claim; [deployment status](../reference/agents.md#deployment-status) derives
-`error` and `warnings` from that result. Completion needs no acknowledgment or
-post-commit cleanup; maintenance cannot rewrite deployment warnings.
+Terminal rows store `reason_code` and optional `result_data` per [terminal results](../reference/controller/reconciliation.md#terminal-results) and [deployment status](../reference/agents.md#deployment-status). For `runtimeFailure`, Compute checks runtime incarnation and cached private startup results, including unready Harnesses without plugins, without repeating the model probe. Missing or invalid evidence leaves cause unspecified.
 
-In one State snapshot, `getDeploymentStatus` reads the work and its latest
-attempt by indexed `workId`, excluding maintenance and unbound history.
-`packages/occ/src/state/controller-work.ts:deploymentProgressForWork` maps
-`PREDECESSOR_COMPLETION_WAITING` to a fixed explanation. Memory State has no
-attempt.
+`packages/occ/src/controller-work-result.ts:validateFailureData` validates reads and writes, rejecting data for other failure reasons. PostgreSQL enforces the persisted shape. `PostgresWorkQueue.complete` and `PostgresWorkQueue.fail` publish under the live claim. [Deployment status](../reference/agents.md#deployment-status) derives `error` and `warnings` from that result. Completion needs no acknowledgment or post-commit cleanup. Maintenance cannot rewrite warnings.
 
-Legacy terminal rows derive `reason_code` from matching activation or terminal
-reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
+`getDeploymentStatus` reads revision, Agent, work and latest exact-work attempt in one authorized State snapshot. Memory omits attempts. `packages/occ/src/deployment-work-status.ts:deploymentProgressForWork` maps `PREDECESSOR_COMPLETION_WAITING` to a fixed explanation. Cleanup checks retirement and session keys, not Git expiry or finite removal.
 
-If Compute declares maintenance, activation schedules observations for this version.
-Incomplete observations, Compute bindings, and dependency retries or expired claims
-exhausting attempts close the item and schedule another while the version stays
-selected and running within its credential deadline; outages never retire it. Each
-claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
+Legacy rows derive `reason_code` from matching activation or terminal reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
 
-`worker.completed` reports target, outcome, and code. A `namespace.ensure` result
-may include the current pass's [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions),
-which stays out of the Driver observation. Attempt ID links the result to its
-claim. Repeated pending state may use `controller_work.deferred` instead of
-`reconcile`. Lease loss reports `worker.error` `CLAIM_LOST`, never stale lifecycle state.
-On `SIGTERM` or `SIGINT`, shutdown aborts in-flight work, waits for the loop,
-removes readiness, closes the other parts and then PostgreSQL, and emits `worker.stopped`.
+Activation schedules maintenance at the shortest applicable Driver interval. Claims reauthorize actors. `ControllerWorker.runtimeSuccessor` blocks serving-predecessor repair as `SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE` when a scoped successor could have changed execution. Only a matching terminal `candidateNotStarted` receipt permits repair before predecessor stopping. Failed, pending or ambiguous scoped successors, including empty policies, otherwise remain fenced. An eligible unscoped replacement may continue preparing its predecessor before the stop boundary under the active revision’s authority and withdrawal checks. Outages do not retire the serving version.
 
-`PostgresWorkQueue.recoverStale()` atomically fails exhausted Work and affected
-provisioning Namespaces with audit evidence. Published versions and yielded stops
-get one recovery attempt. A committed planned handoff stays recoverable until the
-worker confirms its exact predecessor stopped. The current candidate owns retries;
-the worker then rechecks permission to deploy.
+`worker.completed` reports target, outcome, code and, for `namespace.ensure` or `namespace.delete`, the current pass’s optional [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions) outside the Driver observation. Results link to claim attempts. Repeated pending state can emit `controller_work.deferred` instead of `reconcile`. Scoped IAM refusals append claim-protected Agent-deploy `authorization_denial` naming denied action, exact resource and IAM reason. Lease loss emits `worker.error` `CLAIM_LOST` instead of stale lifecycle state. `SIGTERM` or `SIGINT` aborts work, awaits the loop, removes readiness, closes other parts then PostgreSQL, and emits `worker.stopped`.
+
+`PostgresWorkQueue.recoverStale()` atomically fails exhausted Work and affected provisioning Namespaces with audit evidence. Published versions and yielded stops get one recovery attempt. Committed planned handoff remains recoverable until the exact predecessor is confirmed stopped. The candidate owns retries, followed by a deploy-permission recheck.
 
 ## Debugging and Verification
 
 - `worker.started` names the Drivers. Ready `worker.health` confirms a work query.
-- `worker.startup-error` reports startup failures. The
-  [worker exec probe](../../scripts/production-healthcheck.ts) checks the
-  readiness and progress markers.
-- For queued work, compare API and worker database and Installation settings.
-  Check `worker.completed` and `worker.error`. Check IAM for `ACTOR_REVOKED` or
-  `AUTHORIZATION_DENIED`. `DEPENDENCY_UNAVAILABLE` retries within
-  `OCC_WORKER_MAX_ATTEMPTS`. `CLAIM_LOST` ends publication rights.
-  A [dependency deferral](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-  logs `dependency` and `cause` (`unreachable`, `timeout` or `unavailable`).
-  Other failures log the error class in `cause` and the HTTP `status` when present.
-- `worker.compute-prepare-failed` names the failed Driver stage without the raw
-  exception; match its `workId` or `revisionId` to the next `worker.completed`.
+- Check `worker.startup-error` and the [worker exec probe](../../scripts/production-healthcheck.ts), which checks readiness and progress markers.
+- For queued work, compare API and worker database and Installation settings. Check `worker.completed`, `worker.error`, and IAM for `ACTOR_REVOKED` or `AUTHORIZATION_DENIED`. `DEPENDENCY_UNAVAILABLE` retries within `OCC_WORKER_MAX_ATTEMPTS`. `CLAIM_LOST` ends publication rights. [Dependency deferral](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence) logs `dependency` and `cause` (`unreachable`, `timeout` or `unavailable`). Other failures log error class as `cause` and any HTTP `status`.
+- `worker.compute-prepare-failed` names the Driver stage without the raw exception. Match `workId` or `revisionId` to the next `worker.completed`.
 - [Version](../../tests/integration/postgres-worker-agent-revision.test.mjs),
   [revision lifecycle](../../tests/integration/postgres-worker-agent-revision-lifecycle.test.ts),
   [convergence](../../tests/integration/postgres-worker-agent-revision-convergence.test.ts),
@@ -393,11 +216,11 @@ the worker then rechecks permission to deploy.
   [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts),
   [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.ts),
   [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.ts),
+  [scoped dispatch](../../tests/integration/postgres-worker-agent-revision-dispatch-cases.ts),
   [claim audit](../../tests/integration/postgres-worker-audit.test.ts) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.ts)
   require PostgreSQL; none proves model execution.
-- [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
-  and append-failure rollback after an IAM Driver change.
+- [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution and append-failure rollback across IAM Driver changes.
 - [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.ts),
   [Installation configuration](../../tests/integration/sandbox-driver-installation-configuration.test.ts)
   and [IPv6 endpoints](../../tests/integration/sandbox-driver-ipv6-endpoints.test.ts)
@@ -421,15 +244,23 @@ the worker then rechecks permission to deploy.
 
 ## Changelog
 
+- 2026-11-22 10:52: Trace planned replacement alongside shared Stop and Delete settlement. (authoring-run/3f2ad42e-76e0-4b80-949b-491c5b03c4b3 - 52f86d936cd221b85c4d4f19e2fb3dced697c14d)
+- 2026-11-22 10:47: Trace repository cleanup settlement and metrics. (authoring-run/18e09cc2-273a-4950-b512-3648f405ac27 - f31e3395fff2f025a36a31e8b7bcca31d5d45938)
+- 2026-11-22 10:35: Compose scoped dispatch and planned replacement boundaries. (authoring-run/30461211-1627-4cd1-9cd6-d736484fc7e4 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
+- 2026-11-22 10:32: Trace revision finalization through the committed result. (authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
+- 2026-11-22 10:30: Trace shared Agent Stop and Delete settlement. (authoring-run/e04921d4-0e64-4748-963f-ea2bdbee1215 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
+- 2026-11-22 09:29: Trace Read Committed for scoped deployment. (authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576 - db0227da135c6bf5e437038ec1fdbbfcc46ba548)
+- 2026-11-21 10:28: Trace scoped dispatch admission and recovery in the accompanying change. (authoring-run/3f3abf26-0aec-43e5-aa36-3aa72b38cf4a - a450dc92242a9d2e9f87da7e4fe8f8ea9dcd5e30)
+- 2026-11-22 07:15: Integrate planned replacement and worker cleanup flow. (authoring-run/97e818cc-1de3-4ece-b418-7f9cebfad013 - c1286e15d8453b5d014dbe3c1b85867181b675b5)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-19 14:03: Trace stopped revision cleanup in the accompanying change. (authoring-run/49c681f2-4814-4313-b061-284d2b23891c - 4bfefb4bf60b43dfb2e6fcc010be60270474e726)
 - 2026-11-16 19:58: Describe renewal during an overdue Gateway drain. (authoring-run/8226412c-dab2-4991-8e9a-5ecd9677f5d2 - d23297ecc93aad925e3d64c30dd59463f851fcd6)
-
 - 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
-
+- 2026-11-14 10:00: Hint tenant access on delete. (fix-4929)
 - 2026-11-12 14:03: Save development claim evidence. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
 - 2026-11-13 04:51: Explain the planned replacement wait in deployment progress. (authoring-run/7afadd63-f96a-4c29-bac6-c18615964316 - 8185f9274)
 
 - 2026-11-11 01:50: Share the predecessor stop boundary. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
-
 - 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

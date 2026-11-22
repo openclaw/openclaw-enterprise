@@ -2,21 +2,11 @@ import { fork, spawn, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { stopCleanupCommands } from "./cleanup.ts";
-import { installationPhase, type InstallationPhase } from "./openshell-installation-phase.ts";
-import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
+import { boundedProgressLines, openShellProgress } from "./openshell-progress.ts";
 import { removeLiveK3dCase2Directories } from "./runner-case2-receipt.ts";
-import { isObject } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 
-export type OpenShellProgress =
-  | InstallationPhase
-  | { kind: "openshell-stage"; stage: string; outcome: "started" | "passed" | "failed" }
-  | {
-      kind: "openshell-stage-failure";
-      stage: string;
-      category: string;
-      code: string | null;
-      location: "tests/helpers/openshell-sandbox-workflows.mjs";
-    };
+export type OpenShellProgress = NonNullable<ReturnType<typeof liveProgress>>;
 
 export type NodeResult = {
   status: number | null;
@@ -37,7 +27,7 @@ function isSignal(value: unknown): value is NodeJS.Signals {
 }
 
 function supervisorResult(value: unknown): SupervisorResult | undefined {
-  if (!isObject(value)) {
+  if (!isRecord(value)) {
     return undefined;
   }
   const { code, signal, error } = value;
@@ -47,32 +37,14 @@ function supervisorResult(value: unknown): SupervisorResult | undefined {
   return undefined;
 }
 
-function projectedProgress(value: unknown): OpenShellProgress | undefined {
-  if (!isObject(value)) {
-    return undefined;
+function liveProgress(value: unknown) {
+  const progress = openShellProgress(value);
+  switch (progress?.kind) {
+    case "openshell-installation":
+    case "openshell-stage":
+    case "openshell-stage-failure":
+      return progress;
   }
-  // The JS projector owns admission. Narrow its closed output at the log boundary.
-  const { kind, stage, outcome, category, code, location } = value;
-  if (kind === "openshell-installation") {
-    return installationPhase(value);
-  }
-  if (
-    kind === "openshell-stage" &&
-    typeof stage === "string" &&
-    (outcome === "started" || outcome === "passed" || outcome === "failed")
-  ) {
-    return { kind, stage, outcome };
-  }
-  if (
-    kind === "openshell-stage-failure" &&
-    typeof stage === "string" &&
-    typeof category === "string" &&
-    (typeof code === "string" || code === null) &&
-    location === "tests/helpers/openshell-sandbox-workflows.mjs"
-  ) {
-    return { kind, stage, category, code, location };
-  }
-  return undefined;
 }
 
 const maxReporterBytes = 50 * 1024 * 1024;
@@ -233,9 +205,8 @@ export function runNode(
       // output still waits for final accounting and failure redaction below.
       try {
         const event: unknown = JSON.parse(line);
-        if (isObject(event) && event.type === "test:progress") {
-          const projected: unknown = openShellProgress(event.data);
-          const progress = projectedProgress(projected);
+        if (isRecord(event) && event.type === "test:progress") {
+          const progress = liveProgress(event.data);
           if (progress) {
             onProgress(progress);
           }

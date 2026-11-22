@@ -1,26 +1,21 @@
 # Agents
 
-An Agent is a named AI workload in a [Namespace](namespaces.md). It has its own
-identity, Agent revision history, and gateway. Its permissions do not grant
-access across Namespaces.
+An Agent is a named workload with its own identity, revision history, and gateway in one [Namespace](namespaces.md). Its permissions do not cross Namespaces.
 
-Use a [Preset](presets.md) to copy launch settings into an Agent draft.
+A [Preset](presets.md) supplies draft launch settings.
 
 [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md), choose
 [Compute](../guides/topics/agent-compute.md), manage
 [versions](../guides/topics/agent-revisions.md), or
 [troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
 
-Creation saves identity and exact Namespace-owned Configuration with `active`
-status and `stopped` desired runtime state. No Agent revision is
-created and no workload or model starts until an authorized caller requests
-[deployment](#identity-and-deployment).
+Creation saves the identity and exact Namespace-owned Configuration with `active` status and `stopped` desired runtime state. Authorized [deployment](#identity-and-deployment) creates the first revision and starts the workload.
 
 ## Supported operations
 
 Operations beneath `/namespaces/:namespaceId/agents` return `201` for creation,
 `200` for reads/updates, and `202` for deployment, stop, or deletion. Deployment
-returns the saved Agent revision (`AgentRevision`). Stop sets
+returns the saved `AgentRevision`. Stop sets
 `desiredRuntimeState` to `stopped`. Lists require each Agent's exact `read`.
 See [API schemas, envelopes, and permissions](api.md).
 
@@ -83,8 +78,11 @@ results are excluded. `progress.nextAttemptAt` is the earliest queued
 eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
-Nullable `cleanup` reports retirement’s `status` (same meanings) and queued
-`nextAttemptAt`.
+`cleanup` reports recorded retirement and nonserving session disposal, not
+Git expiry or finite removal. Precedence: failed, running, queued, succeeded;
+`nextAttemptAt`: earliest queued eligibility, null when terminal. No applicable
+record: null. Requeued disposal reports queued. Success is not clearance to replace the worker.
+
 Deployment failure remains terminal. Terminal preparation errors retain
 `error.data.preparation` under schema limits (identities, reasons, scheduling, exits, timestamps),
 excluding raw output and credentials.
@@ -101,7 +99,8 @@ codes that a new deployment can clear, such as `DEPENDENCY_UNAVAILABLE` or
 unspecified. Held failures end deployment early:
 `RUNTIME_AUTHENTICATION_FAILED` (rejected credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
-or `WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
+`RUNTIME_STATE_LOCK_UNVERIFIED` (check `gateway-state-lock`), or
+`WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
 own CLI fails with
 [`AGENT_GATEWAY_UNAUTHORIZED`](agents/deployment.md#pending-deployment-progress). `RUNTIME_MODEL_PROBE_FAILED` adds
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
@@ -170,17 +169,19 @@ an account does not issue its credential or change the model, Harness, or Backen
 
 **Development upgrade limitation:** migration `0049` rejects retained
 `chatgpt_service_account` bindings in Agent drafts, any historical AgentRevision,
-or provisioning plans, and rolls back without converting them. No API deletes a
-Agent revision or provisioning request on its own: delete each affected Agent, which
-also deletes its Agent revisions and requests, and create it again after the upgrade.
-Changing the binding does not clear historical Agent revisions. For a request that
-never created an Agent, see
+or provisioning plans, and rolls back without converting them. An authorized
+operator can clear a retired binding held only in the editable Agent draft if the
+installed pre-upgrade Controller supports that update. A retired binding in any
+saved Agent revision or provisioning plan still blocks migration. For draft
+bindings and requests that never created an Agent, see
 [clear legacy bindings](settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
-For dedicated Codex with a Credential Gateway, use
-`{ "method": "credential_source", "sourceId": "cs_…" }`; see
-[credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
-It must also be listed in `credentialSources`.
+For dedicated OpenClaw or Codex, use
+`{ "method": "credential_source", "sourceId": "cs_…" }` with a supported
+TokenService and Credential Proxy or legacy Credential Gateway. List it in
+`credentialSources`; see [Source grants](credential-sources.md#bind-a-source-to-an-agent).
+
+Replacing a revision from or to managed credential delivery currently returns `409` before queueing. Complete Stop before deploying again. See [implementation status](credential-sources.md#implementation-status).
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
@@ -276,11 +277,23 @@ An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then
 clears `activeRevisionId`; version history, credentials, and persistent state
 remain. Cleanup includes failed candidate resources and interrupted predecessor
-retirement owned by the current Compute. Repeating stop is safe. On Kubernetes
-Compute, a turn cut by stop [does not resume](agents/interrupted-turns.md); SSH and
-Docker Compute have limits. To resume the Agent,
-deploy a new version; old versions cannot be restarted. See
+retirement owned by the current Compute. An unguarded retry can stop a newer
+deployment. To resume the Agent, deploy a new version. Old versions cannot be
+restarted. The new deployment may
+[continue eligible interrupted work](agents/interrupted-turns.md). See
 [stop and resume](agents/deployment.md#stop-and-resume).
+
+To avoid stopping a successor:
+
+```sh
+occ --namespace NAMESPACE_ID agent stop AGENT_ID --if-active-revision REVISION_ID
+```
+
+The optional `expectedActiveRevisionId` query requires running intent and the
+exact active, newest, successfully deployed revision under lock. Mismatch: `409`;
+unsupported query: `400`; admitted, not yet stopped: `202`. Never retry unguarded.
+If uncertain, inspect `agent get AGENT_ID` and `agent deployment-status AGENT_ID REVISION_ID`;
+these show state, not which request caused it.
 
 ## Deletion
 
@@ -295,7 +308,7 @@ Compute, retires every version, and removes runtime credentials. It
 atomically deletes the Agent, its Agent revisions, service principal, API keys, and
 exact IAM bindings and restrictions. Kubernetes retirement waits for owned Pods
 and removes owned artifacts, including workspace data. Namespace Configurations
-and Secrets survive. Deletion releases its name;
+and Secrets survive. See [Credential Source implementation status](credential-sources.md#implementation-status) for managed credential retirement. Deletion releases its name;
 [repository cleanup](repository-credentials.md#repo-driver-contract) continues independently.
 
 Permanent failure or exhausted attempts leave the Agent `deleting`.
@@ -329,7 +342,7 @@ deployed Agents keep separate gateways and stable service principals.
 
 The public API has no Agent revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
-The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Its Credential Gateway mediates model sources; direct Secret delivery remains unsupported. Check its compatibility limits.
+The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Credential Gateway or the paired Credential Proxy delivers model credentials; direct Secret delivery remains unsupported. Check its compatibility limits.
 
 ## Failure semantics
 
@@ -384,7 +397,7 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 - [IAM](authorization.md)
 - [Controller configuration](settings.md)
 - [Platform architecture](../design.md)
-- [Agent lifecycle implementation](../../packages/occ/src/index.ts)
+- [Agent controller methods](../../packages/occ/src/controller.ts)
 - [HTTP resource schemas](../../packages/contracts/src/api/resources.ts)
 - [Local testing](../testing/local.md)
 

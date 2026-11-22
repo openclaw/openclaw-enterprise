@@ -10,16 +10,13 @@ import { startDevUpInstallationServer } from "../helpers/dev-up-installation.ts"
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
 import {
-  createFixture,
   matchingInstallationId,
-  mismatchedInstallationId,
-  prepareLifecycleCommands,
   readJsonLines,
   runCommand,
   runDevDown,
   runDevUp,
-  serviceKey,
-} from "../helpers/dev-up.mjs";
+} from "../helpers/dev-up-commands.ts";
+import { createFixture, prepareLifecycleCommands, serviceKey } from "../helpers/dev-up.mjs";
 import { registerKubernetesRecoveryCases } from "./dev-up-kubernetes-recovery-cases.ts";
 import {
   registerFreshShellCustodyCases,
@@ -60,10 +57,8 @@ async function installationServer(t, fixture, scenario) {
     {
       requestLog,
       tlsDirectoryFile,
-      serviceKey,
       scenario,
-      installationId:
-        scenario === "api-mismatch" ? mismatchedInstallationId : matchingInstallationId,
+      installationId: matchingInstallationId,
     },
     stopProcess,
   );

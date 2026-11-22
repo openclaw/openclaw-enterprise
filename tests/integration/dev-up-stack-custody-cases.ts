@@ -4,15 +4,8 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { parseDevUpResourceState } from "../helpers/dev-up-k3d-commands.ts";
-import {
-  createFixture,
-  prepareLifecycleCommands,
-  readJsonLines,
-  runCommand,
-  runDevDown,
-  runDevUp,
-  serviceKey,
-} from "../helpers/dev-up.mjs";
+import { readJsonLines, runCommand, runDevDown, runDevUp } from "../helpers/dev-up-commands.ts";
+import { createFixture, prepareLifecycleCommands, serviceKey } from "../helpers/dev-up.mjs";
 import { requireLogRecord } from "../helpers/json-lines.ts";
 
 type LifecycleScenario = NonNullable<Parameters<typeof prepareLifecycleCommands>[1]>;
@@ -133,7 +126,7 @@ const rollbackCases = [
   { scenario: "compose-up-failed", diagnostic: /partial compose startup/ },
   { scenario: "cluster-create-failed", diagnostic: /partial cluster creation/ },
   { scenario: "node-dns-refused", diagnostic: /cannot resolve registry-1\.docker\.io/ },
-  { scenario: "api-mismatch", diagnostic: /Installation ID does not match/ },
+  { scenario: "api-mismatch", diagnostic: /invalid Installation ID/ },
   { scenario: "api-unauthorized", diagnostic: /authorization failed/ },
 ] as const satisfies readonly { scenario: LifecycleScenario; diagnostic: RegExp }[];
 

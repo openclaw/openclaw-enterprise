@@ -303,8 +303,20 @@ export async function startWorkspaceGatewayHostRelay(
       ],
     });
   }
+  const requireForwarder = () => {
+    if (forwarding.hasExited()) {
+      throw new Error("The Gateway port-forward exited before relay readiness.");
+    }
+  };
+  const waitForRelay: RelayDependencies["waitFor"] = (label, observe) =>
+    waitFor(label, async () => {
+      requireForwarder();
+      const ready = await observe();
+      requireForwarder();
+      return ready;
+    });
   context.after(redirectGatewayLookup(hostname));
-  await waitForLoopbackPort(endpointPort, waitFor);
-  await waitForWorkspaceGatewayTls(hostname, endpointPort, waitFor);
+  await waitForLoopbackPort(endpointPort, waitForRelay);
+  await waitForWorkspaceGatewayTls(hostname, endpointPort, waitForRelay);
   return endpointPort;
 }

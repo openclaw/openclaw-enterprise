@@ -3,13 +3,18 @@ import test from "node:test";
 import {
   AuditEventFactory,
   InMemoryAuditSink,
-  recordAuthorizationDenial,
-  recordMutation,
   redactAuditDetails,
   type AuditEventCreationInput,
   type AuditEventInput,
   type AuditEventKind,
 } from "../../packages/audit/src/index.ts";
+
+// Production callers create an event with the factory, then append it to the sink.
+async function record(sink: InMemoryAuditSink, input: AuditEventCreationInput) {
+  const event = new AuditEventFactory().create(input);
+  await sink.append(event);
+  return event;
+}
 
 function resource(id = "agent-a"): AuditEventInput["resource"] {
   return {
@@ -21,7 +26,7 @@ function resource(id = "agent-a"): AuditEventInput["resource"] {
 
 test("platform mutations create attributable, scoped, immutable audit evidence", async () => {
   const sink = new InMemoryAuditSink();
-  const event = await recordMutation(sink, {
+  const event = await record(sink, {
     installationId: "installation-a",
     namespaceId: "namespace-a",
     actorId: "principal-admin",
@@ -50,7 +55,7 @@ test("platform mutations create attributable, scoped, immutable audit evidence",
 
 test("audit records attribute service principal operations to their platform identities", async () => {
   const sink = new InMemoryAuditSink();
-  const event = await recordMutation(sink, {
+  const event = await record(sink, {
     installationId: "installation-a",
     namespaceId: "namespace-a",
     actorId: "service-principal-deployer",
@@ -75,7 +80,8 @@ test("authorization denials are attributable and never record credentials or mes
     "private-customer-message",
   ] as const;
 
-  const event = await recordAuthorizationDenial(sink, {
+  const event = await record(sink, {
+    kind: "authorization_denial",
     installationId: "installation-a",
     namespaceId: "namespace-a",
     actorId: "principal-unbound",
@@ -118,7 +124,7 @@ test("audit rejects infrastructure actor identities", async () => {
   };
 
   await assert.rejects(
-    recordMutation(sink, {
+    record(sink, {
       ...event,
       // @ts-expect-error Exercise runtime rejection of an infrastructure actor.
       actor: { principalId: "principal-admin", kind: "workload_identity" },
@@ -147,7 +153,7 @@ test("audit sanitization retains operational evidence while removing nested sens
 
 test("audit evidence retains Installation identity and rejects another Namespace", async () => {
   const sink = new InMemoryAuditSink();
-  const event = await recordMutation(sink, {
+  const event = await record(sink, {
     installationId: "installation-a",
     namespaceId: "namespace-a",
     actorId: "principal-admin",
@@ -158,7 +164,7 @@ test("audit evidence retains Installation identity and rejects another Namespace
   assert.equal(Object.hasOwn(event.resource, "installationId"), false);
 
   await assert.rejects(
-    recordMutation(sink, {
+    record(sink, {
       installationId: "installation-a",
       namespaceId: "namespace-b",
       actorId: "principal-admin",

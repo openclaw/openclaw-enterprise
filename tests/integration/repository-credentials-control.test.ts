@@ -5,6 +5,8 @@ import { createServer as createNetServer, connect, Socket } from "node:net";
 import { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
+import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   defaultRegistryRepositories,
@@ -63,7 +65,7 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { BoundListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
 import type { RegistryFixtureDefinition } from "../fixtures/repository-credentials/registry/material.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 type ResourceOwner = Pick<TestContext, "after">;
 type SessionResult = {
@@ -141,41 +143,62 @@ const control = async (
   return { ...response, body: record(response.body) };
 };
 
+async function startControlRelay(
+  owner: ResourceOwner,
+  prefix: string,
+  handle: (caller: Socket, track: (socket: Socket) => Socket) => void,
+) {
+  const resources = createResourceScope();
+  const socketPath = join(await socketDirectory(resources, prefix), "relay.sock");
+  const sockets = new Set<Socket>();
+  const track = (socket: Socket) => {
+    sockets.add(socket.once("close", () => sockets.delete(socket)));
+    return socket.on("error", () => socket.destroy());
+  };
+  const relay = createNetServer((caller) => handle(track(caller), track));
+  resources.after(async () => {
+    const listenerClosed = relay[Symbol.asyncDispose]();
+    const socketsClosed = Array.from(
+      sockets,
+      (socket) => new Promise<void>((resolve) => socket.once("close", () => resolve()).destroy()),
+    );
+    await Promise.all([listenerClosed, ...socketsClosed]);
+  });
+  try {
+    owner.after(() => resources.close());
+    await once(relay.listen(socketPath), "listening");
+    await chmod(socketPath, 0o600);
+    return socketPath;
+  } catch (error) {
+    await resources.close().catch((cleanupError: unknown) => {
+      throw new AggregateError([error, cleanupError], "control relay setup and cleanup failed", {
+        cause: error,
+      });
+    });
+    throw error;
+  }
+}
+
 // The relay consumes the real listener's response but disconnects its caller,
 // reproducing ambiguous loss after admission without replacing control behavior.
-async function dropControlResponse(t: ResourceOwner, target: string) {
-  const directory = await socketDirectory(t, "rcs-loss-");
-  const socketPath = join(directory, "relay.sock");
-  const sockets = new Set<Socket>();
-  const { promise: receipt, resolve: admitted } = Promise.withResolvers<SessionResult>();
-  const relay = createNetServer((caller) => {
-    const upstream = connect(target);
-    for (const socket of [caller, upstream]) {
-      sockets.add(socket);
-      socket.once("close", () => sockets.delete(socket));
-      socket.on("error", () => socket.destroy());
-    }
-    const chunks: Buffer[] = [];
-    upstream.on("data", (chunk: Buffer) => {
-      chunks.push(chunk);
-      caller.destroy();
+async function dropControlResponse(owner: ResourceOwner, target: string) {
+  const { promise: receipt, resolve, reject } = Promise.withResolvers<SessionResult>();
+  // The caller checks the transport failure before it awaits the receipt.
+  void receipt.catch(() => {});
+  const socketPath = await startControlRelay(owner, "rcs-loss-", (caller, track) => {
+    const upstream = track(connect(target));
+    let response = "";
+    upstream.once("data", () => caller.destroy());
+    upstream.setEncoding("utf8").on("data", (chunk: string) => {
+      response += chunk;
     });
-    upstream.once("end", () => {
-      const response = Buffer.concat(chunks).toString();
-      admitted(sessionResult(JSON.parse(response.slice(response.indexOf("\r\n\r\n") + 4))));
-    });
+    void finished(upstream, { writable: false, cleanup: true })
+      .then(() => sessionResult(JSON.parse(response.slice(response.indexOf("\r\n\r\n") + 4))))
+      .then(resolve, () => {
+        caller.destroy();
+        reject(new Error("control relay did not receive a complete session result"));
+      });
     caller.pipe(upstream);
-  });
-  await new Promise<void>((resolve, reject) => {
-    relay.once("error", reject);
-    relay.listen(socketPath, resolve);
-  });
-  await chmod(socketPath, 0o600);
-  t.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => relay.close(resolve));
   });
   return { socketPath, receipt };
 }
@@ -1009,6 +1032,18 @@ async function boundControlFixture(
   const input = inputFor(firstBinding.repositoryRef);
   const receipts = await startReceiptState(receiptResources, fixture, bindings, deadlineWallMs);
   const freshId = () => `${fixture.clock.wallNow()}-${randomUUID()}`;
+  const prepareAdmission = async (input: RepositoryCredentialBoundSessionInput) => {
+    const id = freshId();
+    await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
+    return id;
+  };
+  const readReceipt = async (id: string) => {
+    const value = await receipts.state.read((view) =>
+      view.repositorySessions.findBrokerReceipt(id),
+    );
+    assert.ok(value);
+    return value;
+  };
   const send = (value: object, id = freshId(), socketPath = fixture.config.gateway.controlSocket) =>
     control(
       socketPath,
@@ -1017,7 +1052,17 @@ async function boundControlFixture(
       { ...value, durableAdmission: true },
       { "x-admission-id": id },
     );
-  return { ...fixture, resources, input, inputFor, freshId, send, receipts };
+  return {
+    ...fixture,
+    resources,
+    input,
+    inputFor,
+    freshId,
+    prepareAdmission,
+    readReceipt,
+    send,
+    receipts,
+  };
 }
 
 test(
@@ -1141,18 +1186,13 @@ test("control refuses loose requests before acting on them", { timeout: 15000 },
 });
 
 async function holdControlRequest(owner: ResourceOwner, target: string) {
-  const directory = await socketDirectory(owner, "rcs-held-");
-  const socketPath = join(directory, "relay.sock");
-  const sockets = new Set<Socket>();
   const { promise: received, resolve: captured } = Promise.withResolvers<void>();
-  let release: (() => void) | undefined;
-  const relay = createNetServer((caller) => {
-    sockets.add(caller);
-    caller.on("error", () => caller.destroy());
-    const chunks: Buffer[] = [];
+  const noHeldRequest = (): void => assert.fail("no control request to release");
+  let release = noHeldRequest;
+  const socketPath = await startControlRelay(owner, "rcs-held-", (caller, track) => {
+    let data = Buffer.alloc(0);
     const collect = (chunk: Buffer) => {
-      chunks.push(chunk);
-      const data = Buffer.concat(chunks);
+      data = Buffer.concat([data, chunk]);
       const end = data.indexOf("\r\n\r\n");
       const length = /content-length: ([0-9]+)/i.exec(data.toString());
       if (end < 0 || !length || data.length < end + 4 + Number(length[1])) {
@@ -1161,13 +1201,12 @@ async function holdControlRequest(owner: ResourceOwner, target: string) {
       caller.off("data", collect);
       caller.pause();
       release = () => {
-        const upstream = connect(target);
-        sockets.add(upstream);
-        upstream.on("error", () => caller.destroy());
+        release = noHeldRequest;
+        const upstream = track(connect(target));
+        upstream.once("error", () => caller.destroy());
         upstream.once("connect", () => {
           upstream.write(data);
           caller.pipe(upstream);
-          caller.resume();
         });
         upstream.pipe(caller);
       };
@@ -1175,25 +1214,7 @@ async function holdControlRequest(owner: ResourceOwner, target: string) {
     };
     caller.on("data", collect);
   });
-  await new Promise<void>((resolve, reject) => {
-    relay.once("error", reject);
-    relay.listen(socketPath, resolve);
-  });
-  await chmod(socketPath, 0o600);
-  owner.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => relay.close(resolve));
-  });
-  return {
-    socketPath,
-    received,
-    release: () => {
-      assert.ok(release);
-      release();
-    },
-  };
+  return { socketPath, received, release: () => release() };
 }
 
 test(
@@ -1234,12 +1255,7 @@ test(
       ...defaultRegistryRepositories,
       { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
     ]);
-    const { inputFor, send, freshId, clock } = fixture;
-    const prepared = async (input: RepositoryCredentialBoundSessionInput) => {
-      const id = freshId();
-      await fixture.receipts.prepare(id, input.repositoryRef, input.durationSeconds);
-      return id;
-    };
+    const { inputFor, send, freshId, prepareAdmission, clock } = fixture;
     const first = inputFor("repo-a");
     const retried = inputFor("repo-b");
     const recovered = inputFor("repo-c");
@@ -1248,11 +1264,11 @@ test(
       status: 503,
       body: { error: "unavailable" },
     });
-    const opened = await send(first, await prepared(first));
+    const opened = await send(first, await prepareAdmission(first));
     assert.equal(opened.status, 201);
     // Session capacity refuses these opens; neither may strand a durable reservation.
-    const retriedId = await prepared(retried);
-    const recoveredId = await prepared(recovered);
+    const retriedId = await prepareAdmission(retried);
+    const recoveredId = await prepareAdmission(recovered);
     for (const [input, id] of [
       [retried, retriedId],
       [recovered, recoveredId],
@@ -1351,29 +1367,17 @@ test(
       { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
       { repositoryRef: "repo-d", repository: "fixture/fourth", repositoryId: "76" },
     ]);
-    const { inputFor, send, freshId, receipts } = fixture;
-    const receipt = async (id: string) => {
-      const value = await receipts.state.read((view) =>
-        view.repositorySessions.findBrokerReceipt(id),
-      );
-      assert.ok(value);
-      return value;
-    };
-    const prepared = async (input: RepositoryCredentialBoundSessionInput) => {
-      const id = freshId();
-      await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
-      return id;
-    };
+    const { inputFor, send, prepareAdmission, readReceipt, receipts } = fixture;
     const missing = { status: 404, body: { error: "admission-missing" } };
 
     // The journal reserves an admission the broker then refuses as invalid.
     const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
-    const invalidId = await prepared(invalid);
+    const invalidId = await prepareAdmission(invalid);
     assert.deepEqual(await send(invalid, invalidId), {
       status: 400,
       body: { error: "invalid-request" },
     });
-    assert.equal((await receipt(invalidId)).state, "fenced");
+    assert.equal((await readReceipt(invalidId)).state, "fenced");
     assert.deepEqual(await send(invalid, invalidId), missing);
     assert.deepEqual(await send({ ...invalid, recoverOnly: true }, invalidId), missing);
 
@@ -1401,46 +1405,46 @@ test(
       return result;
     };
     const unbound = inputFor("repo-b");
-    const unboundId = await prepared(unbound);
+    const unboundId = await prepareAdmission(unbound);
     calls = 0;
     outcome = "refused";
     assert.deepEqual(await send(unbound, unboundId), {
       status: 503,
       body: { error: "unavailable" },
     });
-    assert.equal((await receipt(unboundId)).state, "fenced");
+    assert.equal((await readReceipt(unboundId)).state, "fenced");
     assert.deepEqual(await send(unbound, unboundId), missing);
     assert.deepEqual(await send({ ...unbound, recoverOnly: true }, unboundId), missing);
 
     // The journal is away for the bind and the fence; a retry fences instead.
     const away = inputFor("repo-d");
-    const awayId = await prepared(away);
+    const awayId = await prepareAdmission(away);
     calls = 0;
     outcome = "away";
     assert.deepEqual(await send(away, awayId), { status: 503, body: { error: "unavailable" } });
-    assert.equal((await receipt(awayId)).state, "reserved");
+    assert.equal((await readReceipt(awayId)).state, "reserved");
     outcome = undefined;
     assert.deepEqual(await send(away, awayId), missing);
-    assert.equal((await receipt(awayId)).state, "fenced");
+    assert.equal((await readReceipt(awayId)).state, "fenced");
     assert.deepEqual(await send({ ...away, recoverOnly: true }, awayId), missing);
 
     // The bind is recorded but its answer is lost: the fence cannot apply, and the
     // closed session's disposal is recorded instead.
     const lost = inputFor("repo-c");
-    const lostId = await prepared(lost);
+    const lostId = await prepareAdmission(lost);
     calls = 0;
     outcome = "lost";
     assert.deepEqual(await send(lost, lostId), { status: 503, body: { error: "unavailable" } });
     outcome = undefined;
     await waitUntil(
       "the lost session's receipt to be disposed",
-      async () => (await receipt(lostId)).state === "disposed",
+      async () => (await readReceipt(lostId)).state === "disposed",
       { timeoutMs: 5000, intervalMs: 10 },
     );
     const recovered = await send({ ...lost, recoverOnly: true }, lostId);
     assert.equal(recovered.status, 200);
     assert.equal(recovered.body.state, "DISPOSED");
-    assert.equal(recovered.body.sessionId, (await receipt(lostId)).sessionId);
+    assert.equal(recovered.body.sessionId, (await readReceipt(lostId)).sessionId);
   },
 );
 
@@ -1449,14 +1453,7 @@ test(
   { timeout: 15000 },
   async (t) => {
     const fixture = await boundControlFixture(t, {}, defaultRegistryRepositories);
-    const { inputFor, send, freshId, receipts } = fixture;
-    const receipt = async (id: string) => {
-      const value = await receipts.state.read((view) =>
-        view.repositorySessions.findBrokerReceipt(id),
-      );
-      assert.ok(value);
-      return value;
-    };
+    const { inputFor, send, freshId, readReceipt, receipts } = fixture;
     const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
     const id = freshId();
     await receipts.prepare(id, invalid.repositoryRef, invalid.durationSeconds);
@@ -1482,10 +1479,10 @@ test(
       status: 400,
       body: { error: "invalid-request" },
     });
-    assert.equal((await receipt(id)).state, "reserved");
+    assert.equal((await readReceipt(id)).state, "reserved");
     receipts.state.transact = transact;
     assert.deepEqual(await send({ ...invalid, recoverOnly: true }, id), missing);
-    assert.equal((await receipt(id)).state, "fenced");
+    assert.equal((await readReceipt(id)).state, "fenced");
     assert.deepEqual(await send(invalid, id), missing);
   },
 );
@@ -1501,19 +1498,7 @@ test(
       ...defaultRegistryRepositories,
       { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
     ]);
-    const { inputFor, send, freshId, clock, receipts } = fixture;
-    const receipt = async (id: string) => {
-      const value = await receipts.state.read((view) =>
-        view.repositorySessions.findBrokerReceipt(id),
-      );
-      assert.ok(value);
-      return value;
-    };
-    const prepared = async (input: RepositoryCredentialBoundSessionInput) => {
-      const id = freshId();
-      await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
-      return id;
-    };
+    const { inputFor, send, freshId, prepareAdmission, readReceipt, clock, receipts } = fixture;
     const transact = receipts.state.transact;
     // Each entry decides one transaction: true fails it. Past the plan, `down` decides.
     let plan: boolean[] = [];
@@ -1532,7 +1517,7 @@ test(
     const refused: [RepositoryCredentialBoundSessionInput, string][] = [];
     // A refused open: the reservation commits, then the fence transaction fails.
     const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
-    const invalidId = await prepared(invalid);
+    const invalidId = await prepareAdmission(invalid);
     plan = [false, true];
     assert.deepEqual(await send(invalid, invalidId), {
       status: 400,
@@ -1542,7 +1527,7 @@ test(
     // A failed bind: the reservation commits, then the bind and the fence fail. The
     // broker closes the session it never handed out.
     const unbound = inputFor("repo-b");
-    const unboundId = await prepared(unbound);
+    const unboundId = await prepareAdmission(unbound);
     plan = [false, true, true];
     assert.deepEqual(await send(unbound, unboundId), {
       status: 503,
@@ -1550,7 +1535,7 @@ test(
     });
     refused.push([unbound, unboundId]);
     for (const [, id] of refused) {
-      assert.equal((await receipt(id)).state, "reserved");
+      assert.equal((await readReceipt(id)).state, "reserved");
     }
     const valid = inputFor("repo-c");
     // Both records fill capacity inside their admission window.
@@ -1568,15 +1553,15 @@ test(
       body: { error: "overloaded" },
     });
     for (const [, id] of refused) {
-      assert.equal((await receipt(id)).state, "reserved");
+      assert.equal((await readReceipt(id)).state, "reserved");
     }
     // Once a fence commits, its record is forgotten and the next admission opens.
     down = false;
-    const opened = await send(valid, await prepared(valid));
+    const opened = await send(valid, await prepareAdmission(valid));
     assert.equal(opened.status, 201);
     assert.equal(sessionResult(opened.body).session.state, "OPEN");
     for (const [input, id] of refused) {
-      assert.equal((await receipt(id)).state, "fenced");
+      assert.equal((await readReceipt(id)).state, "fenced");
       assert.deepEqual(await send(input, id), {
         status: 404,
         body: { error: "admission-missing" },
@@ -1590,13 +1575,15 @@ test("the control client refuses socket paths over 103 bytes before connecting",
     "drivers/repo/github/access/client/operator",
     "callControl",
   );
-  const request = { method: "GET", path: "/v1/sessions" };
-  // The deliberately unsupported GET path keeps this runtime input outside ControlRequest.
+  const request: ControlRequest = {
+    method: "POST",
+    path: `/v1/sessions/${randomUUID()}/close`,
+  };
   // 104 ASCII bytes, and 61 characters that encode to 115 bytes. Neither file exists,
   // so only the length guard can produce invalid-control-request.
   for (const socket of [`/${"a".repeat(103)}`, `/${"\u00e9".repeat(54)}x.sock`]) {
     assert.ok(Buffer.byteLength(socket) > 103);
-    await assert.rejects(callControl(socket, request as ControlRequest), {
+    await assert.rejects(callControl(socket, request), {
       message: "invalid-control-request",
     });
   }
