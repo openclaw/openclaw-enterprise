@@ -72,6 +72,7 @@ and kubeconfig, and checks OpenClaw’s Google Workspace and Codex’s Linear ca
 | `openshell-linear-read`          | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
 | `codex-search-config`            | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
 | `openshell-git-model`            | No                   | Codex           | Register after enabling Git; verify model turns with and without repositories, Git expiry, and worker restart.                                                                   |
+| `openshell-template-resources`   | No                   | Codex           | [Template resource delivery](../openshell-managed.md#template-resource-delivery).                                                                                                |
 | `openshell-provider-replacement` | No                   | Codex           | [Managed Provider replacement](../openshell-managed.md#provider-replacement), network changes, model turns and peer isolation.                                                   |
 | `openshell-git-replacement`      | No                   | Codex           | [Managed Git recovery](../openshell-git-replacement.md), workspace retention and revision-scoped repository grants.                                                              |
 
@@ -117,9 +118,8 @@ OpenShell needs Landlock, unavailable on QA's Blacksmith runners. Each file
 runs on an Ubuntu 24.04 VM with a Landlock check, Docker daemon, cluster and
 private state. Job names use `QA advisory (OpenShell / <test-file-basename>)`.
 
-Each [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json) file gets a
-`run-ci-lane` job with `lane: openshell` and its selected `test-file`. The
-`qa-openshell-compose` label selects only the first row below.
+`run-ci-lane` selects each [OpenShell](../../../scripts/ci/test-suites/openshell.json)
+`test-file` separately (`lane: openshell`). `qa-openshell-compose` selects the first row only.
 
 | Test (source)                                                                                       | Coverage                                                                                                                                                                         |
 | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -117,25 +117,22 @@ export async function checkContainmentRetirementRetry() {
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
   const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const deployment = driver["deployment"](
-    deploymentName,
-    {
+  const deployment = driver["deployment"]({
+    name: deploymentName,
+    ownership: {
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
       servicePrincipalId: revision.servicePrincipalId,
       revisionId: revision.id,
     },
-    { name: namespace, plane: "execution" },
-    { runtime: "agent:local", workspaceSetup: options().images.gateway },
-    `agent-${digest(revision.agentId)}`,
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, namespace, false),
-  );
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
+    serviceAccountName: `agent-${digest(revision.agentId)}`,
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
   deployment.metadata.uid = "containment-workload-uid";
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   let gatewayReads = 0;
@@ -569,25 +566,22 @@ export async function checkContainmentStopOrder() {
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
   const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const deployment = driver["deployment"](
-    deploymentName,
-    {
+  const deployment = driver["deployment"]({
+    name: deploymentName,
+    ownership: {
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
       servicePrincipalId: revision.servicePrincipalId,
       revisionId: revision.id,
     },
-    { name: namespace, plane: "execution" },
-    { runtime: "agent:local", workspaceSetup: options().images.gateway },
-    `agent-${digest(revision.agentId)}`,
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, namespace, false),
-  );
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
+    serviceAccountName: `agent-${digest(revision.agentId)}`,
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
   deployment.metadata.uid = "containment-stop-workload-uid";
   const pod = {
     apiVersion: "v1",
@@ -669,25 +663,22 @@ function stopOrderFixture(id: string) {
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   const namespaceReads = lifecycleNamespaceReads(driver, namespace, revision.namespaceId);
   const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const deployment = driver["deployment"](
-    deploymentName,
-    {
+  const deployment = driver["deployment"]({
+    name: deploymentName,
+    ownership: {
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
       servicePrincipalId: revision.servicePrincipalId,
       revisionId: revision.id,
     },
-    { name: namespace, plane: "execution" },
-    { runtime: "agent:local", workspaceSetup: options().images.gateway },
-    `agent-${digest(revision.agentId)}`,
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, namespace, false),
-  );
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: options().images.gateway },
+    serviceAccountName: `agent-${digest(revision.agentId)}`,
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
   deployment.metadata.uid = "refused-stop-order-agent-uid";
   const gatewayPod = {
     apiVersion: "v1",

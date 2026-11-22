@@ -1,17 +1,17 @@
+import { driverOperation } from "./driver-operation.ts";
 import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import type {
   ChannelDriver,
   Configuration,
   ConfigurationDriver,
   OpenClawConfigurationDocument,
-  Secret,
   SecretBindings,
   SecretDriver,
 } from "@openclaw-enterprise/contracts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { exactConfiguration, storedSecretBindings } from "./configuration-operations.ts";
-import { secretOperation } from "./secret-operations.ts";
+import { secretOperation, sameSecretBackend } from "./secret-operations.ts";
 import {
   AuthorizationDeniedError,
   ChannelCredentialError,
@@ -42,7 +42,6 @@ interface DeploymentChannelDependencies {
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedChannel: () => ChannelDriver;
   readonly configurationDriver: () => ConfigurationDriver;
-  readonly driverOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly requireBundledChannelBindings: (
     values: OpenClawConfigurationDocument,
     bindings: SecretBindings,
@@ -51,7 +50,6 @@ interface DeploymentChannelDependencies {
     driverId: string,
     failure: () => SecretDriverOwnershipError,
   ) => SecretDriver;
-  readonly sameSecretBackend: (left: Secret, right: Secret) => boolean;
 }
 
 export function createDeploymentChannelChecks(dependencies: DeploymentChannelDependencies) {
@@ -106,7 +104,7 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
             });
             if (
               current === undefined ||
-              !dependencies.sameSecretBackend(secret, current) ||
+              !sameSecretBackend(secret, current) ||
               dependencies.ownedSecretDriver(current.driverId, driverFailure) !== storage
             ) {
               throw new ChannelCredentialError("unavailable", path);
@@ -176,7 +174,7 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
     const configurationId = metadata.id;
     const configurationDriver = dependencies.configurationDriver();
     const configuration = exactConfiguration(
-      await dependencies.driverOperation(() => configurationDriver.read(metadata)),
+      await driverOperation(() => configurationDriver.read(metadata)),
       metadata,
     );
     // Before the Channel Driver, which reads only an env SecretRef and answers any other channel

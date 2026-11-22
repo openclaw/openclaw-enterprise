@@ -12,6 +12,7 @@ const scenarioPresets = {
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
   "openshell-git-model": ["Codex"],
+  "openshell-template-resources": ["Codex"],
   "openshell-provider-replacement": ["Codex"],
   "openshell-git-replacement": ["Codex"],
   "model-ui": ["OpenClaw"],
@@ -48,6 +49,7 @@ export function selectQaMatrix(env = process.env) {
         "plugin-install",
         "openshell-linear-read",
         "openshell-git-model",
+        "openshell-template-resources",
         "openshell-provider-replacement",
         "openshell-git-replacement",
         "codex-search-config",
@@ -107,6 +109,7 @@ export function selectQaMatrix(env = process.env) {
           ![
             "native-restart",
             "channel-egress-upgrade",
+            "openshell-template-resources",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
@@ -124,6 +127,7 @@ export function selectQaMatrix(env = process.env) {
           ![
             "native-restart",
             "channel-egress-upgrade",
+            "openshell-template-resources",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
@@ -143,6 +147,7 @@ export function selectQaMatrix(env = process.env) {
           ![
             "native-restart",
             "channel-egress-upgrade",
+            "openshell-template-resources",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
@@ -268,6 +273,15 @@ export function selectQaMatrix(env = process.env) {
     }
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
   }
+  const templateResources = scenarios.includes("openshell-template-resources");
+  if (templateResources) {
+    assert.equal(
+      installation,
+      "kubernetes",
+      "Template resources require explicit Kubernetes selection",
+    );
+    requiredEnv.push("OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE");
+  }
   const gitModel = scenarios.includes("openshell-git-model");
   const namespaceLifecycle = scenarios.includes("namespace-lifecycle");
   const sandboxPolicy = scenarios.includes("sandbox-policy");
@@ -389,6 +403,7 @@ export function selectQaMatrix(env = process.env) {
     presets,
     providerReplacement,
     gitReplacement,
+    templateResources,
     cells,
     scenarios,
     requiredEnv,

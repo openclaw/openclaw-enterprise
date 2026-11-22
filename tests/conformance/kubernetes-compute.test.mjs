@@ -4776,20 +4776,17 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
   };
   const namespace = kubernetesNamespaceName(tenant.id);
   const ownership = { namespaceId: tenant.id, agentId, revisionId: "revision-render" };
-  const workload = driver.deployment(
-    "codex-agent",
+  const workload = driver.deployment({
+    name: "codex-agent",
     ownership,
-    { name: namespace, plane: "execution" },
-    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
-    "codex-agent",
-    "agent",
-    {},
-    "info",
-    undefined,
-    false,
-    undefined,
-    preparedAuth(driver, namespace, false, account),
-  );
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: "codex-agent",
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false, account),
+  });
   const agentEnvironment = Object.fromEntries(
     workload.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
   );
@@ -4806,24 +4803,24 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
   assert.equal(agentEnvironment.SLACK_BOT_TOKEN, undefined);
   assert.equal(agentEnvironment.MSTEAMS_APP_PASSWORD, undefined);
 
-  const gateway = driver.deployment(
-    "codex-gateway",
+  const gateway = driver.deployment({
+    name: "codex-gateway",
     ownership,
-    { name: namespace, plane: "execution" },
-    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
-    "codex-gateway",
-    "gateway",
-    {},
-    "info",
-    driver.gatewayConfiguration(routedRevision(driver, { agentId: ownership.agentId }), undefined, {
-      name: namespace,
-      plane: "execution",
-    }),
-    false,
-    undefined,
-    undefined,
-    undefined,
-  );
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: "codex-gateway",
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+    configuration: driver.gatewayConfiguration(
+      routedRevision(driver, { agentId: ownership.agentId }),
+      undefined,
+      {
+        name: namespace,
+        plane: "execution",
+      },
+    ),
+  });
   const gatewayEnvironment = new Set(
     gateway.spec.template.spec.containers[0].env.map(({ name }) => name),
   );
@@ -5036,23 +5033,18 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
   admitRevisionHarness(driver, revision);
   const snapshot = driver.pluginRuntimeSnapshot(revision);
   assert.deepEqual(snapshot?.runtime, { kind: "openclaw", selections: {}, pluginApprovers: [] });
-  const gateway = driver.deployment(
-    "gateway-native-approvers",
-    { namespaceId: tenant.id, agentId },
-    namespaceAddress,
-    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
-    "gateway-native-approvers",
-    "gateway",
-    {},
-    "info",
-    undefined,
-    false,
-    undefined,
-    undefined,
-    [],
-    [],
-    snapshot,
-  );
+  const gateway = driver.deployment({
+    name: "gateway-native-approvers",
+    ownership: { namespaceId: tenant.id, agentId },
+    namespace: namespaceAddress,
+    images: { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: "gateway-native-approvers",
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+    enabledChannels: [],
+    pluginRuntime: snapshot,
+  });
   const pod = gateway.spec.template.spec;
   const env = pod.containers[0].env.map(({ name }) => name);
   assert.equal(
@@ -5419,45 +5411,34 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
   };
   const deviceId = "a".repeat(64);
-  const gatewayDeployment = driver.deployment(
-    "gateway-native-worker",
+  const gatewayDeployment = driver.deployment({
+    name: "gateway-native-worker",
     ownership,
-    namespaceAddress,
-    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
-    "gateway-native-worker",
-    "gateway",
-    {},
-    "info",
-    driver.gatewayConfiguration(revision, deviceId, namespaceAddress),
-    false,
-    undefined,
-    undefined,
-    undefined,
-    [],
-    undefined,
-    [],
-  );
-  const workerDeployment = driver.deployment(
-    "agent-native-worker",
-    { ...ownership, revisionId: revision.id },
-    namespaceAddress,
-    { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
-    "agent-native-worker",
-    "agent",
-    {},
-    "info",
-    undefined,
-    false,
-    undefined,
-    driver.harnessAuthForRevision(revision, authContext(revision, namespace), namespaceAddress),
-    [],
-    [],
-    undefined,
-    [],
-    undefined,
-    undefined,
-    { configuration: JSON.stringify(nativeInference) },
-  );
+    namespace: namespaceAddress,
+    images: { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: "gateway-native-worker",
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+    configuration: driver.gatewayConfiguration(revision, deviceId, namespaceAddress),
+  });
+  const workerDeployment = driver.deployment({
+    name: "agent-native-worker",
+    ownership: { ...ownership, revisionId: revision.id },
+    namespace: namespaceAddress,
+    images: { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: "agent-native-worker",
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: driver.harnessAuthForRevision(
+      revision,
+      authContext(revision, namespace),
+      namespaceAddress,
+    ),
+    enabledChannels: [],
+    nativeRuntime: { configuration: JSON.stringify(nativeInference) },
+  });
   driver.addNativeWorker(workerDeployment, "workspace-node-native-worker", undefined, undefined);
   assertExecStringsWithinBudget([gatewayDeployment, workerDeployment]);
   const gateway = gatewayDeployment.spec.template.spec.containers[0];
@@ -6051,26 +6032,26 @@ async function exerciseEmbeddedReplacement(scenario) {
     automountServiceAccountToken: false,
   });
   const predecessorConfiguration = driver.gatewayConfiguration(oldRevision);
-  const predecessorDeployment = driver.deployment(
-    gatewayName,
-    gatewayOwnership,
-    { name: namespace, plane: "execution" },
-    {
+  const predecessorDeployment = driver.deployment({
+    name: gatewayName,
+    ownership: gatewayOwnership,
+    namespace: { name: namespace, plane: "execution" },
+    images: {
       runtime: "openclaw-enterprise/gateway-fixture:local",
       workspaceSetup: driver.options.images.gateway,
     },
-    agentName,
-    "gateway",
-    {},
-    predecessorConfiguration.loggingLevel,
-    predecessorConfiguration,
-    true,
-    oldRevision.servicePrincipalId,
-    driver.harnessAuthForRevision(oldRevision, authContext(oldRevision), {
+    serviceAccountName: agentName,
+    role: "gateway",
+    environment: {},
+    loggingLevel: predecessorConfiguration.loggingLevel,
+    configuration: predecessorConfiguration,
+    embedded: true,
+    workloadServicePrincipalId: oldRevision.servicePrincipalId,
+    harnessAuth: driver.harnessAuthForRevision(oldRevision, authContext(oldRevision), {
       name: kubernetesNamespaceName(tenant.id),
       plane: "control",
     }),
-  );
+  });
   save({
     ...predecessorDeployment,
     metadata: { ...predecessorDeployment.metadata, generation: 2 },
@@ -6559,20 +6540,17 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     serviceAccountId: "sa_00000000-0000-4000-8000-000000000001",
     servicePrincipalId: "service-agent-agt_00000000-0000-4000-8000-000000000001",
   };
-  const workload = driver.deployment(
-    "agent-projected-identity",
+  const workload = driver.deployment({
+    name: "agent-projected-identity",
     ownership,
-    { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
-    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
-    "agent-projected-identity",
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
-  );
+    namespace: { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: "agent-projected-identity",
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
+  });
 
   const launch = (selected) =>
     selected.harnessLaunch({
@@ -6696,28 +6674,21 @@ test("provider Harness public trust rejects invalid material and composes with e
       tls: { caBundle: provider.caBundle },
     };
     const render = (value) =>
-      driver.deployment(
-        `gateway-${digest(revision.agentId)}`,
+      driver.deployment({
+        name: `gateway-${digest(revision.agentId)}`,
         ownership,
-        target,
-        { runtime: configured.images.gateway, workspaceSetup: driver.options.images.gateway },
-        "gateway-account",
-        "gateway",
-        {},
-        "info",
+        namespace: target,
+        images: {
+          runtime: configured.images.gateway,
+          workspaceSetup: driver.options.images.gateway,
+        },
+        serviceAccountName: "gateway-account",
+        role: "gateway",
+        environment: {},
+        loggingLevel: "info",
         configuration,
-        false,
-        undefined,
-        undefined,
-        undefined,
-        [],
-        undefined,
-        [],
-        undefined,
-        undefined,
-        undefined,
-        value,
-      );
+        providerEndpoint: value,
+      });
     const writes = [];
     driver.apiClients = Promise.resolve({
       core: {
@@ -6913,23 +6884,23 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
 
   const namespace = kubernetesNamespaceName(tenant.id);
   const agentHash = createHash("sha256").update(revision.agentId).digest("hex");
-  const gateway = production.deployment(
-    `gateway-${agentHash.slice(0, 12)}`,
-    { namespaceId: tenant.id, agentId: revision.agentId },
-    { name: namespace, plane: "execution" },
-    {
+  const gateway = production.deployment({
+    name: `gateway-${agentHash.slice(0, 12)}`,
+    ownership: { namespaceId: tenant.id, agentId: revision.agentId },
+    namespace: { name: namespace, plane: "execution" },
+    images: {
       runtime: "openclaw-enterprise/gateway-fixture:local",
       workspaceSetup: production.options.images.gateway,
     },
-    `agent-${agentHash.slice(0, 12)}`,
-    "gateway",
-    {},
-    production.gatewayConfiguration(embeddedRevision).loggingLevel,
-    production.gatewayConfiguration(embeddedRevision),
-    true,
-    revision.servicePrincipalId,
-    preparedAuth(production, namespace, true),
-  );
+    serviceAccountName: `agent-${agentHash.slice(0, 12)}`,
+    role: "gateway",
+    environment: {},
+    loggingLevel: production.gatewayConfiguration(embeddedRevision).loggingLevel,
+    configuration: production.gatewayConfiguration(embeddedRevision),
+    embedded: true,
+    workloadServicePrincipalId: revision.servicePrincipalId,
+    harnessAuth: preparedAuth(production, namespace, true),
+  });
   const pod = gateway.spec.template.spec;
   const environment = Object.fromEntries(pod.containers[0].env.map((entry) => [entry.name, entry]));
 

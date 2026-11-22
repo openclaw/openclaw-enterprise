@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { match } from "ts-pattern";
+import { occApiRoutes } from "@openclaw-enterprise/contracts";
 import type {
   AgentAutomationCreateInput,
   AgentAutomationOwnership,
@@ -23,7 +24,12 @@ import {
   type AgentAutomationGatewaySession,
 } from "../gateway/agent-automations-client.ts";
 import { dependencyUnavailable, failure } from "./errors.ts";
-import type { RequestContext, ResourceHandler, ResourceHandlers } from "./types.ts";
+import type {
+  RequestContext,
+  RequestOperation,
+  ResourceHandler,
+  ResourceHandlers,
+} from "./types.ts";
 
 type AutomationOperation = Extract<
   OccApiRoute,
@@ -37,10 +43,28 @@ type AutomationOperation = Extract<
       | "listAgentAutomationRuns";
   }
 >;
+type AutomationRequestOperation = RequestOperation &
+  Pick<AutomationOperation, "operationId" | "action">;
+
 export function isAgentAutomationOperation(
   operation: OccApiRoute,
-): operation is AutomationOperation {
-  return operation.action.startsWith("openclaw.agents.automations.");
+): operation is AutomationOperation;
+export function isAgentAutomationOperation(
+  operation: RequestOperation,
+): operation is AutomationRequestOperation;
+export function isAgentAutomationOperation(operation: RequestOperation): boolean {
+  return (
+    operation.action.startsWith("openclaw.agents.automations.") &&
+    occApiRoutes.some(
+      (route) =>
+        route.operationId === operation.operationId &&
+        route.action === operation.action &&
+        route.method === operation.method &&
+        route.iamAction === operation.iamAction &&
+        route.resourceKind === operation.resourceKind &&
+        route.authorizationTarget === operation.authorizationTarget,
+    )
+  );
 }
 
 export function createAgentAutomationHandlers(options: {

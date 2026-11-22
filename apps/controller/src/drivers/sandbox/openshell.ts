@@ -2307,10 +2307,6 @@ function sandboxSpec(
   const driverConfig = {
     containers: {
       agent: {
-        resources: {
-          requests: { ...resources.requests, "ephemeral-storage": "256Mi" },
-          limits: { ...resources.limits, "ephemeral-storage": "1Gi" },
-        },
         volume_mounts: volumeMounts,
       },
     },
@@ -2323,6 +2319,10 @@ function sandboxSpec(
     {
       workspacePath: dataMount.mount_path,
       workspaceMountPaths: workspace.workspaceMountPaths,
+      resources: {
+        requests: { ...resources.requests, "ephemeral-storage": "256Mi" },
+        limits: { ...resources.limits, "ephemeral-storage": "1Gi" },
+      },
       driverConfig,
       filesystem: filesystemPolicy(options, dataMount, volumeMounts),
       command: sandboxCommand(
@@ -2348,7 +2348,8 @@ interface OpenShellHarnessLayout {
   readonly workspacePath: string;
   readonly workspaceMountPaths?: ReadonlyMap<string, string>;
   readonly environment?: Readonly<Record<string, string>>;
-  readonly driverConfig: Readonly<Record<string, unknown>>;
+  readonly resources: Readonly<Record<string, unknown>>;
+  readonly driverConfig?: Readonly<Record<string, unknown>>;
   readonly filesystem: ReturnType<typeof filesystemPolicy>;
   readonly command: readonly string[];
 }
@@ -2396,7 +2397,10 @@ function sandboxLaunchSpec(
     template: {
       image: requirements.image,
       labels: { ...(layout.templateLabels ?? requirements.labels) },
-      driver_config: { fields: toProtobufStruct({ kubernetes: layout.driverConfig }) },
+      resources: { fields: toProtobufStruct(layout.resources) },
+      ...(layout.driverConfig === undefined
+        ? {}
+        : { driver_config: { fields: toProtobufStruct({ kubernetes: layout.driverConfig }) } }),
       ...(options.kubernetes.userNamespaces === undefined
         ? {}
         : { user_namespaces: options.kubernetes.userNamespaces }),
@@ -2922,7 +2926,10 @@ export function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | u
       : { restart_policy: restartPolicy }),
     template: {
       ...withoutSyntheticOneofs(template),
-      driver_config: canonicalProtobufValues(template.driver_config),
+      resources: canonicalProtobufValues(template.resources),
+      ...(template.driver_config === undefined
+        ? {}
+        : { driver_config: canonicalProtobufValues(template.driver_config) }),
     },
   };
 }
