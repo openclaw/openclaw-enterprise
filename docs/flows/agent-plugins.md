@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-21
-last_updated_session: authoring-run/9fa66906-eefe-4497-818f-876448b9d7fa
+last_updated_session: authoring-run/dfd37ee2-8f11-43a2-812e-455e2951d356
 ---
 
 # Agent Plugin Deployment Flow
@@ -69,29 +69,44 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) returns
-`400` (wrong Namespace), `404` (missing Secret), or `409` (unavailable explicit
-CredentialSource). Saved discovery requires a dedicated Agent.
-Missing/unready bound sources return `404`. Hosted catalogs need credentials, curated none.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) rejects
+cross-Namespace requests (`400`), missing Secrets (`404`) and unavailable explicit
+CredentialSources (`409`). Saved discovery requires dedicated Agents.
+Unavailable bound sources return `404`. Only hosted catalogs need credentials.
 
-OpenShell metadata/exports use operator mTLS. External Gateways may use
+OpenShell metadata/exports use operator mTLS. External Gateways support
 `withSourceToken`. OCC rechecks attachment before dispatch. Owners refresh credentials.
 Cancellation discards late credentials.
 
-`packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools`
+`packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools` reads tokens via the Secret Driver,
+rechecking target and grants around `tools/list`. `driverPolicy.toolNames` pins upstream names.
 
-Managed MCP uses Secret Driver, rechecking before `tools/list`.
-`driverPolicy.toolNames` pins upstream names across runtimes.
+Closing cancels. Account changes clear results. Harness changes clear
+selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
+cap size/time, reject redirects/credential echoes, set `Cache-Control: no-store`.
+Canonical duplicates return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
+Console rejects missing/mismatched detail IDs with retry.
 
-Closing cancels. Account changes clear results. Harness changes clear selections/approvers.
-[Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) cap size/time,
-reject redirects/credential echoes and set `Cache-Control: no-store`.
-The Driver rejects pages repeating canonical selection IDs. The API returns HTTP 503 `PLUGIN_DISCOVERY_INVALID_RESPONSE`.
-The Console rejects missing or mismatched detail IDs and offers retry.
+On `409 RESOURCE_CONFLICT`, [Console](../../apps/controller/src/console/agents/plugin-discovery.mts)
+retires stale **Add**, preserves drafts and offers **Load plugins** (catalog), **Load tools** (connection)
+or **Retry tools** (details).
+
+For saved Agents, catalog or hosted-details `403` clears cached **Add** and tools.
+Use **Load plugins** unless managed tool discovery requires **Recheck access**.
+Both tabs keep current refusal guidance and IDs on cancel or failure. The
+capabilities `GET` checks Driver, policy, release, slot bindings and unique valid
+source IDs. A later discovery `403` can reopen recovery. After success,
+**Recheck access** disappears. Load plugins and tools with an eligible,
+independently connected source.
+
+After managed refusal recovery, choose **Recheck accounts** on an enabled card
+with an empty slot. Both rechecks clear discovery and cancel pending reads. Drafts and
+approvers stay intact. `409 AGENT_DELETING` blocks recovery.
+
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
-`requires_local_executor`; `true` without skills means unavailable.
-Details reject unmatched MCP/scheduled tasks. Optional stdio
-`NativeCodexPluginCatalogReader` rejects invalid `plugin/list`, stopping its child.
+`requires_local_executor`. `true` requires skills. Details reject unmatched
+MCP/scheduled tasks. Invalid `plugin/list` stops optional stdio
+`NativeCodexPluginCatalogReader`.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -386,25 +401,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-21 22:12: Document saved-Agent access recovery. (authoring-run/dfd37ee2-8f11-43a2-812e-455e2951d356 - e9abd3462452c20c0919e8b96ae1db2f5cd79507)
+- 2026-11-21 21:19: Conflicts. (authoring-run/187efa80-5ecc-4bff-97f1-1898033f5a60 - 7ce0780b5f15899d0899a399460bc2b7ad3d6ed4)
 - 2026-11-21 15:08: Detail-ID refusal. (authoring-run/9fa66906-eefe-4497-818f-876448b9d7fa - b0da800df32dc5311524ef462b5c94a3cbe0264e)
-- 2026-11-21 12:38: Document rejection of duplicate hosted catalog selections. (authoring-run/c4d8dbfd-1681-4b5b-a0d6-45a805b2aa68 - 7dd321619d7400e144f805ec7b9bde5e98b59ed2)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-20 16:13: Update discovery source. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
-
-- 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)
-
-- 2026-11-17 21:20: Check guard compatibility before attachment. (01a1eb01-409e-7270-a471-5a104ce7b468 - a5ebff48cd9cb180ea21ecd9740a034fde254864)
-
-- 2026-11-17 19:48: Trace OpenClaw deployment requirements through account validation. (01a1eb01-409e-7270-a471-5a104ce7b468 - 23b54e2855d0a8d60b2168588fe8c7d7f06e9b36)
-
-- 2026-11-12 11:28: Accept omitted hosted executor metadata. (authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
-
-- 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
-
-- 2026-11-05 13:37: Trace plugin-policy refusal recovery. (authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e - a8259883139ac831b32c0a7b0fe872f6db4ee290)
-
-- 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
-
-- 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

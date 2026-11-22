@@ -9774,6 +9774,7 @@ export function registerProviderLifecycleTest(workflow) {
         const topology = await measureOpenShellStage(testContext, "installation", () =>
           prepareProductionInstallation(context, {
             harnessId: selectedHarness,
+            enableCompatibilityBridges: false,
             observeReplacementNode: workflow === "upstream" && selectedScenario === "full",
             ...(workflow === "scratch" ? { withScratch: true, withOAuthToolSources: false } : {}),
             ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),

@@ -554,16 +554,19 @@ for (const fault of ["before write", "after commit", "during worker replacement"
       runtime["states"].set(id, { entry });
       let deliveries = 0;
       const release = () =>
-        runtime.releasePreview(id, hook.startupId, async () => {
-          deliveries++;
-          // A separate reader can observe the bound generation before the launcher starts.
-          const { rows } = await f.observerPool.query(
-            "SELECT desired, observed FROM occ.credential_deliveries WHERE revision_id = $1",
-            [id],
-          );
-          assert.equal(rows[0]?.desired.resourceVersion, binding.resourceVersion);
-          assert.deepEqual(rows[0]?.observed.observedHook, hook);
-          throw new Error("lost release acknowledgement");
+        runtime.releasePreview(id, hook.startupId, {
+          prepare: async () => {},
+          deliver: async () => {
+            deliveries++;
+            // A separate reader can observe the bound generation before the launcher starts.
+            const { rows } = await f.observerPool.query(
+              "SELECT desired, observed FROM occ.credential_deliveries WHERE revision_id = $1",
+              [id],
+            );
+            assert.equal(rows[0]?.desired.resourceVersion, binding.resourceVersion);
+            assert.deepEqual(rows[0]?.observed.observedHook, hook);
+            throw new Error("lost release acknowledgement");
+          },
         });
       await assert.rejects(release(), /lost release acknowledgement/);
       await pending;

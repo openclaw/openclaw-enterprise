@@ -395,6 +395,10 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
       ]);
       const after = await history();
       assert.deepEqual(after.slice(0, before.length), before);
+      // Check the original session and database pool before a restart can hide a failed read.
+      reads.push(
+        await released.request("after-migration", "read", { namespaceId: namespace.namespaceId }),
+      );
       await released.request("after-migration", "work", { name: "After migration" });
       await released.stop();
       released = await start(images.released, "released");

@@ -1379,6 +1379,7 @@
               "flows/cli-agent-browsing",
               "flows/cli-agent-apply",
               "flows/github-actions-testing/preparation",
+              "flows/github-actions-testing/network-proxy-acceptance",
               "flows/agent-repository-credentials",
               "flows/public-github-reads",
               "flows/repository-credentials",

@@ -135,6 +135,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 85 && completedCount > 85) {
     return "preTokenServiceSourceOwnership";
   }
+  if (count === 86 && completedCount > 86) {
+    return "preRepositoryNetworkPolicy";
+  }
   if (count === completedCount) {
     return "completed";
   }
