@@ -20,11 +20,13 @@ preparation, [stage a successor](immutable-installation-upgrade.md).
 If prepared, [stop on immutable Secret refusal](production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable) and preserve the original evidence.
 
 For other resumable failures, reconcile processes, release, migration, rollout
-and dispatch. Add `--resume`. If Doctor exhausts its heap,
+and dispatch. Preserve the original upgrade inputs, protected paths, kubeconfig
+contents, OCC URL, scripts, flow and chart. Add `--resume` and any additional
+flags required by the recovery procedure for the observed failure, after
+completing that procedure's required checks. If Doctor exhausts its heap,
 [increase `--doctor-heap-mib`](#correct-a-doctor-failure).
-Keep all other arguments, protected paths, kubeconfig contents, OCC URL,
-scripts, flow and chart unchanged. Keep candidates semantically unchanged.
-Resume rechecks images, nodes and live state against baseline or candidate.
+Keep candidates semantically unchanged. Resume rechecks images, nodes and live
+state against baseline or candidate.
 
 An [immutable reference switch](immutable-installation-upgrade.md) requires both
 Secrets' recorded UIDs and data.
@@ -52,13 +54,13 @@ unlock the upgrade or establish database state.
 
 ## Resume an unfinished prepared upgrade
 
-Failed application identity or migration preflight prevents further shutdown and
-Helm submission; writers may already be stopped. Inspect the current
-`upgrade-preflight-resume.*/preflight-{api,worker,migration}.log` and corresponding
-`preflight-*-logs.err`. Reconcile the application connection or migration failure
-and unknown creates; retain the original evidence, lock and dispatch journal for
-`--resume`. Historical `migration-preflight-resume.*` attempts remain valid for
-`--cleanup-preflight` using their original, hash-matching helper checkout.
+A failed application identity or migration preflight blocks further shutdown and
+Helm submission. Writers may have stopped. Inspect current
+`upgrade-preflight-resume.*/preflight-{api,worker,migration}.log` and matching
+`preflight-*-logs.err`. Reconcile connection or migration failures and unknown
+creates. Retain original evidence, lock and dispatch journal for `--resume`.
+For `--cleanup-preflight` on historical `migration-preflight-resume.*` attempts,
+use the original, hash-matching helper checkout.
 
 With `--verify-agent`, inspect `agent-continuity.json` and
 `agent-continuity-after*.json`. The former binds the original revision and workload
@@ -67,21 +69,21 @@ selection. Successful Helm work is not repeated. A replacement revision cannot p
 if redeployment is necessary, preserve this incomplete evidence and verify that
 separate recovery. The helper neither redeploys Agents nor rolls back the control plane.
 
-Read `native-command-failures.tsv` for failed scale, Helm or rollout commands:
-rows retain the operation, component (`api`, `worker`, `release`) and exit code.
-Client failures do not establish whether requests took effect; other failures
-may leave no row. Reconcile live state before resuming.
+Read `native-command-failures.tsv` for scale, Helm or rollout failures.
+Rows record operation, component (`api`, `worker`, `release`) and exit code.
+Other failures can lack rows. Client failure can follow request acceptance.
+Reconcile live state before resuming.
 
 Both Deployments are validated before stopping either. Later UID/version/replica
 conflicts can leave the API stopped. Reconcile
 `current-<component>-deployment.json` and `quiescence-<component>-patch.json`
 against live state before resuming.
 
-Helm failure or disconnection does not prove migration rollback. Inspect live
-Helm status/history, initialization Job/Pod outcomes and the database;
-`current-helm-status.json` may be stale. Keep the freeze. Reconcile the stopped
-Helm client before retry or recovery. Resolve `pending-*` releases with the
-release owner. Revision checks cannot fence concurrent clients.
+Helm failure or disconnection leaves migration outcome uncertain. Check live
+Helm status/history, initialization Job/Pod outcomes and database state.
+`current-helm-status.json` may be stale. Keep the freeze and reconcile the
+stopped client before retry or recovery. Resolve `pending-*` with the release
+owner. Revision checks cannot fence concurrent clients.
 
 Ordinary resume skips Helm at the expected deployed revision with candidate
 values/Installation. It can retry the recorded prior or failed expected revision
@@ -92,14 +94,15 @@ Outside this pair, preserve intent and evidence. The release owner must verify
 the recovered manifest, values, Installation, required hook outcomes and migration
 history, then finish verification separately.
 
-Never start old writers against a migrated database. For a retry within the recorded pair, wait
-until the initialization Job and Pods are terminal. Run the **candidate controller
-image** with the [selected-image read-only check](separate-database-upgrade.md#run-a-selected-image-migration)
-against the retained database. Use its migrator credential and required CA. Use the
-same image for the maintenance Job. Require exit-zero `migration.checked`.
+Never start old writers against a migrated database. To retry within the recorded
+pair, wait until the initialization Job and Pods are terminal. Use the **candidate
+controller image** for the maintenance Job and
+[read-only migration check](separate-database-upgrade.md#run-a-selected-image-migration)
+against the retained database with its migrator credential and required CA.
 [Separate migrations](separate-database-upgrade.md) require `--require-current`.
-Pass `--resume --migration-history-checked`. If Helm still reports the original
-revision in separate mode, keep the original API and worker stopped and preserve
+Require exit-zero `migration.checked` before passing
+`--resume --migration-history-checked`. In separate mode, while Helm reports the
+original revision, keep the original API and worker stopped and preserve
 `database-migration-handoff.json`. Prefer a reviewed forward fix. Helm rollback
 leaves committed SQL in place.
 
