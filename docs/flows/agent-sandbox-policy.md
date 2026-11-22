@@ -65,22 +65,17 @@ Installation ceiling and Sandbox wildcard and range support. Preview writes noth
 Validation names failed fields and checks. Stale or denied requests retain resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details without Unicode controls.
 
-`packages/occ/src/agent-deployment-admission.ts:admitModelCredentialPolicy` owns
-managed model credential admission. OCC requires one saved grant matching the
-approved inference host and port. It checks the Installation ceiling and derives
-the binding's injection rule from the approved HTTP method and path. The revision
-saves both policies. See [credential implementation status](../reference/credential-sources.md#implementation-status).
+`packages/occ/src/agent-deployment-admission.ts:admitModelCredentialPolicy` matches
+one grant against the approved inference host/port, checks the ceiling, and
+records separate network and method/path injection policies in the revision ([status](../reference/credential-sources.md#implementation-status)).
 
-`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` authorizes Agent
-`manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent, and
-checks editing, version, pending work, ceiling, and Driver admission.
-`protectedExecutionApplies` refuses nonempty additions for legacy protected
-egress with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`. A repository-only legacy
-Proxy permits an ordinary model exception for an Agent without repositories that
-binds one ready Gateway-owned static Harness source. Legacy protected revisions
-also refuse ordinary additions at deployment and live apply. Selecting a managed
-model revision disables nonempty policy edits and live apply. Protected, dedicated Codex
-repository admission can carry the Sandbox Driver's explicitly acknowledged
+`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` requires Agent
+`manage_policy` and SandboxPolicy `update` and locks Namespace and Agent.
+Legacy protected execution rejects nonempty additions at save, deploy, and
+live apply (`409 SANDBOX_POLICY_PROTECTED_EXECUTION`).
+A repository-only Proxy permits a model exception with no repositories and one ready
+Gateway static Harness Source. Managed revisions block nonempty
+edits and live apply. Protected dedicated Codex admits the Sandbox-approved
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, keys, Driver,
 version and empty additions before credential provisioning. That snapshot
