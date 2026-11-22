@@ -1034,6 +1034,13 @@ async function checkRuntimeChild(t: TestContext) {
           OPENCLAW_ENTERPRISE_CI_STATE: state,
           OCC_TEST_CODEX_SECCOMP_PROFILE: profile,
           OCC_TEST_RUNTIME_IMAGE: `sha256:${"a".repeat(64)}`,
+          // The selected child does not use Kubernetes, but the actual lane also contains
+          // Kubernetes cases and requires their prepared inputs before dispatch.
+          OCC_TEST_KUBERNETES_KUBECONFIG: join(root, "kubeconfig"),
+          OCC_TEST_KUBERNETES_CONTEXT: "k3d-openclaw-ci-staging",
+          OCC_TEST_KUBERNETES_GATEWAY_IMAGE: `localhost/openclaw-ci/runtime@sha256:${"a".repeat(64)}`,
+          OCC_TEST_KUBERNETES_AGENT_IMAGE: `localhost/openclaw-ci/runtime@sha256:${"a".repeat(64)}`,
+          OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE: "openclaw/codex-bwrap.json",
           OCC_TEST_WORKSPACE_ENVOY_IMAGE:
             original.prepare.defaultEnv.OCC_TEST_WORKSPACE_ENVOY_IMAGE,
           OCC_TEST_STAGING_CODEX_VERSION: version,

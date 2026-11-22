@@ -273,6 +273,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   assert.deepEqual(selected.cells[1].unselected, [
     "http-chat",
+    "agent-automations",
     "codex-search-config",
     "agent-audit",
     "git-write",
@@ -297,7 +298,12 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     /not applicable/,
   );
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["http-chat", "model-ui", "console-secrets"]);
+  assert.deepEqual(openclaw.cells[0].scenarios, [
+    "http-chat",
+    "agent-automations",
+    "model-ui",
+    "console-secrets",
+  ]);
   assert.equal(openclaw.repository, false);
   assert.ok(!openclaw.requiredEnv.some((name) => /REPOSITORY|GITHUB_OBSERVER/.test(name)));
   assert.throws(

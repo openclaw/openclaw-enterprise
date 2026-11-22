@@ -46,10 +46,10 @@ function qaRow(
   return { installation, preset, scenarios, focused };
 }
 const fullQa = [
-  qaRow("compose", "Codex", "console-secrets,agent-audit,http-chat", false),
-  qaRow("kubernetes", "Codex", "console-secrets,http-chat", false),
-  qaRow("kubernetes", "OpenClaw", "http-chat", true),
-  qaRow("compose", "OpenClaw", "http-chat", true),
+  qaRow("compose", "Codex", "console-secrets,agent-audit,http-chat,agent-automations", false),
+  qaRow("kubernetes", "Codex", "console-secrets,http-chat,agent-automations", false),
+  qaRow("kubernetes", "OpenClaw", "http-chat,agent-automations", true),
+  qaRow("compose", "OpenClaw", "http-chat,agent-automations", true),
 ];
 
 const manifestDirectory = "scripts/ci/test-suites";

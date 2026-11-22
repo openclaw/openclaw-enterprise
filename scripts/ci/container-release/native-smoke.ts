@@ -13,6 +13,7 @@ import { inspectDigest, skopeo } from "./registry.ts";
 // container-release.test.ts pins this list to the lane manifests.
 export const runtimeImageSmokeTests = Object.freeze([
   "tests/helpers/workspace-gateway-relay-container.test.ts",
+  "tests/integration/automation-model-only-dispatch.test.ts",
   "tests/integration/codex-plugin-stdio-real.test.ts",
   "tests/integration/runtime-image-startup.test.ts",
   "tests/integration/runtime-image-gateway-workspace.test.ts",

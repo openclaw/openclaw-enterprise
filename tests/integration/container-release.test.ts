@@ -1572,6 +1572,7 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   // the production smoke list and the startup lanes still fails.
   const nonPrefixedSmokeFiles = [
     "tests/helpers/workspace-gateway-relay-container.test.ts",
+    "tests/integration/automation-model-only-dispatch.test.ts",
     "tests/integration/codex-plugin-stdio-real.test.ts",
     // Its OpenShell initializer case executes the pinned native workspace initializer.
     "tests/integration/sandbox-driver-startup.test.ts",
