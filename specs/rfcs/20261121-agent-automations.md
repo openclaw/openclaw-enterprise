@@ -86,17 +86,14 @@ Both Harnesses accept only operator-attested anonymous HTTPS. Each Compute
 `automations.trustedAnonymousMcpEndpoints` entry has `url`, `egressCidrs`
 and optional public PEM `caBundle`. Require an exact normalized HTTPS URL
 and exact host addresses (/32 or /128). Refuse stdio, wildcard destinations,
-credentials, private keys and redirects to unapproved origins. The operator
-attests identical anonymous actions from the Gateway and dedicated Agent.
-Tool annotations and successful discovery cannot establish approval.
+credentials, private keys and redirects to unapproved origins. The operator attests identical anonymous actions from both workloads.
 
 The Driver derives the TCP port from the URL (default 443). Add only the listed
 IP/port pairs to the Gateway and, for dedicated Codex, Agent NetworkPolicies.
 Retain default-deny egress and unrelated required workload routes. Validate TLS
 hostname and chain. Project the public CA only into the relevant workload:
 merge it with required Gateway Node trust via `NODE_EXTRA_CA_CERTS` and with
-dedicated Codex PEM trust via `CODEX_CA_CERTIFICATE`. These roots affect other
-TLS connections in that workload. Keep model credentials out of the dedicated
+dedicated Codex PEM trust via `CODEX_CA_CERTIFICATE`. These roots affect workload-wide TLS trust. Keep model credentials out of the dedicated
 Gateway. Refuse a topology that cannot enforce these boundaries.
 
 Native administrators and chat remain trusted writers outside OCC. OCC does
@@ -146,8 +143,8 @@ name, prompt, schedule and enabled state. Stale native revisions return 409.
 Require the selected Driver's instance-pinned transport, native administrative
 access, required methods and an unambiguous server-selected native Agent.
 OCC invokes only `cron.add`, `cron.list`, `cron.get`, `cron.update`,
-`cron.remove` and `cron.runs`, plus the bounded qualification reads above.
-The underlying administrative credential stays private.
+`cron.remove` and `cron.runs`, plus bounded qualification reads and `system.info` for peer identity.
+Keep the administrative credential private.
 
 Creation maps to `sessionTarget: "isolated"`, `wakeMode: "now"`, an `agentTurn`
 payload with the requested prompt and explicit `toolsAllow`, and
@@ -213,24 +210,24 @@ with reservation. Existing rows without trusted binding evidence are eligible
 only for their proven model-only ceiling. Never infer a tool-bearing grant by
 scanning an existing job or current catalog.
 
-Add one optional Compute Driver operation,
-`openAgentAutomationTransport(revision, qualification)`. It returns a private
-RPC connection bound to the exact verified Gateway instance. Before dispatch,
-verify the selected revision, Pod UID, container ID, actual image, guarded
-launcher/version, effective policy and trust configuration. Require a fresh
-deployment if the guard is missing. Refuse absent or stale evidence.
+Optional Compute operation `openAgentAutomationTransport(revision, qualification | undefined)`
+returns a private connection to the verified instance. Creation, edits and
+re-enablement require current qualification of the guarded launcher/version,
+effective policy and trust. Redeploy a missing guard. After withdrawal,
+`undefined` permits disable, delete and history under existing authorization.
 
-Kubernetes Compute provisions a revision-owned Service and private operator
-HTTPRoute through the existing Envoy authentication, trusted headers, scopes
-and NetworkPolicy. This requires no new RBAC or public operation. Select the
-exact Namespace, Agent and revision. Before and after the WebSocket handshake,
-require a nonempty ready endpoint set: every ready EndpointSlice targetRef UID
-and the sole live revision Gateway Pod UID must match the verified Pod.
-Recheck container and image identity. Refuse mismatches or rollover. Keep one
-connection through eligibility read and mutation, then close it. After a
-possibly sent write, return `UNKNOWN_OUTCOME` without reconnect or replay.
-The Agent-wide chat route cannot qualify. Clean up the Service and HTTPRoute
-when retiring the revision. Submit this contract before implementation.
+For every revision, including model-only, Compute provisions a Service and
+private operator HTTPRoute using existing Envoy authentication, trusted headers,
+scopes and NetworkPolicy. No new RBAC or public operation. Select the exact
+Namespace, Agent and revision. Before and after handshake, require nonempty
+ready EndpointSlices whose ready targetRef UIDs all match the sole live revision
+Gateway Pod UID. Before mutation, call bounded `system.info` on that authenticated
+WebSocket. Require its reported hostname to equal the checked Pod's name.
+Retain hello `server.bootId` as process identity and recheck Pod UID, container
+ID and image. Refuse mismatches or rollover. Pin that socket through eligibility
+read and mutation; close without reconnect or replay. A possibly sent write
+returns `UNKNOWN_OUTCOME` on loss. Exclude the Agent-wide chat route. Retain
+revision routes until retirement, then delete them. Submit before implementation.
 
 Before **every** native Gateway process spawn, including supervisor respawn
 and kubelet container restart, the launcher verifies the effective plugin
