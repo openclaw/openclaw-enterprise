@@ -251,8 +251,9 @@ env -u OCC_MIGRATION_HISTORY_DATABASE_URL -u OCC_MIGRATION_HISTORY_CONTAINER \
   --file tests/integration/postgres-migration-compatibility.test.mjs
 ```
 
-Require the run, both compatibility cases and cleanup to pass. Retain the
-attempt state if cleanup fails or process termination is uncertain. In
+Require the run, both compatibility cases and cleanup to pass. If cleanup fails
+or process termination is uncertain, retain the attempt state and follow the
+[recovery steps](ci/run-lanes.md#run-a-complete-local-attempt). In
 `$ATTEMPT/result.json`, check the file’s `imageDigests.releasedController` and
 `imageDigests.candidateController`. Keep this receipt private and unchanged. For the
 [control plane upgrade](../guides/deploy/production-upgrade.md#upgrade-the-control-plane),
