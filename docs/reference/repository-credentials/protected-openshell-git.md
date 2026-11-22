@@ -34,13 +34,12 @@ Select Kubernetes Compute, dedicated Codex, Sandbox and Credential Proxy from on
 Driver registration. Use
 [Installation configuration](../../../deploy/examples/repository-credentials/openshell.fragment.yaml) and
 [artifact rules](../drivers/openshell-sandbox.md#protected-codex-artifact-rules).
-Set repository eligibility in the GitHub Backend registry at
+Set repository eligibility in the registry at
 `/etc/openclaw/repository-registry/registry.json`. Keep the session duration and
-`repository.preparedGitHub` for prepared credentials. Connect the selected Driver
+`repository.preparedGitHub`. Connect the selected Driver
 with `repository.openShell` and Helm `openshellGit`. Omit `controlSocket`,
-`publicCaPath`, and `repository.nativeSender`.
-`repository.openShell` reaches only `github.com` and `api.github.com`: with another
-`repository.preparedGitHub.apiOrigin` the Installation starts, but deploy refuses repository Git.
+`publicCaPath`, `repository.nativeSender` and `repository.preparedGitHub.apiOrigin`:
+`repository.openShell` reaches only `github.com`, and deploy refuses repository Git otherwise.
 Remove Compute's `network.repositoryCredentials`: startup refuses it without
 `repository.nativeSender`.
 
@@ -50,7 +49,7 @@ Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`,
 `repository.openShell.authority` on host `0.0.0.0` (or `::`) and on the
 `openshellGit.port` value (default 8445), with the chart's files
 `/etc/openclaw/openshell-git/tls.crt`, `tls.key` and `gateway-public.pem`.
-Startup and the upgrade check refuse another host, port or path with
+Startup and the upgrade check refuse other values with
 `CHART_LISTENER_MISMATCH`. The `repositoryCredentials`
 inputs select the registry ConfigMap, worker-only App-key and existing custody
 Secrets, and approved issuer CIDRs. Preserve the custody key across restarts;
