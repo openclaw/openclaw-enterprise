@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
 
-import { status } from "@grpc/grpc-js";
 import type {
   DeploymentCredentialBinding,
   CredentialInjectionPolicy,
@@ -34,6 +33,7 @@ import {
 import { statusCode } from "../sandbox/openshell-gateway-errors.ts";
 
 const NAMESPACE_ID = "openclaw.dev/namespace-id";
+const GRPC_FAILED_PRECONDITION = 9;
 const DELIVERY_OWNER = "openclaw.dev/credential-proxy-delivery";
 const STATIC_DELIVERY = "static";
 const TOKEN_SERVICE_OWNER = "openclaw.dev/token-service";
@@ -244,7 +244,7 @@ export async function retireOccTokenServiceProviderCopy(input: {
       const attached = `provider '${name}' is attached to sandbox(es): `;
       if (
         input.retainIfAttached &&
-        statusCode(error) === status.FAILED_PRECONDITION &&
+        statusCode(error) === GRPC_FAILED_PRECONDITION &&
         typeof details === "string" &&
         details.startsWith(attached) &&
         details.slice(attached.length).trim().length > 0
