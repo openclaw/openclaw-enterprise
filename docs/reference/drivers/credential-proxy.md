@@ -32,7 +32,7 @@ The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/ind
 
 OCC registers Sandbox with delivery; independent composition is planned. Worker and Compute call `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` by revision. Optional [`notifyCredentialUpdated`](../../flows/credential-source-lifecycle.md#deliver-source-updates) takes a Source and resolver without a revision.
 
-OpenShell attaches a new or retained Provider; only creation resolves OCC TokenService material. Committed Source replacement updates existing Providers and verifies receipts and serving status; absence needs no resolution or creation. Failure retains custody. Readiness checks policy, version, and supervisor. Stop retains Source, Provider, and IAM grants. Manual retry and live rotation qualification are pending. Executable rules include descendants; substitution is not Bearer-only. [Implementation status](../credential-sources.md#implementation-status) lists enforcement limits.
+OpenShell deployment attaches new or retained Providers; only creation resolves OCC TokenService material. Committed Source replacement updates existing Providers and verifies receipts and serving status; absence needs no resolution or creation. Failure retains custody. Readiness checks policy, version, and supervisor. Stop retains Source, Provider, and IAM grants. Manual retry and live rotation qualification are pending. Executable rules include descendants; substitution is not Bearer-only. [Implementation status](../credential-sources.md#implementation-status) lists enforcement limits.
 
 ## Legacy protected egress
 
