@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
@@ -284,6 +284,7 @@ async function exerciseSavedGitAcl(
   owner: IssuedDeployment,
   replace: ((credentialIndex: number) => Promise<IssuedDeployment>) | undefined,
   expectedCallbacks: number,
+  lent = false,
 ) {
   const origin: GitOrigin = fixture.origin;
   const network = origin.network;
@@ -467,7 +468,12 @@ git -C '${local}' rev-parse '${ref}^{commit}'`,
   }
   const replacementIndex = successor.credentialIndex;
   assert.equal(issuedIndex(fetchStart), replacementIndex);
-  assert.notEqual(replacementIndex, originalIndex, "redeploy must issue a new credential");
+  if (lent) {
+    // A token source lends the same Secret value to every revision until it is replaced.
+    assert.equal(replacementIndex, originalIndex, "TOKEN_REDEPLOY_SAME_SOURCE");
+  } else {
+    assert.notEqual(replacementIndex, originalIndex, "redeploy must issue a new credential");
+  }
   for (const [name, ref, expected] of retained) {
     // Make a real fast-forward candidate so a no-op or cached object cannot
     // count as an enforced write denial.
@@ -515,11 +521,308 @@ git -C '${local}' rev-parse HEAD HEAD^`,
   return { originalIndex, replacementIndex };
 }
 
-if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
-  test(
-    "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent",
-    { timeout: 45 * 60_000 },
-    settleBeforeFixtureTeardown(async (t) => {
+/**
+ * The repository credential source of a journey: the controlled GitHub App issuer, or an
+ * operator's fine-grained token in the Installation's token Secret (fake values only), with the
+ * second fine-grained value that replaces it and the classic value the Worker must refuse.
+ */
+type JourneyCredential =
+  | { kind: "app" }
+  | { kind: "token"; value: string; replacement: string; classic: string };
+
+function fakeTokenCredential(): JourneyCredential {
+  const fake = (prefix: string) => `${prefix}FAKE0${randomBytes(24).toString("hex")}`;
+  return {
+    kind: "token",
+    value: fake("github_pat_"),
+    replacement: fake("github_pat_"),
+    classic: fake("ghp_"),
+  };
+}
+
+/** A lent token is never issued: the deploy must not mint, and Git carries the lent value. */
+async function deployWithLentToken(
+  origin: GitOrigin,
+  deploy: () => Promise<Deployed>,
+  credentialIndex: number,
+): Promise<IssuedDeployment> {
+  const issued = origin.snapshot().issued;
+  const deployed = await deploy();
+  assert.equal(origin.snapshot().issued, issued, "TOKEN_DEPLOY_ISSUES_NOTHING");
+  return { ...deployed, credentialIndex };
+}
+
+/**
+ * Digest search for token values in the workload: every readable process environment and
+ * argument list, the effective Git configuration, and the files under the workload's writable and
+ * configuration roots. Each fingerprint carries a public prefix (the token class prefix, or the
+ * Base64 of `x-access-token:`) so the guest hashes only candidate offsets. Only counts and the
+ * categories with a hit leave the guest.
+ */
+function tokenFingerprints(values: readonly string[]) {
+  const digest = (form: string) => createHash("sha256").update(form).digest("hex");
+  return values.flatMap((value) => {
+    const basic = Buffer.from(`x-access-token:${value}`).toString("base64");
+    return [
+      [Buffer.byteLength(value), digest(value), value.slice(0, value.indexOf("_") + 1)],
+      [Buffer.byteLength(basic), digest(basic), basic.slice(0, 20)],
+    ] as const;
+  });
+}
+
+function searchWorkloadForTokens() {
+  const fs = require("node:fs");
+  const crypto = require("node:crypto");
+  const childProcess = require("node:child_process");
+  const prints: [number, string, string][] = JSON.parse(process.argv[1] ?? "[]");
+  const hit = (buffer: Buffer) =>
+    prints.some(([length, hex, prefix]) => {
+      for (let at = buffer.indexOf(prefix); at !== -1; at = buffer.indexOf(prefix, at + 1)) {
+        const candidate = buffer.subarray(at, at + length);
+        if (
+          candidate.length === length &&
+          crypto.createHash("sha256").update(candidate).digest("hex") === hex
+        ) {
+          return true;
+        }
+      }
+      return false;
+    });
+  const found = new Set<string>();
+  const counts = { environ: 0, cmdline: 0, gitconfig: 0, files: 0, bytes: 0, skipped: 0 };
+  for (const pid of fs.readdirSync("/proc").filter((name: string) => /^\d+$/.test(name))) {
+    for (const kind of ["environ", "cmdline"] as const) {
+      try {
+        const buffer = fs.readFileSync(`/proc/${pid}/${kind}`);
+        counts[kind] += 1;
+        if (hit(buffer)) found.add(kind);
+      } catch {}
+    }
+  }
+  try {
+    const config = childProcess.execFileSync("git", ["config", "--list", "--show-origin"], {
+      cwd: "/",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    counts.gitconfig += 1;
+    if (hit(config)) found.add("gitconfig");
+  } catch {}
+  const roots = new Set(
+    ["/sandbox", "/home", "/root", "/tmp", "/var/tmp", "/etc", "/run", process.env.HOME]
+      .concat(process.cwd())
+      .filter((root): root is string => typeof root === "string" && root.length > 0),
+  );
+  const seen = new Set<string>();
+  const walk = (path: string) => {
+    if (counts.files >= 20_000 || seen.has(path)) return;
+    seen.add(path);
+    let stat;
+    try {
+      stat = fs.lstatSync(path);
+    } catch {
+      return;
+    }
+    if (stat.isDirectory()) {
+      let names: string[] = [];
+      try {
+        names = fs.readdirSync(path);
+      } catch {
+        counts.skipped += 1;
+      }
+      for (const name of names) walk(path === "/" ? `/${name}` : `${path}/${name}`);
+    } else if (stat.isFile()) {
+      if (stat.size > 4 * 1024 * 1024) {
+        counts.skipped += 1;
+        return;
+      }
+      try {
+        const buffer = fs.readFileSync(path);
+        counts.files += 1;
+        counts.bytes += buffer.length;
+        if (hit(buffer)) found.add(path.startsWith("/tmp/") ? "file:/tmp" : `file:${path}`);
+      } catch {
+        counts.skipped += 1;
+      }
+    }
+  };
+  for (const root of roots) walk(root);
+  process.stdout.write(JSON.stringify({ found: [...found].sort(), ...counts }));
+}
+
+async function assertTokensAbsentFromWorkload(
+  t: TestContext,
+  execute: GitExec,
+  target: GitTarget,
+  values: readonly string[],
+  stage: string,
+) {
+  const script = `(${searchWorkloadForTokens.toString()})()`;
+  const result = await execute(target, [
+    "node",
+    "--eval",
+    script,
+    "--",
+    JSON.stringify(tokenFingerprints(values)),
+  ]);
+  const report = JSON.parse(result.stdout.toString("utf8"));
+  t.diagnostic(
+    JSON.stringify({
+      event: "saved-git-token-digest-search",
+      stage,
+      sandbox: savedGitAclIdentity(target.sandboxId),
+      ...report,
+    }),
+  );
+  assert.ok(report.environ > 0 && report.cmdline > 0 && report.files > 0, "TOKEN_SEARCH_COVERAGE");
+  assert.equal(report.gitconfig, 1, "TOKEN_SEARCH_GIT_CONFIG");
+  assert.deepEqual(report.found, [], "TOKEN_ABSENT_FROM_WORKLOAD");
+}
+
+function patchTokenSecret(fixture: GitInstallation, value: string) {
+  return fixture.kube(
+    [
+      "patch",
+      "secret",
+      "git-fixture-token",
+      "-n",
+      fixture.platform,
+      "--type=merge",
+      "--patch-file=/dev/stdin",
+    ],
+    { input: JSON.stringify({ stringData: { token: value } }) },
+  );
+}
+
+/**
+ * The Worker refuses a classic token at its next loan: its log names the code, reason and class
+ * (never the value), and the Agent's Git stops working. Each outcome is its own assertion; the
+ * measured times are reported before any of them can fail.
+ */
+async function refuseClassicToken(
+  t: TestContext,
+  fixture: GitInstallation,
+  target: GitTarget,
+  execute: GitExec,
+  credential: Extract<JourneyCredential, { kind: "token" }>,
+) {
+  const origin: GitOrigin = fixture.origin;
+  const network = origin.network;
+  assert.ok(network);
+  const code = "PREPARED_GITHUB_TOKEN_REFUSED";
+  const workerLogs = () =>
+    fixture.kube(
+      [
+        "logs",
+        "-n",
+        fixture.platform,
+        "-l",
+        "app.kubernetes.io/instance=openclaw-enterprise,app.kubernetes.io/component=worker",
+        "--tail=-1",
+        "--max-log-requests=10",
+      ],
+      { timeout: 60_000 },
+    );
+  const valuesAbsent = (logs: string) => {
+    for (const value of [credential.value, credential.replacement, credential.classic]) {
+      assert.ok(!logs.includes(value), "TOKEN_VALUE_NOT_LOGGED");
+    }
+  };
+  const refusals = (logs: string) =>
+    logs.split("\n").flatMap((line) => {
+      if (!line.includes(code)) return [];
+      try {
+        const event = asRecord(JSON.parse(line.slice(line.indexOf("{"))));
+        return [{ code: event?.code, reason: event?.reason, tokenClass: event?.tokenClass }];
+      } catch {
+        return [{ code: "unparsed", reason: undefined, tokenClass: undefined }];
+      }
+    });
+  const baseline = await workerLogs();
+  valuesAbsent(baseline);
+  assert.deepEqual(refusals(baseline), [], "TOKEN_NO_REFUSAL_BEFORE_CLASSIC");
+
+  const patchedAt = Date.now();
+  await patchTokenSecret(fixture, credential.classic);
+  let logs = "";
+  const refused = await observeUntil(
+    "TOKEN_CLASSIC_REFUSED_LOGGED",
+    t.signal,
+    async () => {
+      logs = await workerLogs();
+      const found = refusals(logs);
+      return found.length > 0 ? found : undefined;
+    },
+    10 * 60_000,
+  );
+  const loggedSeconds = (Date.now() - patchedAt) / 1000;
+  const repository = "https://github.com/fixture/a.git";
+  const probe = createGitAclDenialCommand(network.issuedCredentialFingerprints());
+  let attempts = 0;
+  let last: { answer: string; indices: (number | undefined)[]; requests: number } | undefined;
+  let gitFailedSeconds: number | undefined;
+  try {
+    await observeUntil(
+      "TOKEN_CLASSIC_GIT_FAILS",
+      t.signal,
+      async () => {
+        attempts += 1;
+        const before = network.requests().length;
+        const result = await execute(
+          target,
+          probe({ kind: "success" }, [
+            "sh",
+            "-c",
+            `if git ls-remote '${repository}' >/dev/null 2>&1; then echo ok; else echo failed; fi`,
+          ]),
+        );
+        const observed = network.requests().slice(before);
+        last = {
+          answer: result.stdout.toString("utf8").trim(),
+          indices: [...new Set(observed.map(({ credentialIndex }) => credentialIndex))],
+          requests: observed.length,
+        };
+        if (last.answer === "failed") {
+          gitFailedSeconds = (Date.now() - patchedAt) / 1000;
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10_000));
+        return undefined;
+      },
+      5 * 60_000,
+    );
+  } finally {
+    t.diagnostic(
+      JSON.stringify({
+        event: "saved-git-token-classic-refusal",
+        loggedSeconds,
+        refusals: refused.length,
+        first: refused[0],
+        gitAttempts: attempts,
+        gitFailedSeconds,
+        lastGit: last,
+      }),
+    );
+  }
+  valuesAbsent(logs);
+  valuesAbsent(await workerLogs());
+  assert.ok(
+    refused.every(
+      (event) =>
+        event.code === code && event.tokenClass === "classic" && typeof event.reason === "string",
+    ),
+    "TOKEN_CLASSIC_REFUSED_CLASS",
+  );
+  assert.equal(last?.answer, "failed", "TOKEN_CLASSIC_GIT_FAILS");
+  await assertTokensAbsentFromWorkload(
+    t,
+    execute,
+    target,
+    [credential.value, credential.replacement, credential.classic],
+    "classic",
+  );
+}
+
+async function savedAgentGitJourney(t: TestContext, credential: JourneyCredential) {
       assert.ok(selected, "Select the owned Kubernetes/OpenShell installation");
       for (const setting of ["OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE"]) {
         assert.ok(
@@ -538,8 +841,10 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
             process.env.CODEX_ACCESS_TOKEN === "fixture-only-no-model-call"),
         "Use the inert Local Setup credential with the synthetic startup model",
       );
+      const app = credential.kind === "app";
       const fixture = await createOpenShellGitInstallation(t, {
         nativeGit: true,
+        ...(credential.kind === "token" && { tokenSource: credential.value }),
       });
       const { callbacks, gatewayClient, workspace, request } = fixture;
       assert.ok(callbacks);
@@ -547,12 +852,22 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
       const network = origin.network;
       assert.ok(network && network.token === undefined, "Require the controlled App issuer");
       assert.deepEqual(network.repositories, ["fixture/a", "fixture/b", "fixture/c"]);
+      // The origin accepts the operator's token as one static credential; nothing is issued.
+      let lentIndex = 0;
+      if (!app) {
+        const accepted = origin.snapshot();
+        assert.equal(accepted.issued, 0);
+        assert.equal(accepted.tokens.length, 1, "TOKEN_ORIGIN_ACCEPTS_ONE_VALUE");
+        lentIndex = accepted.tokens[0]!.index;
+      }
+      const deployWith = (run: () => Promise<Deployed>) =>
+        app ? deployWithIssuance(origin, run) : deployWithLentToken(origin, run, lentIndex);
 
       const refs = network.scopes.map(({ repositoryRef }) => repositoryRef);
       const prepareAgent = (installation: GitInstallation) =>
         prepareFiniteGitAgent(t, installation, refs);
       const { agent, path, deploy } = await prepareAgent(fixture);
-      const deployPolicy = () => deployWithIssuance(origin, deploy);
+      const deployPolicy = () => deployWith(deploy);
       const policyPath = `${path}/sandbox-policy/networking`;
       await request("PATCH", `${policyPath}/editing`, { enabled: true });
       const readPolicy = async (): Promise<SandboxPolicyViewWire> => request("GET", policyPath);
@@ -830,15 +1145,20 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
             priorPods.every((id) => !identities.has(id)) &&
             !provider &&
             !profile &&
-            credential?.revoked === true
+            // A lent token is the operator's to revoke at GitHub; retirement removes its route.
+            (app ? credential?.revoked === true : credential?.revoked === false)
             ? true
             : undefined;
         });
-        const revoked = await network.probeIssued(index, "fixture/b", {
-          method: "GET",
-          service: "git-upload-pack",
-        });
-        assert.deepEqual(revoked, { status: 401, type: "application/json" });
+        const revoked = app
+          ? await network.probeIssued(index, "fixture/b", {
+              method: "GET",
+              service: "git-upload-pack",
+            })
+          : undefined;
+        if (app) {
+          assert.deepEqual(revoked, { status: 401, type: "application/json" });
+        }
         t.diagnostic(
           JSON.stringify({
             event: "saved-git-acl-retired",
@@ -846,7 +1166,7 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
             revision: savedGitAclIdentity(deployed.revision.id),
             sandbox: savedGitAclIdentity(deployed.target.sandboxId),
             credentialIndex: index,
-            originStatus: revoked.status,
+            originStatus: revoked?.status,
           }),
         );
       };
@@ -877,71 +1197,6 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
         return result;
       };
 
-      const legacy = await prepareAgent(fixture);
-      const control = await deployWithIssuance(origin, legacy.deploy);
-      const view: SandboxPolicyViewWire = await request(
-        "GET",
-        `${legacy.path}/sandbox-policy/networking`,
-      );
-      assert.equal(view.policy.repositoryNetworkPolicy, undefined);
-      const legacyExec = createManagedWorkloadExec(t, {
-        backend: fixture.gatewayBackend,
-        gatewayClient,
-        workspace,
-        checkpoint: fixture.checkpoint,
-      });
-      const legacyConfig = await gatewayClient.getSandboxConfig(
-        workspace,
-        control.target.sandboxName,
-        t.signal,
-      );
-      assertGitCallbackEndpoint(legacyConfig.supervisor_middleware_services, callbacks.endpoint);
-      const callsBefore = await callbacks.read();
-      const originBefore = network.requests().length;
-      const fetch = await legacyExec(
-        control.target,
-        createGitAclDenialCommand(network.issuedCredentialFingerprints())({ kind: "success" }, [
-          "sh",
-          "-ceu",
-          `export LC_ALL=C
-git clone -q https://github.com/fixture/a.git /tmp/legacy-control
-git -C /tmp/legacy-control fetch -q origin refs/heads/main
-git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
-        ]),
-      );
-      assert.ok(fetch.stdout.toString("utf8").trim() === origin.initialSha);
-      const callsAfter = await callbacks.read();
-      assert.ok(
-        callsAfter > callsBefore,
-        "Legacy Git must reach the enabled authorization callback",
-      );
-      const indices = new Set(
-        network
-          .requests()
-          .slice(originBefore)
-          .filter(
-            (entry) =>
-              entry.repository === "fixture/a" &&
-              entry.operation === "upload-pack" &&
-              entry.authenticated,
-          )
-          .map(({ credentialIndex }) => credentialIndex),
-      );
-      const [index] = indices;
-      assert.ok(indices.size === 1 && typeof index === "number");
-      assert.equal(index, control.credentialIndex);
-      const box = await gatewayClient.getSandbox(
-        { workspace, name: control.target.sandboxName },
-        t.signal,
-      );
-      assert.equal(box?.id, control.target.sandboxId);
-      const providers = box?.spec?.providers;
-      assert.ok(Array.isArray(providers));
-      const gitProviders = providers.filter(
-        (name): name is string =>
-          typeof name === "string" && name.startsWith("oce-github-installation-"),
-      );
-      assert.equal(gitProviders.length, 1);
       const stop = async (target: Deployed) => {
         const revisionId = encodeURIComponent(target.revision.id);
         const stopped = await request(
@@ -950,12 +1205,83 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
         );
         assert.equal(stopped.desiredRuntimeState, "stopped");
       };
-      await stop(control);
-      await retire(control, gitProviders[0]!, index, {
-        path: legacy.path,
-        workspace,
-        agentId: legacy.agent.id,
-      });
+      // The legacy callback route serves App installation tokens only; a token source lends to
+      // native Git alone, so its journey starts at the saved policy.
+      let legacyAttempts: number | undefined;
+      if (app) {
+        const legacy = await prepareAgent(fixture);
+        const control = await deployWithIssuance(origin, legacy.deploy);
+        const view: SandboxPolicyViewWire = await request(
+          "GET",
+          `${legacy.path}/sandbox-policy/networking`,
+        );
+        assert.equal(view.policy.repositoryNetworkPolicy, undefined);
+        const legacyExec = createManagedWorkloadExec(t, {
+          backend: fixture.gatewayBackend,
+          gatewayClient,
+          workspace,
+          checkpoint: fixture.checkpoint,
+        });
+        const legacyConfig = await gatewayClient.getSandboxConfig(
+          workspace,
+          control.target.sandboxName,
+          t.signal,
+        );
+        assertGitCallbackEndpoint(legacyConfig.supervisor_middleware_services, callbacks.endpoint);
+        const callsBefore = await callbacks.read();
+        const originBefore = network.requests().length;
+        const fetch = await legacyExec(
+          control.target,
+          createGitAclDenialCommand(network.issuedCredentialFingerprints())({ kind: "success" }, [
+            "sh",
+            "-ceu",
+            `export LC_ALL=C
+git clone -q https://github.com/fixture/a.git /tmp/legacy-control
+git -C /tmp/legacy-control fetch -q origin refs/heads/main
+git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
+          ]),
+        );
+        assert.ok(fetch.stdout.toString("utf8").trim() === origin.initialSha);
+        const callsAfter = await callbacks.read();
+        assert.ok(
+          callsAfter > callsBefore,
+          "Legacy Git must reach the enabled authorization callback",
+        );
+        const indices = new Set(
+          network
+            .requests()
+            .slice(originBefore)
+            .filter(
+              (entry) =>
+                entry.repository === "fixture/a" &&
+                entry.operation === "upload-pack" &&
+                entry.authenticated,
+            )
+            .map(({ credentialIndex }) => credentialIndex),
+        );
+        const [index] = indices;
+        assert.ok(indices.size === 1 && typeof index === "number");
+        assert.equal(index, control.credentialIndex);
+        const box = await gatewayClient.getSandbox(
+          { workspace, name: control.target.sandboxName },
+          t.signal,
+        );
+        assert.equal(box?.id, control.target.sandboxId);
+        const providers = box?.spec?.providers;
+        assert.ok(Array.isArray(providers));
+        const gitProviders = providers.filter(
+          (name): name is string =>
+            typeof name === "string" && name.startsWith("oce-github-installation-"),
+        );
+        assert.equal(gitProviders.length, 1);
+        await stop(control);
+        await retire(control, gitProviders[0]!, index, {
+          path: legacy.path,
+          workspace,
+          agentId: legacy.agent.id,
+        });
+        legacyAttempts = callsAfter - callsBefore;
+      }
 
       const denied = await prepareAgent(fixture);
       const deniedPath = `${denied.path}/sandbox-policy/networking`;
@@ -978,7 +1304,7 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       t.diagnostic(
         JSON.stringify({
           event: "saved-git-acl-callback-calibration",
-          legacyAttempts: callsAfter - callsBefore,
+          legacyAttempts,
           nativeBaseline: nativeCallbackBaseline,
         }),
       );
@@ -1006,7 +1332,9 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       // Successful App token issuance is the only expected origin HTTP during startup.
       const beforeDeploy = origin.snapshot();
       const beforeDeployGit = network.requests().length;
-      network.shortenNextTokenForRenewal();
+      if (app) {
+        network.shortenNextTokenForRenewal();
+      }
       let original = await deployPolicy();
       const afterDeploy = origin.snapshot();
       const appIssuances =
@@ -1020,7 +1348,11 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
           appIssuances,
         }),
       );
-      assert.ok(appIssuances > 0, "Expected App issuance during held deployment");
+      if (app) {
+        assert.ok(appIssuances > 0, "Expected App issuance during held deployment");
+      } else {
+        assert.equal(appIssuances, 0, "TOKEN_DEPLOY_ISSUES_NOTHING");
+      }
       assert.equal(
         network.requests().length,
         beforeDeployGit,
@@ -1030,7 +1362,7 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       await retire(permissive.deployed, permissive.provider, permissive.index);
       const installed = await loadPolicy(original, write, "read-write");
       deadlines.set(original.target.sandboxId, original.deadlineWallMs);
-      {
+      if (app) {
         const index = original.credentialIndex;
         const before = origin.snapshot();
         const token = before.tokens.find((candidate) => candidate.index === index);
@@ -1102,6 +1434,105 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
             oldStatus: old.status,
           }),
         );
+      } else {
+        assert.ok(credential.kind === "token");
+        const index = original.credentialIndex;
+        const { resourceVersion, providerRevision, ...binding } = installed;
+        assert.ok(resourceVersion && binding.providerId);
+        await exerciseSavedGitAcl(
+          t,
+          fixture,
+          exec,
+          original,
+          undefined,
+          nativeCallbackBaseline,
+          true,
+        );
+        await assertTokensAbsentFromWorkload(
+          t,
+          exec,
+          original.target,
+          [credential.value],
+          "read-write",
+        );
+        // Replace the Secret's value with a second fine-grained token, without a redeploy: the
+        // Worker reads the projected file at each loan and the runtime re-reads its material on
+        // every refresh tick. Measure from the patch to the rotated Provider environment.
+        const next = network.acceptStaticToken(credential.replacement);
+        const issued = origin.snapshot().issued;
+        const patchStartedAt = Date.now();
+        await patchTokenSecret(fixture, credential.replacement);
+        const patchedAt = Date.now();
+        const deliveredAt = await observeUntil(
+          "TOKEN_REPLACEMENT_DELIVERED",
+          t.signal,
+          async () => {
+            requireTimelyGit(original.target);
+            const box = await gatewayClient.getSandbox(
+              { workspace, name: original.target.sandboxName },
+              t.signal,
+            );
+            assert.equal(box?.id, original.target.sandboxId, "TOKEN_REPLACEMENT_NO_REDEPLOY");
+            const admission = box.configurationAdmission;
+            return admission?.state === 2 &&
+              admission.provider_env_revision &&
+              admission.provider_env_revision !== providerRevision
+              ? Date.now()
+              : undefined;
+          },
+          15 * 60_000,
+        );
+        t.diagnostic(
+          JSON.stringify({
+            event: "saved-git-token-replacement",
+            revision: savedGitAclIdentity(original.revision.id),
+            previousIndex: index,
+            credentialIndex: next,
+            patchSeconds: (patchedAt - patchStartedAt) / 1000,
+            deliveredSeconds: (deliveredAt - patchedAt) / 1000,
+            mechanism: "provider-environment-rotation",
+            withinOneLoan: deliveredAt - patchedAt < 1_800_000,
+          }),
+        );
+        const { gitScript, issuedIndex } = savedGitProbeTools(fixture, exec);
+        const fetchStart = network.requests().length;
+        const fetched = await gitScript(
+          original.target,
+          `local_dir=$(mktemp -d)
+git init -q --bare "$local_dir"
+git -C "$local_dir" fetch -q 'https://github.com/fixture/a.git' refs/heads/main:refs/heads/main
+git -C "$local_dir" rev-parse 'refs/heads/main^{commit}'`,
+        );
+        assert.equal(fetched.stdout.toString("utf8").trim(), origin.initialSha);
+        assert.equal(issuedIndex(fetchStart), next, "TOKEN_REPLACEMENT_AT_ORIGIN");
+        assert.deepEqual(
+          (await original.readExecution()).identity,
+          original.original.identity,
+          "TOKEN_REPLACEMENT_NO_REDEPLOY",
+        );
+        const {
+          resourceVersion: updated,
+          providerRevision: environment,
+          ...rotated
+        } = await loadPolicy(original, write, "read-write");
+        assert.deepEqual(
+          rotated,
+          binding,
+          "Replacement must keep the same policy and attached Provider",
+        );
+        assert.ok(updated && BigInt(updated) > BigInt(resourceVersion));
+        assert.notEqual(environment, providerRevision);
+        assert.equal(origin.snapshot().issued, issued, "TOKEN_REPLACEMENT_ISSUES_NOTHING");
+        lentIndex = next;
+        original = { ...original, credentialIndex: next };
+        assert.equal(await callbacks.read(), nativeCallbackBaseline);
+        await assertTokensAbsentFromWorkload(
+          t,
+          exec,
+          original.target,
+          [credential.value, credential.replacement],
+          "replaced",
+        );
       }
       const startPeer = async () => {
         const independent = fixture.independent;
@@ -1128,10 +1559,15 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
           additions: initialPeer.policy.additions,
           repositoryNetworkPolicy: peerGrants,
         });
-        const deployed = await deployWithIssuance(origin, prepared.deploy);
+        const deployed = await deployWith(prepared.deploy);
         assert.notEqual(deployed.target.sandboxId, original.target.sandboxId);
         const peerIndex = deployed.credentialIndex;
-        assert.notEqual(peerIndex, original.credentialIndex);
+        if (app) {
+          assert.notEqual(peerIndex, original.credentialIndex);
+        } else {
+          // The same credential: a second Agent lends the same Secret value.
+          assert.equal(peerIndex, original.credentialIndex, "TOKEN_PEER_SAME_CREDENTIAL");
+        }
         const readPeer = () =>
           loadPolicy(deployed, peerPolicy, "peer", {
             workspace: independent.workspace,
@@ -1232,12 +1668,22 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
           assert.equal(await callbacks.read(), nativeCallbackBaseline);
         };
         await prove("before");
+        if (credential.kind === "token") {
+          await assertTokensAbsentFromWorkload(
+            t,
+            peerExec,
+            deployed.target,
+            [credential.value, credential.replacement],
+            "peer",
+          );
+        }
         return {
           deployed,
           workspace: independent.workspace,
           provider,
           credentialIndex: peerIndex,
           prove,
+          exec: peerExec,
         };
       };
       const peer = await startPeer();
@@ -1285,6 +1731,7 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
           return replacement;
         },
         nativeCallbackBaseline,
+        !app,
       );
       assert.ok(successor && successorProvider && replacementIndex !== undefined);
       assert.notEqual(
@@ -1338,23 +1785,30 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
             quiet.requests,
             "No late upstream request may follow Stop",
           );
-          assert.ok(
-            [originalIndex, replacementIndex].every(
-              (index) => snapshot.tokens.find((token) => token.index === index)?.revoked === true,
-            ),
-            "Both primary credentials must remain revoked",
-          );
-          assert.ok(
-            snapshot.tokens.every(
-              (token) => token.revoked === (token.index !== peer.credentialIndex),
-            ),
-          );
+          if (app) {
+            assert.ok(
+              [originalIndex, replacementIndex].every(
+                (index) => snapshot.tokens.find((token) => token.index === index)?.revoked === true,
+              ),
+              "Both primary credentials must remain revoked",
+            );
+            assert.ok(
+              snapshot.tokens.every(
+                (token) => token.revoked === (token.index !== peer.credentialIndex),
+              ),
+            );
+          } else {
+            assert.ok(snapshot.tokens.every((token) => !token.revoked));
+          }
           return Date.now() >= observationEnds ? true : undefined;
         },
         5_000,
       );
       assert.deepEqual((await readPolicy()).policy.repositoryNetworkPolicy, []);
       await peer.prove("after-stop");
+      if (credential.kind === "token") {
+        await refuseClassicToken(t, fixture, peer.deployed.target, peer.exec, credential);
+      }
       await stop(peer.deployed);
       await retire(peer.deployed, peer.provider, peer.credentialIndex, {
         path: peer.deployed.path,
@@ -1365,6 +1819,17 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
       t.diagnostic(
         "Saved Git ACL clear persisted; deploy refused deny-all and explicit Stop retired both generations",
       );
-    }),
+}
+
+if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
+  test(
+    "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent",
+    { timeout: 45 * 60_000 },
+    settleBeforeFixtureTeardown((t) => savedAgentGitJourney(t, { kind: "app" })),
+  );
+  test(
+    "An Administrator deploys, replaces and narrows a fine-grained token source on saved OpenShell Agents",
+    { timeout: 60 * 60_000 },
+    settleBeforeFixtureTeardown((t) => savedAgentGitJourney(t, fakeTokenCredential())),
   );
 }
