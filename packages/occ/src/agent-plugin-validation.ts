@@ -13,6 +13,7 @@ import {
   type RevisionHarnessDescriptor,
 } from "@openclaw-enterprise/contracts";
 import { resolveConfiguredHarnessId } from "./configured-harness.ts";
+import { credentialSourceMetadata } from "./credential-source-metadata.ts";
 import {
   ConfigurationHarnessError,
   PluginPolicyValidationError,
@@ -96,9 +97,10 @@ export async function validatePluginCredentialSources(
   harnessAuth?: HarnessAuthBinding | null,
 ): Promise<void> {
   if (plugins && Object.keys(plugins).length) {
+    // TODO: Plugin Source selection admission must supply resolved Template pins. This raw projection fails closed for static Sources.
     await driver?.credentials?.validate(
       plugins,
-      sources,
+      sources.map((source) => credentialSourceMetadata(source)),
       harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
     );
   }

@@ -4,6 +4,7 @@ import type {
   Agent,
   AgentPluginCredentialSlot,
   CredentialSource,
+  CredentialSourceMetadata,
   Namespace,
   OpenClawConfigurationDocument,
   PluginApprovers,
@@ -36,7 +37,12 @@ export interface PluginDriver extends Driver {
   readonly describeDeployment?: PluginDeploymentContract["describeDeployment"];
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
-    choices(sources: readonly CredentialSource[]): readonly AgentPluginCredentialSlot[];
+    choices(sources: readonly CredentialSourceMetadata[]): readonly AgentPluginCredentialSlot[];
+    /** Reports selected Source IDs before source or release validation. */
+    selectedBindings(input: {
+      readonly pluginId: string;
+      readonly selection: PluginDesiredState[string];
+    }): Readonly<Record<string, Readonly<Record<string, string>>>>;
     /** Returns a reviewed MCP discovery target only for a compatible slot and source. */
     mcpToolDiscovery?(
       pluginId: string,
@@ -45,7 +51,7 @@ export interface PluginDriver extends Driver {
     ): { readonly endpoint: string } | undefined;
     validate(
       selections: PluginDesiredState,
-      sources: readonly CredentialSource[],
+      sources: readonly CredentialSourceMetadata[],
       modelSourceId?: string,
     ): void | Promise<void>;
   };

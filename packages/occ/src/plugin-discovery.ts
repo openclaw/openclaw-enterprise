@@ -22,6 +22,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
+import { credentialSourceMetadata } from "./credential-source-metadata.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -401,6 +402,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       namespaceId,
       agentId,
       async ({ state, agent, driver }) => {
+        // TODO: Plugin Source selection must use authorized Namespace candidates and their exact Template pins instead of Agent attachments.
         const sources: CredentialSource[] = [];
         if (driver.credentials && agent.executionMode === "dedicated") {
           for (const { sourceId } of agent.credentialSources ?? []) {
@@ -425,7 +427,11 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
           driver: { id: driver.id, implementation: driver.implementation },
           ...driver.policyCapabilities,
           ...(driver.credentials && agent.executionMode === "dedicated"
-            ? { credentialSlots: driver.credentials.choices(sources) }
+            ? {
+                credentialSlots: driver.credentials.choices(
+                  sources.map((source) => credentialSourceMetadata(source)),
+                ),
+              }
             : {}),
           discoveryCredential: driver.discoveryCredential ?? "required",
         });

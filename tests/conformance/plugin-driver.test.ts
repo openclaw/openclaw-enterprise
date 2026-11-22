@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { CredentialSourceMetadata } from "../../packages/contracts/src/index.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
@@ -58,6 +59,111 @@ test("credentialless Diffs keeps its pinned Gateway installation when its tool i
     ]),
     [[tool.id, "installation", "registry.npmjs.org"]],
   );
+});
+
+test("OpenClaw reports selected credential Sources without validating the release", () => {
+  const driver = new OCCPluginDriver();
+  const pluginId = "occ-plugin:slack@1.0.0";
+  const selection = {
+    enabled: true,
+    driverPolicy: { releaseSha256: "0".repeat(64), credentials: { account: "cs_selected" } },
+  };
+  const binding = { account: { default: "cs_selected" } };
+
+  // An old selection must remain readable so an authorized edit can clear it.
+  assert.deepEqual(driver.credentials.selectedBindings({ pluginId, selection }), binding);
+  assert.throws(() => driver.validatePolicies({ [pluginId]: selection }), /release has changed/);
+  assert.deepEqual(
+    driver.credentials.selectedBindings({ pluginId: "occ-plugin:slack@0.9.0", selection }),
+    binding,
+  );
+  assert.deepEqual(
+    driver.credentials.selectedBindings({ pluginId, selection: { enabled: true } }),
+    {},
+  );
+});
+
+test("OpenClaw refuses malformed or disabled credential selections", () => {
+  const driver = new OCCPluginDriver();
+  const pluginId = "occ-plugin:slack@1.0.0";
+
+  for (const selection of [
+    { enabled: true, driverPolicy: { credentials: "cs_selected" } },
+    { enabled: false, driverPolicy: { credentials: { account: "cs_selected" } } },
+    { enabled: true, driverPolicy: { credentials: { account: "not-a-source" } } },
+    { enabled: true, driverPolicy: { credentials: { "invalid slot": "cs_selected" } } },
+  ]) {
+    assert.throws(
+      () => driver.credentials.selectedBindings({ pluginId, selection }),
+      /Invalid credential/,
+    );
+  }
+});
+
+test("OpenClaw admits a pinned static Source as a preliminary Google credential candidate", async () => {
+  const driver = new OCCPluginDriver();
+  const source: CredentialSourceMetadata = {
+    id: "cs_static",
+    namespaceId: "ns_team",
+    name: "Static Google bearer",
+    type: "static",
+    ownerCapability: "token_service",
+    state: "ready",
+    config: {},
+    secrets: {},
+    connectionTemplateId: "ct_google",
+    connectionTemplateVersion: 1,
+    ref: { kind: "credential_source", namespaceId: "ns_team", id: "cs_static" },
+  };
+  const slot = driver.credentials
+    .choices([source])
+    .find(({ pluginId }) => pluginId.startsWith("occ-plugin:google@"));
+  assert.ok(slot);
+  assert.deepEqual(slot.sources, [{ id: source.id, name: source.name }]);
+  const selection = {
+    enabled: true,
+    driverPolicy: { releaseSha256: slot.releaseSha256, credentials: { [slot.id]: source.id } },
+  };
+  await driver.credentials.validate({ [slot.pluginId]: selection }, [source]);
+  await assert.rejects(
+    async () => driver.credentials.validate({ [slot.pluginId]: selection }, [source], source.id),
+    /Select a ready Google/,
+  );
+  const description = await driver.describeDeployment({
+    plugin: { catalog: "driver", pluginId: slot.pluginId },
+    selection,
+    connections: { [slot.id]: { default: source.ref } },
+  });
+  const connection = description.credentials[slot.id]?.default;
+  assert.deepEqual(connection?.sourceRef, source.ref);
+  assert.ok(connection && connection.networkRequirementIds.length > 0);
+  assert.ok(
+    description.networkRequirements
+      .filter(({ id }) => connection.networkRequirementIds.includes(id))
+      .every(
+        ({ purpose, match }) => purpose === "invocation" && match.requestPolicy?.type === "http",
+      ),
+  );
+
+  const unpinned = { ...source };
+  delete unpinned.connectionTemplateId;
+  delete unpinned.connectionTemplateVersion;
+  for (const unavailable of [
+    unpinned,
+    { ...source, state: "registering" as const },
+    { ...source, ownerCapability: "credential_gateway" as const },
+    { ...source, ref: { ...source.ref, id: "cs_other" } },
+  ]) {
+    assert.deepEqual(
+      driver.credentials.choices([unavailable]).find(({ pluginId }) => pluginId === slot.pluginId)
+        ?.sources,
+      [],
+    );
+    await assert.rejects(
+      async () => driver.credentials.validate({ [slot.pluginId]: selection }, [unavailable]),
+      /Google/,
+    );
+  }
 });
 
 test("Slack describes only the selected account at its single default projection", async () => {

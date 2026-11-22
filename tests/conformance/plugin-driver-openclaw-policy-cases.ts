@@ -21,6 +21,7 @@ import type {
   PluginDriver,
 } from "../../packages/contracts/src/index.ts";
 import { PluginPolicyValidationError } from "../../packages/occ/src/index.ts";
+import { credentialSourceMetadata } from "../../packages/occ/src/credential-source-metadata.ts";
 import {
   calendarPluginId,
   codexSelection,
@@ -185,15 +186,20 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     config: { ...source.config, protocol: "rest" },
   };
   const credentials: NonNullable<PluginDriver["credentials"]> = driver.credentials;
-  const slots = credentials.choices([source, broaderRestSource]);
+  const slots = credentials.choices(
+    [source, broaderRestSource].map((item) => credentialSourceMetadata(item)),
+  );
   const slackSlot = slots.find(({ pluginId }) => pluginId === slack.id);
   assert.ok(slackSlot);
   assert.equal(slackSlot.id, "account");
   assert.equal(slackSlot.label, "Slack user account");
   assert.deepEqual(slackSlot.sources, [{ id: source.id, name: source.name }]);
-  await driver.credentials.validate(selections, [source]);
+  await driver.credentials.validate(selections, [credentialSourceMetadata(source)]);
   await assert.rejects(
-    async () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
+    async () =>
+      driver.credentials.validate(selections, [
+        credentialSourceMetadata({ ...broaderRestSource, id: source.id }),
+      ]),
     /Select a ready Slack account/,
   );
   const mixedPlacement = { ...selections, ...occSelection() };

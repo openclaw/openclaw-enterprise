@@ -59,12 +59,21 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values.
-  `choices(sources)` returns each slot with the attached ready sources that
-  match it. OCC returns them as `credentialSlots` in a dedicated Agent's plugin
-  capabilities. `validate(selections, sources, modelSourceId)` refuses a
-  binding that names no matching attached source, or the source that
-  authenticates the model. OCC calls it at Agent create, update, provisioning,
-  and deployment.
+  `choices(sources)` reads public Source metadata and returns preliminary slot
+  candidates. A ready static TokenService Source must have a Template ID and
+  version. The pin does not prove route compatibility: deployment admission must
+  resolve the exact approved version and intersect its authority with the
+  credential-bearing invocation requirements. OCC returns choices as
+  `credentialSlots` in a dedicated Agent's plugin capabilities.
+  `selectedBindings({pluginId, selection})` reports selected Source
+  IDs as `[requirement][connection]` before source or release validation. The
+  OpenClaw Driver uses the `default` connection for each selected slot. This
+  reporter does not yet have an OCC admission caller.
+  `validate(selections, sources, modelSourceId)` checks public Source metadata,
+  the reviewed release and slot, and refuses the Source that authenticates the
+  model. Existing Agent callers project raw Sources without their Template pin,
+  so they refuse static Sources until the selection workflow supplies pinned
+  metadata.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a

@@ -1,5 +1,5 @@
 import type {
-  CredentialSource,
+  CredentialSourceMetadata,
   PluginDeploymentNetworkRequirement,
 } from "@openclaw-enterprise/contracts";
 import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
@@ -57,7 +57,7 @@ function googleNetworks(
   return [...rules.values()];
 }
 
-function sourceScope(source: CredentialSource) {
+function sourceScope(source: Pick<CredentialSourceMetadata, "config">) {
   const config = source.config;
   return googleRequestScope({
     host: config.host,
@@ -79,7 +79,10 @@ export const googleWorkspaceCredentialPolicy = {
   accepts(
     install: ManagedCliInstall,
     slot: ManagedCredentialSlot,
-    source: CredentialSource,
+    source: Pick<
+      CredentialSourceMetadata,
+      "config" | "state" | "ownerCapability" | "egress" | "type"
+    >,
   ): boolean {
     const config = source.config;
     const scope = sourceScope(source);
@@ -95,7 +98,10 @@ export const googleWorkspaceCredentialPolicy = {
       eligibleGoogleOperations(scope).length > 0
     );
   },
-  conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {
+  conflict(
+    selected: Pick<CredentialSourceMetadata, "id" | "config">,
+    sources: readonly Pick<CredentialSourceMetadata, "id" | "config">[],
+  ) {
     const scope = sourceScope(selected);
     if (!scope) {
       return undefined;

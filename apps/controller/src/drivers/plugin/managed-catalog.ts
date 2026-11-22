@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
   type CredentialSource,
+  type CredentialSourceMetadata,
   type PluginCatalogEntry,
   type PluginDesiredState,
   type PluginDeploymentContract,
   type PluginDriver,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { exactDnsName } from "../credential-source-endpoint.ts";
 import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
 import { Type } from "typebox";
@@ -457,7 +458,10 @@ export function managedMcpInstallForSourceConfig(
 
 export function managedMcpSlotAcceptsSource(
   install: ManagedMcpInstall,
-  source: CredentialSource,
+  source: Pick<
+    CredentialSourceMetadata,
+    "state" | "ownerCapability" | "egress" | "type" | "secrets" | "namespaceId" | "config"
+  >,
 ): boolean {
   return (
     source.state === "ready" &&
@@ -469,11 +473,27 @@ export function managedMcpSlotAcceptsSource(
   );
 }
 
+function isPinnedStaticPluginSource(source: CredentialSourceMetadata): boolean {
+  return (
+    source.state === "ready" &&
+    source.ownerCapability === "token_service" &&
+    source.type === "static" &&
+    isNonEmptyString(source.connectionTemplateId) &&
+    isPositiveSafeInteger(source.connectionTemplateVersion) &&
+    source.ref.kind === "credential_source" &&
+    source.ref.id === source.id &&
+    source.ref.namespaceId === source.namespaceId
+  );
+}
+
 function acceptsManagedSource(
   install: ManagedCliInstall | ManagedMcpInstall,
   requirement: string,
-  source: CredentialSource,
+  source: CredentialSourceMetadata,
 ): boolean {
+  if (source.type === "static") {
+    return Object.hasOwn(install.credentials, requirement) && isPinnedStaticPluginSource(source);
+  }
   if (install.kind === "mcp") {
     return requirement === install.slotId && managedMcpSlotAcceptsSource(install, source);
   }
@@ -485,6 +505,28 @@ export function managedPluginCredentials(
   driver: PluginDeploymentContract,
 ): NonNullable<PluginDriver["credentials"]> {
   return {
+    selectedBindings({ pluginId, selection }) {
+      const credentials = selection.driverPolicy?.credentials;
+      if (credentials === undefined) {
+        return {};
+      }
+      const slots = asRecord(credentials);
+      if (!selection.enabled || !slots) {
+        throw new ConfigurationHarnessError(`Invalid credential selection for ${pluginId}.`);
+      }
+      return Object.fromEntries(
+        Object.entries(slots).map(([slot, sourceId]) => {
+          if (
+            !/^[a-z][a-z0-9-]*$/.test(slot) ||
+            typeof sourceId !== "string" ||
+            !sourceId.startsWith("cs_")
+          ) {
+            throw new ConfigurationHarnessError(`Invalid credential binding for ${pluginId}.`);
+          }
+          return [slot, { default: sourceId }];
+        }),
+      );
+    },
     mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource) {
       const install = managedMcpInstalls.find(({ id }) => id === pluginId);
       if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {
@@ -492,7 +534,7 @@ export function managedPluginCredentials(
       }
       return { endpoint: install.url };
     },
-    choices(sources: readonly CredentialSource[]) {
+    choices(sources: readonly CredentialSourceMetadata[]) {
       return managedInstalls.flatMap((install) =>
         Object.entries(install.credentials).map(([id, slot]) => ({
           pluginId: install.id,
@@ -507,32 +549,23 @@ export function managedPluginCredentials(
       );
     },
     async validate(selections, sources, modelSourceId) {
-      const attached = new Map(sources.map((source) => [source.id, source]));
+      const sourcesById = new Map(sources.map((source) => [source.id, source]));
       for (const [pluginId, selection] of Object.entries(selections)) {
         const install = managedInstalls.find(({ id }) => id === pluginId);
         const unavailable = () =>
           new ConfigurationHarnessError(
-            `Select a ready ${install?.entry.name ?? pluginId} account attached to this Agent that matches the reviewed credential slot.`,
+            `Select a ready ${install?.entry.name ?? pluginId} account that matches the reviewed credential slot.`,
           );
         // Existing Agent selections name one source per slot. Only OCC's authorized
         // source records can supply the Namespace and identity for its default connection.
         const connections = Object.fromEntries(
           Object.entries(asRecord(selection.driverPolicy?.credentials) ?? {}).map(
             ([requirement, id]) => {
-              const source = typeof id === "string" ? attached.get(id) : undefined;
+              const source = typeof id === "string" ? sourcesById.get(id) : undefined;
               if (!source) {
                 throw unavailable();
               }
-              return [
-                requirement,
-                {
-                  default: {
-                    kind: "credential_source" as const,
-                    namespaceId: source.namespaceId,
-                    id: source.id,
-                  },
-                },
-              ];
+              return [requirement, { default: source.ref }];
             },
           ),
         );
@@ -543,7 +576,7 @@ export function managedPluginCredentials(
         });
         for (const [requirement, accounts] of Object.entries(deployment.credentials)) {
           for (const { sourceRef } of Object.values(accounts)) {
-            const source = attached.get(sourceRef.id);
+            const source = sourcesById.get(sourceRef.id);
             if (
               !install ||
               !source ||
