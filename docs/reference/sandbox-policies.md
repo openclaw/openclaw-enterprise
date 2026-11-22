@@ -172,9 +172,10 @@ PUT preserves omitted `repositoryNetworkPolicy`. To withdraw an existing policy'
 
 When a Channel needs a bound Secret, the controller checks the saved repository
 policy and the caller's Secret access before handing the value to the Channel.
-The handoff shares the lock used by permission changes. The controller releases
-the lock before waiting for the provider and checks deployment admission again
-before saving the revision.
+The handoff shares the lock used by permission changes. The controller checks
+permissions committed before it acquires the lock. It releases the lock before
+waiting for the provider and checks deployment admission again before saving the
+revision.
 
 To opt into repository policy, an Agent must have an explicit list from its
 first deployment. Ordinary Agents can keep deploying without a list.

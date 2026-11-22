@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
+import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import type {
   ChannelDriver,
@@ -18,6 +19,7 @@ import { secretOperation } from "./secret-operations.ts";
 import {
   AuthorizationDeniedError,
   ChannelCredentialError,
+  DependencyUnavailableError,
   ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
@@ -26,6 +28,7 @@ import {
 } from "./errors.ts";
 import type { DeployAgentInput } from "./deployment-authorization.ts";
 import { unchangedDriver, type DriverRegistry } from "./driver-registry.ts";
+import { RepositoryPolicyDeploymentConflict } from "./repository-network-policy.ts";
 import { exactNamespace, lockNamespace } from "./resource-scope.ts";
 
 type DeploymentConfigurationMetadata = Readonly<
@@ -111,7 +114,7 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
     const rollback = new Error("Channel policy preview completed");
     let validation: ChannelValidation | undefined;
     try {
-      return await dependencies.transactions.transact(async (state) => {
+      const preview = async (state: PlatformUnitOfWork) => {
         await dependencies.authority.holdAuthority(state);
         await lockNamespace(state, deployment.target.namespaceId);
         await dependencies.authority.authorize(principalId, "operate", source);
@@ -122,7 +125,17 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
           try {
             assertPolicy = await deployment.checkPolicy();
           } catch (error) {
-            if (error instanceof AuthorizationDeniedError) {
+            // The preview can fail on a platform dependency before the Channel receives
+            // the Secret. Keep the retry classification without copying Driver diagnostics.
+            if (error instanceof DependencyUnavailableError) {
+              throw new DependencyUnavailableError(
+                "A required dependency was unavailable during repository policy admission.",
+              );
+            }
+            if (
+              error instanceof AuthorizationDeniedError ||
+              error instanceof RepositoryPolicyDeploymentConflict
+            ) {
               throw error;
             }
             throw new ChannelPolicyRefused();
@@ -138,7 +151,9 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
         }
         // Discard grants staged by the policy preview before final admission.
         throw rollback;
-      });
+      };
+      // The policy preview reuses this transaction and reads IAM after the lock wait.
+      return await dependencies.transactions.transact(preview, { readCommitted: true });
     } catch (error) {
       if (error === rollback && validation !== undefined) {
         return validation;
@@ -211,6 +226,7 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
           error:
             error instanceof ChannelCredentialError ||
             error instanceof ChannelPolicyRefused ||
+            error instanceof RepositoryPolicyDeploymentConflict ||
             error instanceof AuthorizationDeniedError
               ? error
               : new ChannelCredentialError("unavailable", path),
@@ -224,7 +240,13 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
                 await validate(value);
                 return undefined;
               } catch (error) {
-                return refusal(error);
+                // Only the Channel contract's credential outcome can leave this callback.
+                return {
+                  error:
+                    error instanceof ChannelCredentialError
+                      ? error
+                      : new ChannelCredentialError("unavailable", path),
+                };
               }
             });
             const handoff = (current: Readonly<Secret> | undefined, assertPolicy?: () => void) => {

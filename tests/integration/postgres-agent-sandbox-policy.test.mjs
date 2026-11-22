@@ -16,13 +16,18 @@ import {
   editStoredRepositoryGrants,
   verifyScopedDeploymentTransition,
   verifyChannelPolicyHandoff,
+  verifyDeploymentAuthorityAfterWait,
 } from "./postgres-state-repository-network-policy-case.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
 import { registerSandboxPolicyWorkerRecovery } from "./postgres-agent-sandbox-policy-worker-recovery-cases.ts";
 
-async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
+async function createPolicyApp(
+  t,
+  recordOperations = false,
+  { laxDriver = false, poolOptions } = {},
+) {
   const grant = {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
@@ -99,6 +104,7 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
     label: "sandbox-policy",
     authSecret: "sandbox-policy-postgres-session-secret-32-characters",
     sandboxDriver,
+    poolOptions,
     controllerOptions: {
       sandboxNetworkPolicyCeiling: [grant, providerRefusalGrant],
       recordOperations,
@@ -1173,3 +1179,17 @@ test(
     await verifyChannelPolicyHandoff(await createPolicyApp(t));
   },
 );
+
+for (const boundary of /** @type {const} */ (["channel", "admission"])) {
+  test(
+    `scoped deployment ${boundary} observes IAM revocation after the writer lock`,
+    requiresPostgres,
+    async (t) => {
+      const fixture = await createPolicyApp(t, true, {
+        poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" },
+      });
+      Object.assign(fixture.sandboxDriver, { admitRepositoryNetworkPolicy: () => ({}) });
+      await verifyDeploymentAuthorityAfterWait(fixture, boundary);
+    },
+  );
+}

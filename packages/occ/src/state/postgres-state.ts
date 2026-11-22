@@ -128,7 +128,10 @@ import type { NamespaceRepository, PersistedNamespace } from "../ports/namespace
 import type { PlatformAuditSink } from "./platform-state.ts";
 import type { PlatformOperation } from "../ports/platform-operations.ts";
 import type { PlatformReadView } from "../ports/platform-read-view.ts";
-import type { PlatformStateStore } from "../ports/platform-state-store.ts";
+import type {
+  PlatformStateStore,
+  PlatformTransactionOptions,
+} from "../ports/platform-state-store.ts";
 import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import type { SecretReferenceKind, SecretRepository } from "../ports/secrets.ts";
 import type { ServiceAccountRepository } from "../ports/service-accounts.ts";
@@ -1727,8 +1730,13 @@ export class PostgresPlatformState implements PlatformStateStore {
     );
   }
 
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state));
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: PlatformTransactionOptions,
+  ): Promise<T> {
+    return options?.readCommitted
+      ? this.transactReadCommitted(work)
+      : this.execute(false, async (state) => work(state));
   }
 
   /** Observe changes committed while acquiring locks, regardless of the connection default. */
@@ -1929,16 +1937,20 @@ export class PostgresPlatformState implements PlatformStateStore {
     });
   }
 
+  /** Select Read Committed when protected reads must see commits made while waiting for locks. */
   async transactWithQueue<T>(
     work: (
       state: PlatformUnitOfWork,
       queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
     ) => Promise<T>,
-    options: PostgresWorkQueueOptions = {},
+    options: PostgresWorkQueueOptions & { readonly readCommitted?: boolean } = {},
   ): Promise<T> {
-    const queueOptions = { ...this.queueOptions, ...options };
-    return this.execute(false, async (state, context) =>
-      work(state, this.bindQueue(context, queueOptions)),
+    const { readCommitted, ...queueOverrides } = options;
+    const queueOptions = { ...this.queueOptions, ...queueOverrides };
+    return this.execute(
+      false,
+      async (state, context) => work(state, this.bindQueue(context, queueOptions)),
+      readCommitted,
     );
   }
 

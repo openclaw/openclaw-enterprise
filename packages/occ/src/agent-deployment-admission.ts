@@ -376,7 +376,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     preview = false,
   ) {
     namespaceIdentity(input.namespaceId);
-    return dependencies.transactions.transact(async (state) => {
+    const admit = async (state: PlatformUnitOfWork) => {
       await dependencies.authority.holdAuthority(state);
       const target: ResourceRef = {
         kind: "agent",
@@ -906,7 +906,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         await state.audit.append(auditEvent(result));
       }
       return result;
-    });
+    };
+    // Authorization after a lock wait must see IAM changes committed by the lock holder.
+    return dependencies.transactions.transact(admit, { readCommitted: true });
   }
 
   return admitAgentDeployment;

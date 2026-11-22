@@ -735,10 +735,8 @@ export async function verifyScopedDeploymentTransition(
   }
 }
 
-export async function verifyChannelPolicyHandoff(
-  fixture: PolicyApp & { sandboxDriver: SandboxDriver },
-) {
-  const { inject, state, computeDriver, sandboxDriver, controller } = fixture;
+async function createScopedDeployment(fixture: PolicyApp) {
+  const { inject, state } = fixture;
   const starter = await fixture.deployAgent("setup");
   const { namespace, secretRef } = starter;
   const root = "/namespaces/" + namespace.id;
@@ -772,6 +770,19 @@ export async function verifyChannelPolicyHandoff(
       p.version,
     );
   });
+  return {
+    namespace,
+    agent,
+    source,
+    deploy: () => inject("POST", root + "/agents/" + agent.id + "/deploy"),
+  };
+}
+
+export async function verifyChannelPolicyHandoff(
+  fixture: PolicyApp & { sandboxDriver: SandboxDriver },
+) {
+  const { state, computeDriver, sandboxDriver, controller } = fixture;
+  const { namespace, agent, source, deploy } = await createScopedDeployment(fixture);
   const { pool } = fixture;
   const writer = await pool.connect();
   const pid = (await writer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
@@ -832,7 +843,6 @@ export async function verifyChannelPolicyHandoff(
     }
   };
   try {
-    const deploy = () => inject("POST", root + "/agents/" + agent.id + "/deploy");
     const reply = await deploy();
     assert.ok(revoked);
     assert.equal(reply.statusCode, 403, reply.body);
@@ -850,6 +860,83 @@ export async function verifyChannelPolicyHandoff(
       await revocation;
     } finally {
       writer.release();
+    }
+  }
+}
+
+export async function verifyDeploymentAuthorityAfterWait(
+  fixture: PolicyApp,
+  boundary: "channel" | "admission",
+): Promise<void> {
+  const { state, pool, controller, computeDriver } = fixture;
+  const { namespace, agent, source, deploy } = await createScopedDeployment(fixture);
+  const writer = await pool.connect();
+  let response: ReturnType<typeof deploy> | undefined;
+  let channelCalls = 0;
+  let computeChecks = 0;
+  try {
+    const {
+      rows: [session],
+    } = await writer.query<{ pid: number; isolation: string }>(
+      "SELECT pg_backend_pid() AS pid, current_setting('default_transaction_isolation') AS isolation",
+    );
+    assert.ok(session);
+    assert.equal(session.isolation, "repeatable read");
+    await writer.query("BEGIN");
+    await writer.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      "occ:iam-configuration",
+    ]);
+
+    if (boundary === "channel") {
+      const channel = new SlackChannelDriver(async () =>
+        assert.fail("Unexpected provider request"),
+      );
+      channel.validateCredentials = async (_values, use) => {
+        await use("CHANNEL_TOKEN", "channel", async () => {
+          channelCalls += 1;
+        });
+      };
+      controller.registerDriver(channel);
+      controller.selectDriver("channel", channel.id);
+    }
+    Object.assign(computeDriver, {
+      validateProtectedRepositoryNetworkPolicy: async () => {
+        computeChecks += 1;
+      },
+    });
+    response = deploy();
+    // The reader must already be blocked by this exact writer before the revocation commits.
+    await waitFor("deployment waits for the IAM writer", async () => {
+      const { rowCount } = await pool.query(
+        `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+           AND $1 = ANY(pg_blocking_pids(pid))`,
+        [session.pid],
+      );
+      return rowCount === 1 || undefined;
+    });
+    const [action, kind, id] =
+      boundary === "channel" ? ["operate", "secret", source.id] : ["deploy", "agent", agent.id];
+    await writer.query(
+      `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
+       VALUES ($1, $2, $3, $4, $5, 'deny')`,
+      [`restriction-${randomUUID()}`, namespace.id, action, kind, id],
+    );
+    await writer.query("COMMIT");
+    const result = await response;
+    const revisions = await state.read((view) =>
+      view.revisions.listRevisionMetadata(namespace.id, agent.id),
+    );
+    assert.deepEqual(
+      { channelCalls, computeChecks, status: result.statusCode, revisionCount: revisions.length },
+      { channelCalls: 0, computeChecks: 0, status: 403, revisionCount: 0 },
+    );
+    assert.equal(result.json().error.code, "FORBIDDEN");
+  } finally {
+    try {
+      await writer.query("ROLLBACK");
+    } finally {
+      writer.release();
+      await response;
     }
   }
 }

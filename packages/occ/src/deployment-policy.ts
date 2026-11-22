@@ -8,6 +8,7 @@ import {
   type SandboxPolicySnapshot,
 } from "@openclaw-enterprise/contracts";
 import { ResourceStateConflictError } from "./errors.ts";
+import { RepositoryPolicyDeploymentConflict } from "./repository-network-policy.ts";
 
 export function admitDeploymentRepositoryPolicy(
   sandboxPolicy: SandboxPolicySnapshot | undefined,
@@ -47,8 +48,5 @@ export function admitDeploymentRepositoryPolicy(
   }
 }
 export function unsupportedComputeRepositoryPolicy(): ResourceStateConflictError {
-  return new ResourceStateConflictError(
-    "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
-    [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
-  );
+  return new RepositoryPolicyDeploymentConflict("incompatible_compute");
 }

@@ -24,6 +24,7 @@ import {
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   authenticatedHeaders,
@@ -49,6 +50,7 @@ import {
   type SecretBindings,
 } from "../../packages/contracts/src/index.ts";
 import {
+  DependencyUnavailableError,
   OpenClawController,
   ResourceStateConflictError,
   type PlatformStateStore,
@@ -2393,8 +2395,10 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     },
     { sessionDurationSeconds: 600 },
   );
+  const secretDriver = createTestSecretDriver({ id: "console-secret" });
   const fixture = await createConsoleAppFixture(t, {
     sandboxDriver: sandbox,
+    secretDriver,
     nativeWorkerSupport: "custom-image",
     createId: (kind: ResourceKind) => {
       if (kind === "namespace") {
@@ -2893,68 +2897,193 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
 
   await t.test(
     "Channel provider receives a bound Secret only after scoped policy admission",
-    async () => {
+    async (channelTest) => {
       const token = await fixture.createSecret(
         namespace.id,
         "Channel credential",
         "synthetic-channel-value",
       );
-      const bound = await fixture.createAgent(
-        namespace.id,
-        "Scoped Agent with a Channel",
-        createHarnessConfiguration("openclaw", "gpt-4.1"),
-        {
+      const createBoundAgent = (name: string) =>
+        fixture.createAgent(namespace.id, name, createHarnessConfiguration("openclaw", "gpt-4.1"), {
           executionMode: "dedicated",
           secretBindings: { CHANNEL_TOKEN: { source: token.ref, delivery: { type: "env" } } },
-        },
-      );
+        });
+      const bound = await createBoundAgent("Scoped Agent with a Channel");
+      const unscoped = await createBoundAgent("Unscoped Agent with a Channel");
       const boundPath = `/namespaces/${namespace.id}/agents/${bound.id}`;
+      const unscopedPath = `/namespaces/${namespace.id}/agents/${unscoped.id}`;
+      const intent = {
+        key: "scoped-channel",
+        expectedConfigurationId: bound.configurationId,
+        expectedGeneration: 1,
+      };
       await setDesiredRepositoryPolicy(controller, namespace.id, bound.id, requested);
       const channel = new SlackChannelDriver(async () =>
         assert.fail("Unexpected real provider call"),
       );
       const provider = t.mock.fn(async () => {});
+      const channelRefusals: unknown[] = [];
       channel.validateCredentials = async (_values, use) => {
-        await use("CHANNEL_TOKEN", "channel", provider);
+        try {
+          await use("CHANNEL_TOKEN", "channel", provider);
+        } catch (error) {
+          channelRefusals.push(error);
+          throw error;
+        }
       };
       controller.registerDriver(channel);
       controller.selectDriver("channel", channel.id);
-      const expectNoHandoff = async (guarded: boolean) => {
-        const status = credentialStatus.mock.callCount();
-        const provision = provisionCredentials.mock.callCount();
-        const reply = guarded
-          ? await fixture.request("POST", boundPath + "/deploy-first", {
-              body: {
-                key: "scoped-channel",
-                expectedConfigurationId: bound.configurationId,
-                expectedGeneration: 1,
-              },
-            })
-          : await fixture.request("POST", boundPath + "/deploy");
-        assertApiError(reply, 409, "RESOURCE_CONFLICT");
+      const deployBound = (guarded: boolean) =>
+        guarded
+          ? fixture.request("POST", boundPath + "/deploy-first", { body: intent })
+          : fixture.request("POST", boundPath + "/deploy");
+      const readIamGrants = () =>
+        controller.transact(async (unit) => ({
+          roles: await unit.iamPolicy.listRoles(namespace.id),
+          bindings: await unit.iamPolicy.listAccessBindings(namespace.id),
+        }));
+      const beforeIam = await readIamGrants();
+      const expectRefusal = async (guarded: boolean, status: number, code: string) => {
+        const credentialStatusCalls = credentialStatus.mock.callCount();
+        const provisionCalls = provisionCredentials.mock.callCount();
+        const reply = await deployBound(guarded);
+        assertApiError(reply, status, code);
         assert.equal(provider.mock.callCount(), 0);
-        assert.equal(credentialStatus.mock.callCount(), status);
-        assert.equal(provisionCredentials.mock.callCount(), provision);
+        assert.equal(credentialStatus.mock.callCount(), credentialStatusCalls);
+        assert.equal(provisionCredentials.mock.callCount(), provisionCalls);
         assert.deepEqual(
           await controller.transact((unit) => unit.revisions.listRevisions(namespace.id, bound.id)),
           [],
         );
+        assert.deepEqual(await readIamGrants(), beforeIam);
+        return reply;
       };
+
+      // Prove the error crossed the bound Secret reader after the Secret backend opened it.
+      // A failure in an earlier preflight could give the same HTTP response.
+      const privateDiagnostic = "private gateway location hidden from deploy logs";
+      const validateGatewaySettings = t.mock.fn(() => {});
+      Object.assign(compute, { validateGatewaySettings });
+      const warn = t.mock.method(fixture.app.log, "warn");
+      try {
+        for (const guarded of [false, true]) {
+          const route = guarded ? "/deploy-first" : "/deploy";
+          await channelTest.test(
+            `${route} preserves a sanitized bound Secret policy preview outage`,
+            async () => {
+              const previousSecretOperations = secretDriver.calls.length;
+              const previousRefusals = channelRefusals.length;
+              const previousCalls = warn.mock.callCount();
+              validateGatewaySettings.mock.mockImplementationOnce(() => {
+                throw new DependencyUnavailableError(privateDiagnostic);
+              });
+              const reply = await expectRefusal(guarded, 503, "DEPENDENCY_UNAVAILABLE");
+              assert.deepEqual(
+                secretDriver.calls
+                  .slice(previousSecretOperations)
+                  .filter((call) => call.operation === "withValue")
+                  .map(({ secret }) => secret.id),
+                [token.id],
+              );
+              const refusals = channelRefusals.slice(previousRefusals);
+              assert.equal(refusals.length, 1);
+              const [refusal] = refusals;
+              assert.ok(refusal instanceof DependencyUnavailableError);
+              assert.equal(
+                refusal.message,
+                "A required dependency was unavailable during repository policy admission.",
+              );
+              const warnings = warn.mock.calls
+                .slice(previousCalls)
+                .map(({ arguments: args }) => args);
+              const logged = JSON.stringify(warnings);
+              assert.ok(logged.includes("http.dependency_unavailable"));
+              assert.ok(logged.includes(reply.headers.get("x-request-id") ?? "missing request ID"));
+              assert.ok(
+                !logged.includes(privateDiagnostic),
+                "private Driver message reached request logs",
+              );
+              assert.ok(!JSON.stringify(reply.body).includes(privateDiagnostic));
+            },
+          );
+        }
+      } finally {
+        warn.mock.restore();
+      }
+
       validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async () => {
         throw new Error("unsupported topology");
       });
-      await expectNoHandoff(false);
+      const incompatibleTopology = await expectRefusal(false, 409, "RESOURCE_CONFLICT");
+      assert.match(JSON.stringify(incompatibleTopology.body), /Compute Driver cannot enforce/);
+      admitRevision.mock.mockImplementationOnce(() => {
+        throw new ResourceStateConflictError(privateDiagnostic);
+      });
+      const unexpectedConflict = await expectRefusal(false, 409, "RESOURCE_CONFLICT");
+      assert.ok(!JSON.stringify(unexpectedConflict.body).includes(privateDiagnostic));
       Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
         value: () => false,
         configurable: true,
       });
       try {
-        await expectNoHandoff(true);
+        await expectRefusal(true, 409, "RESOURCE_CONFLICT");
       } finally {
         Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
       }
-      await fixture.deployAgent(namespace.id, bound.id);
+      const denied = restrict(fixture.policy, "operate", "secret", {
+        namespaceId: namespace.id,
+        resourceId: token.id,
+      });
+      const legacyDenied = await fixture.request("POST", unscopedPath + "/deploy");
+      assertApiError(legacyDenied, 403, "FORBIDDEN");
+      await expectRefusal(true, 403, "FORBIDDEN");
+      liftRestriction(fixture.policy, denied);
+
+      const first = await deployBound(true);
+      assert.equal(first.status, 202);
       assert.equal(provider.mock.callCount(), 1);
+      // Receipt replay must bypass a later Channel outage and return the original result.
+      const refuseUse = restrict(fixture.policy, "operate", "secret", {
+        namespaceId: namespace.id,
+        resourceId: token.id,
+      });
+      try {
+        const replay = await deployBound(true);
+        assert.equal(replay.status, 202);
+        assert.deepEqual(replay.data, first.data);
+        assert.equal(provider.mock.callCount(), 1);
+      } finally {
+        liftRestriction(fixture.policy, refuseUse);
+      }
+
+      // The Channel provider may see the Secret. Its thrown error is never an admission error.
+      provider.mock.mockImplementationOnce(async () => {
+        throw new DependencyUnavailableError("private Channel provider request detail");
+      });
+      const legacyFailure = await fixture.request("POST", unscopedPath + "/deploy");
+      assertApiError(legacyFailure, 503, "CHANNEL_CREDENTIAL_UNAVAILABLE");
+      assert.equal(provider.mock.callCount(), 2);
+      assert.deepEqual(
+        await controller.transact((unit) =>
+          unit.revisions.listRevisions(namespace.id, unscoped.id),
+        ),
+        [],
+      );
+
+      // Once a legacy revision exists, scoped admission still sends the operator recovery.
+      const legacyRevision = await fixture.deployAgent(namespace.id, unscoped.id);
+      await setDesiredRepositoryPolicy(controller, namespace.id, unscoped.id, requested);
+      const unscopedHistory = await fixture.request("POST", unscopedPath + "/deploy");
+      assertApiError(unscopedHistory, 409, "RESOURCE_CONFLICT");
+      assert.match(JSON.stringify(unscopedHistory.body), /Create a new Agent/);
+      assert.equal(provider.mock.callCount(), 3);
+      const revisions = await controller.transact((unit) =>
+        unit.revisions.listRevisions(namespace.id, unscoped.id),
+      );
+      assert.deepEqual(
+        revisions.map(({ id }) => id),
+        [legacyRevision.id],
+      );
     },
   );
 });
