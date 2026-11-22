@@ -535,9 +535,12 @@ async function observedGitRoute(
     };
     let deliveries = 0;
     await assert.rejects(
-      f.runtime.releasePreview(revision.id, startupId, async () => {
-        deliveries++;
-        return true;
+      f.runtime.releasePreview(revision.id, startupId, {
+        prepare: async () => {},
+        deliver: async () => {
+          deliveries++;
+          return true;
+        },
       }),
       { message: "The preview release was not acknowledged." },
     );
@@ -552,9 +555,12 @@ async function observedGitRoute(
   if (releaseFault === "response-lost") {
     const sent = Promise.withResolvers();
     const response = Promise.withResolvers();
-    const releasing = f.runtime.releasePreview(revision.id, startupId, async () => {
-      sent.resolve();
-      return response.promise;
+    const releasing = f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => {
+        sent.resolve();
+        return response.promise;
+      },
     });
     const failed = assert.rejects(releasing, { message: "release response lost" });
     await sent.promise;
@@ -588,7 +594,10 @@ async function observedGitRoute(
     await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe),
     "installed",
   );
-  await f.runtime.releasePreview(revision.id, startupId, async () => true);
+  await f.runtime.releasePreview(revision.id, startupId, {
+    prepare: async () => {},
+    deliver: async () => true,
+  });
   assert.ok(await f.lookup(), "first read after held launch ACK");
   if (afterRelease) {
     await afterRelease(f, revision);
@@ -710,7 +719,10 @@ async function observedGitRoute(
       "a new process preserves the same execution authorization",
     );
     assert.equal(await f.lookup(), undefined, "fresh readiness alone cannot release a launcher");
-    await f.runtime.releasePreview(revision.id, startupId, async () => true);
+    await f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => true,
+    });
     assert.ok(await f.lookup());
     assert.equal(f.calls.rotate, 1, "recovery never replays the credential write");
 
@@ -731,7 +743,10 @@ async function observedGitRoute(
     await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe);
     assert.equal(f.runtime.previewReleased(revision.id), false);
     await f.reconcile();
-    await f.runtime.releasePreview(revision.id, startupId, async () => true);
+    await f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => true,
+    });
     resume.resolve();
     assert.equal(await staleRequest, undefined, "the previous launcher cannot borrow the new ACK");
     assert.ok(await f.lookup());

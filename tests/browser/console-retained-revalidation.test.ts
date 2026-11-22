@@ -106,6 +106,42 @@ async function showNamespaces(page: Page) {
   await page.locator(settledView).getByRole("list", NAMESPACES).waitFor();
 }
 
+test("Namespaces Back keeps the opened row in view on retained and rebuilt lists", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  for (let index = 0; index < 22; index += 1) {
+    await fixture.createNamespace(`Team ${String(index).padStart(2, "0")}`);
+  }
+
+  for (const width of [1440, 390]) {
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 }, ignoreHTTPSErrors: false },
+    });
+    await login(page, fixture, "/console/namespaces");
+    const view = page.locator(settledView);
+    const row = view.getByRole("link", { name: "Team 20", exact: true });
+    for (const changed of [false, true]) {
+      await row.waitFor();
+      // Start with a real admitted snapshot, then distinguish reuse from replacement.
+      await page.waitForLoadState("networkidle");
+      await tagView(page);
+      await row.focus();
+      await page.keyboard.press("Enter");
+      await page.waitForURL((url) => url.pathname === "/console/agents");
+      await view.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
+      if (changed) {
+        await fixture.createNamespace(`Added ${width}`);
+      }
+      await page.goBack();
+      await row.waitFor();
+      assert.equal(await viewTag(page), changed ? null : "kept");
+      assert.equal(await hasFocus(row), true, `same row at ${width}px`);
+      const box = await row.boundingBox();
+      assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `visible at ${width}px`);
+    }
+  }
+});
+
 async function openAgent(page: Page, name: string) {
   await page.getByRole("link", { name }).click();
   await agentShown(page);
@@ -1162,7 +1198,7 @@ for (const how of ["Enter", "a click"]) {
     // The pressed link, the held page's heading, then the Agent's link in the list.
     assert.deepEqual(
       trail.map((entry) => entry.replace(/#\d+/, "")),
-      ["A: ◇Agents", `H1: ${agent.name}`, `A: ${agent.name}`],
+      ["A: Agents", `H1: ${agent.name}`, `A: ${agent.name}`],
       trail.join(" | "),
     );
   });

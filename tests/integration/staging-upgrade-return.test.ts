@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -24,6 +25,7 @@ import {
   assertReturnedAgents,
   assertRunningController,
   measureUpgradeAvailability,
+  rehearsalMigrationProbeArgs,
   returnedDatabaseConnections,
   returnedAgentSnapshot,
   selectRehearsalControllers,
@@ -151,6 +153,55 @@ async function scratch(t: TestContext) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("return migration probe replaces the exact historical loader with the guarded current loader", async (t) => {
+  // Unmodified loader from the c0b09b2e and 4835e8bf charts.
+  const legacyProgram = String.raw`const command = require("./package.json").scripts?.["db:migrate:production"];
+const entry = /^(?:NODE_ENV=production )?node (scripts\/migrate-production\.(?:mjs|ts))$/.exec(
+  command ?? "",
+)?.[1];
+if (!entry) {
+  throw new Error("The image does not declare a supported production migration command.");
+}
+process.argv.splice(1, 0, entry);
+import("./" + entry);
+`;
+  const legacyArgs = ["-e", legacyProgram, "--"];
+  const args = rehearsalMigrationProbeArgs(legacyArgs);
+  assert.deepEqual(args, [...selectedImageMigrationEntry, "--check"]);
+  assert.deepEqual(rehearsalMigrationProbeArgs([...legacyArgs, "--expect-empty"]), args);
+  assert.deepEqual(rehearsalMigrationProbeArgs([...legacyArgs, "--require-current"]), args);
+  assert.deepEqual(rehearsalMigrationProbeArgs(["scripts/migrate-production.mjs"]), args);
+  assert.equal(rehearsalMigrationProbeArgs(["-e", legacyProgram + "\n", "--"]), undefined);
+  assert.equal(
+    rehearsalMigrationProbeArgs([...legacyArgs, "--expect-empty", "--check"]),
+    undefined,
+  );
+  assert.equal(rehearsalMigrationProbeArgs([...legacyArgs, "--check"]), undefined);
+  assert.equal(rehearsalMigrationProbeArgs(["-e", legacyProgram]), undefined);
+  assert.equal(rehearsalMigrationProbeArgs(), undefined);
+
+  const directory = await scratch(t);
+  await mkdir(join(directory, "scripts"));
+  const packageFile = join(directory, "package.json");
+  const entryReceipt = join(directory, "migration-entered.json");
+  const command = "node scripts/migrate-production.ts";
+  await writeFile(
+    join(directory, "scripts", "migrate-production.ts"),
+    'import { writeFileSync } from "node:fs"; writeFileSync("migration-entered.json", JSON.stringify(process.argv.slice(2)));',
+  );
+  const declareMigration = (script: string) =>
+    writeFile(packageFile, JSON.stringify({ scripts: { "db:migrate:production": script } }));
+  await declareMigration(command);
+  await assert.rejects(
+    runFixtureCommand(process.execPath, args, { cwd: directory, timeout: 10_000 }),
+    /does not declare support for production migration mode arguments/u,
+  );
+  await assert.rejects(readFile(entryReceipt), { code: "ENOENT" });
+  await declareMigration(`NODE_ENV=production ${command}`);
+  await runFixtureCommand(process.execPath, args, { cwd: directory, timeout: 10_000 });
+  assert.deepEqual(JSON.parse(await readFile(entryReceipt, "utf8")), ["--check"]);
+});
 
 test("release checkout admission rejects hidden edits and ignored execution inputs before Docker", async (t) => {
   const directory = await scratch(t);
@@ -897,6 +948,7 @@ test(
       });
       response.setHeader("x-request-id", requestId);
       response.setHeader("x-private-fixture", privateBytes);
+      response.setHeader("x-oce-rehearsal-upstream-reused", "1");
       switch (observedRequests.length) {
         case 1:
           response.end(
@@ -983,6 +1035,7 @@ test(
             startedAt: string;
             finishedAt: string;
             requestId?: string;
+            upstreamSocketReused?: boolean;
             elapsedMs: number;
             gapMs: number | null;
             startGapMs: number | null;
@@ -1056,6 +1109,8 @@ test(
     );
     assert.equal(evidence.samples[0]?.requestId, requestId);
     assert.ok(evidence.samples.slice(1).every((sample) => !("requestId" in sample)));
+    assert.equal(evidence.samples[0]?.upstreamSocketReused, true);
+    assert.ok(evidence.samples.slice(1).every((sample) => !("upstreamSocketReused" in sample)));
     assert.equal(evidence.samples[0]?.gapMs, null);
     for (const sample of evidence.samples) {
       assert.ok(Number.isFinite(Date.parse(sample.startedAt)));
@@ -1191,6 +1246,8 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
   // Even zero elapsed time has the initial opportunity. The closed endpoint
   // includes a slot exactly at settlement; neither may create a fake sample.
   const failure = new Error("synchronous failure");
+  const runtimeReceiptName = "runtime-api-availability.json";
+  const runtimePath = join(directory, runtimeReceiptName);
   for (const duration of [0, 1_000]) {
     await assert.rejects(
       measureUpgradeAvailability(
@@ -1202,14 +1259,12 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
           throw failure;
         },
         async () => {},
-        "runtime-api-availability.json",
+        runtimeReceiptName,
       ),
       (error: unknown) => error === failure,
     );
     assert.deepEqual(await readFile(controllerPath), controllerBytes);
-    const failed = JSON.parse(
-      await readFile(join(directory, "runtime-api-availability.json"), "utf8"),
-    );
+    const failed = JSON.parse(await readFile(runtimePath, "utf8"));
     assert.equal(failed.cadence.scheduledSlots, duration === 0 ? 1 : 2);
     assert.equal(failed.cadence.unprobedSlots, failed.cadence.scheduledSlots);
     assert.equal(failed.cadence.probedSlots, 0);
@@ -1218,6 +1273,54 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
       ["before", "after"],
     );
   }
+
+  // A failed return retains its outage observation and leaves both earlier
+  // receipts intact, even when the final authenticated read succeeds.
+  const runtimeBytes = await readFile(runtimePath);
+  const restoreFailure = new Error("archive restore failed");
+  const statuses = [200, 503, 200];
+  let returnPhaseRecord: object | undefined;
+  await assert.rejects(
+    measureUpgradeAvailability(
+      async () => {
+        const status = statuses.shift();
+        assert.ok(status !== undefined);
+        return { status, body: { data: { id: "original-installation" } } };
+      },
+      "original-installation",
+      directory,
+      async () => {
+        throw restoreFailure;
+      },
+      async (details) => {
+        returnPhaseRecord = details;
+      },
+      "return-api-availability.json",
+    ),
+    (error: unknown) => error === restoreFailure,
+  );
+  const returnEvidence = JSON.parse(
+    await readFile(join(directory, "return-api-availability.json"), "utf8"),
+  );
+  assert.deepEqual(returnPhaseRecord, returnEvidence);
+  assert.equal(returnEvidence.complete, true);
+  assert.equal(returnEvidence.upgradeSucceeded, false);
+  assert.deepEqual(
+    returnEvidence.samples.map(
+      ({ phase, status, outcome }: { phase: string; status: number; outcome: string }) => [
+        phase,
+        status,
+        outcome,
+      ],
+    ),
+    [
+      ["before", 200, "ok"],
+      ["during", 503, "http-error"],
+      ["after", 200, "ok"],
+    ],
+  );
+  assert.deepEqual(await readFile(controllerPath), controllerBytes);
+  assert.deepEqual(await readFile(runtimePath), runtimeBytes);
 });
 
 test(
@@ -1341,11 +1444,13 @@ test("upgrade availability preserves action and evidence-write failures", async 
   const key = `fixture-service-key-${randomUUID()}`;
   // Even matching IDs must have the controller-generated UUIDv4 shape.
   const malformedId = "req_00000000-0000-1000-8000-000000000000";
+  const validId = `req_${randomUUID()}`;
+  let requestId = malformedId;
+  let reuseHeader = "1";
   const server = createServer(tls, (_incoming, response) => {
-    response.setHeader("x-request-id", malformedId);
-    response.end(
-      JSON.stringify({ data: { id: "original-installation" }, meta: { requestId: malformedId } }),
-    );
+    response.setHeader("x-request-id", requestId);
+    response.setHeader("x-oce-rehearsal-upstream-reused", reuseHeader);
+    response.end(JSON.stringify({ data: { id: "original-installation" }, meta: { requestId } }));
   });
   const port = await listen(t, server);
   const request = createProductionTuiRequest({
@@ -1389,10 +1494,10 @@ test("upgrade availability preserves action and evidence-write failures", async 
     },
   );
   assert.equal(recorded, true);
-  const failedSnapshot = JSON.parse(
-    await readFile(join(directory, "forward-api-availability.json"), "utf8"),
-  );
+  const snapshotPath = join(directory, "forward-api-availability.json");
+  const failedSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
   assert.ok(!JSON.stringify(failedSnapshot).includes(malformedId));
+  assert.ok(failedSnapshot.samples.every((sample: object) => !("upstreamSocketReused" in sample)));
   assert.equal(failedSnapshot.upgradeSucceeded, false);
   assert.equal(failedSnapshot.complete, true);
   assert.equal(failedSnapshot.cadence.complete, true);
@@ -1439,6 +1544,8 @@ test("upgrade availability preserves action and evidence-write failures", async 
       },
     );
   }
+  requestId = validId;
+  reuseHeader = "0";
   await assert.rejects(
     measureUpgradeAvailability(
       request,
@@ -1451,6 +1558,11 @@ test("upgrade availability preserves action and evidence-write failures", async 
     ),
     (error: unknown) => error === upgradeFailure,
   );
+  const freshSocketSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.equal(freshSocketSnapshot.samples[0]?.requestId, validId);
+  assert.equal(freshSocketSnapshot.samples[0]?.upstreamSocketReused, false);
+
+  reuseHeader = "true";
   await assert.rejects(
     measureUpgradeAvailability(
       request,
@@ -1463,6 +1575,9 @@ test("upgrade availability preserves action and evidence-write failures", async 
     ),
     (error: unknown) => error === recordFailure,
   );
+  const malformedHeaderSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.equal(malformedHeaderSnapshot.samples[0]?.requestId, validId);
+  assert.ok(!("upstreamSocketReused" in malformedHeaderSnapshot.samples[0]));
 });
 
 test(

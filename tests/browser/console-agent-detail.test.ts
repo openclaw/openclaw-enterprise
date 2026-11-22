@@ -55,6 +55,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settledView,
   settlePageRequests,
   statusTone,
   takeLayoutShifts,
@@ -2751,10 +2752,76 @@ test("a reader without update views the version draft read-only", async (t) => {
   const snapshot = page
     .locator("section.agent-card")
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+  // Draft-only tabs open on this Agent. Back returns to the saved version's shortcut.
+  const snapshotUrl = page.url();
+  for (const name of ["Credentials", "Repositories"]) {
+    await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+    const link = snapshot.getByRole("link", { name: `Draft ${name.toLowerCase()}` });
+    assert.equal(await link.isVisible(), true);
+    await link.press("Enter");
+    await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
+    const selected = page.getByRole("tab", { name, selected: true });
+    assert.equal(await hasFocus(selected), true);
+    assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
+    await page.goBack();
+    await page.waitForURL(snapshotUrl);
+    await link.waitFor();
+    await page.locator(settledView).waitFor();
+    assert.ok(await hasFocus(link), name);
+  }
   await snapshot.getByRole("button", { name: "Open draft", exact: true }).click();
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
   assert.equal(await page.getByRole("button", { name: "Edit current Configuration" }).count(), 0);
+  const draftLinks = snapshot.getByRole("link", { name: /^Draft / });
+  const permissionUrl = `${fixture.origin}${path}/permissions`;
+  await t.test("losing a snapshot shortcut on refocus preserves keyboard position", async () => {
+    const tab = page.getByRole("tab", { name: "Configuration", exact: true });
+    const navigation = page.getByRole("link", { name: "Agents", exact: true });
+    for (const moveFocus of [true, false]) {
+      await page.goto(snapshotUrl);
+      await page.locator(settledView).waitFor();
+      await draftLinks.first().focus();
+      const restore = revokeMemberGrant(fixture, "draft-reader", ["read", "configuration"]);
+      const permissions = await holdRequests(t, page, permissionUrl, {
+        once: true,
+        afterServer: true,
+      });
+      await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+      await permissions.requested;
+      // The sidebar stays active while the Controller rechecks the snapshot.
+      if (moveFocus) {
+        await navigation.focus();
+      }
+      permissions.release();
+      await page.locator(settledView).waitFor();
+      restore();
+      assert.equal(await draftLinks.count(), 0);
+      assert.ok(await hasFocus(moveFocus ? navigation : tab), moveFocus ? "sidebar" : "tab");
+    }
+  });
+
+  // A fresh grant does not clear this tab's 403 on the exact saved Configuration.
+  await page.goto(snapshotUrl);
+  await draftLinks.first().waitFor();
+  const restore = revokeMemberGrant(fixture, "draft-reader", ["read", "configuration"]);
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const denied = page.waitForResponse(fixture.origin + configurationPath);
+  await draftLinks.first().click();
+  assert.equal((await denied).status(), 403);
+  await page.getByRole("heading", { name: "Configuration unavailable" }).waitFor();
+  restore();
+  const granted = page.waitForResponse(permissionUrl);
+  await page.goBack();
+  assert.equal(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await granted).json()).data
+      .configurationRead,
+    true,
+  );
+  await page.locator(settledView).waitFor();
+  await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  assert.equal(await draftLinks.count(), 0);
+  assert.ok(await hasFocus(page.getByRole("heading", { level: 1 })));
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
@@ -2797,8 +2864,11 @@ test("a late permission answer relabels a reader's version entry and skips plugi
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
   // Until the answer lands the page assumes an editor.
   await snapshot.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
+  const draftLinks = snapshot.getByRole("link", { name: /^Draft (credentials|repositories)$/ });
+  assert.equal(await draftLinks.count(), 0);
   firstAnswer.release();
   await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  assert.equal(await draftLinks.count(), 2);
 
   const secondAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,

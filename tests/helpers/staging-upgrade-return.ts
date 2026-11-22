@@ -1,6 +1,10 @@
-import { migrationEntry } from "../../scripts/lib/selected-image-migration.ts";
+import {
+  migrationEntry,
+  selectedImageMigrationEntry,
+} from "../../scripts/lib/selected-image-migration.ts";
 import type { Agent } from "../../packages/contracts/src/index.ts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
+import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -10,7 +14,7 @@ import type {
   V1Job,
   V1PodTemplateSpec,
 } from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
-import { ProductionTuiRequestError } from "./production-tui-request.ts";
+import { ProductionTuiRequestError, type ProductionTuiResponse } from "./production-tui-request.ts";
 import {
   assertProtectedEqual,
   protectedJSON,
@@ -23,6 +27,29 @@ import { Check } from "typebox/value";
 
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
+
+// Both c0b09b2e and 4835e8bf ship these bytes at
+// deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs.
+const legacyRehearsalLoaderHash =
+  "4a6a55d777d238c127c3e0b9d357d87bdcdd91ad9937a2e5460a43e6dd7dd202";
+
+export function rehearsalMigrationProbeArgs(args: readonly string[] = []) {
+  if (!migrationEntry(args)) {
+    const [evaluate, program, separator, option, ...extra] = args;
+    if (
+      evaluate !== "-e" ||
+      separator !== "--" ||
+      !program ||
+      extra.length !== 0 ||
+      (option !== undefined && option !== "--expect-empty" && option !== "--require-current") ||
+      sha256Hex(program) !== legacyRehearsalLoaderHash
+    ) {
+      return undefined;
+    }
+  }
+  // The retained Job is evidence only. Use the current loader's guarded-mode check.
+  return [...selectedImageMigrationEntry, "--check"];
+}
 
 type ControllerImage = {
   reference: string;
@@ -355,10 +382,10 @@ type ExternalRequest = (
   path: string,
   body: undefined,
   options: { authenticated: boolean; signal?: AbortSignal },
-) => Promise<{ status: number | undefined; requestId?: string; body: unknown }>;
+) => Promise<ProductionTuiResponse>;
 
 // These observations describe the fixture's authenticated HTTPS route. They do
-// not establish continuous availability between requests or gate the upgrade.
+// not establish continuous availability between requests or gate the action.
 export async function measureUpgradeAvailability<T>(
   request: ExternalRequest,
   installationId: string,
@@ -367,7 +394,8 @@ export async function measureUpgradeAvailability<T>(
   record: (details: object) => Promise<void>,
   receiptName:
     | "forward-api-availability.json"
-    | "runtime-api-availability.json" = "forward-api-availability.json",
+    | "runtime-api-availability.json"
+    | "return-api-availability.json" = "forward-api-availability.json",
 ) {
   const samples: {
     phase: "before" | "during" | "after";
@@ -383,6 +411,7 @@ export async function measureUpgradeAvailability<T>(
       "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
     status: number | undefined;
     requestId?: string;
+    upstreamSocketReused?: boolean;
   }[] = [];
   const origin = performance.now();
   const nominalIntervalMs = 1_000;
@@ -436,6 +465,7 @@ export async function measureUpgradeAvailability<T>(
     let outcome: (typeof samples)[number]["outcome"];
     let status: number | undefined;
     let requestId: string | undefined;
+    let upstreamSocketReused: boolean | undefined;
     try {
       const response = await request("GET", "/installation", undefined, {
         authenticated: true,
@@ -454,6 +484,9 @@ export async function measureUpgradeAvailability<T>(
       } else {
         outcome = "ok";
         requestId = response.requestId;
+        if (requestId !== undefined) {
+          upstreamSocketReused = response.upstreamSocketReused;
+        }
       }
     } catch (error) {
       // Keep received status even when strict response parsing rejects the body.
@@ -482,6 +515,7 @@ export async function measureUpgradeAvailability<T>(
       outcome,
       status,
       ...(requestId === undefined ? {} : { requestId }),
+      ...(upstreamSocketReused === undefined ? {} : { upstreamSocketReused }),
     });
     previousStart = start;
     previousFinish = finish;
@@ -1138,8 +1172,8 @@ export async function rehearsePopulatedReturn({
     assert.ok(migration, "initializer is missing its migration container");
     assert.equal(migration.image, image.reference, "migration probe must use the selected image");
     assert.ok(migration.env, "initializer migration container is missing its environment");
-    const entry = migration.args && migrationEntry(migration.args);
-    assert.ok(entry, "initializer has an unsupported migration entry point");
+    const args = rehearsalMigrationProbeArgs(migration.args);
+    assert.ok(args, "initializer has an unsupported migration entry point");
     const probeSecret = {
       apiVersion: "v1",
       kind: "Secret",
@@ -1166,7 +1200,8 @@ export async function rehearsePopulatedReturn({
         containers: [
           {
             ...migration,
-            args: [...entry, "--check"],
+            command: ["node"],
+            args,
             env: [
               ...migration.env.filter(({ name }) => name !== "OCC_MIGRATION_DATABASE_URL"),
               {
@@ -1579,7 +1614,7 @@ export async function rehearsePopulatedReturn({
     helmRevision: candidateRelease.version,
   });
 
-  await phase("Stop both candidate writers", async () => {
+  const stopCandidateWriters = async () => {
     await custody.assertPostgres();
     await custody.assertRelease();
     for (const { component, deploymentUID } of candidatePods) {
@@ -1602,8 +1637,8 @@ export async function rehearsePopulatedReturn({
       async () => (await pods()).length === 0 && (await candidateConnections()) === "0",
     );
     await assertNoCandidateWriters();
-  });
-  await phase("Restore the candidate archive and reject the stale archive", async () => {
+  };
+  const restoreCandidateArchive = async () => {
     const receipts = await migrationReceipts(originalDatabase);
     assert.ok(receipts.length > 0, "no candidate migration receipts");
     await dump(candidateArchive);
@@ -1621,13 +1656,8 @@ export async function rehearsePopulatedReturn({
       agentIdentity(accepted),
       await databaseAgents(restoredDatabase),
     );
-  });
-
-  await phase("Check the restored database with the previous controller", () =>
-    checkMigration(previous, previousJob, restoredDatabase, "return-compatibility"),
-  );
-
-  await phase("Return to the previous Helm revision on the restored database", async () => {
+  };
+  const rollBackHelm = async () => {
     await localCluster.assertCluster();
     await custody.assertRelease();
     await assertNoCandidateWriters();
@@ -1636,7 +1666,25 @@ export async function rehearsePopulatedReturn({
     await custody.assertRelease();
     await helm("rollback", release, String(baselineRelease.version), "--wait", "--timeout=5m");
     await verifyInstallation();
-  });
+  };
+  await measureUpgradeAvailability(
+    externalRequest,
+    installationId,
+    directory,
+    async () => {
+      await phase("Stop both candidate writers", stopCandidateWriters);
+      await phase(
+        "Restore the candidate archive and reject the stale archive",
+        restoreCandidateArchive,
+      );
+      await phase("Check the restored database with the previous controller", () =>
+        checkMigration(previous, previousJob, restoredDatabase, "return-compatibility"),
+      );
+      await phase("Return to the previous Helm revision on the restored database", rollBackHelm);
+    },
+    (details) => record("Return API availability observations", details),
+    "return-api-availability.json",
+  );
   const returned = await helmStatus();
   assert.equal(returned.info.status, "deployed");
   await custody.bindRelease(returned.version);

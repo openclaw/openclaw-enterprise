@@ -1,12 +1,9 @@
 # Record the pre-upgrade baseline
 
-Record the starting state of a production installation before you run the
-[production image upgrade](production-upgrade.md). The
-[upgrade checklist](upgrade-checklist.md#record-the-starting-state) lists what to
-record; this page gives commands for its Helm, Kubernetes, OCC, PostgreSQL and
-workspace items. The upgrade helper keeps its own evidence of the release it
-changes. Use the baseline to compare state after the upgrade and to rehearse a
-database restore before maintenance.
+Before the [production image upgrade](production-upgrade.md), record the Helm,
+Kubernetes, OCC, PostgreSQL and workspace state listed in the
+[upgrade checklist](upgrade-checklist.md#record-the-starting-state). Use this baseline for
+comparison and restore rehearsal before maintenance. The upgrade helper records the release it changes.
 
 ## Set the inputs
 
@@ -251,12 +248,18 @@ unexpected history, or different receipts.
 )
 ```
 
-Compare the restored Agent revisions, selected revisions, audit records and
-other required data with the retained candidate. Confirm that the restored
-database contains the records for each accepted operation. Keep writers stopped
-if any required record differs or an operation remains uncertain. Verify Gateway
-and workspace volumes and compatibility with any older image before switching
-writers.
+Confirm the restore includes records for every accepted operation. Compare Agent
+revisions and selections, audit records, queued work IDs and other required data
+with the retained candidate.
+
+Run the
+[read-only check](separate-database-upgrade.md#run-a-selected-image-migration) with
+`CONTROLLER_IMAGE` pinned to the return controller and `OCC_MIGRATION_DATABASE_URL`
+set to `"$RESTORED_MIGRATION_DATABASE_URL"`. Replace `--check` with
+`--require-current`. Require exit zero and `migration.checked` with history
+`completed`. Verify Gateway and workspace volumes and image compatibility. Keep
+writers stopped on discrepancies or uncertainty. After restarting, verify operation
+and queued work outcomes without replay.
 
 ## Verify a restored saved Configuration
 
