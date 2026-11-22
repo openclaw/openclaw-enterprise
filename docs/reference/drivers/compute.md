@@ -213,8 +213,8 @@ explains terminal failures, such as
 [`crash-loop`](kubernetes-compute.md#troubleshooting), and which wait until its deadline.
 
 Throw `ComputePreparationFailedError` for terminal initialization failures.
-The worker records the failed deployment and queues `stopRevision` for that
-candidate in one transaction. After restart it resumes cleanup.
+In one transaction, the worker records the failed deployment and queues
+`stopRevision` for the candidate. It resumes cleanup after restart.
 
 <a id="optional-runtime-diagnostics"></a>
 <a id="optional-runtime-status-and-logs"></a>
@@ -234,10 +234,8 @@ the validated native settings and both runtime-description and log routes return
 
 ## IAM
 
-OCC authenticates the caller and uses the [IAM Driver](iam.md) to authorize the
-exact resource. For deployment, the worker rechecks the original actor's
-`deploy` on the Agent and `read` on its Configuration. Both actor and Agent
-service principal need `operate` on each bound Secret and applicable credential
+OCC authenticates the caller; the [IAM Driver](iam.md) authorizes the exact resource. For deployment, the worker rechecks the original actor's Agent `deploy` and
+Configuration `read`. Both actor and Agent service principal need `operate` on each bound Secret and applicable credential
 source. ServiceAccount authentication also requires the actor to read the
 account. Denied access or unavailable IAM blocks preparation.
 
@@ -253,9 +251,8 @@ Installed Drivers run with control-plane privileges.
 
 ### Driver initialization and shutdown
 
-Each API or worker process loads its configured Driver, validates its methods,
-attaches selected hooks, and runs applicable preflight. Process shutdown does
-not delete Namespace or Agent resources. See [Driver loading](../../flows/driver-plugin-loading.md).
+Each API or worker process loads its Driver, validates methods, attaches selected
+hooks, and runs applicable preflight. Shutdown does not delete Namespace or Agent resources. See [Driver loading](../../flows/driver-plugin-loading.md).
 
 ### Production revision stages
 
@@ -292,11 +289,11 @@ Before calling Compute, the worker checks its selected identity and current
 credential references.
 Activation must be safe to repeat. A failed activation after selection resumes
 at finalization. In [protected Git startup](../repository-credentials/protected-openshell-git.md),
-both version 5 `online-request` and version 6 `request-hook-observed` support
-selection before readiness. When Compute reports `heldForRepositoryGitMaterial`
-and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
-record the selection. The original work stays queued until that revision is ready;
-only then does the worker activate it, retire its predecessor, and complete the work.
+version 5 `online-request` and version 6 `request-hook-observed` allow selection
+before readiness. When Compute reports `heldForRepositoryGitMaterial` and
+`REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can record
+the selection. It keeps the work queued until the revision is ready, then activates
+it, retires its predecessor, and completes the work.
 
 Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
 before closing credentials and stopping predecessors. Failed stop blocks preparation.
@@ -321,12 +318,11 @@ a separate five-second cleanup signal. See [hook execution](../../flows/compute-
 
 ### Optional active-runtime maintenance
 
-A Compute interval queues another authorized preparation and activation for the
-selected revision. Repository access or standing approvals can schedule
-maintenance independently. The worker uses the earliest applicable interval.
-A failed maintenance observation leaves the selected revision in place and schedules
-another authorized pass. A newer deployment or an
-exclusive replacement can supersede an older pass.
+A Compute interval queues authorized preparation and activation of the selected
+revision. Repository access or standing approvals can schedule maintenance
+independently; the worker uses the earliest applicable interval. A failed
+observation keeps the selected revision and schedules another authorized pass.
+A newer deployment or exclusive replacement can supersede an older pass.
 
 ### Plugin startup warnings
 
@@ -346,15 +342,14 @@ Set `drivers.compute` in Installation YAML; restart API and worker after changes
 | `package`       | string | Optional    | Installed package. Omit for bundled Kubernetes or SSH selection. |
 
 See [selection and validation](selection.md#configuration-definitions-and-discovery)
-and the [implementation references](#implementations). Docker uses development
-environment settings instead. Agent Configuration and Harness bindings are
-separate inputs saved with each revision.
+and [implementations](#implementations). Docker uses development environment settings.
+Each revision saves Agent Configuration and Harness bindings separately.
 
 ## Limits
 
 Compute uses the revision's recorded identity. Changing Drivers does not migrate it.
-Stop, retirement, and deletion require confirmation of Driver-owned cleanup. Check the [feature matrix](compute-matrix.md)
-for topology, deletion support, and private gateway access.
+Stop, retirement, and deletion require confirmed Driver-owned cleanup. See the
+[feature matrix](compute-matrix.md) for topology, deletion support, and private gateway access.
 
 ## Troubleshooting
 
