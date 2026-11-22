@@ -235,12 +235,12 @@ export class OpenShellPreparedGitProvider {
           scope.apiOrigin !== "https://api.github.com" ||
           scope.gitOrigin !== "https://github.com"
         : scope.installationId !== undefined
-        ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
-          scope.repository !== undefined ||
-          scope.apiOrigin !== "https://api.github.com" ||
-          scope.gitOrigin !== "https://github.com"
-        : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
-          scope.repository.split("/").some((part) => part === "." || part === "..")) ||
+          ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
+            scope.repository !== undefined ||
+            scope.apiOrigin !== "https://api.github.com" ||
+            scope.gitOrigin !== "https://github.com"
+          : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
+            scope.repository.split("/").some((part) => part === "." || part === "..")) ||
       scope.binaries.length === 0 ||
       scope.binaries.some(
         (path) => !/^\/[A-Za-z0-9_./-]+$/.test(path) || path.split("/").includes(".."),

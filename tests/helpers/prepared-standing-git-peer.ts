@@ -70,50 +70,52 @@ export async function standingGitOrigin(
   const tls = gh.tls;
   const backendId = "prepared-standing";
   const registrationName = "oce-prepared-git";
-  const registry = requireGitHubAppRegistry(validateGitHubRepositoryRegistry({
-    version: 1,
-    backendId,
-    providerInstanceId: "fixture-provider",
-    appId: fixtureAppId,
-    githubInstallationId: fixtureInstallationId,
-    maximumDurationSeconds: selection || draftPull ? 600 : 180,
-    allowStandingApprovals: true,
-    ...(installationAccess && {
-      installationAccess: {
-        repositoryRef: "team-installation",
-        namespaces: [{ namespaceId, accessMode: "installation", allowStandingApproval: true }],
-      },
-    }),
-    repositories: selection
-      ? selection.entries.map((entry) => ({
-          ...entry,
-          namespaces: [
-            {
-              namespaceId,
-              profiles: ["github-repository"],
-              permissions: selection.permissions,
-              ...(selection.allowStandingApproval && { allowStandingApproval: true }),
-            },
-          ],
-        }))
-      : [
-          {
-            repositoryRef: "source",
-            repository: fixtureRepository,
-            repositoryId: fixtureRepositoryId,
+  const registry = requireGitHubAppRegistry(
+    validateGitHubRepositoryRegistry({
+      version: 1,
+      backendId,
+      providerInstanceId: "fixture-provider",
+      appId: fixtureAppId,
+      githubInstallationId: fixtureInstallationId,
+      maximumDurationSeconds: selection || draftPull ? 600 : 180,
+      allowStandingApprovals: true,
+      ...(installationAccess && {
+        installationAccess: {
+          repositoryRef: "team-installation",
+          namespaces: [{ namespaceId, accessMode: "installation", allowStandingApproval: true }],
+        },
+      }),
+      repositories: selection
+        ? selection.entries.map((entry) => ({
+            ...entry,
             namespaces: [
               {
                 namespaceId,
-                profiles: ["git-write"],
-                transport: draftPull ? "git-and-draft-pr" : "git-only",
-                ...(draftPull && { pullRequestBase: "main" }),
-                allowStandingApproval: true,
-                pushRefAllowlist: [pushRef],
+                profiles: ["github-repository"],
+                permissions: selection.permissions,
+                ...(selection.allowStandingApproval && { allowStandingApproval: true }),
               },
             ],
-          },
-        ],
-  }));
+          }))
+        : [
+            {
+              repositoryRef: "source",
+              repository: fixtureRepository,
+              repositoryId: fixtureRepositoryId,
+              namespaces: [
+                {
+                  namespaceId,
+                  profiles: ["git-write"],
+                  transport: draftPull ? "git-and-draft-pr" : "git-only",
+                  ...(draftPull && { pullRequestBase: "main" }),
+                  allowStandingApproval: true,
+                  pushRefAllowlist: [pushRef],
+                },
+              ],
+            },
+          ],
+    }),
+  );
   const directory = await temporaryDirectory(t, "standing-peer-");
   const controlSocket = join(directory, "control.sock");
   const privateKeyPath = join(directory, "app.pem");

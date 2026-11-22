@@ -163,7 +163,11 @@ test("registry load refuses every option the network policy cannot enforce for a
   for (const [name, mutate] of Object.entries(refusals)) {
     const input = tokenRegistryInput();
     mutate(input);
-    assert.throws(() => validateGitHubRepositoryRegistry(input), /invalid-repository-registry/, name);
+    assert.throws(
+      () => validateGitHubRepositoryRegistry(input),
+      /invalid-repository-registry/,
+      name,
+    );
   }
   // A registry without the token authority is still the App registry: both fields are required.
   const app = tokenRegistryInput();
@@ -256,7 +260,12 @@ test("a token source gets its own endpointless Provider; installation and token 
   assert.match(tokenProvider ?? "", /^oce-github-token-[a-f0-9]{32}$/);
   assert.match(installationProvider ?? "", /^oce-github-installation-[a-f0-9]{32}$/);
   const refused = [
-    { ...base, tokenSource: "repository-token", nativeGit: undefined, repositoryNetworkPolicy: undefined },
+    {
+      ...base,
+      tokenSource: "repository-token",
+      nativeGit: undefined,
+      repositoryNetworkPolicy: undefined,
+    },
     { ...base, tokenSource: "repository-token", installationId: "42" },
     { ...base, tokenSource: "Repository_Token" },
   ];
@@ -300,7 +309,11 @@ test("a loan lasts at most one hour, names no provider expiry and audits no valu
   const remaining = Date.parse(loan.usableUntil) - now;
   assert.ok(remaining > 0 && remaining <= githubTokenLoanMaximumMs, String(remaining));
   assert.equal(githubTokenLoanMaximumMs, 3_600_000);
-  assert.equal(new Date(loan.usableUntil).getUTCMilliseconds(), 0, "whole seconds for the Provider");
+  assert.equal(
+    new Date(loan.usableUntil).getUTCMilliseconds(),
+    0,
+    "whole seconds for the Provider",
+  );
   // A caller cannot ask for more than an hour.
   now += 1000;
   const long = await source.lend({ revisionId: "rev_token", loanMs: 86_400_000 });
@@ -405,10 +418,15 @@ test("the native material reader lends without a row and turns stale on replacem
   now = warm.usableUntil;
   assert.equal(await reader.current(null, source, installed), undefined);
   // Another source never shares a version.
-  const other = await reader.readWarm(null, { key: { source: { id: "repository-git:admission-2" } } });
+  const other = await reader.readWarm(null, {
+    key: { source: { id: "repository-git:admission-2" } },
+  });
   assert.ok(other && renewed && other.materialVersion !== renewed.materialVersion);
   // Replacement: the installed version turns stale at once; the next loan carries the new value.
-  const before = { preparationAttemptId: renewed!.preparationAttemptId, materialVersion: renewed!.materialVersion };
+  const before = {
+    preparationAttemptId: renewed!.preparationAttemptId,
+    materialVersion: renewed!.materialVersion,
+  };
   now = renewed!.usableUntil - 1_800_000;
   assert.ok(await reader.current(null, source, before));
   await replace(fakeReplacement);

@@ -130,7 +130,9 @@ export function createGitHubTokenLoanSource(options: GitHubTokenLoanSourceOption
         }
         const now = clock.now();
         const requested = Math.min(
-          input.untilMs !== undefined ? input.untilMs - now : (input.loanMs ?? githubTokenLoanMaximumMs),
+          input.untilMs !== undefined
+            ? input.untilMs - now
+            : (input.loanMs ?? githubTokenLoanMaximumMs),
           githubTokenLoanMaximumMs,
         );
         if (!Number.isSafeInteger(requested) || requested < 1000) {
@@ -181,13 +183,21 @@ type TokenLoanSource = ReturnType<typeof createGitHubTokenLoanSource>;
  * installed version stays current for its loan and turns stale when the Secret is replaced.
  * The caller's transaction still holds the live session lock; no material row is locked.
  */
-export function createGitHubTokenMaterialReader<Transaction, Source extends { readonly key: { readonly source: { readonly id: string } } }>(
+export function createGitHubTokenMaterialReader<
+  Transaction,
+  Source extends { readonly key: { readonly source: { readonly id: string } } },
+>(
   loans: TokenLoanSource,
   clock: { now(): number } = Date,
 ): TokenMaterialReader<Transaction, Source> {
   const identity = (source: Source, window: number, secretVersion: string) => ({
     preparationAttemptId: loanUuid("github-token-loan", source.key.source.id, String(window)),
-    materialVersion: loanUuid("github-token-material", source.key.source.id, String(window), secretVersion),
+    materialVersion: loanUuid(
+      "github-token-material",
+      source.key.source.id,
+      String(window),
+      secretVersion,
+    ),
     usableUntil: (window + 2) * githubTokenLoanWindowMs,
   });
   return Object.freeze({

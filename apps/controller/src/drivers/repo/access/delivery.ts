@@ -13,7 +13,11 @@ export interface RepositoryGitDeliveryBinding {
       } & (
         | { readonly installationId: string; readonly tokenSource?: never }
         /** The registry's token Secret name: native Git only, lent rather than issued. */
-        | { readonly installationId?: never; readonly tokenSource: string; readonly nativeGit: "v1" }
+        | {
+            readonly installationId?: never;
+            readonly tokenSource: string;
+            readonly nativeGit: "v1";
+          }
       ))
     | { readonly repository: string; readonly installationId?: never }
     | { readonly repository?: never; readonly installationId: string };
