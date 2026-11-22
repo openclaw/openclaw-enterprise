@@ -115,7 +115,6 @@ export function documentApiExamples<T>(document: T): T {
         const response = record(rawResponse, `${name} ${status} response`);
         const isError = Number(status) >= 400;
         let failure = lookupFailure(status);
-        let errorExampleKey: string | undefined;
         if (status === "429") {
           const code = Object.hasOwn(rateLimitCodes, name) ? rateLimitCodes[name] : undefined;
           if (!code) {
@@ -125,13 +124,6 @@ export function documentApiExamples<T>(document: T): T {
         }
         if (status === "504" && name !== "chatWithAgent") {
           failure = ["RUNTIME_LOGS_TIMEOUT", "The runtime status or log read timed out."];
-        }
-        if (
-          status === "501" &&
-          (name === "createCredentialSource" || name === "updateCredentialSource")
-        ) {
-          failure = ["NOT_IMPLEMENTED", "Managed credential source enrollment is unavailable."];
-          errorExampleKey = "MANAGED_SOURCE_NOT_IMPLEMENTED";
         }
         if (!response.description || response.description === "Default Response") {
           response.description = isError ? failure?.[1] : lookup(STATUS_CODES, status);
@@ -151,7 +143,7 @@ export function documentApiExamples<T>(document: T): T {
             if (!failure) {
               throw new Error(`Missing error example: ${name} ${status}`);
             }
-            const key = errorExampleKey ?? failure[0];
+            const key = failure[0];
             sharedExamples[key] = {
               summary: failure[0],
               value: { error: { code: failure[0], message: failure[1] }, meta },

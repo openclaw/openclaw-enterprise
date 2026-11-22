@@ -1,4 +1,8 @@
 import {
+  parseRepositoryNetworkPolicyCeiling,
+  type RepositoryNetworkPolicyCeiling,
+} from "@openclaw-enterprise/contracts";
+import {
   reconcileNamespaceLifecycle,
   type NamespaceLifecycleBinding,
   type NamespaceLifecycleEvidence,
@@ -111,7 +115,6 @@ import {
   NotImplementedError,
   ResourceStateConflictError,
   ScopeViolationError,
-  PostgresCommitOutcomeUnknownError,
 } from "./errors.ts";
 import { createAgentCredentialWithdrawal } from "./agent-credential-withdrawal.ts";
 import { createAgentTermination } from "./agent-termination.ts";
@@ -179,6 +182,7 @@ export interface ControllerOptions {
   };
   readonly preparedTokens?: TokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
+  readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
@@ -374,7 +378,10 @@ function initializeInstallationDrivers(
   installation: Installation,
   options: Pick<
     ControllerOptions,
-    "namespaceLifecycleBindings" | "sandboxNetworkPolicyCeiling" | "driverConfigurations"
+    | "namespaceLifecycleBindings"
+    | "repositoryNetworkPolicyCeiling"
+    | "sandboxNetworkPolicyCeiling"
+    | "driverConfigurations"
   >,
   hasBuiltInRepositoryPolicy: () => boolean,
 ) {
@@ -579,10 +586,8 @@ function createCredentialServices({
         selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
         clock: resourceValues.now,
         timestamp: resourceValues.timestamp,
-        nextSourceId,
         tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
         driverOperation: (operation) => driverOperation(operation, "TokenService"),
-        isCommitOutcomeUnknown: (error) => error instanceof PostgresCommitOutcomeUnknownError,
         connectionTokenIssuer,
         preparedIssuer,
       },
@@ -786,6 +791,8 @@ export function createControllerComposition(
     { record: workRecorder.record, requestAuditId: currentRequestAuditId },
   );
   const sandboxPolicyOperations = createSandboxPolicyOperations({
+    repositoryCeiling: (namespaceId) =>
+      repositoryPolicy.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
     installationId: admittedInstallation.id,
     ceiling: sandboxNetworkPolicyCeiling,
     authority,
@@ -861,6 +868,9 @@ export function createControllerComposition(
   const credentialProxyCapacity: CredentialProxyCapacity = capacity.capacity;
   const backendMap: ReadonlyMap<string, BackendDefinition> = backendDefinitionMap(backends);
   const repositoryPolicy = createRepositoryPolicyOperations({
+    repositoryNetworkPolicyCeiling: parseRepositoryNetworkPolicyCeiling(
+      options.repositoryNetworkPolicyCeiling ?? [],
+    ),
     drivers,
     selectedRepository: () => publicController.selectedDriver("repo"),
     selectedCompute,

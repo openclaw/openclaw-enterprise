@@ -152,20 +152,49 @@ test("OpenShell stock Supervisor fixture refuses a substituted imported image", 
     Architecture: "amd64",
   };
   // buildx may append a display newline to the exact bytes named by the descriptor.
+  const calls: string[][] = [];
   const expectedConfig = await stockSupervisorConfig(
     selected,
     `${manifest}\n`,
-    inspected,
+    async (flags) => {
+      calls.push(flags);
+      return flags.length
+        ? inspected
+        : {
+            Descriptor: {
+              mediaType: "application/vnd.oci.image.index.v1+json",
+              digest: sha256(index),
+            },
+          };
+    },
     "linux/amd64",
   );
+  assert.deepEqual(calls, [[], ["--platform", "linux/amd64"]]);
   assert.equal(
     await stockSupervisorConfig(
       selected,
       manifest,
-      { Id: config, Os: "linux", Architecture: "amd64" },
+      async (flags) => {
+        assert.deepEqual(flags, []);
+        return { Id: config, Os: "linux", Architecture: "amd64" };
+      },
       "linux/amd64",
     ),
     expectedConfig,
+  );
+
+  await assert.rejects(
+    stockSupervisorConfig(
+      selected,
+      manifest,
+      async () => ({
+        Id: sha256("substitute"),
+        Os: "linux",
+        Architecture: "amd64",
+      }),
+      "linux/amd64",
+    ),
+    /differs from the pinned config/u,
   );
 
   // Local import can rewrite its manifest; the image config must stay stock.

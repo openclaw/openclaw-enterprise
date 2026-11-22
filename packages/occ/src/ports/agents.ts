@@ -35,6 +35,7 @@ export interface WorkspaceSetupRepository extends WorkspaceSetupReadRepository {
 }
 
 export interface SandboxPolicyReadRepository {
+  readonly supportsRepositoryNetworkPolicy?: true;
   find(namespaceId: string, agentId: string): Promise<Readonly<SandboxPolicy> | undefined>;
 }
 
