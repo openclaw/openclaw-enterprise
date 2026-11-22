@@ -6,6 +6,22 @@ Strands control-plane peer to select that release's worker Pods. The chart grant
 the worker TCP 18791 to Strands Agent Pods in its routed namespaces and read access to individual ReplicaSets for Pod ownership checks. The provider
 creates tenant resources and uses the installation's DNS peer and Gateway route.
 
+For a dedicated Codex Agent, add the supervisor route below to
+`drivers.compute.configuration.network`. Without it, the worker refuses
+to prepare the revision.
+
+```yaml
+providerHarness:
+  mode: namespace
+  port: 18790
+```
+
+Before deployment, check `/opt/oce/runtime/provenance.json` in the Gateway
+image. Its `source` must be `https://github.com/openclaw/openclaw` and its
+`commit` must match `commit` in the controller checkout's
+`deploy/runtime/openclaw-source.json`. A mismatch leaves the Gateway unready.
+Pin that image by digest and use it as the base for the companion image.
+
 The first Gateway issues workspace-node setup. The trusted file node reports
 migration or baseline failures through a private socket. The supervisor exposes
 that failure on the authenticated diagnostic Service and starts Box only after
