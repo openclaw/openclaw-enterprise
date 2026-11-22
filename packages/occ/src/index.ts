@@ -264,6 +264,8 @@ export type { ServiceAccountReadRepository } from "./ports/service-accounts.ts";
 export {
   CLAUDE_CLI_AGENT_RUNTIME_ID,
   harnessIdForAgentRuntime,
+  refuseClaudeCodeNodeExecHost,
+  refuseClaudeCodeRuntime,
   resolveConfiguredAgentRuntimeId,
   resolveConfiguredHarnessId,
   selectsClaudeCodeRuntime,

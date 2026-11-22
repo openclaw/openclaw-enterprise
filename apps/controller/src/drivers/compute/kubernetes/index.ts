@@ -213,6 +213,7 @@ import {
   KubernetesSecretWriteForbiddenError,
   provisionsDedicatedOpenClaw,
   requireChannelSecretBindings,
+  refuseClaudeCodeNodeExecHost,
   requireOpenClawRoster,
   resolveConfiguredHarnessId,
   selectsClaudeCodeRuntime,
@@ -1464,6 +1465,35 @@ const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
 // is the only writable path in it: the rest is the read-only skeleton from
 // CLAUDE_CODE_SETTINGS_VOLUME (finding 3178), as are the managed settings that carry the
 // credential.
+// The node command that runs a session's Claude Code turn on a paired node. A session whose
+// exec host is node (an authorized sender's `/exec host=node node=<id>`, which no Configuration
+// setting governs) places Claude Code there, and the pinned OpenClaw skips tool mediation for it
+// (src/agents/cli-runner/execution-target.ts, prepare-tool-policy.ts). Embedded OpenClaw, the
+// only mode this runtime runs in, denies it, so such a turn fails instead.
+const NODE_CLAUDE_CODE_RUN_COMMAND = "agent.cli.claude.run.v1";
+
+// gateway.nodes with NODE_CLAUDE_CODE_RUN_COMMAND added to commands.deny, which outranks any allow.
+function denyNodeClaudeCodeRuns(
+  value: OpenClawConfigurationValue | undefined,
+): OpenClawConfigurationValue {
+  const nodes = asRecord(value);
+  if (value !== undefined && nodes === undefined) {
+    throw new GatewaySettingFailure("gateway.nodes", "must be an object");
+  }
+  const commands = asRecord(nodes?.commands);
+  if (nodes?.commands !== undefined && commands === undefined) {
+    throw new GatewaySettingFailure("gateway.nodes.commands", "must be an object");
+  }
+  const deny = commands?.deny;
+  if (deny !== undefined && !(Array.isArray(deny) && deny.every((name) => typeof name === "string"))) {
+    throw new GatewaySettingFailure("gateway.nodes.commands.deny", "must be a list of command names");
+  }
+  return {
+    ...nodes,
+    commands: { ...commands, deny: [...new Set([...((deny as string[] | undefined) ?? []), NODE_CLAUDE_CODE_RUN_COMMAND])] },
+  } as OpenClawConfigurationValue;
+}
+
 const CLAUDE_CODE_PROJECTS_STATE = Object.freeze([
   "claude-projects",
   `${CLAUDE_CODE_CONFIG_DIRECTORY}/${CLAUDE_CODE_TRANSCRIPT_DIRECTORY}`,
@@ -5221,6 +5251,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       callerSettingError,
     );
     requireHarnessCredentialBinding(configuration, callerSettingError, options);
+    // Tool policy reaches Claude Code only through OpenClaw's mediation, which the pinned
+    // OpenClaw skips under exec host node. The runtime runs only under embedded OpenClaw
+    // (validateAdmittedHarnessAuth), where node placement serves no purpose, so Configuration
+    // save and every deployment refuse the pair.
+    refuseClaudeCodeNodeExecHost(configuration, callerSettingError, options);
     // Every OpenClaw topology applies the tool policy, embedded too (findings 2688, 2689), and the
     // plugin entry key rule (finding 3077). Preparation and activation skip them: an active
     // revision saved before these rules keeps its maintenance and recovery passes until a
@@ -14458,6 +14493,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           : {}),
         // Omitted and auto resolve to loopback unless OpenClaw detects a container,
         // and containerd on cgroup v2 leaves no marker it recognizes (finding 996).
+        ...(selectsClaudeCodeRuntime(configuration)
+          ? { nodes: denyNodeClaudeCodeRuns(gateway.nodes) }
+          : {}),
         bind: gateway.bind === "custom" ? "custom" : "lan",
         trustedProxies: [...this.options.network.gatewayTrustedProxyCidrs],
         allowRealIpFallback: true,

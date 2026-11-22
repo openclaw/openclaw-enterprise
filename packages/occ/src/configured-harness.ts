@@ -35,27 +35,105 @@ export function harnessIdForAgentRuntime(agentRuntimeId: string): string {
 }
 
 /**
- * Whether any model policy in the document names the Claude Code agent runtime. A lenient
- * read for Compute, which renders an already admitted document: resolveConfiguredAgentRuntimeId
- * has refused a document whose policies conflict or name another provider, so one such policy
+ * The setting path (`....agentRuntime.id`) of the first model policy in the document that names
+ * the Claude Code agent runtime, or undefined: agents.defaults.models, each agents.entries
+ * entry's models, each models.providers provider and its catalog rows. A lenient read for
+ * Compute, which renders an already admitted document: resolveConfiguredAgentRuntimeId has
+ * refused a document whose policies conflict or name another provider, so one such policy
  * means the Gateway spawns Claude Code.
  */
-export function selectsClaudeCodeRuntime(values: Readonly<OpenClawConfigurationDocument>): boolean {
+export function claudeCodeRuntimeSetting(
+  values: Readonly<OpenClawConfigurationDocument>,
+): string | undefined {
   const namesClaudeCode = (policy: unknown): boolean =>
     asRecord(asRecord(policy)?.agentRuntime)?.id === CLAUDE_CLI_AGENT_RUNTIME_ID;
-  const modelPolicies = (host: unknown): unknown[] =>
-    Object.values(asRecord(asRecord(host)?.models) ?? {});
+  const modelPolicies = (host: unknown, path: string): Array<readonly [unknown, string]> =>
+    Object.entries(asRecord(asRecord(host)?.models) ?? {}).map(
+      ([model, policy]) => [policy, keyedSettingPath(path, model)] as const,
+    );
   const agents = asRecord(values.agents);
-  const providers = Object.values(asRecord(asRecord(values.models)?.providers) ?? {});
-  return [
-    ...modelPolicies(agents?.defaults),
-    ...Object.values(asRecord(agents?.entries) ?? {}).flatMap(modelPolicies),
-    ...providers,
-    ...providers.flatMap((provider) => {
+  const providers = Object.entries(asRecord(asRecord(values.models)?.providers) ?? {});
+  const policies = [
+    ...modelPolicies(agents?.defaults, "agents.defaults.models"),
+    ...Object.entries(asRecord(agents?.entries) ?? {}).flatMap(([key, entry]) =>
+      modelPolicies(entry, entryModelsPath(key)),
+    ),
+    ...providers.flatMap(([providerId, provider]) => {
+      const path = keyedSettingPath("models.providers", providerId);
       const rows = asRecord(provider)?.models;
-      return Array.isArray(rows) ? rows : [];
+      return [
+        [provider, path] as const,
+        ...(Array.isArray(rows)
+          ? rows.map((row, index) => [row, `${path}.models[${index}]`] as const)
+          : []),
+      ];
     }),
-  ].some(namesClaudeCode);
+  ];
+  const selecting = policies.find(([policy]) => namesClaudeCode(policy));
+  return selecting === undefined ? undefined : `${selecting[1]}.agentRuntime.id`;
+}
+
+/** Whether any model policy in the document names the Claude Code agent runtime. */
+export function selectsClaudeCodeRuntime(values: Readonly<OpenClawConfigurationDocument>): boolean {
+  return claudeCodeRuntimeSetting(values) !== undefined;
+}
+
+/**
+ * Refuses a Configuration that selects the Claude Code agent runtime and sets an exec host of
+ * "node" (`tools.exec.host`, or an `agents.entries.<id>.tools.exec.host`, the only spellings OCE
+ * admits: openClawSandboxProblem). With exec host node the pinned OpenClaw skips tool mediation
+ * for Claude Code (`src/agents/cli-runner/prepare-tool-policy.ts`), so the CLI runs with its
+ * native tools outside tool policy. Embedded OpenClaw, the only mode this runtime runs in, has no
+ * use for both. On a Preset save, a host that waits on an unfilled variable is checked once
+ * filled, at deployment. Compute calls it for every Configuration it admits.
+ */
+export function refuseClaudeCodeNodeExecHost(
+  values: Readonly<OpenClawConfigurationDocument>,
+  settingError: (setting: string, requirement: string) => Error,
+  options?: ConfigurationValidationOptions,
+): void {
+  if (!selectsClaudeCodeRuntime(values)) {
+    return;
+  }
+  const execHost = (scope: unknown) => asRecord(asRecord(asRecord(scope)?.tools)?.exec)?.host;
+  const hosts: Array<readonly [unknown, readonly string[], string]> = [
+    [execHost(values), ["tools", "exec", "host"], "tools.exec.host"],
+    ...Object.entries(asRecord(asRecord(values.agents)?.entries) ?? {}).map(
+      ([key, entry]) =>
+        [
+          execHost(entry),
+          ["agents", "entries", key, "tools", "exec", "host"],
+          `${keyedSettingPath("agents.entries", key)}.tools.exec.host`,
+        ] as const,
+    ),
+  ];
+  for (const [host, path, setting] of hosts) {
+    if (host === "node" && options?.unresolved?.(path) === undefined) {
+      throw settingError(
+        setting,
+        'must be "auto" or "gateway" with the claude-cli agent runtime: on exec host "node", OpenClaw runs Claude Code outside tool policy',
+      );
+    }
+  }
+}
+
+/**
+ * Refuses the Claude Code agent runtime on a Compute Driver that does not prepare it: only
+ * Kubernetes Compute mounts its managed settings and sealed configuration directory and turns its
+ * telemetry off. `compute` names the Driver in the refusal, such as "SSH Compute".
+ */
+export function refuseClaudeCodeRuntime(
+  values: Readonly<OpenClawConfigurationDocument>,
+  settingError: (setting: string, requirement: string) => Error,
+  compute: string,
+): void {
+  const runtime = claudeCodeRuntimeSetting(values);
+  if (runtime !== undefined) {
+    throw settingError(
+      runtime,
+      `selects claude-cli, the Claude Code agent runtime, which runs only on Kubernetes Compute, not ${compute}: set it to openclaw`,
+    );
+  }
 }
 
 // The runtime a model policy selects. `policy` gives the setting path of the object that holds

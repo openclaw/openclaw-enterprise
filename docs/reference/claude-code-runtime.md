@@ -37,6 +37,15 @@ and WebFetch. File, shell and web fetch work therefore follows `tools.deny`,
 `tools.allow`, the tool profile and their `byProvider` entries. A side question
 runs with no Claude Code tools.
 
+OpenClaw skips this mediation when the exec host is `node`: Claude Code then
+gets its full native tool set, outside tool policy. OCE refuses that pair at
+save and deployment with `400 INVALID_REQUEST`, naming `tools.exec.host` or the
+`agents.entries.<id>.tools.exec.host` that is `node`. A session can also be set
+to a node with `/exec host=node node=<id>`, which no setting governs, so the
+gateway denies the node command that runs Claude Code
+(`gateway.nodes.commands.deny` gets `agent.cli.claude.run.v1`), and such a turn
+fails.
+
 OpenClaw's system prompt replaces Claude Code's own. Each turn's `TMPDIR`,
 `TMP` and `TEMP` point at `.openclaw/tmp` in the session's or Agent's
 workspace. The default workspace, `/home/node/.openclaw/workspace`, is mounted

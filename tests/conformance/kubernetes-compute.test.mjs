@@ -6189,6 +6189,16 @@ async function exerciseEmbeddedReplacement(scenario) {
     ]);
     assert.match(preparation, /"\/runtime-state\/home\/\.claude"/u);
     assert.match(preparation, /"\/gateway-state\/claude-projects"/u);
+    // A session placed on a paired node (exec host node) would run Claude Code there without
+    // tool mediation; the rendered Gateway denies that node command.
+    const rendered = JSON.parse(
+      objects.get(key("ConfigMap", `${gatewayName}-rev-${digest(replacement.id)}`)).data[
+        "openclaw.json"
+      ],
+    );
+    assert.deepEqual(rendered.gateway.nodes, {
+      commands: { deny: ["agent.cli.claude.run.v1"] },
+    });
     // Claude Code's admin-managed settings carry the credential and outrank every other
     // tier, and the model's tools run as the Gateway's uid. Only the settings init mounts
     // the Memory volume writable; the Gateway sees it read-only at /etc/claude-code.
@@ -6297,6 +6307,15 @@ async function exerciseEmbeddedReplacement(scenario) {
         mountPath.startsWith("/home/node/.claude"),
       ),
       false,
+    );
+    // Other runtimes keep the Configuration's node commands.
+    assert.equal(
+      JSON.parse(
+        objects.get(key("ConfigMap", `${gatewayName}-rev-${digest(replacement.id)}`)).data[
+          "openclaw.json"
+        ],
+      ).gateway.nodes,
+      undefined,
     );
   }
   const probeConfiguration = JSON.parse(gatewayEnvironment.OPENCLAW_HARNESS_PROBE_CONFIG.value);
@@ -6443,6 +6462,59 @@ test("the Claude Code agent runtime is admitted for embedded OpenClaw only", () 
   ]) {
     assert.doesNotThrow(() => driver.validateConfiguration({ ...configuration, tools }));
   }
+});
+
+test("an exec host of node is refused with the Claude Code agent runtime at save and deployment", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const model = "anthropic/claude-sonnet-4-5";
+  const providers = { anthropic: { baseUrl: "https://api.anthropic.com" } };
+  const claudeCode = {
+    agents: { defaults: { model, models: { [model]: { agentRuntime: { id: "claude-cli" } } } } },
+    models: { providers },
+  };
+  const defaultRuntime = { agents: { defaults: { model } }, models: { providers } };
+  const withHost = (configuration, spelling, host) => {
+    const tools = { exec: { host } };
+    return spelling === "tools.exec.host"
+      ? { ...configuration, tools }
+      : {
+          ...configuration,
+          agents: { ...configuration.agents, entries: { [spelling]: { tools } } },
+        };
+  };
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  // Under exec host node the pinned OpenClaw skips the tool mediation that applies tool policy
+  // to Claude Code, which then runs with its native tools. Both admitted spellings, the global
+  // setting and each Agent entry's, are refused for this runtime and
+  // stay admitted for the default runtime, which applies tool policy on every host.
+  for (const [spelling, setting] of [
+    ["tools.exec.host", "tools.exec.host"],
+    ["main", "agents.entries.main.tools.exec.host"],
+    ["ops-team", "agents.entries.ops-team.tools.exec.host"],
+  ]) {
+    const refusal = `Configuration setting ${setting} must be "auto" or "gateway" with the claude-cli agent runtime: on exec host "node", OpenClaw runs Claude Code outside tool policy.`;
+    assert.throws(() => driver.validateConfiguration(withHost(claudeCode, spelling, "node")), {
+      name: "ConfigurationHarnessError",
+      message: refusal,
+    });
+    assert.throws(
+      () =>
+        driver.validateHarnessAuth(embedded, apiKeyAuth, withHost(claudeCode, spelling, "node")),
+      { message: refusal },
+    );
+    assert.doesNotThrow(() =>
+      driver.validateConfiguration(withHost(defaultRuntime, spelling, "node")),
+    );
+    for (const host of ["auto", "gateway"]) {
+      assert.doesNotThrow(() => driver.validateConfiguration(withHost(claudeCode, spelling, host)));
+    }
+  }
+  // A Preset host that waits on an unfilled variable is checked once filled, at deployment.
+  assert.doesNotThrow(() =>
+    driver.validateConfiguration(withHost(claudeCode, "tools.exec.host", "node"), {
+      unresolved: (path) => (path.join(".") === "tools.exec.host" ? ["", ""] : undefined),
+    }),
+  );
 });
 
 test(
