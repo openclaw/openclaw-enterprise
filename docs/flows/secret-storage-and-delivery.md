@@ -8,14 +8,12 @@ last_updated_session: authoring-run/1065fff4-04fa-4b9e-b140-4ed9dbdde80f
 
 ## Overview
 
-An authorized owner stores a Namespace-owned Secret before any Agent exists,
-binds its stable reference in Configuration for gateway delivery, then grants, assigns
-and deploys a consuming Agent. For these Configuration bindings, OCC admits
-references and Kubernetes supplies values only to each selected gateway.
-Harness model authentication uses the
-[shared Agent binding flow](native-service-account-credential-delivery.md).
-The local installer also grants a new Agent access and verifies a model response.
-Credential issuance and provider internals are outside this flow.
+An authorized owner stores a Namespace-owned Secret, binds its stable reference
+in Configuration, grants and assigns an Agent, then deploys it. OCC admits
+references; Kubernetes delivers values only to selected gateways. Harness model
+authentication follows the [shared Agent binding flow](native-service-account-credential-delivery.md).
+The local installer verifies a model response. Credential issuance and provider
+internals are out of scope.
 
 ## Entry Points
 
@@ -26,16 +24,14 @@ Credential issuance and provider internals are outside this flow.
 - `GET /namespaces/:namespaceId/secrets`: metadata for readable Secrets.
 - `GET /namespaces/:namespaceId/secrets/:secretId`: exact Secret metadata and
   readable consumer references.
-- Configuration create/update, Agent create/update assignment, and the existing
-  Agent deployment action: authorized exact Secret references, same-Namespace
-  bindings, exact Agent assignment authority, and an approved Harness/Compute
-  selection.
+- Configuration/Agent create or update and deployment: exact Secret and assignment
+  authority, same-Namespace bindings, and approved Harness/Compute selection.
 - Local installer: `scripts/first-agent.ts:main` uses the bootstrap service key.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
   [OpenClawController](../../packages/occ/src/controller.ts), and
   [KubernetesSecretDriver](../../apps/controller/src/drivers/secret/kubernetes/index.ts).
-- The console and [OCC CLI](../guides/cli.md#provision-integration-secrets)
-  use these HTTP operations for OCC-authorized writes.
+- The console and [OCC CLI](../guides/cli.md#provision-integration-secrets) write
+  through OCC-authorized HTTP operations.
 
 ## Flow
 
@@ -77,75 +73,66 @@ graph TD
 
 `packages/occ/src/secret-operations.ts:createSecret`
 
-[createSecret](../../packages/occ/src/secret-operations.ts) validates
-nonempty UTF-8 input of at most 65,536 bytes. OCC checks Secret `create` before
-and after locking the Namespace, which must be ready. This can run before Agent
-creation. OCC generates the Secret ID and the selected Driver supplies its backend
-reference. The value stays in request and Driver memory.
+[createSecret](../../packages/occ/src/secret-operations.ts) accepts nonempty UTF-8
+input up to 65,536 bytes. OCC checks Secret `create` before and after locking the
+ready Namespace; no Agent is required. OCC generates the Secret ID, the selected
+Driver supplies the backend reference, and the value stays in request and Driver memory.
 
 ### 2. Store material and commit safe identity
 
 `apps/controller/src/drivers/secret/kubernetes/index.ts:KubernetesSecretDriver.create`
 
 [KubernetesSecretDriver.create](../../apps/controller/src/drivers/secret/kubernetes/index.ts)
-uses Compute-owned verified tenant storage placement. It creates a mutable Opaque Secret with
-a Namespace-derived name, exact Namespace ownership metadata, and a fixed
-`value` key. Its result contains only backend identity, including UID. [OCC state](../../packages/occ/src/state/postgres-state.ts)
-persists immutable Namespace, driver, and backend metadata while public metadata
-omits the backend locator and returns `{ kind: "secret", namespaceId, id }`.
+uses verified Compute-owned tenant placement to create a mutable Opaque Secret
+with a Namespace-derived name, exact ownership metadata, and `value` key. It returns
+backend identity, including UID. [OCC state](../../packages/occ/src/state/postgres-state.ts)
+persists immutable Namespace, Driver, and backend metadata; public metadata omits
+the locator and returns `{ kind: "secret", namespaceId, id }`.
 
-A definite OCC transaction failure can compensate the created object; an unknown
-commit cannot. A failed create deletes the owned object under its requested name.
-A successful but refused create uses the returned UID and resourceVersion.
-There is no value journal or automatic replay; a pending create can require
-operator recovery.
+A definite OCC transaction failure can compensate creation; an unknown commit
+cannot. Failed creation removes the owned object by requested name; a confirmed
+but refused create uses its returned UID and resourceVersion. No value journal
+or automatic replay exists; pending creation can require operator recovery.
 
-`privateSecretStore` applies the same conditional removal to confirmed but
-refused OAuth-client creates. OCC keeps the hidden registration and selected
-Driver until `cleanupOAuthClients` confirms deletion or absence. Ordinary private
-ownership checks and unknown SQL outcomes remain unchanged. See
+`privateSecretStore` conditionally removes confirmed but refused OAuth-client
+creates. OCC retains the hidden registration and selected Driver until
+`cleanupOAuthClients` confirms deletion or absence; private ownership checks and
+unknown SQL outcomes remain unchanged. See
 [private registration behavior](../reference/drivers/kubernetes-secret.md#installation-private-oauth-client-secrets).
 
-Secret mutations share the 12-second Kubernetes budget of
-[Configuration writes](configuration-driver/persistence-and-revisions.md).
-A write needs at least 2 seconds remaining; otherwise it returns `503` without
-being sent. Cleanup for a sent create runs outside that budget. A create refused
-before sending needs no cleanup read.
+Secret mutations use the 12-second Kubernetes budget for
+[Configuration writes](configuration-driver/persistence-and-revisions.md). With
+less than 2 seconds left, a write returns `503` unsent. Unsent creates need no
+cleanup read; sent-create cleanup runs outside the budget.
 
 ### 3. Bind a source, then admit references
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-The Agent response exposes its immutable `servicePrincipalId`. An administrator
-grants that identity `operate` on the exact Secret before deployment. OCC checks
-Installation administration, Namespace scope, and target access through the
-selected IAM Driver; policy and audit commit together.
+Before deployment, an administrator grants the Agent's immutable
+`servicePrincipalId` exact Secret `operate`. OCC checks Installation
+administration, Namespace scope, and target access through the selected IAM Driver;
+policy and audit commit together.
 
 [createConfiguration and updateConfiguration](../../packages/occ/src/configuration-operations.ts)
-keep `secretBindings` in OCC metadata, separate from native `values`. Each binding
-has a Secret source and an env delivery destination; omitted delivery normalizes
-to `env`. Unsupported sources, substitution modes, and reserved environment
-variables fail closed. All sources must belong to the same Namespace as the
-Configuration. A Configuration create/update whose resulting document contains
-bindings requires `operate` on every selected Secret, including retained bindings
-when PATCH omits `secretBindings`.
+store `secretBindings` separately from native `values`. Bindings select a
+same-Namespace Secret and env destination; omitted delivery becomes `env`.
+Unsupported sources, substitution modes, and reserved environment variables fail
+closed. Create/update requires `operate` on every resulting binding, including
+retained bindings when PATCH omits `secretBindings`.
 
-[createAgent and updateAgent](../../packages/occ/src/agent-drafts.ts) require the normal
-Agent mutation permission plus `operate` on each exact Secret when selecting a
-Configuration with bindings.
+[createAgent and updateAgent](../../packages/occ/src/agent-drafts.ts) require Agent
+mutation permission and `operate` on each Secret in the selected Configuration.
 
-[deployAgent](../../packages/occ/src/agent-deployment-admission.ts) separately authorizes the deploying
-caller and consuming Agent service principal to `operate` every Secret, then
-checks live backend identity through the API-side driver. Namespace locking
-serializes binding/admission changes against deletion. Admission freezes
-normalized refs and the selected SecretDriver identity, not backend locators or
-values, in the Agent revision. Enabled native channel environment SecretRefs must have
-matching bindings at admission; disabled channel provider blocks do not require
-them.
+[deployAgent](../../packages/occ/src/agent-deployment-admission.ts) checks `operate`
+for both caller and Agent service principal on every Secret, then verifies live
+backend identity through the API-side Driver. Namespace locking serializes binding
+and admission against deletion. The Agent revision freezes normalized refs and
+SecretDriver identity, without locators or values. Enabled channel environment
+SecretRefs need matching bindings; disabled provider blocks do not.
 
-Model-auth environment destinations are reserved for Agent `harnessAuth`;
-Configuration bindings cannot select or override model credentials in either
-execution topology.
+Agent `harnessAuth` reserves model-auth destinations; Configuration bindings
+cannot select or override model credentials in either topology.
 
 ### 4. Grant the first local Agent access to its model credential
 
@@ -154,71 +141,62 @@ execution topology.
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
 `scripts/first-agent.ts:ensureModelCredentialGrant`
 
-The [tool](../../scripts/first-agent.ts) requires the same checkout's v3
-Kubernetes state and marker. Both Sandbox Drivers require the recorded HTTPS
-Console origin, browser port, and Agent domain; OCC uses recorded loopback HTTP.
-Embedded OpenClaw uses `sandboxDriver: "none"`. OpenShell requires `--harness codex`;
-`--control-ui` requires OpenShell.
-`loadLocalInstallation` uses the recorded Unix socket and clears inherited Docker
-TLS settings before Compose queries the controller port and PostgreSQL service.
-Local Setup saves its authenticated Installation ID in private state. Before
-provisioning, the tool checks that ID against OCC and reads only `data.key` from
-the credential file. It creates the Secret, Configuration, and named Agent through
-the OCC HTTP API. New Agents default to
-`openai/gpt-6-astra`; `OPENCLAW_FIRST_AGENT_MODEL` accepts an authorized plain model
-ID. Reruns retain that choice and reject conflicts.
+The [tool](../../scripts/first-agent.ts) requires this checkout's v3 Kubernetes
+state and marker. Both Sandbox Drivers require the recorded HTTPS Console origin,
+browser port, and Agent domain; OCC uses recorded loopback HTTP. Embedded
+OpenClaw uses `sandboxDriver: "none"`; OpenShell requires `--harness codex`, and
+`--control-ui` requires OpenShell. `loadLocalInstallation` uses the recorded Unix
+socket and clears inherited Docker TLS settings before Compose queries the
+controller port and PostgreSQL service. Before provisioning through OCC HTTP, the
+tool checks Local Setup's privately saved authenticated Installation ID against OCC
+and reads only `data.key` from the credential file. It creates the Secret, Configuration, and named Agent.
+New Agents default to `openai/gpt-6-astra`; `OPENCLAW_FIRST_AGENT_MODEL` accepts
+an authorized plain model ID. Reruns retain the choice and reject conflicts.
 
-Without OpenShell, the tool grants the Agent's returned `servicePrincipalId`
-exact `secret:operate` through Namespace IAM operations. The server resolves the
-caller from its key, authorizes through IAM, and audits mutations. Reruns reuse
-exact bindings and verify Role permissions, including a Role left by a failed
-binding. Database access only reads existing Secret metadata.
+Without OpenShell, Namespace IAM grants the returned `servicePrincipalId` exact
+`secret:operate`. The server resolves the caller from its key, authorizes, and
+audits mutations. Reruns reuse exact bindings and check Role permissions, including
+Roles left by failed bindings. Database access reads only existing Secret metadata.
 
-With OpenShell, it registers an `openai` or `codex-pat` CredentialSource and grants
-the Agent exact `credential_source:operate`, not Secret access, through IAM.
-`--replace-key` updates the Secret and requests a Credential Gateway reread before
-deployment. The private record prevents Harness or Sandbox Driver changes on reruns.
-`scripts/first-agent.ts:withRecord` creates the PID lock and atomic record
-replacement with explicit owner read/write mode `0600`, independent of the
-process umask. An existing lock stops the command before record access or
-provisioning; the helper neither reads nor removes another invocation's lock.
-Only successful exclusive creation registers cleanup, including initialization
-failures. A release failure reports the lock path and sets a failing exit status
-without replacing the original action error. A crash can leave a lock that needs
+With OpenShell, IAM grants exact `credential_source:operate` on a registered
+`openai` or `codex-pat` CredentialSource, not Secret access. `--replace-key`
+updates the Secret and requests a Credential Gateway reread before deployment.
+The record rejects Harness or Sandbox Driver changes on reruns.
+`scripts/first-agent.ts:withRecord` creates the PID lock and atomically
+replaces the record; both use owner read/write mode `0600` regardless of umask. An existing lock stops execution
+before record access or provisioning; the helper never reads or removes another
+invocation's lock. Only exclusive creation registers cleanup, including on
+initialization failure. Release failure reports the path and fails the command
+without replacing the action error. A crash can leave a lock requiring
 [inspected recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-reports-an-existing-lock).
-The helper closes the temporary record before renaming and removes a failed
-temporary output without replacing the previous record.
+The helper closes the temporary record before rename and removes failed temporary
+output without replacing the previous record.
 
-The tool provisions runtime credentials and requests deployment through OCC.
-Reruns follow newer revisions after drift checks. A stopped Agent fails immediately
-with the `occ agent deploy` command. Local OpenShell requires the Driver-owned
-`/sandbox/enterprise` workspace and frozen Codex policy: `sandbox: "danger-full-access"`
-and `approvalsReviewer: "user"` for API-key and PAT sources. Prior PAT revisions
-with `workspace-write` are recognized; new deployments use current policy.
-Other workspace or Configuration differences fail drift checks.
+The tool provisions credentials and requests OCC deployment. Reruns follow newer
+revisions after drift checks; a stopped Agent fails with `occ agent deploy`.
+Local OpenShell requires Driver-owned `/sandbox/enterprise` and frozen Codex
+`sandbox: "danger-full-access"`, `approvalsReviewer: "user"` policy for API keys
+and PATs. Earlier PAT revisions with `workspace-write` are recognized; new
+deployments use current policy. Other workspace or Configuration drift fails.
 After OCC selects the version, [findGateway](../../scripts/first-agent-model.ts)
-uses `openclaw.dev/namespace`. Both modes use one
-provider-owned Harness namespace.
-Selection requires exact Agent labels, the revision ConfigMap mount, and a
-Running, Ready Pod.
-`kubectl exec` runs the type-stripped verifier with nonce and optional prompt on
-stdin. Proof requires a refusal-free assistant reply matching the whole nonce
-after trimming whitespace, removing one final period, and removing one quote
-pair, backtick pair, or multiline fence. Custom answers stay verbatim.
-The key stays in the embedded OpenClaw Gateway container or dedicated Codex Pod
-or Sandbox. Kubernetes Compute owns experimental two-cluster placement.
-The helper ignores execution mode for placement.
+uses `openclaw.dev/namespace`; both modes use one provider-owned Harness namespace.
+It requires exact Agent labels, the revision ConfigMap mount, and a Running, Ready
+Pod. `kubectl exec` sends the nonce and optional prompt to the type-stripped
+verifier on stdin. A refusal-free reply must match the whole nonce after trimming whitespace,
+removing one final period, and removing one quote pair, backtick pair, or multiline
+fence. Custom answers remain verbatim. The key stays in the embedded OpenClaw
+Gateway container or dedicated Codex Pod or Sandbox. Kubernetes Compute owns experimental
+two-cluster placement; the helper ignores execution mode for placement.
 `scripts/first-agent.ts:main` distinguishes credential rejection from policy refusal
 before verification. See [deployment recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-deployment-fails).
 On model failure, the CLI prints the original error and [revision diagnostics](../../scripts/first-agent-diagnostics.ts).
-The API resolves Kubernetes and OpenShell Harness ownership. Pod UID or restart
-count changes suppress log attribution. Diagnostics report container state, admitted startup fields, and fixed Codex
-connection, fallback, and retry classes. They exclude free-form logs and provider
-bodies.
-Collection allows ten seconds, 64 KiB per response, and two container streams per
-role. Same-stream gaps retain valid but incomplete evidence. Missing or incomplete
-evidence preserves the original failure. Startup observations cannot establish its cause.
-The tool retains installation resources on exit.
+The API resolves Kubernetes and OpenShell Harness ownership; changed Pod UIDs or
+restart counts suppress log attribution. Diagnostics include container state,
+admitted startup fields, and fixed Codex connection, fallback, and retry classes,
+not free-form logs or provider bodies. Collection permits ten seconds, 64 KiB per
+response, and two container streams per role. Same-stream gaps leave valid but
+incomplete evidence. Missing or incomplete evidence preserves the original failure;
+startup observations cannot establish cause. Installation resources remain on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
 <span id="4.-render-only-the-exact-gateway's-projection"></span>
@@ -227,39 +205,36 @@ The tool retains installation resources on exit.
 
 `apps/controller/src/worker/revision-inputs.ts:createRevisionCredentialResolver`
 
-[ControllerWorker](../../apps/controller/src/worker.ts) rechecks
-consumption authority and resolves Agent revision refs from OCC metadata before each
-preparation and activation. It passes an ephemeral `ComputeRevisionContext`; it
-does not add backend metadata to the Agent revision. Its Compute Driver performs
-the physical Secret reads and scoped runtime delivery.
+Before preparation and activation, [ControllerWorker](../../apps/controller/src/worker.ts)
+rechecks consumption authority and resolves OCC references into an ephemeral
+`ComputeRevisionContext`. Backend metadata stays outside the Agent revision;
+Compute reads and delivers the Secret.
 
 [KubernetesComputeDriver.prepareRevision](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
-checks the Agent revision, source UIDs, projection identities and verified storage Namespace.
-Dedicated Gateways directly reference admitted canonical Secrets. It renders `env[].valueFrom.secretKeyRef` with `optional: false` only in each
-selected consuming gateway. Model-auth projections are prepared separately from
-Agent `harnessAuth`. ConfigMaps retain native references only. A missing
-Secret/key prevents startup; normal readiness and cutover rules still control
-activation. Dispatch checks OCC metadata; Compute also rejects a replaced source UID before
-delivery. Kubernetes environment references themselves bind a name and key, so
-Kubernetes administrators remain trusted.
+checks the Agent revision, source UIDs, projection identities, and verified storage
+Namespace. Dedicated Gateways reference admitted canonical Secrets through
+`env[].valueFrom.secretKeyRef` with `optional: false`, scoped to each consumer.
+Agent `harnessAuth` supplies separate model-auth projections; ConfigMaps retain
+native references only. Missing Secrets or keys prevent startup; readiness and
+cutover control activation. Dispatch checks OCC metadata, and Compute rejects
+replaced UIDs before delivery. Kubernetes references bind name and key, so
+administrators remain trusted.
 
-For an embedded replacement, preparation stages its immutable ConfigMap without
-requiring the old gateway to be healthy. The worker commits the selected Agent revision
-before activation replaces the gateway Deployment and checks readiness. This lets
-an explicit corrected deployment recover from a native SecretRef startup failure;
-preparation alone is not proof that the replacement runtime is ready.
+Embedded replacement stages an immutable ConfigMap even if the old gateway is
+unhealthy. The worker commits the selected Agent revision, then activation replaces
+the Deployment and checks readiness. An explicit corrected deployment can recover
+from SecretRef startup failure; preparation does not prove runtime readiness.
 
-Kubelet obtains the bytes and creates the process environment. OpenClaw resolves
-its existing `{ source: "env", provider, id }` reference. This is the handoff to
-the native consumer, not a new OpenClaw provider or OCC text-substitution engine.
-Native channel credentials follow these same admitted bindings. No legacy
-per-Agent channel Secret injects additional values. Dedicated gateways receive
-channel bytes; the dedicated Harness receives only its separately admitted model
-authentication. Embedded channel credentials remain unsupported.
+Kubelet creates the process environment from Secret bytes. OpenClaw resolves its
+native `{ source: "env", provider, id }` reference; OCC does not substitute text or
+add a provider. Channel credentials use the admitted bindings, without legacy
+per-Agent injection. Dedicated gateways receive channel bytes; the dedicated
+Harness receives only separately admitted model authentication. Embedded channel
+credentials remain unsupported.
 
-The trusted worker reads canonical sources and manages Harness runtime projections; workload
-ServiceAccounts have no Secret API verbs. A trusted workload writer can still
-project namespace Secrets, so controller compromise remains outside workload isolation.
+The trusted worker reads canonical sources and manages Harness projections.
+Workload ServiceAccounts have no Secret API verbs, but trusted workload writers
+can project Namespace Secrets; workload isolation excludes controller compromise.
 
 <span id="5-update-restart-or-remove"></span>
 <span id="5.-update,-restart,-or-remove"></span>
@@ -269,58 +244,52 @@ project namespace Secrets, so controller compromise remains outside workload iso
 
 `packages/occ/src/secret-operations.ts:updateSecret`
 
-[updateSecret](../../packages/occ/src/secret-operations.ts) serializes the write and uses
-Kubernetes concurrency/ownership checks. It changes only the stored value; the
-response retains the same ref. No Agent revision, binding, or running environment is
-updated, and no controller automatically restarts the gateway. A successful update
-means stored, not delivered.
+[updateSecret](../../packages/occ/src/secret-operations.ts) serializes the write,
+checks Kubernetes concurrency and ownership, and changes only the stored value.
+The ref, Agent revisions, bindings, and running environments stay unchanged; the
+controller does not restart gateways. Success proves storage, not delivery.
 
-For coordinated channel replacement, stop the Agent and wait for shutdown before
-updating each Secret. A partial update leaves it stopped until repaired; there is
-no multi-Secret transaction or rollback of stored bytes.
+For channel replacement, stop the Agent, wait for shutdown, then update each
+Secret. Partial updates leave it stopped until repair; no multi-Secret transaction
+or byte rollback exists.
 
 For model-key replacement, update the OCC Secret and explicitly deploy each
-consuming Agent through OCE. The new Agent revision's preparation calls
-`KubernetesComputeDriver.deliverHarnessAuth`, which reads the current canonical source
-and writes the DP Secret for that Agent revision before the Harness starts. Wait for
-activation and verify a real model request before revoking the old key upstream.
-A Harness Pod recreation reads its existing DP projection; it does not deliver
-current source values. This remains true when the Configuration and Secret reference
-are unchanged.
+consumer through OCE. Preparation calls `KubernetesComputeDriver.deliverHarnessAuth`
+to read the current canonical source and write the new Agent revision's DP Secret
+before Harness startup. Wait for activation and verify a real model request before
+revoking the old key upstream. A recreated Harness Pod reads its existing DP projection, not current source
+values, even with unchanged Configuration and Secret refs.
 
-Dedicated Gateway infrastructure restarts read canonical channel Secrets
-directly. Failed cutover does not restore old source values. Revoking `operate`
-blocks new OCC admission, not kubelet process starts or already delivered bytes.
+Dedicated Gateway restarts read canonical channel Secrets directly. Failed cutover
+does not restore source values. Revoking `operate` blocks new OCC admission, not
+kubelet starts or delivered bytes.
 
-For the collection GET, OCC validates the exact Namespace identity, then authorizes
-Namespace `read`, resolves that Namespace, lists its Secret metadata, and filters
-by exact Secret `read` within one State read. For the detail GET, OCC authorizes
-the exact Secret before lookup, enumerates the bounded consumer page, and checks
-which consumers may be named within the same read. With PostgreSQL State and
-Native IAM selected, authorization and metadata share the existing read-only,
-repeatable-read State unit.
+Collection GET validates the exact Namespace identity, authorizes Namespace `read`,
+resolves the Namespace, lists metadata, and filters by exact Secret `read` in one
+State read. Detail GET authorizes the exact Secret before lookup, then enumerates
+and authorizes names in its consumer page within that read. With PostgreSQL State
+and Native IAM, authorization and metadata share a read-only, repeatable-read State unit.
+A response can complete under its observed policy; a later request uses a fresh State read.
 
-[deleteSecret](../../packages/occ/src/secret-operations.ts) rejects current Configuration,
-Agent harness-binding draft, selected version, and pending-work dependencies under the same serialization
-boundary. One `listReferences` query returns at most 50 of them, ordered by kind and ID;
-`secretConsumers` checks `read` on each referencing resource, names the readable ones in
-the `409`, and counts the rest. `readSecret` returns the same result as `consumers`.
-Once unreferenced, it deletes only the exact Namespace-owned backend and metadata.
-A partial delete can retry; missing or foreign objects cannot be
-adopted or recreated. Gateway replacement does not garbage-collect
-Secrets, so immediate revocation requires stopping workloads or revoking the
-credential at its issuer.
+[deleteSecret](../../packages/occ/src/secret-operations.ts) rejects Configuration,
+Agent harness-binding draft, selected version, and pending-work dependencies under
+the same serialization boundary. `listReferences` returns at most 50, ordered by kind and ID.
+`secretConsumers` checks each resource's `read`, names readable consumers in the
+`409`, and counts the rest; `readSecret` returns the same `consumers` result.
+Unreferenced deletion removes only the exact Namespace-owned backend and metadata.
+Partial deletion can retry; missing or foreign objects cannot be adopted or
+recreated. Gateway replacement does not collect Secrets. Immediate revocation
+requires stopping workloads or revoking the credential at its issuer.
 
 ## Debugging and Verification
 
-- Read public Secret metadata without requesting or dumping values. Inspect safe
-  ownership/UID metadata separately as an authorized operator; do not print
-  `Secret.data`, complete process environments, or credential-bearing requests.
-- A stored Secret with no ready gateway is valid. Update success does not imply
-  delivery. Compare Agent revision/Pod identities and use noncredential sentinel values
-  for restart assertions.
-- On local failure, resolve any reported lock before rerunning with the same
-  Agent name. Agent and Agent revision IDs print only after the model responds.
+- Read public metadata without values. Authorized operators inspect ownership/UID
+  metadata separately; never print `Secret.data`, full environments, or
+  credential-bearing requests.
+- Storage does not require a ready gateway or prove delivery. Compare Agent
+  revision/Pod identities and use noncredential sentinels for restart assertions.
+- Resolve reported locks before rerunning the same Agent name. Agent and Agent
+  revision IDs print only after the model responds.
 - Source selection, exact Namespace ownership, consumption authorization, missing
   material, and concurrent backend mutations fail closed. Do not retry a denial
   against another driver or model-key source.
@@ -328,10 +297,10 @@ credential at its issuer.
   requires explicitly selected PostgreSQL/Kubernetes, digest-pinned real runtime
   images, and an authorized model key. It must prove the native-ref negative control,
   genuine turn, and env restart behavior; mocked rendering is not that proof.
-- Run focused conformance, API, startup, Helm, PostgreSQL Secret-state, real
-  Compute, and real Agent suites when changing this flow's implementation. State
-  skipped credentials, infrastructure, or runtime hooks as verification gaps
-  rather than replacing them with mocked rendering.
+- For implementation changes, run focused conformance, API, startup, Helm,
+  PostgreSQL Secret-state, real Compute, and real Agent suites. Report missing
+  credentials, infrastructure, or runtime hooks as gaps; mocked rendering cannot
+  replace them.
 
 ## Related docs
 
