@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import {
+  inferenceKeyDestination,
+  modelProviderRequestApproved,
+  normalizeInferenceBaseUrl,
+  normalizeStaticKeyDestinations,
+  connectionValuesChanged,
   CONFIGURATION_KINDS,
   DRIVER_CAPABILITIES,
   LOGGING_LEVELS,
@@ -20,6 +25,7 @@ import {
   normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
   ConfigurationValidationError,
+  ConnectionTemplateValidationError,
   sandboxNetworkGrantsWithinCeiling,
   validateSandboxNetworkGrants,
   type AgentRevision,
@@ -29,8 +35,97 @@ import {
   type ServiceAccountReference,
   type SandboxNetworkGrant,
 } from "../../packages/contracts/src/index.ts";
+import { registerDeploymentPolicyCases } from "./contracts-deployment-policy-cases.ts";
 import { registerConfigurationCases } from "./contracts-configuration-cases.ts";
 import { registerRuntimeDiagnosticCases } from "./contracts-runtime-diagnostic-cases.ts";
+
+test("inference URLs preserve canonical private IPv4 destinations and reject unsafe aliases", () => {
+  const baseUrl = "https://10.77.43.42:8443/v1";
+  assert.equal(normalizeInferenceBaseUrl(baseUrl), baseUrl);
+  assert.deepEqual(inferenceKeyDestination(baseUrl, "openai-responses"), {
+    method: "POST",
+    host: "10.77.43.42",
+    port: 8443,
+    path: "/v1/responses",
+  });
+  for (const host of ["127.0.0.1", "169.254.169.254", "10.1", "010.77.43.42"]) {
+    assert.throws(
+      () => normalizeInferenceBaseUrl(`https://${host}/v1`),
+      ConnectionTemplateValidationError,
+    );
+  }
+});
+
+test("static bearer templates canonicalize and version every approved HTTP destination", () => {
+  const destinations = normalizeStaticKeyDestinations([
+    { host: "service.example.org", port: 8443, path: "/reports/**", method: "GET" },
+    { host: "10.77.43.42", port: 443, path: "/v1/responses", method: "POST" },
+    { host: "SERVICE.EXAMPLE.ORG", port: 8443, path: "/reports/**", method: "GET" },
+  ]);
+  assert.deepEqual(destinations, [
+    { host: "10.77.43.42", port: 443, path: "/v1/responses", method: "POST" },
+    { host: "service.example.org", port: 8443, path: "/reports/**", method: "GET" },
+  ]);
+  const template = { mode: "static_bearer" as const, destinations };
+  assert.equal(
+    connectionValuesChanged(template, { ...template, destinations: [...destinations].reverse() }),
+    false,
+  );
+  for (const change of [
+    { host: "other.example.org" },
+    { port: 8444 },
+    { path: "/other" },
+    { method: "PUT" },
+  ]) {
+    assert.equal(
+      connectionValuesChanged(template, {
+        ...template,
+        destinations: [{ ...destinations[0]!, ...change }, destinations[1]!],
+      }),
+      true,
+    );
+  }
+  assert.throws(
+    () => normalizeStaticKeyDestinations([{ ...destinations[0]!, host: "010.77.43.42" }]),
+    ConnectionTemplateValidationError,
+  );
+  assert.throws(
+    () => normalizeStaticKeyDestinations([{ ...destinations[0]!, method: "post" }]),
+    ConnectionTemplateValidationError,
+  );
+  assert.equal(
+    normalizeStaticKeyDestinations([{ ...destinations[0]!, method: "M-SEARCH" }])[0]?.method,
+    "M-SEARCH",
+  );
+});
+
+test("a provider request must match a static template's approved method and destination", () => {
+  const provider = { baseUrl: "https://10.77.43.42/v1", protocol: "openai-responses" as const };
+  const request = inferenceKeyDestination(provider.baseUrl, provider.protocol);
+  const template = { mode: "static_bearer" as const, destinations: [request] };
+  assert.equal(modelProviderRequestApproved(provider, template), true);
+  assert.equal(
+    modelProviderRequestApproved(provider, {
+      ...template,
+      destinations: [{ ...request, path: "/v1/**" }],
+    }),
+    true,
+  );
+  assert.equal(
+    modelProviderRequestApproved(provider, {
+      ...template,
+      destinations: [{ ...request, method: "GET" }],
+    }),
+    false,
+  );
+  assert.equal(
+    modelProviderRequestApproved(provider, {
+      ...template,
+      destinations: [{ ...request, host: "other.example.org" }],
+    }),
+    false,
+  );
+});
 
 test("network delegation covers every requested host label and port without broadening executables", () => {
   const grant = {
@@ -119,6 +214,8 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "credential_gateway",
     "credential_refresh",
     "credential_proxy",
+    "credential_proxy_delivery",
+    "token_service",
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 
@@ -462,6 +559,75 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   }, TypeError);
 });
 
+test("an admitted standalone credential policy cannot be retargeted through its draft", () => {
+  const namespaceId = `ns_${randomUUID()}`;
+  const sourceId = `cs_${randomUUID()}`;
+  const tokenServiceInstanceId = randomUUID();
+  const request = {
+    binary: "/usr/bin/node",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http" as const, method: "POST", path: "/v1/responses" },
+  };
+  const binding = {
+    bindingRef: "model",
+    sourceRef: { kind: "credential_source" as const, namespaceId, id: sourceId },
+    consumer: { kind: "model" as const, providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" as const },
+  };
+  const revision = {
+    id: `rev_${randomUUID()}`,
+    namespaceId,
+    agentId: `agt_${randomUUID()}`,
+    revision: 1,
+    executionAdmission: { version: 8, mode: "standalone" },
+    backendId: null,
+    configurationId: `cfg_${randomUUID()}`,
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    configuration: { agents: { defaults: { model: "codex/gpt-5" } } },
+    gatewayManagedMode: true,
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
+    compute: { id: "kubernetes", implementation: "kubernetes-local" },
+    sandboxDriverId: "openshell",
+    harnessAuth: {
+      method: "credential_source",
+      sourceId,
+      tokenServiceInstanceId,
+      sourceType: "static",
+    },
+    credentialSources: [{ sourceId, tokenServiceInstanceId, sourceType: "static" }],
+    credentialDeployment: {
+      driver: { id: "openshell", implementation: "openshell", configurationId: "a".repeat(64) },
+      proxyDriverId: "native-proxy",
+      networkAccessPolicy: { allowed: [request] },
+      bindings: [binding],
+      injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
+    },
+    servicePrincipalId: "agent-principal",
+    createdAt: "2026-11-20T00:00:00.000Z",
+  } satisfies AgentRevision;
+  const admitted = freezeAgentRevision(revision);
+  const policy = admitted.credentialDeployment;
+  assert.ok(policy);
+
+  // A Driver callback must not be able to change the validated destination or source through the draft.
+  request.host = "other.example.org";
+  request.requestPolicy.path = "/other";
+  binding.sourceRef.id = `cs_${randomUUID()}`;
+  assert.equal(policy.networkAccessPolicy.allowed[0]?.host, "api.openai.com");
+  assert.equal(
+    policy.injectionPolicies[0]?.allowedRequests[0]?.requestPolicy?.path,
+    "/v1/responses",
+  );
+  assert.equal(policy.bindings[0]?.sourceRef.id, sourceId);
+  assert.equal(Object.isFrozen(policy.bindings[0]?.sourceRef), true);
+  assert.throws(() => {
+    // @ts-expect-error Verify the runtime freeze for an untyped Driver callback.
+    policy.bindings[0].sourceRef.id = "replacement";
+  }, TypeError);
+});
+
 test("only a codex_pat Harness binding names a ServiceAccount source, and only exactly", () => {
   const namespaceId = `ns_${randomUUID()}`;
   const account = {
@@ -519,3 +685,4 @@ test("only a codex_pat Harness binding names a ServiceAccount source, and only e
 
 registerRuntimeDiagnosticCases();
 registerConfigurationCases();
+registerDeploymentPolicyCases();

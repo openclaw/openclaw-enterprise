@@ -23,6 +23,7 @@ export function registerRuntimeProvenanceCases() {
     "directory",
     "oversized",
     "different-image",
+    "substituted-classic-id",
     "cleanup-failed",
     "invalid-inventory",
     "cleanup-failed-once",
@@ -41,6 +42,8 @@ export function registerRuntimeProvenanceCases() {
         OCC_TEST_KUBERNETES_CODEX_VERSION: "not-reviewed",
       });
       const configId = `sha256:${"b".repeat(64)}`;
+      const wrongId = `sha256:${"a".repeat(64)}`;
+      const wrongImport = scenario === "different-image" || scenario === "substituted-classic-id";
       const imageId = scenario === "manifest" ? `sha256:${"9".repeat(64)}` : configId;
       const containerId = "d".repeat(64);
       const canary = "private-provenance-must-not-be-uploaded";
@@ -125,13 +128,17 @@ export function registerRuntimeProvenanceCases() {
         if (args[0] === "image" && args[1] === "inspect" && args.at(-1) === imageId) {
           // Docker 29 selects a platform manifest from the immutable image index.
           const selected = args.includes("--platform");
+          if (selected && scenario !== "manifest") {
+            // Docker 28.0.4 rejects this flag for image inspect.
+            return "exit 125";
+          }
           const descriptor = selected
             ? { mediaType: "application/vnd.oci.image.manifest.v1+json", digest: manifestDigest }
             : { mediaType: "application/vnd.oci.image.index.v1+json", digest: imageId };
           return `printf '%s' ${bashString(
             JSON.stringify([
               {
-                Id: imageId,
+                Id: scenario === "substituted-classic-id" ? wrongId : imageId,
                 Os: "linux",
                 Architecture: "amd64",
                 ...(scenario === "manifest" ? { Descriptor: descriptor } : {}),
@@ -139,11 +146,11 @@ export function registerRuntimeProvenanceCases() {
             ]),
           )}; exit 0`;
         }
-        if (scenario === "different-image" && args.includes("inspecti")) {
+        if (wrongImport && args.includes("inspecti")) {
           return `printf '%s' ${bashString(
             JSON.stringify({
               status: {
-                id: `sha256:${"a".repeat(64)}`,
+                id: wrongId,
                 repoDigests: [args.at(-1)],
                 pinned: true,
               },
@@ -291,11 +298,7 @@ export function registerRuntimeProvenanceCases() {
       }
       assert.ok(!diagnostics.includes(canary));
       assert.ok(!prepared.stderr.includes(canary));
-      assert.equal(
-        created,
-        scenario === "different-image" ? 0 : 1,
-        "reuse one extraction for the shared image",
-      );
+      assert.equal(created, wrongImport ? 0 : 1, "reuse one extraction for the shared image");
       assert.equal(containerPresent, retainedContainer);
       if (!allowRemoval) {
         const failedCleanup = await commands.cleanup();

@@ -3,17 +3,11 @@ import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
   type KubernetesComputeDriver,
-  type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
-import {
-  digest,
-  options,
-  routedOptions,
-  routedRevision,
-  tenant,
-} from "../helpers/kubernetes-routed-scenarios.mjs";
+import { options, routedOptions } from "../helpers/kubernetes-routed-options.ts";
+import { digest, routedRevision, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { agent as credentialAgent } from "./kubernetes-runtime-credentials-fixture.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
@@ -225,7 +219,7 @@ export async function checkGatewayRetirement() {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
       },
-    }) as KubernetesComputeDriverOptions,
+    }),
   );
   const agentId = "agent-revision-storage";
   const ownership = { namespaceId: tenant.id, agentId };
@@ -490,9 +484,8 @@ export async function checkEmbeddedGatewayRetirement() {
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://192.0.2.10:3128" },
       },
-    }) as KubernetesComputeDriverOptions,
+    }),
   );
   const revision: AgentRevision = routedRevision(driver, {
     id: "revision-embedded-deletion",
@@ -556,10 +549,7 @@ export async function checkEmbeddedGatewayRetirement() {
     revision,
     target,
   );
-  const policies: ObservedResource[] = [
-    ...agentPolicies.map(({ resource }) => resource),
-    driver["channelNetworkPolicy"](revision, [], target),
-  ];
+  const policies: ObservedResource[] = [...agentPolicies.map(({ resource }) => resource)];
   for (const policy of policies) {
     save(policy);
   }

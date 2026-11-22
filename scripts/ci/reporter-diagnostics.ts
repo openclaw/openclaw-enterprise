@@ -1,4 +1,5 @@
 import { skipperOperationDiagnostic } from "./skipper-release.ts";
+import { isRecord } from "./records.ts";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -97,10 +98,6 @@ type ProbeDiagnosticFields = {
   probeStage?: string;
 } & Partial<Record<(typeof probeBooleanFields)[number], boolean>> &
   Partial<Record<(typeof probeDurationFields)[number], number | null | undefined>>;
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function optionalProperty(value: unknown, key: string): unknown {
   if (value == null) {
@@ -594,6 +591,30 @@ export function projectFailureDiagnostic(
           : undefined,
       lastHttpStatus: safeStatus(diagnostic.lastHttpStatus),
     };
+  }
+  if (diagnostic.kind === "observability-installation-probe") {
+    const { phase, reason, status } = diagnostic;
+    if (phase === "fetch") {
+      return {
+        kind: "observability-installation-probe",
+        phase,
+        reason: includes(
+          ["timeout", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND", "ECONNRESET"],
+          reason,
+        )
+          ? reason
+          : undefined,
+      };
+    }
+    if (phase === "body") {
+      return {
+        kind: "observability-installation-probe",
+        phase,
+        reason: includes(["timeout", "invalid-json"], reason) ? reason : undefined,
+        status: safeStatus(status),
+      };
+    }
+    return undefined;
   }
   if (diagnostic.kind === "observability-installation-status") {
     const status = safeStatus(diagnostic.status);

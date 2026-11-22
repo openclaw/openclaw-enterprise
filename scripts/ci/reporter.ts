@@ -1,7 +1,8 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { TestEvent } from "node:test/reporters";
-import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
+import { projectFailureDiagnostic } from "./reporter-diagnostics.ts";
+import { isRecord } from "./records.ts";
 import {
   boundedProgressLines,
   openShellProgress,
@@ -164,6 +165,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
     "network-connection",
     "worker-authority",
     "worker-transport",
+    "worker-provider-replay",
+    "worker-transcript-settlement",
     "http-unauthorized",
     "http-forbidden",
     "http-rate-limit",
@@ -196,6 +199,14 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
     ],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
+    turnStartupPhase: [
+      "provisioning_environment",
+      "preparing_workspace",
+      "preparing_context",
+      "starting_model",
+    ],
+    turnLifecyclePhase: ["end", "error"],
+    turnLifecycleError: turnErrors,
     proofError: turnErrors,
     assistantError: turnErrors,
     execError: turnErrors,
@@ -237,6 +248,25 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
     expectedNodeWorkerBundle: ["installed", "missing"],
   };
   const safe: Record<string, WorkerField> = {};
+  if (failureStage === "model-outcome") {
+    const audit = worker.credentialProxyAudit;
+    const rule = worker.credentialProxyRule;
+    if (
+      typeof audit === "string" &&
+      ["unsupported-operation", "not-observed", "ambiguous", "unavailable"].includes(audit)
+    ) {
+      safe.credentialProxyAudit = audit;
+    }
+    if (
+      audit === "unsupported-operation" &&
+      typeof rule === "number" &&
+      Number.isSafeInteger(rule) &&
+      rule > 0 &&
+      rule <= 255
+    ) {
+      safe.credentialProxyRule = rule;
+    }
+  }
   for (const [field, values] of Object.entries(vocabularies)) {
     const value = worker[field];
     if (value !== undefined) {

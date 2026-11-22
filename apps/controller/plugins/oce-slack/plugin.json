@@ -11,7 +11,7 @@
     "ai.openclaw.oce": {
       "id": "occ-plugin:slack",
       "displayName": "Slack",
-      "policyScope": "enablement_only",
+      "policyScope": "tool_human_approval",
       "release": "./ai.openclaw.oce/release.json"
     }
   }

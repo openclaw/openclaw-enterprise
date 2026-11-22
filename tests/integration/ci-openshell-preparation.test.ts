@@ -132,6 +132,42 @@ test("prepareOpenShell rejects mutable OpenShell image overrides before kubectl 
 });
 const execFileAsync = promisify(execFileCallback);
 
+type CandidateCommandHandlers = {
+  inspectImage?: (image: string) => { stdout: string } | Promise<{ stdout: string }>;
+  showChart?: (chart: string) => { stdout: string } | Promise<{ stdout: string }>;
+};
+
+// Git and chart filesystem checks run for real; scenarios supply Docker and Helm metadata.
+function candidateCommands(handlers: CandidateCommandHandlers): PrepareOptions["execFile"] {
+  return async (command, args) => {
+    if (command === "git") {
+      return execFileAsync(command, args);
+    }
+    if (command === "docker") {
+      assert.equal(args.length, 5);
+      assert.deepEqual(args.slice(0, 4), [
+        "image",
+        "inspect",
+        "--format",
+        '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
+      ]);
+      const image = args[4];
+      assert.ok(image);
+      assert.ok(handlers.inspectImage, "unexpected Docker image inspection");
+      return handlers.inspectImage(image);
+    }
+    if (command === "helm") {
+      assert.equal(args.length, 3);
+      assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
+      const chart = args[2];
+      assert.ok(chart);
+      assert.ok(handlers.showChart, "unexpected Helm chart inspection");
+      return handlers.showChart(chart);
+    }
+    assert.fail(`unexpected candidate command ${command}`);
+  };
+}
+
 async function candidateCheckout(t: TestContext, { gatewayAppVersion = "0.0.0" } = {}) {
   const root = await openShellTestDirectory(t, "openshell-candidate");
   const gatewayChart = join(root, "deploy", "helm", "openshell");
@@ -190,11 +226,11 @@ test("OpenShell stock selection accepts empty selectors and mirrors of released 
     },
     {
       OCC_TEST_OPENSHELL_GATEWAY_IMAGE:
-        "localhost/mirror/gateway@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
+        "localhost/mirror/gateway@sha256:1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5",
       OCC_TEST_OPENSHELL_SANDBOX_IMAGE:
-        "localhost/mirror/sandbox@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
+        "localhost/mirror/sandbox@sha256:e57d07cd6cc1fc314b80368d6b51ec6fbf825fb62cd8f081312941180846866f",
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE:
-        "localhost/mirror/supervisor@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
+        "localhost/mirror/supervisor@sha256:f1ec231b5dbe5b6a40c33acb2ac847995aabb959a56134ef6d7d7aa4f43199d3",
     },
   ]) {
     assert.equal(await validateOpenShellSelection(env, execFile), null);
@@ -240,39 +276,36 @@ test("OpenShell candidate preflight uses verified chart bytes and removes its sn
   const { env } = await candidateCheckout(t);
   const inspected: string[] = [];
   let charts: { gateway: string; directory: string; workspace: string } | undefined;
-  const selection = await validateOpenShellSelection(env, async (command, args) => {
-    if (command === "git") {
-      return execFileAsync(command, args);
-    }
-    if (command === "helm") {
-      assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
-      const chart = args[2];
-      assert.ok(chart);
-      const gateway = await readFile(join(chart, "Chart.yaml"), "utf8");
-      const directory = dirname(chart);
-      const workspace = await readFile(
-        join(directory, "openshell-workspace", "values.yaml"),
-        "utf8",
-      );
-      charts = { gateway, directory, workspace };
-      return { stdout: gateway };
-    }
-    // Docker reports fixture metadata. Git tree and on-disk chart comparisons run for real.
-    assert.equal(command, "docker");
-    assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-    if (inspected.length === 0) {
-      // The checkout can change after chart validation and before Helm consumes it.
-      await writeFile(join(env.OCC_TEST_OPENSHELL_HELM_CHART, "Chart.yaml"), "appVersion: 9.9.9\n");
-      await writeFile(
-        join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"),
-        "replicaCount: 99\n",
-      );
-    }
-    const image = args.at(-1);
-    assert.ok(image);
-    inspected.push(image);
-    return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
-  });
+  const selection = await validateOpenShellSelection(
+    env,
+    candidateCommands({
+      async inspectImage(image) {
+        if (inspected.length === 0) {
+          // The checkout can change after chart validation and before Helm consumes it.
+          await writeFile(
+            join(env.OCC_TEST_OPENSHELL_HELM_CHART, "Chart.yaml"),
+            "appVersion: 9.9.9\n",
+          );
+          await writeFile(
+            join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"),
+            "replicaCount: 99\n",
+          );
+        }
+        inspected.push(image);
+        return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
+      },
+      async showChart(chart) {
+        const gateway = await readFile(join(chart, "Chart.yaml"), "utf8");
+        const directory = dirname(chart);
+        const workspace = await readFile(
+          join(directory, "openshell-workspace", "values.yaml"),
+          "utf8",
+        );
+        charts = { gateway, directory, workspace };
+        return { stdout: gateway };
+      },
+    }),
+  );
   assert.deepEqual(
     new Set(inspected),
     new Set([
@@ -394,21 +427,13 @@ test("prepareOpenShell rejects a verified gateway chart without an application v
   await assert.rejects(
     prepareOpenShell({
       cluster: ownedCluster(root),
-      async execFile(command, args) {
-        if (command === "git") {
-          return execFileAsync(command, args);
-        }
-        if (command === "docker") {
-          assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-          return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
-        }
-        assert.equal(command, "helm");
-        assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
-        const chart = args[2];
-        assert.ok(chart);
-        assert.equal(dirname(dirname(chart)), root);
-        return { stdout: await readFile(join(chart, "Chart.yaml"), "utf8") };
-      },
+      execFile: candidateCommands({
+        inspectImage: () => ({ stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` }),
+        async showChart(chart) {
+          assert.equal(dirname(dirname(chart)), root);
+          return { stdout: await readFile(join(chart, "Chart.yaml"), "utf8") };
+        },
+      }),
       registerImage: async () => assert.fail("invalid candidate must not register images"),
       env,
     }),
@@ -424,14 +449,10 @@ test("prepareOpenShell rejects source, chart, and image mismatches before cluste
     assert.fail("mismatched candidates must not register images"),
   );
   let imageRevision = env.OCC_TEST_OPENSHELL_SOURCE_REVISION;
-  const execFile: PrepareOptions["execFile"] = async (command, args) => {
-    if (command === "git") {
-      return execFileAsync(command, args);
-    }
-    assert.equal(command, "docker", "candidate mismatch must fail before cluster commands");
-    assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-    return { stdout: `${imageRevision}\n` };
-  };
+  // No Helm handler: mismatches must stop before later preflight or cluster commands.
+  const execFile = candidateCommands({
+    inspectImage: () => ({ stdout: `${imageRevision}\n` }),
+  });
   const prepare = (selected = env) =>
     prepareOpenShell({
       cluster: ownedCluster(root),

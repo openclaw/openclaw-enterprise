@@ -4,13 +4,13 @@ published: false
 
 ## 2. Install OpenShell and bootstrap OCC
 
-Keep the names required by the staged policies: release `oce`, OpenShell release `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system`.
+Staged policies require release `oce`, OpenShell release `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system`.
 
-Exclude other install, upgrade and Job writers. Use a local chart and matching CLI. Keep the new
-`$RUN_DIR/install-receipt` directory for [read-only handoff](production-handoff.md#resume-an-installation-in-progress).
-If installation stops, reconcile the receipt before writing again.
+Exclude concurrent install, upgrade, and Job writers. Use a local chart with its matching CLI.
+Retain `$RUN_DIR/install-receipt` for [read-only handoff](production-handoff.md#resume-an-installation-in-progress);
+after interruption, reconcile it before writing again.
 
-Read the Kubernetes DNS zone from CoreDNS below or ask your cluster administrator for `CLUSTER_DOMAIN`. Confirm the suffix before continuing.
+Set and confirm `CLUSTER_DOMAIN` from CoreDNS below or your administrator.
 
 ```bash
 CLUSTER_DOMAIN=$(kubectl -n kube-system get configmap coredns -o json |
@@ -26,6 +26,22 @@ jq -n --arg registry "${SANDBOX_REGISTRY:?}" \
   --arg clusterDomain "${CLUSTER_DOMAIN:?}" \
   --arg repository "${SANDBOX_REPOSITORY:?}" -f "$assets/openshell-values.jq" \
   > "$RUN_DIR/openshell.json"
+```
+
+On default-deny clusters, apply OpenShell NetworkPolicies in `$PLATFORM_NS`
+before Helm. Render the chart with `$RUN_DIR/openshell.json` to check Pod labels
+and ports. For stock OpenShell v0.1.9, both Pod templates have
+`app.kubernetes.io/instance=openshell-gateway`. The certificate Job has
+`app.kubernetes.io/name=openshell-certgen` and
+`app.kubernetes.io/component=certgen`. The Gateway has
+`app.kubernetes.io/name=openshell`.
+
+Allow the certificate Job and Gateway to reach the API destinations in
+`API_CIDRS` on their API ports (TCP 443 on EKS). Allow DNS to the cluster DNS
+Service IP and its Pods on TCP and UDP 53. Allow the OCC API and worker Pods
+to reach the Gateway on TCP 8080. The certificate Job is a Helm pre-install hook. Policies selecting only Gateway Pods block it.
+
+```bash
 helm upgrade --install openshell-gateway "${OPENSHELL_CHART:?}" \
   -n "$PLATFORM_NS" -f "$RUN_DIR/openshell.json" --wait
 os_ip=$(kubectl -n "$PLATFORM_NS" get svc openshell-gateway -o jsonpath='{.spec.clusterIP}')
@@ -42,9 +58,13 @@ jq -n --arg cluster "$CLUSTER_NAME" --arg controller "${CONTROLLER_IMAGE:?}" --a
   --argjson apiCidrs "${API_CIDRS:?}" -f "$assets/values.jq" > "$RUN_DIR/values.json"
 ```
 
+Templates disable channels. For Slack, [enable managed channel egress and verify
+its dependencies](channel-egress.md#enable-channels-in-the-kubernetes-and-eks-quickstarts)
+in the generated files **before** continuing.
+
 <a id="set-the-production-browser-origins-before-installing-occ"></a>
 
-Check browser values **before** the first Helm install. Keep port 18443 in the Console origin and laptop forward. Browser origins differ from the private Envoy hostname. For existing HTTPS ingress, follow the [native-admin ingress requirements](native-admin.md#production-requirements) for Console and wildcard Agent hosts.
+**Before** the first Helm install, check browser values. Keep port 18443 in the Console origin and laptop forward; use separate browser and private Envoy hostnames. Existing HTTPS ingress must meet [Console and wildcard Agent requirements](native-admin.md#production-requirements).
 
 ```bash
 jq -e --arg d "$CLUSTER_NAME.oce.localhost" '
@@ -84,9 +104,10 @@ values for `auth-secret` (OCC sessions) and `routing-key` (private routing).
 Store each value as 64 hexadecimal characters without a trailing newline.
 Keep files mode 0600 and retain the keys for redeployment.
 
-From the matching release checkout, use jq, yq v4, and Node.js matching
-`engines.node` in `package.json`. Check that the OpenShell PKI job’s
-`openshell-client-tls` Secret exists before creating the bootstrap claim and Secrets.
+Use the matching release checkout, jq, yq v4, and Node.js matching `engines.node`
+in `package.json`. Installation generates bootstrap credentials and their Secret.
+Before creating OCC inputs, check that the OpenShell PKI job’s
+`openshell-client-tls` Secret exists.
 
 ```bash
 : "${OCC_SECRET_DIR:?Set OCC_SECRET_DIR to the protected input directory}"
@@ -107,14 +128,6 @@ fi
 
 platform_kube=(kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n "$PLATFORM_NS")
 "${platform_kube[@]}" get secret openshell-client-tls -o name
-bootstrap_claim=$(jq -er '.bootstrap.password.claimName' "$RUN_DIR/values.json")
-bootstrap_image=$(jq -er '.images.controller' "$RUN_DIR/values.json")
-BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
-  .metadata.namespace = strenv(PLATFORM_NS) |
-  .metadata.name = strenv(BOOTSTRAP_CLAIM) |
-  .spec.storageClassName = strenv(STORAGE_CLASS)
-' deploy/examples/production/bootstrap-pvc.yaml > "$RUN_DIR/bootstrap-pvc.yaml"
-"${platform_kube[@]}" create -f "$RUN_DIR/bootstrap-pvc.yaml"
 "${platform_kube[@]}" create secret generic occ-database \
   --from-file="application-url=$OCC_SECRET_DIR/application-url" \
   --from-file="migration-url=$OCC_SECRET_DIR/migration-url"
@@ -126,18 +139,15 @@ BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
   --from-file="occ=$OCC_SECRET_DIR/routing-key"
 ```
 
-Prepare the fresh claim on the OCC initialization Job’s `oce-role=control` pool.
-If cluster policy forbids the preparation Pod or you cannot verify its network
-isolation, skip the helper. Have the storage administrator set the same fresh
-volume’s root to UID/GID 1000 and mode 0700.
-
-```bash
-scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG" --context "$CONTEXT" \
-  --namespace "$PLATFORM_NS" --claim "$bootstrap_claim" --image "$bootstrap_image" \
-  --node-selector oce-role=control
-```
-
-Continue after helper success or storage administrator confirmation that the root is ready.
+Before the pre-install hook, the installer creates the bootstrap Secret and
+prints the protected recovery directory. It never overwrites Secrets; use
+[existing-Secret mode](production-installation-preparation.md#optional-supply-bootstrap-credentials)
+for deliberately preprovisioned inputs. Only bootstrap receives its read-only
+projection, during installation only. Retain local inputs outside the checkout.
+The service key expires 30 days after registration; Secret changes do not rotate it.
+After failed or uncertain creation or installation, stop and
+[reconcile the attempt](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
+before continuing. Do not regenerate credentials or repeat confirmed creates.
 
 ```bash
 # Allow the initialization hook to reach the DNS Service VIP.
@@ -175,6 +185,8 @@ Helm bootstraps OCC with zero workers. Reuse the session directory and kubeconfi
 
 Initialize the operator session. Its REST helper runs via Kubernetes exec in the API Pod.
 
+For a Gateway in another namespace, set `OPENSHELL_NAMESPACE` first.
+
 ```bash
 INSTALLATION_FILE="$RUN_DIR/installation.yaml"
 install -m 600 "$RUN_DIR/installation.json" "$INSTALLATION_FILE"
@@ -193,9 +205,9 @@ jq --slurpfile peers "$RUN_DIR/trusted-peers.json" \
 jq '.worker.replicaCount=1' \
   "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
 # The API registers model credentials and the worker manages workspaces through OpenShell.
-kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
+kube -n "${OPENSHELL_NAMESPACE:-$PLATFORM_NS}" get service openshell-gateway -o json |
   jq -e --arg ns "$PLATFORM_NS" --arg release "$RELEASE" '
-    .spec as $svc | select($svc.type=="ClusterIP" and ($svc.selector|length)>0
+    .metadata.namespace as $gatewayNs | .spec as $svc | select($svc.type=="ClusterIP" and ($svc.selector|length)>0
       and ($svc.clusterIP|test("^[0-9]+(\\.[0-9]+){3}$"))) |
     [$svc.ports[] | select(.protocol=="TCP" and .port==8080)] | select(length==1) | first as $port |
     {apiVersion:"networking.k8s.io/v1", kind:"NetworkPolicy",
@@ -205,7 +217,8 @@ kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
        {key:"app.kubernetes.io/component",operator:"In",values:["api","worker"]}]},
        policyTypes:["Egress"],egress:[
          {to:[{ipBlock:{cidr:($svc.clusterIP+"/32")}}],ports:[{protocol:"TCP",port:8080}]},
-         {to:[{podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
+         {to:[{namespaceSelector:{matchLabels:{"kubernetes.io/metadata.name":$gatewayNs}},
+           podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
        ]}}' > "$RUN_DIR/management-policy.json"
 kube create -f "$RUN_DIR/management-policy.json"
 cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
@@ -216,7 +229,7 @@ upgrade_installation
 
 Agent deployment pairs these egress rules with management ingress for the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Keep both directions. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Supervisor grants apply per tenant and Gateway grants per Agent. To verify ownership-based withdrawal, inspect every grant for that namespace. For a live Agent in its verified namespace, stage the current platform helper and renderer and run `deployment_network` in its saved session to replace a name-only grant.
 
-If namespace ownership has changed or the Agent’s Gateway Service is gone, withdraw the obsolete grant directly. Inspect its source namespace, Agent or supervisor Pod selector, and destination management selector with `kube -n "$PLATFORM_NS" get networkpolicy "$policy" -o yaml`. Match them to the recorded owner. Confirm a separate restrictive ingress policy still selects the management Pods so deleting the grant keeps them isolated. Then run `kube -n "$PLATFORM_NS" delete networkpolicy "$policy"` with the verified policy name. Preserve grants for other tenants and callers.
+If namespace ownership has changed or the Agent’s Gateway Service is gone, withdraw the obsolete grant directly. Check that its source namespace, Pod selector and management selector match the recorded owner: `kube -n "${OPENSHELL_NAMESPACE:-$PLATFORM_NS}" get networkpolicy "$policy" -o yaml`. Confirm another restrictive ingress policy still selects the management Pods, so they stay isolated. Then delete it: `kube -n "${OPENSHELL_NAMESPACE:-$PLATFORM_NS}" delete networkpolicy "$policy"`. Preserve grants for other tenants and callers.
 
 After Compute creates the backing namespace, apply the [tenant bindings](production-agents.md#prepare-each-namespace). Verify restricted Pod Security and grant the ordinary worker role last.
 

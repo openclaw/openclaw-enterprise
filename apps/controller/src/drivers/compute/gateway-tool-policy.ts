@@ -26,6 +26,10 @@ const GATEWAY_TOOL_BASELINE = {
     "get_goal",
     "create_goal",
     "update_goal",
+    // Read-only over the session's eligible skills, including pinned Skill Library
+    // revisions whose files exist only in the Gateway.
+    "skills_search",
+    "skills_read",
     "ls",
     "read",
     "write",
@@ -156,7 +160,7 @@ const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
 
 // Reviewed core, automation and Codex adapter enforcement. Update together
 // with the runtime source pin and archive provenance.
-export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "b58996d69286d55d1bbbd9b5c03b4ad837baac45";
+export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef";
 
 type SettingError = (setting: string, requirement: string) => Error;
 

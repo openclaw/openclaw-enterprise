@@ -391,8 +391,8 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
   const selected = {
     namespaceId: context.namespace.id,
     agentId: selectedAgent,
-    requests: { cpu: "88", memory: "344Gi" },
-    limits: { cpu: "90", memory: "352Gi" },
+    requests: { cpu: "1500m" },
+    limits: { cpu: "3", memory: "3Gi" },
   };
   const options: OpenShellSandboxDriverOptions = {
     ...base,
@@ -426,9 +426,7 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
   );
   const templateFor = (sandbox: string) => record(sandboxes.get(sandbox)?.spec?.template);
   const resources = (template: Record<string, unknown>, section: "requests" | "limits") => {
-    const driverConfig = record(record(template.driver_config).fields);
-    const containers = structFields(structFields(driverConfig.kubernetes).containers);
-    const agentResources = structFields(structFields(containers.agent).resources);
+    const agentResources = record(record(template.resources).fields);
     return Object.fromEntries(
       Object.entries(structFields(agentResources[section])).map(([resource, entry]) => {
         const value = record(entry).stringValue;
@@ -439,18 +437,52 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
   };
   const saved = templateFor(name);
   assert.deepEqual(resources(saved, "requests"), {
-    cpu: "88",
-    memory: "344Gi",
+    cpu: "1500m",
+    memory: "1Gi",
     "example.com/gpu": "1",
     "ephemeral-storage": "256Mi",
   });
   assert.deepEqual(resources(saved, "limits"), {
-    cpu: "90",
-    memory: "352Gi",
+    cpu: "3",
+    memory: "3Gi",
     "example.com/gpu": "1",
     "ephemeral-storage": "1Gi",
   });
+  // A Sandbox created with the previous default still has its immutable launch policy.
+  const installed = sandboxes.get(name);
+  assert.ok(installed?.spec);
+  const policy = record(installed.spec.policy);
+  const filesystem = record(policy.filesystem);
+  assert.ok(Array.isArray(filesystem.read_only));
+  assert.ok(filesystem.read_only.includes("/opt/devtools"));
+  assert.ok(Array.isArray(filesystem.read_write));
+  assert.equal(filesystem.read_write.includes("/opt/devtools"), false);
+  const previous = {
+    ...installed,
+    spec: {
+      ...installed.spec,
+      policy: {
+        ...policy,
+        filesystem: {
+          ...filesystem,
+          read_only: filesystem.read_only.filter((path: unknown) => path !== "/opt/devtools"),
+        },
+      },
+    },
+  };
+  sandboxes.set(name, previous);
+  calls.length = 0;
+  await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+  assert.deepEqual(calls, [["getSandbox", name, context.namespace.name]]);
+  assert.equal(sandboxes.get(name), previous);
+  sandboxes.set(name, installed);
+
   const other = await provision([], dedicatedRevision(driver, context, "000000000004"));
+  const otherFilesystem = record(
+    record(sandboxes.get(other.resourceName)?.spec?.policy).filesystem,
+  );
+  assert.ok(Array.isArray(otherFilesystem.read_only));
+  assert.ok(otherFilesystem.read_only.includes("/opt/devtools"));
   const otherTemplate = templateFor(other.resourceName);
   assert.equal(otherTemplate.runtime_class_name, undefined);
   assert.deepEqual(resources(otherTemplate, "requests"), {
@@ -517,6 +549,17 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
     },
   });
   assert.deepEqual(await provision(), first);
+  sandboxes.set(name, decoded);
+
+  // A server that drops or changes template sizing must not be adopted, even
+  // when identity and all other workload fields still match.
+  for (const resources of [undefined, { fields: {} }]) {
+    sandboxes.set(name, {
+      ...decoded,
+      spec: { ...spec, template: { ...record(spec.template), resources } },
+    });
+    await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+  }
   sandboxes.set(name, decoded);
 
   // Another revision's Sandbox, or one without its Harness service, is never adopted.

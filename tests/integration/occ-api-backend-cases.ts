@@ -9,7 +9,7 @@ import {
   AgentRevisionResponse,
   ErrorResponse,
 } from "../../packages/contracts/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   bindHarnessKey,
   bootstrapInstallation,
@@ -269,15 +269,16 @@ export async function runBackendIdCharacterRule(configure: ConfigureController) 
   // so OCC must accept it as configuration and the state store must save it.
   const id = `open\u00a0${"😀".repeat(195)}`;
   const controller = await bootstrapChatGptBackend(configure, id);
-  const { request, collection, configurationId } = await prepareAgentCollection(
+  const { request, collection, configurationId, readAgent } = await prepareAgentCollection(
     controller,
     "backend-id-rule",
   );
   const create = (name: string, backendId: string) =>
     request("POST", collection, { body: { name, configurationId, backendId } });
-  const created = await create("long-backend-id", id);
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.partialDeepStrictEqual(created.data, { backendId: id });
+  const created = checkedInjectedBody(await create("long-backend-id", id), 201, AgentResponse);
+  assert.equal(created.data.backendId, id);
+  const saved = await readAgent(created.data.id);
+  assert.equal(saved.backendId, id);
 
   // 201 code points; DEL and C1 controls (PostgreSQL's [[:cntrl:]] refuses both); line and
   // paragraph separators.

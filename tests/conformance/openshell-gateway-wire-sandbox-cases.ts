@@ -1,4 +1,5 @@
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { canonicalSandboxSpec } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -107,6 +108,15 @@ export function registerSandboxCases(): void {
           { service: "", targetPort: 18_790, authorizationMode: "bearer_passthrough" },
         ],
         spec: {
+          template: {
+            image: "runtime@sha256:" + "a".repeat(64),
+            resources: {
+              fields: {
+                requests: { structValue: { fields: { cpu: { stringValue: "1" } } } },
+                limits: { structValue: { fields: { memory: { stringValue: "2Gi" } } } },
+              },
+            },
+          },
           policy: {
             network_policies: {
               model: {
@@ -147,13 +157,21 @@ export function registerSandboxCases(): void {
         AbortSignal.timeout(2_000),
       );
 
+      // Independently pinned field numbers must carry sizing, and real protobuf
+      // Value oneof markers must not break adoption of the readback.
+      const template = createRequests[0]?.spec?.template;
+      assert.deepEqual(
+        canonicalSandboxSpec({ template }),
+        canonicalSandboxSpec({ template: request.spec.template }),
+      );
+      assert.equal(template?.driver_config, undefined);
       assert.equal(created.workspace, "tenant-workspace");
       assert.deepEqual(created.serviceUrls, {
         "": `http://tenant-workspace--${request.name}.openshell.localhost:${port}/`,
       });
       assert.ok(observed && service);
       assert.deepEqual(observed.annotations, request.annotations);
-      assert.deepEqual(observed.spec, request.spec);
+      assert.deepEqual(canonicalSandboxSpec(observed.spec), canonicalSandboxSpec(request.spec));
       assert.equal(service.targetPort, 18_790);
       assert.equal(service.authorizationMode, "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH");
       assert.equal(
@@ -382,9 +400,7 @@ export function registerSandboxCases(): void {
 
   test("OpenShell client reads an existing Sandbox and its service endpoint", async () => {
     const requests: (
-      | ["GetSandbox", WireRequest<"GetSandbox">]
-      | ["GetService", WireRequest<"GetService">]
-      | ["DeleteService", WireRequest<"DeleteService">]
+      ["GetSandbox", WireRequest<"GetSandbox">] | ["DeleteService", WireRequest<"DeleteService">]
     )[] = [];
     const notFound = (callback: (error: { code: number }) => void) =>
       callback(Object.assign(new Error("not found"), { code: grpc.status.NOT_FOUND }));
@@ -406,17 +422,6 @@ export function registerSandboxCases(): void {
               annotations: { "openclaw.dev/revision-id": "rev_wire" },
             },
           },
-        });
-      },
-      GetService(call, callback) {
-        requests.push(["GetService", call.request]);
-        if (call.request.sandbox !== "sandbox-wire") {
-          notFound(callback);
-          return;
-        }
-        callback(null, {
-          endpoint: { sandbox: call.request.sandbox, name: call.request.name, target_port: 18_790 },
-          url: "http://tenant-workspace--sandbox-wire.openshell.localhost:8080/",
         });
       },
       // Per Sandbox name: how DeleteService answers (finding 1657).
@@ -489,32 +494,10 @@ export function registerSandboxCases(): void {
         await client.getSandbox({ name: "missing", workspace: "tenant-workspace" }, signal),
         undefined,
       );
-      assert.equal(
-        await client.getServiceUrl(
-          { sandbox: "sandbox-wire", workspace: "tenant-workspace", service: "" },
-          signal,
-        ),
-        `http://tenant-workspace--sandbox-wire.openshell.localhost:${port}/`,
-      );
-      assert.equal(
-        await client.getServiceUrl(
-          { sandbox: "missing", workspace: "tenant-workspace", service: "" },
-          signal,
-        ),
-        undefined,
-      );
       assert.deepEqual(requests[0], [
         "GetSandbox",
         {
           name: "sandbox-wire",
-          workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
-        },
-      ]);
-      assert.deepEqual(requests[2], [
-        "GetService",
-        {
-          sandbox: "sandbox-wire",
-          name: "",
           workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
         },
       ]);

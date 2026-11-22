@@ -9,6 +9,7 @@ import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 import { preloadAgentSandboxController } from "./agent-sandbox.ts";
 import { selectOpenShellCandidate, verifyOpenShellCandidate } from "./openshell-candidate.ts";
 import { downloadPinnedArtifact } from "./routing.ts";
+import { isRecord } from "./records.ts";
 
 type Environment = Parameters<typeof selectOpenShellCandidate>[0];
 type ExecuteFile = Parameters<typeof verifyOpenShellCandidate>[1]["execFile"];
@@ -35,8 +36,8 @@ interface KubectlAsset {
   sha256: string;
 }
 
-const openShellVersion = "0.1.8";
-const openShellRevision = "f3d976590d3eb1379690a2abaf0f0e26c21d487d";
+const openShellVersion = "0.1.9";
+const openShellRevision = "ce58cf8e9b953281352d98a637e41616295b1318";
 const agentSandboxVersion = "v0.5.2";
 const kubectlVersion = "v1.36.4";
 const k3sImage =
@@ -44,13 +45,13 @@ const k3sImage =
 const openShellChartArchive = `helm-chart-${openShellVersion}.tgz`;
 const openShellWorkspaceChartArchive = `openshell-workspace-${openShellVersion}.tgz`;
 const openShellSourceArchive = `openshell-v${openShellVersion}.tar.gz`;
-const openShellSourceRoot = `OpenShell-${openShellVersion}`;
-const openShellSourceSha256 = "ea6c2dcb50b3ecb3c7bf3d8b5ae4ada71eee838a1a2b12f7a1d2ada76b0837b9";
+const openShellSourceRoot = `openshell-${openShellVersion}`;
+const openShellSourceSha256 = "e92705150f012d8d0b080db9af3c2c38df3425782cc68355b9179342e59531ba";
 const agentSandboxManifestSha256 =
   "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b";
-const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellVersion}@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4`;
-const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellVersion}@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b`;
-const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellVersion}@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1`;
+const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellVersion}@sha256:1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5`;
+const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellVersion}@sha256:e57d07cd6cc1fc314b80368d6b51ec6fbf825fb62cd8f081312941180846866f`;
+const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellVersion}@sha256:f1ec231b5dbe5b6a40c33acb2ac847995aabb959a56134ef6d7d7aa4f43199d3`;
 
 const kubectlAssets: Readonly<Record<string, KubectlAsset>> = Object.freeze({
   "darwin:arm64": {
@@ -113,7 +114,7 @@ async function ensurePrivateDirectory(path: string): Promise<void> {
 }
 
 function openShellSourceUrl() {
-  return `https://codeload.github.com/NVIDIA/OpenShell/tar.gz/refs/tags/v${openShellVersion}`;
+  return `https://codeload.github.com/ai-openshell/openshell/tar.gz/refs/tags/v${openShellVersion}`;
 }
 
 function agentSandboxManifestUrl() {
@@ -291,10 +292,6 @@ async function acquireOpenShellCharts(execFile: ExecuteFile, helm: string, direc
   await execFile(helm, ["show", "chart", chartPath]);
   await execFile(helm, ["show", "chart", workspaceChartPath]);
   return { gateway: chartPath, workspace: workspaceChartPath };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isAgentSandboxNode(node: unknown): node is AgentSandboxNodes["items"][number] {

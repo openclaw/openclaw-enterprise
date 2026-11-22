@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -20,14 +21,18 @@ import {
   stopYieldRecheckMs,
 } from "../../apps/controller/src/worker/stop-yields.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
-import type { AgentProvisioningRecord } from "../../packages/occ/src/state/agent-provisioning.ts";
+import type { AgentProvisioningRecord } from "../../packages/occ/src/ports/agent-provisioning.ts";
 import {
+  revisionAdmittedBeforeWork,
   type ControllerWork,
+} from "../../packages/occ/src/controller-work.ts";
+import {
   deploymentErrorForWork,
   deploymentProgressForWork,
-  revisionAdmittedBeforeWork,
-} from "../../packages/occ/src/state/controller-work.ts";
+} from "../../packages/occ/src/deployment-work-status.ts";
+import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { DEPLOYMENT_FAILED, WORKSPACE_SETUP_RETRYING } from "../helpers/refusal-text.mjs";
+import { identifier, seedPlatformState } from "./platform-state-contract-fixture.ts";
 
 // Findings 1093 and 1094: stops that yield during their Gateway drain (#2145) are rechecked on
 // a faster-growing cadence, do not count as due Work for another draining stop, and log their
@@ -485,3 +490,85 @@ test("completion renewals remain due during other drains without producing a log
   now.value += 5_000;
   assert.equal(yields.yielded("completion", "PREDECESSOR_COMPLETION_WAITING"), undefined);
 });
+
+for (const stale of ["expired", "retargeted"] as const) {
+  test(`memory refuses a guarded predecessor stop with a stale completion claim (${stale})`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-01T00:00:00Z") });
+    const store = new InMemoryPlatformState();
+    const { namespace, agent, revision: predecessor } = await seedPlatformState(store);
+    const { id: namespaceId } = namespace;
+    const { id: agentId } = agent;
+    const candidateId = identifier("rev");
+    const request = { predecessorRevisionId: predecessor.id, candidateRevisionId: candidateId };
+    const before = await store.transact(async (unit) => {
+      await unit.agents.transitionAgentDesiredRuntimeState(
+        namespaceId,
+        agentId,
+        "stopped",
+        "running",
+      );
+      await unit.agents.compareAndSetActiveRevision(
+        namespaceId,
+        agentId,
+        undefined,
+        predecessor.id,
+      );
+      await unit.revisions.createRevision({ ...predecessor, id: candidateId, revision: 2 });
+      const preStop = await unit.agents.recordPredecessorReplacement(namespaceId, agentId, {
+        ...request,
+        phase: "pre-stop",
+        beginCompletion: true,
+      });
+      assert.equal(preStop?.completionStartedAt, new Date().toISOString());
+      if (stale === "expired") {
+        return preStop;
+      }
+
+      // The old candidate remains admitted after a newer candidate takes over the stop.
+      const successor = await unit.revisions.createRevision({
+        ...predecessor,
+        id: identifier("rev"),
+        revision: 3,
+      });
+      return unit.agents.recordPredecessorReplacement(namespaceId, agentId, {
+        ...request,
+        candidateRevisionId: successor.id,
+        phase: "pre-stop",
+      });
+    });
+    assert.ok(before);
+    assert.equal(before.phase, "pre-stop");
+    const windowMs = 30_000;
+    if (stale === "expired") {
+      t.mock.timers.tick(windowMs);
+    }
+
+    const result = await store.transact((unit) =>
+      unit.agents.recordPredecessorReplacement(namespaceId, agentId, {
+        ...request,
+        phase: "stopping",
+        completionClaim: {
+          idempotencyKey: `agent_revision:${candidateId}:reconcile`,
+          claimToken: randomUUID(),
+          windowMs,
+        },
+      }),
+    );
+    const readReplacement = () =>
+      store.read((view) => view.agents.findPredecessorReplacement(namespaceId, agentId));
+    assert.deepEqual(await readReplacement(), before, "refusal preserves the committed pre-stop");
+    assert.equal(result, undefined);
+
+    const accepted = await store.transact((unit) =>
+      unit.agents.recordPredecessorReplacement(namespaceId, agentId, {
+        predecessorRevisionId: predecessor.id,
+        candidateRevisionId: before.candidateRevisionId,
+        phase: "stopping",
+      }),
+    );
+    assert.equal(accepted?.phase, "stopping", "the current unguarded stop still records");
+    assert.equal(accepted.candidateRevisionId, before.candidateRevisionId);
+    assert.equal(accepted.stoppingAt, new Date().toISOString());
+    assert.deepEqual(await readReplacement(), accepted);
+  });
+}

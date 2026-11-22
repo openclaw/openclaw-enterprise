@@ -13,6 +13,10 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { createConsoleFixtureRevisions } from "./console-fixture-revisions.ts";
+import {
+  createConsoleFixturePolicy,
+  createConsoleFixturePolicyHelpers,
+} from "./console-fixture-policy.ts";
 import { fileConsoleApp as createFileConsoleApp } from "./console-file-app.ts";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
@@ -34,7 +38,7 @@ import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/sr
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "./kubernetes-compute.ts";
 import { reservePort } from "./available-port.ts";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
@@ -333,12 +337,13 @@ export async function createConsoleAppFixture(t, options = {}) {
     verification: [],
     apikey: [],
   };
+  const authSecret = `console-test-secret-${randomUUID()}-${randomUUID()}`;
   const auth = createControllerAuth({
     installationId,
     mode: authMode,
     baseURL: authBaseURL,
     agentDomain: options.nativeAdmin?.domain ?? `agents.${new URL(authBaseURL).hostname}`,
-    secret: `console-test-secret-${randomUUID()}-${randomUUID()}`,
+    secret: authSecret,
     memoryDatabase,
   });
   const credentials = {
@@ -348,17 +353,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   };
   const account = await auth.createAccount(credentials);
   const seed = auth.principalSeed(account, { grant: "administrator" });
-  const policy = {
-    identities: [seed.principal],
-    groups: [],
-    memberships: [],
-    roles: seed.roles.map((role) => ({
-      ...role,
-      permissions: role.permissions.map((item) => ({ ...item })),
-    })),
-    bindings: seed.bindings.map((binding) => ({ ...binding })),
-    restrictions: /** @type {import("../../packages/contracts/src/index.ts").Restriction[]} */ ([]),
-  };
+  const policy = createConsoleFixturePolicy(seed);
   // These grant-free accounts are fixture setup. Accounts added later through
   // createAccountWithPolicy are also shareable, because State resolves identities live.
   /** @type {{credentials: typeof credentials, principal: typeof seed.principal}[]} */
@@ -507,8 +502,10 @@ export async function createConsoleAppFixture(t, options = {}) {
       : { nativeAdminGatewayApiKey: options.nativeAdminGatewayApiKey }),
     resolveHarness: resolveApprovedHarness,
     createController(installation) {
-      controller = new OpenClawController(installation, {
+      /** @type {import("../../packages/occ/src/index.ts").ControllerOptions} */
+      const controllerOptions = {
         state: platformState,
+        authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:
           options.namespaceLifecycleBindings ??
           (options.sandboxDriver?.ensureNamespace === undefined
@@ -520,6 +517,10 @@ export async function createConsoleAppFixture(t, options = {}) {
           ? {}
           : { pluginSourceReader: options.pluginSourceReader }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
+        ...(options.repositoryNetworkPolicyCeiling === undefined
+          ? {}
+          : { repositoryNetworkPolicyCeiling: options.repositoryNetworkPolicyCeiling }),
+        ...(options.createId === undefined ? {} : { createId: options.createId }),
         driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),
         recordOperations: options.recordOperations ?? false,
@@ -533,7 +534,15 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.credentialProxyCapacity === undefined
           ? {}
           : { credentialProxyCapacity: options.credentialProxyCapacity }),
-      });
+      };
+      controller =
+        options.repositoryAdmission === undefined
+          ? new OpenClawController(installation, controllerOptions)
+          : OpenClawController.forInstallation(
+              installation,
+              controllerOptions,
+              options.repositoryAdmission,
+            );
       const modelBackends = backends.filter((backend) => backend.type === "chatgpt");
       if (modelBackends.length > 0) {
         const unexpectedBackendCall = async () =>
@@ -665,29 +674,21 @@ export async function createConsoleAppFixture(t, options = {}) {
     return fixtureResponse(result, 201, InstallationResponse, "bootstrap Installation").data;
   }
 
-  /** @param {string} name @param {{ready?: boolean}} [options] */
-  async function createNamespace(name, { ready = false } = {}) {
-    const result = await request("POST", "/namespaces", { body: { name } });
-    const namespace = fixtureResponse(result, 201, NamespaceResponse, "create Namespace").data;
-    if (ready) {
-      await makeNamespaceReady(namespace.id);
-      const current = await request("GET", `/namespaces/${namespace.id}`);
-      return fixtureResponse(current, 200, NamespaceResponse, "read ready Namespace").data;
-    }
-    return namespace;
-  }
-
-  /** @param {string} namespaceId */
-  async function makeNamespaceReady(namespaceId) {
-    assert.ok(controller, "bootstrap must create the controller before Namespace lifecycle runs");
-    const updated = await controller.handleNamespaceLifecycle(
-      seed.principal.id,
-      namespaceId,
-      "ready",
-    );
-    assert.equal(updated?.status, "ready");
-    return updated;
-  }
+  const {
+    createNamespace,
+    grantAgentSecretOperate,
+    addedAccessBindings,
+    withIamOutage,
+    createNamespaceMember,
+  } = createConsoleFixturePolicyHelpers({
+    policy,
+    principalId: seed.principal.id,
+    request,
+    fixtureResponse,
+    getController: () => controller,
+    iamDriver,
+    createAccountWithPolicy,
+  });
 
   /**
    * @param {string} namespaceId
@@ -723,90 +724,6 @@ export async function createConsoleAppFixture(t, options = {}) {
       },
     );
     return fixtureResponse(configuration, 200, ConfigurationResponse, "update Configuration").data;
-  }
-
-  // The listed bindings createAgent adds for each Agent's model credential (finding 2260).
-  const modelGrantBindingIds = new Set();
-
-  // Grants the Agent operate on one Secret, as an Installation administrator's console does. The
-  // Agent's service principal and its role are added on the first grant; a repeat changes nothing.
-  // The evaluator reads this fixture policy, while the Namespace's IAM API lists only what it
-  // stored, so a `listed` grant is also written through that API: the console's policy reads
-  // then see it, as they see a production grant (finding 1920).
-  async function grantAgentSecretOperate(
-    agent,
-    source,
-    { listed = true, modelGrant = false } = {},
-  ) {
-    const roleId = `auth-${agent.id}`;
-    const bindingId = `${roleId}-${source.id}`;
-    if (policy.bindings.some((binding) => binding.id === bindingId)) {
-      return;
-    }
-    if (!policy.identities.some((identity) => identity.id === agent.servicePrincipalId)) {
-      policy.identities.push({
-        id: agent.servicePrincipalId,
-        kind: "service_principal",
-        namespaceId: agent.namespaceId,
-        agentId: agent.id,
-      });
-    }
-    if (!policy.roles.some((role) => role.id === roleId)) {
-      policy.roles.push({
-        id: roleId,
-        namespaceId: agent.namespaceId,
-        permissions: [{ action: "operate", resourceKind: "secret" }],
-      });
-    }
-    policy.bindings.push({
-      id: bindingId,
-      namespaceId: agent.namespaceId,
-      subjectKind: "identity",
-      subjectId: agent.servicePrincipalId,
-      roleId,
-      resourceKind: "secret",
-      resourceId: source.id,
-    });
-    if (listed) {
-      const binding = await listSecretOperate(agent, source);
-      if (modelGrant) {
-        modelGrantBindingIds.add(binding.id);
-      }
-    }
-  }
-
-  // The Namespace's listed access bindings, without the model-credential grants createAgent
-  // lists: what the console or the test itself granted since.
-  async function addedAccessBindings(namespaceId) {
-    const bindings = await request("GET", `/namespaces/${namespaceId}/iam/access-bindings`);
-    assert.equal(bindings.status, 200, JSON.stringify(bindings.body));
-    return bindings.data.filter(({ id }) => !modelGrantBindingIds.has(id));
-  }
-
-  async function listSecretOperate(agent, source) {
-    const iamPath = `/namespaces/${agent.namespaceId}/iam`;
-    const permissions = [{ action: "operate", resourceKind: "secret" }];
-    const roles = await request("GET", `${iamPath}/roles`);
-    assert.equal(roles.status, 200, JSON.stringify(roles.body));
-    let listedRole = roles.data.find(({ name }) => name === "Fixture Agent Secret operate");
-    if (!listedRole) {
-      const created = await request("POST", `${iamPath}/roles`, {
-        body: { name: "Fixture Agent Secret operate", permissions },
-      });
-      assert.equal(created.status, 201, JSON.stringify(created.body));
-      listedRole = created.data;
-    }
-    const binding = await request("POST", `${iamPath}/access-bindings`, {
-      body: {
-        subjectKind: "identity",
-        subjectId: agent.servicePrincipalId,
-        roleId: listedRole.id,
-        resourceKind: "secret",
-        resourceId: source.id,
-      },
-    });
-    assert.equal(binding.status, 201, JSON.stringify(binding.body));
-    return binding.data;
   }
 
   /**
@@ -914,56 +831,6 @@ export async function createConsoleAppFixture(t, options = {}) {
     return { credentials: accountCredentials, principal: createdSeed.principal };
   }
 
-  /**
-   * Runs `run` while the real IAM Driver throws on each authorization request `failing` selects,
-   * as an IAM outage on those decisions would, and restores the Driver afterwards.
-   * @template T
-   * @param {(request: { action: string, resource: { kind: string, id: string } }) => boolean} failing
-   * @param {() => Promise<T>} run
-   * @returns {Promise<T>}
-   */
-  async function withIamOutage(failing, run) {
-    const authorize = iamDriver.authorize;
-    iamDriver.authorize = async (request) => {
-      if (failing(request)) {
-        throw new Error("IAM outage");
-      }
-      return authorize.call(iamDriver, request);
-    };
-    try {
-      return await run();
-    } finally {
-      iamDriver.authorize = authorize;
-    }
-  }
-
-  /**
-   * A Namespace member: an account whose one Role in `namespaceId` holds exactly `grants`, as
-   * [action, resourceKind] pairs. It has no Installation access.
-   * @param {string} label
-   * @param {string} namespaceId
-   * @param {readonly (readonly [
-   *   import("../../packages/contracts/src/index.ts").Permission["action"],
-   *   import("../../packages/contracts/src/index.ts").Permission["resourceKind"],
-   * ])[]} grants
-   */
-  function createNamespaceMember(label, namespaceId, grants) {
-    return createAccountWithPolicy(label, (principal) => {
-      policy.roles.push({
-        id: `role-${label}`,
-        namespaceId,
-        permissions: grants.map(([action, resourceKind]) => ({ action, resourceKind })),
-      });
-      policy.bindings.push({
-        id: `binding-${label}`,
-        namespaceId,
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: `role-${label}`,
-      });
-    });
-  }
-
   return {
     principal: seed.principal,
     origin,
@@ -1004,23 +871,6 @@ export async function createConsoleAppFixture(t, options = {}) {
   };
 }
 
-// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
-// grant or revoke after sign-in: State reads the policy on each request.
-/**
- * @param {{policy: Pick<Awaited<ReturnType<typeof createConsoleAppFixture>>["policy"], "roles">}} fixture
- * @param {string} label
- */
-export function memberRole(fixture, label) {
-  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
-  assert.ok(role, `member ${label} has a Role`);
-  return role;
-}
-
-/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
-export function grantMember(fixture, label, grants) {
-  memberRole(fixture, label).permissions.push(
-    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
-  );
-}
+export { memberRole, grantMember } from "./console-fixture-policy.ts";
 
 export { authorizationDenials, denialsDuring } from "./console-audit-denials.ts";

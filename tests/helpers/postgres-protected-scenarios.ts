@@ -7,7 +7,7 @@ import { Check } from "typebox/value";
 import type { Agent, EgressInstallation, Namespace } from "../../packages/contracts/src/index.ts";
 import { AgentSchema, CredentialSourceSchema } from "../../packages/contracts/src/api/resources.ts";
 import type { InstalledDriver, OpenClawController } from "../../packages/occ/src/index.ts";
-import type { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import type { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { attempt, type StoredSendReceipt } from "../../packages/occ/src/egress-send-receipts.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { isArray, isRecord } from "./egress-observation-values.ts";
@@ -119,7 +119,7 @@ type FixturePorts = Pick<
 > &
   Pick<Awaited<ReturnType<typeof createExchangeOrigin>>, "setResponse"> & {
     readonly controller: OpenClawController;
-    readonly egress: OpenShellCredentialProxyDriver;
+    readonly egress: OpenShellLegacyEgressProxyDriver;
     readonly installation: EgressInstallation;
     readonly installedDriver: InstalledDriver;
     readonly namespace: Namespace;

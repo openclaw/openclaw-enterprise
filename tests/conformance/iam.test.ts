@@ -24,10 +24,8 @@ import {
   type Role,
   type ServicePrincipal,
 } from "../../packages/contracts/src/index.ts";
-import {
-  InMemoryPlatformState,
-  type PlatformUnitOfWork,
-} from "../../packages/occ/src/state/platform-state.ts";
+import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 import { immutableSnapshot } from "../../packages/utils/src/index.ts";
 import {
   AuthAccountRoleInvalidError,
@@ -821,49 +819,17 @@ test("identity access coverage counts only direct human Agent audit grants", asy
       { id: "read-and-audit", permissions: [readPermission, auditPermission] },
     ],
     bindings: [
-      {
-        id: "direct",
-        subjectKind: "identity",
-        subjectId: "principal-reader-a",
-        roleId: "read-and-audit",
-        ...agentA,
-      },
-      {
-        id: "ordinary",
-        subjectKind: "identity",
-        subjectId: "principal-foreign",
-        roleId: "read-only",
-        ...agentA,
-      },
-      {
-        id: "service",
-        subjectKind: "identity",
-        subjectId: "service-principal-reader-a",
-        roleId: "read-and-audit",
-        ...agentA,
-      },
-      {
-        id: "group",
-        subjectKind: "group",
-        subjectId: "group-readers-a",
-        roleId: "read-and-audit",
-        ...agentA,
-      },
-      {
-        id: "broad",
-        subjectKind: "identity",
-        subjectId: "principal-reader-b",
-        roleId: "read-and-audit",
+      coverageBinding("direct", "principal-reader-a", "read-and-audit", agentA),
+      coverageBinding("ordinary", "principal-foreign", "read-only", agentA),
+      coverageBinding("service", "service-principal-reader-a", "read-and-audit", agentA),
+      coverageBinding("group", "group-readers-a", "read-and-audit", agentA, "group"),
+      coverageBinding("broad", "principal-reader-b", "read-and-audit", {
         namespaceId: "namespace-a",
-      },
-      {
-        id: "unscoped",
-        subjectKind: "identity",
-        subjectId: "principal-unbound",
-        roleId: "audit-only",
+      }),
+      coverageBinding("unscoped", "principal-unbound", "audit-only", {
         resourceKind: "agent",
         resourceId: "agent-a",
-      },
+      }),
     ],
   });
   const covers = (principalId: string, targetIdentityId: string) =>

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-11-13
-last_updated_session: authoring-run/6366a138-6e59-492d-8eae-730c7c10e323
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Credential source refresh Flow
@@ -9,7 +9,7 @@ last_updated_session: authoring-run/6366a138-6e59-492d-8eae-730c7c10e323
 ## Overview
 
 OCC registers an empty OAuth2 provider. The Refresh Driver requests a token;
-the gateway renews it before expiry. See [source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
+the gateway renews it before expiry. See [binding and withdrawal](credential-source-lifecycle.md).
 
 In [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
 the refresh grant; the Harness gets a placeholder and account metadata.
@@ -24,8 +24,8 @@ use committed tokens and cannot trigger issuance.
 - Trigger: `POST /namespaces/:namespaceId/credential-sources` with a `refresh`
   type, `PATCH`, `GET`, or `DELETE …/credential-sources/:credentialSourceId`,
   and `POST …/credential-sources/:credentialSourceId/rotate`.
-- Source: `packages/occ/src/index.ts:createCredentialSource`
-- Source: `packages/occ/src/index.ts:rotateCredentialSource`
+- Source: `packages/occ/src/credential-source-operations.ts:createCredentialSource`
+- Source: `packages/occ/src/credential-source-operations.ts:rotateCredentialSource`
 - Source: `apps/controller/src/drivers/credential-refresh/openshell.ts:OpenShellCredentialRefreshDriver`
 - Assumptions: the OpenShell Backend declares `credential_gateway` and
   `credential_refresh`; the Installation selects both Drivers. Gateway
@@ -54,7 +54,7 @@ graph TD
 
 ### 1. Registration
 
-`packages/occ/src/index.ts:createCredentialSource`
+`packages/occ/src/credential-source-operations.ts:createCredentialSource`
 
 OCC authorizes creation and validates config and Secret reference fields against
 the selected type. If the type declares `rotation: refresh` and its provider has
@@ -104,10 +104,10 @@ OpenShell resolves the credential at runtime.
 
 ### 2. First mint
 
-`packages/occ/src/index.ts:mintFirstRefreshToken`
+`packages/occ/src/credential-source-operations.ts:mintFirstRefreshToken`
 
-OCC calls `configureRefresh` with the source config and resolved Secret values,
-then `rotate`. Request UUIDs derived from source ID and step prevent duplicate effects. The OpenShell Driver sends `ConfigureProviderRefresh`
+OCC passes config and resolved Secret values to `configureRefresh`,
+then calls `rotate`. Source ID and step determine request UUIDs to prevent duplicates. The OpenShell Driver sends `ConfigureProviderRefresh`
 (`client_id`, `scope`, and Secret material) and `RotateProviderCredential`;
 OpenShell calls the issuer and stores the token on the provider. A thrown call leaves the outcome unknown;
 after cleanup, OCC retains the `deleting` record. A definite non-`ready` result
@@ -116,33 +116,26 @@ failure code. Otherwise OCC commits `ready` with audit.
 
 ### Device authorization and configuration
 
-`packages/occ/src/index.ts:startAgentDeviceAuthorization`,
-`pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
+`packages/occ/src/device-authorization-flow.ts:createDeviceAuthorizationFlow`
+`packages/occ/src/plugin-discovery.ts:withPluginDiscoveryCredential`
 
-`deviceAuthorization.harnessId` sources register before login.
-`source_registering` and `source_ready` commit with state and identify actor,
-request, and source. Audit failure blocks login; failed starts retain audited sources.
+OCC checks Agent authority and Namespace `credential_source:create` before registration
+and again before login. Audits `source_registering`, `source_ready`, and
+`session_pending` omit login material. Failed starts retain the source. The
+`device_authorization` row in `occ.authentication_states` stores the sealed challenge
+and provider handle, immutable binding, and versioned progress.
 
-OCC commits the session Secret's handle, actor, source, and Driver IDs with
-`session_pending`. Known commit failure deletes metadata and private Driver value;
-unknown outcomes skip compensation. Session events identify Agent or Namespace
-and source ID, excluding handles, credentials, and user codes.
+`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` retains
+`start_unconfirmed` across navigation. Agent detail keeps Credentials open for
+replies unless another tab owns the draft. A `501` or unavailable type disables
+sign-in. Poll `403` pauses checks and shows the request ID. Retry uses the same handle.
+See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
-`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
-`start_unconfirmed` before start; both authentication forms retain it across navigation.
-Agent detail keeps Credentials open during start and records late replies unless
-a newer tab owns the draft. A usable reply before navigation supplies the challenge.
-A `501`, or no offered Codex device-login type (`deviceLoginOffered`), disables
-Sign in; other refusals permit retry. Unconfirmed attempts cannot restart, poll,
-or cancel. See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
-
-Compare-and-swap serializes known-session polls. `readAgentDeviceAuthorization`
-checks actor, Namespace, and saved-Agent bindings before session writes or provider I/O. Poll/cancel
-mismatches raise `DeviceAuthorizationScopeMismatchError`; the Controller records
-one `authorization_denial` with request/route attribution and
-`DEVICE_AUTHORIZATION_SCOPE_MISMATCH`. Responses remain generic `404`, or `503`
-on audit failure, without private binding or source details. After polling, OCC rechecks permissions and both Driver selections. Uncertain exchanges close the handle but
-keep the source.
+`readSession` checks Agent authority, actor, Namespace, and saved Agent.
+Poll checks source `operate` before changes and after I/O. Scope mismatches audit
+`DEVICE_AUTHORIZATION_SCOPE_MISMATCH` and return `404` (`503` on audit failure).
+Version checks serialize polls and fence cancelled results. OCC rechecks both Drivers
+after I/O. Cancellation and expiry clear encrypted state.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
 sends start, poll, and exchange requests from API Pods to fixed `auth.openai.com`
@@ -186,7 +179,7 @@ longer offers: that source keeps its gateway status without `refresh`.
 
 ### 4. Update and rotation
 
-`packages/occ/src/index.ts:updateCredentialSource`
+`packages/occ/src/credential-source-operations.ts:updateCredentialSource`
 
 `PATCH` locks the source, not the Namespace, so other Namespace writes do not
 wait on the issuer. A field the catalog marks `issuerRotated` (`refresh_token`)
@@ -201,7 +194,7 @@ reconfiguration, even one whose mint fails, starts a new OpenShell authorization
 epoch that revokes running Sandboxes' stable placeholders, so Agents need a
 redeploy.
 
-`packages/occ/src/index.ts:rotateCredentialSource`
+`packages/occ/src/credential-source-operations.ts:rotateCredentialSource`
 
 `POST …/rotate` requires `credential_source:update`, a `ready` source, and a
 `refresh` type; a static type returns `409`. It calls `rotate` under the source
@@ -211,7 +204,7 @@ whose outcome is unknown records neither event.
 
 ### 5. Deletion
 
-`packages/occ/src/index.ts:deleteCredentialSource`
+`packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
 After the usual reference check and `deleting` mark, OCC calls `removeRefresh`,
 then the gateway's `removeSource`. Before `DeleteProviderRefresh`,
@@ -318,6 +311,19 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:18: Link device login source. (authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15 - c77f4a6376b5412d0544e7dc69194877d755e2f7)
+
+- 2026-11-20 16:13: Follow Plugin discovery through its dedicated module. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
+
+- 2026-11-18 21:15: Simplify authentication state. (authoring-run/038990d2-f182-4b8e-8b66-afc5c706ca11 - fb3be388136a143306686807d06e415f93c1f5e4)
+
+- 2026-11-18 16:20: Trace device login through shared OCC authentication state in the accompanying change. (authoring-run/0e501248-a309-4913-b4df-122e4c3783c2 - 5dfbd6c1db67024917c79790ee7b6155e6f753e1)
+
+- 2026-11-18 15:41: Authorize device login through Agent and credential source permissions. (authoring-run/422adac7-ed17-4891-a192-172d70a85dbc - b589e9fcf314a096cdcc89bb1af83d6a09c80630)
+
+- 2026-11-17 19:24: Trace device-login storage. (authoring-run/a1a47d55-3248-4349-81a2-ca786027b634 - c5ddcd80cb4cfcd0b969a52ef5c4cafff552a8e8)
 
 - 2026-11-13 01:14: Reconcile device-login auditing. (authoring-run/6366a138-6e59-492d-8eae-730c7c10e323 - 2f1d2561161dd49cad47dafa9710df55dddbb18e)
 

@@ -14,6 +14,7 @@ import {
   newController,
   oldRuntime,
   runtime,
+  upgradeDiagnosticLines,
 } from "../helpers/production-upgrade-recovery-tools.ts";
 
 function requireObject(value: unknown): Record<string, unknown> {
@@ -203,10 +204,6 @@ export function registerFleetAdmissionCases({
     const liveValues = requireObject(
       JSON.parse((await execute("yq", ["-o=json", ".", join(f.directory, "live-values")])).stdout),
     );
-    assert.equal(
-      requireObject(liveValues.api).channelDirectoryProxyUrl,
-      "http://198.51.100.25:3128",
-    );
     assert.equal(requireObject(liveValues.images).controller, newController);
     assert.equal(
       requireObject(liveValues.repositoryCredentials).hostname,
@@ -255,7 +252,7 @@ export function registerFleetAdmissionCases({
     assert.equal(events.filter((event) => event === "secret-replaced").length, 1);
     assert.ok(!events.includes("migration"), "Helm must wait for an acknowledged Secret write");
     const candidate = requireObject(JSON.parse(await readFile(path, "utf8")));
-    requireObject(candidate.api).channelDirectoryProxyUrl = "http://198.51.100.26:3128";
+    candidate.api = { replicas: 3 };
     await writeFile(path, JSON.stringify(candidate));
     await assert.rejects(f.run("--resume"), /reviewed candidate values changed after preparation/);
     assert.deepEqual(await f.events(), events);
@@ -556,8 +553,7 @@ export function registerFleetAdmissionCases({
       const stderr = await f
         .run()
         .then(() => assert.fail("the upgrade must refuse"), commandStderr);
-      const lines = stderr.trimEnd().split("\n");
-      assert.deepEqual(lines, [
+      assert.deepEqual(upgradeDiagnosticLines(stderr), [
         "upgrade-production-images: the deployment inventory contains a running Agent without an active revision; resolve its initial deployment first. No cluster changes were made.",
         '  - Agent agt_stranded_1 "Mail \\"triage\\"\\nbot\\u007f?" in Namespace ns_alpha "Team Alpha"',
         '  - Agent agt_stranded_2 (name unavailable) in Namespace ns_alpha "Team Alpha"',

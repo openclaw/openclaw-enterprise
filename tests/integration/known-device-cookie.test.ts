@@ -18,22 +18,16 @@ import {
   verifyKnownDevice,
   type KnownDeviceAccountState,
 } from "../../apps/controller/src/auth/known-device.ts";
-import { injectJson as injectFixtureJson } from "../helpers/inject-json.mjs";
+import { injectJson } from "../helpers/inject-json.ts";
 import { within as fixtureWithin } from "../helpers/wait-for.ts";
 
 type App = ReturnType<typeof createFastifyApp>;
-type InjectResponse = Awaited<ReturnType<App["inject"]>>;
+type InjectResponse = Awaited<ReturnType<typeof injectJson>>;
 type RequestResult =
   { kind: "response"; response: InjectResponse } | { kind: "request-error"; error: unknown };
 const within: <T>(promise: Promise<T>, message: string, timeoutMs: number) => Promise<T> =
   fixtureWithin;
 const createControllerAuth: (options: ControllerAuthOptions) => ControllerAuth = createFixtureAuth;
-const injectJson: (
-  app: App,
-  method: "POST",
-  url: string,
-  options: Parameters<typeof injectFixtureJson>[3],
-) => ReturnType<App["inject"]> = injectFixtureJson;
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const fastifyModule: unknown = require("fastify");
 assert.equal(typeof fastifyModule, "function");

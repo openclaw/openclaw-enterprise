@@ -9,6 +9,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
@@ -33,6 +34,7 @@ import type {
   RecoveryFixture,
   RecoveryFixtureFactory,
 } from "../helpers/production-upgrade-recovery-fixture.ts";
+import { renderedDocuments } from "../helpers/production-upgrade-recovery-render.ts";
 import {
   field,
   list,
@@ -40,7 +42,12 @@ import {
   requireRecoveryPreflight,
   type RecoveryState,
 } from "../helpers/production-upgrade-recovery-state.ts";
-import { runtime, skipWithoutHelm } from "../helpers/production-upgrade-recovery-tools.ts";
+import {
+  execute,
+  runtime,
+  skipWithoutHelm,
+  upgradeDiagnosticLines,
+} from "../helpers/production-upgrade-recovery-tools.ts";
 import {
   createDoctorPodFixture,
   embeddedDoctorNamespace,
@@ -85,27 +92,60 @@ export function registerWriterHandoffCases({
   realHelm: string;
   repository: string;
 }): void {
-  test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
+  test("an aliased separate database deployment pauses before Helm and preserves the handoff on resume", async (t) => {
     let databaseId = "ins_test";
     const f = await fixture(t, {
       controllerOnly: true,
       candidates: true,
-      chart: { installation: (installation) => installation },
+      valuesExtension: "yaml",
+      chart: {
+        values: (values) => ({ migrationMode: "separate", ...values }),
+        installation: (installation) => installation,
+      },
       databaseAnswer: () => ({ rows: [{ id: databaseId }] }),
+      migrationSecrets: true,
     });
     // This handoff changes migration ownership, not the example's Plugin Drivers.
     await writeFile(
       join(f.directory, "candidate-installation.json"),
       await readFile(join(f.directory, "installation.json")),
     );
-    const path = join(f.directory, "candidate-values.json");
-    const values = asRecord(JSON.parse(await readFile(path, "utf8")));
-    assert.ok(values, "expected staged chart values");
-    const database = asRecord(values.database);
-    assert.ok(database, "expected staged database settings");
-    values.database = { ...database, upgradeMigration: "separate" };
-    await writeFile(path, JSON.stringify(values));
+    // Operators can reuse a YAML scalar with an alias in their candidate values.
+    await execute("yq", [
+      "-i",
+      '.migrationMode anchor = "separate" | .database.upgradeMigration alias = "separate"',
+      join(f.directory, "candidate-values.yaml"),
+    ]);
+    const { stdout } = await execute(
+      realHelm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "system",
+        "--values",
+        join(f.directory, "values.yaml"),
+      ],
+      { cwd: repository },
+    );
+    const initializer = renderedDocuments(stdout).find(
+      (resource) => field(field(resource, "metadata"), "name") === "oce-initialization",
+    );
+    assert.ok(initializer);
+    await writeFile(
+      join(f.directory, "state.json"),
+      JSON.stringify({
+        ...(await f.state()),
+        installationRelease: { hooks: [{ manifest: JSON.stringify(initializer) }] },
+      }),
+    );
     await runWithInjectedFault(f, "fail-scale-worker");
+    const check: unknown = JSON.parse(await f.readEvidence("preflight-migration-job.json"));
+    const pod = field(field(field(check, "spec"), "template"), "spec");
+    const containers = list(field(pod, "containers"), "preflight migration Job containers");
+    const args = list(field(containers[0], "args"), "preflight migration arguments");
+    assert.deepEqual(args.slice(-2), ["--check-for-installation", "ins_test"]);
     await assert.rejects(f.run("--resume", "--migration-history-checked"), (error: unknown) => {
       const failure = readUpgradeFailure(error);
       return failure.code === 3 && /separate database deployment/.test(failure.stderr);
@@ -145,9 +185,59 @@ export function registerWriterHandoffCases({
     assert.equal(refused.helmSubmissions ?? 0, 0);
     assert.deepEqual([refused.api, refused.worker], [0, 0]);
     databaseId = "ins_test";
-    // Completing the handoff requires no further patch.
-    await f.run("--resume", "--migration-history-checked");
-    assert.equal((await f.state()).helmSubmissions, 1);
+    const resume = ["--resume", "--migration-history-checked"];
+    await runWithInjectedFault(f, "reject-helm-submission", ...resume);
+    const rejected = await f.state();
+    const intent = await assertHelmIntent(f, 1, 2);
+    assert.equal(rejected.version, 1);
+    assert.equal(rejected.helmSubmissions, 1);
+    const handoff = join(f.evidence, "database-migration-handoff.json");
+    const savedHandoff = join(f.directory, "saved-handoff.json");
+    const settingsPaths = [
+      join(f.directory, "values.yaml"),
+      join(f.directory, "installation.json"),
+    ];
+    const settings = () =>
+      Promise.all(
+        settingsPaths.map(async (path) => ({
+          bytes: await readFile(path),
+          inode: (await stat(path)).ino,
+        })),
+      );
+    const attempts = () => readdir(join(f.evidence, "helm-attempts")).then((names) => names.sort());
+    const preflights = () =>
+      readdir(f.evidence).then((names) =>
+        names.filter((name) => name.startsWith("upgrade-preflight-resume.")).sort(),
+      );
+    const before = [await settings(), await attempts(), await preflights(), await f.events()];
+
+    // Manual migration has no sibling journal to reject a missing handoff.
+    assert.equal(existsSync(`${f.evidence}.migration-state.json`), false);
+    await rename(handoff, savedHandoff);
+    try {
+      await assert.rejects(
+        f.run(...resume),
+        /original separate database deployment handoff is missing/,
+      );
+      const held = await f.state();
+      assert.deepEqual(
+        [held.api, held.worker, held.version, held.helmSubmissions, held.dispatches],
+        [0, 0, 1, 1, 0],
+      );
+      assert.deepEqual(await assertHelmIntent(f, 1, 2), intent);
+      assert.deepEqual(
+        [await settings(), await attempts(), await preflights(), await f.events()],
+        before,
+      );
+      assert.equal(existsSync(handoff), false);
+    } finally {
+      await rename(savedHandoff, handoff);
+    }
+
+    // The original evidence allows completion without stopping either writer again.
+    await f.run(...resume);
+    assert.equal((await f.state()).helmSubmissions, 2);
+    assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
   });
 
   test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {
@@ -763,8 +853,9 @@ export function registerWriterHandoffCases({
       const prefix = join(f.evidence, "dispatch/ns_test--agt_test");
       assert.doesNotMatch(failure.stderr, /agt_ok/);
       assert.equal(existsSync(join(f.evidence, "dispatch/ns_test--agt_ok.json")), true);
+      const diagnostic = upgradeDiagnosticLines(failure.stderr);
       if (!refusal) {
-        assert.deepEqual(failure.stderr.trimEnd().split("\n"), [
+        assert.deepEqual(diagnostic, [
           `upgrade-production-images: at least one Agent deployment outcome is unknown; inspect ${join(f.evidence, "dispatch")} and reconcile it before resuming:`,
           '  - Agent agt_test "Mail triage" in Namespace ns_test',
         ]);
@@ -774,7 +865,7 @@ export function registerWriterHandoffCases({
         return;
       }
       assert.deepEqual(
-        failure.stderr.trimEnd().split("\n"),
+        diagnostic,
         keyRefused
           ? [
               `upgrade-production-images: OCC rejected the service key in ${join(f.directory, "key")}, so it did not deploy 1 recorded Agent(s) and saved no revision for them:`,
