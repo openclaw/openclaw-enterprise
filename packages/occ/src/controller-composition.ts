@@ -73,6 +73,7 @@ import type {
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialProxyDriver,
+  CredentialSourceReference,
   DeploymentPolicy,
   Installation,
   InstallationDeploymentInventory,
@@ -167,6 +168,15 @@ export interface ControllerOptions {
     readonly gateway: CredentialGatewayDriver;
     readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
   };
+  /** Code-only binding for Source-scoped cleanup owned by the selected delivery Proxy. */
+  readonly credentialSourceDelivery?:
+    | ((
+        proxy: CredentialProxyDriver,
+        namespace: Readonly<Namespace>,
+        source: CredentialSourceReference,
+        signal: AbortSignal,
+      ) => Promise<void>)
+    | undefined;
   readonly preparedTokens?: TokenService | undefined;
   readonly modelCredentialPreset?: (input: {
     readonly presetId: string;
@@ -482,6 +492,7 @@ function createCredentialServices({
   drivers,
   publicController,
   preparedTokens,
+  credentialSourceDelivery,
   deviceCipher,
   canUseNativeAuthorization,
 }: {
@@ -501,6 +512,7 @@ function createCredentialServices({
     | "finishConnectionRevocation"
   >;
   preparedTokens: TokenService | undefined;
+  credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   canUseNativeAuthorization: boolean;
 }) {
@@ -569,6 +581,22 @@ function createCredentialServices({
         sourceDrivers: credentialSourceDrivers,
         iamPolicy,
         selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+        retireDelivery: async (namespace, source, signal) => {
+          if (!drivers.hasSelection("credential_proxy_delivery")) {
+            return;
+          }
+          if (!credentialSourceDelivery) {
+            throw new DependencyUnavailableError(
+              "The selected credential delivery Proxy cannot retire this Source.",
+            );
+          }
+          await credentialSourceDelivery(
+            publicController.selectedDriver("credential_proxy_delivery"),
+            namespace,
+            source,
+            signal,
+          );
+        },
         clock: resourceValues.now,
         timestamp: resourceValues.timestamp,
         tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
@@ -736,6 +764,7 @@ export function createControllerComposition(
     drivers,
     publicController,
     preparedTokens,
+    credentialSourceDelivery: options.credentialSourceDelivery,
     deviceCipher,
     canUseNativeAuthorization: !authorization,
   });

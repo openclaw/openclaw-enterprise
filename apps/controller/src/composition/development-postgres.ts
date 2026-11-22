@@ -3,7 +3,10 @@ import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
-import { installationControllerOptions } from "./installation-config.ts";
+import {
+  credentialSourceDeliveryBinding,
+  installationControllerOptions,
+} from "./installation-config.ts";
 import { installTokenServiceDriver } from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
@@ -190,6 +193,7 @@ export async function composePostgresDevelopment(
       {
         authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(drivers?.installation),
+        credentialSourceDelivery: credentialSourceDeliveryBinding(drivers),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),

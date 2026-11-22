@@ -92,14 +92,15 @@ the old snapshot.
 Enabled external channels require dedicated execution; unsupported Harness and
 execution-mode combinations fail deployment. Embedded OpenClaw is never delegated to OpenShell.
 
-Stopping an Agent deletes its exact gateway route and runtime, then removes the
-dedicated Harness Deployment or delegates removal to its provider. Sandbox cleanup
-follows the [provisioning lifecycle](#sandbox-provisioning). Stop retains Agent-owned
-PersistentVolumeClaims, runtime credential Secrets, the Credential Source, and Provider
-copy; retirement removes revision resources. Repeated stop checks exact ownership
-and converges when runtime objects are absent. For revisions with a Credential Proxy,
-Compute stops the Harness before removing the Proxy deployment and keeps the target
-record until removal succeeds.
+Stop removes the Agent's exact gateway route and runtime, then its dedicated Harness
+Deployment or delegates provider-owned removal. Sandbox cleanup follows the
+[provisioning lifecycle](#sandbox-provisioning). Stop retains Agent-owned
+PersistentVolumeClaims, runtime credential Secrets, and the Credential Source;
+retirement removes revision resources. Repeated stop checks exact ownership and
+converges for absent runtime objects. Compute stops the Harness before removing its
+revision's Credential Proxy deployment and retains the target record until removal
+succeeds. The [OpenShell Proxy](credential-proxy.md) retires its delivery copy after
+the last binding is removed.
 
 ### Plugin startup status
 

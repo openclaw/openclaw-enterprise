@@ -69,6 +69,7 @@ import {
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   PostgresCommitOutcomeUnknownError,
@@ -3868,7 +3869,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         failure: error.failure,
       });
     }
-    if (
+    if (error instanceof CredentialDeliveryFailedError) {
+      const params = request.params as { namespaceId?: string; credentialSourceId?: string };
+      app.log.warn({
+        event: "credential.delivery_failed",
+        requestId: request.id,
+        namespaceId: params.namespaceId,
+        credentialSourceId: params.credentialSourceId,
+        code: "CREDENTIAL_DELIVERY_FAILED",
+      });
+    } else if (
       mapped.status === 503 &&
       mapped.code === "DEPENDENCY_UNAVAILABLE" &&
       error instanceof Error &&
