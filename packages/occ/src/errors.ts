@@ -1162,6 +1162,7 @@ export class KubernetesSecretWriteForbiddenError extends DependencyUnavailableEr
 
 /** A step of dedicated activation that completes by itself once a workload catches up. */
 export type ActivationPendingCode =
+  | "CREDENTIAL_ACTIVATION_PENDING"
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_NODE_BINDING_PENDING"
   | "REPOSITORY_GIT_MATERIAL_PENDING"
@@ -1229,6 +1230,17 @@ export class ComputePreparationFailedError extends Error {
     if (evidence !== undefined) {
       this.evidence = evidence;
     }
+  }
+}
+
+/** The selected Credential Proxy confirmed this deployment cannot become ready. */
+export class CredentialDeploymentFailedError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super("The Credential Proxy refused the staged deployment.");
+    this.name = "CredentialDeploymentFailedError";
+    this.code = code;
   }
 }
 

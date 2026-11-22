@@ -28,7 +28,7 @@ OpenShell is a development integration. See the
 
 ## Register a source
 
-For write-only enrollment through TokenService, see [managed static sources](credential-sources/managed-static.md). Agent deployment remains unavailable.
+For write-only enrollment and reviewed staged Agent admission through TokenService, see [managed static sources](credential-sources/managed-static.md).
 
 1. Wait for the Namespace to become `ready`.
 2. For a Secret-backed source, [create a Secret](drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and keep its `ref`.
@@ -132,7 +132,7 @@ Cloning, pushing or creating a pull request requires a separately admitted
 For **source-backed Harness authentication**, set `harnessAuth` to
 `{ "method": "credential_source", "sourceId": "cs_…" }`. Choose a listed
 Gateway source whose catalog type supports Harness authentication, or a managed
-static Source for draft binding only. Naming an
+static Source for staged deployment. Naming an
 unlisted source, or removing it while `harnessAuth` still names it, fails after the grant checks with `400`: "The Harness credential source must be listed in the Agent's credentialSources." When replacing a binding after a Driver change,
 update `harnessAuth` if it names the old source.
 [Binding and deployment trace](../flows/credential-source-lifecycle.md#3-bind-and-admit-an-agent-revision)
@@ -145,11 +145,13 @@ update `harnessAuth` if it names the old source.
 
 While a Credential Gateway is selected, deployment and guided provisioning reject
 `api_key` and `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`.
-Guided provisioning accepts a ready model source in `harnessAuth`, records it in
+Guided provisioning accepts a ready Gateway model source in `harnessAuth`, records it in
 the Agent's `credentialSources`, and grants its service principal exact source
 `operate` access. The caller needs source `operate`; the Agent receives no
 permission on the underlying model Secret. Queued and running provisioning jobs
 keep their source referenced before the Agent exists.
+Guided provisioning rejects TokenService-owned Sources with `409` before creating work.
+Create an ordinary Agent draft, save its network grant, and deploy it instead.
 
 The Console reads the Gateway catalog from Installation or [Namespace Agent capabilities](authorization/default-users.md#create-agents-in-the-console).
 Both Dedicated Harnesses share provider and Secret controls. API-key provisioning registers the Secret first. See [Console creation](console/create-and-deploy.md).
