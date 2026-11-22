@@ -1,6 +1,7 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  admitRepositoryNetworkPolicy,
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
@@ -8,7 +9,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
-import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
+import type { RepositoryNetworkPolicy, SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   AgentRepository,
   AgentRevisionRepository,
@@ -753,6 +754,44 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
   });
 }
 
+type StoredExecutionAdmission = AgentRevision["executionAdmission"] & {
+  readonly repositoryNetworkPolicyVersion?: unknown;
+};
+
+function executionAdmissionFromRow(
+  stored: StoredExecutionAdmission,
+  policy: RepositoryNetworkPolicy | undefined,
+  egressPlan: AgentRevision["egressPlan"],
+): AgentRevision["executionAdmission"] {
+  try {
+    const { repositoryNetworkPolicyVersion, ...admission } = stored;
+    const hasReaderVersion = Object.hasOwn(stored, "repositoryNetworkPolicyVersion");
+    // Bind the storage-only marker to the policy and supported execution mode
+    // before exposing a scoped revision to Worker.
+    if (
+      hasReaderVersion !== (policy !== undefined) ||
+      (hasReaderVersion &&
+        (admission.mode !== "unprotected" ||
+          policy?.version !== 1 ||
+          repositoryNetworkPolicyVersion !== policy.version ||
+          !isDeepStrictEqual(admitRepositoryNetworkPolicy(policy.grants, policy.grants), policy)))
+    ) {
+      throw new Error("Invalid persisted repository network policy reader version.");
+    }
+    const executionAdmission = hasReaderVersion ? admission : stored;
+    assertExecutionAdmission({
+      executionAdmission,
+      ...(egressPlan === undefined ? {} : { egressPlan }),
+    });
+    return executionAdmission;
+  } catch {
+    throw new SavedConfigurationReadError(
+      "configuration",
+      "Persisted AgentRevision execution admission is missing, unsupported or inconsistent.",
+    );
+  }
+}
+
 function revisionFromRow(
   row: PostgresRow,
   metadata = revisionMetadataFromRow(row),
@@ -769,32 +808,25 @@ function revisionFromRow(
     harness_auth: AgentRevision["harnessAuth"] & { readonly protectedExecutionVersion?: number };
     credential_sources?: AgentRevision["credentialSources"];
     egress_plan?: AgentRevision["egressPlan"];
-    execution_admission: AgentRevision["executionAdmission"];
+    execution_admission: StoredExecutionAdmission;
     secret_driver_id?: AgentRevision["secretDriverId"];
     secret_bindings?: AgentRevision["secretBindings"];
     plugins?: AgentRevision["plugins"];
     plugin_approvers?: AgentRevision["pluginApprovers"];
     repository_credentials?: AgentRevision["repositoryCredentials"];
   };
-  try {
-    assertExecutionAdmission({
-      executionAdmission: admitted.execution_admission,
-      ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
-    });
-  } catch {
-    throw new SavedConfigurationReadError(
-      "configuration",
-      "Persisted AgentRevision execution admission is missing, unsupported or inconsistent.",
-    );
-  }
+  const executionAdmission = executionAdmissionFromRow(
+    admitted.execution_admission,
+    admitted.sandbox_policy?.repositoryNetworkPolicy,
+    admitted.egress_plan,
+  );
   // Older readers require an exact Harness-auth shape, rejecting the protected
   // reader version before handing a revision to Compute. It grants no authority.
   const { protectedExecutionVersion, ...harnessAuth } = admitted.harness_auth ?? {};
-  const protectedAdmission = admitted.execution_admission.mode === "protected";
+  const protectedAdmission = executionAdmission.mode === "protected";
   if (
     Object.hasOwn(admitted, "service_account") ||
-    protectedExecutionVersion !==
-      (protectedAdmission ? admitted.execution_admission.version : undefined) ||
+    protectedExecutionVersion !== (protectedAdmission ? executionAdmission.version : undefined) ||
     !validHarnessAuthSnapshot(harnessAuth, text(row, "namespace_id"))
   ) {
     throw new SavedConfigurationReadError(
@@ -860,7 +892,7 @@ function revisionFromRow(
       ? {}
       : { repositoryCredentials: admitted.repository_credentials }),
     harnessAuth,
-    executionAdmission: admitted.execution_admission,
+    executionAdmission,
     ...(admitted.egress_plan === undefined ? {} : { egressPlan: admitted.egress_plan }),
     ...(admitted.credential_sources === undefined
       ? {}
@@ -1897,16 +1929,20 @@ export class PostgresPlatformState implements PlatformStateStore {
     });
   }
 
+  /** Select Read Committed when protected reads must see commits made while waiting for locks. */
   async transactWithQueue<T>(
     work: (
       state: PlatformUnitOfWork,
       queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
     ) => Promise<T>,
-    options: PostgresWorkQueueOptions = {},
+    options: PostgresWorkQueueOptions & { readonly readCommitted?: boolean } = {},
   ): Promise<T> {
-    const queueOptions = { ...this.queueOptions, ...options };
-    return this.execute(false, async (state, context) =>
-      work(state, this.bindQueue(context, queueOptions)),
+    const { readCommitted, ...queueOverrides } = options;
+    const queueOptions = { ...this.queueOptions, ...queueOverrides };
+    return this.execute(
+      false,
+      async (state, context) => work(state, this.bindQueue(context, queueOptions)),
+      readCommitted,
     );
   }
 
@@ -4212,6 +4248,12 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The AgentRevision execution admission is missing or inconsistent.",
           );
         }
+        const repositoryPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+        if (repositoryPolicy !== undefined && revision.executionAdmission.mode !== "unprotected") {
+          throw new ScopeViolationError(
+            "Repository network policy requires unprotected execution.",
+          );
+        }
         if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
@@ -4327,7 +4369,13 @@ export class PostgresPlatformState implements PlatformStateStore {
                       protectedExecutionVersion: revision.executionAdmission.version,
                     }
                   : revision.harnessAuth,
-              execution_admission: revision.executionAdmission,
+              execution_admission:
+                repositoryPolicy === undefined
+                  ? revision.executionAdmission
+                  : {
+                      ...revision.executionAdmission,
+                      repositoryNetworkPolicyVersion: 1,
+                    },
               ...(revision.egressPlan === undefined ? {} : { egress_plan: revision.egressPlan }),
               ...(revision.credentialSources === undefined
                 ? {}

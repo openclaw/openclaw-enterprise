@@ -115,3 +115,37 @@ export function isCanonicalRepositoryGrantList(
     return false;
   }
 }
+
+export function admitRepositoryNetworkPolicy(
+  value: unknown,
+  ceiling: unknown,
+): RepositoryNetworkPolicy | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const grants = parseGrants(value, "/repositoryNetworkPolicy");
+  const limits = new Map(
+    (ceiling === undefined ? [] : parseGrants(ceiling, "/repositoryNetworkPolicyCeiling")).map(
+      ({ repository, access }) => [repository, access],
+    ),
+  );
+  for (const [index, grant] of grants.entries()) {
+    const limit = limits.get(grant.repository);
+    if (limit === undefined || (limit === "read" && grant.access === "write")) {
+      throw new RepositoryNetworkPolicyAdmissionError(
+        "OUTSIDE_CEILING",
+        `/repositoryNetworkPolicy/${index}`,
+        "The grant exceeds the Installation repository network policy delegation limit.",
+      );
+    }
+  }
+
+  grants.sort((a, b) => (a.repository < b.repository ? -1 : 1));
+  const version = 1;
+  const canonicalGrants = Object.freeze(grants.map((grant) => Object.freeze(grant)));
+  return Object.freeze({
+    version,
+    grants: canonicalGrants,
+    identity: JSON.stringify({ version, grants: canonicalGrants }),
+  });
+}
