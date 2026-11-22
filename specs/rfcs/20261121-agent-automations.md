@@ -4,7 +4,7 @@ implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
-# Proposal: Schedule model-only Agent automations through OCC
+# Proposal: Schedule Agent automations with approved MCP tools
 
 - **ID:** RFC-20261121-agent-automations
 - **Created:** 2026-11-21
@@ -15,82 +15,89 @@ author: kevinlin-openai
 
 ## Decision and scope
 
-OpenClaw Control Plane (OCC) brokers six HTTP operations for **model-only** Agent
-automations. OCC owns human authorization, creator records and attributable audit.
-OpenClaw owns job definitions, scheduling, model execution and run history.
+OpenClaw Control Plane (OCC) brokers six HTTP operations for timed Agent turns.
+An operator can schedule the same **Agent-shared, preapproved static Model Context
+Protocol (MCP) operations** that the deployed Agent can perform unattended. OCC
+owns caller authorization, creator records, binding identity and audit. OpenClaw
+owns job definitions, scheduling, execution and history.
 
-Every OCC-created scheduled Agent turn has explicit `payload.toolsAllow: []`.
-OCC reasserts that empty list on relevant updates. There is no caller-selected
-tool field, wildcard, alias, default or automatic tool grant. The scheduled model
-must receive no callable tools: no code, shell, file, delegation/subagent,
-messaging, dynamic, app or MCP tools. GitHub reports and connector actions are
-not part of this feature.
+The cap is a finite list of exact native tool names. The server derives it from
+the deployed Agent's explicit provisioning and Gateway tool policy. The client
+supplies the schedule and prompt. When the Agent has no eligible operations, the
+cap is explicitly `[]` and the scheduled turn can use the model alone. Unknown
+qualification or an ambiguous binding refuses admission.
 
-This requirement concerns model-initiated tool calls. Scheduler activity, model
-requests, runtime/bootstrap processing, history persistence and configured failure
-alerts are outside the no-tools claim. Ordinary Agent chat, native administration,
-and their existing tools and approval policies remain unchanged.
+## Execution authority
 
-## Trust boundary
+The human needs exact-Agent `operate` to create the job. Creation authorizes
+standing use of the Agent's shared workload authority. The native administrative
+connection can create a trusted operator job. This design grants it only the
+admitted MCP operations. It never captures the creator's personal account,
+requester session, delegated user credential or approval. The ordinary Agent and
+scheduled turn must use the same server endpoint, tools, permitted provider
+actions, workload credential identity and standing approval. An operation that
+needs an interactive approval or a requester-specific grant is ineligible.
+Approval of one tool does not imply approval of each action accepted by it.
+The provider or its adapter must enforce the same action restrictions on both paths.
 
-The guarantee applies to OCC-managed writes while trusted writers leave those
-jobs unchanged. Ordinary chat and native administrators are trusted and can
-alter native jobs outside OCC. This is **not** a tamper-resistant sole-writer
-guarantee. There is no native-edit prevention, import, ownership adoption or
-background reconciliation service. Unregistered native jobs remain outside OCC
-inventory and management.
-
-OCC authorizes its callers; it does not claim that the administrative native
-transport is a non-owner Agent identity. The private Gateway credential never
-reaches an HTTP caller. A scheduled model request uses the selected Agent's
-runtime authentication, not the human creator's controller-session credentials.
+An existing job retains the Agent's delegation after its creator loses access.
+The creator then loses management and history access unless separately authorized.
+An Agent administrator can disable or remove the job. Withdrawing an operation or
+its workload credential blocks future calls. A call already issued can complete.
 
 <a id="unresolved-execution-authority"></a>
 
-## Why the tool-bearing design was narrowed
+## Select eligible tools
 
-At the pinned `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`, direct administrative
-cron creation produces trusted operator authority. Native
-[execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
-and [sender projection](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context-registry.ts#L176)
-do not establish a non-owner caller. Approved
-[`sessions` actions](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/agents/tools/sessions-tool.ts#L193)
-can therefore have controls that explicit non-owner callers lack. Target
-visibility still applies; cross-session effects have not been demonstrated.
-OCE's [managed policy](../../apps/controller/src/drivers/compute/gateway-tool-policy.ts)
-forbids Gateway administration tools, so Gateway restart was not demonstrated as
-reachable in deployed OCE.
+The component that provisions the runtime must attest the effective bindings
+for its Driver, Harness and packaged version. Select only enabled, static MCP
+servers with explicitly provisioned, nonempty literal include lists. Resolve
+each exact name against the authenticated server catalog and the deployed
+Gateway policy. Record the native name, underlying server and original MCP
+tool name, stable endpoint and workload credential reference/identity, permitted
+actions and standing approval identity. Refuse wildcard or pattern grants,
+ambiguous names, missing identity evidence and tools outside either policy.
+Bind all entries to the exact Namespace, Agent and provisioning revision.
+Keep credential values out of this record. A rotated secret for the same authorized workload identity can qualify after revalidation.
 
-A finite nonempty allowlist does not repair actor/action authority and
-[disables Codex's native shell/file surface](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/extensions/codex/src/app-server/dynamic-tool-build.ts#L523).
-The selected alternative is an explicit empty list, not a partial deny list or
-a global restriction on ordinary Agent chat. No upstream changes are authorized.
-Source support for an empty list is not production runtime qualification.
+For a nonempty cap the effective Code Mode and tool search must both be off.
+Exclude native shell, files, code execution, delegation, messaging, dynamic
+discovery and app tools. Neither creation nor a later run can introduce another
+tool through discovery, a wrapper or alias. Qualify the packaged embedded
+OpenClaw Harness and ordinary dedicated Codex Harness independently. Current
+managed MCP Sandbox and Codex app topologies cannot supply this contract.
+Ordinary chat and native administration keep their existing policies.
+
+Upstream [operator execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
+and [Codex native tool construction](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/extensions/codex/src/app-server/dynamic-tool-build.ts#L523)
+make an unchecked list of tool names insufficient. The proposal retains
+model-only scheduling for Agents with no eligible MCP operations. A generic
+tool picker would grant authority without proving the endpoint, identity or
+action. Native jobs outside the OCC inventory remain under native administration.
+Trusted native writers can change jobs outside OCC. This RFC covers OCC-managed
+writes and policy changes on supported deployments.
 
 ## Goals and non-goals
 
-Support one-shot, interval and cron schedules; native normalization; CRUD,
-pause/resume and retained run history; exact-Agent authorization; and explicit
-uncertainty without duplicate dispatch.
-
-Immediate execution, result-delivery recipients, commands, scripts, event
-triggers, scheduled tools/connectors, service-principal HTTP access, Console
-controls and CLI commands are out of scope. Native edits outside OCC remain
-trusted activity outside this feature's guarantee.
+Support one-shot, interval and cron schedules, CRUD, pause/resume, native
+normalization and retained history. Immediate execution, new result
+destinations, scripts, event triggers, service-principal HTTP access, Console
+controls and CLI commands are outside this proposal. Scheduler housekeeping
+and configured failure notifications can still occur.
 
 ## Authorization and interface
 
 All paths start with `/namespaces/{namespaceId}/agents/{agentId}/automations`.
 Public automation IDs are UUIDs; they are distinct from native job IDs.
 
-| Method and path | Request | Result |
-| --- | --- | --- |
-| POST collection | `name`, `enabled`, `schedule`, `prompt` | 201 and normalized job, after qualification |
-| GET collection | Optional `offset`, `limit` | 200 and authorized summaries |
-| GET `/{id}` | No query | 200 and supported job |
-| PATCH `/{id}` | Expected revision and editable fields | 200 and updated job |
-| DELETE `/{id}` | `expectedConfigRevision` query | 204 |
-| GET `/{id}/runs` | Optional `offset`, `limit` | 200 and authorized native history |
+| Method and path  | Request                                 | Result                                      |
+| ---------------- | --------------------------------------- | ------------------------------------------- |
+| POST collection  | `name`, `enabled`, `schedule`, `prompt` | 201 and normalized job, after qualification |
+| GET collection   | Optional `offset`, `limit`              | 200 and authorized summaries                |
+| GET `/{id}`      | No query                                | 200 and supported job                       |
+| PATCH `/{id}`    | Expected revision and editable fields   | 200 and updated job                         |
+| DELETE `/{id}`   | `expectedConfigRevision` query          | 204                                         |
+| GET `/{id}/runs` | Optional `offset`, `limit`              | 200 and authorized native history           |
 
 Creation requires a human session and exact-Agent `operate`; `administer` alone
 does not substitute. Management and history require creator `operate` or
@@ -117,10 +124,14 @@ Typed native calls are limited to `cron.add`, `cron.list`, `cron.get`,
 the underlying native credential.
 
 Creation maps to `sessionTarget: "isolated"`, `wakeMode: "now"`, an `agentTurn`
-payload with the requested prompt and **explicit empty** `toolsAllow`, and
-`delivery.mode: "none"`. Never omit the cap or substitute a wildcard/default.
-Relevant native updates must preserve/reassert `[]`; an unqualified or unsupported
-shape must not be activated as model-only work.
+payload with the requested prompt and explicit `toolsAllow`, and
+`delivery.mode: "none"`. Preserve native schedule normalization, including generated
+interval anchors and cron staggering, in reads and subsequent edits. Persist the immutable ceiling and binding identities
+with the OCC reservation. Reassert the permitted cap on update. Additions to
+the Agent policy never expand an existing job. If a selected binding is
+withdrawn, remapped or cannot be verified, refuse enablement and prevent that
+binding from executing. An empty MCP include filter can mean unrestricted access. Disable or omit that server when its permitted set is empty.
+Never serialize an empty include list as a restriction.
 
 Before native create, reserve a public OCC UUID with its exact Namespace, Agent,
 human creator, selected native Agent and creation time. Commit reservation and
@@ -129,7 +140,7 @@ declaration key and create disabled. OpenClaw allocates the native ID. Bind it
 durably once before a separate update enables the job if requested.
 
 Creator/target fields are immutable; a native ID cannot be rebound or shared by
-two records for one Agent. Store no prompt, credential, duplicate definition or
+two records for one Agent. Store no prompt, credential value, duplicate definition or
 second scheduler. Agent deletion removes its ownership rows. Native job deletion
 retains them so the same creator/admin boundary authorizes history afterward.
 Native history expiry still applies, and a deleted job that never ran returns 404.
@@ -164,38 +175,71 @@ denials and uncertain outcomes with Principal, Namespace, Agent, selected
 revision, operation and known public/native IDs. Exclude prompts, transcripts,
 credentials and native payloads. Preserve metadata established before a denial.
 
+## Interface changes and deployment
+
+The public HTTP and IAM contract above stays the same. Extend the PostgreSQL
+ownership record to persist the immutable cap and binding snapshot atomically
+with reservation. Existing rows without trusted binding evidence are eligible
+only for their proven model-only ceiling. Never infer a tool-bearing grant by
+scanning an existing job or current catalog.
+
+Extend the runtime-facing Driver contract to report qualified bindings and to
+apply or verify enforcement **before native scheduler startup**, including
+catch-up. OCC compares opaque binding identities and calls the selected Driver.
+The Driver and Harness own MCP catalog lookup, credential and action checks,
+native tool mapping and runtime-specific controls. OCC core must contain no
+vendor-specific rules. Submit this RFC before implementing the covered Driver
+contract changes.
+
+Bind admission and enablement to the selected running Agent revision. Serialize
+these writes with the deployment decision or refuse them while a pending
+successor can change the bindings. The worker must check every bound job against
+the intersection of its original cap and the successor's effective policy before starting or resuming its scheduler.
+Keep the scheduler stopped on refusal or failure. Apply the same gate to restart,
+rollback and crash recovery before overdue jobs can run. A completed check of the
+old Gateway cannot authorize the replacement. Native CAS protects the job
+definition. It cannot detect remapping the same tool name to a new endpoint,
+credential or action. Check the saved binding identity and current deployed
+policy before use. The runtime must stop new calls as soon as an effective
+grant or credential is withdrawn.
+
 ## Qualification and acceptance
 
-Qualification uses the actual packaged embedded OpenClaw and dedicated Codex
-Harnesses. Fixed `[]` in source or a native CRUD fixture is insufficient. No
-mocked model/tool outcome, invented endpoint or test-only qualification bypass
-can satisfy these criteria.
-
-- **AC1 — Model-only execution:** create all schedule forms through OCC and retain
-  native normalization. Each packaged Harness completes a real model-only
-  one-shot, deletes it natively, and exposes its retained history through OCC.
-- **AC2 — Lifecycle and persistence:** edit, pause, resume and delete with native
-  CAS. Preserve public/native identity, creator ownership, paused state, the empty
-  cap and available history across supported revision/Gateway replacement.
-- **AC3 — No tools and authorization:** reject client-selected tool fields and
-  prove the scheduled model has no shell/file, code, dynamic, subagent/delegation,
-  messaging, app or MCP tools. Use genuine runtime evidence and independent
-  absence-of-effect checks, not the model's claim alone. Agent policy changes
-  must not widen an existing managed job's empty cap. Preserve creator/admin
-  separation, administer-only create refusal, CSRF/Origin, service-key refusal,
-  demotion safety and UUID validation. Ordinary chat/native administration remain
-  outside the restriction.
-- **AC4 — Recovery:** prove lost replies, native CAS races, post-commit audit and
-  revision failures without duplicate dispatch. Distinguish native/container proof
-  from PostgreSQL-backed production placement and model proof.
-- **AC5 — Durable audit and cleanup:** prove PostgreSQL ownership constraints,
-  reservation/binding audit atomicity, safe failed-create cleanup with concurrent
-  binding, post-deletion authorization, and Agent deletion with sibling retention.
+- **AC1. Genuine execution.** Through OCC, exercise each schedule type. On
+  each packaged Harness, run a real scheduled turn against a provisioned static
+  MCP service. Observe a permitted operation on the service with the same
+  verified workload identity and approval as ordinary Agent chat. Use provider
+  or service records to verify the action and credential identity.
+- **AC2. Restricted execution.** On both Harnesses, request a forbidden sibling
+  tool, a second server and a forbidden action on the allowed tool. Verify
+  refusals and absence of provider effects. Attempt native shell/file actions,
+  delegation, messaging, app tools and discovery. Verify the effective tool
+  surface and absence of effects. A personal credential or an interactive
+  approval requirement cannot qualify. Check explicit model-only execution with
+  no eligible operations, and refusal of Code Mode/tool search on a nonempty cap.
+- **AC3. Ownership and persistence.** Verify CSRF/Origin, service-key refusal,
+  exact-Agent create and creator/admin management, UUID validation and native
+  history after deletion. Demote the creator and verify the job still uses the
+  shared Agent identity. An administrator can stop it. Pause, resume, edit
+  and delete with native CAS. Preserve cap, binding, identity, paused state
+  and retained history across supported Gateway and Agent revision replacement.
+- **AC4. Policy and recovery.** Narrow a literal filter, withdraw a credential,
+  and remap the same alias to another server or principal. Race enablement with
+  a pending revision. Restart with an overdue job and roll back to another
+  revision. Verify no newly forbidden call starts, no widened grant is stored,
+  and an already issued call is distinguished from a new call. Prove a later
+  catalog or policy addition cannot widen the job. Check concurrent native CAS,
+  lost replies, failed audit and revision changes without duplicate dispatch.
+- **AC5. Durable records.** Verify PostgreSQL reservation, binding and audit
+  atomicity, failed-create cleanup racing with binding, Agent deletion with
+  sibling retention, and history access after deletion. Use the actual packaged
+  Harnesses and real endpoint, credential, model and database evidence for
+  their relevant criteria. A native CRUD fixture alone cannot qualify execution.
 
 ## Delivery status
 
-The previous tool-bearing route remains gated. The model-only implementation and
-its runtime qualification must replace it before activation is completed. The
-[plan](../plans/20261121-agent-automations.md) records exact tested commits, results,
-missing credentials and remaining proof. No implementation PR or release-readiness
-claim is authorized until the requested outcome is ready.
+The broker is partially implemented. Tool-bearing scheduling stays gated until
+the relevant Driver and packaged Harness satisfy the criteria above. The
+[implementation plan](../plans/20261121-agent-automations.md) records delivery
+evidence. RFC submission permits implementation of the proposed Driver contract.
+Production qualification remains outstanding.
