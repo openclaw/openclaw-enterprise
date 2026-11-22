@@ -38,17 +38,17 @@ is separate.
    migration catalogs, and completed history. Verify schema and bootstrap state
    without writes, using the incumbent Installation ID obtained independently
    through its authenticated API and bound startup configuration. Refuse a missing
-   or different Installation ID. Independently establish that both controllers use
-   the same live writable PostgreSQL database; a restored copy can retain the same
-   Installation ID and migration history. Refuse continuous service if the shared
-   writable target cannot be established. Qualify both APIs with the
-   incumbent worker and the candidate API with its replacement. Every write made
-   during overlap must remain readable and actionable by each API and worker
+   or different Installation ID. Independently verify that both controllers
+   share one live writable PostgreSQL database throughout overlap and on
+   reconnect. A restored copy can retain the ID and history. Refuse overlap
+   if database identity is uncertain. Qualify both APIs with the incumbent
+   worker and the candidate API with its replacement. Each write must
+   remain readable and actionable by every API and worker
    still serving. Defer an incompatible effect until its predecessors drain only
    when the operation contract permits the delay; otherwise use maintenance.
    Qualify mixed-version Console assets in a cold load and open tab. Exclude
    sessions requiring the original worker. Refuse continuous service before
-   changing workloads if any live condition fails.
+   changing workloads if ingress lacks a verifiable drain signal or a live condition fails.
 2. **Start the candidate without changing incumbent behavior.** Helm owns two
    API Deployments with disjoint slot selectors and a common Service selector;
    normally one slot has one replica and the other is empty. Stage a revision
@@ -61,12 +61,14 @@ is separate.
    authenticated first attempt reach that Pod through the ordinary ingress while
    the incumbent remains healthy.
 4. **Withdraw and drain the incumbent.** Target its slot and exact Pod UID.
-   Make it unready but keep its listener available for stale endpoints and pooled
-   connections. The ingress owner must provide a verifiable withdrawal and
-   connection-drain signal for that Pod across the actual ingress instances.
-   Finish admitted work and give chat clients a resumable disconnect. Scale the
-   slot to zero only after that signal and settlement; a timeout keeps the
-   listener running and reports what remains.
+   Mark it unready. Keep listening and give chat clients a resumable disconnect.
+   The ingress owner must confirm every instance has stopped selecting the Pod
+   and drained requests that can still reach it. Include pooled connections
+   and requests waiting in middleware before connecting. Then fence new API
+   admissions on that Pod and verify settlement of admitted work, including
+   disconnected writes. Scale to zero only after both owners confirm drain.
+   Empty sockets and proxy exit are insufficient. On timeout, keep listening
+   and report pending work.
 5. **Transfer worker authority.** Keep the candidate API serving. The deployment
    and dispatch owners must keep the restart inventory valid until transfer:
    defer work that could create an original-worker-only session, leave accepted
@@ -130,13 +132,17 @@ running Agent. Capture first attempts throughout the upgrade.
 
 - **AC-1.** Reads, mutations, Console cold loads and open tabs, and TUI actions
   return their expected result within ordinary deadlines. Record status, latency,
-  serving Pod, and endpoint continuity; traffic must reach both versions. Verify
-  a candidate mutation followed by an incumbent read, and candidate-queued work
-  dispatched by the incumbent worker.
+  serving Pod, endpoint continuity, leading and trailing failures, and unprobed
+  slots. Reach both versions. Verify an incumbent read of a candidate mutation
+  and incumbent worker dispatch of candidate-queued work.
 - **AC-2.** Authorization changes and shared quotas produce the same decisions
-  through both APIs. Interrupt an admitted mutation during drain and verify one
-  durable effect, audit record, and downstream effect. Delay withdrawal on one
-  ingress instance and verify that the old listener remains available.
+  through both APIs. Delay one ingress instance’s withdrawal. Hold a request
+  between selection of the retiring Pod and connection. Require first-attempt
+  success before retiring that listener. Separately, disconnect a client after
+  admission. Hold its mutation before commit through ingress drain and past the
+  API drain deadline. Apply must report pending work and keep the retiring
+  listener running. Release the mutation, resume the handoff and verify one
+  commit, one result audit record and one downstream effect without resending.
 - **AC-3.** Reconnect an acknowledged chat turn through the public route, recover
   one terminal reply in the original conversation, and complete a continuation.
   After the final restart inventory, wait for the incumbent worker process to
