@@ -3,16 +3,11 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Locator } from "playwright";
 import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
-import {
-  CONFIGURED_IAM_ID_PREFIXES,
-  type AuditEvent,
-  type Permission,
-} from "../../packages/contracts/src/index.ts";
-import { validatePersistedNativeIAMState } from "../../packages/iam/src/index.ts";
+import type { AuditEvent, Permission } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
-import { grantRole, restrict } from "../helpers/iam-grants.ts";
+import { grantConfiguredNamespaceRole, grantRole, restrict } from "../helpers/iam-grants.ts";
 import { namespaceDeleteDenied } from "../helpers/refusal-access.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 
@@ -53,29 +48,14 @@ async function configuredNamespaceMember(
   namespaceId: string,
   actions: Permission["action"][],
 ) {
-  const { policy } = fixture;
   const name = "namespace-cleanup";
-  const groupId = `${CONFIGURED_IAM_ID_PREFIXES.group}${name}`;
-  const role = {
-    id: `${CONFIGURED_IAM_ID_PREFIXES.role}${name}`,
+  const { credentials, principal } = await fixture.createAccountWithPolicy(name, () => {});
+  const role = grantConfiguredNamespaceRole(fixture.policy, principal.id, {
     name,
-    permissions: actions.map((action) => ({ action, resourceKind: "namespace" as const })),
-  };
-  // Configured IAM grants use an Installation Role and a Namespace-scoped Group binding.
-  policy.roles.push(role);
-  policy.groups.push({ id: groupId, name });
-  policy.bindings.push({
-    id: `${CONFIGURED_IAM_ID_PREFIXES.binding}${name}`,
     namespaceId,
-    roleId: role.id,
-    subjectKind: "group",
-    subjectId: groupId,
+    permissions: { namespace: actions },
   });
-  const member = await fixture.createAccountWithPolicy(name, (principal) => {
-    policy.memberships.push({ groupId, principalId: principal.id });
-  });
-  validatePersistedNativeIAMState(policy);
-  return { credentials: member.credentials, role };
+  return { credentials, role };
 }
 
 // How a refused, still focusable delete control looks once a keyboard user reaches it (findings

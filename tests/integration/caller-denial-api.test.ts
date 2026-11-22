@@ -3,13 +3,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import {
-  CONFIGURED_IAM_ID_PREFIXES,
-  type AuditEvent,
-  type CredentialSourceReference,
-} from "../../packages/contracts/src/index.ts";
+import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { validatePersistedNativeIAMState } from "../../packages/iam/src/index.ts";
 import type {
   PlatformOperation,
   PlatformStateStore,
@@ -32,7 +27,7 @@ import {
   NAMESPACE_CREATE_DENIED,
   namespaceDeleteDenied,
 } from "../helpers/refusal-access.ts";
-import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { grantConfiguredNamespaceRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 type Body = Record<string, unknown> | undefined;
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -621,36 +616,18 @@ test("a permitted Namespace member can still create a Secret and delete an empty
   await fixture.bootstrap();
   const writable = await fixture.createNamespace("Granted creation", { ready: true });
   const empty = await fixture.createNamespace("Granted deletion", { ready: true });
-  const { policy } = fixture;
-  const groupId = `${CONFIGURED_IAM_ID_PREFIXES.group}namespace-member`;
-  // Materialize the configured IAM rows in the fixture's Native IAM state. The Roles are
-  // Installation-level and each Group binding applies in exactly one Namespace.
-  policy.groups.push({ id: groupId, name: "namespace-member" });
-  for (const [name, namespaceId, action, resourceKind] of [
-    ["secret-creator", writable.id, "create", "secret"],
-    ["namespace-deleter", empty.id, "delete", "namespace"],
-  ] as const) {
-    const roleId = `${CONFIGURED_IAM_ID_PREFIXES.role}${name}`;
-    policy.roles.push({
-      id: roleId,
-      name,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action, resourceKind },
-      ],
+  const member = await fixture.createAccountWithPolicy("granted-member", ({ id }) => {
+    grantConfiguredNamespaceRole(fixture.policy, id, {
+      name: "secret-creator",
+      namespaceId: writable.id,
+      permissions: { namespace: ["read"], secret: ["create"] },
     });
-    policy.bindings.push({
-      id: `${CONFIGURED_IAM_ID_PREFIXES.binding}${name}`,
-      namespaceId,
-      roleId,
-      subjectKind: "group",
-      subjectId: groupId,
+    grantConfiguredNamespaceRole(fixture.policy, id, {
+      name: "namespace-deleter",
+      namespaceId: empty.id,
+      permissions: { namespace: ["read", "delete"] },
     });
-  }
-  const member = await fixture.createAccountWithPolicy("granted-member", (principal) => {
-    policy.memberships.push({ groupId, principalId: principal.id });
   });
-  validatePersistedNativeIAMState(policy);
   const session = await fixture.signIn(member.credentials);
   assert.equal((await fixture.request("GET", "/installation", { session })).status, 403);
   for (const [namespaceId, canCreateSecret, canDeleteNamespace] of [
