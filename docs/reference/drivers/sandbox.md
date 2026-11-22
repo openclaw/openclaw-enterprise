@@ -166,12 +166,7 @@ the marker is missing or mismatched, refuse startup with
 `SandboxWorkspaceSetupRefusedError` to preserve later edits. See the
 [workspace setup sequence](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution).
 
-The paired [Credential Gateway](credential-gateway.md#lifecycle) issues one opaque
-`{ sourceId, ref }` attachment per bound credential source. Compute passes them
-in `credentialAttachments`, which is empty when the revision uses no sources.
-The Sandbox must consume every attachment and reject references from any other
-provider. Compute waits for the gateway to report every attachment
-`ready` before activation.
+For Gateway-owned Sources, [Credential Gateway](credential-gateway.md#lifecycle) issues opaque `{ sourceId, ref }` attachments. Compute passes them in `credentialAttachments`; Sandbox consumes each and rejects foreign references. Compute waits until the Gateway reports every attachment ready before activation. For TokenService-owned Sources, the paired Credential Proxy configures delivery separately.
 
 ### Sandbox resource identity
 

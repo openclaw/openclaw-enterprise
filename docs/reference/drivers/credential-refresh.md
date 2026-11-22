@@ -144,7 +144,7 @@ destructor.
 ## Related
 
 - [CredentialGatewayDriver contract](credential-gateway.md)
-- [Credential sources](../credential-sources.md#rotate-a-refresh-source)
+- [Credential sources](../credential-sources/other-delivery-modes.md#rotate-a-refresh-source)
 - [Credential source refresh flow](../../flows/credential-source-refresh.md)
 - [Credential refresh proposal](../../../specs/rfcs/0016-sandbox-credential-injection/credential-refresh.md)
 - [OCC credential source operations](../../../packages/occ/src/credential-source-operations.ts)

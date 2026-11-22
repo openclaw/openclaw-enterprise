@@ -32,7 +32,7 @@ The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/ind
 
 The Sandbox registration exposes `credential_proxy_delivery`. Worker and Compute use `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` for an Agent revision. Optional `notifyCredentialUpdated` receives a Source notification and credential resolver, without a revision.
 
-OpenShell uses OCC TokenService. The Proxy resolves an authorized Source when transfer is needed, updates its Provider copy, and attaches it to the Sandbox. Readiness requires matching policy, Provider version, and supervisor state. Stop removes the Sandbox and binding but retains the Source and Provider copy. See [implementation status](../credential-sources.md#implementation-status).
+OpenShell uses OCC TokenService. The Proxy resolves an authorized Source when transfer is needed, updates its Provider copy, and attaches it to the Sandbox. Readiness requires matching policy, Provider version, and supervisor state. On Stop, Compute removes the Sandbox and the Provider attachment for that deployment. The Source, Provider copy, and Source IAM grants remain. See [implementation status](../credential-sources.md#implementation-status).
 
 ## Legacy protected egress
 

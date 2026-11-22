@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-20"
-last_updated_session: "authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc"
+updated: "2026-11-22"
+last_updated_session: "authoring-run/afd8fac9-f5bf-4366-9cd1-d3ff0c00ba14"
 ---
 
 # Agent sandbox policy flow
@@ -63,21 +63,22 @@ Installation ceiling and Sandbox wildcard and range support. Preview writes noth
 Validation names failed fields and checks. Stale or denied requests retain resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details without Unicode controls.
 
-Staged `validateDeploymentPolicy(policy, context)` checks source approval, reviewed requests and
-projections using trusted binding, source and consumer authority. Only proposed proxy configuration
-receives a source-bound resolver. The proxy qualifies bindings and requests. Static approvals match
-method, host, port and path (`null` permits any method). The Sandbox qualifies HTTP rules and exact
-MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
+`packages/occ/src/agent-deployment-admission.ts:admitModelCredentialPolicy` owns
+managed model credential admission. OCC requires one saved grant matching the
+approved inference host and port. It checks the Installation ceiling and derives
+the binding's injection rule from the approved HTTP method and path. The revision
+saves both policies. See [credential implementation status](../reference/credential-sources.md#implementation-status).
 
-`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` independently authorizes
-Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
-and checks editing, expected version, pending work, complete ceiling coverage,
-and registry-resolved Driver admission. The saved additions come from the
-admitted snapshot. While the active or next revision runs under protected
-execution (the Installation selects the Credential Proxy), additions are refused
-with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`, as are live application to a
-protected revision and a protected deploy carrying them; protected
-revisions admit no ordinary Agent policy snapshot. Protected, dedicated Codex
+`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` authorizes Agent
+`manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent, and
+checks editing, version, pending work, ceiling, and Driver admission.
+`protectedExecutionApplies` refuses nonempty additions for legacy protected
+egress with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`. A repository-only legacy
+Proxy permits an ordinary model exception for an Agent without repositories that
+binds one ready Gateway-owned static Harness source. Legacy protected revisions
+also refuse ordinary additions at deployment and live apply. Managed model
+deployment requires a saved grant; selecting its revision disables nonempty
+policy edits and live apply. Protected, dedicated Codex
 repository admission can carry the Sandbox Driver's explicitly acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
@@ -265,6 +266,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-22 10:23: Trace managed model admission and legacy protected egress. (authoring-run/afd8fac9-f5bf-4366-9cd1-d3ff0c00ba14 - 6747afc21abe61933b5e5222cacb79141c2a692f)
 
 - 2026-11-20 16:58: Point to deployment admission and its request module. (authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc - 48e378422c0f6527682d305cac5ca3992a00c5ad)
 

@@ -2,6 +2,8 @@
 
 Installation administrators can publish a connection template for the Installation or one Namespace. They can also register an OAuth client in either scope. A registration inherits the selected template’s availability, issuer, token URL and optional revocation URL. A Namespace template can use an Installation client or a client in the same Namespace.
 
+For planned static Bearer templates and shared Plugin credential Sources, see [credential implementation status](credential-sources.md#implementation-status).
+
 In Console, open **Credentials → Connection templates**. Choose **Create connection template** and set **Template availability** to the whole Installation or a particular Namespace. Select a compatible OAuth client or choose **Create template and register OAuth client**.
 
 ## Register a client

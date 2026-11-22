@@ -308,7 +308,7 @@ Compute, retires every version, and removes runtime credentials. It
 atomically deletes the Agent, its Agent revisions, service principal, API keys, and
 exact IAM bindings and restrictions. Kubernetes retirement waits for owned Pods
 and removes owned artifacts, including workspace data. Namespace Configurations
-and Secrets survive. Deletion releases its name;
+and Secrets survive. See [Credential Source implementation status](credential-sources.md#implementation-status) for managed credential retirement. Deletion releases its name;
 [repository cleanup](repository-credentials.md#repo-driver-contract) continues independently.
 
 Permanent failure or exhausted attempts leave the Agent `deleting`.
@@ -342,7 +342,7 @@ deployed Agents keep separate gateways and stable service principals.
 
 The public API has no Agent revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
-The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Its Credential Gateway mediates model sources; direct Secret delivery remains unsupported. Check its compatibility limits.
+The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Credential Gateway or the paired Credential Proxy delivers model credentials; direct Secret delivery remains unsupported. Check its compatibility limits.
 
 ## Failure semantics
 

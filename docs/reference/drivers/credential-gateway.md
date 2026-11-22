@@ -191,7 +191,7 @@ configuration. The interface has no initializer or destructor.
    Driver must finish every effect of an aborted registration within 30 seconds
    of the abort. A record left `registering` or `deleting` is never usable, and
    the caller retries DELETE to remove any gateway copy. See
-   [credential sources](../credential-sources.md#register-a-source).
+   [credential sources](../credential-sources/other-delivery-modes.md#register-a-source).
 2. **Admission.** `deployAgent` freezes `{ method, sourceId,
 credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source must
    be `ready`, and its type must declare `harnessAuth`. A Sandbox must be
@@ -218,7 +218,8 @@ credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source 
    attachment lets the Agent revision activate.
 6. **Update.** The API locks the source, reads its current or replacement Secret
    values, and calls `updateSource`. Running Harness processes keep the previous
-   value until they restart.
+   value until they restart. See
+   [Gateway source updates](../credential-sources/other-delivery-modes.md#update-a-source).
 7. **Withdrawal.** The API records a `pending` withdrawal for the currently selected
    Agent revision and queues worker work. The worker rechecks `agent:operate`, and
    Compute derives the Sandbox from the Agent revision ID and calls `withdraw` for each pending

@@ -34,8 +34,9 @@ OpenShell integrations ([operator](openshell-sandbox.md) or experimental
 OpenClaw Harness Pods. Internal execution classes share `occ/kubernetes`;
 Compute keeps other resources. Dedicated native OpenClaw requires a selected
 SandboxDriver that provisions the Harness and declares networking, filesystem, and
-process containment. Stock OpenShell cannot provide required credential and
-workload-identity projections; Agent deployment with OpenShell remains unsupported.
+process containment. OpenShell rejects Kubernetes Secret environment projection and
+projected Agent identity. Use a supported credential delivery path and disable
+ServicePrincipal credential projection; see [OpenShell qualification](openshell-sandbox.md#workload-identity).
 
 HTTP chat defaults on for new single-cluster runtime revisions and uses a
 private exact-POST route with trusted-proxy chat authority. Explicit opt-out
@@ -72,8 +73,9 @@ Harness configuration selects the Agent's execution topology:
   separate Pods with separate ServiceAccounts. Compute issues a node-only setup
   credential through the gateway and stores the resulting device identity on the
   Harness workspace claim. The node host supervises the remote worker, which owns
-  the agent loop, model inference, and coding tools. Only the Harness receives the
-  model API key. Compute makes its generated `dedicated-native` worker-inference
+  the agent loop, model inference, and coding tools. With direct Secret delivery,
+  only the Harness receives the model API key. With managed delivery, it receives a
+  placeholder and the paired Proxy injects the credential. Compute makes its generated `dedicated-native` worker-inference
   profile mandatory, so sessions use the enrolled Harness without a Cloud Worker
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,

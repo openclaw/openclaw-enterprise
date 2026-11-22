@@ -38,11 +38,7 @@ and per-tool sandboxes are deferred.
 
 ## Configuration
 
-Select `drivers.sandbox` with bundled Kubernetes Compute. The
-[`openshell` Backend](../backends.md#openshell-gateway) must match the Sandbox
-and [Credential Gateway](openshell-credential-gateway.md#configure-the-driver)
-IDs. Configure Gateway connection fields and the WSS CA
-(`rootCertificatePath`) on the Backend.
+Select `drivers.sandbox` with Kubernetes Compute. The [`openshell` Backend](../backends.md#openshell-gateway) must list the Sandbox ID and, if selected, the [Credential Gateway](openshell-credential-gateway.md#configure-the-driver) ID. For managed delivery, OCC registers Sandbox and Credential Proxy together; Proxy exposes `credential_proxy_delivery`. Configure the Gateway connection and WSS CA (`rootCertificatePath`) on the Backend.
 
 ```yaml
 drivers:

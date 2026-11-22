@@ -156,8 +156,7 @@ selected credentials.
 Embedded OpenClaw runs its gateway and Harness together in the data plane.
 Dedicated Kubernetes execution uses separate Gateway and Harness Pods, identities
 and storage within one tenant namespace in a single cluster. The Gateway uses scoped remote file operations rather than
-mounting the Harness workspace. Only the model-executing consumer receives its
-model credential; a dedicated Gateway does not.
+mounting the Harness workspace. Direct authentication gives the model credential to the executing Harness; managed delivery gives it a placeholder. A dedicated Gateway does not receive the model credential.
 
 <a id="agent-provisioning-sequence"></a>
 
