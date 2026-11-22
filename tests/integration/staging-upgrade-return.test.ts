@@ -1171,6 +1171,7 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
   let now = 100;
   t.mock.method(performance, "now", () => now);
   t.mock.timers.enable({ apis: ["Date"], now: 30_000 });
+  const resumed = Promise.withResolvers<void>();
   const settled = Promise.withResolvers<string>();
   let requests = 0;
   // Synthetic time is limited to scheduler arithmetic. The adjacent TLS test
@@ -1186,6 +1187,7 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
           // Slots 2 and 3 pass while the first during request is in flight.
           now = 4_610;
           t.mock.timers.setTime(1_000);
+          resumed.resolve();
           break;
         case 3:
           now = 5_610;
@@ -1201,9 +1203,10 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
     },
     "original-installation",
     directory,
-    () => {
+    async (measureGuardedResume) => {
       // Synchronous action work delays admission past slot 0.
       now = 1_360;
+      await measureGuardedResume(() => resumed.promise);
       return settled.promise;
     },
     async () => {},
@@ -1220,6 +1223,7 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
     probedSlots: 2,
     unprobedSlots: 4,
   });
+  assert.deepEqual(evidence.guardedResume, { startOffsetMs: 1_260, endOffsetMs: 4_510 });
   assert.deepEqual(
     evidence.samples.map((sample: { scheduledSlot: number | null }) => sample.scheduledSlot),
     [null, 1, 4, null],
@@ -1265,6 +1269,7 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
     );
     assert.deepEqual(await readFile(controllerPath), controllerBytes);
     const failed = JSON.parse(await readFile(runtimePath, "utf8"));
+    assert.ok(!("guardedResume" in failed));
     assert.equal(failed.cadence.scheduledSlots, duration === 0 ? 1 : 2);
     assert.equal(failed.cadence.unprobedSlots, failed.cadence.scheduledSlots);
     assert.equal(failed.cadence.probedSlots, 0);
@@ -1305,6 +1310,7 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
   assert.deepEqual(returnPhaseRecord, returnEvidence);
   assert.equal(returnEvidence.complete, true);
   assert.equal(returnEvidence.upgradeSucceeded, false);
+  assert.ok(!("guardedResume" in returnEvidence));
   assert.deepEqual(
     returnEvidence.samples.map(
       ({ phase, status, outcome }: { phase: string; status: number; outcome: string }) => [
@@ -1321,6 +1327,32 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
   );
   assert.deepEqual(await readFile(controllerPath), controllerBytes);
   assert.deepEqual(await readFile(runtimePath), runtimeBytes);
+
+  const resumeFailure = new Error("guarded resume failed");
+  await assert.rejects(
+    measureUpgradeAvailability(
+      async () => ({ status: 200, body: { data: { id: "original-installation" } } }),
+      "original-installation",
+      directory,
+      async (measureGuardedResume) => {
+        now += 20;
+        try {
+          await measureGuardedResume(async () => {
+            now += 50;
+            throw resumeFailure;
+          });
+        } finally {
+          now += 10;
+        }
+      },
+      async () => {},
+    ),
+    (error: unknown) => error === resumeFailure,
+  );
+  const failedResumeEvidence = JSON.parse(await readFile(controllerPath, "utf8"));
+  assert.equal(failedResumeEvidence.upgradeSucceeded, false);
+  assert.deepEqual(failedResumeEvidence.guardedResume, { startOffsetMs: 20, endOffsetMs: 70 });
+  assert.equal(failedResumeEvidence.cadence.endOffsetMs, 80);
 });
 
 test(
@@ -1369,7 +1401,7 @@ test(
       secrets: [${JSON.stringify(key)}],
     });
     await measureUpgradeAvailability(request, "original-installation", ${JSON.stringify(directory)},
-      () => new Promise(() => {}),
+      (measureGuardedResume) => measureGuardedResume(() => new Promise(() => {})),
       () => writeFile(${JSON.stringify(completed)}, "finished"));
   `,
     );
@@ -1393,6 +1425,7 @@ test(
           complete: boolean;
           throughOffsetMs: number;
           cadence: { complete: boolean; probedSlots: number };
+          guardedResume?: { startOffsetMs: number; endOffsetMs?: number };
           samples: { phase: string; outcome: string }[];
         }
       | undefined;
@@ -1421,6 +1454,10 @@ test(
     assert.equal(persisted.cadence.complete, false);
     assert.equal(persisted.cadence.probedSlots, 1);
     assert.equal(persisted.throughOffsetMs, completedThrough);
+    assert.ok(persisted.guardedResume);
+    assert.ok(persisted.guardedResume.startOffsetMs >= 0);
+    assert.ok(persisted.guardedResume.startOffsetMs <= completedThrough);
+    assert.ok(!("endOffsetMs" in persisted.guardedResume));
     assert.equal(persisted.samples.length, 2);
     assert.deepEqual(persisted.samples.slice(0, completedPrefix.length), completedPrefix);
     assert.equal(persisted.samples[0]?.phase, "before");
@@ -1496,6 +1533,7 @@ test("upgrade availability preserves action and evidence-write failures", async 
   assert.equal(recorded, true);
   const snapshotPath = join(directory, "forward-api-availability.json");
   const failedSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.ok(!("guardedResume" in failedSnapshot));
   assert.ok(!JSON.stringify(failedSnapshot).includes(malformedId));
   assert.ok(failedSnapshot.samples.every((sample: object) => !("upstreamSocketReused" in sample)));
   assert.equal(failedSnapshot.upgradeSucceeded, false);

@@ -383,6 +383,7 @@ type ExternalRequest = (
   body: undefined,
   options: { authenticated: boolean; signal?: AbortSignal },
 ) => Promise<ProductionTuiResponse>;
+type MeasureGuardedResume = <T>(resume: () => Promise<T>) => Promise<T>;
 
 // These observations describe the fixture's authenticated HTTPS route. They do
 // not establish continuous availability between requests or gate the action.
@@ -390,7 +391,7 @@ export async function measureUpgradeAvailability<T>(
   request: ExternalRequest,
   installationId: string,
   directory: string,
-  upgrade: () => Promise<T>,
+  upgrade: (measureGuardedResume: MeasureGuardedResume) => Promise<T>,
   record: (details: object) => Promise<void>,
   receiptName:
     | "forward-api-availability.json"
@@ -420,6 +421,16 @@ export async function measureUpgradeAvailability<T>(
   let maxStartGapMs = 0;
   const cadence: { start?: number; finish?: number } = {};
   const evidenceErrors: unknown[] = [];
+  let guardedResume: { startOffsetMs: number; endOffsetMs?: number } | undefined;
+  const measureGuardedResume: MeasureGuardedResume = async (resume) => {
+    const timing: NonNullable<typeof guardedResume> = { startOffsetMs: performance.now() - origin };
+    guardedResume = timing;
+    try {
+      return await resume();
+    } finally {
+      timing.endOffsetMs = performance.now() - origin;
+    }
+  };
   const evidence = (upgradeSucceeded: boolean | null) => {
     // A checkpoint covers only the last completed request. File-write time is
     // exposed by the next start; an interrupted write cannot extend this boundary.
@@ -449,6 +460,7 @@ export async function measureUpgradeAvailability<T>(
               probedSlots,
               unprobedSlots: scheduledSlots - probedSlots,
             },
+      ...(guardedResume === undefined ? {} : { guardedResume: { ...guardedResume } }),
       samples: samples.map((observation) => ({ ...observation })),
     };
   };
@@ -541,7 +553,7 @@ export async function measureUpgradeAvailability<T>(
   let outcome: { succeeded: true; value: T } | { succeeded: false; error: unknown };
   cadence.start = performance.now();
   try {
-    const upgrading = upgrade();
+    const upgrading = upgrade(measureGuardedResume);
     observing = (async () => {
       while (!stopped.signal.aborted) {
         await sample("during");
@@ -549,10 +561,12 @@ export async function measureUpgradeAvailability<T>(
         // actual starts. A slow request/write or late wake skips slots, never
         // queues requests to replay them. Recheck time after early timer wakes.
         const nextStart = previousStart! + nominalIntervalMs;
-        while (!stopped.signal.aborted && performance.now() < nextStart) {
-          await delay(nextStart - performance.now(), undefined, { signal: stopped.signal }).catch(
-            () => {},
-          );
+        while (!stopped.signal.aborted) {
+          const remainingMs = nextStart - performance.now();
+          if (remainingMs <= 0) {
+            break;
+          }
+          await delay(remainingMs, undefined, { signal: stopped.signal }).catch(() => {});
         }
       }
     })();
@@ -1309,7 +1323,7 @@ export async function rehearsePopulatedReturn({
       externalRequest,
       installationId,
       directory,
-      async () => {
+      async (measureGuardedResume) => {
         const evidence = join(directory, "forward");
         const client = join(directory, "helm-client.json");
         const shimDirectory = join(directory, "helm-client-bin");
@@ -1556,7 +1570,7 @@ export async function rehearsePopulatedReturn({
         ];
         // The current chart has no obsolete external channel proxy to reconcile.
         // Resume still verifies completed migration and the complete live resource set.
-        await upgrade(recoveryArgs);
+        await measureGuardedResume(() => upgrade(recoveryArgs));
         const recovered = await helmStatus();
         assert.equal(recovered.version, baselineRelease.version + 2);
         assert.equal(recovered.info.status, "deployed");
