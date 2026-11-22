@@ -1,5 +1,4 @@
-import { numericErrorStatus } from "@openclaw-enterprise/utils";
-import { unreachableSocketFailure } from "../compute/kubernetes/index.ts";
+import { asRecord, numericErrorStatus } from "@openclaw-enterprise/utils";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../compute/operation-context.ts";
 import { currentMutationDeadline } from "../../admission/mutation-deadline.ts";
 
@@ -20,6 +19,54 @@ const MINIMUM_SEND_BUDGET_MS = 2_000;
 // API server can refuse new connections for a second or more (finding 682), so
 // the pauses span about four seconds. Writes are never retried.
 const READ_RETRY_DELAYS_MS: readonly number[] = [100, 250, 500, 1_000, 2_000];
+
+export class KubernetesRequestTimeout extends Error {}
+
+// Socket-level failures: the request never reached a Kubernetes API server, or its
+// connection broke before an answer. EPIPE is a write to a connection the peer already
+// closed; ECONNABORTED is a connection the local kernel aborted (a socket destroyed
+// through sock_diag, as `ss -K` does). undici's header and body timeouts are absent: they
+// default to 300 s, so the per-request deadline always ends a request first. TLS trust and
+// HTTP status failures keep their original error.
+const UNREACHABLE_SOCKET_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+export function unreachableSocketFailure(error: unknown): boolean {
+  return unreachableSocketCause(error) !== undefined;
+}
+
+/** "timeout" for a request timeout, else the socket code that never reached an API server. */
+export function unreachableSocketCause(error: unknown, depth = 0): string | undefined {
+  if (error instanceof KubernetesRequestTimeout) {
+    return "timeout";
+  }
+  const record = asRecord(error);
+  if (record === undefined || depth > 4) {
+    return undefined;
+  }
+  if (typeof record.code === "string" && UNREACHABLE_SOCKET_CODES.has(record.code)) {
+    return record.code;
+  }
+  const nested = Array.isArray(record.errors) ? record.errors : [];
+  for (const entry of [record.cause, ...nested]) {
+    const cause = unreachableSocketCause(entry, depth + 1);
+    if (cause !== undefined) {
+      return cause;
+    }
+  }
+  return undefined;
+}
 
 /** What a driver throws when a request ends without an answer it can use. */
 export interface KubernetesRequestFailures {

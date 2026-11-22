@@ -83,8 +83,11 @@ results are excluded. `progress.nextAttemptAt` is the earliest queued
 eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
-Nullable `cleanup` reports retirement’s `status` (same meanings) and queued
-`nextAttemptAt`.
+`cleanup` reports recorded retirement and nonserving session disposal, not
+Git expiry or finite removal. Precedence: failed, running, queued, succeeded;
+`nextAttemptAt`: earliest queued eligibility, null when terminal. No applicable
+record: null. Requeued disposal reports queued. Success is not clearance to replace the worker.
+
 Deployment failure remains terminal. Terminal preparation errors retain
 `error.data.preparation` under schema limits (identities, reasons, scheduling, exits, timestamps),
 excluding raw output and credentials.
@@ -101,7 +104,8 @@ codes that a new deployment can clear, such as `DEPENDENCY_UNAVAILABLE` or
 unspecified. Held failures end deployment early:
 `RUNTIME_AUTHENTICATION_FAILED` (rejected credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
-or `WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
+`RUNTIME_STATE_LOCK_UNVERIFIED` (check `gateway-state-lock`), or
+`WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
 own CLI fails with
 [`AGENT_GATEWAY_UNAUTHORIZED`](agents/deployment.md#pending-deployment-progress). `RUNTIME_MODEL_PROBE_FAILED` adds
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
@@ -235,6 +239,13 @@ First deployment applies them once; pending inputs have no read/update API. See
 read (Agent `read`) or replace (Agent `operate`) one file in the live workspace.
 See [live file access](agents/workspace-files.md#live-file-access).
 
+## HTTP chat
+
+Human sessions and service API keys with exact-Agent `operate` can submit turns
+through `POST /agents/:agentId/chat` on Kubernetes Compute. See the
+[HTTP chat contract](agent-http-chat.md) for native JSON/SSE responses,
+conversation scope, availability and execution limits.
+
 ## Native admin UI
 
 Authorized users can open the selected Agent gateway's native browser UI
@@ -269,9 +280,23 @@ An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then
 clears `activeRevisionId`; version history, credentials, and persistent state
 remain. Cleanup includes failed candidate resources and interrupted predecessor
-retirement owned by the current Compute. Repeating stop is safe. To resume,
+retirement owned by the current Compute. Repeating stop is safe. On Kubernetes
+Compute, a turn cut by stop [does not resume](agents/interrupted-turns.md); SSH and
+Docker Compute have limits. To resume the Agent,
 deploy a new version; old versions cannot be restarted. See
 [stop and resume](agents/deployment.md#stop-and-resume).
+
+To avoid stopping a successor:
+
+```sh
+occ --namespace NAMESPACE_ID agent stop AGENT_ID --if-active-revision REVISION_ID
+```
+
+The optional `expectedActiveRevisionId` query requires running intent and the
+exact active, newest, successfully deployed revision under lock. Mismatch: `409`;
+unsupported query: `400`; admitted, not yet stopped: `202`. Never retry unguarded.
+If uncertain, inspect `agent get AGENT_ID` and `agent deployment-status AGENT_ID REVISION_ID`;
+these show state, not which request caused it.
 
 ## Deletion
 
@@ -375,7 +400,7 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 - [IAM](authorization.md)
 - [Controller configuration](settings.md)
 - [Platform architecture](../design.md)
-- [Agent lifecycle implementation](../../packages/occ/src/index.ts)
+- [Agent controller methods](../../packages/occ/src/controller.ts)
 - [HTTP resource schemas](../../packages/contracts/src/api/resources.ts)
 - [Local testing](../testing/local.md)
 
@@ -384,6 +409,8 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18: On Kubernetes, a turn cut by stop, replacement or deletion does not resume; see [interrupted turns](agents/interrupted-turns.md). (finding 3347)
 
 - 2026-10-25: Moved workspace file request details to [Agent workspace files](agents/workspace-files.md).
 

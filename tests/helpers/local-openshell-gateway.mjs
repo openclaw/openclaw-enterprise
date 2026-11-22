@@ -7,9 +7,22 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 
+export async function localOpenShellGatewayOptions(context, kubectl, environment, namespace, port) {
+  return {
+    endpoint: `https://127.0.0.1:${port}`,
+    ...(await localOpenShellGatewayIdentity(context, kubectl, environment, namespace)),
+  };
+}
+
 // Read only the disposable installation's administrative client identity. Never
 // project it into an Agent; these private host files are removed with the test.
-export async function localOpenShellGatewayOptions(context, kubectl, environment, namespace, port) {
+export async function localOpenShellGatewayIdentity(
+  context,
+  kubectl,
+  environment,
+  namespace,
+  signal,
+) {
   const directory = await mkdtemp(join(tmpdir(), "oce-gateway-client-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   let result;
@@ -17,9 +30,10 @@ export async function localOpenShellGatewayOptions(context, kubectl, environment
     result = await execute(
       "kubectl",
       [...kubectl, "get", "secret", "openshell-client-tls", "-n", namespace, "-o", "json"],
-      { env: environment, timeout: 30_000, maxBuffer: 1024 * 1024 },
+      { env: environment, signal, timeout: 30_000, maxBuffer: 1024 * 1024 },
     );
   } catch {
+    signal?.throwIfAborted();
     // Do not attach subprocess output, which may contain private key material.
     throw new Error("Cannot read the disposable Gateway client identity.");
   }
@@ -29,7 +43,6 @@ export async function localOpenShellGatewayOptions(context, kubectl, environment
     await writeFile(join(directory, name), Buffer.from(data[name], "base64"), { mode: 0o600 });
   }
   return {
-    endpoint: `https://127.0.0.1:${port}`,
     rootCertificatePath: join(directory, "ca.crt"),
     auth: {
       mode: "mtls",

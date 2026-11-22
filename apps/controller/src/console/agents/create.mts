@@ -168,6 +168,8 @@ export interface CreateAgentDraft {
   inputs: Record<string, string>;
   edited: boolean;
   manualModel: boolean;
+  // The original native disable while the editor supplies Dedicated transport.
+  nativeCodexEntry?: Record<string, unknown> | undefined;
   pendingModelSettings: ModelSettings | undefined;
   pendingPrimaryModel: string | undefined;
   pendingModelSelections: Record<string, unknown> | undefined;
@@ -221,6 +223,7 @@ function onRefocus(recheck: () => void) {
 // Revisit catalog refresh and credential-aware discovery after the basic creation flow ships.
 const MODEL_CHOICES = {
   openai: [
+    "gpt-6.1-sol",
     "gpt-6-astra",
     "gpt-6-sol",
     "gpt-6-luna",
@@ -1093,6 +1096,7 @@ function renderAgentForm(
 
   apiKey.setAttribute("aria-describedby", credentialHelp.id);
   let manualModel = !useModelChoices;
+  let nativeCodexEntry = draft.nativeCodexEntry;
   let pendingModelSettings = draft.pendingModelSettings;
   let pendingPrimaryModel = draft.pendingPrimaryModel;
   let pendingModelSelections = draft.pendingModelSelections;
@@ -1194,12 +1198,13 @@ function renderAgentForm(
     id: "provider-credential-secret",
     label: "Model credential Secret",
     getCurrentSource: () => modelCredentialSource,
+    onPendingChange: () => updateControls(),
     onSecretSelected(secret) {
+      edited = true;
       modelCredentialSource = secret.ref;
       modelCredentialSecret = secret;
       resetPluginDiscovery();
       feedback.textContent = "";
-      updateControls();
     },
     createSecretName: () => {
       const agentName = name.value.trim();
@@ -1213,6 +1218,11 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  // The picker owns validation and reports an accepted choice above. Searching its list
+  // must not clear the field's validity or mark the draft as edited.
+  for (const event of ["input", "change"]) {
+    modelCredentialField.addEventListener(event, (search) => search.stopPropagation());
+  }
   let secretNameConflict: string | null = null;
   const secretConflictMessage = element("p", { className: "status-body" });
   const ownsSecretRecovery = () =>
@@ -1379,11 +1389,15 @@ function renderAgentForm(
     pendingModelSettings = undefined;
     pendingPrimaryModel = undefined;
     pendingModelSelections = undefined;
+    nativeCodexEntry = undefined;
     configuration.value = currentTemplate();
     configurationError.clear();
     feedback.textContent = "";
     renderChannelEditor();
   });
+  function pluginIdsValid(ids: unknown) {
+    return ids === undefined || (isArray(ids) && ids.every((id) => typeof id === "string"));
+  }
   function readModelConfiguration(
     targetHarness = harness.value,
   ): Record<string, unknown> | "invalid-json" | "number-range" | "invalid-allow" {
@@ -1393,17 +1407,15 @@ function renderAgentForm(
     if (values === undefined) {
       return diagnostic.kind === "number-range" ? "number-range" : "invalid-json";
     }
-    // Only the Codex template merges this field. Do not validate unrelated draft settings.
+    // Codex controls require a valid allowlist when supplied; other Harness drafts stay editable.
     if (targetHarness !== "codex" || !Object.hasOwn(objectFields(values.plugins), "allow")) {
       return values;
     }
     const allow = objectFields(values.plugins).allow;
-    if (isArray(allow) && allow.every((id) => typeof id === "string")) {
+    if (pluginIdsValid(allow)) {
       return values;
     }
-    configurationError.show(
-      'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
-    );
+    configurationError.show("Set plugins.allow to an array of strings, or remove the field.");
     focusConfiguration();
     return "invalid-allow";
   }
@@ -1431,6 +1443,44 @@ function renderAgentForm(
     configurationError.show(catalogErrorMessage);
     focusConfiguration();
     return false;
+  }
+  function dedicatedCodexEntry(entry: Record<string, unknown>) {
+    const defaults = objectFields(
+      objectFields(defaultCodexPreset.template.configuration.values.plugins.entries.codex.config)
+        .appServer,
+    );
+    // Leave malformed draft containers visible for repair.
+    const config = entry.config;
+    if (config !== undefined && !isObject(config)) {
+      return entry;
+    }
+    const server = config?.appServer;
+    if (server !== undefined && !isObject(server)) {
+      return entry;
+    }
+    return {
+      ...entry,
+      config: {
+        ...config,
+        appServer: {
+          ...defaults,
+          ...server,
+          transport: defaults.transport,
+          url: defaults.url,
+          authToken: defaults.authToken,
+        },
+      },
+    };
+  }
+  // Only remove transport that the form supplied. A changed or deleted entry belongs to the draft.
+  function restoreNativeCodexEntry(entries: Record<string, unknown>) {
+    const restore =
+      nativeCodexEntry && sameValue(entries.codex, dedicatedCodexEntry(nativeCodexEntry));
+    if (restore) {
+      entries.codex = nativeCodexEntry;
+    }
+    nativeCodexEntry = undefined;
+    return restore;
   }
   function updateModelConfiguration(resetTransport = false, values = readModelConfiguration()) {
     if (typeof values === "string" || !canMergeModelCatalog(values, model.value, resetTransport)) {
@@ -1612,24 +1662,24 @@ function renderAgentForm(
       }
     }
     values.models = { ...(values.models ?? {}), providers };
+    const codex = pluginEntries.codex;
+    const disabled = isObject(codex) && codex.enabled === false;
     if (next.plugins) {
-      values.plugins = {
-        ...(values.plugins ?? {}),
-        allow: [
-          ...new Set([...(isArray(plugins.allow) ? plugins.allow : []), ...next.plugins.allow]),
-        ],
-        entries: {
-          ...(plugins.entries ?? {}),
-          codex: resetTransport
-            ? next.plugins.entries.codex
-            : (pluginEntries.codex ?? next.plugins.entries.codex),
-        },
-      };
-    } else if (pluginEntries.codex) {
-      delete pluginEntries.codex;
-      if (isArray(plugins.allow)) {
-        plugins.allow = plugins.allow.filter((id) => id !== "codex");
+      // An unfinished JSON edit can change the selector without ending the projection.
+      if (!nativeCodexEntry) {
+        if (resetTransport && pluginHarness === "openclaw" && disabled) {
+          nativeCodexEntry = codex;
+        }
+        const entry = disabled ? dedicatedCodexEntry(codex) : next.plugins.entries.codex;
+        values.plugins = {
+          ...(values.plugins ?? {}),
+          entries: { ...(plugins.entries ?? {}), codex: resetTransport ? entry : (codex ?? entry) },
+        };
       }
+    } else if (nativeCodexEntry) {
+      restoreNativeCodexEntry(pluginEntries);
+    } else if (resetTransport && pluginHarness === "codex" && codex && !disabled) {
+      delete pluginEntries.codex;
     }
     configuration.value = JSON.stringify(values, null, 2);
     // Read the written selections: omitted primaries and -0 must match subsequent draft reads.
@@ -1655,7 +1705,7 @@ function renderAgentForm(
     apiKey.value = "";
     modelCredentialSource = null;
     modelCredentialSecret = undefined;
-    modelCredentialPicker.refresh();
+    modelCredentialPicker.resetSelection();
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
@@ -1690,7 +1740,7 @@ function renderAgentForm(
   harness.addEventListener("change", () => {
     const values = readModelConfiguration();
     if (values === "invalid-allow") {
-      // Only Codex merges the allowlist; the other harness choice was OpenClaw.
+      // Only the Codex choice refuses a malformed allowlist.
       harness.value = "openclaw";
       return;
     }
@@ -1742,6 +1792,11 @@ function renderAgentForm(
     const ref = modelPrimary(selected);
     const selectedHarness = values && configuredHarnessId(values);
     if (typeof ref === "string" && selectedHarness) {
+      if (selectedHarness === "openclaw" && nativeCodexEntry) {
+        if (restoreNativeCodexEntry(objectFields(objectFields(values?.plugins).entries))) {
+          configuration.value = JSON.stringify(values, null, 2);
+        }
+      }
       harness.value = selectedHarness;
       if (selectedHarness === "codex") {
         mode.value = "dedicated";
@@ -2014,6 +2069,7 @@ function renderAgentForm(
   let savedCredentialSource = draft.savedCredentialSource;
   let credentialRegistration: CredentialRegistration | null = null;
   let credentialRegistrationRejected = false;
+  let registrationRefusal = "";
   let failedCredentialSource: RegisteredCredential | null = null;
   let provisioningRequestId = createClientRequestId();
   // The API admitted (or may have admitted) a job under provisioningRequestId. Create Agent
@@ -2170,8 +2226,9 @@ function renderAgentForm(
         if (credentialRegistrationRejected) {
           credentialRegistration = null;
           credentialRegistrationRejected = false;
-          feedback.textContent =
-            "No credential registration exists. Correct the source configuration and try again.";
+          feedback.textContent = `${registrationRefusal ? registrationRefusal + " " : ""}No credential registration exists. Correct the source configuration and try again.`;
+        } else if (registrationRefusal) {
+          feedback.textContent = `${registrationRefusal} No credential registration is visible. The selected Secret remains saved. Resolve the reported problem with an administrator if needed, then select Create Agent to retry.`;
         } else {
           feedback.textContent =
             "No credential registration is visible. Select Create Agent to retry the same registration.";
@@ -2482,6 +2539,7 @@ function renderAgentForm(
     manualModel,
     pluginApprovers,
     edited,
+    nativeCodexEntry,
     pendingModelSettings,
     pendingPrimaryModel,
     pendingModelSelections,
@@ -2601,6 +2659,7 @@ function renderAgentForm(
   function renderChannelEditor() {
     const values = parseObject(configuration);
     if (values === undefined) {
+      updateControls();
       channelEditor.replaceChildren(
         element(
           "section",
@@ -2708,10 +2767,6 @@ function renderAgentForm(
   // Every step of a provisioning plan needs a ready Namespace, so the API would refuse it; a
   // draft plan still saves (finding 2007, #2867).
   const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
-  const deploymentNeedsRepository = () =>
-    installationCapabilities?.repositoryAccessRequired === true &&
-    !repositories.hasValidSelection();
-  const provisioningNeedsRepository = () => shouldProvision() && deploymentNeedsRepository();
   // A Namespace that takes no new Agent, draft or not: an adopted one still provisioning, which
   // becomes ready by waiting, or one that turned failed or deleting, or went missing, while the
   // form was open, which never does (finding 2022). A refocus still rechecks it.
@@ -3053,9 +3108,6 @@ function renderAgentForm(
           : namespaceEnded()
             ? "This Namespace cannot hold new Agents, so Create Agent is unavailable."
             : "Create Agent is unavailable until this Namespace is ready.";
-      } else if (!modeUnavailable && deploymentNeedsRepository()) {
-        nextStatus =
-          "This installation’s Credential Proxy requires repository access to deploy an Agent. Select approved repository access if this Agent needs Git, or use an installation that supports deployment without repositories.";
       } else if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady
@@ -3121,6 +3173,28 @@ function renderAgentForm(
     if (binding?.method === "runtime") {
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
+    }
+    if (
+      capabilityDiscoveryDone &&
+      codexSelectable &&
+      !harness.disabled &&
+      !sandboxDriverOutage &&
+      !modeUnavailable &&
+      !(dedicatedRefused && embeddedRefused)
+    ) {
+      const plugins = objectFields(parseObject(configuration)?.plugins);
+      const entry = objectFields(objectFields(plugins.entries).codex);
+      if (
+        entry.enabled === false &&
+        pluginIdsValid(plugins.allow) &&
+        pluginIdsValid(plugins.deny) &&
+        (entry.config === undefined ||
+          (isObject(entry.config) &&
+            (entry.config.appServer === undefined || isObject(entry.config.appServer))))
+      ) {
+        harnessHint.textContent +=
+          " Switching harnesses keeps the Codex plugin disabled in this draft. If this draft can be deployed, Dedicated Codex enables it at runtime.";
+      }
     }
     nativeProvider.disabled ||= providerLocked;
     authMethod.disabled ||= Boolean(savedSecret || savedCredentialSource || credentialRegistration);
@@ -3260,7 +3334,9 @@ function renderAgentForm(
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
     repositories.setDisabled(planLocked || repositoryRetryLocked());
+    const checkingSecret = modelCredentialPicker.pendingStatus();
     const submitUnavailable =
+      Boolean(checkingSecret) ||
       (!savedAgent &&
         (repositoryRetryLocked() ||
           (requiresRepositories() && !repositories.hasValidSelection()) ||
@@ -3273,26 +3349,22 @@ function renderAgentForm(
       credentialGrantRefused ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent &&
-        (provisioningNeedsRepository() ||
-          provisioningWaitsForNamespace() ||
-          namespaceRefusesAgents())) ||
+      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
-    let submitReason: HTMLElement | null = null;
+    let submitReason: HTMLElement | null = checkingSecret;
     if (
       !savedAgent &&
       capabilitiesSettled() &&
-      (namespaceRefusesAgents() ||
-        (!selectedModeUnavailable() &&
-          (provisioningNeedsRepository() || provisioningWaitsForNamespace())))
+      (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
     ) {
       submitReason = capabilityStatus;
-      submit.setAttribute("aria-describedby", capabilityStatus.id);
     } else if (capabilityDiscoveryDenied && !capabilitiesUnreadable && !accessStatus.hidden) {
       // The refused Installation read's block above the form says why Create waits (finding 2092).
       submitReason = accessStatus;
-      submit.setAttribute("aria-describedby", accessStatus.id);
+    }
+    if (submitReason) {
+      submit.setAttribute("aria-describedby", submitReason.id);
     } else {
       submit.removeAttribute("aria-describedby");
     }
@@ -3419,7 +3491,6 @@ function renderAgentForm(
   }
   function applyCapabilities(capabilities: InstallationCapabilities | undefined) {
     installationCapabilities = capabilities;
-    repositories.setDeploymentRequiresRepository(capabilities?.repositoryAccessRequired === true);
     applyPluginCapabilities();
     nativeAdminAvailable = capabilities?.nativeAdmin === true;
     nativeWorkersAvailable = capabilities?.nativeWorkers !== undefined;
@@ -3776,6 +3847,7 @@ function renderAgentForm(
       input.setCustomValidity(workspaceFileProblem(filename, input.value));
     }
     if (
+      modelCredentialPicker.pendingStatus() ||
       pending ||
       outcomeUnknown ||
       provisioningAttempt ||
@@ -3784,10 +3856,7 @@ function renderAgentForm(
       !capabilitiesSettled() ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent &&
-        (provisioningNeedsRepository() ||
-          provisioningWaitsForNamespace() ||
-          namespaceRefusesAgents())) ||
+      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       // The console's own errors under each field, not the browser's bubble (UX plan C3).
       !validateFields([...form.elements])
     ) {
@@ -3989,6 +4058,7 @@ function renderAgentForm(
     context.setDraftCapture(null);
     let mutationStarted = false;
     let creatingSecret = false;
+    let postingRegistration = false;
     const requestedSecretName = requestedModelSecretName();
     let refusedInConfiguration = false;
     try {
@@ -4038,11 +4108,14 @@ function renderAgentForm(
           };
           mutationStarted = true;
           credentialRegistrationRejected = false;
+          registrationRefusal = "";
+          postingRegistration = true;
           const result = await request(`${namespacePath(namespaceId)}/credential-sources`, {
             method: "POST",
             expectedStatus: 201,
             body: credentialRegistration,
           });
+          postingRegistration = false;
           if (!context.isCurrent()) {
             return;
           }
@@ -4268,6 +4341,9 @@ function renderAgentForm(
       }
       const registrationProblem =
         error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";
+      if (postingRegistration && knownRejection) {
+        registrationRefusal = registrationProblem.trim();
+      }
       // A refused grant on a saved Agent shows this text only to an Installation administrator (a
       // member sees MEMBER_GRANT_REFUSED below), so its denial names nobody to ask (finding 2113).
       const detail = credentialRegistration

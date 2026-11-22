@@ -46,51 +46,24 @@ accounts make no provider call. Validation has an eight-second request budget
 and never opens a Socket Mode connection or sends a message.
 
 Failures return sanitized `CHANNEL_CREDENTIAL_*` errors with the native field
-path. A retryable `503` means Slack or its route failed. When the production API
-has no proxy URL, its egress is closed (`OCC_API_HTTPS_EGRESS_OPEN` is not `true`),
-and `auth.test` gets no answer from Slack (connection, DNS, or time budget
-failure), validation instead returns `409` `RESOURCE_CONFLICT`. Helm sets
-`OCC_API_HTTPS_EGRESS_OPEN` to `true` when Google or OIDC sign-in is
-enabled with empty `egressCidrs`, because that rule allows TCP 443 to any address. The
-message names the [proxy settings](#enable-lookup-in-production) and says to try
-again if the API has another approved route to Slack, because an open route that
-timed out gets the same answer. App-token prefixes do not prove validity, scopes, or app/bot pairing.
-Validation checks the current values; credentials can change before runtime
-startup, which remains a separate connectivity check.
+path. An unavailable configured route remains retryable. If no managed OCC
+listener is configured, credential validation reports a configuration conflict
+before provider I/O. The Driver never falls back to direct access.
 
 ## Enable lookup in production
 
-The production API selects the Slack Driver. With default-deny egress, Slack
-lookup and credential validation need a proxy. With the recommended Helm setting
-`slackProxy.enabled: true`, the chart:
+Configure [managed channel egress](kubernetes-compute/channel-egress.md).
+Composition derives the reserved OCC listener from the validated installation
+settings and permits only that exact Service host. The API and Gateway use
+separate listeners. Envoy receives no provider credentials.
 
-- creates a private `openclaw-enterprise-slack-proxy` Service;
-- points `OCC_CHANNEL_DIRECTORY_PROXY_URL` at that Service DNS name;
-- allows API Pod egress only to the proxy Pod selector; and
-- allows the proxy public IPv4 egress on TCP 443, excluding private and
-  reserved ranges.
+`enableRouting()` declares the apex and subdomains of `slack.com`,
+`slack-edge.com` and `slack-msgs.com` on TCP 443. Compute owns address checks,
+per-Agent rules and revocation. Provider TLS stays end-to-end and its
+certificates remain verified. Directory lookup cannot select an Agent's listener.
 
-The bundled proxy accepts HTTP `CONNECT` only for Slack hostnames on port 443.
-The API accepts a DNS proxy URL only when Helm also sets the matching
-`OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`; it rejects any other DNS proxy URL.
-
-Operators can instead set Helm `api.channelDirectoryProxyUrl` to an approved
-external HTTP or HTTPS proxy, such as `http://198.51.100.25:3128` with the
-example IP and port replaced. The value must contain one literal IPv4 address
-other than `0.0.0.0` and an explicit port, without credentials or a path. The
-chart passes it to the API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API
-Pod egress only to that IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
-destinations at the proxy. The chart does not grant the worker or Agent Pods this
-egress.
-
-The Driver sends Slack API requests through the selected tunnel and verifies
-Slack's TLS certificate. Keep the selected bot token in the same-Namespace
-Secret; Helm values need no token or other credential for the proxy.
-Without a reachable Slack route, lookup returns unavailable, and credential
-validation answers as described in [Credential validation](#credential-validation). Exact-ID entry does not bypass credential validation. See the
-[production controller settings](../settings/production.md) for the environment
-contract.
-
-See the [ChannelDriver contract](channel.md) for OCC authorization and
+Keep the bot token in its same-Namespace Secret. Lookup returns unavailable when
+the managed route cannot be used. Exact-ID entry does not bypass credential
+validation. See the [ChannelDriver contract](channel.md) for authorization and
 [Slack Configuration](../configuration/secrets.md#native-channel-configuration)
-for gateway token bindings.
+for Gateway token bindings.

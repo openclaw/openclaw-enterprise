@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type { Locator, Page, Response } from "playwright";
+import type { Locator, Page } from "playwright";
 import { Check } from "typebox/value";
 
 import {
@@ -13,9 +13,11 @@ import type { Preset } from "../../packages/contracts/src/presets.ts";
 
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { CONSOLE_NAMESPACE_NOT_READY, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { CONSOLE_NAMESPACE_NOT_READY } from "../helpers/refusal-text.mjs";
+import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
+import { runPollTick, startedFetches, trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   AGENT_READ,
   expireSessions,
@@ -398,23 +400,14 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
   await reportNamespaces(page, patches);
   await routeInstallationProvisioning(page, fixture);
   const view = page.locator(settledView);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   await view.getByText(DRAFT_INVITATION).waitFor();
-  const reads: Response[] = [];
-  page.on("response", (response) => {
-    if (new URL(response.url()).pathname === "/namespaces") {
-      reads.push(response);
-    }
-  });
+  // Reads started: exact once a tick returns, answered or not.
+  const reads = () => startedFetches(page, "/namespaces");
   // One check: its read must arrive, so its answer, not the absence of one, keeps the note.
-  const poll = async () => {
-    const read = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/namespaces",
-    );
-    await page.clock.runFor(10_000);
-    await read;
-  };
+  const poll = () => runPollTick(page, "/namespaces", 10_000);
   await poll();
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   // A hidden tab reads nothing. Only the property changes, so the page's own visibility
@@ -427,9 +420,9 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
       });
     }, value);
   await hidden(true);
-  const beforeHidden = reads.length;
+  const beforeHidden = await reads();
   await page.clock.runFor(30_000);
-  assert.equal(reads.length, beforeHidden);
+  assert.equal(await reads(), beforeHidden);
   await hidden(false);
   // The reader is typing a search when the Namespace turns ready.
   const search = view.getByRole("searchbox", { name: "Search Agents" });
@@ -450,9 +443,9 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
   await search.fill("");
   await view.getByText(INVITATION).waitFor();
   // A ready Namespace needs no more checks.
-  const settled = reads.length;
+  const settled = await reads();
   await page.clock.runFor(30_000);
-  assert.equal(reads.length, settled);
+  assert.equal(await reads(), settled);
 
   function release() {
     patches.delete(namespace.id);
@@ -460,7 +453,8 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
 });
 
 // The Agents list waiting on a provisioning Namespace, with the page clock held: `poll()` runs one
-// check and waits for its read to arrive, so its answer, not the absence of one, is what shows.
+// check and waits until the page has handled its read, so its answer, not the absence of one, is
+// what shows, and the next check is already scheduled.
 async function waitingList(t: TestContext) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
   const { page } = await newPage(t, fixture, { browser });
@@ -469,6 +463,7 @@ async function waitingList(t: TestContext) {
   await reportNamespaces(page, patches);
   await routeInstallationProvisioning(page, fixture);
   const view = page.locator(settledView);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   await view.getByText(DRAFT_INVITATION).waitFor();
@@ -479,24 +474,24 @@ async function waitingList(t: TestContext) {
     }
   });
   // Requests, not answers: a check started but not yet answered still counts.
-  let requested = 0;
-  page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/namespaces") {
-      requested += 1;
+  const requested = () => startedFetches(page, "/namespaces");
+  const poll = async (leg?: string) => {
+    const before = await requested();
+    try {
+      await runPollTick(page, "/namespaces", 10_000);
+    } catch (cause) {
+      if (leg === undefined) {
+        throw cause;
+      }
+      const request = (await requested()) === before ? "no request was sent" : "request sent";
+      throw new Error(`Namespace poll for ${leg}: ${request}`, { cause });
     }
-  });
-  const poll = async () => {
-    const read = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/namespaces",
-    );
-    await page.clock.runFor(10_000);
-    await read;
   };
   // No check comes over three more cadences.
   const assertStopped = async () => {
-    const settled = requested;
+    const settled = await requested();
     await page.clock.runFor(30_000);
-    assert.equal(requested, settled);
+    assert.equal(await requested(), settled);
   };
   const create = view.getByRole("button", { name: "Create Agent" });
   const set = (patch: NamespacePatch) => patches.set(namespace.id, patch);
@@ -555,18 +550,18 @@ test("the Agents list keeps checking its Namespace after a failed read", async (
   await note.evaluate((node: HTMLElement) => {
     node.dataset.kept = "";
   });
-  await poll();
+  await poll("unchanged 200 read");
   assert.equal(await view.locator("#namespace-not-ready[data-kept]").count(), 1);
   await page.route(
     (url) => url.pathname === "/namespaces",
     (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
     { times: 1 },
   );
-  await poll();
+  await poll("injected 503 read");
   assert.deepEqual(reads, [200, 503]);
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   set({ status: "ready" });
-  await poll();
+  await poll("ready recovery after the 503");
   await view
     .getByRole("status")
     .filter({ hasText: "Namespace status: Ready. Agents created here can be deployed now." })
@@ -607,6 +602,7 @@ async function openGatedForm(
   const { page } = await newPage(t, fixture, { browser });
   if (clock) {
     await page.clock.install({ time: new Date("2026-10-19T12:00:00Z") });
+    await trackSettledFetches(page);
   }
   // The Namespace reads as provisioning, and takes drafts, until it is released.
   const patches = new Map<string, NamespacePatch>([[namespace.id, { status: "provisioning" }]]);
@@ -664,13 +660,7 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
     async (t) => {
       const { page, view, create, name, release } = await openGatedForm(t, team, { clock: true });
       // One poll: its read must arrive, so its answer, not the absence of one, keeps the gate.
-      const poll = async () => {
-        const read = page.waitForResponse(
-          (response) => new URL(response.url()).pathname === "/namespaces",
-        );
-        await page.clock.runFor(10_000);
-        await read;
-      };
+      const poll = () => runPollTick(page, "/namespaces", 10_000);
       // A Namespace still provisioning keeps the gate.
       await poll();
       await view.getByText(WAITS, { exact: true }).waitFor();
@@ -691,22 +681,13 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
     await view.getByRole("button", { name: "Start without Preset" }).click();
     await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
     await view.getByText(WAITS, { exact: true }).waitFor();
-    const reads: Response[] = [];
-    page.on("response", (response) => {
-      if (new URL(response.url()).pathname === "/namespaces") {
-        reads.push(response);
-      }
-    });
-    // Two polls: by the time the second one's read arrives, a read any replaced form started on
-    // the first one has arrived too.
+    // Two polls. Reads count as the page starts them, and a replaced form's timer fires in the
+    // same ticks, so any read it started counts too.
+    const before = await startedFetches(page, "/namespaces");
     for (let poll = 0; poll < 2; poll += 1) {
-      const read = page.waitForResponse(
-        (response) => new URL(response.url()).pathname === "/namespaces",
-      );
-      await page.clock.runFor(10_000);
-      await read;
+      await runPollTick(page, "/namespaces", 10_000);
     }
-    assert.equal(reads.length, 2);
+    assert.equal(await startedFetches(page, "/namespaces"), before + 2);
   });
 });
 

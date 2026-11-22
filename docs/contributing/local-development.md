@@ -31,7 +31,7 @@ before changing shared dependencies or hook configuration.
 - [Testing](../testing/README.md) covers isolated PostgreSQL, Docker, Kubernetes,
   and browser checks. Use the environment required by the behavior you changed.
 - [OpenShell tests](../testing/openshell.md#start-a-reusable-development-environment)
-  provide an owned, reusable v0.1.6 cluster for Sandbox Driver development and
+  provide an owned, reusable v0.1.8 cluster for Sandbox Driver development and
   its real model and containment proof. It is separate from the normal
   fail-closed OpenShell development profile and does not make OpenShell a
   supported production Agent runtime.
@@ -44,11 +44,11 @@ The SHA identifies the base commit; an image also includes local source edits.
 Building a controller requires a Git checkout. Selecting an existing controller
 image keeps that image's metadata.
 
-For a standalone controller build, use the same helper. Replace the base image
-with the approved immutable Node image for your environment:
+To build a standalone controller image, supply the approved immutable Node
+image for your environment.
 
 ```bash
-node scripts/build-controller.mjs docker --target runtime \
+node scripts/build-controller.ts docker --target runtime \
   --build-arg NODE_BASE_IMAGE='<approved-node-image@sha256:digest>' \
   --tag openclaw-enterprise-controller:development
 ```

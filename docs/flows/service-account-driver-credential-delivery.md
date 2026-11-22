@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-04
-last_updated_session: authoring-run/390095eb-01a9-4e24-b609-791b49f19f81
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -20,9 +20,9 @@ with the projected access token.
 - Trigger: `POST /namespaces/:namespaceId/service-accounts`, then
   `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials`,
   Agent association, and deployment.
-- Sources: `apps/controller/src/api-startup.mjs:startApi`,
+- Sources: `apps/controller/src/api-startup.ts:startApi`,
   `apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver`,
-  `packages/occ/src/index.ts:OpenClawController`.
+  `packages/occ/src/controller.ts:OpenClawController`.
 - Requires PostgreSQL, a ready Namespace, exact OCC permissions, the selected
   ChatGPT Backend and member ServiceAccount Driver, an API-only credential for
   the configured ChatGPT workspace, and a dedicated Codex runtime for managed
@@ -60,11 +60,11 @@ graph TD
 
 ### 1. Compose the Backend and its ServiceAccount Driver
 
-`apps/controller/src/api-startup.mjs:startApi`
+`apps/controller/src/api-startup.ts:startApi`
 
 `loadInstallationConfiguration` validates the singular `backend` array and
 requires each ChatGPT Backend to declare the selected `service_account` member
-Driver. `api-startup.mjs:startApi` then reads the mounted `apiKeyPath`, constructs
+Driver. `api-startup.ts:startApi` then reads the mounted `apiKeyPath`, constructs
 `Backend<ChatGPTClient>`, and injects it into the bundled
 `ChatGPTServiceAccountDriver` factory. That client and admin key stay on the API
 side. The worker receives only nonsecret Backend definitions so it can reject
@@ -72,9 +72,9 @@ stale or mismatched deployment snapshots before Compute effects.
 
 ### 2. Create the account and private Backend binding
 
-`packages/occ/src/index.ts:OpenClawController.createServiceAccount`
+`packages/occ/src/service-account-operations.ts:createServiceAccount`
 
-`OpenClawController.createServiceAccount` authorizes the exact Namespace and
+`createServiceAccount` authorizes the exact Namespace and
 allocates its `sa_*` identity. `ChatGPTServiceAccountDriver.create` creates the
 upstream account, registers rollback, and persists its private Backend binding
 in the same PostgreSQL transaction, including Backend, Driver, Namespace,
@@ -112,13 +112,25 @@ force is ignored and revocation runs.
 
 `apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver.createCredential`
 
-`OpenClawController.createServiceAccountCredential` authorizes account `update`
+`createServiceAccountCredential` authorizes account `update`
 before `ChatGPTServiceAccountDriver.createCredential` issues a Codex-scoped
-token. `KubernetesComputeDriver.storeServiceAccountCredential` stores it in one
-account-owned control-plane Secret. The private Backend binding retains workspace
-metadata. The private credential ID, internal
-credential reference, and audit changes commit together;
-confirmed failures compensate created provider and Kubernetes resources.
+token and registers one rollback callback. The callback first confirms revocation
+of that exact provider credential, then removes only the account-owned Secret
+whose token and credential ID both match. Unconfirmed revocation leaves the
+Secret available for recovery. The callback runs after PostgreSQL releases the
+account lock, so deletion uses uid and resourceVersion preconditions to protect
+a later issuance.
+
+`KubernetesComputeDriver.storeServiceAccountCredential` stores the token in one
+account-owned control-plane Secret. If the create reply is lost, an exact
+readback of ownership, token, credential ID, uid, and resourceVersion confirms
+the stored state without repeating or deleting the Secret. An absent or
+mismatched object leaves the create failure in force; an unreadable or
+unidentified object remains an unknown outcome. The Driver owns compensation
+after either storage failure or a later known transaction failure.
+
+The private Backend binding retains workspace metadata. The private credential
+ID, internal credential reference, and audit changes commit together.
 The Secret also records the provider credential ID. A crash or an unknown
 COMMIT that failed runs no compensation, so before issuing, and when deleting an
 account with no recorded credential, the Driver reads the Secret through
@@ -132,7 +144,8 @@ account lookup; a selected Driver that fails stays `503`.
 
 ### 4. Save Agent Backend intent and admit the Agent revision
 
-`packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`, `deployAgent`
+`packages/occ/src/agent-drafts.ts:createAgent`, `updateAgent`,
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 Agent `backendId` is nullable. Create omission saves `null`; PATCH omission
 preserves the current value; explicit `null` clears it; and a nonnull ID must
@@ -194,6 +207,13 @@ Refresh, rotation, and automated reconciliation remain deferred.
   oversized declared responses. The same suite checks that an oversized
   chunked body is cancelled at its byte limit. These cases do not prove live
   provider accounts or model execution.
+- Run the focused `postgres-platform` CI selection for
+  `tests/integration/postgres-service-account-compensation.test.ts` with the
+  [PostgreSQL prerequisites](../testing/postgresql.md). It exercises the real
+  Controller HTTP routes, PostgreSQL transactions, ChatGPT Backend, and
+  Kubernetes Compute through owned loopback TLS fixtures. It covers retained
+  recovery receipts, exact deletion, account-lock races, and unknown COMMIT
+  outcomes. This component proof does not qualify a live provider or cluster.
 - Verify the provider account, private credential ID, exact-account Secret,
   Codex-only projection for that Agent revision, and genuine model response. For ownership,
   compensation, and ambiguous commits, see the [service-account guide](../reference/service-accounts.md)
@@ -215,6 +235,11 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
+
+- 2026-11-20 16:31: Update OCC ServiceAccount operation source pointers. (authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c - 8eb97c71e0aa0b84779e19f9bbacc2d37f22fa14)
+- 2026-11-11 02:28: Confirm exact Secret readback and revoke provider credentials before deleting failed-issuance recovery receipts. (authoring-run/18242737-895e-484c-a1a9-29c2cd289d43 - 7fed115af7b57060bba5c6e276ad4cf316b9b58d)
 - 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
 - 2026-10-15 05:30: Issuance and account deletion reclaim the token Secret and provider credential of an issuance that never committed. (fix-1397, finding 1397)
 - 2026-10-14 18:44: Cancel oversized chunked ChatGPT Admin API responses while reading, before complete buffering. (issue-2411 - 1dae0cc9b76f034f5ca8e1ff500c9b545aa44501)

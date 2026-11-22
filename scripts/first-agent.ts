@@ -1,19 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { accessSync, constants } from "node:fs";
 import { open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { privateOwned } from "./lib/private-owned-path.mjs";
-import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
+
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mts";
-import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
+import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.ts";
 import { isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
+import { createFirstAgentApi, type FirstAgentApi } from "./first-agent-api.ts";
+import { findFirstAgentSecret } from "./first-agent-database.ts";
+import { collectFirstAgentDiagnostics } from "./first-agent-diagnostics.ts";
 import {
   FirstAgentModelError,
   firstAgentPriorPatPolicy,
@@ -22,10 +23,9 @@ import {
   reuseFirstAgentRecord,
   selectFirstAgentModel,
   verifyFirstAgentModel,
-} from "./first-agent-model.mjs";
-
-import { createFirstAgentApi, type FirstAgentApi } from "./first-agent-api.ts";
-import { collectFirstAgentDiagnostics } from "./first-agent-diagnostics.ts";
+} from "./first-agent-model.ts";
+import { configurePodmanComposeProvider } from "./lib/podman-compose-provider.ts";
+import { privateOwned } from "./lib/private-owned-path.ts";
 
 type Fields = Record<string, unknown>;
 type Harness = "openclaw" | "codex";
@@ -49,6 +49,15 @@ function fields(value: unknown, firstProperty: string): Fields {
 function text(value: unknown): string {
   if (typeof value !== "string") {
     throw new TypeError("Expected a string.");
+  }
+  return value;
+}
+
+const invalidDatabaseInput = "Invalid local database input.";
+
+function databaseInput(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error(invalidDatabaseInput);
   }
   return value;
 }
@@ -112,7 +121,7 @@ const failureState: { diagnostics?: () => Promise<string> } = {};
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function usage() {
-  return `Usage: node scripts/first-agent.mjs <name> [--harness openclaw|codex] [--control-ui] [--prompt <text>] [--replace-key]
+  return `Usage: node scripts/first-agent.ts <name> [--harness openclaw|codex] [--control-ui] [--prompt <text>] [--replace-key]
 
 Create and deploy an Agent in the local Kubernetes installation started by
 ./bin/occ dev up, then ask the actual model to return a random value.
@@ -207,23 +216,6 @@ async function exists(path: string) {
     }
     throw error;
   }
-}
-
-function availableInPath(name: string) {
-  // Match Go's exec.LookPath: a provider exists only when a PATH entry holds
-  // an executable file with that name, not when a non-executable one does.
-  const directories = (process.env.PATH ?? "").split(delimiter);
-  return directories.some((directory) => {
-    if (!directory) {
-      return false;
-    }
-    try {
-      accessSync(join(directory, name), constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  });
 }
 
 function parseJson(value: string, description: string): unknown {
@@ -348,15 +340,11 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
     "data",
   );
   const keyData = key.data == null ? {} : fields(key.data, "key");
-  const keyMeta = key.meta == null ? {} : fields(key.meta, "installationId");
-  if (
-    typeof keyData.key !== "string" ||
-    typeof keyData.servicePrincipalId !== "string" ||
-    typeof keyMeta.installationId !== "string"
-  ) {
-    throw new Error(
-      "The recorded Local Setup administrator key is missing its Installation or identity.",
-    );
+  if (typeof keyData.key !== "string" || keyData.key.length === 0) {
+    throw new Error("The recorded Local Setup administrator key is missing its credential.");
+  }
+  if (typeof state.installationId !== "string" || state.installationId.length === 0) {
+    throw new Error("Local Setup has no confirmed Installation ID. Complete Local Setup first.");
   }
 
   const containerEngine = state.containerEngine;
@@ -369,13 +357,7 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
   delete environment.OPENAI_API_KEY_FILE;
   delete environment.CODEX_ACCESS_TOKEN;
   delete environment.CODEX_ACCESS_TOKEN_FILE;
-  if (state.containerEngine === "podman" && !environment.PODMAN_COMPOSE_PROVIDER) {
-    // The Compose command uses --project-directory, which podman-compose does not
-    // support; docker-compose reaches Podman through the recorded DOCKER_HOST.
-    environment.PODMAN_COMPOSE_PROVIDER = availableInPath("docker-compose")
-      ? "docker-compose"
-      : "podman-compose";
-  }
+  configurePodmanComposeProvider(containerEngine, environment);
   const composeBase = [
     "compose",
     "--project-directory",
@@ -387,7 +369,7 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
   ];
   const compose = (...args: string[]) =>
     run(containerEngine, [...composeBase, ...args], { env: environment });
-  const kubectl = (...args: (string | RunOptions)[]) => {
+  const kubectl = (...args: unknown[]) => {
     const last = args.at(-1);
     const options = typeof last === "object" ? last : {};
     const commandArgs = typeof last === "object" ? args.slice(0, -1) : args;
@@ -434,10 +416,10 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
   }
   loopbackOrigin(String(server), "https:");
 
-  const database = (sql: string, variables: Record<string, unknown>) => {
+  const database = (sql: string, variables: Record<string, string>) => {
     const args = Object.entries(variables).flatMap(([name, value]) => {
-      if (!/^[a-z_]+$/.test(name) || typeof value !== "string") {
-        throw new Error("Invalid local database input.");
+      if (!/^[a-z_]+$/.test(name)) {
+        throw new Error(invalidDatabaseInput);
       }
       return ["--set", `${name}=${value}`];
     });
@@ -478,12 +460,14 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
   };
   return {
     directory,
-    key: {
-      data: { key: keyData.key, servicePrincipalId: keyData.servicePrincipalId },
-      meta: { installationId: keyMeta.installationId },
-    },
+    key: { data: { key: keyData.key } },
+    installationId: state.installationId,
     origin,
     kubectl,
+    checkProvisioning: () =>
+      run(join(root, "bin", "occ"), ["dev", "check"], {
+        env: { ...environment, OCC_DEVELOPMENT_STATE_DIRECTORY: directory },
+      }),
     database,
     sandboxDriver: state.sandboxDriver,
     nativeAdmin,
@@ -679,8 +663,8 @@ function nativeConfiguration(
                 mode: "trusted-proxy",
                 trustedProxy: {
                   userHeader: "x-occ-identity",
+                  requiredHeaders: ["x-openclaw-scopes"],
                   allowUsers: ["occ-workspace-files"],
-                  deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
                 },
                 identityScopes: { "occ-workspace-files": ["operator.admin"] },
               }),
@@ -771,7 +755,7 @@ function assertManagedConfiguration(
     Object.keys(configuration.secretBindings ?? {}).length
   ) {
     throw new Error(
-      "This Agent's Configuration was changed outside this helper. Use a new Agent name or manage this Agent through OCC.",
+      "This Agent's Configuration does not match this version of the helper. Use a new Agent name or manage this Agent through OCC.",
     );
   }
 }
@@ -807,7 +791,7 @@ function assertManagedRevision(
     revision.plugins !== undefined
   ) {
     throw new Error(
-      "This Agent revision was changed outside this helper. Use a new Agent name or manage this Agent through OCC.",
+      "This Agent revision does not match this version of the helper. Use a new Agent name or manage this Agent through OCC.",
     );
   }
   return firstAgentPriorPatPolicy(values, record, revision.id, priorRevisionId);
@@ -826,20 +810,22 @@ function assertManagedCredentialSource(source: Fields, record: Fields, secret: F
   }
 }
 
-async function ensureCredentialSourceGrant(
+async function ensureModelCredentialGrant(
   api: FirstAgentApi,
   base: string,
   agent: Fields,
   source: Fields,
+  resourceKind: "secret" | "credential_source",
 ) {
-  const permissions = [{ action: "operate", resourceKind: "credential_source" }];
+  const permissions = [{ action: "operate", resourceKind }];
   const suffix = createHash("sha256")
     .update(text(agent.id))
     .update("\0")
     .update(text(source.id))
     .digest("hex")
     .slice(0, 16);
-  const roleName = `Local first Agent source ${suffix}`;
+  const label = resourceKind === "secret" ? "Secret" : "source";
+  const roleName = `Local first Agent ${label} ${suffix}`;
   const roles = await api("GET", `${base}/iam/roles`);
   let role = findFields(roles, "roles", "name", (candidate) => candidate.name === roleName);
   if (role === undefined) {
@@ -849,13 +835,13 @@ async function ensureCredentialSourceGrant(
     });
   }
   if (!isDeepStrictEqual(role.permissions, permissions)) {
-    throw new Error("The first-Agent CredentialSource IAM Role changed outside this helper.");
+    throw new Error("The first-Agent model credential IAM Role changed outside this helper.");
   }
   const expected = {
     subjectKind: "identity",
     subjectId: agent.servicePrincipalId,
     roleId: role.id,
-    resourceKind: "credential_source",
+    resourceKind,
     resourceId: source.id,
   };
   const bindings = await api("GET", `${base}/iam/access-bindings`);
@@ -952,9 +938,18 @@ async function main(options: Options) {
     }
     throw error;
   }
+  let provisioningChecked = false;
+  async function checkProvisioning() {
+    if (local.sandboxDriver !== "openshell" || provisioningChecked) {
+      return;
+    }
+    progress("Checking the managed Agent Sandbox controller before deploying...");
+    await local.checkProvisioning();
+    provisioningChecked = true;
+  }
   const api = createFirstAgentApi(local);
   const installation = await objectResponse(api, "id", "GET", "/installation");
-  if (installation.id !== local.key.meta.installationId) {
+  if (installation.id !== local.installationId) {
     throw new Error("The controller Installation does not match Local Setup's administrator key.");
   }
   const namespaces = await api("GET", "/namespaces");
@@ -1023,6 +1018,10 @@ async function main(options: Options) {
       (process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_FILE)
     ) {
       throw new Error("Select only one model authentication method.");
+    }
+    // A repeat turn on an existing revision does not need the provisioning controller.
+    if (!record.agentId || options.replaceKey) {
+      await checkProvisioning();
     }
     if (!existing) {
       await save(record);
@@ -1122,7 +1121,11 @@ async function main(options: Options) {
 
     let suppliedKey: string | undefined;
     if (!record.secretId) {
-      record.secretId = await findFirstAgentSecret(local.database, namespace.id, record.secretName);
+      record.secretId = await findFirstAgentSecret(
+        local.database,
+        databaseInput(namespace.id),
+        databaseInput(record.secretName),
+      );
       if (!record.secretId) {
         suppliedKey = await modelKey(authMethod);
         progress("Saving the model credential in the local platform Secret...");
@@ -1224,16 +1227,10 @@ async function main(options: Options) {
     const agentPath = `${base}/agents/${agent.id}`;
     if (credentialSource === undefined) {
       progress("Authorizing the Agent to use its exact model Secret...");
-      await grantFirstAgentSecret(local.database, {
-        installationId: installation.id,
-        namespaceId: namespace.id,
-        agentId: agent.id,
-        secretId: secret.id,
-        actorId: local.key.data.servicePrincipalId,
-      });
+      await ensureModelCredentialGrant(api, base, agent, secret, "secret");
     } else {
       progress("Authorizing the Agent to use its exact model CredentialSource...");
-      await ensureCredentialSourceGrant(api, base, agent, credentialSource);
+      await ensureModelCredentialGrant(api, base, agent, credentialSource, "credential_source");
     }
     const credentials = await objectResponse(
       api,
@@ -1242,6 +1239,7 @@ async function main(options: Options) {
       `${agentPath}/runtime-credentials`,
     );
     if (!credentials.transportConfigured) {
+      await checkProvisioning();
       await api("POST", `${agentPath}/runtime-credentials`, {});
     }
 
@@ -1266,6 +1264,7 @@ async function main(options: Options) {
           `${base}/configurations/${record.configurationId}`,
         );
         assertManagedConfiguration(beforeDeploy, record, expectedConfiguration);
+        await checkProvisioning();
         progress("Deploying the Agent to local Kubernetes...");
         const revision = await objectResponse(api, "configuration", "POST", `${agentPath}/deploy`);
         assertManagedRevision(revision, record, expectedConfiguration);

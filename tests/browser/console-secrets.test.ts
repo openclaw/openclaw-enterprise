@@ -27,14 +27,16 @@ import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_NOT_FOUND,
   SECRET_CREATE_DENIED,
+  SECRET_NAME_CONFLICT,
+  tooManyRequestsIn,
+} from "../helpers/refusal-text.mjs";
+import {
   SECRET_DELETE_DENIED,
   SECRET_LINK_UNLISTED,
   secretLinkUnlistedAdministrator,
-  SECRET_NAME_CONFLICT,
   SECRET_UPDATE_DENIED,
-  tooManyRequestsIn,
-} from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+} from "../helpers/refusal-access.ts";
+import { restrict } from "../helpers/iam-grants.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
@@ -438,35 +440,45 @@ test("deleting a template and client targets the selected availability and prese
   );
   assert.ok(google);
   const { issuer, authorizationUrl, tokenUrl, destinations } = google.current;
+  const templateBody = {
+    namespaceId: namespace.id,
+    displayName: google.displayName,
+    mode: "manual",
+    issuer,
+    authorizationUrl,
+    tokenUrl,
+    scopes: [],
+    destinations,
+  };
   const local = await fixture.request("POST", "/connection-templates", {
-    body: {
-      namespaceId: namespace.id,
-      displayName: google.displayName,
-      mode: "manual",
-      issuer,
-      authorizationUrl,
-      tokenUrl,
-      scopes: [],
-      destinations,
-    },
+    body: templateBody,
   });
   assert.equal(local.status, 201);
-  // Both rows have the same visible name. Only their availability and resource IDs distinguish them.
-  async function register(templateId: string) {
+  const draft = await fixture.request("POST", "/connection-templates", {
+    body: { ...templateBody, displayName: "Google OAuth draft" },
+  });
+  assert.equal(draft.status, 201);
+  // The two registrations share a provider client ID but have separate names and record IDs.
+  async function register(
+    templateId: string,
+    displayName: string,
+    providerClientId = "google-app",
+  ) {
     const result = await fixture.request("POST", "/oauth-clients", {
       body: {
         connectionTemplateId: templateId,
         connectionTemplateVersion: 1,
-        displayName: "Google app",
-        clientId: "google-app",
+        displayName,
+        clientId: providerClientId,
         tokenEndpointAuthMethod: "none",
       },
     });
     assert.equal(result.status, 201);
     return result.data.id as string;
   }
-  const clientId = await register(google.id);
-  await register(local.data.id);
+  const clientId = await register(google.id, "Google app");
+  const localClientId = await register(local.data.id, "Support app");
+  assert.notEqual(clientId, localClientId);
   const { page } = await newPage(t, fixture, {
     browser,
     context: { viewport: { width: 390, height: 844 } },
@@ -498,6 +510,22 @@ test("deleting a template and client targets the selected availability and prese
   await removeClient.waitFor();
 
   await sections.getByRole("link", { name: "Connection templates", exact: true }).click();
+  const catalog = page.getByRole("table", { name: "Connection templates", exact: true });
+  const templateRow = (action: string) => catalog.getByRole("row").filter({ has: button(action) });
+  const draftRow = catalog.getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: "Google OAuth draft", exact: true }),
+  });
+  const localTemplate = "Delete Google OAuth (Namespace · Customer support)";
+  await templateRow("Delete Google OAuth (Installation-wide)")
+    .getByRole("cell", { name: "Google app", exact: true })
+    .waitFor();
+  await templateRow(localTemplate)
+    .getByRole("cell", { name: "Support app", exact: true })
+    .waitFor();
+  await draftRow.getByRole("cell", { name: "No OAuth client assigned", exact: true }).waitFor();
+
+  // A registration created after the list loaded must appear when deletion refreshes the catalog.
+  await register(draft.data.id, "Google app", "draft-app");
   await removeTemplate.click();
   assert.match(await templateDialog.innerText(), /Google OAuth/);
   assert.match(await templateDialog.innerText(), /Installation-wide/);
@@ -511,8 +539,12 @@ test("deleting a template and client targets the selected availability and prese
     .click();
   assert.equal((await deletedTemplate).status(), 204);
   await page.getByText("Deleted Google OAuth.", { exact: true }).waitFor();
+  await draftRow.getByRole("cell", { name: "Google app", exact: true }).waitFor();
+  await templateRow(localTemplate)
+    .getByRole("cell", { name: "Support app", exact: true })
+    .waitFor();
   await page.reload();
-  await button("Delete Google OAuth (Namespace · Customer support)").waitFor();
+  await button(localTemplate).waitFor();
   assert.equal(await removeTemplate.count(), 0);
 
   await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
@@ -525,55 +557,69 @@ test("deleting a template and client targets the selected availability and prese
   assert.equal(await removeClient.count(), 0);
 });
 
-test("a lost template creation response closes registration and reloads the committed template", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery");
-  const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, secretsUrl(namespace));
-  await page
-    .getByRole("navigation", { name: "Credential sections" })
-    .getByRole("link", { name: "OAuth clients", exact: true })
-    .click();
-  const open = page.getByRole("button", { name: "Register OAuth client", exact: true });
-  await open.click();
-  const registration = dialog(page, "Register OAuth client");
-  const choice = registration.getByLabel("Connection template", { exact: true });
-  await registration
-    .getByRole("button", { name: "Create connection template", exact: true })
-    .click();
-  const editor = dialog(page, "Create connection template");
-  await fillDirectoryTemplate(editor);
-  assert.equal(await editor.getByLabel("OAuth scope limit").inputValue(), "unrestricted");
-  // The real API commits the template. Only the browser response is lost.
-  await page.route(fixture.origin + "/connection-templates", async (route) => {
-    if (route.request().method() !== "POST") {
-      return route.continue();
-    }
-    const response = await route.fetch();
-    assert.equal(response.status(), 201);
-    await route.abort("failed");
+for (const outcome of ["lost", "versionless"]) {
+  test(`a ${outcome} template creation response closes registration and reloads the committed template`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery");
+    const { page } = await newPage(t, fixture, { browser });
+    await login(page, fixture, secretsUrl(namespace));
+    await page
+      .getByRole("navigation", { name: "Credential sections" })
+      .getByRole("link", { name: "OAuth clients", exact: true })
+      .click();
+    const open = page.getByRole("button", { name: "Register OAuth client", exact: true });
+    await open.click();
+    const registration = dialog(page, "Register OAuth client");
+    const choice = registration.getByLabel("Connection template", { exact: true });
+    await registration
+      .getByRole("button", { name: "Create connection template", exact: true })
+      .click();
+    const editor = dialog(page, "Create connection template");
+    await fillDirectoryTemplate(editor);
+    assert.equal(await editor.getByLabel("OAuth scope limit").inputValue(), "unrestricted");
+    // The real API commits the template. Only the browser confirmation is disrupted.
+    await page.route(fixture.origin + "/connection-templates", async (route) => {
+      if (route.request().method() !== "POST") {
+        return route.continue();
+      }
+      const response = await route.fetch();
+      assert.equal(response.status(), 201);
+      if (outcome === "lost") {
+        return route.abort("failed");
+      }
+      const payload: { data: { current: { version?: number } } } = await response.json();
+      assert.equal(payload.data.current.version, 1);
+      delete payload.data.current.version;
+      await route.fulfill({ response, json: payload });
+    });
+    await editor.getByRole("button", { name: "Create template", exact: true }).click();
+    await editor.getByText(/The template may have been saved/).waitFor();
+    assert.equal(
+      await editor.getByRole("button", { name: "Create template", exact: true }).isDisabled(),
+      true,
+    );
+    const reloaded = responseTo(page, "GET", fixture.origin + "/connection-templates");
+    const close = editor.getByRole("button", { name: "Close" });
+    assert.equal(await close.evaluate((button) => button === document.activeElement), true);
+    await page.keyboard.press("Enter");
+    const saved = (await (await reloaded).json()).data;
+    const committed = saved.filter(
+      (template: { namespaceId?: string }) => template.namespaceId === namespace.id,
+    );
+    assert.equal(committed.length, 1);
+    await registration.waitFor({ state: "hidden" });
+    await page.getByText(/Reopen registration and check the template list/).waitFor();
+    await open.click();
+    await choice.selectOption(committed[0].id);
+    assert.equal(
+      await choice.getByRole("option", { name: /Directory OAuth · Namespace/ }).count(),
+      1,
+    );
+    assert.equal(
+      await registration.getByLabel("Client availability").inputValue(),
+      "Namespace · Registration recovery",
+    );
   });
-  await editor.getByRole("button", { name: "Create template", exact: true }).click();
-  await editor.getByText(/Could not confirm the template change/).waitFor();
-  const reloaded = responseTo(page, "GET", fixture.origin + "/connection-templates");
-  await editor.getByRole("button", { name: "Cancel" }).click();
-  const saved = (await (await reloaded).json()).data;
-  const committed = saved.filter(
-    (template: { namespaceId?: string }) => template.namespaceId === namespace.id,
-  );
-  assert.equal(committed.length, 1);
-  await registration.waitFor({ state: "hidden" });
-  await page.getByText(/Reopen registration and check the template list/).waitFor();
-  await open.click();
-  await choice.selectOption(committed[0].id);
-  assert.equal(
-    await choice.getByRole("option", { name: /Directory OAuth · Namespace/ }).count(),
-    1,
-  );
-  assert.equal(
-    await registration.getByLabel("Client availability").inputValue(),
-    "Namespace · Registration recovery",
-  );
-});
+}
 
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
   const audit = new InMemoryAuditSink();
@@ -689,7 +735,7 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   for (const [linkedId, shown] of [
     [secret.id, `Secret ${secret.id}`],
     ["sec_not-a-secret-id", "such Secret"],
-  ]) {
+  ] satisfies [string, string][]) {
     await page.goto(`${fixture.origin}${secretsUrl(namespace)}&secret=${linkedId}`);
     await page
       .getByRole("status")

@@ -3,11 +3,12 @@ package occdev
 import "fmt"
 
 // Defaults for an unset or empty development profile selector. Every Go entry
-// point resolves them here; scripts/dev-up keeps its own Docker default
-// because occ dev up selects Docker explicitly when it runs that script.
+// point and scripts/dev-up resolve them the same way: unset Compute selects
+// Kubernetes, and an unset control plane follows the Compute Driver (see
+// ResolveProfile). occ dev up names Docker Compute explicitly when it runs
+// scripts/dev-up for it.
 const (
-	defaultDevelopmentComputeDriver = "docker"
-	defaultDevelopmentControlPlane  = "compose"
+	defaultDevelopmentComputeDriver = "kubernetes"
 	defaultDevelopmentSandboxDriver = "none"
 )
 
@@ -23,19 +24,34 @@ type Profile struct {
 
 // ResolveProfile reads OCC_DEVELOPMENT_COMPUTE_DRIVER,
 // OCC_DEVELOPMENT_CONTROL_PLANE and OCC_DEVELOPMENT_SANDBOX_DRIVER through
-// getenv. An unset or empty selector takes its default.
+// getenv. An unset or empty selector takes its default: Kubernetes Compute,
+// no Sandbox Driver, and the control plane of the selected Compute Driver,
+// so nothing selected means the Kubernetes-only profile.
 func ResolveProfile(getenv func(string) string) Profile {
-	setting := func(key, fallback string) string {
-		if value := getenv(key); value != "" {
-			return value
-		}
-		return fallback
+	return resolveProfileFor(getenv, profileSetting(getenv, "OCC_DEVELOPMENT_COMPUTE_DRIVER", defaultDevelopmentComputeDriver))
+}
+
+// resolveProfileFor resolves the profile for computeDriver. An unset control
+// plane is the Kubernetes control plane on Kubernetes Compute and the Compose
+// control plane otherwise: Docker Compute serves only the Compose control
+// plane, so COMPUTE=docker alone keeps passing CheckDockerCompute.
+func resolveProfileFor(getenv func(string) string, computeDriver string) Profile {
+	controlPlane := "compose"
+	if computeDriver == "kubernetes" {
+		controlPlane = "kubernetes"
 	}
 	return Profile{
-		ComputeDriver: setting("OCC_DEVELOPMENT_COMPUTE_DRIVER", defaultDevelopmentComputeDriver),
-		ControlPlane:  setting("OCC_DEVELOPMENT_CONTROL_PLANE", defaultDevelopmentControlPlane),
-		SandboxDriver: setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", defaultDevelopmentSandboxDriver),
+		ComputeDriver: computeDriver,
+		ControlPlane:  profileSetting(getenv, "OCC_DEVELOPMENT_CONTROL_PLANE", controlPlane),
+		SandboxDriver: profileSetting(getenv, "OCC_DEVELOPMENT_SANDBOX_DRIVER", defaultDevelopmentSandboxDriver),
 	}
+}
+
+func profileSetting(getenv func(string) string, key, fallback string) string {
+	if value := getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func resolveProfile(env map[string]string) Profile {
@@ -60,10 +76,11 @@ const (
 	downNoRecordedState
 )
 
-// downChoice is the stack occ dev down stops and why. StateDirectory is the
-// resolved state directory when the choice consulted it, otherwise empty.
+// downChoice is the stack occ dev down stops, its profile, and why.
+// StateDirectory is the resolved state directory when the choice consulted it,
+// otherwise empty.
 type downChoice struct {
-	ComputeDriver  string
+	Profile        Profile
 	Reason         downReason
 	StateDirectory string
 }
@@ -74,31 +91,35 @@ func (c downChoice) unselected() bool {
 	return c.Reason == downRecordedState || c.Reason == downNoRecordedState
 }
 
-// downComputeDriver chooses the stack occ dev down stops. An explicit
+// chooseDownStack chooses the stack occ dev down stops. An explicit
 // OCC_DEVELOPMENT_COMPUTE_DRIVER wins. Without one, a selection only
 // Kubernetes Compute serves (the Kubernetes control plane or a Sandbox
 // Driver) selects the Kubernetes path, Compose options keep the Docker path,
 // and otherwise the state directory decides: when it exists, down stops the
 // recorded Kubernetes stack; when it is absent, down stops the Docker stack.
-// recorded returns the resolved state directory and whether it exists; it is
-// consulted only in that last case.
-func (p Profile) downComputeDriver(computeSelected, composeOptions bool, recorded func() (string, bool, error)) (downChoice, error) {
+// Only the Kubernetes path records state, so the unrecorded fallback is
+// Docker even though occ dev up defaults to Kubernetes Compute. recorded
+// returns the resolved state directory and whether it exists; it is consulted
+// only in that last case.
+func chooseDownStack(env map[string]string, composeOptions bool, recorded func() (string, bool, error)) (downChoice, error) {
+	selected := resolveProfile(env)
+	docker := resolveProfileFor(func(key string) string { return env[key] }, "docker")
 	switch {
-	case computeSelected:
-		return downChoice{ComputeDriver: p.ComputeDriver, Reason: downComputeSelected}, nil
-	case p.ControlPlane == "kubernetes" || p.SandboxDriver != defaultDevelopmentSandboxDriver:
-		return downChoice{ComputeDriver: "kubernetes", Reason: downKubernetesSelected}, nil
+	case env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "":
+		return downChoice{Profile: selected, Reason: downComputeSelected}, nil
+	case env["OCC_DEVELOPMENT_CONTROL_PLANE"] == "kubernetes" || selected.SandboxDriver != defaultDevelopmentSandboxDriver:
+		return downChoice{Profile: selected, Reason: downKubernetesSelected}, nil
 	case composeOptions:
-		return downChoice{ComputeDriver: p.ComputeDriver, Reason: downComposeOptions}, nil
+		return downChoice{Profile: docker, Reason: downComposeOptions}, nil
 	}
 	path, present, err := recorded()
 	if err != nil {
 		return downChoice{}, err
 	}
 	if present {
-		return downChoice{ComputeDriver: "kubernetes", Reason: downRecordedState, StateDirectory: path}, nil
+		return downChoice{Profile: selected, Reason: downRecordedState, StateDirectory: path}, nil
 	}
-	return downChoice{ComputeDriver: p.ComputeDriver, Reason: downNoRecordedState, StateDirectory: path}, nil
+	return downChoice{Profile: docker, Reason: downNoRecordedState, StateDirectory: path}, nil
 }
 
 // KubernetesOnly reports the profile whose control plane also runs in

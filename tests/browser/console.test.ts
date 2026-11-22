@@ -45,12 +45,9 @@ import {
 } from "./console-fetch-accounting.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import {
-  NO_READABLE_NAMESPACES,
-  NAMESPACE_UNAVAILABLE,
-  WORKSPACE_FILES_UNAVAILABLE,
-  SIGN_IN_UNAVAILABLE,
-} from "../helpers/refusal-text.mjs";
+import { within } from "../helpers/wait-for.ts";
+import { WORKSPACE_FILES_UNAVAILABLE, SIGN_IN_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { NO_READABLE_NAMESPACES, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
 
 type App = ReturnType<typeof createFastifyApp>;
 type RouteHandler = Parameters<App["get"]>[1]["handler"];
@@ -776,7 +773,7 @@ async function navigateDuringInstallationAccessProbe(
   await page.getByRole("link", { name: "Namespaces" }).click();
   await page.waitForURL(/\/console\/namespaces/);
   if (settleFirst) {
-    await navigationAsked.promise;
+    await within(navigationAsked.promise, "the held second permissions read");
     probe.release();
     // The Console keeps a settled answer for the tab in session storage.
     await page.waitForFunction(() => sessionStorage.getItem("occ.console.installationAccess"));

@@ -18,6 +18,7 @@ import type {
   HarnessAuthSnapshot,
   HarnessExecutionMode,
   Namespace,
+  ModelProvider,
   OpenClawConfigurationDocument,
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
@@ -37,10 +38,27 @@ import type {
   AgentRuntimeLogChunk,
   AgentRuntimeLogRequest,
 } from "../../runtime-logs.ts";
-import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
+import type {
+  ProtectedRepositoryNetworkPolicyContext,
+  SandboxNamespaceContext,
+  SandboxHarnessObservation,
+} from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
+export interface AgentChatCompletionsEndpoint {
+  readonly url: string;
+  readonly model: string;
+}
+
+export type AgentChatCompletionsResolution =
+  | ({ readonly status: "available" } & AgentChatCompletionsEndpoint)
+  | { readonly status: "disabled" }
+  | { readonly status: "unavailable" }
+  | { readonly status: "unsupported" };
+
 export interface ComputeRevisionContext {
+  /** An active provider's maintenance pass may update its existing Harness only. */
+  readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
   /** A fresh read of the still-authorized revision and its exact committed installation. */
@@ -225,6 +243,13 @@ export interface ComputeDriver extends Driver {
     source?: SelectedDriverRegistration | "stored",
   ): void;
   /**
+   * Side-effect-free check that Compute preserves the explicit repository policy boundary
+   * on the selected execution topology. Throw or reject for an unsupported topology.
+   */
+  validateProtectedRepositoryNetworkPolicy?(
+    context: ProtectedRepositoryNetworkPolicyContext,
+  ): void | Promise<void>;
+  /**
    * After release is refused, select a withdrawal only for a grant this Compute previously
    * admitted. Selection is side-effect free. The worker runs the withdrawal under the active
    * revision's authorized claim; resolve only after observing the grant and workload gone.
@@ -237,7 +262,7 @@ export interface ComputeDriver extends Driver {
   /** Enforces Gateway administration restrictions for managed Agent revisions. */
   readonly supportsGatewayManagedMode?: true;
   readonly capability: "compute";
-  /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */
+  /** Deployment must observe and provision Agent-owned runtime credentials before saving a revision. */
   readonly requiresAgentRuntimeCredentials?: true;
   /** Default: platform admission policy. Driver ownership preserves native logging settings. */
   readonly runtimeLogging?: "platform" | "driver";
@@ -246,6 +271,8 @@ export interface ComputeDriver extends Driver {
   readonly maintenanceIntervalMs?: number;
   /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
   admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
+  /** Optional immutable launch inputs, separate from execution authority. No side effects. */
+  snapshotRuntimeInputs?(revision: Readonly<AgentRevision>): string | undefined;
   /**
    * Opt into exclusive replacement: the worker stops all earlier revisions before
    * preparation and supersedes their reconciliation once a newer exclusive
@@ -308,6 +335,15 @@ export interface ComputeDriver extends Driver {
   normalizeHarnessOverrides?(
     overrides: Readonly<Record<string, unknown>>,
   ): Readonly<Record<string, unknown>>;
+  /** Translate a saved provider and its selected catalog rows into immutable deployment values. */
+  resolveModelProvider?(
+    provider: Readonly<ModelProvider>,
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+  ): {
+    readonly values: OpenClawConfigurationDocument;
+    readonly settings: Readonly<Record<string, unknown>>;
+  };
   /** Resolve immutable Harness settings before credential and egress admission. */
   resolveHarnessConfiguration?(
     harness: RevisionHarnessDescriptor,
@@ -375,11 +411,30 @@ export interface ComputeDriver extends Driver {
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   /**
-   * Private WSS base for native chat, with an equivalent HTTPS UI endpoint. The Driver
-   * must enforce a session-writing ceiling across HTTP and WebSocket, including device
-   * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
+   * Resolve a private browser transport for an already-authorized, exact AgentRevision.
+   * Installation and Principal IDs are server-owned. Returned headers are credentials:
+   * never serialize them to a browser or fall back to a shared machine endpoint.
+   * Subject is the non-secret native identity for connection attribution; never derive it from headers.
+   * Reads existing revision credentials only; absence is a dependency failure.
    */
-  getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
+  getGatewayBrowserRequest?(
+    revision: AgentRevision,
+    input: {
+      readonly installationId: string;
+      readonly principalId: string;
+      readonly mode: "admin" | "chat";
+    },
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        readonly endpoint: string;
+        readonly subject: string;
+        readonly headers: Readonly<Record<string, string>>;
+      }
+    | undefined
+  >;
+  /** Resolve only the private HTTP completion route for this exact revision. */
+  getChatCompletionsEndpoint?(revision: AgentRevision): AgentChatCompletionsResolution;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   checkNamespaceDeletion?(

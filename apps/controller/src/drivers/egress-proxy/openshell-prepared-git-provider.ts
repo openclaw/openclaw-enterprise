@@ -1,3 +1,7 @@
+import {
+  openShellGitEndpoints,
+  type OpenShellGitNetworkTarget,
+} from "../sandbox/openshell-git-network-policy.ts";
 import type { RepositoryGitRecipient } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -17,9 +21,7 @@ import {
 } from "../sandbox/openshell-gateway-client.ts";
 
 /** Operator-owned scope; never populate this from a workload request. */
-export type OpenShellPreparedGitDelivery =
-  | { readonly repository: string; readonly installationId?: never }
-  | { readonly repository?: never; readonly installationId: string };
+export type OpenShellPreparedGitDelivery = OpenShellGitNetworkTarget;
 
 export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
   readonly workspace: string;
@@ -70,6 +72,15 @@ export type OpenShellPreparedGitGeneration = Pick<
 
 /** Exact current installation identity; timestamps and sequence are not identity fields. */
 export interface OpenShellPreparedGitInstalled extends RepositoryGitRecipient {
+  readonly processInstanceId: string;
+  readonly networkInstanceId: string;
+  /** Current launcher evidence for mandatory online authorization, persisted with its runtime. */
+  readonly enrollment?: {
+    readonly configurationId: string;
+    readonly bootstrapRevision: string;
+    readonly hook?: NonNullable<RepositoryGitRecipient["observedHook"]>;
+    readonly release: "held" | "sending" | "acknowledged";
+  };
   readonly workspace: string;
   readonly sandbox: string;
   readonly sandboxId: string;
@@ -241,49 +252,10 @@ export class OpenShellPreparedGitProvider {
       ],
       // This profile bounds transport, not credential placement or GitHub permissions. Release
       // must independently verify the mandatory request phase, verified TLS and sole recipient.
-      endpoints: scope.installationId
-        ? [
-            {
-              host: git.hostname,
-              port: 443,
-              protocol: "rest",
-              rules: [
-                { allow: { method: "GET", path: "/**/info/refs" } },
-                { allow: { method: "POST", path: "/**/git-upload-pack" } },
-                { allow: { method: "POST", path: "/**/git-receive-pack" } },
-              ],
-            },
-            {
-              host: api.hostname,
-              port: 443,
-              protocol: "rest",
-              access: "NETWORK_ACCESS_PRESET_FULL",
-            },
-            {
-              host: api.hostname,
-              port: 443,
-              protocol: "graphql",
-              path: "/graphql",
-              access: "NETWORK_ACCESS_PRESET_FULL",
-            },
-          ]
-        : [
-            {
-              host: git.hostname,
-              port: Number(git.port || 443),
-              protocol: "rest",
-              path: "/" + scope.repository + ".git/**",
-            },
-            {
-              host: api.hostname,
-              port: Number(api.port || 443),
-              protocol: "rest",
-              path: "/repos/" + scope.repository + "/pulls",
-            },
-          ],
+      endpoints: openShellGitEndpoints(git, api, scope),
       binaries: this.scope.binaries,
       inferenceCapable: false,
-      annotations: { [OWNER]: this.fingerprint },
+      annotations: { [OWNER]: this.fingerprint, [GIT_REVISION]: scope.executionId },
     };
   }
 
@@ -437,6 +409,11 @@ export class OpenShellPreparedGitProvider {
       refuse();
     }
     const expired = !standing && generation.credentialState === "active" && expires <= Date.now();
+    if (this.scope.observedHookPreview && !expired && generation.credentialState === "active") {
+      // The route store confirmed the earlier write. Reconcile creates an OBSERVE receipt
+      // for current readiness; adoption never sends the credential UPDATE again.
+      this.refreshReceipt = { version: generation.resourceVersion };
+    }
     return this.bindingForGeneration({
       providerId: generation.providerId,
       profileVersion: generation.profileVersion,
@@ -480,7 +457,7 @@ export class OpenShellPreparedGitProvider {
           workspace: this.scope.workspace,
           name: this.provider,
           type: this.profile.id,
-          labels: { [OWNER]: this.fingerprint },
+          labels: { [OWNER]: this.fingerprint, [GIT_REVISION]: this.scope.executionId },
           credentials: { [KEY]: token.value },
           ...(credentialState === "active"
             ? { credentialExpirationTimes: { [KEY]: token.expiresAt } }
@@ -955,6 +932,37 @@ function preparedGitName(name: string, owner: string | undefined): boolean {
 
 function preparedGitProvider(provider: OpenShellProviderResponse): boolean {
   return provider.type === provider.name && preparedGitName(provider.name, provider.labels[OWNER]);
+}
+
+export const GIT_REVISION = "openclaw.dev/git-revision-id";
+
+export function preparedGitProviderForRevision(
+  provider: OpenShellProviderResponse,
+  revisionId: string,
+): boolean {
+  return preparedGitProvider(provider) && provider.labels[GIT_REVISION] === revisionId;
+}
+
+/** Also finds artifacts left after a lost create/delete reply, without resolving live policy. */
+export async function deleteRetiredGitProviders(
+  client: OpenShellGatewayClient,
+  workspace: string,
+  revisionId: string,
+  signal: AbortSignal,
+): Promise<void> {
+  for (const provider of await client.listProviders(workspace, signal)) {
+    if (preparedGitProviderForRevision(provider, revisionId)) {
+      await deleteOpenShellPreparedGitProvider(client, workspace, provider, signal);
+    }
+  }
+  for (const profile of await client.listProviderProfiles(workspace, signal)) {
+    if (
+      profile.annotations?.[GIT_REVISION] === revisionId &&
+      preparedGitName(profile.id, profile.annotations[OWNER])
+    ) {
+      await client.deleteProviderProfile(workspace, profile.id, signal);
+    }
+  }
 }
 
 /**

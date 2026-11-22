@@ -60,6 +60,7 @@ network additions. It grants no default access; an absent or empty array delegat
 none. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
+See [repository delegation](sandbox-policies.md#repository-network-policy).
 
 The optional `iam` block declares the
 [Default users](authorization/default-users.md#installation-iam-configuration)
@@ -243,13 +244,12 @@ its metadata names the source generation. Where unset, OCC sets
 [`telemetry.enabled: false`](claude-code-runtime.md#telemetry-and-model-pins).
 OCE isolates the Agent and has no Gateway approval screen. Unless `tools.exec`
 sets `security` or `ask`, OCC defaults `tools.exec.mode` to `"full"` and, in that
-mode, `tools.exec.strictInlineEval` to `false`.
+mode, `tools.exec.strictInlineEval` to `false`. With a channel enabled, OCC
+also sets an unset [`session.dmScope`](configuration/secrets.md#direct-message-sessions)
+to `"per-account-channel-peer"`.
 Later Configuration updates change no running gateway or existing version
 until the next deployment. Deleting a Configuration still referenced by an Agent
 returns `409`.
-
-Native OpenClaw provider settings in `values.channels` follow the same
-Configuration ownership and immutable Agent deployment lifecycle.
 
 Database constraints require the supported Configuration kind, a positive
 generation, matching Agent ownership, and a valid immutable saved version
@@ -347,7 +347,7 @@ details compatibility checks.
 - [Agent Configuration, versions, and deployment](agents.md)
 - [Kubernetes Compute Driver](drivers/kubernetes-compute.md)
 - [Identity and access management](authorization.md)
-- [Configuration lifecycle implementation](../../packages/occ/src/index.ts)
+- [Configuration lifecycle implementation](../../packages/occ/src/configuration-operations.ts)
 - [Local testing](../testing/local.md)
 - [Kubernetes testing](../testing/kubernetes.md)
 

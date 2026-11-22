@@ -53,6 +53,14 @@ export class AuthorizationDeniedError extends Error {
   }
 }
 
+/** Keep IAM evidence while concealing a resource the caller cannot read or operate. */
+export class HiddenResourceAuthorizationDeniedError extends AuthorizationDeniedError {
+  constructor(denial: AuthorizationDeniedError) {
+    super(denial.message, denial.evidence, denial.authorization, denial.checkedPrincipalId);
+    this.name = "HiddenResourceAuthorizationDeniedError";
+  }
+}
+
 /**
  * The caller's own denial where the named grant needs a reason to make sense: an Agent update
  * checks the grant on the Agent's current Harness authentication even when it replaces it
@@ -160,7 +168,14 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   readonly requestDiagnostic?: {
     readonly method: string;
     readonly grpcStatus: number;
-    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+    readonly validationCategory:
+      | "POLICY_SAFETY"
+      | "POLICY_MIDDLEWARE_VALIDATION"
+      | "PVC_ADMISSION_LABELS"
+      | "CLASS_ADMISSION_LABELS"
+      | "CALLER_DRIVER_CONFIG_DISABLED"
+      | "RESOURCE_METADATA_FORBIDDEN"
+      | "UNKNOWN";
   };
 
   constructor(
@@ -172,6 +187,39 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
     if (requestDiagnostic !== undefined) {
       this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
     }
+  }
+}
+
+/** The caller cannot determine whether the storage transaction committed. */
+export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
+  constructor() {
+    super("The PostgreSQL transaction commit outcome is unknown.");
+    this.name = "PostgresCommitOutcomeUnknownError";
+  }
+}
+
+export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super("The Agent audit disclosure record is unavailable.");
+  }
+}
+
+/** The database did not accept required audit evidence in the current transaction. */
+export class AuditAppendUnavailableError extends DependencyUnavailableError {
+  readonly reasonCode: "AUDIT_CAPACITY_EXCEEDED" | undefined;
+
+  constructor(reasonCode?: "AUDIT_CAPACITY_EXCEEDED") {
+    super("The platform audit write failed.");
+    this.name = "AuditAppendUnavailableError";
+    this.reasonCode = reasonCode;
+  }
+}
+
+/** A failed private runtime diagnostics transport read, without supplier details. */
+export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError {
+  constructor() {
+    super("The private Gateway diagnostics transport is unavailable.");
+    this.name = "RuntimeDiagnosticsTransportError";
   }
 }
 
@@ -357,10 +405,38 @@ export class ChannelDirectoryError extends Error {
   }
 }
 
+export class WorkClaimLostError extends Error {
+  constructor() {
+    super("The controller work claim is missing, expired, or owned by another worker.");
+    this.name = "WorkClaimLostError";
+  }
+}
+
 export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ScopeViolationError";
+  }
+}
+
+/** A password proof no longer belongs to the current recovery designation. */
+export class RecoveryPasswordPolicyError extends ScopeViolationError {
+  constructor() {
+    super("The password is not eligible for sign-in.");
+    this.name = "RecoveryPasswordPolicyError";
+  }
+}
+
+/** A submitted source field failed validation by the selected TokenService. */
+export class TokenServiceSourceInputError extends ScopeViolationError {}
+
+/** This registration was refused before the TokenService attempted any material write. */
+
+/** A device login's private binding does not match the admitted request scope. */
+export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {
+  constructor() {
+    super("The login belongs to another actor or Agent scope.");
+    this.name = "DeviceAuthorizationScopeMismatchError";
   }
 }
 
@@ -634,6 +710,8 @@ export class SandboxNetworkPolicyConflictError extends ResourceStateConflictErro
 
 const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
   save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+  saveRepository:
+    "Protected execution applies to this Agent. The Credential Proxy governs its egress. To withdraw an existing repository list, send empty arrays for additions and repositoryNetworkPolicy.",
   apply:
     "This Agent's active revision runs under protected execution: the Credential Proxy routes alone govern its egress, so live network policy application is refused.",
   deploy:
@@ -672,17 +750,10 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
   }
 }
 
-/**
- * Finding 2360: with repository.openShell, the bundled OpenShell Credential Proxy's only
- * registration is the request-phase Git service, which never advertises the execution profile.
- * It delivers repository Git, so a Proxy-owned credential source (static, prepared or
- * credential-free metadata) or an Agent without a repository binding can never be admitted.
- * Source creation answered a generic 503 for this permanent configuration and such a deploy a
- * 503 or a bare 404; both now name the Installation settings.
- */
+/** The configured Git transport does not support protected credential-source admission. */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "With repository.openShell the Credential Proxy serves only repository Git, not Proxy-owned credential sources or Agents without repository access. Installation administrators can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
+    "With repository.openShell the Credential Proxy serves only repository Git. Protected credential sources require a qualified execution profile. Ordinary model sources can use Credential Gateway without live adoption.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);
@@ -898,6 +969,8 @@ export const DELETED_NAMESPACE_NAME_CONFLICT =
  * A revision admits one installed egress execution (UNIQUE (namespace_id, revision_id)); a
  * second Sandbox for the same revision is refused alike by the memory and PostgreSQL stores.
  */
+export const EGRESS_SANDBOX_INSTALLED_CONFLICT =
+  "Sandbox already has a current egress installation.";
 export const EGRESS_REVISION_INSTALLED_CONFLICT =
   "Egress revision already has an installed execution.";
 
@@ -1185,6 +1258,8 @@ export class SandboxRevisionUnsupportedError extends Error {
   readonly code:
     | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
     | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_RECREATION_REQUIRED"
+    | "SANDBOX_WORKLOAD_IMMUTABLE"
     | "SANDBOX_POD_LABELS_NOT_PERMITTED"
     | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
@@ -1584,6 +1659,7 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * operator can fix (`proxyRegistration`) from its availability check.
  */
 export class RetryLaterError extends DependencyUnavailableError {
+  readonly retryAfterSeconds?: number;
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
   constructor(reason: "proxyRegistration");
@@ -1594,6 +1670,9 @@ export class RetryLaterError extends DependencyUnavailableError {
       ),
     );
     this.name = "RetryLaterError";
+    if (reason === "registrationFence") {
+      this.retryAfterSeconds = Math.max(1, Math.ceil(Number(detail)));
+    }
     if (reason === "deviceLoginFailed") {
       this.cause = detail;
     }

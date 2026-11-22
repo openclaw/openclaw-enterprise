@@ -11,7 +11,7 @@ import { openShellGitExecutionIdentity } from "../../apps/controller/src/drivers
 
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
@@ -193,7 +193,14 @@ test(
     };
     assert.equal(observed.sandboxId, sandboxId);
     const workload = "original-workload-uid";
-    const continuity = { model, workload: async () => workload };
+    const continuity = {
+      model,
+      runtime: "runtime-files",
+      policy: async (
+        box: import("../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts").OpenShellSandboxResponse,
+      ) => box.spec?.policy as Record<string, unknown>,
+      execution: async () => workload,
+    };
     const box = await client.getSandbox({ workspace, name: sandbox }, t.signal);
     assert.ok(box);
     const hash = await witnessOpenShellGitLaunch(client, continuity, box, observed, t.signal, {

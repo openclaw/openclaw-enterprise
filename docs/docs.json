@@ -64,6 +64,10 @@
                       {
                         "page": "guides/integrations/codex-plugins",
                         "label": "Plugins"
+                      },
+                      {
+                        "page": "guides/integrations/channels",
+                        "label": "Channels"
                       }
                     ]
                   },
@@ -102,7 +106,8 @@
               "guides/repository-credentials/openshell-read-only",
               "guides/repository-credentials/openshell-git-renewal",
               "guides/kubernetes-setup",
-              "guides/deploy/quickstart-session"
+              "guides/deploy/quickstart-session",
+              "guides/deploy/native-admin-domain-recovery"
             ]
           },
           {
@@ -127,6 +132,14 @@
                   {
                     "page": "reference/agents/deployment",
                     "label": "Deployment"
+                  },
+                  {
+                    "page": "reference/agents/interrupted-turns",
+                    "label": "Interrupted turns"
+                  },
+                  {
+                    "page": "reference/agents/planned-replacement",
+                    "label": "Planned replacement"
                   },
                   {
                     "page": "reference/agents/gateway-managed-mode",
@@ -199,6 +212,14 @@
                   {
                     "page": "reference/console/create-and-deploy",
                     "label": "Create and Deploy in the Console"
+                  },
+                  {
+                    "page": "guides/agent-http-chat",
+                    "label": "HTTP Chat"
+                  },
+                  {
+                    "page": "reference/agent-http-chat",
+                    "label": "HTTP Chat Contract"
                   },
                   {
                     "page": "reference/agent-native-admin",
@@ -285,6 +306,10 @@
                   {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
+                  },
+                  {
+                    "page": "reference/credential-sources/managed-static",
+                    "label": "Managed Static Sources"
                   },
                   {
                     "page": "guides/credential-proxy",
@@ -412,6 +437,10 @@
                             "label": "Networking and Isolation"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/channel-egress",
+                            "label": "Channel Egress"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/gateway-authentication",
                             "label": "Gateway Authentication"
                           },
@@ -436,6 +465,10 @@
                             "label": "Preprovisioned Namespace"
                           }
                         ]
+                      },
+                      {
+                        "page": "reference/drivers/kubernetes-openshell-compute",
+                        "label": "Kubernetes + OpenShell"
                       },
                       {
                         "page": "reference/drivers/ssh-compute",
@@ -614,16 +647,29 @@
                     "label": "Overview"
                   },
                   {
-                    "page": "guides/deploy/kubernetes",
-                    "label": "Kubernetes"
-                  },
-                  {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup Without OpenShell"
-                  },
-                  {
-                    "page": "guides/deploy/production-installation",
-                    "label": "Control Plane Setup"
+                    "group": "Control Plane Setup",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/control-plane-setup",
+                        "label": "Overview"
+                      },
+                      {
+                        "page": "guides/deploy/kubernetes",
+                        "label": "Prepare the Cluster"
+                      },
+                      {
+                        "page": "guides/deploy/production-installation",
+                        "label": "Install the Control Plane"
+                      },
+                      {
+                        "page": "guides/deploy/openshift",
+                        "label": "OpenShift"
+                      },
+                      {
+                        "page": "guides/deploy/azure-postgresql",
+                        "label": "Azure PostgreSQL"
+                      }
+                    ]
                   },
                   {
                     "page": "guides/deploy/installation-profiles",
@@ -763,6 +809,18 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/one-off-upgrades",
+                    "label": "One Off Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/channel-egress",
+                    "label": "Channel Egress Setup"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade-command",
+                    "label": "Upgrade Commands"
+                  },
+                  {
                     "page": "guides/deploy/separate-database-upgrade",
                     "label": "Separate Database Deployment"
                   },
@@ -777,6 +835,10 @@
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
                     "label": "Upgrade Recovery"
+                  },
+                  {
+                    "page": "guides/deploy/production-preflight-cleanup",
+                    "label": "Preflight Cleanup"
                   },
                   {
                     "page": "guides/deploy/production-helm-recovery",
@@ -815,6 +877,7 @@
               }
             ],
             "hidden": [
+              "guides/quickstart",
               "guides/deploy/production-installation-preparation",
               "guides/deploy/service-keys",
               "guides/deploy/oidc-upgrade",
@@ -972,20 +1035,26 @@
               }
             ],
             "hidden": [
+              "testing/agent-http-chat",
               "testing/postgresql",
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/harness-restart-recovery",
               "testing/native-agent-browser",
               "testing/populated-controller-return",
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-git-replacement",
+              "testing/openshell-managed",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
+              "testing/openshell-permission-diagnostics",
               "testing/ci/openshell-execution",
               "testing/repository-credentials",
               "testing/static-egress",
+              "testing/static-egress-upgrade",
               "testing/protected-repository-custody"
             ]
           },
@@ -1050,7 +1119,7 @@
                   },
                   {
                     "page": "contributing/credential-proxy-driver",
-                    "label": "Implement a Credential Proxy Driver"
+                    "label": "Legacy Egress Driver"
                   },
                   {
                     "group": "Driver Contracts",
@@ -1094,6 +1163,10 @@
                       {
                         "page": "reference/drivers/sandbox",
                         "label": "Sandbox"
+                      },
+                      {
+                        "page": "reference/drivers/strands-box",
+                        "label": "Strands Box"
                       },
                       {
                         "page": "reference/drivers/secret",
@@ -1246,8 +1319,10 @@
               "design/safeguards",
               "reference/settings/programmatic",
               "flows/platform-startup",
+              "flows/installation-preparation",
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
+              "flows/coordinated-production-upgrade/preflight-cleanup",
               "flows/tenant-restore",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/keycloak",
@@ -1274,17 +1349,23 @@
               "flows/service-account-driver-credential-delivery",
               "flows/service-api-keys",
               "flows/harness-execution-topology",
+              "flows/strands-box-companion",
+              "flows/harness-restart-recovery",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/connection-templates",
+              "flows/openshell-managed-workload",
               "flows/credential-source-lifecycle",
+              "flows/token-service-static-custody",
               "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
+              "flows/channel-egress",
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",
+              "flows/agent-http-chat",
               "flows/kubernetes-existing-namespace-placement",
               "flows/production-tui",
               "flows/production-tui/native-client",

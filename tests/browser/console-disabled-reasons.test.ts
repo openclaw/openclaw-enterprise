@@ -8,13 +8,12 @@ import type { Locator } from "playwright";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
-  AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
   CHANNELS_NEED_DEDICATED,
-  DIAGNOSTICS_DENIED,
   SECRET_CREATE_DENIED,
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
+import { AGENT_CREATE_DENIED, DIAGNOSTICS_DENIED } from "../helpers/refusal-access.ts";
 import {
   AGENT_READ,
   accessibleDescription,
@@ -29,7 +28,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
 const DEFAULT_CODEX_PRESET = await shippedPreset("default-codex");

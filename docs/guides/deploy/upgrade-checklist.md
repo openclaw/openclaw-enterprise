@@ -56,10 +56,38 @@ command; use this page as its migration inventory.
 - [ ] Check controller/runtime compatibility. Upgrade the controller first when
       it supports the deployed runtime. Use a release-specific sequence when the
       versions cannot run together.
+- [ ] [Check operator access](#check-operator-access) while the incumbent serves traffic.
 - [ ] Freeze concurrent Helm changes, disable OCC autoscalers and restart automation,
       and stop all other database writers through recovery. Freeze Agent deployments
       and settle existing deployment work for every release; also freeze draft edits
       for runtime releases.
+
+### Check operator access
+
+Use the upgrade's OCC CLI, endpoint, CA and protected key file. Check the
+issuance record's expiry, if present, against the planned upgrade and recovery
+window. Before freezing writers, verify the Installation ID and fleet access.
+Set `BASELINE` to the intended release's
+[baseline directory](upgrade-baseline.md#record-the-release-and-its-configuration).
+
+```bash
+(
+  set -euo pipefail
+  installation_id=$(jq -er '.installationId | strings | select(length > 0)' \
+    "${BASELINE:?}/installation-secret.json")
+  /secure/occ/bin/occ --output json installation get |
+    jq -es --arg id "$installation_id" 'length == 1 and .[0].id == $id' >/dev/null
+  /secure/occ/bin/occ --output json installation deployment-inventory |
+    jq -es --arg id "$installation_id" \
+      'length == 1 and .[0].installationId == $id and (.[0].namespaces | type == "array")' >/dev/null
+)
+```
+
+Continue on exit zero, including for an empty fleet. If OCC rejects the key,
+obtain a current key from the Installation administrator and repeat both reads.
+For permission failures, check the [inventory grants](upgrade-baseline.md#record-the-occ-inventory).
+Resolve target or connection errors before maintenance. The helper rechecks the
+inventory before stopping writers.
 
 ### Check ReplicaSet capacity
 
@@ -235,10 +263,13 @@ and database migrations to retained volumes and local profile state.
 2. Run the [upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window),
    including the candidate's canonical migration check. Stop on unsupported
    history or an unresolved required quiescence step.
-3. Upgrade the controller, worker, and Console. Wait for database migration,
-   bootstrap, authenticated API recovery, and worker readiness. The old API Pod
-   stops first and finishes admitted requests within its 30-second grace
-   ([shutdown timing](../../flows/production-startup.md#4-start-private-api-and-worker-deployments)).
+3. Upgrade the controller, worker, and Console. The API Pod’s
+   [30-second grace period](../../flows/production-startup.md#4-start-private-api-and-worker-deployments)
+   can expire mid-request. Keep the freeze through recovery. After forced or
+   uncertain shutdown, have the database owner confirm that old transactions
+   have ended before proceeding. Neither Pod removal nor migration checks prove
+   this. Verify migration, bootstrap, authenticated API recovery, and worker
+   readiness.
 4. Reconcile persisted resources that startup intentionally preserves, including
    same-name Presets. Compare complete objects, not only counts or names.
 5. Update runtime image selection only when required. Reload API and worker, then

@@ -32,14 +32,14 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
+import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { within } from "../helpers/wait-for.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   persistedDeploymentError,
@@ -79,9 +79,9 @@ import {
   RESOURCE_CONFLICT,
   POD_QUOTA_FULL,
   PROVISIONING_NOT_COMPLETED,
-  codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -1117,6 +1117,7 @@ test("Dedicated Agent creation keeps the first revision observed after admission
 // waits, Stop and recovery show, instead of holding the form until the deployment ends (plan 35:
 // "progress switches to the exact ordinary deployment view"). It stops polling the job.
 test("Dedicated Agent creation opens the Agent's deployment at handoff", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Open at handoff", { ready: true });
@@ -1315,7 +1316,7 @@ for (const mode of ["unavailable", "refused"] as const) {
 }
 
 // A revision read Restriction can refuse the first deployment to a caller its provisioning job
-// still answers (tests/integration/postgres-agent-provisioning.test.mjs). That caller would find
+// still answers (tests/integration/postgres-agent-provisioning.test.ts). That caller would find
 // nothing on the Deployment tab, so the form keeps following the job, asks once whether the
 // deployment is readable, and opens the Agent when the job succeeds, as before handoff opened it.
 test("Dedicated Agent creation keeps following the job when the first deployment is unreadable", async (t) => {
@@ -1432,7 +1433,7 @@ for (const leave of [false, true]) {
       page.clock.runFor(1_000),
     ]);
     assert.equal(response.status(), 200);
-    await deploymentReads.started.promise;
+    await within(deploymentReads.started.promise, "the stalled deployment read to start");
     const cancelled = page.waitForEvent("requestfailed", {
       predicate: (request) => request === response.request(),
       timeout: 5_000,
@@ -1876,33 +1877,42 @@ test("Static model selection survives credential edits and resets for provider o
   assert.equal(await choice.isEnabled(), true);
   assert.deepEqual(
     (await optionValues(choice)).map(({ value }) => value),
-    ["", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+    [
+      "",
+      "gpt-6.1-sol",
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ],
   );
   assert.equal(await choice.locator('option[value=""]').textContent(), "Choose a model");
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
-  await choice.selectOption("gpt-6-astra");
+  await choice.selectOption("gpt-6.1-sol");
   const selectedConfiguration = await configuration.inputValue();
-  assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-6-astra");
+  assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-6.1-sol");
   for (const credential of ["first-openai-key", "replacement-openai-key"]) {
     await page.getByLabel("Agent name").fill(`Static model ${credential}`);
     await createModelCredentialSecret(page, credential);
-    assert.equal(await choice.inputValue(), "gpt-6-astra");
+    assert.equal(await choice.inputValue(), "gpt-6.1-sol");
     assert.equal(await configuration.inputValue(), selectedConfiguration);
   }
 
   // Switching compatible harnesses changes the native transport without clearing the model.
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
-  assert.equal(await choice.inputValue(), "gpt-6-astra");
+  assert.equal(await choice.inputValue(), "gpt-6.1-sol");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "openai/gpt-6-astra",
+    "openai/gpt-6.1-sol",
   );
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await choice.inputValue(), "gpt-6-astra");
+  assert.equal(await choice.inputValue(), "gpt-6.1-sol");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "codex/gpt-6-astra",
+    "codex/gpt-6.1-sol",
   );
 
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
@@ -2004,7 +2014,7 @@ for (const width of [1440, 390]) {
       assert.equal(feedback.focused, true);
       assert.ok(
         feedback.messages.includes(
-          'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+          "Set plugins.allow to an array of strings, or remove the field.",
         ),
       );
       assert.deepEqual(errors, []);
@@ -2052,22 +2062,22 @@ for (const width of [1440, 390]) {
       await editAllow(["keep-plugin"]);
       await chooseList.click();
       await choice.selectOption("gpt-6-sol");
-      assert.deepEqual(record((await readValues()).plugins).allow, ["keep-plugin", "codex"]);
+      assert.deepEqual(record((await readValues()).plugins).allow, ["keep-plugin"]);
       assert.equal(await configuration.getAttribute("aria-invalid"), null);
     }
 
-    // Absence, an empty array, and whole string entries all permit the same merge and retry.
+    // Valid authored lists, including absence and an empty list, survive model changes exactly.
     for (const allow of [undefined, [], ["keep-plugin", "codex"]]) {
       await editAllow(allow);
       await chooseList.click();
       await choice.selectOption("gpt-6-luna");
       const values = await readValues();
       assert.equal(primary(values), "codex/gpt-6-luna");
-      assert.deepEqual(record(values.plugins).allow, allow?.length ? allow : ["codex"]);
+      assert.deepEqual(record(values.plugins).allow, allow);
       assert.equal(await configuration.getAttribute("aria-invalid"), null);
     }
 
-    // Switching to Anthropic does not merge this field and must not acquire this validation.
+    // Switching to Anthropic preserves this field and must not acquire Codex validation.
     await editAllow(7);
     const provider = page.getByLabel("Provider", { exact: true });
     const harness = page.getByLabel("Harness", { exact: true });
@@ -2130,7 +2140,7 @@ for (const width of [1440, 390]) {
     await choice.selectOption("gpt-6-sol");
     assert.equal(primary(await readValues()), "codex/gpt-6-sol");
 
-    // Authentication owns its picker even when the model reset cannot merge the draft.
+    // Authentication owns its picker even when the model reset refuses the malformed draft.
     const keySecret = page.getByLabel("API key Secret", { exact: true });
     const tokenSecret = page.getByLabel("Service account token Secret", { exact: true });
     const authDraft = await editAllow("codex");
@@ -2177,7 +2187,7 @@ for (const width of [1440, 390]) {
     assert.equal(await authMethod.inputValue(), openClawAuth);
     assert.equal(await manual.inputValue(), harnessModel);
     assert.equal(primary(await readValues()), "codex/gpt-6-sol");
-    assert.deepEqual(record((await readValues()).plugins).allow, ["codex"]);
+    assert.deepEqual(record((await readValues()).plugins).allow, []);
     assert.equal(await configuration.getAttribute("aria-invalid"), null);
     assert.deepEqual(errors, []);
     assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -2428,24 +2438,24 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   assert.equal(await credential.inputValue(), secretOptionLabel(secret));
   assert.equal(await page.getByLabel("Agent name").inputValue(), "Model selection round trip");
-  await choice.selectOption("gpt-6-sol");
+  await choice.selectOption("gpt-6.1-sol");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "codex/gpt-6-sol",
+    "codex/gpt-6.1-sol",
   );
 
   // Repeated switches must still offer both modes without leaving a hidden required input.
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
-  assert.equal(await model.inputValue(), "gpt-6-sol");
+  assert.equal(await model.inputValue(), "gpt-6.1-sol");
   await page.getByRole("button", { name: "Choose a model from the list", exact: true }).click();
-  assert.equal(await choice.inputValue(), "gpt-6-sol");
+  assert.equal(await choice.inputValue(), "gpt-6.1-sol");
   const agent: AgentWire = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(agent.harnessAuth, { method: "api_key", source: secret.ref });
   const savedConfiguration = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
-  assert.equal(savedConfiguration.data.values.agents.defaults.model, "codex/gpt-6-sol");
+  assert.equal(savedConfiguration.data.values.agents.defaults.model, "codex/gpt-6.1-sol");
 });
 
 test("Agent creation accepts a manual model outside the static list and saves through the real Agent API", async (t) => {
@@ -2607,7 +2617,8 @@ test("Agent creation names the Configuration field that holds an inline model cr
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 400);
   const feedback = page.getByRole("alert").filter({
-    hasText: codexApiKeyRefusal("models.providers.openai.apiKey"),
+    hasText:
+      "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
   });
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.

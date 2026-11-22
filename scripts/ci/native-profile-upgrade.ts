@@ -1,0 +1,167 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFile } from "./prepare-command.ts";
+
+// This is the fixed pre-feature main revision, not a previous published release.
+export const nativeProfileBaseline = Object.freeze({
+  revision: "535e08cae41dfd5bda0c072fcb37039e699203eb",
+  tree: "618072a31adcaafb75060fa49c2d4f2309c19c98",
+  nativeCommit: "b58996d69286d55d1bbbd9b5c03b4ad837baac45",
+  sourceArchiveSha256: "a53322b1af2a374970e381f5eea64292fe8deadfaa11e3802bd256044757d1f1",
+  migrations: "275f512c05f0773ce10fb5302a2f80aa0a123176",
+  runtimeTree: "321b4da892accee710bb260459de236d33d2a364",
+  controllerRecipe: "174d60747bcd89de181c69fac573abd4cc660477",
+});
+export const nativeProfileUpgradeFile = "tests/integration/native-profile-upgrade-k3d-real.test.ts";
+
+function isPropertyBag(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function sourceMetadata(text: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(text);
+  if (value === null) {
+    throw new TypeError("Cannot read properties of null (reading 'commit')");
+  }
+  return isPropertyBag(value) ? value : {};
+}
+
+// A JSON array containing a single hash coerces to that hash at any nesting depth.
+type SourceHash = string | [SourceHash];
+
+function assertSourceHashes(source: Record<string, unknown>): asserts source is {
+  commit: SourceHash;
+  sourceArchiveSha256: SourceHash;
+} {
+  assert.ok(
+    /^[a-f0-9]{40}$/.test(String(source.commit)) &&
+      /^[a-f0-9]{64}$/.test(String(source.sourceArchiveSha256)),
+  );
+}
+
+export function nativeProfileSourceReceipt(value: unknown) {
+  if (
+    !isPropertyBag(value) ||
+    !Object.entries(nativeProfileBaseline).every(([key, expected]) => value[key] === expected) ||
+    typeof value.tree !== "string" ||
+    !/^[a-f0-9]{40}$/.test(value.tree)
+  ) {
+    throw new Error(
+      "Native profile baseline source receipt does not match the fixed pre-feature source.",
+    );
+  }
+  return { ...nativeProfileBaseline };
+}
+
+export function selectsNativeProfileUpgrade(lane: unknown, file?: unknown) {
+  return lane === "gateway-routing" && (file === undefined || file === nativeProfileUpgradeFile);
+}
+
+// Verify the complete old build context, including its migration catalog. The
+// candidate owns a separate, observed catalog; it need not equal the baseline.
+export async function verifyNativeProfileBaseline(
+  repository: string,
+  run: typeof execFile = execFile,
+) {
+  const git = async (...args: string[]) =>
+    (await run("git", args, { cwd: repository })).stdout.trim();
+  assert.equal(await git("rev-parse", "HEAD"), nativeProfileBaseline.revision);
+  assert.equal(await git("status", "--porcelain", "--untracked-files=all"), "");
+  assert.equal(await git("rev-parse", "HEAD:migrations"), nativeProfileBaseline.migrations);
+  assert.equal(await git("rev-parse", "HEAD:deploy/runtime"), nativeProfileBaseline.runtimeTree);
+  assert.equal(await git("rev-parse", "HEAD:Dockerfile"), nativeProfileBaseline.controllerRecipe);
+  const source = sourceMetadata(
+    await readFile(join(repository, "deploy/runtime/openclaw-source.json"), "utf8"),
+  );
+  assert.equal(source.commit, nativeProfileBaseline.nativeCommit);
+  assert.equal(source.sourceArchiveSha256, nativeProfileBaseline.sourceArchiveSha256);
+  const legacy = await readFile(
+    join(repository, "apps/controller/src/http/native-admin.ts"),
+    "utf8",
+  );
+  assert.match(legacy, /compute\.getGatewayEndpoint\?\.\(revision\)/);
+  assert.match(legacy, /compute\.getGatewayChatEndpoint\?\.\(revision\)/);
+  assert.doesNotMatch(legacy, /getGatewayBrowserRequest/);
+  return nativeProfileSourceReceipt({
+    ...nativeProfileBaseline,
+    tree: await git("rev-parse", "HEAD^{tree}"),
+  });
+}
+
+// The candidate is the actual tested checkout, not an assumed copy of the old
+// nine-bridge runtime. A merge may add bridges, migrations or another native pin.
+export async function nativeProfileCandidateSource(repository: string) {
+  const git = async (...args: string[]) =>
+    (await execFile("git", args, { cwd: repository })).stdout.trim();
+  const source = sourceMetadata(
+    await readFile(join(repository, "deploy/runtime/openclaw-source.json"), "utf8"),
+  );
+  assertSourceHashes(source);
+  const bridgePatches = (await git("ls-tree", "-r", "HEAD", "deploy/runtime"))
+    .split("\n")
+    .flatMap((line) => {
+      const match =
+        /^100644 blob ([a-f0-9]{40})\t(deploy\/runtime\/openclaw-[a-z0-9-]+\.patch)$/.exec(line);
+      if (!match) {
+        return [];
+      }
+      const blob = match[1];
+      const path = match[2];
+      assert.ok(blob !== undefined && path !== undefined);
+      return [{ path, blob }];
+    });
+  assert.ok(bridgePatches.length > 0, "candidate native bridge inventory is required");
+  return {
+    revision: await git("rev-parse", "HEAD"),
+    tree: await git("rev-parse", "HEAD^{tree}"),
+    controllerRecipe: await git("rev-parse", "HEAD:Dockerfile"),
+    runtimeRecipe: await git("rev-parse", "HEAD:deploy/runtime/Dockerfile"),
+    runtimeTree: await git("rev-parse", "HEAD:deploy/runtime"),
+    migrations: await git("rev-parse", "HEAD:migrations"),
+    nativeCommit: source.commit,
+    sourceArchiveSha256: source.sourceArchiveSha256,
+    bridgePatches,
+  };
+}
+
+export async function withNativeProfileBaseline<Result>(
+  repository: string,
+  operation: (
+    sourceRoot: string,
+    receipt: Awaited<ReturnType<typeof verifyNativeProfileBaseline>>,
+  ) => Promise<Result>,
+): Promise<Result> {
+  const run = (args: string[]) => execFile("git", args, { cwd: repository, timeoutMs: 120_000 });
+  try {
+    await run(["cat-file", "-e", nativeProfileBaseline.revision + "^{commit}"]);
+  } catch {
+    // Public, fixed source; never select credentials or a moving branch. CI's
+    // checkout uses persist-credentials:false. Reuse its existing object store.
+    const { stdout } = await run(["rev-parse", "--is-shallow-repository"]);
+    const depth = stdout.trim() === "true" ? ["--depth=1"] : [];
+    await run([
+      "fetch",
+      "--no-tags",
+      ...depth,
+      "https://github.com/openclaw/openclaw-enterprise.git",
+      nativeProfileBaseline.revision,
+    ]);
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), "oce-native-upgrade-source-"));
+  const source = join(directory, "source");
+  let added = false;
+  try {
+    await run(["worktree", "add", "--detach", source, nativeProfileBaseline.revision]);
+    added = true;
+    const receipt = await verifyNativeProfileBaseline(source);
+    return await operation(source, receipt);
+  } finally {
+    if (added) {
+      await run(["worktree", "remove", source]);
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+}

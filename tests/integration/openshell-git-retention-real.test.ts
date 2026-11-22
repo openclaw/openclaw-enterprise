@@ -3,32 +3,249 @@ import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
+import type { InstallationDeploymentInventory } from "@openclaw-enterprise/contracts";
+
 import type {
   OpenShellProviderResponse,
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
-import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
-import { deployFiniteAgent, observeUntil } from "../helpers/finite-git-agent.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
+import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
+import {
+  deployFiniteAgent,
+  deployStandingAgent,
+  observeUntil,
+} from "../helpers/finite-git-agent.ts";
 import { createFiniteGitProviderObservation } from "../helpers/finite-git-providers.ts";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
+import { waitForStockSupervisor } from "../helpers/openshell-stock-supervisor-image.ts";
 import {
   createFiniteGitConversation,
   finiteGitConversationFailureStage,
 } from "../helpers/finite-git-conversation.ts";
 import {
   createOpenShellGitDenial,
+  gitRemovalDenialCategory,
+  gitRemovalDenialCommand,
   openShellGitDenialFailureStage,
-} from "../helpers/openshell-git-denial.mjs";
+} from "../helpers/openshell-git-denial.ts";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
 
+// The installed lane keeps its declared cases. Ordinary integration runs exercise polling off-cluster.
+if (!selected) {
+  test("stock Supervisor readiness pins the Pod and its container", async (t) => {
+    const digest = "sha256:" + "a".repeat(64);
+    const configDigest = "sha256:" + "b".repeat(64);
+    const otherDigest = "sha256:" + "c".repeat(64);
+    const expected = {
+      sandboxId: "sandbox",
+      sandboxUid: "sandbox-uid",
+      image: `registry.example/supervisor@${digest}`,
+      digests: [digest, configDigest],
+    };
+    const pod = {
+      metadata: {
+        uid: "pod-uid",
+        name: "supervisor",
+        labels: {
+          "openshell.ai/boundary-role": "supervisor",
+          "openshell.ai/boundary-pair": "pair",
+        },
+        annotations: { "openshell.ai/sandbox-id": expected.sandboxId },
+        ownerReferences: [{ kind: "Sandbox", uid: expected.sandboxUid }],
+      },
+      spec: { containers: [{ name: "supervisor", image: expected.image }] },
+    };
+    const running = {
+      name: "supervisor",
+      ready: true,
+      imageID: `containerd://${configDigest}`,
+      containerID: "containerd://owned",
+      state: { running: {} },
+    };
+    const ready = { ...pod, status: { phase: "Running", containerStatuses: [running] } };
+    const pending = {
+      ...pod,
+      status: {
+        phase: "Pending",
+        containerStatuses: [
+          { name: "supervisor", ready: false, state: { waiting: { reason: "ContainerCreating" } } },
+        ],
+      },
+    };
+    const noRead = async () =>
+      assert.fail("must check the initial identity and image before reading");
+    await t.test(
+      "waits for the selected container's ready status and runtime digest",
+      async (t) => {
+        let reads = 0;
+        const readPod = async (signal: AbortSignal) => {
+          assert.equal(signal.aborted, false);
+          reads++;
+          return ready;
+        };
+        assert.deepEqual(
+          await waitForStockSupervisor(pending, readPod, expected, t.signal),
+          running,
+        );
+        assert.equal(reads, 1);
+        assert.deepEqual(await waitForStockSupervisor(ready, noRead, expected, t.signal), running);
+      },
+    );
+    await t.test("rejects a wrong requested or resolved image before readiness", async (t) => {
+      await assert.rejects(
+        waitForStockSupervisor(
+          { ...pending, spec: { containers: [{ name: "supervisor", image: "other" }] } },
+          noRead,
+          expected,
+          t.signal,
+        ),
+        /must select the verified stock image/,
+      );
+      const wrongImage = {
+        ...ready,
+        status: {
+          ...ready.status,
+          containerStatuses: [{ ...running, ready: false, imageID: otherDigest }],
+        },
+      };
+      await assert.rejects(
+        waitForStockSupervisor(wrongImage, noRead, expected, t.signal),
+        /running supervisor image must match/,
+      );
+    });
+    await t.test("refuses a replaced Pod or restarted container during the wait", async (t) => {
+      await assert.rejects(
+        waitForStockSupervisor(
+          pending,
+          async () => ({ ...ready, metadata: { ...pod.metadata, uid: "replacement" } }),
+          expected,
+          t.signal,
+        ),
+        /supervisor Pod UID changed/,
+      );
+      const starting = {
+        ...ready,
+        status: { ...ready.status, containerStatuses: [{ ...running, ready: false }] },
+      };
+      const replacement = {
+        ...ready,
+        status: {
+          ...ready.status,
+          containerStatuses: [{ ...running, containerID: "containerd://replacement" }],
+        },
+      };
+      await assert.rejects(
+        waitForStockSupervisor(starting, async () => replacement, expected, t.signal),
+        /supervisor container identity changed/,
+      );
+    });
+    await t.test("reports the last waiting reason when startup does not finish", async (t) => {
+      await assert.rejects(
+        waitForStockSupervisor(pending, noRead, expected, t.signal, 25),
+        /did not become ready within 25 ms \(phase=Pending, reason=ContainerCreating/,
+      );
+      const cancellation = new Error("cancelled fixture");
+      await assert.rejects(
+        waitForStockSupervisor(pending, noRead, expected, AbortSignal.abort(cancellation)),
+        (error) => error === cancellation,
+      );
+    });
+  });
+}
+
 interface OriginToken {
   uses: number;
   revoked: boolean;
 }
+
+test(
+  "OpenShell standing Git remains available when a controller-only upgrade refuses worker replacement",
+  { skip: !selected, timeout: 45 * 60_000 },
+  async (t) => {
+    const fixture = await createOpenShellGitInstallation(t, { allowStandingApprovals: true });
+    const { agent, revision, path, readExecution, original, target } = await deployStandingAgent(
+      t,
+      fixture,
+    );
+    const { namespace, origin } = fixture;
+    const conversation = createFiniteGitConversation({
+      kube: fixture.kube,
+      agent: { id: agent.id, namespaceId: namespace.id, revision: { id: revision.id } },
+      signal: t.signal,
+      readExecution,
+      originalIdentity: original.identity,
+    });
+    const execute = createManagedWorkloadExec(t, {
+      backend: fixture.gatewayBackend,
+      gatewayClient: fixture.gatewayClient,
+      workspace: fixture.workspace,
+      checkpoint: fixture.checkpoint,
+    });
+    assert.match(origin.repository, /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/);
+    const readGit = async () => {
+      const before = origin.snapshot();
+      const result = await execute(target, [
+        "sh",
+        "-ceu",
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 " +
+          "git -c protocol.version=2 ls-remote --exit-code --refs https://github.com/" +
+          origin.repository +
+          ".git refs/heads/main",
+      ]);
+      assert.equal(result.stdout.toString("utf8").trim(), `${origin.initialSha}\trefs/heads/main`);
+      assert.ok(
+        origin.snapshot().requests > before.requests,
+        "the fresh read reached the private origin",
+      );
+    };
+
+    // Establish both kinds of service before asking the real upgrade helper to
+    // retain the revision. The installation API must classify the live grant.
+    await readGit();
+    const reply = await conversation.turn(undefined, 180_000);
+    await observeUntil("the original worker's standing Git launch evidence", t.signal, async () => {
+      const inventory: InstallationDeploymentInventory = await fixture.request(
+        "GET",
+        "/installation/deployment-inventory",
+      );
+      const retained = inventory.namespaces
+        .find(({ id }) => id === namespace.id)
+        ?.agents.find(({ id }) => id === agent.id);
+      assert.equal(retained?.activeRevisionId, revision.id);
+      assert.equal(retained?.deploymentInProgress, false);
+      return retained?.repositoryWorkerRestart === "original-worker-required" ? true : undefined;
+    });
+
+    const revisionsBefore = await fixture.request("GET", `${path}/revisions`);
+    const upgrade = await fixture.upgradeController();
+    assert.equal(upgrade.code, 1);
+    assert.ok(
+      upgrade.stderr.includes(
+        `Namespace "${namespace.id}", Agent "${agent.id}", revision "${revision.id}": original-worker-required`,
+      ),
+      "the canonical controller-only helper must refuse this exact retained revision",
+    );
+    assert.match(
+      upgrade.stderr,
+      /Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement/u,
+    );
+    assert.deepEqual(
+      upgrade.after,
+      upgrade.before,
+      "Helm and both writer processes must stay unchanged",
+    );
+
+    await conversation.turn(reply, 180_000);
+    await readGit();
+    assert.deepEqual((await readExecution()).identity, original.identity);
+    assert.deepEqual(await fixture.request("GET", `${path}/revisions`), revisionsBefore);
+  },
+);
 
 test(
   "OpenShell retains its runtime after Git expiry and worker restart",
@@ -45,14 +262,70 @@ test(
       workspace,
       checkpoint: evidence,
     } = fixture;
-    const { agent, revision, suffix, deadlineWallMs, readExecution, original, target, supervisor } =
-      await deployFiniteAgent(t, fixture);
-    const modelKubectl = async (...args: (string | { input?: string; timeout?: number })[]) => {
+    const modelKubectl = async (...args: unknown[]): Promise<string> => {
       const options = args.pop();
       assert.ok(options && typeof options === "object");
       assert.ok(args.every((argument) => typeof argument === "string"));
-      return fixture.kube(args, options);
+      const output: unknown = await fixture.kube(args, options);
+      assert.ok(typeof output === "string");
+      return output;
     };
+    // The same Git-enabled Installation must also start a model-only Agent. This uses the
+    // ordinary API, real worker, Gateway attachment and a genuine model turn before Git starts.
+    const model = process.env.OCC_TEST_OPENAI_MODEL;
+    assert.ok(model);
+    const base = `/namespaces/${namespace.id}`;
+    const configuration = await fixture.request("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("codex", model),
+    });
+    const modelOnly = await fixture.request("POST", `${base}/agents`, {
+      name: `model-only-${randomUUID()}`,
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }],
+    });
+    const role = await fixture.request("POST", `${base}/iam/roles`, {
+      name: `model-only-${randomUUID()}`,
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+    await fixture.request("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: modelOnly.servicePrincipalId,
+      roleId: role.id,
+      resourceKind: "credential_source",
+      resourceId: modelSource.id,
+    });
+    const modelPath = `${base}/agents/${modelOnly.id}`;
+    await fixture.request("POST", `${modelPath}/runtime-credentials`, {});
+    const modelRevision = await fixture.request("POST", `${modelPath}/deploy`);
+    await observeUntil(
+      "model-only Agent startup",
+      t.signal,
+      async () => {
+        const deployment = await fixture.request(
+          "GET",
+          `${modelPath}/deployments/${modelRevision.id}`,
+        );
+        assert.notEqual(deployment.status, "failed");
+        return deployment.status === "succeeded" ? deployment : undefined;
+      },
+      600_000,
+    );
+    await verifyFirstAgentModel(modelKubectl, {
+      namespaceId: namespace.id,
+      agentId: modelOnly.id,
+      revisionId: modelRevision.id,
+      prompt: undefined,
+      apiKey: undefined,
+      expectProviderKey: false,
+    });
+    await fixture.request("POST", `${modelPath}/stop`);
+    t.diagnostic("Fresh Gateway model source completed a model-only turn with Git configured.");
+
+    const { agent, revision, suffix, deadlineWallMs, readExecution, original, target, supervisor } =
+      await deployFiniteAgent(t, fixture);
     const verifyModelTurn = async (stage: string) => {
       const before = origin.snapshot();
       assert.deepEqual((await readExecution()).identity, original.identity);
@@ -553,15 +826,9 @@ test(
           const startedAt = Date.now();
           // Keep the raw Git error inside the workload. A transport category only
           // qualifies with the exact, ordered supervisor evidence below.
-          const result = await execute(a.target, [
-            "sh",
-            "-ceu",
-            "set +e; error=$(" +
-              git +
-              ' 2>&1); status=$?; set -e; test "$status" -ne 0; test "$status" -ne 126; test "$status" -ne 127; case "$error" in *"returned error: 403"*|*"response 403"*) printf signed ;; *) printf transport ;; esac',
-          ]);
+          const result = await execute(a.target, gitRemovalDenialCommand(git));
           const endedAt = Date.now();
-          const category = result.stdout.toString("utf8");
+          const category = gitRemovalDenialCategory(result);
           if (category === "signed") {
             assert.equal(mode, "live", "completed detach must refuse before HTTP");
             phase = step.signed;
@@ -593,7 +860,6 @@ test(
               workerUid: previous.workerUid,
             });
           } else {
-            assert.equal(category, "transport");
             phase = step.marker;
             const markerHost = `git-retention-${randomUUID()}.invalid`;
             await execute(a.target, [

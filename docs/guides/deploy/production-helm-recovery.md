@@ -67,9 +67,8 @@ also rechecks both retained Secrets against their prepared UIDs and full data.
 Recovery keeps the candidate reference; it does not return to the original Secret.
 
 Resources present only in the recorded predecessor must be absent, including
-resources marked `helm.sh/resource-policy: keep`. For example, clearing
-`api.channelDirectoryProxyUrl` retires its egress NetworkPolicy and API container
-environment entry. Recovery refuses while either remains. Reconcile removals
+resources marked `helm.sh/resource-policy: keep`. Recovery refuses while a
+retired resource remains. Reconcile removals
 explicitly while writers are stopped; the recovery command does not delete them.
 It checks absence before recording recovery, immediately before rollback, after
 rollback and on resume. Read failures do not count as absence.
@@ -124,3 +123,9 @@ replayed, even if a later revision looks healthy. Preserve the evidence and
 reconcile with the release owner. Do not remove the recovery directory to retry.
 Complete the [remaining verification](production-upgrade.md) separately when the
 command cannot safely resume.
+
+Before a new same-candidate rollback, the helper validates the original recovery
+attempt and rechecks both candidate application database identities. A mismatch
+or incomplete check prevents rollback; reconcile the application connections
+without changing the original evidence. Already accepted or uncertain recovery
+remains readback-only and does not rerun these checks or dispatch rollback.

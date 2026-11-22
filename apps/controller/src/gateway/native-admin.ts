@@ -6,9 +6,9 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { unsupportedNativeGatewayAuthFields } from "./auth-fields.ts";
-import { deriveNativeAdminHost } from "./native-admin-host.mjs";
+import { deriveNativeAdminHost } from "./native-admin-host.ts";
 
-export { deriveNativeAdminHost } from "./native-admin-host.mjs";
+export { deriveNativeAdminHost };
 
 export interface NativeAdminAccessConfig {
   readonly enabled: boolean;
@@ -84,7 +84,6 @@ export function nativeAdminConfigurationSupported(
   const auth = asRecord(gateway?.auth);
   const proxy = asRecord(auth?.trustedProxy);
   const ui = asRecord(gateway?.controlUi);
-  const approval = asRecord(proxy?.deviceAutoApprove);
   const scopes = asRecord(auth?.identityScopes)?.["occ-workspace-files"];
   return (
     auth?.mode === "trusted-proxy" &&
@@ -96,12 +95,33 @@ export function nativeAdminConfigurationSupported(
     proxy.allowUsers.includes("occ-workspace-files") &&
     Array.isArray(scopes) &&
     scopes.includes("operator.admin") &&
-    approval?.enabled === true &&
     ui?.enabled === true &&
     Array.isArray(ui.allowedOrigins) &&
     ui.allowedOrigins.includes(origin) &&
     ui.dangerouslyDisableDeviceAuth !== true &&
     ui.dangerouslyAllowHostHeaderOriginFallback !== true
+  );
+}
+
+/**
+ * Whether the Configuration has turned on browser chat for this Agent at all, correct or not.
+ * The opt-in turns on Control UI and adds the Agent's origin and trusted-proxy auth. Control UI
+ * with neither, as the default Preset's loopback-only port-forward access, is not the opt-in.
+ */
+export function nativeAdminBrowserChatTurnedOn(
+  revision: Readonly<AgentRevision>,
+  origin: string,
+): boolean {
+  const gateway = asRecord(revision.configuration.gateway);
+  const ui = asRecord(gateway?.controlUi);
+  const auth = asRecord(gateway?.auth);
+  if (ui?.enabled !== true) {
+    return false;
+  }
+  return (
+    (Array.isArray(ui.allowedOrigins) && ui.allowedOrigins.includes(origin)) ||
+    auth?.mode === "trusted-proxy" ||
+    asRecord(auth?.trustedProxy) !== undefined
   );
 }
 
@@ -129,7 +149,6 @@ export function prepareNativeAdminConfiguration(
   const ui = record(gateway.controlUi, "gateway.controlUi");
   const auth = record(gateway.auth, "gateway.auth");
   const proxy = record(auth.trustedProxy, "gateway.auth.trustedProxy");
-  const approval = record(proxy.deviceAutoApprove, "gateway.auth.trustedProxy.deviceAutoApprove");
   const identities = record(auth.identityScopes, "gateway.auth.identityScopes");
   if (
     (auth.mode !== undefined && auth.mode !== "trusted-proxy") ||
@@ -189,15 +208,6 @@ export function prepareNativeAdminConfiguration(
             "occ-workspace-files",
             "gateway.auth.trustedProxy.allowUsers",
           ),
-          deviceAutoApprove: {
-            ...approval,
-            enabled: true,
-            scopes: append(
-              approval.scopes,
-              "operator.admin",
-              "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
-            ),
-          },
         },
         identityScopes: {
           ...identities,

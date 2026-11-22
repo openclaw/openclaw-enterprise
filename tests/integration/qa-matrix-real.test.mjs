@@ -1,12 +1,90 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { createConsoleFixtureTransport } from "../helpers/console-fixture-transport.ts";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 
 const selected = process.env.OCC_TEST_QA_MATRIX === "1";
+
+async function verifyAgentAudit(f, agent) {
+  const transport = createConsoleFixtureTransport(f.consoleUrl, f.apiUrl);
+  const signIn = (credentials) =>
+    signInWithEmailPassword({
+      ...credentials,
+      origin: f.consoleUrl,
+      fetch: transport.fetchThroughLoopback,
+      headers: { origin: f.consoleUrl },
+    });
+  const request = async (session, method, path, expectedStatus, body) => {
+    const result = await transport.rawRequest(method, path, {
+      headers: authenticatedHeaders(session),
+      body,
+      timeout: 30_000,
+    });
+    assert.equal(result.response.status, expectedStatus, `${method} ${path}`);
+    return JSON.parse(result.text);
+  };
+  const base = `/namespaces/${agent.namespaceId}`;
+  const agentPath = `${base}/agents/${agent.id}`;
+  const auditPath = `${agentPath}/audit-events?limit=100`;
+  const admin = await signIn(f.credentials);
+  const credentials = { email: `qa-audit-${randomUUID()}@example.test`, password: randomUUID() };
+  const { data: reader } = await request(admin, "POST", "/api/auth/accounts", 201, credentials);
+  const session = await signIn(credentials);
+  // This account must have a direct grant on this Agent to see its audit records.
+  await request(session, "GET", auditPath, 403);
+  const role = await f.api("POST", `${base}/iam/roles`, {
+    name: "qa-agent-audit",
+    permissions: [
+      { action: "read", resourceKind: "agent" },
+      { action: "read_audit", resourceKind: "agent" },
+    ],
+  });
+  await f.api("POST", `${base}/iam/access-bindings`, {
+    subjectKind: "identity",
+    subjectId: reader.principalId,
+    roleId: role.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+  });
+
+  const { meta } = await request(session, "GET", agentPath, 200);
+  const { data } = await request(session, "GET", auditPath, 200);
+  assert.ok(
+    data.events.some(
+      (entry) => entry.operationId === "getAgent" && entry.requestId === meta.requestId,
+    ),
+    "the successful Agent read must have an audit record",
+  );
+  // Use the request ID returned by the original deployment and match the successful attempt.
+  assert.ok(agent.deployRequestId, "the deployment must return its request ID");
+  const queued = data.events.find(
+    (entry) => entry.event === "work_queued" && entry.requestId === agent.deployRequestId,
+  );
+  assert.ok(queued?.workId, "the deployment must have a queue record");
+  const result = data.events.find(
+    (entry) =>
+      entry.event === "work_result" &&
+      entry.workId === queued.workId &&
+      entry.workState === "succeeded",
+  );
+  assert.ok(result?.attemptId, "the deployment must have a successful worker result");
+  assert.ok(
+    data.events.some(
+      (entry) =>
+        entry.event === "work_claimed" &&
+        entry.workId === queued.workId &&
+        entry.attemptId === result.attemptId,
+    ),
+    "the result must refer to the claim for this deployment",
+  );
+}
 
 test(
   "shipped installations: canonical QA matrix",
@@ -21,13 +99,13 @@ test(
     validateQaInputs(selection);
     const { createQaInstallation, prepareQaPluginCatalogs, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
-    const { protectedText } = await import("../helpers/qa-secrets.mjs");
+    const { protectedText } = await import("../helpers/qa-secrets.ts");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
-      await import("../helpers/qa-repository.mjs");
+      await import("../helpers/qa-repository.ts");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
-    const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.mjs");
+    const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.ts");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
       ? resolve(process.env.OCC_TEST_QA_ARTIFACTS)
       : await mkdtemp(join(tmpdir(), "oce-qa-matrix-evidence-"));
@@ -59,10 +137,77 @@ test(
     for (const exclusion of selection.exclusions) {
       context.diagnostic(`Excluded: ${exclusion}`);
     }
+    if (selection.channelUpgrade) {
+      await stage(
+        context,
+        "kubernetes/Codex",
+        "one-off channel upgrade through the regular Agent workflow",
+        async () => {
+          const result = await promisify(execFile)(
+            process.execPath,
+            [
+              "--test",
+              "--test-concurrency=1",
+              "tests/integration/channel-egress-disabled-helm-real.test.ts",
+              "tests/integration/channel-egress-upgrade-helm-real.test.ts",
+            ],
+            {
+              env: {
+                ...process.env,
+                OCC_TEST_SLACK_LIVE: "1",
+                OCC_TEST_CHANNEL_EGRESS_UPGRADE: "1",
+              },
+              timeout: 1_800_000,
+              maxBuffer: 8 * 1024 * 1024,
+            },
+          );
+          assert.match(result.stdout, /(?:skipped|skip) 0/);
+          context.diagnostic(result.stdout);
+        },
+        "channel-egress-upgrade",
+      );
+    }
+    if (selection.nativeRestart) {
+      const { arrangeProductionTopology, assertInterruptedGatewayTurnResumes } =
+        await import("../helpers/harness-topology-k3d-real.mjs");
+      const { boundedTeardown } = await import("../helpers/bounded-teardown.ts");
+      await stage(
+        context,
+        "kubernetes/Codex",
+        "native restart continuation and cancellation",
+        async () => {
+          const { context: topologyContext } = boundedTeardown(context, {
+            label: "native restart topology teardown",
+          });
+          const topology = await arrangeProductionTopology(
+            topologyContext,
+            "dedicated",
+            undefined,
+            {
+              gatewayPassword: true,
+              nativeAdmin: { enabled: true },
+            },
+          );
+          // Reuse the real Agent API workflow, retained volumes and native model turns.
+          await assertInterruptedGatewayTurnResumes(topologyContext, topology);
+        },
+        "native-restart",
+      );
+    }
     if (selection.namespaceLifecycle) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(context, "kubernetes/OpenShell", "Namespace gateway before any Agent", () =>
         verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
+      );
+    }
+    if (selection.gitModel) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "fresh Gateway model delivery with and without Git access",
+        () => verifyQaSandboxPolicy(artifacts, "openshell-git-model"),
+        "openshell-git-model",
       );
     }
     if (selection.oidcAgentChat) {
@@ -70,10 +215,49 @@ test(
       await stage(
         context,
         "kubernetes/OpenClaw",
-        "OIDC sign-in, owner setup, real chat and administrative denial",
+        "OIDC enrollment, returning sign-in, owner setup, real chat and administrative denial",
         () => runOidcAgentChatScenario(context),
         "oidc-agent-chat",
       );
+      const { runNativeProfileUpgradeScenario } =
+        await import("../helpers/native-profile-upgrade.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "fixed pre-feature OCE installation upgrades the same retained Agent to delegated native profiles",
+        () => runNativeProfileUpgradeScenario(context),
+        "oidc-agent-chat-upgrade",
+      );
+    }
+    for (const gitReplacement of [false, true].filter((git) =>
+      git ? selection.gitReplacement : selection.providerReplacement,
+    )) {
+      const { verifyOpenShellProviderReplacement } =
+        await import("../helpers/openshell-provider-replacement.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        gitReplacement ? "managed Git replacement" : "managed Provider replacement",
+        () => verifyOpenShellProviderReplacement(context, { gitReplacement }),
+        gitReplacement ? "openshell-git-replacement" : "openshell-provider-replacement",
+      );
+    }
+    if (selection.templateResources) {
+      const inputs = JSON.parse(
+        await readFile(process.env.OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE, "utf8"),
+      );
+      const { verifyOpenShellTemplateResources } =
+        await import("../helpers/openshell-provider-replacement.mjs");
+      for (const workspaceMode of ["operator", "managed"]) {
+        assert.ok(inputs[workspaceMode], `Select the prepared ${workspaceMode} installation`);
+        await stage(
+          context,
+          `kubernetes/Codex/OpenShell/${workspaceMode}`,
+          `${workspaceMode} template sizing, workspace access and real model turn`,
+          () => verifyOpenShellTemplateResources(context, inputs[workspaceMode], workspaceMode),
+          "openshell-template-resources",
+        );
+      }
     }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
@@ -82,6 +266,16 @@ test(
         "kubernetes/Codex/OpenShell",
         "shared Driver configuration and real network enforcement",
         () => verifyQaSandboxPolicy(artifacts),
+      );
+    }
+    if (selection.scratchVolume) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "admitted scratch and workspace access with invalid claim refusal",
+        () => verifyQaSandboxPolicy(artifacts, "scratch-volume"),
+        "scratch-volume",
       );
     }
     if (selection.pluginInstall) {
@@ -131,6 +325,9 @@ test(
                 artifacts,
                 {
                   repositoryInputs: selection.repository,
+                  disableNativeAdmin: selection.cells
+                    .filter((cell) => cell.installation === installation)
+                    .every((cell) => cell.scenarios.every((scenario) => scenario === "http-chat")),
                 },
               );
               await prepareQaPluginCatalogs(fixture);
@@ -203,7 +400,8 @@ test(
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
                           return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
-                            apiKeyAuth: name === "codex-search-config",
+                            apiKeyAuth: name === "codex-search-config" || name === "http-chat",
+                            httpChat: name === "http-chat",
                           });
                         },
                       );
@@ -233,6 +431,23 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "http-chat",
+                    async (agent, step) => {
+                      const { verifyQaHttpChat } = await import("../helpers/qa-http-chat.ts");
+                      await step("human and service HTTP turns and isolated conversations", () =>
+                        verifyQaHttpChat(f, agent),
+                      );
+                    },
+                  ],
+                  [
+                    "agent-audit",
+                    async (agent, step) => {
+                      await step("authorized Agent reads and linked deployment audit records", () =>
+                        verifyAgentAudit(f, agent),
+                      );
+                    },
+                  ],
                   [
                     "console-secrets",
                     async (agent, step) => {

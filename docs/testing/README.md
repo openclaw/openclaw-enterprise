@@ -33,6 +33,7 @@ the Go version in [`go.mod`](../../go.mod), Git, and `tar`:
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm cli:build
 ```
 
 Browser tests also need Chromium; see [browser setup](local.md#console-browser-checks).
@@ -52,7 +53,7 @@ pnpm test                     # Conformance and integration files
 pnpm cli:test                 # Go
 pnpm docs:install             # Browser and docs dependencies
 pnpm test:console-browser     # Chromium
-node --test tests/docs/*.test.mjs tests/helpers/*.test.mjs
+node --test 'tests/docs/*.test.{mjs,ts}' 'tests/helpers/*.test.{mjs,ts}'
 ```
 
 These commands select test files, but real-service cases may skip without their
@@ -62,8 +63,8 @@ For conformance tests alone, use `pnpm test:conformance`.
 ### Run one test
 
 ```sh
-pnpm test:files --test-reporter=spec -- tests/conformance/contracts.test.mjs
-pnpm test:files --test-name-pattern='the Driver contract exposes' -- tests/conformance/contracts.test.mjs
+pnpm test:files --test-reporter=spec -- tests/conformance/contracts.test.ts
+pnpm test:files --test-name-pattern='the Driver contract exposes' -- tests/conformance/contracts.test.ts
 ```
 
 The second command selects one named case. `test:files` does not prepare
@@ -78,11 +79,11 @@ pnpm test:integration
 
 Choose the scope you need:
 
-| Scope                     | What it runs                                                                                                                                                  | Setup and commands                                                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Local integration tests   | Component workflows in `tests/integration`; real-service cases skip unless configured.                                                                        | `pnpm test:integration`; use the suite guides under [Further reading](#further-reading) for external dependencies. |
-| Full Integration workflow | Manually selected CI lanes for databases, containers, clusters, and real providers. `all` runs every selectable lane, including `qa-matrix` and `dev-up-k3d`. | [Lane coverage and hosted dispatch](ci/full-integration.md#run-a-protected-integration-lane).                      |
-| QA matrix                 | Agent journeys across supported installations.                                                                                                                | [Scenarios, credentials, and commands](ci/qa-advisory.md).                                                         |
+| Scope                     | What it runs                                                                                                                            | Setup and commands                                                                                                 |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Local integration tests   | Component workflows in `tests/integration`; real-service cases skip unless configured.                                                  | `pnpm test:integration`; use the suite guides under [Further reading](#further-reading) for external dependencies. |
+| Full Integration workflow | Quarter-hour ticks check whether the full suite can start on `main`. Dispatch one lane or `all` on `main`, then complete team approval. | [Lane coverage and hosted dispatch](ci/full-integration.md#run-a-protected-integration-lane).                      |
+| QA matrix                 | Agent journeys across supported installations.                                                                                          | [Scenarios, credentials, and commands](ci/qa-advisory.md).                                                         |
 
 For real-service cases, prepare the selected suite first. Some create remote
 resources or send messages. Use authorized disposable resources, scope selectors

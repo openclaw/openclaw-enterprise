@@ -128,8 +128,9 @@ while it started. See [Agent logs](../topics/agent-logs.md).
 The Console cannot roll back or deploy an old version again. See
 [Agent revisions](../topics/agent-revisions.md) for the lifecycle.
 
-Select **Open draft** to open the current saved settings. Edit and save
-Configuration, plugin selections, channel settings, or credentials.
+Select **Open draft** to open the current saved settings. If you can read the Configuration,
+select **Draft credentials** or **Draft repositories** in the snapshot to open that tab.
+Edit and save Configuration, plugin selections, channel settings, or credentials.
 **Prepare this version**, above the tabs, checks off saved settings and
 credentials and holds **Deploy new version** with its status. A model credential
 the last deployment rejected keeps the credentials step open: deploying again
@@ -197,9 +198,10 @@ The console has no chat panel. To give an Agent a task:
 - Message it in a channel its Configuration sets up, such as Slack. The
   [channel settings](channels-and-credentials.md#slack-editor), not OCE grants,
   decide who may mention it.
-- With Agent `administer`, use the [native admin panel](#conditional-native-admin-panel)
-  when the Installation enables it. It is unavailable under GitHub, Google, or
-  OIDC sign-in.
+- When [native browser access](#conditional-native-admin-panel) is enabled for
+  the Installation and available for the Agent, sign in with a password or OIDC.
+  In Agent details, choose **Open chat** with Agent `operate` or **Open Agent UI**
+  with Agent `administer`. If you have both grants, **Open Agent UI** takes precedence.
 - Otherwise ask someone who can edit the Agent's Configuration to let you into
   its channel. An operator with cluster access can check a real response with
   [model verification](../operate/model-verification.md).
@@ -208,11 +210,12 @@ The console has no chat panel. To give an Agent a task:
 
 ## Open the Agent UI
 
-When enabled by the Installation and permitted for your account, **Open Agent UI**
-in the header opens the Agent interface directly in a new tab. Its description
-names the version selected for service, even while you view a draft or historical
-version. **Refresh access** checks availability again. Unavailable access leaves
-the launch disabled and explains the next step; denied access hides it.
+When browser access is available, choose **Open chat** or **Open Agent UI** in
+the header to open the Agent interface in a new tab. The link description refers
+to the version selected for service, even while you view a draft or historical
+version. **Refresh access** checks availability again. If the button is disabled,
+read the availability message for the next step. The controls are hidden when
+the Installation disables browser access or your account lacks access.
 
 Gateway managed mode restricts administrative changes by default. OCE deployments
 can overwrite changes made while managed mode is off. Use OCE for durable configuration. See [native admin access](../../reference/agent-native-admin.md)

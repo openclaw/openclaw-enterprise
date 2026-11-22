@@ -17,17 +17,18 @@
     "tests/browser/console-agent-deploy-again.test.ts",
     "tests/browser/console-agent-logs.test.ts",
     "tests/browser/console-agent-repositories.test.ts",
-    "tests/integration/repository-credentials-github-prepared.test.mjs",
+    "tests/integration/repository-credentials-github-prepared.test.ts",
     "tests/integration/github-installation-access-policy.test.ts",
     "tests/integration/repository-credentials-github-installation-issuer.test.ts",
     "tests/integration/skipper-private-git-origin.test.mjs",
-    "tests/integration/repository-credentials-github-token.test.mjs",
-    "tests/integration/repository-credentials-client-config.test.mjs",
+    "tests/integration/skipper-private-git-network-origin.test.ts",
+    "tests/integration/repository-credentials-github-token.test.ts",
+    "tests/integration/repository-credentials-client-config.test.ts",
     "tests/browser/console-agent-overview.test.ts",
     "tests/browser/console-deployment-activity.test.ts",
     "tests/browser/console-agent-plugin-approvers.test.ts",
     "tests/browser/console-agent-plugin-refusals.test.ts",
-    "tests/browser/docs-compute-matrix.test.mjs",
+    "tests/browser/docs-compute-matrix.test.ts",
     "tests/browser/console-namespace-not-ready.test.ts",
     "tests/browser/console-secrets.test.ts",
     "tests/browser/console-namespace-delete.test.ts",
@@ -86,10 +87,10 @@
       "path": "tests/browser/console-namespace-not-ready.test.ts"
     },
     {
-      "path": "tests/browser/docs-compute-matrix.test.mjs"
+      "path": "tests/browser/docs-compute-matrix.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-github-prepared.test.mjs"
+      "path": "tests/integration/repository-credentials-github-prepared.test.ts"
     },
     {
       "path": "tests/integration/github-installation-access-policy.test.ts",
@@ -108,10 +109,18 @@
       "path": "tests/integration/skipper-private-git-origin.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-github-token.test.mjs"
+      "path": "tests/integration/skipper-private-git-network-origin.test.ts",
+      "expectedTests": [
+        "private Git network origin accepts only its broad fixture credential across three repositories",
+        "private Git network origin calibrates the exact issued A/B/C credential and observes retirement",
+        "private Git network origin tracks the rotated credential and retains redaction fingerprints"
+      ]
     },
     {
-      "path": "tests/integration/repository-credentials-client-config.test.mjs"
+      "path": "tests/integration/repository-credentials-github-token.test.ts"
+    },
+    {
+      "path": "tests/integration/repository-credentials-client-config.test.ts"
     },
     {
       "path": "tests/browser/console-agent-overview.test.ts"

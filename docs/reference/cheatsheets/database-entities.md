@@ -57,6 +57,9 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `harness_auth_credential_source_id`
 - `credential_sources` (every bound credential source)
 - `active_revision_id`
+- `predecessor_replacement` (nullable JSONB with the predecessor and candidate
+  revision IDs and the `pre-stop` or `stopping` phase). See the
+  [common stop boundary](../agents/planned-replacement.md#common-stop-boundary).
 - `desired_runtime_state`
 - `sandbox_policy_editing`
 - `status`
@@ -140,6 +143,16 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `authentication_states`
+
+Stores OCC's transient [browser OAuth connection attempts](../../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../../flows/credential-source-refresh.md#device-authorization-and-configuration). The `kind` determines the required fields and lifecycle. Human sign-in attempts use `human_authentication_attempts` instead.
+
+- Common: `kind`, `id`, `namespace_id`, `actor_id`, `expires_at`, `binding` (immutable workflow data)
+- `oauth_connection`: `credential_source_id`, `connection_template_id`, `connection_template_version`, `created_at`; `binding` holds browser, PKCE, selected scope, redirect, and issuer data
+- `device_authorization`: `phase`, `next_poll_at`, `encrypted_challenge`, `private_state`, `version`; `binding` holds Agent, source, Driver, and polling-interval data
+
+OCC deletes an OAuth row when the matching browser callback consumes it. Device polling checks `version` before committing; cancellation and expiry clear the encrypted challenge and provider handle.
+
 ### `connection_templates`
 
 Stores the scope and current version of each OAuth connection template.
@@ -184,24 +197,6 @@ Records the Namespace, consenting principal, approved template version and revoc
 - `revocation_requested_by`
 - `revoked_at`
 
-### `connection_sessions`
-
-Stores the private, single-use OAuth attempt for the initiating principal and browser session.
-
-- `state_hash`
-- `namespace_id`
-- `credential_source_id`
-- `pkce_verifier`
-- `selected_scopes`
-- `issuer_required`
-- `session_id`
-- `redirect_uri`
-- `actor_id`
-- `connection_template_id`
-- `connection_template_version`
-- `created_at`
-- `expires_at`
-
 ### `connection_token_custody`
 
 Tracks the Token Service secret reference, the published access token version and the next refresh time.
@@ -212,9 +207,15 @@ Tracks the Token Service secret reference, the published access token version an
 - `scheduled_version`
 - `next_refresh_at`
 
+### `token_service_instances`
+
+Binds an Installation to its selected TokenService Driver and private-store identity.
+
+- `installation_id`, `id`, `driver_id`, `store_identity`
+
 ### `credential_sources`
 
-Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. The Token Service owns saved account sources.
+Records each source owner. Gateway and Proxy sources identify their Driver. Managed static Sources identify their TokenService instance; saved accounts retain their existing Token Service owner.
 
 - `id`
 - `namespace_id`
@@ -222,20 +223,22 @@ Records the owner of each source. A Credential Gateway or Credential Proxy sourc
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
 - `driver_id` (Gateway and Proxy sources)
+- `token_service_instance_id` (managed static Source owner)
 - `state`
 - `created_at`
 
 ### `egress_installations`
 
 Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement
-instance/configuration fingerprint to the exact admitted revision plan.
+instance/configuration fingerprint to the exact admitted revision plan. Retains retired
+receipts while allowing one current enrollment per sender and Sandbox.
 See [protected inference](../credential-sources/protected-inference.md).
 
 - `sender_id`, `sandbox_id`
 - `namespace_id`, `agent_id`, `revision_id`
-- `installation`
+- `installation`, `retired`
 
 ### `credential_deliveries`
 
@@ -475,6 +478,8 @@ Defines native IAM rules that deny actions on a resource kind or specific resour
 ### `audit_events`
 
 Keeps an append-only record of bootstrap, changes to resources, and authorization denials.
+When Control Plane audit is enabled, it also records covered API requests,
+worker activity, and disclosures of Agent audit records. See the [audit guide](../../guides/topics/audit-log.md).
 
 - `id`
 - `occurred_at`
@@ -503,6 +508,7 @@ Queues and tracks controller work for Namespace and Agent lifecycle changes, Age
 - `available_at`
 - `attempt_count`
 - `claim_token`
+- `audit_attempt_id`
 - `lease_expires_at`
 - `completed_at`
 - `reason_code`

@@ -1,12 +1,15 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { removeImageFileContainer, type ImageFileContainerReceipt } from "../lib/image-file.ts";
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.ts";
-import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
+import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.ts";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
-import { fork, spawn } from "node:child_process";
 import { constants, type Dirent } from "node:fs";
 import {
   access,
   chmod,
   lstat,
+  open,
   readFile,
   readdir,
   rename,
@@ -16,12 +19,26 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { startObservabilityPhase } from "./observability-phase-notice.ts";
 import { withStateLock } from "./state-lock.ts";
-import { runPostgresAdmin } from "./postgres-admin.mjs";
+import { quoteIdentifier, runPostgresAdmin } from "./postgres-admin.ts";
+import { runCommand } from "./command-supervision.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
 type CleanupResource = Record<string, unknown>;
+type K3dCleanupIdentity = {
+  cluster: string;
+  serverID: string;
+  networkID: string;
+  volumes: { name: string; createdAt: string }[];
+};
+type CleanupAuthority = {
+  expectedCleanupOwner?: string;
+  expectedCleanupLane?: string;
+  expectedStateSha256?: string;
+  k3dIdentity?: K3dCleanupIdentity;
+};
 
 type CleanupState = Record<string, unknown> & {
   prefix: string;
@@ -35,11 +52,6 @@ type CommandRunner = (
   args: string[],
   options?: CommandOptions,
 ) => Promise<{ stdout: string }>;
-type SupervisorResult = {
-  code: number | null;
-  signal: string | null;
-  error?: { message: string; code?: string };
-};
 type DropResult = { error?: unknown };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,18 +71,6 @@ function errorCode(error: unknown): unknown {
 
 function errorMessage(error: unknown): unknown {
   return isRecord(error) ? error.message : undefined;
-}
-
-function isSupervisorResult(value: unknown): value is SupervisorResult {
-  return (
-    isRecord(value) &&
-    (value.code === null || typeof value.code === "number") &&
-    (value.signal === null || typeof value.signal === "string") &&
-    (value.error === undefined ||
-      (isRecord(value.error) &&
-        typeof value.error.message === "string" &&
-        (value.error.code === undefined || typeof value.error.code === "string")))
-  );
 }
 
 const activeCommands = new Set<() => void>();
@@ -118,151 +118,49 @@ function databaseDropTimeoutMs() {
   return Math.min(60_000, commandTimeoutMs());
 }
 
-function execFile(
+async function execFile(
   command: string,
   args: string[],
   options: CommandOptions = {},
 ): Promise<CommandResult> {
-  return new Promise((resolvePromise, reject) => {
-    const processGroup = process.platform !== "win32";
-    const spawnOptions = {
-      cwd: options.cwd ?? repositoryRoot,
-      env: { ...process.env, ...(options.env ?? {}) },
-    };
-    // The supervisor remains the group leader until command and pipes settle.
-    // It also owns termination when this caller exits without running JS hooks.
-    const child = processGroup
-      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
-          ...spawnOptions,
-          detached: true,
-          execArgv: [],
-          stdio: ["ignore", "pipe", "pipe", "ipc"],
-        })
-      : spawn(command, args, { ...spawnOptions, stdio: ["ignore", "pipe", "pipe"] });
-    let commandResult: SupervisorResult | undefined;
-    if (processGroup) {
-      child.on("message", (result) => {
-        if (isSupervisorResult(result)) {
-          commandResult = result;
-        }
+  let stdout = "";
+  let stderr = "";
+  const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
+  const graceMs = positiveEnvMs("OPENCLAW_CI_COMMAND_KILL_GRACE_MS", 5_000);
+  const result = await runCommand(
+    command,
+    args,
+    { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] },
+    { phase: "cleanup", deadline: { timeoutMs, graceMs }, activeCommands },
+    (child) => {
+      child.stdout?.on("data", (chunk: Buffer | string) => {
+        stdout += chunk.toString();
       });
-    }
-    let signalError: unknown;
-    let killSent = false;
-    const signalCommand = (signal: NodeJS.Signals) => {
-      if (signal === "SIGKILL") {
-        killSent = true;
-      }
-      try {
-        if (processGroup) {
-          // A live supervisor anchors the numeric group ID. Once it exits,
-          // never signal an ID that another process could have reused.
-          if (
-            child.pid !== undefined &&
-            child.pid > 1 &&
-            child.exitCode === null &&
-            child.signalCode === null
-          ) {
-            process.kill(-child.pid, signal);
-          }
-        } else {
-          child.kill(signal);
-        }
-      } catch (error) {
-        if (errorCode(error) !== "ESRCH") {
-          signalError ??= error;
-        }
-      }
-    };
-    const stop = () => signalCommand("SIGKILL");
-    activeCommands.add(stop);
-    const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
-    const graceMs = positiveEnvMs("OPENCLAW_CI_COMMAND_KILL_GRACE_MS", 5_000);
-    let timedOut = false;
-    let settled = false;
-    let killTimer: NodeJS.Timeout | undefined;
-    let abandonTimer: NodeJS.Timeout | undefined;
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      signalCommand("SIGTERM");
-      killTimer = setTimeout(() => {
-        signalCommand("SIGKILL");
-        // A descendant can escape the group while retaining these pipes. Bound
-        // their lifetime without signalling processes outside our owned group.
-        abandonTimer = setTimeout(() => {
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          child.unref();
-          finish(child.exitCode, child.signalCode);
-        }, graceMs);
-      }, graceMs);
-    }, timeoutMs);
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.on("data", (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
-    function finish(code: number | null, signal: string | null, spawnError?: Error) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      activeCommands.delete(stop);
-      clearTimeout(timeoutTimer);
-      clearTimeout(killTimer);
-      clearTimeout(abandonTimer);
-      // Close can precede the grace timer if surviving descendants closed their
-      // output. They still belong to the timed-out command and must be stopped.
-      if (timedOut && !killSent) {
-        signalCommand("SIGKILL");
-      }
-      let error = spawnError;
-      if (processGroup && !error) {
-        if (commandResult) {
-          ({ code, signal } = commandResult);
-          if (commandResult.error) {
-            error = Object.assign(new Error(commandResult.error.message), commandResult.error);
-          }
-        } else {
-          error = new Error(
-            `Cleanup command supervisor exited before reporting a result (${signal ?? code})`,
-          );
-        }
-      }
-      if (timedOut) {
-        error = new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs} ms`);
-      } else if (!error && code !== 0) {
-        const message = stderr.trim() || stdout.trim() || signal || String(code);
-        error = new Error(`${command} ${args.join(" ")} failed: ${message}`);
-      }
-      if (error) {
-        Object.assign(error, { stdout, stderr });
-        if (signalError) {
-          error.cause = signalError;
-        }
-        reject(error);
-      } else {
-        resolvePromise({ stdout, stderr });
-      }
-    }
-    child.on("error", (error) => {
-      if (child.pid === undefined) {
-        finish(null, null, error);
-      } else {
-        // A failed kill is not a failed spawn: keep the pipe-abandonment bound.
-        signalError ??= error;
-      }
-    });
-    // Exit precedes pipe drain. Keep the deadline and escalation alive until
-    // close, even when the wrapper has exited but its descendants have not.
-    child.on("close", (code, signal) => finish(code, signal));
-    if (processGroup) {
-      child.send({ command, args });
-    }
-  });
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        stderr += chunk.toString();
+      });
+    },
+  );
+  let error: Error;
+  if (result.kind === "timeout") {
+    error = new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs} ms`);
+  } else if (result.kind === "spawn-error") {
+    error = result.error;
+  } else if (result.kind === "supervisor-lost") {
+    error = new Error(
+      `Cleanup command supervisor exited before reporting a result (${result.signal ?? result.code})`,
+    );
+  } else if (result.code !== 0) {
+    const message = stderr.trim() || stdout.trim() || result.signal || String(result.code);
+    error = new Error(`${command} ${args.join(" ")} failed: ${message}`);
+  } else {
+    return { stdout, stderr };
+  }
+  Object.assign(error, { stdout, stderr });
+  if (result.signalError) {
+    error.cause = result.signalError;
+  }
+  throw error;
 }
 
 function assertCleanupState(state: unknown): asserts state is CleanupState {
@@ -283,8 +181,32 @@ function assertCleanupState(state: unknown): asserts state is CleanupState {
   }
 }
 
-async function readState(path: string): Promise<CleanupState> {
-  const state: unknown = JSON.parse(await readFile(path, "utf8"));
+async function readState(
+  path: string,
+  expectedHash?: string,
+  regularFile = false,
+): Promise<CleanupState> {
+  let bytes: Buffer;
+  if (regularFile) {
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      assert.ok((await file.stat()).isFile(), "Child cleanup requires a regular journal");
+      bytes = await file.readFile();
+    } finally {
+      await file.close();
+    }
+  } else {
+    bytes = await readFile(path);
+  }
+  if (expectedHash !== undefined) {
+    assert.match(expectedHash, /^[a-f0-9]{64}$/);
+    assert.equal(
+      createHash("sha256").update(bytes).digest("hex"),
+      expectedHash,
+      "cleanup state changed after preparation",
+    );
+  }
+  const state: unknown = JSON.parse(bytes.toString("utf8"));
   assertCleanupState(state);
   return state;
 }
@@ -376,13 +298,6 @@ function composeArgs(resource: CleanupResource, state: CleanupState, ...args: st
     throw new Error("Refusing to clean developer PostgreSQL port 55432.");
   }
   return ["compose", "-f", resource.composeFile, "-p", resource.name, ...args];
-}
-
-function quoteIdentifier(value: string) {
-  if (!/^[a-z0-9_]+$/.test(value)) {
-    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
-  }
-  return `"${value.replaceAll('"', '""')}"`;
 }
 
 async function cleanupComposePostgres(
@@ -481,16 +396,20 @@ async function cleanupDatabase(resource: CleanupResource, state: CleanupState) {
   });
 }
 
-async function cleanupK3dCluster(resource: CleanupResource, state: CleanupState) {
+async function cleanupK3dCluster(
+  resource: CleanupResource,
+  state: CleanupState,
+  identity?: K3dCleanupIdentity,
+) {
   assertResourceOwner(resource, state);
   assertOwnedK3dFilesystem(resource);
-  await deleteOwnedK3dCluster(resource);
+  await deleteOwnedK3dCluster(resource, identity ? { identity } : {});
   await emptyK3dSharedStorage(resource);
   await rm(resource.directory, { recursive: true, force: true });
 }
 
 // The fixture lanes bind <directory>/storage into every node as local-path's storage
-// (prepare.mjs). local-path creates each claim's volume directory as root and removes it with a
+// (prepare.ts). local-path creates each claim's volume directory as root and removes it with a
 // helper Pod only after the claim is deleted, so volumes of namespaces that tests deleted without
 // waiting leave directories the runner user cannot remove. The cluster is gone by now, so nothing
 // writes there again: empty the storage as root from the cluster's own node image, which is
@@ -538,9 +457,15 @@ async function emptyK3dSharedStorage(resource: CleanupResource & { directory: st
 // create timed out before it retries; it keeps the cluster's directory.
 async function deleteOwnedK3dCluster(
   resource: CleanupResource,
-  { execFile: run = execFile }: { execFile?: CommandRunner } = {},
+  {
+    execFile: run = execFile,
+    identity,
+  }: { execFile?: CommandRunner; identity?: K3dCleanupIdentity } = {},
 ) {
   assertOwnedName("openclaw-k8s-", resource.name, "k3d cluster");
+  if (identity) {
+    return deleteBoundK3dCluster(resource, identity, run);
+  }
   const k3d = process.env.OPENCLAW_CI_K3D_BIN ?? "k3d";
   const listClusters = async () => {
     const result = await run(k3d, ["cluster", "list", "-o", "json"]);
@@ -592,6 +517,115 @@ async function deleteOwnedK3dCluster(
       throw new Error(`Possible owned k3d ${kind} remain after deletion: ${resource.name}`);
     }
   }
+}
+
+// Staged cleanup carries captured custody into the destructive owner. Never
+// resolve a replacement by cluster name or use k3d's label-wide deletion here.
+async function deleteBoundK3dCluster(
+  resource: CleanupResource,
+  identity: K3dCleanupIdentity,
+  run: CommandRunner,
+) {
+  assert.equal(identity.cluster, resource.name);
+  assert.match(identity.serverID, /^[a-f0-9]{64}$/);
+  assert.match(identity.networkID, /^[a-f0-9]{64}$/);
+  assert.ok(identity.volumes.length > 0);
+  assert.equal(new Set(identity.volumes.map((v) => v.name)).size, identity.volumes.length);
+  for (const volume of identity.volumes) {
+    assert.match(volume.name, /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/);
+    assert.ok(volume.createdAt.length > 0);
+  }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const text = async (...args: string[]) => (await run(docker, args)).stdout;
+  const lines = async (...args: string[]) =>
+    (await text(...args)).trim().split(/\r?\n/u).filter(Boolean).sort();
+  const label = `label=k3d.cluster=${identity.cluster}`;
+  assert.deepEqual(
+    await lines("ps", "-aq", "--no-trunc", "--filter", label),
+    [identity.serverID],
+    "bound k3d server identity changed",
+  );
+  const networkName = `k3d-${identity.cluster}`;
+  const attachments: unknown = JSON.parse(
+    await text(
+      "container",
+      "inspect",
+      "--format",
+      "{{json .NetworkSettings.Networks}}",
+      identity.serverID,
+    ),
+  );
+  assert.ok(isRecord(attachments));
+  assert.deepEqual(Object.keys(attachments), [networkName]);
+  const attachment = attachments[networkName];
+  assert.ok(isRecord(attachment));
+  assert.equal(attachment.NetworkID, identity.networkID, "bound k3d network identity changed");
+  assert.equal(
+    (await text("network", "inspect", "--format", "{{.Name}}", identity.networkID)).trim(),
+    networkName,
+  );
+  const network: unknown = JSON.parse(
+    await text("network", "inspect", "--format", "{{json .Containers}}", identity.networkID),
+  );
+  assert.ok(isRecord(network));
+  assert.deepEqual(Object.keys(network), [identity.serverID], "bound k3d network is shared");
+  const mounted = await lines(
+    "container",
+    "inspect",
+    "--format",
+    '{{range .Mounts}}{{if eq .Type "volume"}}{{println .Name}}{{end}}{{end}}',
+    identity.serverID,
+  );
+  assert.deepEqual(
+    mounted,
+    identity.volumes.map((v) => v.name).sort(),
+    "bound k3d volume membership changed",
+  );
+  const checkVolume = async (
+    volume: K3dCleanupIdentity["volumes"][number],
+    consumers: string[],
+  ) => {
+    const info: unknown = JSON.parse(
+      await text("volume", "inspect", "--format", "{{json .}}", volume.name),
+    );
+    assert.ok(isRecord(info));
+    assert.equal(info.Name, volume.name);
+    assert.equal(info.CreatedAt, volume.createdAt, "bound k3d volume was replaced");
+    assert.equal(info.Driver, "local");
+    assert.equal(info.Scope, "local");
+    assert.deepEqual(
+      await lines("ps", "-aq", "--no-trunc", "--filter", `volume=${volume.name}`),
+      consumers,
+      "bound k3d volume is shared",
+    );
+  };
+  for (const volume of identity.volumes) {
+    await checkVolume(volume, [identity.serverID]);
+  }
+  // Keep volumes until their post-container consumer check. Non-forced volume
+  // removal also lets Docker reject an attachment racing that final check.
+  await text("rm", "-f", identity.serverID);
+  await text("network", "rm", identity.networkID);
+  for (const volume of identity.volumes) {
+    // Docker volumes have names, not immutable deletion IDs. This recheck does
+    // not claim atomic protection against a privileged daemon-side recreation.
+    await checkVolume(volume, []);
+    await text("volume", "rm", volume.name);
+  }
+  assert.deepEqual(
+    await lines("ps", "-aq", "--no-trunc", "--filter", label),
+    [],
+    "k3d server remains or was replaced during cleanup",
+  );
+  assert.ok(
+    !(await lines("network", "ls", "--format", "{{.Name}}")).includes(networkName),
+    "k3d network remains or was replaced during cleanup",
+  );
+  const volumes = await lines("volume", "ls", "-q");
+  assert.ok(
+    identity.volumes.every((v) => !volumes.includes(v.name)),
+    "bound k3d volume remains",
+  );
 }
 
 async function cleanupImageTag(resource: CleanupResource, state: CleanupState) {
@@ -709,8 +743,48 @@ async function cleanupFirstAgentImages(resource: CleanupResource, state: Cleanup
   }
 }
 
-async function cleanupResource(resource: CleanupResource, state: CleanupState, statePath: string) {
+function assertImageFileName(
+  resource: CleanupResource,
+  prefix: string,
+): asserts resource is CleanupResource & ImageFileContainerReceipt {
+  if (
+    typeof resource.name !== "string" ||
+    !resource.name.startsWith(`${prefix}-provenance-`) ||
+    !/^openclaw-ci-[a-z0-9-]+-provenance-[a-f0-9]{12}$/.test(resource.name)
+  ) {
+    throw new Error("Refusing to remove an unowned image extraction container.");
+  }
+}
+
+async function cleanupResource(
+  resource: CleanupResource,
+  state: CleanupState,
+  statePath: string,
+  identity?: K3dCleanupIdentity,
+) {
   switch (resource.kind) {
+    case "image-file": {
+      if (resource.owner !== state.prefix) {
+        throw new Error("Refusing to clean an image extraction container owned by another prefix.");
+      }
+      assertImageFileName(resource, state.prefix);
+      await removeImageFileContainer({
+        resource,
+        persist: () => writeState(statePath, state),
+        command: async (_docker, args, options = {}) => {
+          try {
+            return (
+              await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+                timeoutMs: options.timeout ?? 30_000,
+              })
+            ).stdout;
+          } catch {
+            throw new Error("Runtime provenance image cleanup command failed.");
+          }
+        },
+      });
+      break;
+    }
     case "first-agent-image-registry":
       await cleanupFirstAgentImages(resource, state);
       break;
@@ -718,6 +792,24 @@ async function cleanupResource(resource: CleanupResource, state: CleanupState, s
       assertResourceOwner(resource, state);
       const loggingOptions = { env: process.env, execFile };
       await cleanupLogging(resource, loggingOptions);
+      break;
+    }
+    case "child-state": {
+      assertResourceOwner(resource, state);
+      assert.match(state.prefix, /^openclaw-ci-[a-z0-9-]+$/);
+      assertString(resource.name, "child state name");
+      const suffix = resource.name.slice(`${state.prefix}-child-`.length);
+      if (!resource.name.startsWith(`${state.prefix}-child-`) || !/^[a-f0-9]{12}$/.test(suffix)) {
+        throw new Error("Refusing an unowned child state path.");
+      }
+      const childPath = join(dirname(statePath), `${resource.name}.json`);
+      assert.notEqual(childPath, statePath, "A child state cannot own its parent.");
+      assertString(resource.id, "child state identity");
+      assert.match(resource.id, /^child-state-[a-f0-9]{12}$/);
+      await cleanupState(childPath, {
+        expectedCleanupOwner: resource.id,
+        expectedCleanupLane: "postgres-auth",
+      });
       break;
     }
     case "postgres-database":
@@ -730,7 +822,7 @@ async function cleanupResource(resource: CleanupResource, state: CleanupState, s
       await cleanupK3dImage(resource, state);
       break;
     case "k3d-cluster":
-      await cleanupK3dCluster(resource, state);
+      await cleanupK3dCluster(resource, state, identity);
       break;
     case "image-tag":
       await cleanupImageTag(resource, state);
@@ -760,20 +852,38 @@ async function cleanupResource(resource: CleanupResource, state: CleanupState, s
 async function cleanupResourceIds(
   statePath: string,
   resourceIds?: readonly unknown[],
-  { lockTimeoutMs }: { lockTimeoutMs?: number } = {},
+  { lockTimeoutMs, ...authority }: { lockTimeoutMs?: number } & CleanupAuthority = {},
 ) {
+  assert.equal(
+    authority.expectedStateSha256 !== undefined,
+    authority.k3dIdentity !== undefined,
+    "bound cleanup requires both state digest and resource custody",
+  );
+  assert.equal(
+    authority.expectedCleanupOwner !== undefined,
+    authority.expectedCleanupLane !== undefined,
+    "bound cleanup requires both owner and lane",
+  );
+  if (authority.k3dIdentity || authority.expectedCleanupOwner !== undefined) {
+    assert.equal(resourceIds, undefined, "bound cleanup requires the complete prepared state");
+  }
   const path = resolve(statePath);
   if (!isAbsolute(path)) {
     throw new Error("Cleanup state path must resolve to an absolute path.");
   }
-  if (!(await stateExists(path))) {
+  if (!(await stateExists(path, authority.expectedCleanupOwner !== undefined))) {
+    assert.equal(authority.expectedStateSha256, undefined, "bound cleanup state is missing");
     return false;
   }
   const dropped = resourceIds === undefined ? undefined : await dropDatabases(path, resourceIds);
   // A test may prepare and clean databases from its own process beside the runner.
-  return withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds, dropped), {
-    timeoutMs: lockTimeoutMs,
-  });
+  return withStateLock(
+    path,
+    () => cleanupLockedResourceIds(path, resourceIds, dropped, authority),
+    {
+      timeoutMs: lockTimeoutMs,
+    },
+  );
 }
 
 // DROP DATABASE requests an immediate checkpoint, which writes out every dirty buffer on
@@ -815,9 +925,13 @@ async function dropDatabases(path: string, resourceIds: readonly unknown[]) {
   return results;
 }
 
-async function stateExists(path: string) {
+async function stateExists(path: string, regularFile = false) {
   try {
-    await access(path, constants.F_OK);
+    if (regularFile) {
+      await lstat(path);
+    } else {
+      await access(path, constants.F_OK);
+    }
     return true;
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
@@ -832,11 +946,28 @@ async function cleanupLockedResourceIds(
   path: string,
   resourceIds?: readonly unknown[],
   dropped: Map<unknown, DropResult> = new Map(),
+  authority: CleanupAuthority = {},
 ) {
-  if (!(await stateExists(path))) {
+  if (!(await stateExists(path, authority.expectedCleanupOwner !== undefined))) {
+    assert.equal(authority.expectedStateSha256, undefined, "bound cleanup state is missing");
     return false;
   }
-  const state = await readState(path);
+  const state = await readState(
+    path,
+    authority.expectedStateSha256,
+    authority.expectedCleanupOwner !== undefined,
+  );
+  if (authority.expectedCleanupOwner !== undefined) {
+    assert.equal(state.cleanupOwner, authority.expectedCleanupOwner, "CI cleanup owner mismatch");
+    assert.equal(state.statePath, path, "CI cleanup state path mismatch");
+    assert.equal(state.lane, authority.expectedCleanupLane, "CI cleanup lane mismatch");
+  }
+  if (authority.k3dIdentity) {
+    assert.equal(state.resources.length, 1, "bound cleanup requires exactly one cluster resource");
+    const resource = resourceFields(state.resources[0]);
+    assert.equal(resource.kind, "k3d-cluster");
+    assert.equal(resource.name, authority.k3dIdentity.cluster);
+  }
   const selected = new Set(
     resourceIds ?? state.resources.map((resource) => resourceFields(resource).id),
   );
@@ -849,7 +980,7 @@ async function cleanupLockedResourceIds(
     }
     try {
       if (!dropped.has(resource.id)) {
-        await cleanupResource(resource, state, path);
+        await cleanupResource(resource, state, path, authority.k3dIdentity);
       } else {
         const result = dropped.get(resource.id);
         if (result && "error" in result) {
@@ -861,7 +992,11 @@ async function cleanupLockedResourceIds(
       );
       await writeState(path, state);
     } catch (error) {
-      failures.push(`${resource.kind}:${resource.name ?? resource.id}:${errorMessage(error)}`);
+      failures.push(
+        resource.kind === "image-file"
+          ? "image-file:Runtime provenance cleanup failed; private resource receipt retained."
+          : `${resource.kind}:${resource.name ?? resource.id}:${errorMessage(error)}`,
+      );
     }
   }
 
@@ -875,8 +1010,8 @@ async function cleanupLockedResourceIds(
   return true;
 }
 
-async function cleanupState(statePath: string) {
-  return cleanupResourceIds(statePath);
+async function cleanupState(statePath: string, authority: CleanupAuthority = {}) {
+  return cleanupResourceIds(statePath, undefined, authority);
 }
 
 // Final job cleanup runs after the runner wrote its file-level evidence.
@@ -907,23 +1042,60 @@ async function recordLaneCleanup(
   await rename(temporary, path);
 }
 
-export async function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.state) {
     throw new Error("--state is required.");
   }
-  let processedState: boolean;
+  // Match the composite's lane paths even when preparation left no journal.
+  const runnerTemp = process.env.RUNNER_TEMP;
+  const finishTiming =
+    runnerTemp &&
+    isAbsolute(runnerTemp) &&
+    args.state === join(runnerTemp, "state", "k3d-observability.json") &&
+    args.results === join(runnerTemp, "results", "k3d-observability.json") &&
+    args.lane === undefined &&
+    args["cleanup-owner"] === undefined
+      ? startObservabilityPhase("k3d-observability", "lane-cleanup")
+      : undefined;
+  const started = performance.now();
+  let outcome: "success" | "failure" | "skipped" = "failure";
   try {
-    processedState = await cleanupState(args.state);
-  } catch (error) {
-    if (args.results) {
-      await recordLaneCleanup(args.results, "failed");
+    let processedState: boolean;
+    try {
+      const owner = args["cleanup-owner"];
+      const lane = args.lane;
+      assert.equal(
+        owner !== undefined,
+        lane !== undefined,
+        "bound cleanup requires both owner and lane",
+      );
+      processedState = await cleanupState(
+        args.state,
+        owner !== undefined && lane !== undefined
+          ? { expectedCleanupOwner: owner, expectedCleanupLane: lane }
+          : {},
+      );
+    } catch (error) {
+      if (args.results) {
+        await recordLaneCleanup(args.results, "failed");
+      }
+      throw error;
     }
-    throw error;
-  }
-  if (args.results) {
-    await recordLaneCleanup(args.results, "passed", processedState);
+    if (args.results) {
+      await recordLaneCleanup(args.results, "passed", processedState);
+    }
+    outcome = processedState ? "success" : "skipped";
+  } finally {
+    finishTiming?.(outcome, Math.round(performance.now() - started));
   }
 }
 
 export { cleanupResourceIds, cleanupState, deleteOwnedK3dCluster, stopCleanupCommands };
+
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error: unknown) => {
+    console.error(errorMessage(error));
+    process.exitCode = 1;
+  });
+}

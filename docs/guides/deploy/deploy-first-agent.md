@@ -6,9 +6,33 @@ Use this OpenShell workflow to evaluate Agent deployment and model execution.
 A successful run does not complete the
 [remaining OpenShell production qualification](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
+## Prepare an existing OpenShell Gateway
+
+The Kubernetes network helper defaults to `oce-system`. If you use an existing Gateway in another namespace, complete these steps before you start in the Console or call the API.
+
+1. Confirm that the Installation references that Gateway. The command prints the Gateway endpoint, the Harness peer namespace and Service ClusterIP, and the namespaces in the workspace policies and RoleBinding. All must match that Gateway. OCE creates Agent and workspace NetworkPolicies from these fields.
+
+   ```bash
+   jq -r '(.backend[] | select(.type == "openshell") | .configuration.endpoint),
+     (.drivers.compute.configuration.network.providerHarness | "\(.namespace) \(.address)"),
+     (.drivers.sandbox.configuration.gateway | (.operatorWorkspaceResources + .networkPolicyResources)[]
+       | .. | objects | .["kubernetes.io/metadata.name"] // (select(.kind == "ServiceAccount") | .namespace) // empty)' \
+     "$INSTALLATION_FILE"
+   ```
+
+   Set `OPENSHELL_NAMESPACE` in the operator shell to the Gateway's namespace, if the installation did not already save it. The helper uses it for OpenShell Service discovery and policy placement. OCE stays in `oce-system`, and `save_session` retains the setting.
+
+2. Confirm that the operator can read the Services used by the helper and manage NetworkPolicies in the affected namespaces.
+3. Check that the API and worker Pods can reach that Gateway. The quickstart's installation block grants this egress when `OPENSHELL_NAMESPACE` is set before it runs. Otherwise, add scoped egress from those Pods to the `openshell-gateway` Service on TCP 8080 and to its selected Pods on the target port.
+4. Ask the Gateway owner to check ingress for every existing client of the management Pods, including any ingress controller or proxy that connects to them. Verify that each required client has a scoped allow on its destination port before the helper applies its rules. On a cluster that enforces NetworkPolicy, the first ingress policy selecting those Pods can isolate them for ingress.
+
+If repository credentials are already enabled, also [check Gateway egress](#check-gateway-egress-before-adding-git) before deployment.
+
 Create an Agent called `fred` in the Console below, or [start with the API](#1-select-or-register-the-model-credential). Both paths lead to the same onboarding steps. Choose a fresh setup where the name `fred` is available.
 
 ## Create and deploy fred in the Console
+
+For a Gateway in another namespace, [complete the Gateway prerequisites](#prepare-an-existing-openshell-gateway) first.
 
 Run `deployment_preflight` in your operator shell before creating the Agent. Open `$CONSOLE_ORIGIN/console/` and sign in with the administrator account from setup. Keep any required browser port-forward running.
 
@@ -31,6 +55,8 @@ modelSource=$(jq -er '.data.harnessAuth | select(.method=="credential_source") |
 Continue to [onboarding in the Control UI](#4-complete-onboarding-in-the-control-ui).
 
 ## 1. Select or register the model credential
+
+For a Gateway in another namespace, [complete the Gateway prerequisites](#prepare-an-existing-openshell-gateway) first.
 
 Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
 
@@ -75,7 +101,7 @@ modelSource=$(request GET "$base/credential-sources" |
     '[.data[]|select(.name==$n and .type==$t and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
 ```
 
-Otherwise, store the credential in a Namespace Secret and register its reference before enabling the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
+Otherwise, store the credential in a Namespace Secret and register its reference with Credential Gateway. This works with or without the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
 
 ```bash
 # POST $base/secrets: read the credential from its file.
@@ -126,7 +152,7 @@ After creating the dedicated Agent, bind its exact browser origin to its new Con
 installation=$(request GET "/installation" | jq -er .data.id)
 origin=$(node --input-type=module - "$CONSOLE_ORIGIN" "$NATIVE_ADMIN_DOMAIN" "$RUN_DIR/agent" "$installation" <<'JS'
 import { readFileSync } from "node:fs";
-import { deriveNativeAdminHost } from "./apps/controller/src/gateway/native-admin-host.mjs";
+import { deriveNativeAdminHost } from "./apps/controller/src/gateway/native-admin-host.ts";
 const [consoleOrigin, nativeAdminDomain, agentFile, installation] = process.argv.slice(2);
 const { data: agent } = JSON.parse(readFileSync(agentFile));
 const url = new URL(consoleOrigin);
@@ -140,7 +166,7 @@ request GET "$base/configurations/$cfg" |
     .values.gateway += {publicOrigin:$origin,controlUi:{enabled:true,allowedOrigins:[$origin]}} |
     .values.gateway.auth += {mode:"trusted-proxy",
       trustedProxy:{userHeader:"x-occ-identity",allowUsers:["occ-workspace-files"],
-        deviceAutoApprove:{enabled:true,scopes:["operator.read","operator.write"]}},
+        requiredHeaders:["x-openclaw-scopes"]},
       identityScopes:{"occ-workspace-files":["operator.admin"]}}' |
   request PATCH "$base/configurations/$cfg" --data-binary @- > "$RUN_DIR/browser-configuration"
 ```
@@ -212,6 +238,8 @@ In the Console, open **Workspace files** on `fred`. Check `IDENTITY.md` for its 
 
 Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen **Open Agent UI**, and select the **same conversation** in chat history. Ask “How do I like my answers?” and check the reply against your saved preference. Retain the conversation's browser path with the private session record.
 
+To hand off work, share the Namespace, Agent name, conversation label, and a link to the decision in your team’s repository at the exact commit. Keep launch tokens, redemption tokens, and browser cookies private. Your teammate signs in to the Console with their own account and [opens the Agent](native-admin.md#local-development). If they see the conversation in chat history, they can select it. Otherwise, they can start a new conversation with the decision reference.
+
 <Snippet file="../../snippets/openshell-quickstart/console-onboard.md" />
 
 </Accordion>
@@ -240,4 +268,20 @@ save_session
 
 Run the two commands printed by `save_session` to resume in a fresh Bash shell. The private session saves IDs and paths; the service key stays in its protected file. Keep this Agent running. You can add Git with either credential. To add plugins, use the service account token.
 
+### Check Gateway egress before adding Git
+
+If you use an existing Gateway, ask its owner to verify that the management Pods can still reach required outbound services, such as external PostgreSQL. Use scoped egress rules for those services. The helper adds egress for the repository credential hook, DNS, and the Kubernetes API. On a cluster that enforces NetworkPolicy, the first egress policy selecting those Pods can isolate them for egress. Check these allows before Add Git applies the policy.
+
 On Amazon EKS, [verify workspace routing](eks-openshell-installation.md#verify-workspace-routing). To extend this Agent, continue to [Git](../repository-credentials/openshell-git-push.md) or [Plugins](../integrations/codex-plugins.md).
+
+## Clean up a separately managed Gateway
+
+Follow the [Agent deletion procedure](quickstart-delete-agent.md) first. Keep the separately managed OpenShell release. Skip the `helm uninstall openshell-gateway` step in the installation cleanup.
+
+Resume the saved session for each run directory used by this installation. Review the helper's policy manifests in `$RUN_DIR` and confirm ownership. Check that workloads you are retaining have the rules they need. Then delete the recorded policies.
+
+```bash
+delete_service_peers
+```
+
+The helper deletes by manifest in each recorded namespace. This includes the management policies in the saved `OPENSHELL_NAMESPACE`. Retain the run directory until cleanup is complete.
