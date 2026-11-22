@@ -13092,7 +13092,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Rename a connection template, or create a version with new approved values",
+        "summary": "Rename a connection template or create a version with updated settings",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -38615,7 +38615,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List connection templates the caller may connect in this Namespace",
+        "summary": "List connection templates available in this Namespace",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }

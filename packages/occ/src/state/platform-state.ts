@@ -85,7 +85,7 @@ import {
 } from "../repository-credential-validation.ts";
 import type {
   ConnectionTemplate,
-  OAuthConnectionTemplateVersion,
+  ConnectionTemplateVersion,
   SavedConnection,
   AccessBinding,
   Agent,
@@ -648,7 +648,7 @@ interface PlatformSnapshot {
     string,
     Readonly<StoredOAuthClient> & { cleanupAfter?: string }
   >;
-  readonly oauthConnectionTemplateVersions: Map<string, Readonly<OAuthConnectionTemplateVersion>>;
+  readonly connectionTemplateVersions: Map<string, Readonly<ConnectionTemplateVersion>>;
   readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
   readonly savedConnections: Map<string, Readonly<SavedConnection>>;
   readonly presets: Map<string, Readonly<Preset>>;
@@ -812,7 +812,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     configurations: copyStoredMap(snapshot.configurations),
     connectionTemplates: new Map(snapshot.connectionTemplates),
     clientRegistrations: new Map(snapshot.clientRegistrations),
-    oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
+    connectionTemplateVersions: new Map(snapshot.connectionTemplateVersions),
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     savedConnections: new Map(snapshot.savedConnections),
     agentAutomations: copyStoredMap(snapshot.agentAutomations),
@@ -1454,10 +1454,18 @@ function repositories(
   };
   const assertTemplateVersion = (
     template: ConnectionTemplate,
-    version: OAuthConnectionTemplateVersion,
+    version: ConnectionTemplateVersion,
   ) => {
     validateConnectionTemplateDestinations(version);
-    if (!version.oauthClientId) {
+    if (
+      version.templateId !== template.id ||
+      (version.mode === "static_bearer") !== (template.current.mode === "static_bearer")
+    ) {
+      throw new ResourceStateConflictError(
+        "The version must match the template identity and authentication method.",
+      );
+    }
+    if (version.mode === "static_bearer" || !version.oauthClientId) {
       return;
     }
     const registration = snapshot.clientRegistrations.get(version.oauthClientId);
@@ -1468,9 +1476,7 @@ function repositories(
         registration.namespaceId !== template.namespaceId) ||
       registration.issuer !== version.issuer ||
       registration.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl !== undefined &&
-        registration.revocationUrl !== version.revocationUrl) ||
-      version.templateId !== template.id
+      (version.revocationUrl !== undefined && registration.revocationUrl !== version.revocationUrl)
     ) {
       throw new ResourceStateConflictError(
         "The OAuth client registration must match the template scope and client.",
@@ -1484,8 +1490,11 @@ function repositories(
         (template) => template.namespaceId === namespaceId,
       ).length,
     hasOtherConnectionIssuer: async (issuer) =>
-      [...snapshot.oauthConnectionTemplateVersions.values()].some(
-        (version) => version.oauthClientId !== undefined && version.issuer !== issuer,
+      [...snapshot.connectionTemplateVersions.values()].some(
+        (version) =>
+          version.mode !== "static_bearer" &&
+          version.oauthClientId !== undefined &&
+          version.issuer !== issuer,
       ),
     listConnectionTemplates: async () =>
       Object.freeze(
@@ -1494,8 +1503,10 @@ function repositories(
           .map((template) => immutableCopy(template)),
       ),
     findOAuthConnectionTemplateVersion: async (templateId, version) => {
-      const found = snapshot.oauthConnectionTemplateVersions.get(versionKey(templateId, version));
-      return found === undefined ? undefined : immutableCopy(found);
+      const found = snapshot.connectionTemplateVersions.get(versionKey(templateId, version));
+      return found === undefined || found.mode === "static_bearer"
+        ? undefined
+        : immutableCopy(found);
     },
     listOAuthClients: async () =>
       Object.freeze(
@@ -1574,8 +1585,8 @@ function repositories(
     },
     deleteOAuthClient: async (registrationId, retainForCleanup) => {
       if (
-        Array.from(snapshot.oauthConnectionTemplateVersions.values()).some(
-          (version) => version.oauthClientId === registrationId,
+        Array.from(snapshot.connectionTemplateVersions.values()).some(
+          (version) => version.mode !== "static_bearer" && version.oauthClientId === registrationId,
         )
       ) {
         return false;
@@ -1596,7 +1607,7 @@ function repositories(
       assertTemplateVersion(template, template.current);
       const saved = immutableCopy(template);
       snapshot.connectionTemplates.set(saved.id, saved);
-      snapshot.oauthConnectionTemplateVersions.set(
+      snapshot.connectionTemplateVersions.set(
         versionKey(saved.id, saved.current.version),
         saved.current,
       );
@@ -1613,7 +1624,7 @@ function repositories(
         if (changes.version.version !== current.current.version + 1) {
           throw new ResourceStateConflictError("Connection template versions advance by one.");
         }
-        snapshot.oauthConnectionTemplateVersions.set(
+        snapshot.connectionTemplateVersions.set(
           versionKey(templateId, changes.version.version),
           immutableCopy(changes.version),
         );
@@ -1641,9 +1652,9 @@ function repositories(
         throw new ResourceStateConflictError("The connection template is in use.");
       }
       snapshot.connectionTemplates.delete(templateId);
-      for (const key of Array.from(snapshot.oauthConnectionTemplateVersions.keys())) {
+      for (const key of Array.from(snapshot.connectionTemplateVersions.keys())) {
         if (key.startsWith(`${templateId}\u0000`)) {
-          snapshot.oauthConnectionTemplateVersions.delete(key);
+          snapshot.connectionTemplateVersions.delete(key);
         }
       }
       return true;
@@ -1654,13 +1665,15 @@ function repositories(
     const { namespaceId, credentialSourceId, connectionTemplateId, connectionTemplateVersion } =
       record;
     const template = snapshot.connectionTemplates.get(connectionTemplateId);
+    const version = snapshot.connectionTemplateVersions.get(
+      versionKey(connectionTemplateId, connectionTemplateVersion),
+    );
     if (
       !snapshot.credentialSources.has(agentKey(namespaceId, credentialSourceId)) ||
       !template ||
       (template.namespaceId !== undefined && template.namespaceId !== namespaceId) ||
-      !snapshot.oauthConnectionTemplateVersions.has(
-        versionKey(connectionTemplateId, connectionTemplateVersion),
-      )
+      !version ||
+      version.mode === "static_bearer"
     ) {
       throw new ResourceStateConflictError(
         "The connection must use a source and template in its scope.",
@@ -1781,12 +1794,13 @@ function repositories(
     createSavedConnection: async (connection) => {
       assertInitialized(snapshot);
       assertConnectionScope(connection);
-      const version = snapshot.oauthConnectionTemplateVersions.get(
+      const version = snapshot.connectionTemplateVersions.get(
         versionKey(connection.connectionTemplateId, connection.connectionTemplateVersion),
       );
       const client = snapshot.clientRegistrations.get(connection.oauthClientId);
       if (
         !version ||
+        version.mode === "static_bearer" ||
         !isDeepStrictEqual(version.destinations, connection.destinations) ||
         version.issuer !== connection.issuer ||
         version.tokenUrl !== connection.tokenUrl ||
@@ -4324,7 +4338,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     configurations: new Map(),
     connectionTemplates: new Map(),
     clientRegistrations: new Map(),
-    oauthConnectionTemplateVersions: new Map(),
+    connectionTemplateVersions: new Map(),
     connectionTokenCustody: new Map(),
     savedConnections: new Map(),
     agentAutomations: new Map(),

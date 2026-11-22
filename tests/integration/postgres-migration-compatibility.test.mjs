@@ -1493,7 +1493,8 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
-      [88, "preAgentAutomations"],
+      [88, "preStaticConnectionTemplates"],
+      [89, "preAgentAutomations"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1852,8 +1853,9 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     for (const schemas of [false, true]) {
-      void context.test(
+      const subtest = context.test(
         `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
         async (child) => {
           const db = await historyDatabase(child, fixture, "fresh", { schemas });
@@ -1882,6 +1884,7 @@ test(
           assert.deepEqual(await historySnapshot(db), after);
         },
       );
+      subtests.push(subtest);
     }
     // Gaps: 26, 60 and 61 have no named history; 27 is covered by the rollback case.
     const histories = await coveringNewestPrefix("populated canonical", 62, [
@@ -1945,10 +1948,11 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
-      [88, "preAgentAutomations"],
+      [88, "preStaticConnectionTemplates"],
+      [89, "preAgentAutomations"],
     ]);
     for (const [prefix, history] of histories) {
-      void context.test(`populated canonical ${history}`, async (child) => {
+      const subtest = context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         const namespaceId = await seedCanonicalData(db, {
           preset: prefix >= 25,
@@ -2293,7 +2297,9 @@ test(
           );
         }
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -2442,6 +2448,7 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     // Prefixes 63 to 74 are not listed, so the guard starts at 75.
     for (const [prefix, history] of await coveringNewestPrefix("Provider continuation", 75, [
       [32, "backendTerminology"],
@@ -2486,9 +2493,10 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
-      [88, "preAgentAutomations"],
+      [88, "preStaticConnectionTemplates"],
+      [89, "preAgentAutomations"],
     ])) {
-      void context.test(history, async (child) => {
+      const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
         await installProviderCompletedHistory(db);
         // Stock Drizzle appends later canonical migrations while retaining Provider fingerprints.
@@ -2503,7 +2511,9 @@ test(
         // Approver storage appends to either continuation without rewriting existing receipts.
         await assertCompletedHistory(db, receipts);
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -2600,6 +2610,9 @@ test(
       history: "preTokenServiceSourceOwnership",
     });
     const current = await logicalRestoreSnapshot(upgraded);
+    context.diagnostic(
+      `Upgraded restored prefix 84 via 85: ${catalogDigest(await migrationCatalog(upgraded.migrator))}`,
+    );
     assert.deepEqual(current.receipts, native.receipts);
     assert.deepEqual(current.identities, at85.identities);
     for (const flag of ["--require-current", undefined]) {
@@ -2609,6 +2622,27 @@ test(
       });
       assert.deepEqual(await logicalRestoreSnapshot(upgraded), current);
     }
+
+    // The immediately preceding completed archive must upgrade through the production command.
+    const staticPredecessor = await historyDatabase(context, fixture, "static_predecessor", {
+      prefix: 88,
+    });
+    const staticUpgrade = await restoreHistoryArchive(
+      context,
+      fixture,
+      await dumpHistoryArchive(fixture, staticPredecessor),
+    );
+    assert.deepEqual(await runHistoryCommand(staticUpgrade, "production"), {
+      ok: true,
+      history: "preStaticConnectionTemplates",
+    });
+    context.diagnostic(
+      `Upgraded restored prefix 88: ${catalogDigest(await migrationCatalog(staticUpgrade.migrator))}`,
+    );
+    assert.deepEqual(await runHistoryCommand(staticUpgrade, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
 
     // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
     const catalogRefusal = /catalog objects or effective grants differ/;
@@ -2699,6 +2733,7 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     // Prefixes 63 to 74 are not listed, so the guard starts at 75.
     for (const [prefix, history] of await coveringNewestPrefix("rollback", 75, [
       [0, "empty"],
@@ -2751,9 +2786,10 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
-      [88, "preAgentAutomations"],
+      [88, "preStaticConnectionTemplates"],
+      [89, "preAgentAutomations"],
     ])) {
-      void context.test(`prefix ${prefix} transaction`, async (child) => {
+      const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
         if (prefix) {
           await seedCanonicalData(db, {
@@ -2811,8 +2847,13 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
-        } else if (prefix === 88) {
+        } else if (prefix === 89) {
+          // Abort 0090 after it has created the automation table.
           failAt = "IF to_regclass('occ.agent_automations') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 88) {
+          // Abort 0089 after it has created the static version table and its current-version FK.
+          failAt =
+            "IF to_regclass('occ.static_key_template_versions') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 87) {
           // Abort 0088 after its new validator functions exist, before it replaces constraints.
           failAt =
@@ -2868,7 +2909,9 @@ test(
         });
         await assertCompletedHistory(db, before.receipts);
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 

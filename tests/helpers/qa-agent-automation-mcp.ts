@@ -560,7 +560,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       // Source filters run before Gateway/Agent subsets. The peer really exposes blocked_probe;
       // its own prefixed selector must not select that operation under another alias.
       await refuseDedicatedCandidate("source-selector", (values) => {
-        values.mcp.servers.blocked.toolFilter.include.push("BlOcKeD__blocked_probe");
+        values.mcp.servers.blocked.toolFilter.include.push("blocked__blocked_probe");
       });
       // Codex also reserves the complete mcp__ allocation namespace before those subsets.
       await refuseDedicatedCandidate("reserved-namespace", (values) => {
@@ -1301,7 +1301,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     ];
     if (agent.preset === "OpenClaw") {
       invalid.unshift([
-        "server-filter-alias-selector",
+        "server-filter-alias-selector-casefold",
         (values) => {
           // Embedded deployment must preserve an active grant when the candidate source
           // filter contains its own alias selector, even though that server is disallowed.
@@ -1329,7 +1329,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     }
     const deployPath = `/namespaces/${agent.namespaceId}/agents/${agent.id}/deploy`;
     for (const [name, mutate] of invalid) {
-      const sourceSelector = name === "server-filter-alias-selector";
+      const sourceSelector = name === "server-filter-alias-selector-casefold";
       const jobsBefore = sourceSelector ? await nativeJobs() : undefined;
       const callsBefore = sourceSelector ? (await collect()).length : undefined;
       const values = structuredClone(currentConfig.values);
