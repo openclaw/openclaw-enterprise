@@ -432,8 +432,11 @@ test(
                       );
                       const { verifyQaAgentAutomationMcp } =
                         await import("../helpers/qa-agent-automation-mcp.ts");
-                      await step("approved MCP ordinary and scheduled authority parity", () =>
-                        verifyQaAgentAutomationMcp(f, agent),
+                      await step(
+                        agent.preset === "Codex"
+                          ? "dedicated MCP scheduling refusal without native mutation"
+                          : "approved MCP ordinary and scheduled authority parity",
+                        () => verifyQaAgentAutomationMcp(f, agent),
                       );
                     },
                   ],

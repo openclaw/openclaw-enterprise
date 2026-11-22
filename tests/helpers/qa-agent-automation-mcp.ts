@@ -319,8 +319,49 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     return calls.slice(priorControlCalls);
   }
   const failures: unknown[] = [];
-  try {
+  async function workflow() {
     await configure();
+    if (agent.preset === "Codex") {
+      assert.ok(networkPeer);
+      native = await observer();
+      const inventory = async () => {
+        const page = await native!.client.request<{ jobs: unknown[] }>("cron.list", {
+          includeDisabled: true,
+          includeDeliveryPreviews: false,
+          limit: 200,
+          offset: 0,
+        });
+        return page.jobs
+          .map((value) => {
+            const job = asRecord(value);
+            assert.equal(typeof job?.id, "string");
+            return { id: job!.id as string, declarationKey: job?.declarationKey ?? null };
+          })
+          .sort((left, right) => left.id.localeCompare(right.id));
+      };
+      // Dedicated model-only scheduling is proved by the preceding matrix stage. A
+      // configured nonempty MCP grant must fail explicitly before native mutation.
+      const jobsBefore = await inventory();
+      const callsBefore = (await networkPeer.read()).length;
+      const refused = await request("POST", "", input("Dedicated MCP must not silently downgrade"));
+      assert.equal(refused.status, 503, "dedicated MCP creation must fail closed");
+      assert.equal(refused.errorCode, "AUTOMATIONS_UNQUALIFIED");
+      assert.equal(refused.data, undefined, "a refused grant cannot return a downgraded job");
+      assert.deepEqual(await inventory(), jobsBefore, "refusal must not create a native cron job");
+      assert.equal(
+        (await networkPeer.read()).length,
+        callsBefore,
+        "refusal must not call the peer",
+      );
+      await f.record(`automations-${agent.id}-dedicated-mcp-refused`, {
+        status: refused.status,
+        errorCode: refused.errorCode,
+        nativeInventoryUnchanged: true,
+        peerCallsUnchanged: true,
+        silentDowngrade: false,
+      });
+      return;
+    }
     if (agent.preset === "OpenClaw") {
       assert.ok(networkPeer);
       const configPath = `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`;
@@ -999,6 +1040,9 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       serviceRevocationDeniedCalls: deniedCalls.length,
       deletedJobNoDispatch: true,
     });
+  }
+  try {
+    await workflow();
   } catch (error) {
     failures.push(error);
   }
