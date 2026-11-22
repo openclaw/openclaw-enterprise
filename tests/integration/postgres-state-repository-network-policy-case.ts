@@ -3,7 +3,7 @@ import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mj
 import pg from "pg";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
@@ -18,6 +18,7 @@ import {
   type SandboxPolicySnapshot,
 } from "../../packages/contracts/src/index.ts";
 import {
+  AuthorizationDeniedError,
   InMemoryPlatformState,
   ScopeViolationError,
   type PlatformStateStore,
@@ -690,6 +691,118 @@ export async function editStoredRepositoryGrants(
   assert.deepEqual(await stored(), cleared);
 }
 
+export async function rejectStaleRepositoryPolicySave(
+  t: TestContext,
+  fixture: PolicyApp,
+  label: string,
+): Promise<void> {
+  const { pool, inject, controller, principal } = fixture;
+  const {
+    rows: [settings],
+  } = await pool.query<{ isolation: string }>(
+    "SELECT current_setting('default_transaction_isolation') AS isolation",
+  );
+  assert.equal(settings?.isolation, "repeatable read");
+
+  for (const route of ["HTTP PUT", "direct OCC"] as const) {
+    await t.test(route, async (caseContext) => {
+      const { namespace, agent, path, seed, stored } = await policyEditor(fixture);
+      const original = await seed();
+      const save = async () => {
+        if (route === "HTTP PUT") {
+          const reply = await inject("PUT", path, {
+            expectedVersion: original.version,
+            additions: [],
+            repositoryNetworkPolicy: [],
+          });
+          if (reply.statusCode === 403) {
+            assert.equal(reply.json().error.code, "FORBIDDEN");
+          }
+          return reply.statusCode;
+        }
+        try {
+          await controller.updateAgentSandboxPolicy(
+            principal.id,
+            namespace.id,
+            agent.id,
+            "networking",
+            original.version,
+            [],
+            [],
+          );
+          return 200;
+        } catch (error) {
+          if (error instanceof AuthorizationDeniedError) {
+            assert.deepEqual(error.authorization, {
+              action: "update",
+              resource: { kind: "sandbox_policy", id: original.id, namespaceId: namespace.id },
+            });
+            return 403;
+          }
+          throw error;
+        }
+      };
+      const auditCount = async () => {
+        const { rows } = await pool.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM occ.audit_events
+           WHERE namespace_id=$1 AND resource_kind='sandbox_policy'
+             AND resource_id=$2 AND outcome='success'`,
+          [namespace.id, original.id],
+        );
+        return rows[0]!.count;
+      };
+      const beforeAudit = await auditCount();
+      const writer = await pool.connect();
+      let pending: ReturnType<typeof save> | undefined;
+      try {
+        await writer.query("BEGIN");
+        const {
+          rows: [blocker],
+        } = await writer.query<{ pid: number }>(
+          "SELECT pg_backend_pid() AS pid, pg_advisory_xact_lock(hashtextextended($1, 0))",
+          ["occ:iam-configuration"],
+        );
+        assert.ok(blocker);
+
+        // A request blocked behind a real IAM writer must see the committed restriction.
+        pending = save();
+        void pending.catch(() => {});
+        await waitUntil("the scoped save waits for the IAM configuration writer", async () => {
+          const result = await pool.query(
+            `SELECT 1 FROM pg_locks locks JOIN pg_stat_activity activity USING (pid)
+             WHERE locks.locktype='advisory' AND NOT locks.granted
+               AND activity.application_name=$1 AND $2=ANY(pg_blocking_pids(locks.pid))`,
+            [label, blocker.pid],
+          );
+          return result.rowCount === 1;
+        });
+        await writer.query(
+          `INSERT INTO occ.iam_restrictions
+           (id, namespace_id, action, resource_kind, resource_id, effect)
+           VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+          [`restriction-${randomUUID()}`, namespace.id, original.id],
+        );
+        await writer.query("COMMIT");
+      } catch (error) {
+        await writer.query("ROLLBACK");
+        throw error;
+      } finally {
+        writer.release();
+      }
+
+      const outcome = await pending;
+      const observed = await stored();
+      const afterAudit = await auditCount();
+      caseContext.diagnostic(
+        `${route}: outcome=${outcome}, persisted version ${original.version} → ${observed.version}, success audits added=${afterAudit - beforeAudit}`,
+      );
+      assert.equal(outcome, 403);
+      assert.deepEqual(observed, original);
+      assert.equal(afterAudit, beforeAudit);
+    });
+  }
+}
+
 export async function verifyScopedDeploymentTransition(
   fixture: PolicyApp & { sandboxDriver: SandboxDriver },
 ) {
@@ -786,10 +899,8 @@ export async function verifyScopedDeploymentTransition(
   }
 }
 
-export async function verifyChannelPolicyHandoff(
-  fixture: PolicyApp & { sandboxDriver: SandboxDriver },
-) {
-  const { inject, state, computeDriver, sandboxDriver, controller } = fixture;
+async function createScopedDeployment(fixture: PolicyApp) {
+  const { inject, state } = fixture;
   const starter = await fixture.deployAgent("setup");
   const { namespace, secretRef } = starter;
   const root = "/namespaces/" + namespace.id;
@@ -823,6 +934,19 @@ export async function verifyChannelPolicyHandoff(
       p.version,
     );
   });
+  return {
+    namespace,
+    agent,
+    source,
+    deploy: () => inject("POST", root + "/agents/" + agent.id + "/deploy"),
+  };
+}
+
+export async function verifyChannelPolicyHandoff(
+  fixture: PolicyApp & { sandboxDriver: SandboxDriver },
+) {
+  const { state, computeDriver, sandboxDriver, controller } = fixture;
+  const { namespace, agent, source, deploy } = await createScopedDeployment(fixture);
   const { pool } = fixture;
   const writer = await pool.connect();
   const pid = (await writer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
@@ -883,7 +1007,6 @@ export async function verifyChannelPolicyHandoff(
     }
   };
   try {
-    const deploy = () => inject("POST", root + "/agents/" + agent.id + "/deploy");
     const reply = await deploy();
     assert.ok(revoked);
     assert.equal(reply.statusCode, 403, reply.body);
@@ -901,6 +1024,83 @@ export async function verifyChannelPolicyHandoff(
       await revocation;
     } finally {
       writer.release();
+    }
+  }
+}
+
+export async function verifyDeploymentAuthorityAfterWait(
+  fixture: PolicyApp,
+  boundary: "channel" | "admission",
+): Promise<void> {
+  const { state, pool, controller, computeDriver } = fixture;
+  const { namespace, agent, source, deploy } = await createScopedDeployment(fixture);
+  const writer = await pool.connect();
+  let response: ReturnType<typeof deploy> | undefined;
+  let channelCalls = 0;
+  let computeChecks = 0;
+  try {
+    const {
+      rows: [session],
+    } = await writer.query<{ pid: number; isolation: string }>(
+      "SELECT pg_backend_pid() AS pid, current_setting('default_transaction_isolation') AS isolation",
+    );
+    assert.ok(session);
+    assert.equal(session.isolation, "repeatable read");
+    await writer.query("BEGIN");
+    await writer.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      "occ:iam-configuration",
+    ]);
+
+    if (boundary === "channel") {
+      const channel = new SlackChannelDriver(async () =>
+        assert.fail("Unexpected provider request"),
+      );
+      channel.validateCredentials = async (_values, use) => {
+        await use("CHANNEL_TOKEN", "channel", async () => {
+          channelCalls += 1;
+        });
+      };
+      controller.registerDriver(channel);
+      controller.selectDriver("channel", channel.id);
+    }
+    Object.assign(computeDriver, {
+      validateProtectedRepositoryNetworkPolicy: async () => {
+        computeChecks += 1;
+      },
+    });
+    response = deploy();
+    // The reader must already be blocked by this exact writer before the revocation commits.
+    await waitFor("deployment waits for the IAM writer", async () => {
+      const { rowCount } = await pool.query(
+        `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+           AND $1 = ANY(pg_blocking_pids(pid))`,
+        [session.pid],
+      );
+      return rowCount === 1 || undefined;
+    });
+    const [action, kind, id] =
+      boundary === "channel" ? ["operate", "secret", source.id] : ["deploy", "agent", agent.id];
+    await writer.query(
+      `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
+       VALUES ($1, $2, $3, $4, $5, 'deny')`,
+      [`restriction-${randomUUID()}`, namespace.id, action, kind, id],
+    );
+    await writer.query("COMMIT");
+    const result = await response;
+    const revisions = await state.read((view) =>
+      view.revisions.listRevisionMetadata(namespace.id, agent.id),
+    );
+    assert.deepEqual(
+      { channelCalls, computeChecks, status: result.statusCode, revisionCount: revisions.length },
+      { channelCalls: 0, computeChecks: 0, status: 403, revisionCount: 0 },
+    );
+    assert.equal(result.json().error.code, "FORBIDDEN");
+  } finally {
+    try {
+      await writer.query("ROLLBACK");
+    } finally {
+      writer.release();
+      await response;
     }
   }
 }

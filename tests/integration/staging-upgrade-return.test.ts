@@ -897,6 +897,7 @@ test(
       });
       response.setHeader("x-request-id", requestId);
       response.setHeader("x-private-fixture", privateBytes);
+      response.setHeader("x-oce-rehearsal-upstream-reused", "1");
       switch (observedRequests.length) {
         case 1:
           response.end(
@@ -983,6 +984,7 @@ test(
             startedAt: string;
             finishedAt: string;
             requestId?: string;
+            upstreamSocketReused?: boolean;
             elapsedMs: number;
             gapMs: number | null;
             startGapMs: number | null;
@@ -1056,6 +1058,8 @@ test(
     );
     assert.equal(evidence.samples[0]?.requestId, requestId);
     assert.ok(evidence.samples.slice(1).every((sample) => !("requestId" in sample)));
+    assert.equal(evidence.samples[0]?.upstreamSocketReused, true);
+    assert.ok(evidence.samples.slice(1).every((sample) => !("upstreamSocketReused" in sample)));
     assert.equal(evidence.samples[0]?.gapMs, null);
     for (const sample of evidence.samples) {
       assert.ok(Number.isFinite(Date.parse(sample.startedAt)));
@@ -1341,11 +1345,13 @@ test("upgrade availability preserves action and evidence-write failures", async 
   const key = `fixture-service-key-${randomUUID()}`;
   // Even matching IDs must have the controller-generated UUIDv4 shape.
   const malformedId = "req_00000000-0000-1000-8000-000000000000";
+  const validId = `req_${randomUUID()}`;
+  let requestId = malformedId;
+  let reuseHeader = "1";
   const server = createServer(tls, (_incoming, response) => {
-    response.setHeader("x-request-id", malformedId);
-    response.end(
-      JSON.stringify({ data: { id: "original-installation" }, meta: { requestId: malformedId } }),
-    );
+    response.setHeader("x-request-id", requestId);
+    response.setHeader("x-oce-rehearsal-upstream-reused", reuseHeader);
+    response.end(JSON.stringify({ data: { id: "original-installation" }, meta: { requestId } }));
   });
   const port = await listen(t, server);
   const request = createProductionTuiRequest({
@@ -1389,10 +1395,10 @@ test("upgrade availability preserves action and evidence-write failures", async 
     },
   );
   assert.equal(recorded, true);
-  const failedSnapshot = JSON.parse(
-    await readFile(join(directory, "forward-api-availability.json"), "utf8"),
-  );
+  const snapshotPath = join(directory, "forward-api-availability.json");
+  const failedSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
   assert.ok(!JSON.stringify(failedSnapshot).includes(malformedId));
+  assert.ok(failedSnapshot.samples.every((sample: object) => !("upstreamSocketReused" in sample)));
   assert.equal(failedSnapshot.upgradeSucceeded, false);
   assert.equal(failedSnapshot.complete, true);
   assert.equal(failedSnapshot.cadence.complete, true);
@@ -1439,6 +1445,8 @@ test("upgrade availability preserves action and evidence-write failures", async 
       },
     );
   }
+  requestId = validId;
+  reuseHeader = "0";
   await assert.rejects(
     measureUpgradeAvailability(
       request,
@@ -1451,6 +1459,11 @@ test("upgrade availability preserves action and evidence-write failures", async 
     ),
     (error: unknown) => error === upgradeFailure,
   );
+  const freshSocketSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.equal(freshSocketSnapshot.samples[0]?.requestId, validId);
+  assert.equal(freshSocketSnapshot.samples[0]?.upstreamSocketReused, false);
+
+  reuseHeader = "true";
   await assert.rejects(
     measureUpgradeAvailability(
       request,
@@ -1463,6 +1476,9 @@ test("upgrade availability preserves action and evidence-write failures", async 
     ),
     (error: unknown) => error === recordFailure,
   );
+  const malformedHeaderSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.equal(malformedHeaderSnapshot.samples[0]?.requestId, validId);
+  assert.ok(!("upstreamSocketReused" in malformedHeaderSnapshot.samples[0]));
 });
 
 test(

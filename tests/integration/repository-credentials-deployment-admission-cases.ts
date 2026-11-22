@@ -149,6 +149,124 @@ function checkedEnvelope<Schema extends TSchema>(
   return body;
 }
 
+export async function verifyRepositoryPolicyWriteProjection(
+  fixture: Composition & {
+    readonly namespace: { readonly id: string };
+    readonly configuration: { readonly id: string };
+    readonly iamState: Parameters<typeof grantRole>[0];
+    requestWithoutGrants(app: App, grant: (principalId: string) => void): Promise<Request>;
+  },
+  editableAgent: () => Promise<{
+    readonly policyPath: string;
+  }>,
+  sourceId: string,
+  grant: RepositoryNetworkGrant,
+) {
+  const absent = await editableAgent();
+  const present = await editableAgent();
+  const read = async (path: string) =>
+    checkedEnvelope(await fixture.request("GET", path), SandboxPolicyViewResponse, 200).data.policy;
+  const original = await read(absent.policyPath);
+  const initial = await read(present.policyPath);
+  for (const policy of [original, initial]) {
+    assert.equal(Object.hasOwn(policy, "repositoryNetworkPolicy"), false);
+  }
+
+  // Grant read on the Agent, Configuration and Harness source, plus mutation
+  // on these two policies. Policy read remains unavailable to this account.
+  const edit = await fixture.requestWithoutGrants(fixture.app, (principalId) => {
+    const namespaceId = fixture.namespace.id;
+    for (const policy of [original, initial]) {
+      grantRole(fixture.iamState, principalId, {
+        id: "manage-" + policy.agentId,
+        namespaceId,
+        resource: { kind: "agent", id: policy.agentId },
+        permissions: { agent: ["read", "manage_policy"] },
+      });
+      grantRole(fixture.iamState, principalId, {
+        id: "update-" + policy.id,
+        namespaceId,
+        resource: { kind: "sandbox_policy", id: policy.id },
+        permissions: { sandbox_policy: ["update"] },
+      });
+    }
+    grantRole(fixture.iamState, principalId, {
+      id: "read-policy-configuration",
+      namespaceId,
+      resource: { kind: "configuration", id: fixture.configuration.id },
+      permissions: { configuration: ["read"] },
+    });
+    grantRole(fixture.iamState, principalId, {
+      id: "read-policy-source",
+      namespaceId,
+      resource: { kind: "credential_source", id: sourceId },
+      permissions: { credential_source: ["read"] },
+    });
+  });
+  assert.equal((await edit("GET", absent.policyPath)).status, 403);
+  assert.equal((await edit("GET", present.policyPath)).status, 403);
+
+  const update = (
+    path: string,
+    expectedVersion: number,
+    repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
+  ) =>
+    edit("PUT", path, {
+      expectedVersion,
+      additions: [],
+      ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
+    });
+  const saved = checkedEnvelope(
+    await update(present.policyPath, initial.version, [grant]),
+    SandboxPolicyResponse,
+    200,
+  ).data;
+  assert.deepEqual(saved.repositoryNetworkPolicy, [grant]);
+  // Align versions with ordinary saves and check that the response omits both
+  // an absent list and the existing list, which this caller cannot read.
+  const omitted = checkedEnvelope(
+    await update(present.policyPath, saved.version),
+    SandboxPolicyResponse,
+    200,
+  ).data;
+  assert.equal(Object.hasOwn(omitted, "repositoryNetworkPolicy"), false);
+  const advance = checkedEnvelope(
+    await update(absent.policyPath, original.version),
+    SandboxPolicyResponse,
+    200,
+  ).data;
+  const omittedAbsent = checkedEnvelope(
+    await update(absent.policyPath, advance.version),
+    SandboxPolicyResponse,
+    200,
+  ).data;
+  assert.equal(Object.hasOwn(omittedAbsent, "repositoryNetworkPolicy"), false);
+  assert.equal(omittedAbsent.version, omitted.version);
+
+  const before = await read(absent.policyPath);
+  const existing = await read(present.policyPath);
+  assert.equal(Object.hasOwn(before, "repositoryNetworkPolicy"), false);
+  assert.deepEqual(existing.repositoryNetworkPolicy, [grant]);
+  const first = checkedEnvelope(
+    await update(absent.policyPath, before.version, []),
+    ErrorResponse,
+    403,
+    "first deny-all save without SandboxPolicy read",
+  ).error;
+  const withdrawal = checkedEnvelope(
+    await update(present.policyPath, existing.version, []),
+    ErrorResponse,
+    403,
+    "withdrawal without SandboxPolicy read",
+  ).error;
+  assert.deepEqual(
+    { ...first, message: first.message.replaceAll(before.id, "<policy>") },
+    { ...withdrawal, message: withdrawal.message.replaceAll(existing.id, "<policy>") },
+  );
+  assert.deepEqual(await read(absent.policyPath), before);
+  assert.deepEqual(await read(present.policyPath), existing);
+}
+
 function narrowRepositoryPolicy(
   registry: GitHubRepositoryRegistry,
   namespaceId: string,

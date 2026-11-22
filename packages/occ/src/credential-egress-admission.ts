@@ -59,7 +59,7 @@ export const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 
 interface CredentialEgressAdmissionDependencies {
-  readonly installationId: () => string;
+  readonly installationId: string;
   readonly authorize: (
     principalId: string,
     action: AuthorizationRequest["action"],
@@ -117,7 +117,7 @@ export function createCredentialEgressAdmission(
     return {
       source: immutableCopy({
         key: {
-          installationId: dependencies.installationId(),
+          installationId: dependencies.installationId,
           namespaceId,
           source: { id: sourceId, generation: 1 },
           provider: lifecycle.provider,
@@ -177,7 +177,7 @@ export function createCredentialEgressAdmission(
     await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
     return immutableCopy({
       key: {
-        installationId: dependencies.installationId(),
+        installationId: dependencies.installationId,
         namespaceId,
         source: { id: sourceId, generation: 1 },
         provider: credentialFreeProviderRef,
@@ -311,7 +311,7 @@ export function createCredentialEgressAdmission(
     }
     return immutableCopy({
       key: {
-        installationId: dependencies.installationId(),
+        installationId: dependencies.installationId,
         namespaceId,
         source: { id: sourceId, generation },
         backend: control.backend,
@@ -454,7 +454,7 @@ export function createCredentialEgressAdmission(
     }
     const modelId = typeof model === "string" ? model.slice(model.indexOf("/") + 1) : "";
     const execution = {
-      installationId: dependencies.installationId(),
+      installationId: dependencies.installationId,
       namespaceId: agent.namespaceId,
       agentId: agent.id,
       servicePrincipalId: agent.servicePrincipalId,

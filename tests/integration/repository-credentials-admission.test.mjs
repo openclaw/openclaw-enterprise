@@ -18,6 +18,7 @@ import {
   registerProtectedRepositoryPolicyDeploymentCase,
   registerRepositoryCredentialsDeploymentAdmissionCases,
   selectedRepositoryRegistry,
+  verifyRepositoryPolicyWriteProjection,
 } from "./repository-credentials-deployment-admission-cases.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
@@ -280,7 +281,7 @@ async function fixture(
     controllerOptions = {},
     extraRepositories = [],
     installationAccess = false,
-    bindRepositoryAdmission = false,
+    repositoryAdmission,
     configureRegistry,
   } = {},
 ) {
@@ -334,17 +335,18 @@ async function fixture(
     };
     const repository = registry === undefined ? undefined : repositoryDriver(registry, Driver);
     const controller =
-      bindRepositoryAdmission && repository !== undefined
+      repositoryAdmission !== undefined && repository !== undefined
         ? OpenClawController.forInstallation(installation, options, {
             policy: repository,
             backendId,
+            ...(repositoryAdmission === "built-in" && { policyMode: "built-in" }),
           })
         : new OpenClawController(installation, options);
     for (const driver of [iam, compute, configurationDriver, secretDriver]) {
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
     }
-    if (repository !== undefined) {
+    if (repository !== undefined && repositoryAdmission !== "built-in") {
       controller.registerDriver(repository);
       controller.selectDriver(repository.capability, repository.id);
     }
@@ -366,7 +368,7 @@ async function fixture(
     t.after(() => app.close());
     /** @type {AdmissionRequest} */
     const request = await createAuthenticatedControllerRequest(app, auth);
-    return { controller, request, app };
+    return { controller, request, app, repository };
   }
 
   const initial = await compose();
@@ -440,15 +442,21 @@ async function fixture(
   }
 
   // A signed-in person with no grant at all, for answers that must not depend on existence.
-  /** @param {AdmissionApp} app @returns {Promise<AdmissionRequest>} */
-  async function requestWithoutGrants(app) {
+  /**
+   * @param {AdmissionApp} app
+   * @param {(principalId: string) => void} [grant]
+   * @returns {Promise<AdmissionRequest>}
+   */
+  async function requestWithoutGrants(app, grant) {
     const credentials = {
       email: `outsider-${randomUUID()}@example.com`,
       password: `outsider-password-${randomUUID()}`,
       name: "Outsider",
     };
     const account = await auth.auth.createAccount(credentials);
-    iamState.identities.push(auth.auth.principalSeed(account, { grant: "none" }).principal);
+    const { principal } = auth.auth.principalSeed(account, { grant: "none" });
+    iamState.identities.push(principal);
+    grant?.(principal.id);
     return createAuthenticatedControllerRequest(app, credentials);
   }
 
@@ -903,7 +911,7 @@ test("the SandboxPolicy read shows only current Namespace repository approvals",
   assert.ok(loaded);
   const f = await fixture(t, {
     harness: "codex",
-    bindRepositoryAdmission: true,
+    repositoryAdmission: "selected",
     extraRepositories: ["manual"],
     controllerOptions: {
       ...installationControllerOptions(loaded.installation),
@@ -975,6 +983,14 @@ test("the SandboxPolicy read shows only current Namespace repository approvals",
     assert.equal(rejected.status, 200, JSON.stringify(rejected));
     assert.deepEqual(rejected.data.repositoryNetworkPolicyCeiling, [], "async rejection");
 
+    approval.mock.mockImplementation(() => {
+      throw new Error("synthetic private approval diagnostic");
+    });
+    const failed = await f.request("GET", policyPath);
+    assert.equal(failed.status, 200);
+    assert.deepEqual(failed.data.repositoryNetworkPolicyCeiling, [], "synchronous exception");
+    assert.equal(JSON.stringify(failed).includes("synthetic private approval diagnostic"), false);
+
     const sentinel = "synthetic-private-repository-driver-diagnostic";
     approval.mock.mockImplementation(() => {
       throw new SandboxNetworkPolicyConflictError(sentinel);
@@ -996,6 +1012,48 @@ test("the SandboxPolicy read shows only current Namespace repository approvals",
     assert.deepEqual(replaced.data.repositoryNetworkPolicyCeiling, [], "method replacement");
   } finally {
     restoreApproval();
+  }
+});
+
+test("the SandboxPolicy read preserves saved grants when the built-in repository owner fails", async (t) => {
+  const savedGrants = [{ repository: "example/project", access: "read" }];
+  for (const ceiling of [savedGrants, []]) {
+    await t.test(ceiling.length ? "configured ceiling" : "empty ceiling", async (t) => {
+      const f = await fixture(t, {
+        repositoryAdmission: "built-in",
+        controllerOptions: { repositoryNetworkPolicyCeiling: ceiling },
+      });
+      const agent = await f.createAgent();
+      const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+      // This controller can read saved grants from a compatible writer but cannot create them.
+      await f.state.transact(async (unit) => {
+        const policy = await unit.sandboxPolicies.find(f.namespace.id, agent.id);
+        assert.ok(policy);
+        const saved = {
+          ...policy,
+          version: policy.version + 1,
+          repositoryNetworkPolicy: savedGrants,
+        };
+        assert.deepEqual(await unit.sandboxPolicies.save(saved, policy.version), saved);
+      });
+      const initial = await f.request("GET", policyPath);
+      assert.equal(initial.status, 200, JSON.stringify(initial));
+      assert.deepEqual(initial.data.repositoryNetworkPolicyCeiling, ceiling);
+      assert.deepEqual(initial.data.policy.repositoryNetworkPolicy, savedGrants);
+      assert.equal(initial.data.repositoryNetworkPolicySaveSupported, true);
+
+      const privateDiagnostic = "synthetic private repository owner diagnostic";
+      const resolve = t.mock.fn(() => {
+        throw new Error(privateDiagnostic);
+      });
+      // Break contract introspection after the actual owner has been bound and validated.
+      Object.defineProperty(f.repository, "resolve", { get: resolve });
+      const current = await f.request("GET", policyPath);
+      assert.equal(current.status, 200, JSON.stringify(current));
+      assert.deepEqual(current.data, { ...initial.data, repositoryNetworkPolicyCeiling: [] });
+      assert.equal(JSON.stringify(current).includes(privateDiagnostic), false);
+      assert.equal(resolve.mock.callCount(), ceiling.length ? 1 : 0);
+    });
   }
 });
 
@@ -1205,6 +1263,7 @@ async function protectedOpenShellComposition(
     runtimeAuthCompute = false,
     inspected = false,
     repositoryNetworkPolicyCeiling,
+    repositoryAdmission = repositoryNetworkPolicyCeiling === undefined ? undefined : "selected",
     configureRegistry,
   } = {},
 ) {
@@ -1242,7 +1301,7 @@ async function protectedOpenShellComposition(
       .map(({ repositoryRef }) => repositoryRef)
       .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
     installationAccess,
-    bindRepositoryAdmission: repositoryNetworkPolicyCeiling !== undefined,
+    repositoryAdmission,
     configureRegistry,
   });
   let sandbox = repositorySandbox(
@@ -1393,6 +1452,7 @@ test("first repository policy save requires affirmative admission of the exact d
   const f = await protectedOpenShellComposition(t, {
     bindings,
     configureRegistry: selectedRepositoryRegistry("write"),
+    repositoryAdmission: "built-in",
     installedProfile: "repository",
     credentialGateway: true,
     repositoryNetworkPolicyCeiling: [{ ...grant, access: "write" }],
@@ -1509,7 +1569,8 @@ test("first repository policy save requires affirmative admission of the exact d
   assert.equal((await put([grant])).status, 409);
   assert.equal(admit.mock.callCount(), admissionsBeforeDrift);
   f.controller.selectDriver("compute", selectedCompute.id);
-  const repo = f.controller.selectedDriver("repo");
+  const repo = f.repository;
+  assert.ok(repo);
   const allows = repo.repositoryNetworkPolicyAllows.bind(repo);
   const approval = repo.repositoryNetworkPolicyAllows;
   repo.repositoryNetworkPolicyAllows = (input) => {
@@ -1544,6 +1605,34 @@ test("first repository policy save requires affirmative admission of the exact d
     return refused;
   }
 
+  await t.test("first-save hint is unavailable if the built-in Repo owner fails", async () => {
+    const edit = await editableAgent();
+    const before = await f.request("GET", edit.policyPath);
+    assert.equal(before.status, 200);
+    assert.equal(before.data.repositoryNetworkPolicySaveSupported, true);
+    assert.equal(Object.hasOwn(before.data.policy, "repositoryNetworkPolicy"), false);
+
+    const sentinel = "synthetic private repository owner diagnostic";
+    const resolve = t.mock.fn(() => {
+      throw new Error(sentinel);
+    });
+    Object.defineProperty(repo, "resolve", { get: resolve, configurable: true });
+    try {
+      const configurationReads = read.mock.callCount();
+      const after = await f.request("GET", edit.policyPath);
+      assert.equal(after.status, 200, JSON.stringify(after));
+      assert.equal(JSON.stringify(after).includes(sentinel), false);
+      assert.deepEqual(after.data, {
+        ...before.data,
+        repositoryNetworkPolicyCeiling: [],
+        repositoryNetworkPolicySaveSupported: false,
+      });
+      assert.ok(resolve.mock.callCount() > 0);
+      assert.equal(read.mock.callCount(), configurationReads);
+    } finally {
+      Reflect.deleteProperty(repo, "resolve");
+    }
+  });
   await t.test("a Sandbox without protected artifact admission cannot opt in", async () => {
     const original = Object.getOwnPropertyDescriptor(sandbox, "admitProtectedCodexArtifactPolicy");
     Object.defineProperty(sandbox, "admitProtectedCodexArtifactPolicy", {
@@ -1605,6 +1694,13 @@ test("first repository policy save requires affirmative admission of the exact d
       f.controller.selectDriver("iam", iam.id);
     }
   });
+
+  await t.test(
+    "an update-only editor cannot distinguish a first empty list from withdrawal",
+    async () => {
+      await verifyRepositoryPolicyWriteProjection(f, editableAgent, source.data.id, grant);
+    },
+  );
 
   const artifactCheck = t.mock.method(sandbox, "admitProtectedCodexArtifactPolicy");
   const saved = await put([grant]);

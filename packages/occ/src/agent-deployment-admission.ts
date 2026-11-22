@@ -9,6 +9,8 @@ import {
   computeRepositoryPolicyAdmission,
   bindProtectedRepositoryPolicySandbox,
 } from "./deployment-policy.ts";
+import { validateRepositoryBrokerNetworkProxy } from "./repository-policy.ts";
+import { driverOperation } from "./driver-operation.ts";
 import { deploymentSandboxPolicy, type createSandboxPolicyOperations } from "./sandbox-policy.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -30,7 +32,6 @@ import {
   type PluginRevisionState,
   type ResourceKind,
   type ResourceRef,
-  type RevisionHarnessDescriptor,
   type SandboxDriver,
   type SecretDriver,
 } from "@openclaw-enterprise/contracts";
@@ -154,7 +155,6 @@ export interface DeploymentAdmissionDependencies {
     ReturnType<typeof createConfigurationOperations>,
     "authorizeBindings"
   >;
-  readonly driverOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly modelPolicyAgent: (
     mode: HarnessExecutionMode,
     resolveHarness: HarnessResolver,
@@ -165,11 +165,6 @@ export interface DeploymentAdmissionDependencies {
   >;
   readonly secretDriver: () => SecretDriver;
   readonly validateComputeConfiguration: (values: Readonly<OpenClawConfigurationDocument>) => void;
-  readonly validateRepositoryBrokerNetworkProxy: (
-    harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
-    configuration: Readonly<OpenClawConfigurationDocument>,
-    sandbox: SandboxDriver | undefined,
-  ) => void;
   readonly timestamp: () => string;
   readonly nextIdentifier: (kind: ResourceKind) => string;
   readonly egress: Pick<ReturnType<typeof createCredentialEgressAdmission>, "admitProxyPlan">;
@@ -204,7 +199,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     }
     const configurationDriver = dependencies.configurationDriver();
     const configuration = exactConfiguration(
-      await dependencies.driverOperation(() =>
+      await driverOperation(() =>
         configurationDriver.read({ id: metadata.id, namespaceId: agent.namespaceId }),
       ),
       metadata,
@@ -375,7 +370,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     preview = false,
   ) {
     namespaceIdentity(input.namespaceId);
-    return dependencies.transactions.transact(async (state) => {
+    const admit = async (state: PlatformUnitOfWork) => {
       await dependencies.authority.holdAuthority(state);
       const target: ResourceRef = {
         kind: "agent",
@@ -693,11 +688,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const admittedRepository = admitRepository();
       const resolvedRepositoryCredentials = admittedRepository?.credentials;
       if (resolvedRepositoryCredentials !== undefined) {
-        dependencies.validateRepositoryBrokerNetworkProxy(
-          revisionHarness,
-          admittedConfiguration,
-          sandbox,
-        );
+        validateRepositoryBrokerNetworkProxy(revisionHarness, admittedConfiguration, sandbox);
       }
       const repositoryCredentials =
         await dependencies.repositoryPolicy.applyRepositoryStandingApproval(
@@ -914,7 +905,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         await state.audit.append(auditEvent(result));
       }
       return result;
-    });
+    };
+    // Authorization after a lock wait must see IAM changes committed by the lock holder.
+    return dependencies.transactions.transact(admit, { readCommitted: true });
   }
 
   return admitAgentDeployment;

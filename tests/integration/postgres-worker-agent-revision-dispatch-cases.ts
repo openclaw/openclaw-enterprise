@@ -25,7 +25,7 @@ import type {
 } from "../helpers/postgres-worker-refused-candidate.ts";
 import { repositoryBoundary } from "../helpers/postgres-worker-revision-support.mjs";
 import type { createTestSecretDriver } from "../helpers/secret-driver.ts";
-import { waitFor, waitUntil } from "../helpers/wait-for.ts";
+import { waitFor, waitUntil, within } from "../helpers/wait-for.ts";
 
 interface DispatchFixture {
   admitInitialRevision: RevisionFixture["admitInitialRevision"];
@@ -34,6 +34,7 @@ interface DispatchFixture {
   revision: RevisionFixture["revision"];
   actor: RevisionFixture["actor"];
   compute: RevisionFixture["compute"];
+  createWorkerPool: RevisionFixture["createWorkerPool"];
   currentAgent: RevisionFixture["currentAgent"];
   expireClaim: RevisionFixture["expireClaim"];
   namespace: RevisionFixture["namespace"];
@@ -1229,6 +1230,143 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
             untouched ? "REVISION_ALREADY_ACTIVE" : "SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE",
           );
         }
+      },
+    );
+  }
+
+  for (const boundary of ["Compute binding", "exclusive predecessor stop"] as const) {
+    revisionTest(
+      `an IAM change committed during the lock wait prevents ${boundary}`,
+      async (fixture) => {
+        const owner = await fixture.agent("repository-policy-iam-lock", {
+          executionMode: "dedicated",
+        });
+        const { id: policyId, options } = await saveRepositoryPolicy(fixture, owner, []);
+        const previous = await fixture.revision(owner, 1, options);
+        const compute = computeSupportingRepositoryPolicy(fixture.compute);
+        await fixture.start({ ...compute, maintenanceIntervalMs: 3_600_000 });
+        await fixture.work(previous, "succeeded");
+        await fixture.stop();
+        const candidate = await fixture.revision(owner, 2, options);
+
+        // The first advisory-lock statement can freeze a Repeatable Read snapshot
+        // before the writer commits. Use the Worker's single connection to identify
+        // that wait in PostgreSQL before making the revocation visible.
+        const workerPool = fixture.createWorkerPool();
+        await workerPool.query("SET default_transaction_isolation = 'repeatable read'");
+        const {
+          rows: [worker],
+        } = await workerPool.query<{ pid: number; isolation: string }>(
+          "SELECT pg_backend_pid() AS pid, current_setting('default_transaction_isolation') AS isolation",
+        );
+        assert.equal(worker?.isolation, "repeatable read");
+
+        const paused = Promise.withResolvers<void>();
+        const resume = Promise.withResolvers<void>();
+        const exclusive = boundary === "exclusive predecessor stop";
+        const effects: string[] = [];
+        let validations = 0;
+        const writer = await fixture.observerPool.connect();
+        try {
+          await fixture.start(
+            {
+              ...compute,
+              maintenanceIntervalMs: 3_600_000,
+              ...(exclusive
+                ? { requiresStoppedPredecessors: () => true }
+                : {
+                    async bindAgent() {
+                      effects.push("bind");
+                    },
+                  }),
+              validateProtectedRepositoryNetworkPolicy() {
+                // For exclusive placement, let initial validation finish and pause
+                // at the validation just before preparation checks predecessors.
+                validations += 1;
+                if (validations === (exclusive ? 2 : 1)) {
+                  paused.resolve();
+                  return resume.promise;
+                }
+              },
+              async prepareRevision(revision, ctx) {
+                effects.push(`prepare:${revision.id}`);
+                return compute.prepareRevision(revision, ctx);
+              },
+              async stopRevision(revision) {
+                effects.push(`stop:${revision.id}`);
+                await compute.stopRevision(revision);
+              },
+            },
+            { pool: workerPool },
+          );
+          await within(paused.promise, `validation before ${boundary}`);
+          await writer.query("BEGIN");
+          const {
+            rows: [blocker],
+          } = await writer.query<{ pid: number }>(
+            "SELECT pg_backend_pid() AS pid, pg_advisory_xact_lock(hashtextextended($1, 0))",
+            ["occ:iam-configuration"],
+          );
+          assert.ok(blocker);
+          resume.resolve();
+          await waitUntil("Worker waits for the IAM configuration writer", async () => {
+            const { rowCount } = await fixture.observerPool.query(
+              `SELECT 1 FROM pg_locks
+             WHERE pid = $1 AND locktype = 'advisory' AND NOT granted
+               AND $2 = ANY(pg_blocking_pids(pid))`,
+              [worker.pid, blocker.pid],
+            );
+            return rowCount === 1;
+          });
+          await writer.query(
+            `INSERT INTO occ.iam_restrictions
+             (id, namespace_id, action, resource_kind, resource_id, effect)
+           VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+            [`restriction-${randomUUID()}`, fixture.namespace.id, policyId],
+          );
+          await writer.query("COMMIT");
+        } catch (error) {
+          await writer.query("ROLLBACK");
+          throw error;
+        } finally {
+          resume.resolve();
+          writer.release();
+        }
+
+        const result = await settledRevision(fixture, candidate);
+        const denied = await fixture.observerPool.query<{ authorization: unknown }>(
+          `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+         FROM occ.audit_events WHERE namespace_id = $1 AND kind = 'authorization_denial'`,
+          [fixture.namespace.id],
+        );
+        assert.deepEqual(
+          {
+            state: result.state,
+            reason: result.reasonCode,
+            effects,
+            active: (await fixture.currentAgent(owner))?.activeRevisionId,
+            denials: denied.rows,
+          },
+          {
+            state: "failed_permanent",
+            reason: "AUTHORIZATION_DENIED",
+            effects: [],
+            active: previous.id,
+            denials: [
+              {
+                authorization: {
+                  principalId: fixture.actor.id,
+                  action: "update",
+                  resource: {
+                    kind: "sandbox_policy",
+                    id: policyId,
+                    namespaceId: fixture.namespace.id,
+                  },
+                },
+              },
+            ],
+          },
+        );
       },
     );
   }

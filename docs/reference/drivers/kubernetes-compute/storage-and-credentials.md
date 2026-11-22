@@ -55,9 +55,13 @@ RWO guarantees neither SQLite compatibility nor exclusive Gateway access.
 Replacement uses one replica with `Recreate`. After a node partition or forced
 replacement, fence the old writer before allowing another.
 
-A stop deletes the Gateway and waits for its Pod to disappear before stopping the
-Harness, which finishes active work meanwhile; a refused candidate's stop deletes
-both at once. Gateways get up to 330 seconds to drain and clean up. If OpenClaw
+With a dedicated Harness, an ordinary stop deletes the Gateway and waits for
+its Pod to disappear before stopping the Harness. For a refused candidate,
+the Driver stops the dedicated Harness before waiting for the Gateway Pod to
+disappear. An embedded Harness stops with the Gateway. Shutdown can interrupt
+active work.
+
+Gateways get up to 330 seconds to drain and clean up. If OpenClaw
 exits non-zero, as when stopped during startup, its running container releases
 its locks; force-terminated or killed after that grace, the container leaves
 them and an owner lease, which the next Pod cannot verify.
@@ -86,6 +90,9 @@ Only the Gateway Pod mounts these writable directories:
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
 These directories persist across Gateway replacement.
+
+If an earlier Pod lost a Skill Library bundle, follow
+[recover a missing Skill Library bundle](../../../guides/topics/remote-harness.md#recover-a-missing-skill-library-bundle).
 
 Back up `state/openclaw.sqlite` with its matching `client/credentials.sqlite`.
 Restore both at their original configured paths with private ownership and

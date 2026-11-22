@@ -41,9 +41,10 @@ service principal. Grant `read_logs` and `read_audit` separately.
 
 SandboxPolicy reads and discovery require Agent `read`. Preview, save, and live
 application require Agent `manage_policy` and enabled editing. Live application also
+requires SandboxPolicy `read`. Saving an explicit empty repository network policy list
 requires SandboxPolicy `read`. Ordinary deployment and fresh first deployment
 require SandboxPolicy `read` for saved network policy additions or an explicit
-repository network policy list, even an empty list. Deploying an explicit list
+[repository network policy list](../sandbox-policies.md#repository-network-policy), even an empty list. Deploying an explicit list
 also requires Agent `manage_policy` and SandboxPolicy `update` on the exact
 resources. An Agent update that leaves
 repository bindings requires SandboxPolicy `read` when saved additions exist.
