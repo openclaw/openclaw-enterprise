@@ -97,6 +97,7 @@ type AgentDetailScenario = {
   cleanupCompletes?: true;
   bootstrapRuntime?: true;
   harness?: AgentRuntimeHarnessStatus;
+  harnessAfterFirstRead?: AgentRuntimeHarnessStatus;
   agentName?: string;
   mobile?: true;
   clipboard?: "unavailable";
@@ -1940,7 +1941,7 @@ export function createAgentDetailScenarios({
       sandboxLost: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox lost",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "lost", code: "SANDBOX_STOPPED" },
         description:
@@ -1954,16 +1955,23 @@ export function createAgentDetailScenarios({
       sandboxRunning: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox running",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "running" },
+        harnessAfterFirstRead: { state: "lost", code: "SANDBOX_STOPPED" },
         description:
-          "A healthy Sandbox carries no warning: Live serving stays Not verified, with Sandbox running under it.",
+          "Returning to the Agent refreshes the Sandbox record for the same active version.",
+        steps: [
+          "Confirm Live serving shows Not verified with Sandbox running below it.",
+          "Switch to another window and return without reloading the story.",
+          "Confirm the same Agent and version show Sandbox lost and Deploy a new version.",
+        ],
+        gap: "The Sandbox records are simulated.",
       },
       sandboxStatusUnknown: {
         group: "Pages/Agent detail",
         name: "Sandbox status unknown",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "unknown", code: "UNAVAILABLE" },
         description:

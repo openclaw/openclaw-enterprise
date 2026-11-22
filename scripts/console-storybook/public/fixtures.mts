@@ -8,6 +8,7 @@ import type {
   SecretMetadata,
   AgentRuntimeContainerStatus,
   AgentRuntimePodStatus,
+  AgentRuntimeHarnessStatus,
   AgentRuntimeEvent,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
@@ -73,6 +74,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     nativeAdminReason?: "not-enabled" | "configuration" | "compute";
     nativeAdminUrl?: string;
     harness?: unknown;
+    harnessAfterFirstRead?: AgentRuntimeHarnessStatus;
     runtimeImages?: unknown;
     runtimePod?: string;
     diagnosticsState?: string;
@@ -195,6 +197,7 @@ const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_dem
 export function installFixture(scenario: FixtureScenario, evidence: FixtureEvidence) {
   const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
+  let harnessStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
   if (scenario.pendingOidcAttempt) {
@@ -934,13 +937,17 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (suffix === "/harness-status" && method === "GET") {
           // A scenario's harness answers for the current version, as OCC reads it.
+          const harness =
+            harnessStatusReads++ > 0
+              ? (scenario.harnessAfterFirstRead ?? scenario.harness)
+              : scenario.harness;
           return response(
-            scenario.harness === undefined || !saved.activeRevisionId
+            harness === undefined || !saved.activeRevisionId
               ? { status: "unobserved" }
               : {
                   status: "observed",
                   revisionId: saved.activeRevisionId,
-                  harness: scenario.harness,
+                  harness,
                 },
           );
         }

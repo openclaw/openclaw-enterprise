@@ -1,4 +1,8 @@
-import type { PluginCatalogEntry, PluginCatalogPage } from "@openclaw-enterprise/contracts";
+import type {
+  AgentPluginCredentialSlot,
+  PluginCatalogEntry,
+  PluginCatalogPage,
+} from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import {
   type CatalogDirection,
@@ -21,6 +25,9 @@ export interface PluginDiscoveryContext {
 }
 
 type Message = string | (() => string);
+const managedAccessAdvice =
+  "Tool discovery requires Agent edit access and permission to use the selected credential. Choose Recheck access.";
+
 type CatalogRequest = { cursor?: string; q?: string } | { pluginId: string };
 type DiscoveryRetryAction = "Load plugins" | "Load tools" | "Retry tools";
 type DiscoveryEntry = CatalogEntry & { retryAfterConflict?: true | undefined };
@@ -37,6 +44,7 @@ interface PluginDiscoveryOptions extends Pick<
   catalogPath?: string;
   // Create Agent adds the discovery credential. An existing Agent's path identifies its saved one.
   requestBody(body: CatalogRequest): unknown;
+  applyRecheckedCapabilities?(response: unknown): boolean;
   deniedMessage?: Message;
   unsupportedMessage?: string;
   availableMessage?: Message;
@@ -93,6 +101,7 @@ export function createPluginDiscovery({
   saveHint,
   catalogPath = `${namespacePath(context.namespaceId)}/agents/plugins`,
   requestBody,
+  applyRecheckedCapabilities,
   deniedMessage = "Plugin discovery requires Agent create permission in this Namespace. Saved selections can still be edited.",
   unsupportedMessage = "This Installation's Plugin Driver does not offer catalog browsing. You can edit configured selections or JSON, or ask an operator to select a catalog-capable Driver.",
   availableMessage = "Load plugins available to this credential. Your plugin selections stay unchanged.",
@@ -102,13 +111,18 @@ export function createPluginDiscovery({
   let prefetched = false;
   let searchTimer: number | undefined;
   let requests = new AbortController();
+  // Keep the managed recovery path available after clearing the active refusal.
+  let managedRecovery = false;
+  let currentRefusal: { requestId: string | undefined } | undefined;
+  const retryAccessAdvice = () => withRequestId(managedAccessAdvice, currentRefusal?.requestId);
   let catalog: Pick<
     PluginFieldCatalog,
-    "status" | "message" | "nextCursor" | "setup" | "reloadRequired"
+    "status" | "message" | "nextCursor" | "setup" | "reloadRequired" | "access"
   > = {
     status: "idle",
     nextCursor: null,
   };
+  const canLoad = () => !catalog.access && canDiscover();
   const entries = new Map<string, DiscoveryEntry>();
   let pageIds: string[] = [];
   let cursors: (string | null)[] = [null];
@@ -126,27 +140,35 @@ export function createPluginDiscovery({
       }
     },
     onCancelDiscovery: cancel,
+    ...(applyRecheckedCapabilities && { onRecheckAccess: (slot) => void recheckAccess(slot) }),
     onLoadTools: (id, connection) => void loadTools(id, connection),
   });
 
-  function render() {
-    const canLoad = canDiscover();
-    const statusMessage = canLoad ? availableMessage : unavailableMessage;
-    fields.setCatalog({
-      ...catalog,
-      entries: pageIds.map((id) => entries.get(id)).filter((entry) => entry !== undefined),
-      knownEntries: [...entries.values()],
-      pageNumber: pageIndex + 1,
-      hasPrevious: pageIndex > 0,
-      canLoad,
-      message:
-        catalog.message ?? (typeof statusMessage === "function" ? statusMessage() : statusMessage),
-    });
+  function render(transition?: "refusal") {
+    const available = canLoad();
+    const statusMessage = available ? availableMessage : unavailableMessage;
+    fields.setCatalog(
+      {
+        ...catalog,
+        entries: pageIds.map((id) => entries.get(id)).filter((entry) => entry !== undefined),
+        knownEntries: [...entries.values()],
+        pageNumber: pageIndex + 1,
+        hasPrevious: pageIndex > 0,
+        canLoad: available,
+        canRecheck:
+          managedRecovery &&
+          (available || catalog.access === "denied" || catalog.access === "checking"),
+        message:
+          catalog.message ??
+          (typeof statusMessage === "function" ? statusMessage() : statusMessage),
+      },
+      transition,
+    );
   }
 
   function update() {
     render();
-    if (!prefetched && catalog.status === "idle" && canPrefetch() && canDiscover()) {
+    if (!prefetched && catalog.status === "idle" && canPrefetch() && canLoad()) {
       if (!context.isCurrent() || isPending()) {
         return;
       }
@@ -199,9 +221,96 @@ export function createPluginDiscovery({
     catalog = state;
   }
 
+  function retireSavedDiscovery(error: ReturnType<typeof requestFailure>, managed = false) {
+    const deleting = error.status === 409 && error.code === "AGENT_DELETING";
+    if (!applyRecheckedCapabilities || (!deleting && error.status !== 403)) {
+      return false;
+    }
+    if (deleting) {
+      retireCatalog(
+        withRequestId(
+          "Plugin discovery is unavailable while this Agent is being deleted.",
+          error.requestId,
+        ),
+        "deleting",
+      );
+    } else if (managed || managedRecovery) {
+      managedRecovery = true;
+      currentRefusal = { requestId: error.requestId };
+      retireCatalog(retryAccessAdvice(), "denied");
+    } else {
+      const denial = typeof deniedMessage === "function" ? deniedMessage() : deniedMessage;
+      retireCatalog(withRequestId(`${denial} Choose Load plugins to try again.`, error.requestId));
+    }
+    render("refusal");
+    return true;
+  }
+
+  function retireCatalog(message: string, access?: PluginFieldCatalog["access"]) {
+    invalidateRequests();
+    entries.clear();
+    resetCatalogPage({
+      status: "error",
+      nextCursor: null,
+      reloadRequired: true,
+      message,
+      ...(access && { access }),
+    });
+  }
+
+  async function recheckAccess(slot?: AgentPluginCredentialSlot) {
+    if (!applyRecheckedCapabilities || !managedRecovery || !context.isCurrent() || isPending()) {
+      return;
+    }
+    if (slot ? !fields.canRecheckAccounts(slot) : catalog.access !== "denied") {
+      return;
+    }
+
+    retireCatalog("Checking plugin access and account eligibility.", "checking");
+    render();
+    const current = generation;
+    const isCurrent = () => context.isCurrent() && current === generation;
+    try {
+      const response = await context.request(`${catalogPath}/capabilities`, {
+        signal: requests.signal,
+      });
+      if (!isCurrent()) {
+        return;
+      }
+      if (applyRecheckedCapabilities(response)) {
+        currentRefusal = undefined;
+        delete catalog.access;
+        catalog.message =
+          "Access rechecked. Choose Load plugins to discover available plugins again.";
+      } else {
+        catalog.access = "denied";
+        catalog.message = `${retryAccessAdvice()} Plugin capabilities could not be confirmed for this setup.`;
+      }
+    } catch (cause) {
+      if (!isCurrent()) {
+        return;
+      }
+      const error = requestFailure(cause);
+      if (error.status === 401) {
+        context.onExpired();
+      } else if (!((error.status === 409 || !currentRefusal) && retireSavedDiscovery(error))) {
+        catalog.access = "denied";
+        catalog.message = `${retryAccessAdvice()} ${withRequestId("Access could not be rechecked.", error.requestId)}`;
+      }
+    } finally {
+      if (isCurrent()) {
+        render();
+      }
+    }
+  }
+
   function cancel() {
     const pending = searchTimer !== undefined || catalog.status === "loading";
     invalidateRequests();
+    if (catalog.access === "checking") {
+      catalog.access = "denied";
+      catalog.message = retryAccessAdvice();
+    }
     if (pending) {
       resetCatalogPage(
         catalog.reloadRequired
@@ -214,6 +323,9 @@ export function createPluginDiscovery({
 
   function scheduleSearch(q: string) {
     query = q.trim();
+    if (catalog.access) {
+      return;
+    }
     if (catalog.reloadRequired) {
       // Keep the recovery action explicit while still retaining the latest query.
       cancel();
@@ -222,7 +334,7 @@ export function createPluginDiscovery({
     // Invalidate on input, before the delay, so an older response cannot fill this query.
     invalidateRequests();
     resetCatalogPage({ status: "idle", nextCursor: null, setup: catalog.setup });
-    if (context.isCurrent() && canDiscover() && !isPending()) {
+    if (context.isCurrent() && canLoad() && !isPending()) {
       catalog.status = "loading";
       searchTimer = setTimeout(() => {
         // A form submission or tab change can prevent this deferred read from starting.
@@ -257,7 +369,7 @@ export function createPluginDiscovery({
     const queryChanged = search !== query;
     if (
       !context.isCurrent() ||
-      !canDiscover() ||
+      !canLoad() ||
       isPending() ||
       (catalog.status === "loading" && searchTimer === undefined && !queryChanged)
     ) {
@@ -316,6 +428,9 @@ export function createPluginDiscovery({
         context.onExpired();
         return;
       }
+      if (retireSavedDiscovery(error)) {
+        return;
+      }
       if (isDiscoveryConflict(error)) {
         entries.clear();
         resetCatalogPage({ status: "error", nextCursor: null, reloadRequired: true });
@@ -334,7 +449,13 @@ export function createPluginDiscovery({
 
   async function loadTools(id: string, connection?: ManagedToolConnection) {
     const entry = entries.get(id);
-    if (!canDiscover() || isPending() || catalog.status === "loading" || !entry) {
+    if (
+      !context.isCurrent() ||
+      !canLoad() ||
+      isPending() ||
+      catalog.status === "loading" ||
+      !entry
+    ) {
       return;
     }
     const pending: ManagedToolDiscovery | undefined = connection && {
@@ -397,11 +518,18 @@ export function createPluginDiscovery({
             },
       );
     } catch (cause) {
+      if (!context.isCurrent() || active !== generation) {
+        return;
+      }
+      const error = requestFailure(cause);
+      // A newer account replaces the result marker, but the refusal can apply to the Agent.
+      if (retireSavedDiscovery(error, !!pending)) {
+        return;
+      }
       const current = currentEntry();
       if (!current) {
         return;
       }
-      const error = requestFailure(cause);
       if (error.status === 401) {
         context.onExpired();
         return;

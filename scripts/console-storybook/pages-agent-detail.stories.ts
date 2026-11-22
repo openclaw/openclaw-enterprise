@@ -50,6 +50,10 @@ export const SlackMcpTools = {
   ...story("slackMcpTools"),
   name: "Choose tools for a connected Slack account",
 };
+export const SlackMcpAccountRecovery = {
+  ...story("slackMcpAccountRecovery"),
+  name: "Recover a Slack account after access is restored",
+};
 export const SlackMcpSavedToolsUnavailable = story("slackMcpSavedToolsUnavailable");
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
@@ -59,6 +63,7 @@ export const PluginsToolRefusal = story("pluginsToolRefusal");
 export const PluginsDetailIdentityRefused = story("pluginsDetailIdentityRefused");
 export const PluginsCatalogConflict = story("pluginsCatalogConflict");
 export const PluginsDetailsConflict = story("pluginsDetailsConflict");
+export const PluginsAgentDeleting = story("pluginsAgentDeleting");
 export const PluginApproversInherited = story("pluginApproversInherited");
 export const PluginApproversOverrides = story("pluginApproversOverrides");
 export const PluginApproversLookup = story("pluginApproversLookup");
