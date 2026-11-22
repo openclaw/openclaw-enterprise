@@ -320,15 +320,32 @@ def same_security_context(actual, expected):
     # setting and refuse admission rewrites, even equivalent inherited settings.
     # The only exception is the retained Pod in without_admission_assigned.
     left, right = actual.get("securityContext"), expected.get("securityContext")
-    return ({} if left is None else left) == ({} if right is None else right)
+    # Python equality conflates booleans, integers and floats. Keep wire types exact.
+    return (json.dumps({} if left is None else left, sort_keys=True)
+            == json.dumps({} if right is None else right, sort_keys=True))
+
+
+def all_containers_use_group(spec, group):
+    # The Pod group is already checked. A container override takes precedence.
+    for field in ("containers", "initContainers"):
+        for container in spec.get(field, []):
+            context = container.get("securityContext")
+            if context is None:
+                continue
+            if not isinstance(context, dict):
+                return False
+            effective = context.get("runAsGroup", group)
+            if type(effective) is not int or effective != group:
+                return False
+    return True
 
 
 def without_admission_assigned(actual, expected):
     # Pod admission can assign an SELinux level and the template's own Pod group
     # when the template omits them. Remove only those exact Pod-level shapes from
     # the retained Pod: one sensitivity with two distinct categories (no range
-    # or category span), and one group equal to the template Pod runAsGroup. Every
-    # other field, every container and the Job template still compare exactly.
+    # or category span), and one group already used by the Pod and every container.
+    # Every other field, every container and the Job template still compare exactly.
     live = actual.get("securityContext")
     template = expected.get("securityContext") or {}
     if not isinstance(live, dict) or not isinstance(template, dict):
@@ -344,7 +361,8 @@ def without_admission_assigned(actual, expected):
     if ("supplementalGroups" not in template
             and type(template.get("runAsGroup")) is int
             and isinstance(groups, list) and len(groups) == 1
-            and type(groups[0]) is int and groups[0] == template["runAsGroup"]):
+            and type(groups[0]) is int and groups[0] == template["runAsGroup"]
+            and all_containers_use_group(expected, groups[0])):
         removed.add("supplementalGroups")
     if not removed:
         return actual

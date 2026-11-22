@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -733,6 +733,59 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
           await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
         });
       }
+    }
+  });
+
+  test("recovery accepts a supplemental group only if it is redundant for every initializer container", async (t) => {
+    for (const [placement, group] of [
+      ["containers", 1001],
+      ["initContainers", 1001],
+      ["containers", 1000],
+    ] as const) {
+      await t.test(`${placement} runAsGroup=${group}`, async (subtest) => {
+        const f = await fixture(subtest, { recoveryHooks: true });
+        const helm = join(f.directory, "bin", "helm");
+        // Change the fixture's JSON Job at render time so the recorded attempt,
+        // retained Job and Pod all have the same override before admission.
+        await rename(helm, `${helm}-original`);
+        await writeFile(
+          helm,
+          `#!/bin/bash
+set -eo pipefail
+if [[ "$1" != template ]]; then exec "$0-original" "$@"; fi
+"$0-original" "$@" | jq -Rr '
+  if startswith("{") and (fromjson | .kind == "Job" and .metadata.name == "oce-initialization")
+  then fromjson | .spec.template.spec.${placement}[0].securityContext.runAsGroup = ${group} | tojson
+  else . end'
+`,
+          { mode: 0o700 },
+        );
+        const state = await loseHelmResponseWithCompletedHook(f);
+        const jobSpec = templateSpec(resource(state, "Job/oce-initialization").spec);
+        assert.deepEqual(state.recoveryPod.spec, jobSpec);
+        assert.equal(
+          requiredRecord(
+            firstContainer(jobSpec, placement).securityContext,
+            "expected the container security context",
+          ).runAsGroup,
+          group,
+        );
+        const context = requiredRecord(
+          state.recoveryPod.spec.securityContext,
+          "expected the Pod security context",
+        );
+        assert.equal(context.runAsGroup, 1000);
+        assert.equal(context.fsGroup, undefined);
+        context.supplementalGroups = [1000];
+        if (group !== 1000) {
+          await assertRecoveryRefusedBeforeRollback(f, state, /initializer Pod identity/);
+          return;
+        }
+        context.seLinuxOptions = { level: "s0:c34,c12" };
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        await f.run(...recoverHelm);
+        assert.equal((await f.state()).rollbackSubmissions, 1);
+      });
     }
   });
 
