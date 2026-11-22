@@ -15,7 +15,7 @@ import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import type { createQaInstallation, createQaAgent } from "./qa-installation.mjs";
 import { registerQaSecret } from "./qa-secrets.ts";
 import {
-  qaCodexToolQualificationGaps,
+  qaCodexObservationLimits,
   readQaAutomationRunEvidence,
   startQaCodexToolObservation,
 } from "./qa-automation-evidence.ts";
@@ -27,7 +27,7 @@ type Agent = Awaited<ReturnType<typeof createQaAgent>>;
 export async function verifyQaAgentAutomations(
   f: Fixture,
   agent: Agent,
-): Promise<{ qualificationGaps: string[] }> {
+): Promise<{ observationLimits: string[] }> {
   const transport = createConsoleFixtureTransport(f.consoleUrl, f.apiUrl);
   const session = await signInWithEmailPassword({
     ...f.credentials,
@@ -329,10 +329,10 @@ export async function verifyQaAgentAutomations(
         nativeInventoryScope:
           "Gateway direct/deferred; native dynamic declarations, feature-state diagnostics and per-thread MCP/app discovery metadata; native built-in inventory incomplete",
       });
-      const qualificationGaps = nativePolicy
-        ? qaCodexToolQualificationGaps(nativePolicy, evidence.native?.threadId)
+      const observationLimits = nativePolicy
+        ? qaCodexObservationLimits(nativePolicy, evidence.native?.threadId)
         : [];
-      return { job: current, runId: run.runId, qualificationGaps };
+      return { job: current, runId: run.runId, observationLimits };
     } finally {
       await fileCheck("cleanup");
       await live?.catch(() => undefined);
@@ -340,7 +340,7 @@ export async function verifyQaAgentAutomations(
   }
 
   const failures: unknown[] = [];
-  let outcome: { qualificationGaps: string[] } | undefined;
+  let outcome: { observationLimits: string[] } | undefined;
   try {
     const created: AgentAutomationData[] = [];
     for (const schedule of [
@@ -443,8 +443,8 @@ export async function verifyQaAgentAutomations(
     const widened = await negativeTurn(await get(recurring.id), "widened");
     assert.notEqual(widened.runId, restricted.runId);
     const after = await oneShot("Model-only one-shot after replacement");
-    const qualificationGaps = [
-      ...new Set([...restricted.qualificationGaps, ...widened.qualificationGaps]),
+    const observationLimits = [
+      ...new Set([...restricted.observationLimits, ...widened.observationLimits]),
     ];
     await f.record(`automations-${agent.id}-completed`, {
       agentId: agent.id,
@@ -454,10 +454,12 @@ export async function verifyQaAgentAutomations(
       historyAfterDeletionVerified: true,
       policyWideningVerified: true,
       nativeIdentityRetained: true,
-      qualificationGaps,
-      completeToolSurfaceQualified: qualificationGaps.length === 0,
+      observationLimits,
+      qualificationStatus: "not_assessed_by_this_scenario",
+      evidenceScope:
+        "OCC lifecycle, reported tool surfaces, transcript calls and independent file effects",
     });
-    outcome = { qualificationGaps };
+    outcome = { observationLimits };
   } catch (error) {
     failures.push(error);
   }

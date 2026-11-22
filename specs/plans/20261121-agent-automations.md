@@ -62,32 +62,32 @@ retained history, CAS and UNKNOWN_OUTCOME semantics intact.
 
 ## Verification
 
-| Required outcome                                             | Current result                                                                                                                                                                              |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Human admission, UUIDs and final authority                   | P1 admin-demotion and P2 invalid-ID regressions reproduced and fixed at `e22a860f1c`; native suite 2 passed, PostgreSQL 1 passed, actual admission case 1 passed                            |
-| Ownership, audit and cleanup                                 | Real PostgreSQL reservation/binding/cleanup atomicity, binding race and deletion-worker sibling preservation passed                                                                         |
-| Model-only add/update contract                               | Implemented after RFC submission; real native CRUD verifies explicit empty writes/readback, forged-cap refusal and unsupported-cap activation refusal                                       |
-| Real model-only execution in both Harnesses                  | At `925a4976f7`, both packaged Harnesses passed deployment/authentication, a one-shot model response and a recurring model response; evidence collection then failed before policy widening |
-| No model tools, including native Codex/code/app/MCP surfaces | Unverified; implement genuine runtime evidence and independent effect checks; source `[]` alone is insufficient                                                                             |
-| One-shot deletion and retained history                       | Both Harnesses verified native one-shot deletion and retained completed-run history at `925a4976f7`; post-replacement proof remains pending                                                 |
-| CAS, uncertainty and container replacement                   | Genuine native fixture passes without model calls; OCC storage/Compute remain fixtures, not production placement proof                                                                      |
-| Independent review                                           | Alternate app reviews found no actionable core issue at `1b8ceb379d` or QA issue at `925a4976f7`; canonical CLI remains blocked by authentication without a report                          |
+| Required outcome                                             | Current result                                                                                                                                                                                                 |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Human admission, UUIDs and final authority                   | P1 admin-demotion and P2 invalid-ID regressions reproduced and fixed at `e22a860f1c`; native suite 2 passed, PostgreSQL 1 passed, actual admission case 1 passed                                               |
+| Ownership, audit and cleanup                                 | Real PostgreSQL reservation/binding/cleanup atomicity, binding race and deletion-worker sibling preservation passed                                                                                            |
+| Model-only add/update contract                               | Implemented after RFC submission; real native CRUD verifies explicit empty writes/readback, forged-cap refusal and unsupported-cap activation refusal                                                          |
+| Real model-only execution in both Harnesses                  | At `e4b0d4c9ed`, both packaged Harnesses passed genuine one-shots, recurring responses, retained history, policy widening and Gateway replacement                                                              |
+| No model tools, including native Codex/code/app/MCP surfaces | Both Harnesses observed empty Gateway inventories, no transcript calls and no file effects; Codex also recorded zero dynamic tools. Complete AC3 remains subject to combined dispatch and source evidence      |
+| One-shot deletion and retained history                       | Both Harnesses verified native deletion and retained history before and after replacement at `e4b0d4c9ed`                                                                                                      |
+| CAS, uncertainty and container replacement                   | Genuine native fixture passes without model calls; OCC storage/Compute remain fixtures, not production placement proof                                                                                         |
+| Independent review                                           | Alternate app reviews found no actionable core issue at `1b8ceb379d` or QA issue at `925a4976f7` and `e4b0d4c9ed`; final diff review pending. Canonical CLI remains blocked by authentication without a report |
 
 Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
 [PostgreSQL setup](../../docs/testing/postgresql.md) and
 [real-runtime procedures](../../docs/testing/kubernetes.md). The existing
 `agent-automations` scenario is registered in the QA matrix and advisory lane;
-its final qualification stage reports incomplete evidence separately from lifecycle results.
+its runtime assertions cover observed behavior. Native metadata limits remain explicit; full AC3 requires a combined evidence assessment.
 
 ### Revised RFC acceptance audit
 
-| Criterion                       | Established                                                                                        | Remaining                                                                                               |
-| ------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| AC1: Model-only execution       | Real one-shot response, native deletion, retained history and recurring response in both Harnesses | Complete no-tool evidence and post-replacement execution                                                |
-| AC2: Lifecycle and persistence  | Safe management, native CAS and retained-state container replacement                               | Positive create/resume, empty-cap preservation and PostgreSQL-backed production replacement/history     |
-| AC3: No tools and authorization | Human boundary, qualification gate, demotion protection and UUID validation                        | Fixed empty cap and genuine no-tool capability/effect proof in both Harnesses, including policy changes |
-| AC4: Recovery                   | Native lost replies, CAS races and post-commit audit/revision failures without replay              | Recheck the final model-only path and production/model-dependent outcomes                               |
-| AC5: Durable audit and cleanup  | PostgreSQL invariants, atomic audit, binding and cleanup/deletion cases                            | Preserve and rerun affected cases for final implementation changes                                      |
+| Criterion                       | Established                                                                                                  | Remaining                                                                                             |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| AC1: Model-only execution       | Real one-shot response, native deletion and retained history in both Harnesses, before and after replacement | Complete no-tool qualification is assessed under AC3                                                  |
+| AC2: Lifecycle and persistence  | Safe management, native CAS, paused state and native identity/history through deployed replacement           | No additional OCC process/database restart claim                                                      |
+| AC3: No tools and authorization | Human boundary, demotion protection, UUID validation and observed empty caps/tools across policy changes     | Complete family coverage across genuine runs, forced dispatch, independent effects and source tracing |
+| AC4: Recovery                   | Native lost replies, CAS races and post-commit audit/revision failures without replay                        | Recheck the final model-only path and production/model-dependent outcomes                             |
+| AC5: Durable audit and cleanup  | PostgreSQL invariants, atomic audit, binding and cleanup/deletion cases                                      | Preserve and rerun affected cases for final implementation changes                                    |
 
 The first model credential returned `401 invalid_api_key`. Both Harnesses accepted
 an authorized replacement through `OCC_TEST_QA_OPENAI_KEY_FILE` at `925a4976f7`.
@@ -193,6 +193,18 @@ no token extraction, manual refresh or provider fallback was attempted.
   native suite passed 2 tests, PostgreSQL passed 1, and the actual admission case
   passed 1, without skips. The native fixture made zero model calls. These results
   establish protocol/persistence behavior, not the genuine no-tools runtime claim.
+
+- At `e4b0d4c9ed`, both real Kubernetes Harness lifecycle scenarios passed with
+  `gpt-6-luna`: all schedule forms, native normalization, enable/pause, stale CAS,
+  human/service and Origin boundaries, one-shots before/after replacement, native
+  deletion and retained history, recurring runs under restrictive and widened
+  Agent policies, exact native identity retention, empty Gateway tool reports,
+  no transcript tool calls and independent file absence. Codex native rollouts
+  also recorded zero dynamic tools. Both Agent cleanups passed. The run exited
+  nonzero only at a separate Codex assertion requiring all observation limits to
+  be empty. That assertion imposed universal native configuration readback not
+  required by AC3; replace it with explicit observation limits, preserving every
+  runtime assertion. This reporting correction does not itself establish AC3.
 
 ## Manual Notes
 

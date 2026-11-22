@@ -232,16 +232,16 @@ export async function readQaAutomationRunEvidence(
 }
 
 /** Native observations are partial; never promote discovery or non-use into a full tool inventory. */
-export function qaCodexToolQualificationGaps(
+export function qaCodexObservationLimits(
   value: Record<string, unknown>,
   threadId: unknown,
 ): string[] {
-  const gaps: string[] = [];
+  const limits: string[] = [];
   if (value.unavailable !== undefined) {
-    gaps.push(`Native per-thread observation unavailable at ${String(value.unavailable)}.`);
+    limits.push(`Native per-thread observation unavailable at ${String(value.unavailable)}.`);
   }
   if (value.threadId === undefined) {
-    gaps.push("The live native observation did not identify a thread.");
+    limits.push("The live native observation did not identify a thread.");
   } else {
     assert.equal(
       value.threadId,
@@ -252,7 +252,7 @@ export function qaCodexToolQualificationGaps(
   const features = asRecord(value.features);
   for (const name of ["code_mode", "shell_tool", "unified_exec"]) {
     if (features?.[name] !== false) {
-      gaps.push(
+      limits.push(
         `Native ${name} is ${features?.[name] === true ? "enabled" : "unobserved"}; its disabled state was not established.`,
       );
     }
@@ -262,22 +262,22 @@ export function qaCodexToolQualificationGaps(
   // thread's non-feature controls: web_search, tools.update_plan.enabled,
   // tools.experimental_request_user_input.enabled and orchestrator overrides.
   // Dynamic declarations and no observed calls cannot fill this inventory gap.
-  gaps.push(
-    "Native built-in tool qualification is incomplete: the collected per-thread feature and discovery APIs do not expose the resolved web/search, plan, user-input and orchestrator tool controls.",
+  limits.push(
+    "The collected per-thread feature and discovery APIs do not expose a complete resolved built-in tool inventory, including web/search, plan, user-input and orchestrator controls.",
   );
   if (typeof value.mcpDiscoveryToolCount !== "number" || typeof value.mcpServerCount !== "number") {
-    gaps.push("Native per-thread MCP discovery metadata is unavailable.");
+    limits.push("Native per-thread MCP discovery metadata is unavailable.");
   } else if (value.mcpDiscoveryToolCount > 0) {
-    gaps.push(
+    limits.push(
       "Native MCP discovery advertises tools; effective model-callable filtering is not established by discovery metadata.",
     );
   }
   if (typeof value.appCallableMetadataCount !== "number") {
-    gaps.push("Native per-thread app metadata is unavailable.");
+    limits.push("Native per-thread app metadata is unavailable.");
   } else if (value.appCallableMetadataCount > 0) {
-    gaps.push(
+    limits.push(
       "Native app metadata advertises callable apps; complete model-callable policy was not observed.",
     );
   }
-  return gaps;
+  return limits;
 }
