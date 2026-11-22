@@ -232,7 +232,8 @@ extraction, manual refresh, provider or host fallback occurred.
   This was source and artifact validation, not an independent runtime rerun.
   Command: `node --test tests/integration/automation-model-only-dispatch.test.ts`,
   using the actual `prepareRuntimeImageSmoke` environment.
-  Source image: `localhost/oce-agent-automations/runtime@sha256:ef6e896d0e68c9cde7d49b2c16d4b0eab38c30e18c4b51ba21944d55d6eebc01`.
+  Local Docker tag: `localhost/openclaw-ci-image-openclaw-ci-local-1c553965cbce/runtime-smoke:local`.
+  Docker image ID: `sha256:ef6e896d0e68c9cde7d49b2c16d4b0eab38c30e18c4b51ba21944d55d6eebc01`.
   Both imported roles used `localhost/openclaw-ci-image-openclaw-ci-local-1c553965cbce/runtime-smoke@sha256:98f2a92879164f2ad7c011d74506bfeaee3763bdd5f15d734987b1cbd0ceaafb`.
   Tested patch SHA-256: `01b15f896821df94a1352080144a3f1b9a6f5f967a808d3527529b2ddc308e47`.
   Both Harnesses completed real Gateway child sessions and sent one positive
