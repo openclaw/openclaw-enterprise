@@ -446,13 +446,15 @@ async function repositoryGitJourney(
   // kernel may hand a connection to the hold, which resets it.
   await authorityPort.release();
   await runtime["running"];
+  const standingSessionDurationSeconds = coldWorker ? 90 : 60;
+  const nonStandingSessionDurationSeconds = narrow && policy.draftPull === false ? 180 : 600;
   const driver = new GitHubRepositoryPolicy(
     { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
     peer.registry,
     {
       sessionDurationSeconds:
         policy.sessionDurationSeconds ??
-        (standing ? 90 : narrow && policy.draftPull === false ? 180 : 600),
+        (standing ? standingSessionDurationSeconds : nonStandingSessionDurationSeconds),
     },
   );
   f.controller.registerDriver(driver);
