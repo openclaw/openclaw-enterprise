@@ -9,8 +9,11 @@ import {
   type SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 
-import { ResourceStateConflictError, ScopeViolationError } from "./errors.ts";
-import { RepositoryPolicyDeploymentConflict } from "./repository-network-policy.ts";
+import {
+  RepositoryPolicyDeploymentConflict,
+  ResourceStateConflictError,
+  ScopeViolationError,
+} from "./errors.ts";
 
 export type ConfigurationOwnership = Readonly<
   Pick<Configuration, "id" | "namespaceId" | "kind" | "generation" | "secretBindings" | "createdAt">

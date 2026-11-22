@@ -31,7 +31,11 @@ import {
   type ConfigurationOwnership,
 } from "./deployment-policy.ts";
 import type { InstalledDriver } from "./installed-driver.ts";
-import { DependencyUnavailableError, ResourceStateConflictError } from "./errors.ts";
+import {
+  DependencyUnavailableError,
+  RepositoryPolicyDeploymentConflict,
+  ResourceStateConflictError,
+} from "./errors.ts";
 
 export type RepositoryGrantPolicy = {
   repositoryNetworkPolicyAllows?(input: {
@@ -415,22 +419,6 @@ export function hasOnlyScopedRepositoryRevisions(
       revision.revision === index + 1 &&
       revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
   );
-}
-
-/** The Channel preview can relay these fixed deployment recovery instructions. */
-export class RepositoryPolicyDeploymentConflict extends ResourceStateConflictError {
-  constructor(reason: "unscoped_history" | "incompatible_compute") {
-    if (reason === "unscoped_history") {
-      super(
-        "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
-      );
-    } else {
-      super(
-        "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
-        [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
-      );
-    }
-  }
 }
 
 export function assertScopedRepositoryHistory(history: readonly Readonly<AgentRevision>[]): void {
