@@ -169,9 +169,10 @@ Declare the Default users Roles, Group, and bindings in the Installation
 configuration to let people create Agents in the shared `default` Namespace
 without other grants. Each account that an administrator creates afterwards
 joins the Group. The person owns each Agent, Configuration, Secret, and
-credential source they create, and deploys their Agents themselves. Other
-members cannot see or change those resources unless another Group or direct
-grant gives them access.
+credential source they create, and deploys their Agents themselves. With
+the sample bindings, other members have no grant to read or change those
+resources. Additional bindings to `default-user`, to another Group the member
+belongs to, or directly to the member can grant access, subject to Restrictions.
 [Default users and configured Roles](../../reference/authorization/default-users.md)
 defines each field and its limits.
 

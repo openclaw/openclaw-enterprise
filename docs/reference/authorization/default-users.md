@@ -182,8 +182,11 @@ for revocation limits and containment steps.
 ## The default Namespace
 
 Members of `default` share one Kubernetes namespace. Lists return only the
-resources that the caller can read, so each member sees only their own Agents,
-Configurations, Secrets, and credential sources. The
+resources that the caller can read. In the sample, Owner bindings grant members
+read access to the Agents, Configurations, Secrets, and credential sources they
+create. Additional direct or Group bindings, including bindings to
+`default-user`, can grant read access to other resources. A matching Restriction
+denies the read. The
 [Kubernetes NetworkPolicies](../security.md) stop one Agent from reaching
 another in the same namespace. The Namespace's ResourceQuota is shared; OCC has
 no per-person limit.
@@ -241,8 +244,11 @@ grants in the deploy request. OCC checks each source that the Agent references:
 
 For each source that the caller can `operate`, through any Role, and on which
 the Agent's ServicePrincipal does not have `operate`, OCC binds the
-ServicePrincipal to that exact source. In `default`, a Default user can operate
-only the sources they own. OCC uses the Role
+ServicePrincipal to that exact source. In `default`, the sample Owner bindings
+grant members `operate` on the Secrets and credential sources they create.
+Additional direct or Group bindings, including bindings to `default-user`, can
+grant `operate` on other sources. A matching Restriction denies `operate`. OCC uses
+the Role
 `role_<namespace-id>_agent_secret_operate` or
 `role_<namespace-id>_agent_credential_source_operate`, created on first use,
 and the binding ID `binding_<agent-id>_<source-id>_operate`. Each binding
