@@ -228,7 +228,7 @@ only for their proven model-only ceiling. Never infer a tool-bearing grant by
 scanning an existing job or current catalog.
 
 Extend the runtime-facing Driver contract to report qualified bindings and to
-apply or verify enforcement **before native scheduler startup**, including
+apply or verify enforcement **before OCC-managed scheduler startup**, including
 catch-up. OCC compares opaque binding identities and calls the selected Driver.
 The Driver and Harness own MCP catalog lookup, credential and action checks,
 native tool mapping and runtime-specific controls. OCC core must contain no
@@ -241,9 +241,12 @@ successor can change the bindings. The worker must verify that every saved grant
 remains a subset of the successor's eligible bindings, with unchanged identities,
 before starting or
 resuming its scheduler. Include paused jobs and uncertain/unbound reservations.
-Keep the scheduler stopped on refusal or failure. Apply the same gate to restart,
-rollback and crash recovery before overdue jobs can run. A completed check of the
-old Gateway cannot authorize the replacement. Native CAS protects the job
+Keep the scheduler stopped on refusal or failure. Apply this gate to OCC-managed
+revision admission, startup, rollback and recovery before overdue jobs run.
+A kubelet container restart on the same immutable revision retains its standing
+grant without a controller callback. Worker observation can record and requeue
+work; it does not stop an already running scheduler. A check of the old Gateway
+cannot authorize its replacement. Native CAS protects the job
 definition. It cannot detect remapping the same tool name to a new endpoint,
 credential or action. Check the saved binding identity and current deployed
 policy before use. This admission/startup gate does not cancel calls in a running
@@ -276,8 +279,8 @@ Gateway; use job retirement or service-side denial for withdrawal.
   and remap the same alias to another server or principal. With active, paused
   and uncertain records, verify successor admission/startup refuses each change.
   Delete or retire affected jobs before deploying the narrower policy and
-  recreating them. Race enablement with a pending revision; restart an overdue
-  job and roll back. Prove startup refusal precedes catch-up and later additions
+  recreating them. Race enablement with a pending revision; recover an overdue
+  job through OCC-managed replacement and roll back. Prove startup refusal precedes catch-up and later additions
   cannot widen a cap. Distinguish the running-Gateway withdrawal limit and
   already issued calls. Check native CAS, lost replies, failed audit and revision
   changes without duplicate dispatch.
