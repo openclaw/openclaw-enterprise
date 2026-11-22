@@ -1019,7 +1019,15 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			agent, _ := client.GetAgent(namespace, args[0])
+			agentClient := client
+			if len(args) == 2 && app.output == "json" && os.Getenv("OCC_UPGRADE_BOUND_STATUS_ENRICHMENT") == "1" {
+				// Fleet observers already have the requested deployment. Don't hold
+				// that result for a full request timeout just to add currentAgent.
+				ctx, cancel := context.WithTimeout(command.Context(), time.Second)
+				defer cancel()
+				agentClient = client.WithContext(ctx)
+			}
+			agent, _ := agentClient.GetAgent(namespace, args[0])
 			resource, _ := agent.(map[string]any)
 			if len(args) == 1 {
 				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number, resource)

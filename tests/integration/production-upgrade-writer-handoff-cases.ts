@@ -923,6 +923,55 @@ export function registerWriterHandoffCases({
     assert.equal(existsSync(join(f.evidence, "completed")), false);
   });
 
+  test("a failed status read keeps its exit code when a neighbor fails or the deadline expires", async (t) => {
+    for (const scenario of ["terminal", "deadline"] as const) {
+      const f = await fixture(t, {
+        inventoryNamespaces: [embeddedDoctorNamespace("agt_a", "agt_b")],
+      });
+      const first = { namespaceId: "ns_test", agentId: "agt_a", deploymentId: "rev_first" };
+      const second = { namespaceId: "ns_test", agentId: "agt_b", deploymentId: "rev_new" };
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          nextDeployment: { id: first.deploymentId, status: "running" },
+          deploymentStatusResponses: {
+            [first.deploymentId]: {
+              stdout: JSON.stringify({ ...first, status: "running" }),
+              exitCode: 9,
+            },
+            ...(scenario === "terminal"
+              ? {
+                  [second.deploymentId]: {
+                    stdout: JSON.stringify({ ...second, status: "failed" }),
+                  },
+                }
+              : {}),
+          },
+          ...(scenario === "deadline" ? { statusHangAfterReads: 1, statusHangMs: 12000 } : {}),
+        }),
+      );
+      const failure = await expectUpgradeFailure(
+        f.run("--timeout-seconds", scenario === "deadline" ? "8" : "30"),
+        "the upgrade must refuse the mixed observation",
+      );
+      assert.equal(failure.code, 9, scenario);
+      assert.match(
+        failure.stderr,
+        scenario === "terminal" ? /at least one Agent deployment failed/u : /upgrade timeout/u,
+      );
+      assert.equal(existsSync(join(f.evidence, "status", "ns_test--agt_a--rev_first.json")), false);
+      if (scenario === "terminal") {
+        const snapshot = JSON.parse(
+          await readFile(join(f.evidence, "status", "ns_test--agt_b--rev_new.json"), "utf8"),
+        );
+        assert.equal(snapshot.status, "failed");
+      }
+      assert.ok(!(await f.events()).some((event) => event.startsWith("doctor")));
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    }
+  });
+
   registerAcceptedAgentDeployNoticeTest(fixture);
 
   // Doctor shares the serving gateway container's memory limit, and an out-of-memory
@@ -1069,6 +1118,55 @@ export function registerWriterHandoffCases({
         '  - Agent agt_test "Mail triage": last status running, waiting for succeeded',
         `Their last statuses are in ${f.evidence}/status.`,
       ]);
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    });
+
+    test("a stalled timeout name lookup does not extend replacement observation", async (t) => {
+      const f = await fixture(t, { agent: true });
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          nextDeployment: { id: "rev_new", status: "running" },
+          agentNameHoldMs: 4000,
+        }),
+      );
+      const failure = await expectUpgradeFailure(
+        f.run("--timeout-seconds", "8"),
+        "the upgrade must stop without waiting for the stalled name lookup",
+      );
+      assert.match(
+        failure.stderr,
+        /Agent agt_test \(name unavailable\): last status running, waiting for succeeded/u,
+      );
+      const events = await f.events();
+      assert.ok(events.includes("agent-name-started"));
+      assert.ok(!events.includes("agent-name-finished"));
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    });
+
+    test("a deadline-expired poll keeps the last validated deployment status diagnostic", async (t) => {
+      const f = await fixture(t, { agent: true });
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          nextDeployment: { id: "rev_new", status: "running" },
+          statusHangAfterReads: 1,
+          statusHangMs: 12000,
+        }),
+      );
+      const failure = await expectUpgradeFailure(
+        f.run("--timeout-seconds", "8"),
+        "the upgrade must refuse an unknown current status at the deadline",
+      );
+      assert.match(failure.stderr, /last status running; current status unknown/u);
+      const snapshot = JSON.parse(
+        await readFile(join(f.evidence, "status", "ns_test--agt_test--rev_new.json"), "utf8"),
+      );
+      assert.equal(snapshot.status, "running");
+      assert.ok((await f.events()).includes("deployment-status-hung"));
+      assert.ok(!(await f.events()).some((event) => event.startsWith("doctor")));
       assert.equal(existsSync(join(f.evidence, "completed")), false);
     });
 

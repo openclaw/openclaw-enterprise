@@ -1799,6 +1799,14 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         }
         out({ id });
       } else if (args.includes("agent") && args.includes("get")) {
+        if (
+          Number(state.agentNameHoldMs) > 0 &&
+          Object.values(record(state.deployments, "deployment statuses")).includes("running")
+        ) {
+          log("agent-name-started");
+          await new Promise((resolve) => setTimeout(resolve, Number(state.agentNameHoldMs)));
+          log("agent-name-finished");
+        }
         out({
           id: "agt_test",
           name: "Mail triage",
@@ -1812,6 +1820,16 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         const status = field(state.deployments, [namespaceId, agentId, deploymentId].join("/"));
         if (!status) {
           return fail(1, "deployment not found");
+        }
+        if (Number(state.statusHangAfterReads) > 0) {
+          const reads = Number(state.statusReadCount ?? 0) + 1;
+          state.statusReadCount = reads;
+          save();
+          if (reads > Number(state.statusHangAfterReads)) {
+            log("deployment-status-hung");
+            await new Promise((resolve) => setTimeout(resolve, Number(state.statusHangMs)));
+            log("deployment-status-finished");
+          }
         }
         if (take("deployment-status-running")) {
           out({ namespaceId, agentId, deploymentId, status: "running" });

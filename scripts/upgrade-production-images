@@ -49,7 +49,8 @@ only to keep a reviewed custom configuration.
 For a controller/broker upgrade, --verify-agent with --verify-agent-namespace
 requires the same active revision and Ready workload Pods before completion.
 It needs exact Agent read/operate and active AgentRevision read permissions.
---timeout-seconds bounds each wait (default 900, at most 86400).
+--timeout-seconds bounds each wait (default 900; Agent replacement 3600; at most 86400).
+The replacement default includes up to 30 minutes for admitted work to complete.
 --doctor-heap-mib sets OpenClaw Doctor's heap cap (default 384); raise it only
 after Doctor ran out of heap. It can change on --resume.
 Progress appears on stderr. Native scale and rollout output stays in the private
@@ -777,6 +778,7 @@ occ=occ
 verify_agent=
 verify_agent_namespace=
 timeout_seconds=900
+replacement_timeout_seconds=3600
 doctor_heap_mib=384
 resume=0
 preflight_only=0
@@ -830,7 +832,7 @@ while (($#)); do
         --occ) occ=$2 ;;
         --verify-agent) verify_agent=$2 ;;
         --verify-agent-namespace) verify_agent_namespace=$2 ;;
-        --timeout-seconds) timeout_seconds=$2 ;;
+        --timeout-seconds) timeout_seconds=$2; replacement_timeout_seconds=$2 ;;
         --doctor-heap-mib) doctor_heap_mib=$2 ;;
       esac
       shift 2
@@ -1229,6 +1231,17 @@ for command in cmp helm jq kubectl mktemp node yq; do
   require_command "$command"
 done
 check_kubectl_preferences
+if [[ -n "$runtime_image" ]] && ((preflight_only == 0 && migration_apply_only == 0)); then
+  # Verify that we can observe a child exit without releasing its PID before any upgrade effects.
+  python3 - <<'PYTHON' || die "replacement reads require Python with POSIX waitid(WNOWAIT) support."
+import os
+
+try:
+    os.waitid(os.P_PID, os.getpid(), os.WEXITED | os.WNOWAIT | os.WNOHANG)
+except ChildProcessError:
+    pass  # The syscall is available; this process is not its own child.
+PYTHON
+fi
 
 umask 077
 if ((resume == 0)); then
@@ -3589,6 +3602,66 @@ else
   : >"$deployments"
 fi
 
+replacement_read() {
+  local remaining_seconds=$1 timeout_message=$2
+  shift 2
+  # A read can make multiple requests. Bound the whole process as well as
+  # retaining each client's request timeout.
+  python3 - "$remaining_seconds" "$timeout_message" "$@" <<'PYTHON'
+import os
+import signal
+import subprocess
+import sys
+import time
+
+
+interrupted = 0
+
+
+def interrupt(signum, _frame):
+    global interrupted
+    interrupted = 128 + signum
+
+
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, interrupt)
+# Even if inherited as ignored, our leader must remain waitable until we reap it.
+signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+seconds, message, *command = sys.argv[1:]
+deadline = time.monotonic() + int(seconds)
+process = subprocess.Popen(command, stdin=subprocess.DEVNULL, start_new_session=True)
+timed_out = False
+try:
+    while not interrupted:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            print(f"upgrade-production-images: {message}", file=sys.stderr)
+            break
+        if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
+            break
+        time.sleep(min(remaining, 0.02))
+finally:
+    # The unreaped session leader pins this group ID, even if only a helper
+    # still has our output open. Signal the group before releasing that ID.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    finally:
+        status = process.wait()
+status = interrupted or (1 if timed_out else status)
+sys.exit(status if status >= 0 else 128 - status)
+PYTHON
+}
+
+replacement_occ_read() {
+  local timeout_message=$1 remaining_seconds=$((deadline - SECONDS))
+  shift
+  ((remaining_seconds > 0)) || die "$timeout_message"
+  replacement_read "$remaining_seconds" "$timeout_message" "${occ_json[@]}" "$@"
+}
+
 # A failing CLI can still print a complete status. Publish the snapshot only
 # after the command succeeds and its output contains one known deployment state.
 poll_deployment_status() (
@@ -3596,7 +3669,8 @@ poll_deployment_status() (
   local snapshot status
   snapshot=$(mktemp "${destination}.XXXXXXXX") || return
   trap 'rm -f "$snapshot"' EXIT
-  "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
+  OCC_UPGRADE_BOUND_STATUS_ENRICHMENT=1 replacement_occ_read "Agent $agent_id deployment $deployment_id status could not be read before the upgrade timeout." \
+    --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
     >"$snapshot" || return
   status=$(jq -ser 'select(length == 1) | .[0].status | select(IN("queued","running","succeeded","failed"))' "$snapshot") ||
     die "OCC returned an invalid deployment status for $deployment_id."
@@ -3605,19 +3679,29 @@ poll_deployment_status() (
   printf '%s\n' "$status"
 )
 
-# At the timeout, name each Agent whose deployment had not succeeded: its ID, its name and the
-# last status read (none when the deadline passed before the first poll), so the operator
-# knows which Agent to inspect.
+# At the timeout, identify incomplete Agents from the last observed status. Name
+# lookups are best effort and share one second across the whole diagnostic.
 incomplete_agents() {
-  local namespace_id agent_id status agent_name observed
-  while IFS=' ' read -r namespace_id agent_id status; do
-    agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
+  local namespace_id agent_id status current agent_name observed remaining_seconds
+  local diagnostic_deadline=$((SECONDS + 1))
+  while IFS=' ' read -r namespace_id agent_id status current; do
+    agent_name=
+    remaining_seconds=$((diagnostic_deadline - SECONDS))
+    if ((remaining_seconds > 0)); then
+      agent_name=$(replacement_read "$remaining_seconds" "Agent $agent_id name could not be read before the diagnostic timeout." \
+        "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" 2>/dev/null |
+        jq -r 'if (.name | type) == "string" then .name | tojson | gsub("[\u0080-\u009f]"; "?") else empty end' 2>/dev/null) || agent_name=
+    fi
     observed="no status read"
-    [[ -z "$status" ]] || observed="last status $status"
+    [[ -z "$status" || "$status" == - ]] || observed="last status $status"
+    [[ "$current" != unknown ]] || observed+="; current status unknown"
     printf '  - Agent %s %s: %s, waiting for succeeded\n' "$agent_id" "${agent_name:-(name unavailable)}" "$observed"
   done
 }
 
+# Agent replacement has its own observation budget after dispatch. Preserve the
+# shorter bounds for controller recovery, Doctor and other release phases.
+deadline=$((SECONDS + replacement_timeout_seconds))
 pending=$target_count
 if ((target_count > 0)); then
   progress "Checking Agent readiness and OpenClaw Doctor."
@@ -3633,11 +3717,26 @@ $(printf '%s\n' "${incomplete[@]}" | incomplete_agents)
 Their last statuses are in $evidence_dir/status."
   pending=0
   failed=0
+  status_read_failed=0
   incomplete=()
   while IFS= read -r deployment; do
     json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
-    status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file")
+    if status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file"); then
+      :
+    else
+      status_read_exit=$?
+      warn "Could not read Agent $agent_id deployment $deployment_id; its current status is unknown."
+      if ((status_read_failed == 0)); then status_read_failed=$status_read_exit; fi
+      ((pending += 1))
+      historical_status=$(jq -ser --arg namespaceId "$namespace_id" --arg agentId "$agent_id" --arg deploymentId "$deployment_id" '
+        select(length == 1) | .[0] |
+        select(.namespaceId == $namespaceId and .agentId == $agentId and .deploymentId == $deploymentId) |
+        .status | select(IN("queued","running","succeeded","failed"))
+      ' "$status_file" 2>/dev/null) || historical_status=
+      incomplete+=("$namespace_id $agent_id ${historical_status:--} unknown")
+      continue
+    fi
     case "$status" in
       queued | running)
         ((pending += 1))
@@ -3647,8 +3746,24 @@ Their last statuses are in $evidence_dir/status."
       failed) failed=1 ;;
     esac
   done <"$deployments"
-  ((failed == 0)) || die "at least one Agent deployment failed; inspect $evidence_dir/status."
-  ((pending == 0)) || sleep 2
+  observation_exit=1
+  if ((status_read_failed != 0)); then observation_exit=$status_read_failed; fi
+  if ((failed != 0)); then
+    warn "at least one Agent deployment failed; inspect $evidence_dir/status."
+    exit "$observation_exit"
+  fi
+  if ((pending != 0 && SECONDS >= deadline)); then
+    warn "$pending Agent deployments remained incomplete at the upgrade timeout:
+$(printf '%s\n' "${incomplete[@]}" | incomplete_agents)
+Their last statuses are in $evidence_dir/status."
+    exit "$observation_exit"
+  fi
+  if ((status_read_failed != 0)); then
+    warn "could not verify all Agent deployment statuses; inspect $evidence_dir/status."
+    exit "$status_read_failed"
+  fi
+  remaining_seconds=$((deadline - SECONDS))
+  ((pending == 0 || remaining_seconds <= 0)) || sleep "$((remaining_seconds < 2 ? remaining_seconds : 2))"
 done
 
 doctor_targets="$evidence_dir/doctor-targets.jsonl"
@@ -3661,16 +3776,19 @@ while IFS= read -r deployment; do
     dedicated) expected_runtime_count=2 ;;
     *) die "Agent $agent_id returned unsupported execution mode $execution_mode." ;;
   esac
-  selected=$("${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" | jq -er '.activeRevisionId')
+  active_agent=$(replacement_occ_read "Agent $agent_id active revision could not be read before the upgrade timeout." \
+    --namespace "$namespace_id" agent get "$agent_id")
+  selected=$(jq -er '.activeRevisionId' <<<"$active_agent")
   [[ "$selected" == "$deployment_id" ]] ||
     die "Agent $agent_id selected $selected instead of deployment $deployment_id."
   pods="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").pods.json"
   live_pods="${pods%.json}.live.json"
+  pod_timeout="Agent $agent_id revision Pods did not become ready before the upgrade timeout."
   while true; do
     remaining_seconds=$((deadline - SECONDS))
-    ((remaining_seconds > 0)) ||
-      die "Agent $agent_id revision Pods did not become ready before the upgrade timeout."
-    "${kube[@]}" --request-timeout="${remaining_seconds}s" get pods --all-namespaces \
+    ((remaining_seconds > 0)) || die "$pod_timeout"
+    replacement_read "$remaining_seconds" "$pod_timeout" \
+      "${kube[@]}" --request-timeout="${remaining_seconds}s" get pods --all-namespaces \
       --selector "openclaw.dev/revision=$deployment_id" \
       --output json >"$pods"
     # During replacement, a deleting Pod can still report Running and Ready.
@@ -3690,12 +3808,13 @@ while IFS= read -r deployment; do
           any(.status.conditions[]?; .type == "Ready" and .status == "True")
         )
       ' "$live_pods" >/dev/null; then
+        ((SECONDS < deadline)) || die "$pod_timeout"
         break
       fi
     fi
-    ((SECONDS < deadline)) ||
-      die "Agent $agent_id revision Pods did not become ready before the upgrade timeout."
-    sleep 2
+    remaining_seconds=$((deadline - SECONDS))
+    ((remaining_seconds > 0)) || die "$pod_timeout"
+    sleep "$((remaining_seconds < 2 ? remaining_seconds : 2))"
   done
 
   if ! gateway=$(
@@ -3737,14 +3856,15 @@ while IFS= read -r deployment; do
       ]
     ' "$live_pods"
   )
-  jq -cn --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
+  doctor_target=$(jq -cn --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
     --arg deploymentId "$deployment_id" --arg gatewayNamespace "$gateway_namespace" \
     --arg gatewayName "$gateway_name" --argjson gatewayRestarts "$gateway_restarts" \
     --argjson gatewayUid "$(jq '.uid' <<<"$gateway")" --argjson revisionPods "$revision_pods" \
     '{namespaceId: $namespaceId, agentId: $agentId, deploymentId: $deploymentId,
       gatewayNamespace: $gatewayNamespace, gatewayName: $gatewayName,
-      gatewayRestarts: $gatewayRestarts, gatewayUid: $gatewayUid, revisionPods: $revisionPods}' \
-    >>"$doctor_targets"
+      gatewayRestarts: $gatewayRestarts, gatewayUid: $gatewayUid, revisionPods: $revisionPods}')
+  ((SECONDS < deadline)) || die "$pod_timeout"
+  printf '%s\n' "$doctor_target" >>"$doctor_targets"
 done <"$deployments"
 
 # Doctor runs in the serving gateway container and shares its memory limit. An
@@ -3897,6 +4017,7 @@ revision_pod_change_since_ready() {
 doctor_failed=0
 doctor_timeout=
 if ((target_count > 0)); then
+  ((SECONDS < deadline)) || die "Agent replacement verification exceeded the upgrade timeout before Doctor."
   while IFS= read -r target; do
     json_fields "$target" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId \
       gateway_namespace=gatewayNamespace gateway_name=gatewayName
