@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-11-22
-last_updated_session: authoring-run/ec03baba-cadf-4c59-9194-3a93a3c4763b
+last_updated_session: authoring-run/303eb0c9-04da-4bab-9fac-cc0dca754630
 ---
 
 # Console Agent editing and runtime requests
@@ -108,19 +108,20 @@ on a bound Secret disables deployment. Permissions list readable Secrets lacking
 `operate` and count the rest without names (D756). After deployment, versions outside the newest page
 appear unreadable until an audited read (D758).
 
-Before saving, `parseEditor(true)` rejects numbers parsed as infinity, including
-nested `1e400`. The editor retains text, shows the error, and takes focus. Use a
-number closer to zero and retry.
+`parseEditor(true)` rejects nonfinite numbers like nested `1e400`.
+The editor shows errors, takes focus, and retains text. Retry closer to zero.
 
 `detail.mts:saveConfiguration` rereads Agent and Configuration before PATCHing
-`{ values, expectedGeneration }`, preserving `secretBindings`. Changed IDs,
-stale generations, or concurrent-save conflicts require **Reload draft**. Responses must
-confirm Configuration/Namespace identity, newer generation, and submitted
-values/bindings. Reload before retrying unknown outcomes.
-Focus on **Save Configuration** moves to **Checking Configuration…**, then
-**Edit Configuration** on success unless focus moved. Conflicts retain local text. If focus moved,
-preserve focus, selection, and scroll. Otherwise, focus **Reload draft** and reveal
-the refusal.
+`{ values, expectedGeneration }`, preserving `secretBindings`. Responses must confirm
+Configuration/Namespace identity, newer generation, and submitted values/bindings.
+Reload before retrying unknown outcomes.
+
+**Save Configuration** focuses **Checking Configuration…**, then **Edit Configuration**
+on success. On ID/generation mismatch or stale `409`, retain edits and
+require **Reload draft**. Mark and focus it. Reveal the alert.
+If [tab return](../platform-console.md#2-resolve-the-session-before-private-reads)
+makes the view inert, `console.mts:revalidateMountedAgent` waits for confirmed
+access to that view. Newer focus or selection cancels restoration and scrolling.
 
 **Enable gateway password access** and **Collaboration and safety**
 (`agents/gateway-safety.mts`) stage edits; **Cancel** discards them. Password access
@@ -355,6 +356,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-22 21:08: Trace conflict focus. (authoring-run/303eb0c9-04da-4bab-9fac-cc0dca754630 - 2b01b92963bfeb8bfa0f29fe583f9523d48a78a3)
 - 2026-11-22 08:58: Link snapshots to draft tabs. (authoring-run/ec03baba-cadf-4c59-9194-3a93a3c4763b - f3996c521e94d8bf18ff9018069c699dda6913c6)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
