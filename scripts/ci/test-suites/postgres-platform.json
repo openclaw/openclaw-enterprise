@@ -338,7 +338,8 @@
     {
       "path": "tests/integration/postgres-api-request-audit.test.ts",
       "expectedTests": [
-        "PostgreSQL records API admission and results and blocks work when admission cannot be saved"
+        "PostgreSQL records API admission and results and blocks work when admission cannot be saved",
+        "PostgreSQL retains the mutation and result audit when an admitted client disconnects"
       ]
     },
     {
