@@ -75,6 +75,10 @@ export function deploymentProgressForWork(
       code = attempt.code;
       message = "Waiting for harness credential initialization to finish.";
       break;
+    case "CREDENTIAL_ACTIVATION_PENDING":
+      code = attempt.code;
+      message = "Waiting for this Agent revision's credential activation to complete.";
+      break;
     case "REPOSITORY_GIT_ROUTE_PENDING":
       // Fixed copy: never the repository, grant or the gateway's answer (finding 1045).
       code = attempt.code;
