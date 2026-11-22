@@ -1000,7 +1000,7 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
     stage(name, "started"),
     stage(name, "passed"),
   ]);
-  const replacement = [stage("replacement", "started"), checkpoint("redeploy-request")];
+  const request = checkpoint("redeploy-request");
   const activation = checkpoint("activation");
   const failedStage = stage("replacement", "failed");
   const measurement = (outcome: "passed" | "failed"): Event => ({
@@ -1028,7 +1028,10 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
   const interrupted: Event = { type: "test:interrupted" };
   const fileStart = dequeue(envelope);
 
-  const active = [dequeue(), ...earlierStages, ...replacement];
+  const beforeRequest = [...earlierStages, stage("replacement", "started")];
+  const activeProgress = [...beforeRequest, request];
+  const caseStart = dequeue();
+  const active = [caseStart, ...activeProgress];
   const failed = [...active, activation, failedStage, ...complete()];
   const timedOut = complete(testCase, nativeTimeout);
   const malformed = progress({
@@ -1053,7 +1056,13 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
     checkpoint?: FileEvidence["openShellReplacement"];
     unfinishedStage?: FileEvidence["unfinishedStage"];
     timedOut?: boolean;
+    interruptedNames?: string[];
+    partialLine?: string;
   };
+  const unfinishedReplacement = (events: Event[]): Cutoff => ({
+    events,
+    unfinishedStage: "replacement",
+  });
   const completions: Record<string, Cutoff> = {
     "request progress before failure": {
       events: [...active, failedStage, ...complete(), measurement("failed")],
@@ -1061,9 +1070,10 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
     },
     "request progress after failure": {
       events: [
-        ...active.slice(0, -1),
+        caseStart,
+        ...beforeRequest,
         ...complete(),
-        replacement[1]!,
+        request,
         failedStage,
         measurement("failed"),
       ],
@@ -1092,75 +1102,65 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       timedOut: true,
     },
     "checkpoint reordered before case timeout": {
-      events: [...active.slice(0, -1), activation, replacement[1]!, ...timedOut],
+      events: [caseStart, ...beforeRequest, activation, request, ...timedOut],
       unfinishedStage: "replacement",
       timedOut: true,
     },
-    "wrong timeout category": {
-      events: [...active, activation, ...complete(testCase, { ...nativeTimeout, code: "OTHER" })],
-      unfinishedStage: "replacement",
-    },
-    "wrong timeout case coordinate": {
-      events: [...active, activation, ...complete({ ...testCase, line: 10 }, nativeTimeout)],
-      unfinishedStage: "replacement",
-    },
+    "wrong timeout category": unfinishedReplacement([
+      ...active,
+      activation,
+      ...complete(testCase, { ...nativeTimeout, code: "OTHER" }),
+    ]),
+    "wrong timeout case coordinate": unfinishedReplacement([
+      ...active,
+      activation,
+      ...complete({ ...testCase, line: 10 }, nativeTimeout),
+    ]),
     "case timeout with contradictory measurement": {
       events: [...active, activation, ...timedOut, measurement("passed")],
       timedOut: true,
     },
-    "malformed checkpoint beside an otherwise valid case timeout": {
-      events: [...active, malformed, activation, ...timedOut],
-      unfinishedStage: "replacement",
-    },
+    "malformed checkpoint beside an otherwise valid case timeout": unfinishedReplacement([
+      ...active,
+      malformed,
+      activation,
+      ...timedOut,
+    ]),
   };
-  type Interruption = Cutoff & {
-    interruptedNames?: string[];
-    partialLine?: string;
-  };
-  const interruptions: Record<string, Interruption> = {
-    "progress after interruption": {
-      events: [...active, interrupted, activation],
-      unfinishedStage: "replacement",
-    },
+  const interruptions: Record<string, Cutoff> = {
+    "progress after interruption": unfinishedReplacement([...active, interrupted, activation]),
     "interruption before replacement": {
       events: [dequeue(), ...earlierStages.slice(0, -1), interrupted],
     },
-    "nested interruption": {
-      events: [dequeue({ ...testCase, nesting: 1 }), ...active.slice(1), interrupted],
-      unfinishedStage: "replacement",
-    },
-    "foreign interruption": {
-      events: [
-        dequeue({ ...testCase, file: join(root, "tests/helpers/foreign.mjs") }),
-        ...active.slice(1),
-        interrupted,
-      ],
-      unfinishedStage: "replacement",
-    },
-    "duplicate interruption": {
-      events: [dequeue(), ...active, interrupted],
-      unfinishedStage: "replacement",
-    },
-    "completed wrapper interruption": {
-      events: [...completedWrapper, ...active, interrupted],
-      unfinishedStage: "replacement",
-    },
-    "missing coordinates at interruption": {
-      events: [
-        {
-          type: "test:dequeue",
-          data: {
-            name,
-            nesting: 0,
-            entryFile: absolutePath,
-            file: testCase.file,
-          },
+    "nested interruption": unfinishedReplacement([
+      dequeue({ ...testCase, nesting: 1 }),
+      ...activeProgress,
+      interrupted,
+    ]),
+    "foreign interruption": unfinishedReplacement([
+      dequeue({ ...testCase, file: join(root, "tests/helpers/foreign.mjs") }),
+      ...activeProgress,
+      interrupted,
+    ]),
+    "duplicate interruption": unfinishedReplacement([dequeue(), ...active, interrupted]),
+    "completed wrapper interruption": unfinishedReplacement([
+      ...completedWrapper,
+      ...active,
+      interrupted,
+    ]),
+    "missing coordinates at interruption": unfinishedReplacement([
+      {
+        type: "test:dequeue",
+        data: {
+          name,
+          nesting: 0,
+          entryFile: absolutePath,
+          file: testCase.file,
         },
-        ...active.slice(1),
-        interrupted,
-      ],
-      unfinishedStage: "replacement",
-    },
+      },
+      ...activeProgress,
+      interrupted,
+    ]),
     "truncated interruption preview with siblings": {
       events: [
         ...siblings.map((name, i) => dequeue({ ...testCase, line: 20 + i, name })),
@@ -1172,23 +1172,9 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       partialLine: '{"type":"test:output"',
     },
   };
-  const controls = [
-    ...Object.entries(completions).map(([label, control]) => ({
-      label,
-      ...control,
-      deadline: false,
-    })),
-    ...Object.entries(interruptions).map(([label, control]) => ({
-      label,
-      interruptedNames: [name],
-      ...control,
-      deadline: true,
-    })),
-  ];
-  for (const control of controls) {
-    const { label, events, deadline, checkpoint, unfinishedStage, timedOut } = control;
-    const partialLine = "partialLine" in control ? control.partialLine : undefined;
-    const interruptedNames = "interruptedNames" in control ? control.interruptedNames : undefined;
+  const runCutoff = async (label: string, control: Cutoff, deadline: boolean) => {
+    const { events, checkpoint, unfinishedStage, timedOut, partialLine, interruptedNames } =
+      control;
     await t.test(label, async () => {
       let stdout = "";
       for await (const chunk of reporter([fileStart, ...events])) {
@@ -1237,8 +1223,14 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       }
       assert.deepEqual(
         evidence.details?.interruptedTests?.map(({ name }) => name),
-        interruptedNames,
+        interruptedNames ?? (deadline ? [name] : undefined),
       );
     });
+  };
+  for (const [label, control] of Object.entries(completions)) {
+    await runCutoff(label, control, false);
+  }
+  for (const [label, control] of Object.entries(interruptions)) {
+    await runCutoff(label, control, true);
   }
 });
