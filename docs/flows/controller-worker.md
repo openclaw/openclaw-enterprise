@@ -135,7 +135,7 @@ no retries. Progress probes track passes and renewals; see
 `apps/controller/src/worker.ts:ControllerWorker.authorizeRevision`
 
 Namespace work verifies the target is still `provisioning` or `deleting`.
-A changed target completes as `SUPERSEDED_TARGET`. Otherwise `authorize()`
+A changed target completes as `SUPERSEDED_TARGET`. Otherwise `authorizeNamespace()`
 rechecks the original actor. Provisioning enforces Namespace restrictions.
 Placement into an existing Kubernetes namespace requires Installation administration.
 
@@ -173,7 +173,7 @@ and rejects ownership or Compute-Driver mismatches before teardown.
 
 ### 5. Invoke Compute while renewing the live claim
 
-`apps/controller/src/worker.ts:ControllerWorker.observe`,
+`apps/controller/src/worker.ts:ControllerWorker.observeNamespace`,
 `apps/controller/src/worker.ts:ControllerWorker.observeRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.withClaimHeartbeat`
 

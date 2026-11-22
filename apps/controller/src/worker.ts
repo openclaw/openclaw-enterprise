@@ -31,7 +31,6 @@ import type {
   AgentRevision,
   AgentRevisionMetadata,
   CredentialSource,
-  AuditEvent,
   AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
@@ -628,14 +627,27 @@ function revisionReadinessRecheckMs(ageMs: number): number {
   );
 }
 
-interface DispatchResult {
-  readonly namespaceParticipants?: readonly NamespaceLifecycleEvidence[];
-  readonly outcome: Outcome;
-  readonly code: string;
-  readonly observation?: Observation;
-  readonly hintCode?: NamespaceHintCode;
+interface WorkerAuthorizationEvidence {
   readonly decision?: AuthorizationDecision;
   readonly authorization?: AuthorizationRequest;
+}
+
+function workerAuthorizationEvidence({ authorization, decision }: WorkerAuthorizationEvidence) {
+  return {
+    ...(authorization === undefined ? {} : { authorization }),
+    ...(decision === undefined ? {} : { decisionReason: decision.reason }),
+  };
+}
+
+interface DispatchResult extends WorkerAuthorizationEvidence {
+  readonly outcome: Outcome;
+  readonly code: string;
+}
+
+interface NamespaceDispatchResult extends DispatchResult {
+  readonly namespaceParticipants?: readonly NamespaceLifecycleEvidence[];
+  readonly observation?: Observation;
+  readonly hintCode?: NamespaceHintCode;
 }
 
 function deniedAuthorization(authorization: AuthorizationRequest, decision: AuthorizationDecision) {
@@ -1250,6 +1262,10 @@ function uniqueSecretRefs(bindings: SecretBindings): SecretReference[] {
     refs.set(`${source.namespaceId}\u0000${source.id}`, source);
   }
   return [...refs.values()];
+}
+
+function expectedNamespaceStatus(target: NonNullable<ClaimedWork["namespaceTarget"]>) {
+  return target === "ready" ? "provisioning" : "deleting";
 }
 
 const MAX_STOPPED_PREDECESSOR_RECORDS = 4_096;
@@ -2174,57 +2190,6 @@ export class ControllerWorker {
     return this.mode === "production" || typeof compute.activateRevision === "function";
   }
 
-  private async authorize(
-    claim: ClaimedWork,
-    namespace: Readonly<Namespace>,
-  ): Promise<DispatchResult | undefined> {
-    const installation = this.installation;
-    if (installation === undefined) {
-      throw new Error("The worker Installation is unavailable.");
-    }
-    const state = await this.loadIAMState();
-    const driver = this.iam;
-    const exact: AuthorizationRequest = {
-      principalId: claim.actorId,
-      action: claim.namespaceTarget === "ready" ? "create" : "delete",
-      resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
-    };
-    const request: AuthorizationRequest =
-      claim.namespaceTarget === "ready"
-        ? {
-            principalId: claim.actorId,
-            action: "create",
-            resource: { kind: "namespace", id: installation.id },
-          }
-        : exact;
-    const actorPresent = state.identities.some((identity) => identity.id === claim.actorId);
-    const decision = await this.iamDecision(driver, request);
-    if (!actorPresent) {
-      return { outcome: "permanent", code: "ACTOR_REVOKED", decision, authorization: request };
-    }
-    if (!decision.allowed) {
-      return deniedAuthorization(request, decision);
-    }
-    if (claim.namespaceTarget === "ready") {
-      if (namespace.existingNamespace !== undefined) {
-        const adminRequest: AuthorizationRequest = {
-          principalId: claim.actorId,
-          action: "administer",
-          resource: { kind: "installation", id: installation.id },
-        };
-        const refusal = await this.checkGrant(driver, adminRequest);
-        if (refusal !== undefined) {
-          return refusal;
-        }
-      }
-      const exactDecision = await this.iamDecision(driver, exact);
-      if (exactDecision.evidence.restrictionIds.length > 0) {
-        return deniedAuthorization(exact, exactDecision);
-      }
-    }
-    return undefined;
-  }
-
   private sandboxMaintenanceInterval(revision: Readonly<AgentRevision>): number | undefined {
     return this.sandbox?.id === revision.sandboxDriverId
       ? this.sandbox?.maintenanceIntervalMs
@@ -2571,7 +2536,10 @@ export class ControllerWorker {
   ): Promise<void> {
     const cleanupRevisionId = withdrawnRevision?.id ?? repositoryCleanupRevisionId(claim);
     if (cleanupRevisionId === undefined) {
-      await this.finalize(claim, undefined, { outcome: "permanent", code: "INVALID_TARGET" });
+      await this.finalize(claim, undefined, {
+        outcome: "permanent",
+        code: "INVALID_TARGET",
+      });
       return;
     }
     const effect = await this.runRepositoryCleanupEffects(
@@ -2973,20 +2941,29 @@ export class ControllerWorker {
       }
       return;
     }
+    await this.processNamespace(claim);
+  }
+
+  private async processNamespace(claim: ClaimedWork): Promise<void> {
     if (claim.agentId !== undefined || claim.namespaceTarget === undefined) {
-      await this.finalize(claim, undefined, { outcome: "permanent", code: "INVALID_TARGET" });
+      await this.finalize(claim, undefined, {
+        outcome: "permanent",
+        code: "INVALID_TARGET",
+      });
       return;
     }
     let namespace: Readonly<Namespace> | undefined;
-    let result: DispatchResult;
+    let result: NamespaceDispatchResult;
     try {
       namespace = await this.state.read((view) => view.namespaces.findNamespace(claim.namespaceId));
-      const expected = claim.namespaceTarget === "ready" ? "provisioning" : "deleting";
-      if (namespace === undefined || namespace.status !== expected) {
-        await this.finalize(claim, namespace, { outcome: "success", code: "SUPERSEDED_TARGET" });
+      if (namespace?.status !== expectedNamespaceStatus(claim.namespaceTarget)) {
+        await this.finalize(claim, namespace, {
+          outcome: "success",
+          code: "SUPERSEDED_TARGET",
+        });
         return;
       }
-      const denied = await this.authorize(claim, namespace);
+      const denied = await this.authorizeNamespace(claim, namespace);
       if (denied !== undefined) {
         await this.finalize(claim, namespace, denied);
         return;
@@ -2994,7 +2971,7 @@ export class ControllerWorker {
       if (!(await this.renewClaim(claim))) {
         throw new WorkClaimLostError();
       }
-      result = await this.observe(claim, namespace);
+      result = await this.observeNamespace(claim, namespace);
     } catch (error) {
       if (
         error instanceof WorkClaimLostError ||
@@ -3006,6 +2983,268 @@ export class ControllerWorker {
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalize(claim, namespace, result);
+  }
+
+  private async authorizeNamespace(
+    claim: ClaimedWork,
+    namespace: Readonly<Namespace>,
+  ): Promise<DispatchResult | undefined> {
+    const installation = this.installation;
+    if (installation === undefined) {
+      throw new Error("The worker Installation is unavailable.");
+    }
+    const state = await this.loadIAMState();
+    const driver = this.iam;
+    const exact: AuthorizationRequest = {
+      principalId: claim.actorId,
+      action: claim.namespaceTarget === "ready" ? "create" : "delete",
+      resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
+    };
+    const request: AuthorizationRequest =
+      claim.namespaceTarget === "ready"
+        ? {
+            principalId: claim.actorId,
+            action: "create",
+            resource: { kind: "namespace", id: installation.id },
+          }
+        : exact;
+    const actorPresent = state.identities.some((identity) => identity.id === claim.actorId);
+    const decision = await this.iamDecision(driver, request);
+    if (!actorPresent) {
+      return { outcome: "permanent", code: "ACTOR_REVOKED", decision, authorization: request };
+    }
+    if (!decision.allowed) {
+      return deniedAuthorization(request, decision);
+    }
+    if (claim.namespaceTarget === "ready") {
+      if (namespace.existingNamespace !== undefined) {
+        const adminRequest: AuthorizationRequest = {
+          principalId: claim.actorId,
+          action: "administer",
+          resource: { kind: "installation", id: installation.id },
+        };
+        const refusal = await this.checkGrant(driver, adminRequest);
+        if (refusal !== undefined) {
+          return refusal;
+        }
+      }
+      const exactDecision = await this.iamDecision(driver, exact);
+      if (exactDecision.evidence.restrictionIds.length > 0) {
+        return deniedAuthorization(exact, exactDecision);
+      }
+    }
+    return undefined;
+  }
+
+  private async observeNamespace(
+    claim: ClaimedWork,
+    namespace: Readonly<Namespace>,
+  ): Promise<NamespaceDispatchResult> {
+    return this.withClaimHeartbeat(claim, async (signal) => {
+      if (claim.namespaceTarget === "deleted") {
+        const attempts = await this.state.read((view) =>
+          view.repositorySessions.listNamespaceAttempts(namespace.id),
+        );
+        const owners = new Map(attempts.map((attempt) => [attempt.revisionId, attempt]));
+        for (const attempt of owners.values()) {
+          const revision = await this.state.read((view) =>
+            view.revisions.findRevision(attempt.namespaceId, attempt.agentId, attempt.revisionId),
+          );
+          if (revision !== undefined && revisionAdmittedBeforeWork(revision, claim)) {
+            await this.closeRevisionCredentials(claim, revision);
+          }
+        }
+      }
+      const namespaceParticipants: NamespaceLifecycleEvidence[] = [];
+      const observe = () =>
+        this.provisioningController!.observeNamespaceLifecycle(
+          namespace,
+          claim.namespaceTarget ?? "ready",
+          signal,
+          (evidence) => {
+            namespaceParticipants.push(evidence);
+            this.emit({
+              event: "worker.namespace-participant",
+              actorId: claim.actorId,
+              namespaceId: namespace.id,
+              workId: claim.idempotencyKey,
+              ...evidence,
+            });
+          },
+        );
+      const observed = await captureNamespaceHint(observe);
+      const { observation } = observed;
+      if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
+        return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
+      }
+      const complete =
+        "namespaceReady" in observation ? observation.namespaceReady : observation.namespaceDeleted;
+      let outcome: Outcome;
+      if (observation.failure === "permanent") {
+        outcome = "permanent";
+      } else if (complete && observation.failure === undefined) {
+        outcome = "success";
+      } else if (observation.failure === "retryable") {
+        outcome = "retry";
+      } else {
+        outcome = "pending";
+      }
+      return {
+        outcome,
+        code: complete ? "NAMESPACE_RECONCILED" : "NAMESPACE_INCOMPLETE",
+        namespaceParticipants,
+        ...observed,
+      };
+    });
+  }
+
+  private async finalize(
+    claim: ClaimedWork,
+    namespace: Readonly<Namespace> | undefined,
+    result: NamespaceDispatchResult,
+  ): Promise<void> {
+    const expired =
+      result.outcome === "pending" && this.workAgeMs(claim) >= this.convergenceTimeoutMs;
+    const resolved: NamespaceDispatchResult = expired
+      ? { ...result, outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" }
+      : result;
+    const pendingAudit =
+      resolved.outcome === "pending" && resolved.observation !== undefined
+        ? JSON.stringify([claim.namespaceTarget, resolved.code, resolved.observation])
+        : undefined;
+    const { idempotencyKey, namespaceTarget } = claim;
+    const { observation, code } = resolved;
+    const outcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
+    const auditedObservation = await this.state.transactWithQueue(async (unit, queue) => {
+      requireClaimRenewal(await queue.heartbeat(claim));
+      const current =
+        namespace === undefined
+          ? undefined
+          : await unit.namespaces.lockNamespace(namespace.id, { includeDeleted: true });
+      const settlingNamespace =
+        current !== undefined &&
+        current.deletedAt === undefined &&
+        namespaceTarget !== undefined &&
+        current.status === expectedNamespaceStatus(namespaceTarget);
+      const repeatedPending =
+        pendingAudit !== undefined &&
+        this.auditedPendingLifecycle.get(idempotencyKey) === pendingAudit;
+      const shouldAppendObservation =
+        observation !== undefined && resolved.decision === undefined && !repeatedPending;
+      if (settlingNamespace) {
+        let removedPolicy;
+        if (namespaceTarget === "ready") {
+          if (outcome === "success" || outcome === "permanent") {
+            await unit.namespaces.transitionNamespaceStatus(
+              current.id,
+              "provisioning",
+              outcome === "success" ? "ready" : "failed",
+            );
+          }
+        } else if (outcome === "success") {
+          await unit.namespaces.markNamespaceDeleted(current.id, new Date().toISOString());
+          // No grant outlives its Namespace. The lifecycle event records what was removed.
+          removedPolicy = await removeNamespacePolicy(unit, current.id);
+        }
+        if (resolved.decision !== undefined || shouldAppendObservation) {
+          await this.appendNamespaceEvidence(unit, claim, current, resolved, removedPolicy);
+        }
+      }
+
+      if (outcome === "success") {
+        await queue.complete(claim);
+      } else if (outcome === "pending") {
+        // The queue's reconcile evidence for this wait follows the lifecycle audit above.
+        await queue.defer(claim, { code }, repeatedPending ? { recordEvidence: false } : {});
+      } else if (outcome === "permanent") {
+        await queue.fail(claim, { code });
+      } else {
+        await queue.retry(claim, { code });
+      }
+      return settlingNamespace && shouldAppendObservation;
+    }, this.queueOptions);
+    // Recorded after commit: a rolled-back audit row is written again next pass.
+    if (pendingAudit === undefined) {
+      this.auditedPendingLifecycle.delete(idempotencyKey);
+    } else if (auditedObservation) {
+      this.auditedPendingLifecycle.delete(idempotencyKey);
+      if (this.auditedPendingLifecycle.size >= MAX_AUDITED_PENDING_LIFECYCLE_RECORDS) {
+        // Drop the oldest; at worst that work's next identical pass is audited again.
+        this.auditedPendingLifecycle.delete(this.auditedPendingLifecycle.keys().next().value!);
+      }
+      this.auditedPendingLifecycle.set(idempotencyKey, pendingAudit);
+    }
+    this.passOutcome = outcome;
+    // The Compute Driver's bounded reason for a failed Namespace pass; the lifecycle audit
+    // and Namespace status keep only the failure class.
+    const reason =
+      claim.namespaceTarget !== "ready" || resolved.observation?.failure === undefined
+        ? undefined
+        : namespaceFailureReason(resolved.observation);
+    this.emit({
+      event: "worker.completed",
+      ...workLogFields(claim),
+      namespaceId: claim.namespaceId,
+      result: resolved.outcome,
+      outcome: resolved.outcome,
+      code: resolved.code,
+      ...(reason === undefined ? {} : { reason }),
+      ...(resolved.hintCode === undefined ? {} : { hintCode: resolved.hintCode }),
+    });
+  }
+
+  private async appendNamespaceEvidence(
+    unit: PlatformUnitOfWork,
+    claim: ClaimedWork,
+    namespace: Readonly<Namespace>,
+    result: NamespaceDispatchResult,
+    removedPolicy?: Parameters<typeof removedPolicyDetails>[0],
+  ): Promise<void> {
+    const installation = this.installation;
+    if (installation === undefined) {
+      throw new Error("The worker Installation is unavailable.");
+    }
+    const deleting = claim.namespaceTarget === "deleted";
+    const subject = { actorId: claim.actorId, namespaceId: namespace.id };
+    const resource = { kind: "namespace", id: namespace.id, namespaceId: namespace.id } as const;
+    if (result.decision !== undefined) {
+      await unit.audit.append({
+        ...this.auditIdentity(installation, subject),
+        kind: "authorization_denial",
+        action: deleting ? "openclaw.namespaces.delete" : "openclaw.namespaces.create",
+        resource,
+        ...workerAuthorizationEvidence(result),
+        reasonCode: result.code,
+        outcome: "denied",
+      });
+      return;
+    }
+    const observation = result.observation;
+    if (observation === undefined) {
+      return;
+    }
+    const details = {
+      ...(result.namespaceParticipants === undefined
+        ? {}
+        : { participants: result.namespaceParticipants.map((evidence) => ({ ...evidence })) }),
+      computeDriverId: this.compute.id,
+      ...("namespaceReady" in observation
+        ? { namespaceReady: observation.namespaceReady }
+        : { namespaceDeleted: observation.namespaceDeleted }),
+      ...(observation.failure === undefined ? {} : { failure: observation.failure }),
+      ...(result.outcome === "pending" ? { convergencePending: true } : {}),
+      ...removedPolicyDetails(removedPolicy),
+    };
+    await unit.audit.append({
+      ...this.auditIdentity(installation, subject),
+      kind: "mutation",
+      action: deleting
+        ? "openclaw.namespaces.lifecycle.delete"
+        : "openclaw.namespaces.lifecycle.ensure",
+      resource,
+      outcome: result.outcome === "success" || result.outcome === "pending" ? "success" : "failure",
+      details,
+    });
   }
 
   private async processAgentProvisioning(claim: ClaimedWork): Promise<void> {
@@ -3568,14 +3807,8 @@ export class ControllerWorker {
       throw new Error(`The worker Agent ${operation} ${context} context is unavailable.`);
     }
     const envelope = {
-      id: `aud_${randomUUID()}`,
-      installationId: this.installation.id,
-      namespaceId: claim.namespaceId,
-      occurredAt: new Date().toISOString(),
-      actorId: claim.actorId,
-      source: "occ" as const,
+      ...this.auditIdentity(this.installation, claim),
       resource: { kind: "agent" as const, id: claim.agentId, namespaceId: claim.namespaceId },
-      iamDriverId: this.iamDriverId,
     };
     const action = operation === "deletion" ? "delete" : "stop";
     if (result.decision !== undefined) {
@@ -3583,8 +3816,7 @@ export class ControllerWorker {
         ...envelope,
         kind: "authorization_denial",
         action: `openclaw.agents.${action}`,
-        ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
-        decisionReason: result.decision.reason,
+        ...workerAuthorizationEvidence(result),
         reasonCode: result.code,
         outcome: "denied",
       });
@@ -4068,18 +4300,14 @@ export class ControllerWorker {
       throw new Error("The worker credential withdrawal audit context is unavailable.");
     }
     await unit.audit.append({
-      id: `aud_${randomUUID()}`,
-      installationId: this.installation.id,
-      namespaceId: claim.namespaceId,
-      occurredAt: new Date().toISOString(),
+      ...this.auditIdentity(this.installation, {
+        actorId: entry.actorId,
+        namespaceId: claim.namespaceId,
+      }),
       kind: entry.outcome === "denied" ? "authorization_denial" : "mutation",
-      actorId: entry.actorId,
-      source: "occ",
       action: "openclaw.agents.lifecycle.credentials_withdraw",
       resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
-      iamDriverId: this.iamDriverId,
-      ...(entry.authorization === undefined ? {} : { authorization: entry.authorization }),
-      ...(entry.decision === undefined ? {} : { decisionReason: entry.decision.reason }),
+      ...workerAuthorizationEvidence(entry),
       ...(entry.outcome === "denied" ? { reasonCode: entry.code } : {}),
       outcome: entry.outcome,
       details: {
@@ -5704,68 +5932,6 @@ export class ControllerWorker {
     }
   }
 
-  private async observe(
-    claim: ClaimedWork,
-    namespace: Readonly<Namespace>,
-  ): Promise<DispatchResult> {
-    return this.withClaimHeartbeat(claim, async (signal) => {
-      if (claim.namespaceTarget === "deleted") {
-        const attempts = await this.state.read((view) =>
-          view.repositorySessions.listNamespaceAttempts(namespace.id),
-        );
-        const owners = new Map(attempts.map((attempt) => [attempt.revisionId, attempt]));
-        for (const attempt of owners.values()) {
-          const revision = await this.state.read((view) =>
-            view.revisions.findRevision(attempt.namespaceId, attempt.agentId, attempt.revisionId),
-          );
-          if (revision !== undefined && revisionAdmittedBeforeWork(revision, claim)) {
-            await this.closeRevisionCredentials(claim, revision);
-          }
-        }
-      }
-      const namespaceParticipants: NamespaceLifecycleEvidence[] = [];
-      const observe = () =>
-        this.provisioningController!.observeNamespaceLifecycle(
-          namespace,
-          claim.namespaceTarget ?? "ready",
-          signal,
-          (evidence) => {
-            namespaceParticipants.push(evidence);
-            this.emit({
-              event: "worker.namespace-participant",
-              actorId: claim.actorId,
-              namespaceId: namespace.id,
-              workId: claim.idempotencyKey,
-              ...evidence,
-            });
-          },
-        );
-      const observed = await captureNamespaceHint(observe);
-      const { observation } = observed;
-      if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
-        return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
-      }
-      const complete =
-        "namespaceReady" in observation ? observation.namespaceReady : observation.namespaceDeleted;
-      let outcome: Outcome;
-      if (observation.failure === "permanent") {
-        outcome = "permanent";
-      } else if (complete && observation.failure === undefined) {
-        outcome = "success";
-      } else if (observation.failure === "retryable") {
-        outcome = "retry";
-      } else {
-        outcome = "pending";
-      }
-      return {
-        outcome,
-        code: complete ? "NAMESPACE_RECONCILED" : "NAMESPACE_INCOMPLETE",
-        namespaceParticipants,
-        ...observed,
-      };
-    });
-  }
-
   /**
    * Whether a candidate's deployment work last saw its OAuth bootstrap still running: of its
    * readiness evidence, the newest is HARNESS_CREDENTIAL_BOOTSTRAP_PENDING. Transient dependency
@@ -7123,6 +7289,21 @@ export class ControllerWorker {
     );
   }
 
+  private auditIdentity(
+    installation: Readonly<Installation>,
+    subject: Pick<ClaimedWork, "actorId" | "namespaceId">,
+  ) {
+    return {
+      id: `aud_${randomUUID()}`,
+      installationId: installation.id,
+      namespaceId: subject.namespaceId,
+      occurredAt: new Date().toISOString(),
+      actorId: subject.actorId,
+      source: "occ",
+      iamDriverId: this.iamDriverId,
+    } as const;
+  }
+
   private async appendRevisionObservation(
     unit: PlatformUnitOfWork,
     claim: ClaimedWork,
@@ -7134,16 +7315,13 @@ export class ControllerWorker {
       throw new Error("The worker revision activation is unavailable.");
     }
     await unit.audit.append({
-      id: `aud_${randomUUID()}`,
-      installationId: installation.id,
-      namespaceId: revision.namespaceId,
-      occurredAt: new Date().toISOString(),
+      ...this.auditIdentity(installation, {
+        actorId: claim.actorId,
+        namespaceId: revision.namespaceId,
+      }),
       kind: "mutation",
-      actorId: claim.actorId,
-      source: "occ",
       action: "openclaw.agents.lifecycle.activate",
       resource: { kind: "agent_revision", id: revision.id, namespaceId: revision.namespaceId },
-      iamDriverId: this.iamDriverId,
       outcome: "success",
       details: {
         computeDriverId: this.compute.id,
@@ -7162,20 +7340,14 @@ export class ControllerWorker {
       throw new Error("The worker superseded revision is unavailable.");
     }
     await unit.audit.append({
-      id: `aud_${randomUUID()}`,
-      installationId: installation.id,
-      namespaceId: claim.namespaceId,
-      occurredAt: new Date().toISOString(),
+      ...this.auditIdentity(installation, claim),
       kind: "mutation",
-      actorId: claim.actorId,
-      source: "occ",
       action: "openclaw.agents.lifecycle.supersede",
       resource: {
         kind: "agent_revision",
         id: claim.revisionId,
         namespaceId: claim.namespaceId,
       },
-      iamDriverId: this.iamDriverId,
       outcome: "success",
       details: {
         activeRevisionId: active.id,
@@ -7194,203 +7366,14 @@ export class ControllerWorker {
       throw new Error("The worker revision authorization is unavailable.");
     }
     await unit.audit.append({
-      id: `aud_${randomUUID()}`,
-      installationId: installation.id,
-      namespaceId: claim.namespaceId,
-      occurredAt: new Date().toISOString(),
+      ...this.auditIdentity(installation, claim),
       kind: "authorization_denial",
-      actorId: claim.actorId,
-      source: "occ",
       action: "openclaw.agents.deploy",
       resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
-      iamDriverId: this.iamDriverId,
-      ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
-      ...(result.decision === undefined ? {} : { decisionReason: result.decision.reason }),
+      ...workerAuthorizationEvidence(result),
       reasonCode: result.code,
       outcome: "denied",
     });
-  }
-
-  private async finalize(
-    claim: ClaimedWork,
-    namespace: Readonly<Namespace> | undefined,
-    result: DispatchResult,
-  ): Promise<void> {
-    const expired =
-      result.outcome === "pending" && this.workAgeMs(claim) >= this.convergenceTimeoutMs;
-    const resolved: DispatchResult = expired
-      ? { ...result, outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" }
-      : result;
-    const pendingAudit =
-      resolved.outcome === "pending" && resolved.observation !== undefined
-        ? JSON.stringify([claim.namespaceTarget, resolved.code, resolved.observation])
-        : undefined;
-    let auditedPending = false;
-    await this.state.transactWithQueue(async (unit, queue) => {
-      requireClaimRenewal(await queue.heartbeat(claim));
-      const current =
-        namespace === undefined
-          ? undefined
-          : await unit.namespaces.lockNamespace(namespace.id, { includeDeleted: true });
-      if (
-        current !== undefined &&
-        current.deletedAt === undefined &&
-        ((claim.namespaceTarget === "ready" && current.status === "provisioning") ||
-          (claim.namespaceTarget === "deleted" && current.status === "deleting"))
-      ) {
-        const exhausted = resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts;
-        if (claim.namespaceTarget === "ready" && resolved.outcome === "success") {
-          await unit.namespaces.transitionNamespaceStatus(current.id, "provisioning", "ready");
-        } else if (
-          claim.namespaceTarget === "ready" &&
-          (resolved.outcome === "permanent" || exhausted)
-        ) {
-          await unit.namespaces.transitionNamespaceStatus(current.id, "provisioning", "failed");
-        }
-        let removedPolicy;
-        if (claim.namespaceTarget === "deleted" && resolved.outcome === "success") {
-          await unit.namespaces.markNamespaceDeleted(current.id, new Date().toISOString());
-          // No grant outlives its Namespace; the lifecycle event records what was removed.
-          removedPolicy = await removeNamespacePolicy(unit, current.id);
-        }
-
-        if (resolved.decision !== undefined) {
-          await this.appendDenial(unit, claim, current, resolved);
-        } else if (
-          resolved.observation !== undefined &&
-          (pendingAudit === undefined ||
-            this.auditedPendingLifecycle.get(claim.idempotencyKey) !== pendingAudit)
-        ) {
-          await this.appendObservation(unit, claim, current, resolved, removedPolicy);
-          auditedPending = pendingAudit !== undefined;
-        }
-      }
-
-      if (resolved.outcome === "success") {
-        await queue.complete(claim);
-      } else if (resolved.outcome === "pending") {
-        // The queue's reconcile evidence for this wait follows the lifecycle audit above.
-        await queue.defer(
-          claim,
-          { code: resolved.code },
-          pendingAudit !== undefined &&
-            this.auditedPendingLifecycle.get(claim.idempotencyKey) === pendingAudit
-            ? { recordEvidence: false }
-            : {},
-        );
-      } else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts) {
-        await queue.fail(claim, { code: resolved.code });
-      } else {
-        await queue.retry(claim, { code: resolved.code });
-      }
-    }, this.queueOptions);
-    // Recorded after commit: a rolled-back audit row is written again next pass.
-    if (pendingAudit === undefined) {
-      this.auditedPendingLifecycle.delete(claim.idempotencyKey);
-    } else if (auditedPending) {
-      this.auditedPendingLifecycle.delete(claim.idempotencyKey);
-      if (this.auditedPendingLifecycle.size >= MAX_AUDITED_PENDING_LIFECYCLE_RECORDS) {
-        // Drop the oldest; at worst that work's next identical pass is audited again.
-        this.auditedPendingLifecycle.delete(this.auditedPendingLifecycle.keys().next().value!);
-      }
-      this.auditedPendingLifecycle.set(claim.idempotencyKey, pendingAudit);
-    }
-    this.passOutcome = this.outcomeWithAttemptLimit(claim, resolved.outcome);
-    // The Compute Driver's bounded reason for a failed Namespace pass; the lifecycle audit
-    // and Namespace status keep only the failure class.
-    const reason =
-      claim.namespaceTarget !== "ready" || resolved.observation?.failure === undefined
-        ? undefined
-        : namespaceFailureReason(resolved.observation);
-    this.emit({
-      event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      result: resolved.outcome,
-      outcome: resolved.outcome,
-      code: resolved.code,
-      ...(reason === undefined ? {} : { reason }),
-      ...(resolved.hintCode === undefined ? {} : { hintCode: resolved.hintCode }),
-    });
-  }
-
-  private async appendObservation(
-    unit: PlatformUnitOfWork,
-    claim: ClaimedWork,
-    namespace: Readonly<Namespace>,
-    result: DispatchResult,
-    removedPolicy?: Parameters<typeof removedPolicyDetails>[0],
-  ): Promise<void> {
-    const installation = this.installation;
-    if (installation === undefined) {
-      throw new Error("The worker Installation is unavailable.");
-    }
-    const observation = result.observation;
-    if (observation === undefined) {
-      return;
-    }
-    const details = {
-      ...(result.namespaceParticipants === undefined
-        ? {}
-        : { participants: result.namespaceParticipants.map((evidence) => ({ ...evidence })) }),
-      computeDriverId: this.compute.id,
-      ...("namespaceReady" in observation
-        ? { namespaceReady: observation.namespaceReady }
-        : { namespaceDeleted: observation.namespaceDeleted }),
-      ...(observation.failure === undefined ? {} : { failure: observation.failure }),
-      ...(result.outcome === "pending" ? { convergencePending: true } : {}),
-      ...removedPolicyDetails(removedPolicy),
-    };
-    const event: AuditEvent = {
-      id: `aud_${randomUUID()}`,
-      installationId: installation.id,
-      namespaceId: namespace.id,
-      occurredAt: new Date().toISOString(),
-      kind: "mutation",
-      actorId: claim.actorId,
-      source: "occ",
-      action:
-        claim.namespaceTarget === "deleted"
-          ? "openclaw.namespaces.lifecycle.delete"
-          : "openclaw.namespaces.lifecycle.ensure",
-      resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
-      iamDriverId: this.iamDriverId,
-      outcome: result.outcome === "success" || result.outcome === "pending" ? "success" : "failure",
-      details,
-    };
-    await unit.audit.append(event);
-  }
-
-  private async appendDenial(
-    unit: PlatformUnitOfWork,
-    claim: ClaimedWork,
-    namespace: Readonly<Namespace>,
-    result: DispatchResult,
-  ): Promise<void> {
-    const installation = this.installation;
-    if (installation === undefined) {
-      throw new Error("The worker Installation is unavailable.");
-    }
-    const event: AuditEvent = {
-      id: `aud_${randomUUID()}`,
-      installationId: installation.id,
-      namespaceId: namespace.id,
-      occurredAt: new Date().toISOString(),
-      kind: "authorization_denial",
-      actorId: claim.actorId,
-      source: "occ",
-      action:
-        claim.namespaceTarget === "deleted"
-          ? "openclaw.namespaces.delete"
-          : "openclaw.namespaces.create",
-      resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
-      iamDriverId: this.iamDriverId,
-      ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
-      ...(result.decision === undefined ? {} : { decisionReason: result.decision.reason }),
-      reasonCode: result.code,
-      outcome: "denied",
-    };
-    await unit.audit.append(event);
   }
 }
 
