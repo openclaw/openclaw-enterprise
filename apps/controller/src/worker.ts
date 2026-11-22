@@ -7008,17 +7008,19 @@ export class ControllerWorker {
     const terminalFailure =
       resolved.outcome === "permanent" ||
       (resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
-    if (
-      terminalFailure &&
-      resolved.candidateNotStarted !== true &&
-      (await this.hasIncompatibleDeploymentHistory(claim))
-    ) {
-      // A failure before the ordinary history check cannot authorize cleanup.
-      await this.finalize(claim, undefined, {
-        outcome: "permanent",
-        code: INCOMPATIBLE_REPOSITORY_HISTORY,
-      });
-      return;
+    if (terminalFailure && resolved.candidateNotStarted !== true) {
+      const historyFailure = await this.terminalDeploymentHistoryFailure(
+        claim,
+        resolved.outcome === "retry" && resolved.code === "DEPENDENCY_UNAVAILABLE",
+      );
+      if (historyFailure !== undefined) {
+        // A failure before the ordinary history check cannot authorize cleanup.
+        await this.finalize(claim, undefined, {
+          outcome: "permanent",
+          code: historyFailure,
+        });
+        return;
+      }
     }
     if (
       resolved.outcome === "retry" &&
@@ -7385,7 +7387,10 @@ export class ControllerWorker {
     }, this.queueOptions);
   }
 
-  private async hasIncompatibleDeploymentHistory(claim: ClaimedWork): Promise<boolean> {
+  private async terminalDeploymentHistoryFailure(
+    claim: ClaimedWork,
+    exhaustedDependencyRetry: boolean,
+  ): Promise<typeof INCOMPATIBLE_REPOSITORY_HISTORY | "DEPENDENCY_UNAVAILABLE" | undefined> {
     const { namespaceId, agentId, revisionId } = claim;
     if (
       agentId === undefined ||
@@ -7394,16 +7399,44 @@ export class ControllerWorker {
       claim.agentTarget !== undefined ||
       !isCandidateDeployment(claim)
     ) {
-      return false;
+      return undefined;
     }
-    return this.state.read(async (view) => {
+    const failure = await this.state.read<
+      typeof INCOMPATIBLE_REPOSITORY_HISTORY | PersistedStateInvalidError | undefined
+    >(async (view) => {
       const agent = await view.agents.findAgent(namespaceId, agentId);
       if (agent === undefined || agent.activeRevisionId === revisionId) {
-        return false;
+        return undefined;
       }
-      const candidate = await view.revisions.findRevision(namespaceId, agentId, revisionId);
-      return candidate !== undefined && !(await this.canReleaseScopedRevision(candidate, view));
+      let candidate: Readonly<AgentRevision> | undefined;
+      try {
+        candidate = await view.revisions.findRevision(namespaceId, agentId, revisionId);
+      } catch (error) {
+        if (!exhaustedDependencyRetry || !(error instanceof PersistedStateInvalidError)) {
+          throw error;
+        }
+        const replacement = await view.agents.findPredecessorReplacement(namespaceId, agentId);
+        if (isCommittedPredecessorStop(replacement, revisionId)) {
+          throw error;
+        }
+        return error;
+      }
+      return candidate !== undefined && !(await this.canReleaseScopedRevision(candidate, view))
+        ? INCOMPATIBLE_REPOSITORY_HISTORY
+        : undefined;
     });
+    if (!(failure instanceof PersistedStateInvalidError)) {
+      return failure;
+    }
+    // Check the yield after releasing the State connection. An unfinished stop
+    // can still recover when the candidate becomes readable again.
+    if (
+      (await this.queue.findWorkAttempt(claim.idempotencyKey, "PREDECESSOR_STOP_YIELDED")) !==
+      undefined
+    ) {
+      throw failure;
+    }
+    return "DEPENDENCY_UNAVAILABLE";
   }
 
   /**
