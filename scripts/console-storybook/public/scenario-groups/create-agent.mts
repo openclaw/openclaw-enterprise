@@ -339,6 +339,24 @@ export const createAgentFormScenarios = {
       "Open Runtime details and Tab to Execution mode. With Codex it takes focus and looks unavailable, described by its hint; keys and clicks do not change it. OpenClaw makes it selectable (finding 2945).",
     ],
   },
+  createModelSecretPending: {
+    group: "Pages/Create Agent",
+    name: "Model Secret access check",
+    path: create,
+    actions: form,
+    extraSecrets: [
+      { id: "sec_storybook_first", name: "Sample A" },
+      { id: "sec_storybook_second", name: "Sample B" },
+    ],
+    rules: [{ suffix: "/permissions/secrets", delayMs: 15000, once: true }],
+    description: "The first Secret access check takes 15 seconds.",
+    steps: [
+      "Under OpenAI, choose Sample A. Create Agent is unavailable while the picker checks access.",
+      "Switch to Anthropic during the check. The Secret field clears and stays empty after the answer arrives.",
+      "Choose Sample B, then switch back to OpenAI. The choice, metadata link and selection message clear together.",
+    ],
+    gap: "The Secrets and permission answer are simulated.",
+  },
   createNativeAdmin: {
     group: "Pages/Create Agent",
     name: "Browser chat opt-in",
