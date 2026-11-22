@@ -201,9 +201,9 @@ discard and opens a fresh chooser. A successful or uncertain save disables resta
 and uses ordinary creation recovery.
 
 The form retains chooser state and each variable's `configuration.values` path. If a
-Create refusal starts `Configuration setting <path>` and the submitted value still
-matches the rendered value, it names variables filling that path and offers **Change**
-with their labels. While restart is enabled, **Change** restores the chooser, marks
+Create refusal starts `Configuration setting <path>`, names a setting filled by a Preset
+variable, and the submitted value still matches the rendered value, the form names those
+variables and offers **Change** with their labels. While restart is enabled, **Change** restores the chooser, marks
 those fields with the server's sentence and focuses the first. Feedback names variables,
 never values. A quoted segment such as `models["openai/gpt 5"]` is one key. A failed
 Preset load focuses the chooser heading.
