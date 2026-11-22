@@ -4,6 +4,11 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
+import {
+  CLAUDE_CLI_AGENT_RUNTIME_ID,
+  claudeCodeRuntimeRunsProvider,
+  harnessIdForAgentRuntime,
+} from "./agent-runtime-ids.ts";
 import { canSpell } from "./configuration-settings.ts";
 import {
   agentEntryMessage,
@@ -16,23 +21,17 @@ import {
 } from "./errors.ts";
 import { providerModelsListError } from "./model-provider-settings.ts";
 
-/**
- * OpenClaw's Claude Code CLI backend. It is a model-scoped agent runtime of the embedded
- * OpenClaw Harness, not a Harness of its own: the Gateway process spawns the Claude Code
- * binary for each turn. Upstream calls it `claude-cli`.
- */
-export const CLAUDE_CLI_AGENT_RUNTIME_ID = "claude-cli";
+export {
+  CLAUDE_CLI_AGENT_RUNTIME_ID,
+  claudeCodeRuntimeRunsProvider,
+  harnessIdForAgentRuntime,
+} from "./agent-runtime-ids.ts";
 
 const SUPPORTED_AGENT_RUNTIME_IDS: ReadonlySet<string> = new Set([
   "openclaw",
   "codex",
   CLAUDE_CLI_AGENT_RUNTIME_ID,
 ]);
-
-/** The Harness that executes a configured agent runtime. */
-export function harnessIdForAgentRuntime(agentRuntimeId: string): string {
-  return agentRuntimeId === CLAUDE_CLI_AGENT_RUNTIME_ID ? "openclaw" : agentRuntimeId;
-}
 
 /**
  * The setting path (`....agentRuntime.id`) of the first model policy in the document that names
@@ -968,9 +967,8 @@ function resolveModelPolicy(
         ),
       );
     }
-    // Upstream routes `anthropic/<model>` through its Claude Code CLI backend; any other
-    // provider has no such backend, so the policy would select a runtime that cannot run.
-    if (selected === CLAUDE_CLI_AGENT_RUNTIME_ID && providerId !== "anthropic") {
+    // Any other provider would select a runtime that cannot run.
+    if (selected === CLAUDE_CLI_AGENT_RUNTIME_ID && !claudeCodeRuntimeRunsProvider(providerId)) {
       throw new ConfigurationHarnessError(
         configurationSettingMessage(
           `${first![1]()}.agentRuntime.id`,

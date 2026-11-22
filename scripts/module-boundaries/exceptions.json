@@ -117,6 +117,18 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/agent-runtime-ids.ts",
+      "specifier": "file:packages/occ/src/agent-runtime-ids.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console keeps a Claude Code agent runtime policy through model edits by OCC's dependency-free rule for the models that runtime runs, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
       "to": "packages/occ/src/gateway-security-defaults.ts",
       "specifier": "file:packages/occ/src/gateway-security-defaults.ts",
       "kind": "path",
