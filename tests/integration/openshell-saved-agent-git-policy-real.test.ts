@@ -527,8 +527,7 @@ git -C '${local}' rev-parse HEAD HEAD^`,
  * second fine-grained value that replaces it and the classic value the Worker must refuse.
  */
 type JourneyCredential =
-  | { kind: "app" }
-  | { kind: "token"; value: string; replacement: string; classic: string };
+  { kind: "app" } | { kind: "token"; value: string; replacement: string; classic: string };
 
 function fakeTokenCredential(): JourneyCredential {
   const fake = (prefix: string) => `${prefix}FAKE0${randomBytes(24).toString("hex")}`;
@@ -823,1002 +822,961 @@ async function refuseClassicToken(
 }
 
 async function savedAgentGitJourney(t: TestContext, credential: JourneyCredential) {
-      assert.ok(selected, "Select the owned Kubernetes/OpenShell installation");
-      for (const setting of ["OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE"]) {
-        assert.ok(
-          /^[^@\s]+@sha256:[a-f0-9]{64}$/.test(process.env[setting] ?? ""),
-          `${setting} must select a digest-pinned image for saved Agent validation`,
-        );
-      }
-      assert.equal(
-        process.env.OCC_DEVELOPMENT_STATE_DIRECTORY,
-        undefined,
-        "The saved ACL case must create and own a fresh installation",
-      );
+  assert.ok(selected, "Select the owned Kubernetes/OpenShell installation");
+  for (const setting of ["OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE"]) {
+    assert.ok(
+      /^[^@\s]+@sha256:[a-f0-9]{64}$/.test(process.env[setting] ?? ""),
+      `${setting} must select a digest-pinned image for saved Agent validation`,
+    );
+  }
+  assert.equal(
+    process.env.OCC_DEVELOPMENT_STATE_DIRECTORY,
+    undefined,
+    "The saved ACL case must create and own a fresh installation",
+  );
+  assert.ok(
+    process.env.OPENAI_API_KEY === "fixture-only-no-model-call" &&
+      (process.env.CODEX_ACCESS_TOKEN === undefined ||
+        process.env.CODEX_ACCESS_TOKEN === "fixture-only-no-model-call"),
+    "Use the inert Local Setup credential with the synthetic startup model",
+  );
+  const app = credential.kind === "app";
+  const fixture = await createOpenShellGitInstallation(t, {
+    nativeGit: true,
+    ...(credential.kind === "token" && { tokenSource: credential.value }),
+  });
+  const { callbacks, gatewayClient, workspace, request } = fixture;
+  assert.ok(callbacks);
+  const origin: GitOrigin = fixture.origin;
+  const network = origin.network;
+  assert.ok(network && network.token === undefined, "Require the controlled App issuer");
+  assert.deepEqual(network.repositories, ["fixture/a", "fixture/b", "fixture/c"]);
+  // The origin accepts the operator's token as one static credential; nothing is issued.
+  let lentIndex = 0;
+  if (!app) {
+    const accepted = origin.snapshot();
+    assert.equal(accepted.issued, 0);
+    assert.equal(accepted.tokens.length, 1, "TOKEN_ORIGIN_ACCEPTS_ONE_VALUE");
+    lentIndex = accepted.tokens[0]!.index;
+  }
+  const deployWith = (run: () => Promise<Deployed>) =>
+    app ? deployWithIssuance(origin, run) : deployWithLentToken(origin, run, lentIndex);
+
+  const refs = network.scopes.map(({ repositoryRef }) => repositoryRef);
+  const prepareAgent = (installation: GitInstallation) =>
+    prepareFiniteGitAgent(t, installation, refs);
+  const { agent, path, deploy } = await prepareAgent(fixture);
+  const deployPolicy = () => deployWith(deploy);
+  const policyPath = `${path}/sandbox-policy/networking`;
+  await request("PATCH", `${policyPath}/editing`, { enabled: true });
+  const readPolicy = async (): Promise<SandboxPolicyViewWire> => request("GET", policyPath);
+  const initial = await readPolicy();
+  assert.equal(initial.editingEnabled, true);
+  assert.equal(initial.repositoryNetworkPolicySaveSupported, true);
+  assert.deepEqual(
+    initial.repositoryNetworkPolicyCeiling,
+    network.repositories.map((repository) => ({ repository, access: "write" })),
+    "The operator's ceiling and Namespace registry must approve A, B and C",
+  );
+  assert.equal(initial.policy.repositoryNetworkPolicy, undefined);
+  assert.equal(initial.defaultsRevisionId, undefined);
+  assert.equal(initial.deployedPolicyVersion, undefined);
+  const save = async (
+    previous: SandboxPolicyViewWire,
+    grants: readonly RepositoryNetworkGrant[],
+  ) => {
+    const saved: SandboxPolicyViewWire["policy"] = await request("PUT", policyPath, {
+      expectedVersion: previous.policy.version,
+      additions: previous.policy.additions,
+      repositoryNetworkPolicy: grants,
+    });
+    assert.equal(saved.version, previous.policy.version + 1);
+    assert.equal(saved.agentId, agent.id);
+    assert.deepEqual(saved.repositoryNetworkPolicy, grants);
+    const read = await readPolicy();
+    assert.equal(read.defaultsRevisionId, previous.defaultsRevisionId);
+    assert.equal(read.deployedPolicyVersion, previous.deployedPolicyVersion);
+    assert.deepEqual(read.policy, saved);
+    return saved;
+  };
+
+  const primary = { workspace, policyPath };
+  const loadPolicy = async (
+    deployed: Awaited<ReturnType<typeof deploy>>,
+    desired: SandboxPolicyViewWire["policy"],
+    mode: "permissive" | "read-write" | "read-only" | "peer",
+    { workspace, policyPath } = primary,
+  ) => {
+    const { target, revision } = deployed;
+    const [view, status, config] = await Promise.all([
+      request("GET", policyPath) as Promise<SandboxPolicyViewWire>,
+      gatewayClient.getSandboxPolicyStatus(workspace, target.sandboxName, t.signal),
+      gatewayClient.getSandboxConfig(workspace, target.sandboxName, t.signal),
+    ]);
+    const serving = await deployed.readExecution();
+    assert.deepEqual(serving.identity, deployed.original.identity);
+    assert.equal(view.defaultsRevisionId, revision.id);
+    assert.equal(view.deployedPolicyVersion, desired.version);
+    assert.deepEqual(view.policy.repositoryNetworkPolicy, desired.repositoryNetworkPolicy);
+    const loaded = asRecord(status.revision);
+    assert.ok(loaded && Number.isSafeInteger(loaded.version));
+    assert.equal(loaded.status, "POLICY_STATUS_LOADED");
+    assert.ok(!loaded.load_error);
+    assert.equal(status.active_version, loaded.version);
+    assert.equal(config.version, loaded.version);
+    assert.equal(config.workspace, workspace);
+    assert.equal(config.configuration_admitted, true);
+    assert.equal(config.policy_validation_failure_mode, "fail_closed");
+    assertGitCallbackEndpoint(config.supervisor_middleware_services, callbacks.endpoint);
+    const admitted = serving.sandbox.configurationAdmission;
+    assert.ok(admitted && admitted.state === 2);
+    assert.equal(admitted.instance_id, config.configuration_instance_id);
+    assert.equal(admitted.policy_version, config.version);
+    assert.equal(admitted.policy_hash, config.policy_hash);
+    assert.equal(admitted.config_revision, config.config_revision);
+    assert.equal(admitted.provider_env_revision, config.provider_env_revision);
+    assert.equal(serving.sandbox.spec?.provider_attachment_epoch, config.provider_attachment_epoch);
+    for (const identity of [
+      config.configuration_instance_id,
+      config.policy_hash,
+      config.config_revision,
+      config.provider_env_revision,
+      config.provider_attachment_epoch,
+    ]) {
       assert.ok(
-        process.env.OPENAI_API_KEY === "fixture-only-no-model-call" &&
-          (process.env.CODEX_ACCESS_TOKEN === undefined ||
-            process.env.CODEX_ACCESS_TOKEN === "fixture-only-no-model-call"),
-        "Use the inert Local Setup credential with the synthetic startup model",
+        typeof identity === "string" && identity.length > 0,
+        "missing loaded policy identity",
       );
-      const app = credential.kind === "app";
-      const fixture = await createOpenShellGitInstallation(t, {
-        nativeGit: true,
-        ...(credential.kind === "token" && { tokenSource: credential.value }),
-      });
-      const { callbacks, gatewayClient, workspace, request } = fixture;
-      assert.ok(callbacks);
-      const origin: GitOrigin = fixture.origin;
-      const network = origin.network;
-      assert.ok(network && network.token === undefined, "Require the controlled App issuer");
-      assert.deepEqual(network.repositories, ["fixture/a", "fixture/b", "fixture/c"]);
-      // The origin accepts the operator's token as one static credential; nothing is issued.
-      let lentIndex = 0;
-      if (!app) {
-        const accepted = origin.snapshot();
-        assert.equal(accepted.issued, 0);
-        assert.equal(accepted.tokens.length, 1, "TOKEN_ORIGIN_ACCEPTS_ONE_VALUE");
-        lentIndex = accepted.tokens[0]!.index;
-      }
-      const deployWith = (run: () => Promise<Deployed>) =>
-        app ? deployWithIssuance(origin, run) : deployWithLentToken(origin, run, lentIndex);
+    }
 
-      const refs = network.scopes.map(({ repositoryRef }) => repositoryRef);
-      const prepareAgent = (installation: GitInstallation) =>
-        prepareFiniteGitAgent(t, installation, refs);
-      const { agent, path, deploy } = await prepareAgent(fixture);
-      const deployPolicy = () => deployWith(deploy);
-      const policyPath = `${path}/sandbox-policy/networking`;
-      await request("PATCH", `${policyPath}/editing`, { enabled: true });
-      const readPolicy = async (): Promise<SandboxPolicyViewWire> => request("GET", policyPath);
-      const initial = await readPolicy();
-      assert.equal(initial.editingEnabled, true);
-      assert.equal(initial.repositoryNetworkPolicySaveSupported, true);
-      assert.deepEqual(
-        initial.repositoryNetworkPolicyCeiling,
-        network.repositories.map((repository) => ({ repository, access: "write" })),
-        "The operator's ceiling and Namespace registry must approve A, B and C",
-      );
-      assert.equal(initial.policy.repositoryNetworkPolicy, undefined);
-      assert.equal(initial.defaultsRevisionId, undefined);
-      assert.equal(initial.deployedPolicyVersion, undefined);
-      const save = async (
-        previous: SandboxPolicyViewWire,
-        grants: readonly RepositoryNetworkGrant[],
-      ) => {
-        const saved: SandboxPolicyViewWire["policy"] = await request("PUT", policyPath, {
-          expectedVersion: previous.policy.version,
-          additions: previous.policy.additions,
-          repositoryNetworkPolicy: grants,
-        });
-        assert.equal(saved.version, previous.policy.version + 1);
-        assert.equal(saved.agentId, agent.id);
-        assert.deepEqual(saved.repositoryNetworkPolicy, grants);
-        const read = await readPolicy();
-        assert.equal(read.defaultsRevisionId, previous.defaultsRevisionId);
-        assert.equal(read.deployedPolicyVersion, previous.deployedPolicyVersion);
-        assert.deepEqual(read.policy, saved);
-        return saved;
-      };
+    // Require one private Git route with exact method, path, and service
+    // grants. This expectation derives from the scenario's independent
+    // A/B/C oracle and never calls the product policy compiler.
+    const rules = asRecord(asRecord(config.policy)?.network_policies);
+    assert.ok(rules);
+    const github = Object.entries(rules).flatMap(([name, rule]) => {
+      const endpoints = asRecord(rule)?.endpoints ?? [];
+      assert.ok(Array.isArray(endpoints));
+      return endpoints
+        .map(asRecord)
+        .filter(
+          (endpoint) =>
+            typeof endpoint?.host === "string" &&
+            (endpoint.host === "*" || /(?:^|[.])github[.]com$/iu.test(endpoint.host)),
+        )
+        .map((endpoint) => ({ name, endpoint }));
+    });
+    const grants = desired.repositoryNetworkPolicy;
+    assert.ok(grants);
+    assert.equal(github.length, grants.length);
+    const git = github.find(({ endpoint }) => endpoint?.host === "github.com");
+    assert.ok(git?.endpoint && desired.repositoryNetworkPolicy);
+    const providers = serving.sandbox.spec?.providers;
+    const provider = asRecord(git.endpoint.credential_binding)?.provider;
+    assert.ok(typeof provider === "string" && provider.length > 0);
+    assert.ok(providers?.includes(provider), "Git binding must name an attached Provider");
+    assert.equal(git.name, "repository-git-network");
+    const sourceRules = asRecord(asRecord(loaded.policy)?.network_policies);
+    const source = asRecord(sourceRules?.[git.name]);
+    const sourceEndpoints = source?.endpoints;
+    assert.ok(Array.isArray(sourceEndpoints));
+    assert.equal(sourceEndpoints.length, github.length);
+    const expectedEffective = {
+      ...source,
+      endpoints: sourceEndpoints.map((raw: unknown) => {
+        const endpoint = asRecord(raw);
+        assert.ok(endpoint);
+        assert.deepEqual(endpoint.credential_binding, { provider });
+        assert.ok(!endpoint.provider_credentialed && !endpoint.token_grant_owner);
+        return { ...endpoint, provider_credentialed: true };
+      }),
+    };
+    assert.ok(
+      isDeepStrictEqual(wirePolicy(rules[git.name]), wirePolicy(expectedEffective)),
+      "Effective Git endpoints must retain the exact Sandbox credential bindings",
+    );
 
-      const primary = { workspace, policyPath };
-      const loadPolicy = async (
-        deployed: Awaited<ReturnType<typeof deploy>>,
-        desired: SandboxPolicyViewWire["policy"],
-        mode: "permissive" | "read-write" | "read-only" | "peer",
-        { workspace, policyPath } = primary,
-      ) => {
-        const { target, revision } = deployed;
-        const [view, status, config] = await Promise.all([
-          request("GET", policyPath) as Promise<SandboxPolicyViewWire>,
-          gatewayClient.getSandboxPolicyStatus(workspace, target.sandboxName, t.signal),
-          gatewayClient.getSandboxConfig(workspace, target.sandboxName, t.signal),
-        ]);
-        const serving = await deployed.readExecution();
-        assert.deepEqual(serving.identity, deployed.original.identity);
-        assert.equal(view.defaultsRevisionId, revision.id);
-        assert.equal(view.deployedPolicyVersion, desired.version);
-        assert.deepEqual(view.policy.repositoryNetworkPolicy, desired.repositoryNetworkPolicy);
-        const loaded = asRecord(status.revision);
-        assert.ok(loaded && Number.isSafeInteger(loaded.version));
-        assert.equal(loaded.status, "POLICY_STATUS_LOADED");
-        assert.ok(!loaded.load_error);
-        assert.equal(status.active_version, loaded.version);
-        assert.equal(config.version, loaded.version);
-        assert.equal(config.workspace, workspace);
-        assert.equal(config.configuration_admitted, true);
-        assert.equal(config.policy_validation_failure_mode, "fail_closed");
-        assertGitCallbackEndpoint(config.supervisor_middleware_services, callbacks.endpoint);
-        const admitted = serving.sandbox.configurationAdmission;
-        assert.ok(admitted && admitted.state === 2);
-        assert.equal(admitted.instance_id, config.configuration_instance_id);
-        assert.equal(admitted.policy_version, config.version);
-        assert.equal(admitted.policy_hash, config.policy_hash);
-        assert.equal(admitted.config_revision, config.config_revision);
-        assert.equal(admitted.provider_env_revision, config.provider_env_revision);
-        assert.equal(
-          serving.sandbox.spec?.provider_attachment_epoch,
-          config.provider_attachment_epoch,
-        );
-        for (const identity of [
-          config.configuration_instance_id,
-          config.policy_hash,
-          config.config_revision,
-          config.provider_env_revision,
-          config.provider_attachment_epoch,
-        ]) {
-          assert.ok(
-            typeof identity === "string" && identity.length > 0,
-            "missing loaded policy identity",
-          );
-        }
-
-        // Require one private Git route with exact method, path, and service
-        // grants. This expectation derives from the scenario's independent
-        // A/B/C oracle and never calls the product policy compiler.
-        const rules = asRecord(asRecord(config.policy)?.network_policies);
-        assert.ok(rules);
-        const github = Object.entries(rules).flatMap(([name, rule]) => {
-          const endpoints = asRecord(rule)?.endpoints ?? [];
-          assert.ok(Array.isArray(endpoints));
-          return endpoints
-            .map(asRecord)
-            .filter(
-              (endpoint) =>
-                typeof endpoint?.host === "string" &&
-                (endpoint.host === "*" || /(?:^|[.])github[.]com$/iu.test(endpoint.host)),
-            )
-            .map((endpoint) => ({ name, endpoint }));
-        });
-        const grants = desired.repositoryNetworkPolicy;
-        assert.ok(grants);
-        assert.equal(github.length, grants.length);
-        const git = github.find(({ endpoint }) => endpoint?.host === "github.com");
-        assert.ok(git?.endpoint && desired.repositoryNetworkPolicy);
-        const providers = serving.sandbox.spec?.providers;
-        const provider = asRecord(git.endpoint.credential_binding)?.provider;
-        assert.ok(typeof provider === "string" && provider.length > 0);
-        assert.ok(providers?.includes(provider), "Git binding must name an attached Provider");
-        assert.equal(git.name, "repository-git-network");
-        const sourceRules = asRecord(asRecord(loaded.policy)?.network_policies);
-        const source = asRecord(sourceRules?.[git.name]);
-        const sourceEndpoints = source?.endpoints;
-        assert.ok(Array.isArray(sourceEndpoints));
-        assert.equal(sourceEndpoints.length, github.length);
-        const expectedEffective = {
-          ...source,
-          endpoints: sourceEndpoints.map((raw: unknown) => {
-            const endpoint = asRecord(raw);
-            assert.ok(endpoint);
-            assert.deepEqual(endpoint.credential_binding, { provider });
-            assert.ok(!endpoint.provider_credentialed && !endpoint.token_grant_owner);
-            return { ...endpoint, provider_credentialed: true };
-          }),
-        };
-        assert.ok(
-          isDeepStrictEqual(wirePolicy(rules[git.name]), wirePolicy(expectedEffective)),
-          "Effective Git endpoints must retain the exact Sandbox credential bindings",
-        );
-
-        const [attached, profile] = await Promise.all([
-          gatewayClient.getProvider(workspace, provider, t.signal),
-          gatewayClient.getProviderProfile(workspace, provider, t.signal),
-        ]);
-        assert.equal(attached?.type, provider);
-        assert.ok(profile?.definition);
-        assert.ok(attached.id);
-        assert.match(profile.resourceVersion, /^[1-9]\d*$/);
-        assert.equal(
-          await gatewayClient.readExclusivePreviewWorkspace(
-            workspace,
-            target.sandboxId,
-            t.signal,
-            provider,
-          ),
-          true,
-        );
-
-        assert.match(attached.resourceVersion, /^[1-9]\d*$/);
-        const identity = {
-          providerId: attached.id,
-          profileVersion: profile.resourceVersion,
-          resourceVersion: attached.resourceVersion,
-        };
-        assert.deepEqual(profile.definition.endpoints ?? [], []);
-        assert.deepEqual(profile.definition.binaries ?? [], []);
-        const providerRuleName = "_provider_" + provider.replaceAll("-", "_");
-        assert.deepEqual(
-          wirePolicy(rules[providerRuleName]),
-          { name: providerRuleName },
-          "The attached Git Provider must contribute an empty policy layer",
-        );
-        const gitEndpoints = [];
-        for (const { name, endpoint } of github) {
-          assert.ok(name === git.name && endpoint);
-          assert.equal(endpoint.host, "github.com");
-          gitEndpoints.push(endpoint);
-          assert.equal(endpoint.port, 443);
-          assert.equal(endpoint.protocol, "rest");
-          assert.equal(endpoint.enforcement, "NETWORK_ENFORCEMENT_MODE_ENFORCE");
-          assert.equal(endpoint.provider_credentialed, true);
-          assert.ok(!endpoint.allow_uninspected_credentials);
-          assert.ok(endpoint.tls === undefined || endpoint.tls === "NETWORK_TLS_MODE_UNSPECIFIED");
-        }
-        const expected = grants.map(({ repository, access }) => {
-          const services =
-            access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
-          const rules = services.flatMap((service) => [
-            {
-              allow: {
-                method: "GET",
-                path: `/${repository}.git/info/refs`,
-                query: { service: { glob: service } },
-              },
-            },
-            { allow: { method: "POST", path: `/${repository}.git/${service}` } },
-          ]);
-          return { path: `/${repository}.git/**`, rules };
-        });
-        assert.deepEqual(
-          wirePolicy(gitEndpoints.map(({ path, rules }) => ({ path, rules }))),
-          wirePolicy(expected),
-        );
-        const generation = {
-          ...identity,
-          provider,
-          hash: config.policy_hash,
-          configInstance: config.configuration_instance_id,
-          configRevision: config.config_revision,
-          providerRevision: config.provider_env_revision,
-          attachmentEpoch: config.provider_attachment_epoch,
-        };
-        // The manual receipt carries only identity digests and observed counters.
-        t.diagnostic(
-          JSON.stringify({
-            event: "saved-git-acl-installed",
-            generation: savedGitAclIdentity(generation),
-            mode,
-            agent: savedGitAclIdentity(deployed.agent.id),
-            revision: savedGitAclIdentity(revision.id),
-            sandbox: savedGitAclIdentity(target.sandboxId),
-            savedVersion: desired.version,
-            policyVersion: loaded.version,
-          }),
-        );
-        return generation;
-      };
-
-      // Observe the actual deployment owner's cleanup through independent runtime,
-      // Kubernetes, Provider, profile and issuer channels.
-      const retire = async (
-        deployed: Deployed,
-        providerName: string,
-        index: number,
-        owner = { path, workspace, agentId: agent.id },
-      ) => {
-        await observeUntil("retirement of the loaded Agent revision", t.signal, async () => {
-          const deployment: AgentDeploymentStatusWire = await request(
-            "GET",
-            `${owner.path}/deployments/${deployed.revision.id}`,
-          );
-          assert.notEqual(deployment.cleanup?.status, "failed");
-          const sandbox = await gatewayClient.getSandbox(
-            { workspace: owner.workspace, name: deployed.target.sandboxName },
-            t.signal,
-          );
-          assert.ok(sandbox === undefined || sandbox.id === deployed.target.sandboxId);
-          const ownedResource = await fixture.kube([
-            "get",
-            "sandboxes.agents.x-k8s.io",
-            deployed.target.sandboxName,
-            "-n",
-            owner.workspace,
-            "--ignore-not-found",
-            "-o",
-            "name",
-          ]);
-          const podIds = await fixture.kube([
-            "get",
-            "pods",
-            "-n",
-            owner.workspace,
-            "-o",
-            'jsonpath={range .items[*]}{.metadata.uid}{" "}{.metadata.ownerReferences[*].uid}{" "}{end}',
-          ]);
-          const previous = deployed.original.identity;
-          const identities = new Set(podIds.split(/\s+/u));
-          const priorPods = [
-            previous.sandboxUid,
-            previous.podUid,
-            deployed.supervisor.supervisorPodUid,
-          ];
-          const provider = await gatewayClient.getProvider(owner.workspace, providerName, t.signal);
-          const profile = await gatewayClient.getProviderProfile(
-            owner.workspace,
-            providerName,
-            t.signal,
-          );
-          const credential = origin.snapshot().tokens.find((token) => token.index === index);
-          return deployment.cleanup?.status === "succeeded" &&
-            !sandbox &&
-            ownedResource.trim() === "" &&
-            priorPods.every((id) => !identities.has(id)) &&
-            !provider &&
-            !profile &&
-            // A lent token is the operator's to revoke at GitHub; retirement removes its route.
-            (app ? credential?.revoked === true : credential?.revoked === false)
-            ? true
-            : undefined;
-        });
-        const revoked = app
-          ? await network.probeIssued(index, "fixture/b", {
-              method: "GET",
-              service: "git-upload-pack",
-            })
-          : undefined;
-        if (app) {
-          assert.deepEqual(revoked, { status: 401, type: "application/json" });
-        }
-        t.diagnostic(
-          JSON.stringify({
-            event: "saved-git-acl-retired",
-            agent: savedGitAclIdentity(owner.agentId),
-            revision: savedGitAclIdentity(deployed.revision.id),
-            sandbox: savedGitAclIdentity(deployed.target.sandboxId),
-            credentialIndex: index,
-            originStatus: revoked?.status,
-          }),
-        );
-      };
-      // First-save and rollout are separate mutations. Saving must not admit
-      // a revision or silently change the revision that serves the saved Agent.
-      assert.deepEqual(await request("GET", `${path}/revisions`), []);
-      const managed = createManagedWorkloadExec(t, {
-        backend: fixture.gatewayBackend,
-        gatewayClient,
+    const [attached, profile] = await Promise.all([
+      gatewayClient.getProvider(workspace, provider, t.signal),
+      gatewayClient.getProviderProfile(workspace, provider, t.signal),
+    ]);
+    assert.equal(attached?.type, provider);
+    assert.ok(profile?.definition);
+    assert.ok(attached.id);
+    assert.match(profile.resourceVersion, /^[1-9]\d*$/);
+    assert.equal(
+      await gatewayClient.readExclusivePreviewWorkspace(
         workspace,
-        checkpoint: fixture.checkpoint,
-      });
-      const deadlines = new Map<string, number>();
-      const requireTimelyGit = (target: GitTarget) => {
-        const deadline = deadlines.get(target.sandboxId);
-        assert.ok(
-          deadline !== undefined && Date.now() < deadline,
-          "The exact finite Git grant must be active",
-        );
-      };
-      const exec: GitExec = async (target, command) => {
-        requireTimelyGit(target);
-        const result = await managed(target, command);
-        for (const output of [result.stdout, result.stderr]) {
-          assert.ok(!network.containsIssuedCredential(output), "ACL_CREDENTIAL_IN_OUTPUT");
-        }
-        requireTimelyGit(target);
-        return result;
-      };
+        target.sandboxId,
+        t.signal,
+        provider,
+      ),
+      true,
+    );
 
-      const stop = async (target: Deployed) => {
-        const revisionId = encodeURIComponent(target.revision.id);
-        const stopped = await request(
-          "POST",
-          `${target.path}/stop?expectedActiveRevisionId=${revisionId}`,
-        );
-        assert.equal(stopped.desiredRuntimeState, "stopped");
-      };
-      // The legacy callback route serves App installation tokens only; a token source lends to
-      // native Git alone, so its journey starts at the saved policy.
-      let legacyAttempts: number | undefined;
-      if (app) {
-        const legacy = await prepareAgent(fixture);
-        const control = await deployWithIssuance(origin, legacy.deploy);
-        const view: SandboxPolicyViewWire = await request(
-          "GET",
-          `${legacy.path}/sandbox-policy/networking`,
-        );
-        assert.equal(view.policy.repositoryNetworkPolicy, undefined);
-        const legacyExec = createManagedWorkloadExec(t, {
-          backend: fixture.gatewayBackend,
-          gatewayClient,
-          workspace,
-          checkpoint: fixture.checkpoint,
-        });
-        const legacyConfig = await gatewayClient.getSandboxConfig(
-          workspace,
-          control.target.sandboxName,
-          t.signal,
-        );
-        assertGitCallbackEndpoint(legacyConfig.supervisor_middleware_services, callbacks.endpoint);
-        const callsBefore = await callbacks.read();
-        const originBefore = network.requests().length;
-        const fetch = await legacyExec(
-          control.target,
-          createGitAclDenialCommand(network.issuedCredentialFingerprints())({ kind: "success" }, [
-            "sh",
-            "-ceu",
-            `export LC_ALL=C
+    assert.match(attached.resourceVersion, /^[1-9]\d*$/);
+    const identity = {
+      providerId: attached.id,
+      profileVersion: profile.resourceVersion,
+      resourceVersion: attached.resourceVersion,
+    };
+    assert.deepEqual(profile.definition.endpoints ?? [], []);
+    assert.deepEqual(profile.definition.binaries ?? [], []);
+    const providerRuleName = "_provider_" + provider.replaceAll("-", "_");
+    assert.deepEqual(
+      wirePolicy(rules[providerRuleName]),
+      { name: providerRuleName },
+      "The attached Git Provider must contribute an empty policy layer",
+    );
+    const gitEndpoints = [];
+    for (const { name, endpoint } of github) {
+      assert.ok(name === git.name && endpoint);
+      assert.equal(endpoint.host, "github.com");
+      gitEndpoints.push(endpoint);
+      assert.equal(endpoint.port, 443);
+      assert.equal(endpoint.protocol, "rest");
+      assert.equal(endpoint.enforcement, "NETWORK_ENFORCEMENT_MODE_ENFORCE");
+      assert.equal(endpoint.provider_credentialed, true);
+      assert.ok(!endpoint.allow_uninspected_credentials);
+      assert.ok(endpoint.tls === undefined || endpoint.tls === "NETWORK_TLS_MODE_UNSPECIFIED");
+    }
+    const expected = grants.map(({ repository, access }) => {
+      const services =
+        access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
+      const rules = services.flatMap((service) => [
+        {
+          allow: {
+            method: "GET",
+            path: `/${repository}.git/info/refs`,
+            query: { service: { glob: service } },
+          },
+        },
+        { allow: { method: "POST", path: `/${repository}.git/${service}` } },
+      ]);
+      return { path: `/${repository}.git/**`, rules };
+    });
+    assert.deepEqual(
+      wirePolicy(gitEndpoints.map(({ path, rules }) => ({ path, rules }))),
+      wirePolicy(expected),
+    );
+    const generation = {
+      ...identity,
+      provider,
+      hash: config.policy_hash,
+      configInstance: config.configuration_instance_id,
+      configRevision: config.config_revision,
+      providerRevision: config.provider_env_revision,
+      attachmentEpoch: config.provider_attachment_epoch,
+    };
+    // The manual receipt carries only identity digests and observed counters.
+    t.diagnostic(
+      JSON.stringify({
+        event: "saved-git-acl-installed",
+        generation: savedGitAclIdentity(generation),
+        mode,
+        agent: savedGitAclIdentity(deployed.agent.id),
+        revision: savedGitAclIdentity(revision.id),
+        sandbox: savedGitAclIdentity(target.sandboxId),
+        savedVersion: desired.version,
+        policyVersion: loaded.version,
+      }),
+    );
+    return generation;
+  };
+
+  // Observe the actual deployment owner's cleanup through independent runtime,
+  // Kubernetes, Provider, profile and issuer channels.
+  const retire = async (
+    deployed: Deployed,
+    providerName: string,
+    index: number,
+    owner = { path, workspace, agentId: agent.id },
+  ) => {
+    await observeUntil("retirement of the loaded Agent revision", t.signal, async () => {
+      const deployment: AgentDeploymentStatusWire = await request(
+        "GET",
+        `${owner.path}/deployments/${deployed.revision.id}`,
+      );
+      assert.notEqual(deployment.cleanup?.status, "failed");
+      const sandbox = await gatewayClient.getSandbox(
+        { workspace: owner.workspace, name: deployed.target.sandboxName },
+        t.signal,
+      );
+      assert.ok(sandbox === undefined || sandbox.id === deployed.target.sandboxId);
+      const ownedResource = await fixture.kube([
+        "get",
+        "sandboxes.agents.x-k8s.io",
+        deployed.target.sandboxName,
+        "-n",
+        owner.workspace,
+        "--ignore-not-found",
+        "-o",
+        "name",
+      ]);
+      const podIds = await fixture.kube([
+        "get",
+        "pods",
+        "-n",
+        owner.workspace,
+        "-o",
+        'jsonpath={range .items[*]}{.metadata.uid}{" "}{.metadata.ownerReferences[*].uid}{" "}{end}',
+      ]);
+      const previous = deployed.original.identity;
+      const identities = new Set(podIds.split(/\s+/u));
+      const priorPods = [
+        previous.sandboxUid,
+        previous.podUid,
+        deployed.supervisor.supervisorPodUid,
+      ];
+      const provider = await gatewayClient.getProvider(owner.workspace, providerName, t.signal);
+      const profile = await gatewayClient.getProviderProfile(
+        owner.workspace,
+        providerName,
+        t.signal,
+      );
+      const credential = origin.snapshot().tokens.find((token) => token.index === index);
+      return deployment.cleanup?.status === "succeeded" &&
+        !sandbox &&
+        ownedResource.trim() === "" &&
+        priorPods.every((id) => !identities.has(id)) &&
+        !provider &&
+        !profile &&
+        // A lent token is the operator's to revoke at GitHub; retirement removes its route.
+        (app ? credential?.revoked === true : credential?.revoked === false)
+        ? true
+        : undefined;
+    });
+    const revoked = app
+      ? await network.probeIssued(index, "fixture/b", {
+          method: "GET",
+          service: "git-upload-pack",
+        })
+      : undefined;
+    if (app) {
+      assert.deepEqual(revoked, { status: 401, type: "application/json" });
+    }
+    t.diagnostic(
+      JSON.stringify({
+        event: "saved-git-acl-retired",
+        agent: savedGitAclIdentity(owner.agentId),
+        revision: savedGitAclIdentity(deployed.revision.id),
+        sandbox: savedGitAclIdentity(deployed.target.sandboxId),
+        credentialIndex: index,
+        originStatus: revoked?.status,
+      }),
+    );
+  };
+  // First-save and rollout are separate mutations. Saving must not admit
+  // a revision or silently change the revision that serves the saved Agent.
+  assert.deepEqual(await request("GET", `${path}/revisions`), []);
+  const managed = createManagedWorkloadExec(t, {
+    backend: fixture.gatewayBackend,
+    gatewayClient,
+    workspace,
+    checkpoint: fixture.checkpoint,
+  });
+  const deadlines = new Map<string, number>();
+  const requireTimelyGit = (target: GitTarget) => {
+    const deadline = deadlines.get(target.sandboxId);
+    assert.ok(
+      deadline !== undefined && Date.now() < deadline,
+      "The exact finite Git grant must be active",
+    );
+  };
+  const exec: GitExec = async (target, command) => {
+    requireTimelyGit(target);
+    const result = await managed(target, command);
+    for (const output of [result.stdout, result.stderr]) {
+      assert.ok(!network.containsIssuedCredential(output), "ACL_CREDENTIAL_IN_OUTPUT");
+    }
+    requireTimelyGit(target);
+    return result;
+  };
+
+  const stop = async (target: Deployed) => {
+    const revisionId = encodeURIComponent(target.revision.id);
+    const stopped = await request(
+      "POST",
+      `${target.path}/stop?expectedActiveRevisionId=${revisionId}`,
+    );
+    assert.equal(stopped.desiredRuntimeState, "stopped");
+  };
+  // The legacy callback route serves App installation tokens only; a token source lends to
+  // native Git alone, so its journey starts at the saved policy.
+  let legacyAttempts: number | undefined;
+  if (app) {
+    const legacy = await prepareAgent(fixture);
+    const control = await deployWithIssuance(origin, legacy.deploy);
+    const view: SandboxPolicyViewWire = await request(
+      "GET",
+      `${legacy.path}/sandbox-policy/networking`,
+    );
+    assert.equal(view.policy.repositoryNetworkPolicy, undefined);
+    const legacyExec = createManagedWorkloadExec(t, {
+      backend: fixture.gatewayBackend,
+      gatewayClient,
+      workspace,
+      checkpoint: fixture.checkpoint,
+    });
+    const legacyConfig = await gatewayClient.getSandboxConfig(
+      workspace,
+      control.target.sandboxName,
+      t.signal,
+    );
+    assertGitCallbackEndpoint(legacyConfig.supervisor_middleware_services, callbacks.endpoint);
+    const callsBefore = await callbacks.read();
+    const originBefore = network.requests().length;
+    const fetch = await legacyExec(
+      control.target,
+      createGitAclDenialCommand(network.issuedCredentialFingerprints())({ kind: "success" }, [
+        "sh",
+        "-ceu",
+        `export LC_ALL=C
 git clone -q https://github.com/fixture/a.git /tmp/legacy-control
 git -C /tmp/legacy-control fetch -q origin refs/heads/main
 git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
-          ]),
-        );
-        assert.ok(fetch.stdout.toString("utf8").trim() === origin.initialSha);
-        const callsAfter = await callbacks.read();
-        assert.ok(
-          callsAfter > callsBefore,
-          "Legacy Git must reach the enabled authorization callback",
-        );
-        const indices = new Set(
-          network
-            .requests()
-            .slice(originBefore)
-            .filter(
-              (entry) =>
-                entry.repository === "fixture/a" &&
-                entry.operation === "upload-pack" &&
-                entry.authenticated,
-            )
-            .map(({ credentialIndex }) => credentialIndex),
-        );
-        const [index] = indices;
-        assert.ok(indices.size === 1 && typeof index === "number");
-        assert.equal(index, control.credentialIndex);
+      ]),
+    );
+    assert.ok(fetch.stdout.toString("utf8").trim() === origin.initialSha);
+    const callsAfter = await callbacks.read();
+    assert.ok(callsAfter > callsBefore, "Legacy Git must reach the enabled authorization callback");
+    const indices = new Set(
+      network
+        .requests()
+        .slice(originBefore)
+        .filter(
+          (entry) =>
+            entry.repository === "fixture/a" &&
+            entry.operation === "upload-pack" &&
+            entry.authenticated,
+        )
+        .map(({ credentialIndex }) => credentialIndex),
+    );
+    const [index] = indices;
+    assert.ok(indices.size === 1 && typeof index === "number");
+    assert.equal(index, control.credentialIndex);
+    const box = await gatewayClient.getSandbox(
+      { workspace, name: control.target.sandboxName },
+      t.signal,
+    );
+    assert.equal(box?.id, control.target.sandboxId);
+    const providers = box?.spec?.providers;
+    assert.ok(Array.isArray(providers));
+    const gitProviders = providers.filter(
+      (name): name is string =>
+        typeof name === "string" && name.startsWith("oce-github-installation-"),
+    );
+    assert.equal(gitProviders.length, 1);
+    await stop(control);
+    await retire(control, gitProviders[0]!, index, {
+      path: legacy.path,
+      workspace,
+      agentId: legacy.agent.id,
+    });
+    legacyAttempts = callsAfter - callsBefore;
+  }
+
+  const denied = await prepareAgent(fixture);
+  const deniedPath = `${denied.path}/sandbox-policy/networking`;
+  await request("PATCH", `${deniedPath}/editing`, { enabled: true });
+  const initialDeniedPolicy: SandboxPolicyViewWire = await request("GET", deniedPath);
+  await request("PUT", deniedPath, {
+    expectedVersion: initialDeniedPolicy.policy.version,
+    additions: initialDeniedPolicy.policy.additions,
+    repositoryNetworkPolicy: [],
+  });
+  const savedDeniedPolicy: SandboxPolicyViewWire = await request("GET", deniedPath);
+  assert.deepEqual(savedDeniedPolicy.policy.repositoryNetworkPolicy, []);
+  const issuedBeforeDenial = origin.snapshot().issued;
+  await request("POST", `${denied.path}/deploy`, undefined, emptyDeployRefusal);
+  assert.equal(origin.snapshot().issued, issuedBeforeDenial);
+  assert.deepEqual(await request("GET", `${denied.path}/revisions`), []);
+
+  const nativeCallbackBaseline = await callbacks.disable();
+  assert.equal(nativeCallbackBaseline, 0);
+  t.diagnostic(
+    JSON.stringify({
+      event: "saved-git-acl-callback-calibration",
+      legacyAttempts,
+      nativeBaseline: nativeCallbackBaseline,
+    }),
+  );
+
+  const desired = await save(
+    initial,
+    network.repositories.map((repository) => ({
+      repository,
+      access: "write" as const,
+    })),
+  );
+  assert.deepEqual(await request("GET", `${path}/revisions`), []);
+  const deployed = await deployPolicy();
+  deadlines.set(deployed.target.sandboxId, deployed.deadlineWallMs);
+  const loaded = await loadPolicy(deployed, desired, "permissive");
+  await calibratePermissiveSavedGit(t, fixture, exec, deployed);
+  const permissive = { deployed, provider: loaded.provider, index: deployed.credentialIndex };
+  assert.equal(await callbacks.read(), nativeCallbackBaseline);
+
+  const write = await save(await readPolicy(), [
+    { repository: "fixture/a", access: "read" },
+    { repository: "fixture/b", access: "write" },
+  ]);
+  // Count all parsed origin HTTP, including anonymous and rejected Git.
+  // Successful App token issuance is the only expected origin HTTP during startup.
+  const beforeDeploy = origin.snapshot();
+  const beforeDeployGit = network.requests().length;
+  if (app) {
+    network.shortenNextTokenForRenewal();
+  }
+  let original = await deployPolicy();
+  const afterDeploy = origin.snapshot();
+  const appIssuances =
+    (afterDeploy.endpoints["issue:201"] ?? 0) - (beforeDeploy.endpoints["issue:201"] ?? 0);
+  const originHttp = afterDeploy.requests - beforeDeploy.requests;
+  t.diagnostic(
+    JSON.stringify({
+      event: "saved-git-acl-startup-origin",
+      revision: savedGitAclIdentity(original.revision.id),
+      originHttp,
+      appIssuances,
+    }),
+  );
+  if (app) {
+    assert.ok(appIssuances > 0, "Expected App issuance during held deployment");
+  } else {
+    assert.equal(appIssuances, 0, "TOKEN_DEPLOY_ISSUES_NOTHING");
+  }
+  assert.equal(network.requests().length, beforeDeployGit, "Unexpected Git HTTP during redeploy");
+  assert.equal(await callbacks.read(), nativeCallbackBaseline);
+  await retire(permissive.deployed, permissive.provider, permissive.index);
+  const installed = await loadPolicy(original, write, "read-write");
+  deadlines.set(original.target.sandboxId, original.deadlineWallMs);
+  if (app) {
+    const index = original.credentialIndex;
+    const before = origin.snapshot();
+    const token = before.tokens.find((candidate) => candidate.index === index);
+    assert.ok(token && !token.revoked);
+    const { resourceVersion, providerRevision, ...binding } = installed;
+    assert.ok(resourceVersion && binding.providerId);
+    await exerciseSavedGitAcl(t, fixture, exec, original, undefined, nativeCallbackBaseline);
+    const next = await observeUntil("same-grant Git credential renewal", t.signal, async () => {
+      requireTimelyGit(original.target);
+      const snapshot = origin.snapshot();
+      assert.ok(snapshot.issued <= before.issued + 1, "Unexpected token issuance during renewal");
+      const current = snapshot.tokens.find((candidate) => candidate.index > index);
+      if (!current || !snapshot.tokens.find((candidate) => candidate.index === index)?.revoked) {
+        return undefined;
+      }
+      const box = await gatewayClient.getSandbox(
+        { workspace, name: original.target.sandboxName },
+        t.signal,
+      );
+      assert.equal(box?.id, original.target.sandboxId);
+      const admission = box.configurationAdmission;
+      return admission?.state === 2 &&
+        admission.provider_env_revision &&
+        admission.provider_env_revision !== providerRevision
+        ? current
+        : undefined;
+    });
+    assert.ok(
+      Date.now() < token.expires,
+      "The first credential must retire ahead of its issuer expiry",
+    );
+    assert.ok(!next.revoked && next.expires > token.expires);
+    assert.deepEqual(next.repositoryIds, token.repositoryIds);
+    assert.deepEqual(next.permissions, token.permissions);
+    const {
+      resourceVersion: updated,
+      providerRevision: environment,
+      ...rotated
+    } = await loadPolicy(original, write, "read-write");
+    assert.deepEqual(rotated, binding, "Renewal must keep the same policy and attached Provider");
+    assert.ok(updated && BigInt(updated) > BigInt(resourceVersion));
+    assert.notEqual(environment, providerRevision);
+    const old = await network.probeIssued(index, "fixture/b", {
+      method: "GET",
+      service: "git-upload-pack",
+    });
+    assert.deepEqual(old, { status: 401, type: "application/json" });
+    original = { ...original, credentialIndex: next.index };
+    assert.equal(await callbacks.read(), nativeCallbackBaseline);
+    t.diagnostic(
+      JSON.stringify({
+        event: "saved-git-acl-rotation",
+        revision: savedGitAclIdentity(original.revision.id),
+        binding: savedGitAclIdentity(binding),
+        previousIndex: index,
+        credentialIndex: next.index,
+        previousVersion: resourceVersion,
+        currentVersion: updated,
+        oldStatus: old.status,
+      }),
+    );
+  } else {
+    assert.ok(credential.kind === "token");
+    const index = original.credentialIndex;
+    const { resourceVersion, providerRevision, ...binding } = installed;
+    assert.ok(resourceVersion && binding.providerId);
+    await exerciseSavedGitAcl(t, fixture, exec, original, undefined, nativeCallbackBaseline, true);
+    await assertTokensAbsentFromWorkload(
+      t,
+      exec,
+      original.target,
+      [credential.value],
+      "read-write",
+    );
+    // Replace the Secret's value with a second fine-grained token, without a redeploy: the
+    // Worker reads the projected file at each loan and the runtime re-reads its material on
+    // every refresh tick. Measure from the patch to the rotated Provider environment.
+    const next = network.acceptStaticToken(credential.replacement);
+    const issued = origin.snapshot().issued;
+    const patchStartedAt = Date.now();
+    await patchTokenSecret(fixture, credential.replacement);
+    const patchedAt = Date.now();
+    const deliveredAt = await observeUntil(
+      "TOKEN_REPLACEMENT_DELIVERED",
+      t.signal,
+      async () => {
+        requireTimelyGit(original.target);
         const box = await gatewayClient.getSandbox(
-          { workspace, name: control.target.sandboxName },
+          { workspace, name: original.target.sandboxName },
           t.signal,
         );
-        assert.equal(box?.id, control.target.sandboxId);
-        const providers = box?.spec?.providers;
-        assert.ok(Array.isArray(providers));
-        const gitProviders = providers.filter(
-          (name): name is string =>
-            typeof name === "string" && name.startsWith("oce-github-installation-"),
-        );
-        assert.equal(gitProviders.length, 1);
-        await stop(control);
-        await retire(control, gitProviders[0]!, index, {
-          path: legacy.path,
-          workspace,
-          agentId: legacy.agent.id,
-        });
-        legacyAttempts = callsAfter - callsBefore;
-      }
-
-      const denied = await prepareAgent(fixture);
-      const deniedPath = `${denied.path}/sandbox-policy/networking`;
-      await request("PATCH", `${deniedPath}/editing`, { enabled: true });
-      const initialDeniedPolicy: SandboxPolicyViewWire = await request("GET", deniedPath);
-      await request("PUT", deniedPath, {
-        expectedVersion: initialDeniedPolicy.policy.version,
-        additions: initialDeniedPolicy.policy.additions,
-        repositoryNetworkPolicy: [],
-      });
-      const savedDeniedPolicy: SandboxPolicyViewWire = await request("GET", deniedPath);
-      assert.deepEqual(savedDeniedPolicy.policy.repositoryNetworkPolicy, []);
-      const issuedBeforeDenial = origin.snapshot().issued;
-      await request("POST", `${denied.path}/deploy`, undefined, emptyDeployRefusal);
-      assert.equal(origin.snapshot().issued, issuedBeforeDenial);
-      assert.deepEqual(await request("GET", `${denied.path}/revisions`), []);
-
-      const nativeCallbackBaseline = await callbacks.disable();
-      assert.equal(nativeCallbackBaseline, 0);
-      t.diagnostic(
-        JSON.stringify({
-          event: "saved-git-acl-callback-calibration",
-          legacyAttempts,
-          nativeBaseline: nativeCallbackBaseline,
-        }),
-      );
-
-      const desired = await save(
-        initial,
-        network.repositories.map((repository) => ({
-          repository,
-          access: "write" as const,
-        })),
-      );
-      assert.deepEqual(await request("GET", `${path}/revisions`), []);
-      const deployed = await deployPolicy();
-      deadlines.set(deployed.target.sandboxId, deployed.deadlineWallMs);
-      const loaded = await loadPolicy(deployed, desired, "permissive");
-      await calibratePermissiveSavedGit(t, fixture, exec, deployed);
-      const permissive = { deployed, provider: loaded.provider, index: deployed.credentialIndex };
-      assert.equal(await callbacks.read(), nativeCallbackBaseline);
-
-      const write = await save(await readPolicy(), [
-        { repository: "fixture/a", access: "read" },
-        { repository: "fixture/b", access: "write" },
-      ]);
-      // Count all parsed origin HTTP, including anonymous and rejected Git.
-      // Successful App token issuance is the only expected origin HTTP during startup.
-      const beforeDeploy = origin.snapshot();
-      const beforeDeployGit = network.requests().length;
-      if (app) {
-        network.shortenNextTokenForRenewal();
-      }
-      let original = await deployPolicy();
-      const afterDeploy = origin.snapshot();
-      const appIssuances =
-        (afterDeploy.endpoints["issue:201"] ?? 0) - (beforeDeploy.endpoints["issue:201"] ?? 0);
-      const originHttp = afterDeploy.requests - beforeDeploy.requests;
-      t.diagnostic(
-        JSON.stringify({
-          event: "saved-git-acl-startup-origin",
-          revision: savedGitAclIdentity(original.revision.id),
-          originHttp,
-          appIssuances,
-        }),
-      );
-      if (app) {
-        assert.ok(appIssuances > 0, "Expected App issuance during held deployment");
-      } else {
-        assert.equal(appIssuances, 0, "TOKEN_DEPLOY_ISSUES_NOTHING");
-      }
-      assert.equal(
-        network.requests().length,
-        beforeDeployGit,
-        "Unexpected Git HTTP during redeploy",
-      );
-      assert.equal(await callbacks.read(), nativeCallbackBaseline);
-      await retire(permissive.deployed, permissive.provider, permissive.index);
-      const installed = await loadPolicy(original, write, "read-write");
-      deadlines.set(original.target.sandboxId, original.deadlineWallMs);
-      if (app) {
-        const index = original.credentialIndex;
-        const before = origin.snapshot();
-        const token = before.tokens.find((candidate) => candidate.index === index);
-        assert.ok(token && !token.revoked);
-        const { resourceVersion, providerRevision, ...binding } = installed;
-        assert.ok(resourceVersion && binding.providerId);
-        await exerciseSavedGitAcl(t, fixture, exec, original, undefined, nativeCallbackBaseline);
-        const next = await observeUntil("same-grant Git credential renewal", t.signal, async () => {
-          requireTimelyGit(original.target);
-          const snapshot = origin.snapshot();
-          assert.ok(
-            snapshot.issued <= before.issued + 1,
-            "Unexpected token issuance during renewal",
-          );
-          const current = snapshot.tokens.find((candidate) => candidate.index > index);
-          if (
-            !current ||
-            !snapshot.tokens.find((candidate) => candidate.index === index)?.revoked
-          ) {
-            return undefined;
-          }
-          const box = await gatewayClient.getSandbox(
-            { workspace, name: original.target.sandboxName },
-            t.signal,
-          );
-          assert.equal(box?.id, original.target.sandboxId);
-          const admission = box.configurationAdmission;
-          return admission?.state === 2 &&
-            admission.provider_env_revision &&
-            admission.provider_env_revision !== providerRevision
-            ? current
-            : undefined;
-        });
-        assert.ok(
-          Date.now() < token.expires,
-          "The first credential must retire ahead of its issuer expiry",
-        );
-        assert.ok(!next.revoked && next.expires > token.expires);
-        assert.deepEqual(next.repositoryIds, token.repositoryIds);
-        assert.deepEqual(next.permissions, token.permissions);
-        const {
-          resourceVersion: updated,
-          providerRevision: environment,
-          ...rotated
-        } = await loadPolicy(original, write, "read-write");
-        assert.deepEqual(
-          rotated,
-          binding,
-          "Renewal must keep the same policy and attached Provider",
-        );
-        assert.ok(updated && BigInt(updated) > BigInt(resourceVersion));
-        assert.notEqual(environment, providerRevision);
-        const old = await network.probeIssued(index, "fixture/b", {
-          method: "GET",
-          service: "git-upload-pack",
-        });
-        assert.deepEqual(old, { status: 401, type: "application/json" });
-        original = { ...original, credentialIndex: next.index };
-        assert.equal(await callbacks.read(), nativeCallbackBaseline);
-        t.diagnostic(
-          JSON.stringify({
-            event: "saved-git-acl-rotation",
-            revision: savedGitAclIdentity(original.revision.id),
-            binding: savedGitAclIdentity(binding),
-            previousIndex: index,
-            credentialIndex: next.index,
-            previousVersion: resourceVersion,
-            currentVersion: updated,
-            oldStatus: old.status,
-          }),
-        );
-      } else {
-        assert.ok(credential.kind === "token");
-        const index = original.credentialIndex;
-        const { resourceVersion, providerRevision, ...binding } = installed;
-        assert.ok(resourceVersion && binding.providerId);
-        await exerciseSavedGitAcl(
-          t,
-          fixture,
-          exec,
-          original,
-          undefined,
-          nativeCallbackBaseline,
-          true,
-        );
-        await assertTokensAbsentFromWorkload(
-          t,
-          exec,
-          original.target,
-          [credential.value],
-          "read-write",
-        );
-        // Replace the Secret's value with a second fine-grained token, without a redeploy: the
-        // Worker reads the projected file at each loan and the runtime re-reads its material on
-        // every refresh tick. Measure from the patch to the rotated Provider environment.
-        const next = network.acceptStaticToken(credential.replacement);
-        const issued = origin.snapshot().issued;
-        const patchStartedAt = Date.now();
-        await patchTokenSecret(fixture, credential.replacement);
-        const patchedAt = Date.now();
-        const deliveredAt = await observeUntil(
-          "TOKEN_REPLACEMENT_DELIVERED",
-          t.signal,
-          async () => {
-            requireTimelyGit(original.target);
-            const box = await gatewayClient.getSandbox(
-              { workspace, name: original.target.sandboxName },
-              t.signal,
-            );
-            assert.equal(box?.id, original.target.sandboxId, "TOKEN_REPLACEMENT_NO_REDEPLOY");
-            const admission = box.configurationAdmission;
-            return admission?.state === 2 &&
-              admission.provider_env_revision &&
-              admission.provider_env_revision !== providerRevision
-              ? Date.now()
-              : undefined;
-          },
-          15 * 60_000,
-        );
-        t.diagnostic(
-          JSON.stringify({
-            event: "saved-git-token-replacement",
-            revision: savedGitAclIdentity(original.revision.id),
-            previousIndex: index,
-            credentialIndex: next,
-            patchSeconds: (patchedAt - patchStartedAt) / 1000,
-            deliveredSeconds: (deliveredAt - patchedAt) / 1000,
-            mechanism: "provider-environment-rotation",
-            withinOneLoan: deliveredAt - patchedAt < 1_800_000,
-          }),
-        );
-        const { gitScript, issuedIndex } = savedGitProbeTools(fixture, exec);
-        const fetchStart = network.requests().length;
-        const fetched = await gitScript(
-          original.target,
-          `local_dir=$(mktemp -d)
+        assert.equal(box?.id, original.target.sandboxId, "TOKEN_REPLACEMENT_NO_REDEPLOY");
+        const admission = box.configurationAdmission;
+        return admission?.state === 2 &&
+          admission.provider_env_revision &&
+          admission.provider_env_revision !== providerRevision
+          ? Date.now()
+          : undefined;
+      },
+      15 * 60_000,
+    );
+    t.diagnostic(
+      JSON.stringify({
+        event: "saved-git-token-replacement",
+        revision: savedGitAclIdentity(original.revision.id),
+        previousIndex: index,
+        credentialIndex: next,
+        patchSeconds: (patchedAt - patchStartedAt) / 1000,
+        deliveredSeconds: (deliveredAt - patchedAt) / 1000,
+        mechanism: "provider-environment-rotation",
+        withinOneLoan: deliveredAt - patchedAt < 1_800_000,
+      }),
+    );
+    const { gitScript, issuedIndex } = savedGitProbeTools(fixture, exec);
+    const fetchStart = network.requests().length;
+    const fetched = await gitScript(
+      original.target,
+      `local_dir=$(mktemp -d)
 git init -q --bare "$local_dir"
 git -C "$local_dir" fetch -q 'https://github.com/fixture/a.git' refs/heads/main:refs/heads/main
 git -C "$local_dir" rev-parse 'refs/heads/main^{commit}'`,
-        );
-        assert.equal(fetched.stdout.toString("utf8").trim(), origin.initialSha);
-        assert.equal(issuedIndex(fetchStart), next, "TOKEN_REPLACEMENT_AT_ORIGIN");
-        assert.deepEqual(
-          (await original.readExecution()).identity,
-          original.original.identity,
-          "TOKEN_REPLACEMENT_NO_REDEPLOY",
-        );
-        const {
-          resourceVersion: updated,
-          providerRevision: environment,
-          ...rotated
-        } = await loadPolicy(original, write, "read-write");
-        assert.deepEqual(
-          rotated,
-          binding,
-          "Replacement must keep the same policy and attached Provider",
-        );
-        assert.ok(updated && BigInt(updated) > BigInt(resourceVersion));
-        assert.notEqual(environment, providerRevision);
-        assert.equal(origin.snapshot().issued, issued, "TOKEN_REPLACEMENT_ISSUES_NOTHING");
-        lentIndex = next;
-        original = { ...original, credentialIndex: next };
-        assert.equal(await callbacks.read(), nativeCallbackBaseline);
-        await assertTokensAbsentFromWorkload(
-          t,
-          exec,
-          original.target,
-          [credential.value, credential.replacement],
-          "replaced",
-        );
-      }
-      const startPeer = async () => {
-        const independent = fixture.independent;
-        assert.ok(independent?.modelSource);
-        assert.notEqual(independent.namespace.id, fixture.namespace.id);
-        assert.notEqual(independent.workspace, workspace);
-        const peerFixture = {
-          ...fixture,
-          ...independent,
-          verifySupervisorImage: (target: GitTarget) =>
-            fixture.verifySupervisorImage(target, independent.workspace),
-        };
-        const prepared = await prepareAgent(peerFixture);
-        assert.notEqual(prepared.agent.id, agent.id);
-        const peerPolicyPath = `${prepared.path}/sandbox-policy/networking`;
-        await request("PATCH", `${peerPolicyPath}/editing`, { enabled: true });
-        const initialPeer: SandboxPolicyViewWire = await request("GET", peerPolicyPath);
-        const peerGrants = [
-          { repository: "fixture/a", access: "write" },
-          { repository: "fixture/c", access: "write" },
-        ] as const;
-        const peerPolicy: SandboxPolicyViewWire["policy"] = await request("PUT", peerPolicyPath, {
-          expectedVersion: initialPeer.policy.version,
-          additions: initialPeer.policy.additions,
-          repositoryNetworkPolicy: peerGrants,
-        });
-        const deployed = await deployWith(prepared.deploy);
-        assert.notEqual(deployed.target.sandboxId, original.target.sandboxId);
-        const peerIndex = deployed.credentialIndex;
-        if (app) {
-          assert.notEqual(peerIndex, original.credentialIndex);
-        } else {
-          // The same credential: a second Agent lends the same Secret value.
-          assert.equal(peerIndex, original.credentialIndex, "TOKEN_PEER_SAME_CREDENTIAL");
-        }
-        const readPeer = () =>
-          loadPolicy(deployed, peerPolicy, "peer", {
-            workspace: independent.workspace,
-            policyPath: peerPolicyPath,
-          });
-        const generation = await readPeer();
-        const { provider } = generation;
-        assert.notEqual(provider, installed.provider);
-        const peerExec = createManagedWorkloadExec(t, {
-          backend: fixture.gatewayBackend,
-          gatewayClient,
-          workspace: independent.workspace,
-          checkpoint: fixture.checkpoint,
-        });
-        const { gitScript, guest } = savedGitProbeTools(fixture, peerExec);
-        const peerGit = async (script: string) => {
-          const result = await gitScript(deployed.target, script);
-          const oid = result.stdout.toString("utf8").trim();
-          assert.ok(/^[a-f0-9]{40}$/u.test(oid), "peer Git must return one commit OID");
-          return oid;
-        };
-        const denyB = async () => {
-          const path = "/fixture/b.git/info/refs";
-          const calibration = await network.probeIssued(peerIndex, "fixture/b", {
-            method: "GET",
-            service: "git-upload-pack",
-          });
-          assert.deepEqual(calibration, {
-            status: 200,
-            type: "application/x-git-upload-pack-advertisement",
-          });
-          const before = origin.snapshot().requests;
-          const denied = await guest(
-            deployed.target,
-            { kind: "rest", method: "GET", path, host: "github.com" },
-            [...curl, `https://github.com${path}?service=git-upload-pack`],
-          );
-          assert.equal(denied.stdout.toString("utf8"), "403 native-rest-policy\n");
-          assert.equal(origin.snapshot().requests, before);
-        };
-        const prove = async (stage: string) => {
-          await denyB();
-          assert.deepEqual(await readPeer(), generation);
+    );
+    assert.equal(fetched.stdout.toString("utf8").trim(), origin.initialSha);
+    assert.equal(issuedIndex(fetchStart), next, "TOKEN_REPLACEMENT_AT_ORIGIN");
+    assert.deepEqual(
+      (await original.readExecution()).identity,
+      original.original.identity,
+      "TOKEN_REPLACEMENT_NO_REDEPLOY",
+    );
+    const {
+      resourceVersion: updated,
+      providerRevision: environment,
+      ...rotated
+    } = await loadPolicy(original, write, "read-write");
+    assert.deepEqual(
+      rotated,
+      binding,
+      "Replacement must keep the same policy and attached Provider",
+    );
+    assert.ok(updated && BigInt(updated) > BigInt(resourceVersion));
+    assert.notEqual(environment, providerRevision);
+    assert.equal(origin.snapshot().issued, issued, "TOKEN_REPLACEMENT_ISSUES_NOTHING");
+    lentIndex = next;
+    original = { ...original, credentialIndex: next };
+    assert.equal(await callbacks.read(), nativeCallbackBaseline);
+    await assertTokensAbsentFromWorkload(
+      t,
+      exec,
+      original.target,
+      [credential.value, credential.replacement],
+      "replaced",
+    );
+  }
+  const startPeer = async () => {
+    const independent = fixture.independent;
+    assert.ok(independent?.modelSource);
+    assert.notEqual(independent.namespace.id, fixture.namespace.id);
+    assert.notEqual(independent.workspace, workspace);
+    const peerFixture = {
+      ...fixture,
+      ...independent,
+      verifySupervisorImage: (target: GitTarget) =>
+        fixture.verifySupervisorImage(target, independent.workspace),
+    };
+    const prepared = await prepareAgent(peerFixture);
+    assert.notEqual(prepared.agent.id, agent.id);
+    const peerPolicyPath = `${prepared.path}/sandbox-policy/networking`;
+    await request("PATCH", `${peerPolicyPath}/editing`, { enabled: true });
+    const initialPeer: SandboxPolicyViewWire = await request("GET", peerPolicyPath);
+    const peerGrants = [
+      { repository: "fixture/a", access: "write" },
+      { repository: "fixture/c", access: "write" },
+    ] as const;
+    const peerPolicy: SandboxPolicyViewWire["policy"] = await request("PUT", peerPolicyPath, {
+      expectedVersion: initialPeer.policy.version,
+      additions: initialPeer.policy.additions,
+      repositoryNetworkPolicy: peerGrants,
+    });
+    const deployed = await deployWith(prepared.deploy);
+    assert.notEqual(deployed.target.sandboxId, original.target.sandboxId);
+    const peerIndex = deployed.credentialIndex;
+    if (app) {
+      assert.notEqual(peerIndex, original.credentialIndex);
+    } else {
+      // The same credential: a second Agent lends the same Secret value.
+      assert.equal(peerIndex, original.credentialIndex, "TOKEN_PEER_SAME_CREDENTIAL");
+    }
+    const readPeer = () =>
+      loadPolicy(deployed, peerPolicy, "peer", {
+        workspace: independent.workspace,
+        policyPath: peerPolicyPath,
+      });
+    const generation = await readPeer();
+    const { provider } = generation;
+    assert.notEqual(provider, installed.provider);
+    const peerExec = createManagedWorkloadExec(t, {
+      backend: fixture.gatewayBackend,
+      gatewayClient,
+      workspace: independent.workspace,
+      checkpoint: fixture.checkpoint,
+    });
+    const { gitScript, guest } = savedGitProbeTools(fixture, peerExec);
+    const peerGit = async (script: string) => {
+      const result = await gitScript(deployed.target, script);
+      const oid = result.stdout.toString("utf8").trim();
+      assert.ok(/^[a-f0-9]{40}$/u.test(oid), "peer Git must return one commit OID");
+      return oid;
+    };
+    const denyB = async () => {
+      const path = "/fixture/b.git/info/refs";
+      const calibration = await network.probeIssued(peerIndex, "fixture/b", {
+        method: "GET",
+        service: "git-upload-pack",
+      });
+      assert.deepEqual(calibration, {
+        status: 200,
+        type: "application/x-git-upload-pack-advertisement",
+      });
+      const before = origin.snapshot().requests;
+      const denied = await guest(
+        deployed.target,
+        { kind: "rest", method: "GET", path, host: "github.com" },
+        [...curl, `https://github.com${path}?service=git-upload-pack`],
+      );
+      assert.equal(denied.stdout.toString("utf8"), "403 native-rest-policy\n");
+      assert.equal(origin.snapshot().requests, before);
+    };
+    const prove = async (stage: string) => {
+      await denyB();
+      assert.deepEqual(await readPeer(), generation);
 
-          const reads = new Set(["GET upload-advertise", "POST upload-pack"]);
-          const writes = new Set([...reads, "GET receive-advertise", "POST receive-pack"]);
-          const observe = async (repo: string, script: string, methods: ReadonlySet<string>) => {
-            assert.ok(Date.now() < deployed.deadlineWallMs);
-            assert.deepEqual((await deployed.readExecution()).identity, deployed.original.identity);
-            const before = origin.snapshot().requests;
-            const offset = network.requests().length;
-            const oid = await peerGit(script);
-            assert.ok(Date.now() < deployed.deadlineWallMs);
-            const observed = network.requests().slice(offset);
-            const originHttpDelta = origin.snapshot().requests - before;
-            assert.equal(originHttpDelta, observed.length, "unexpected origin HTTP");
-            const authenticated = new Set<string>();
-            for (const entry of observed) {
-              const operation = `${entry.method} ${entry.operation}`;
-              assert.ok(entry.repository === repo && methods.has(operation));
-              if (entry.authenticated) {
-                assert.equal(entry.credentialIndex, peerIndex);
-                authenticated.add(operation);
-              }
-            }
-            assert.deepEqual(authenticated, methods);
-            return { oid, originHttpDelta };
-          };
-          const evidence = [];
-          for (const { repository } of peerGrants) {
-            const name = repository.slice("fixture/".length);
-            const local = `/tmp/peer-write-${stage}-${name}`;
-            const fresh = `${local}-fresh`;
-            const ref = `refs/heads/peer-control-${stage}-${name}`;
-            const url = `https://github.com/${repository}.git`;
-            assert.equal(await network.ref(repository, ref), undefined);
-            const push = `git clone -q '${url}' '${local}';
+      const reads = new Set(["GET upload-advertise", "POST upload-pack"]);
+      const writes = new Set([...reads, "GET receive-advertise", "POST receive-pack"]);
+      const observe = async (repo: string, script: string, methods: ReadonlySet<string>) => {
+        assert.ok(Date.now() < deployed.deadlineWallMs);
+        assert.deepEqual((await deployed.readExecution()).identity, deployed.original.identity);
+        const before = origin.snapshot().requests;
+        const offset = network.requests().length;
+        const oid = await peerGit(script);
+        assert.ok(Date.now() < deployed.deadlineWallMs);
+        const observed = network.requests().slice(offset);
+        const originHttpDelta = origin.snapshot().requests - before;
+        assert.equal(originHttpDelta, observed.length, "unexpected origin HTTP");
+        const authenticated = new Set<string>();
+        for (const entry of observed) {
+          const operation = `${entry.method} ${entry.operation}`;
+          assert.ok(entry.repository === repo && methods.has(operation));
+          if (entry.authenticated) {
+            assert.equal(entry.credentialIndex, peerIndex);
+            authenticated.add(operation);
+          }
+        }
+        assert.deepEqual(authenticated, methods);
+        return { oid, originHttpDelta };
+      };
+      const evidence = [];
+      for (const { repository } of peerGrants) {
+        const name = repository.slice("fixture/".length);
+        const local = `/tmp/peer-write-${stage}-${name}`;
+        const fresh = `${local}-fresh`;
+        const ref = `refs/heads/peer-control-${stage}-${name}`;
+        const url = `https://github.com/${repository}.git`;
+        assert.equal(await network.ref(repository, ref), undefined);
+        const push = `git clone -q '${url}' '${local}';
 git -C '${local}' -c user.name=Fixture -c user.email=fixture@example.test commit -q --allow-empty -m 'Peer control ${stage} ${name}';
 git -C '${local}' push -q origin 'HEAD:${ref}';
 git -C '${local}' rev-parse HEAD`;
-            const pushed = await observe(repository, push, writes);
-            assert.notEqual(pushed.oid, origin.initialSha);
-            assert.equal(await network.ref(repository, ref), pushed.oid);
-            assert.equal(await network.hasObject(repository, pushed.oid), true);
-            const fetch = `test ! -e '${fresh}'; git init -q --initial-branch=peer-empty '${fresh}';
+        const pushed = await observe(repository, push, writes);
+        assert.notEqual(pushed.oid, origin.initialSha);
+        assert.equal(await network.ref(repository, ref), pushed.oid);
+        assert.equal(await network.hasObject(repository, pushed.oid), true);
+        const fetch = `test ! -e '${fresh}'; git init -q --initial-branch=peer-empty '${fresh}';
 git -C '${fresh}' fetch -q '${url}' '${ref}:${ref}';
 git -C '${fresh}' rev-parse '${ref}^{commit}'`;
-            const fetched = await observe(repository, fetch, reads);
-            assert.equal(fetched.oid, pushed.oid);
-            evidence.push({ repository, ref, pushed, fetched });
-          }
-          assert.equal(new Set(evidence.map(({ pushed }) => pushed.oid)).size, 2);
-          const event = "saved-git-acl-peer-controls";
-          t.diagnostic(
-            JSON.stringify({ event, stage, credentialIndex: peerIndex, refs: evidence }),
-          );
-          assert.deepEqual(await readPeer(), generation);
-          assert.equal(await callbacks.read(), nativeCallbackBaseline);
-        };
-        await prove("before");
-        if (credential.kind === "token") {
-          await assertTokensAbsentFromWorkload(
-            t,
-            peerExec,
-            deployed.target,
-            [credential.value, credential.replacement],
-            "peer",
-          );
-        }
-        return {
-          deployed,
-          workspace: independent.workspace,
-          provider,
-          credentialIndex: peerIndex,
-          prove,
-          exec: peerExec,
-        };
-      };
-      const peer = await startPeer();
-      let successor: Deployed | undefined;
-      let successorProvider: string | undefined;
-      const { originalIndex, replacementIndex } = await exerciseSavedGitAcl(
-        t,
-        fixture,
-        exec,
-        original,
-        async (index) => {
-          requireTimelyGit(original.target);
-          const beforeDowngrade = await readPolicy();
-          assert.equal(beforeDowngrade.policy.version, write.version);
-          assert.equal(beforeDowngrade.defaultsRevisionId, original.revision.id);
-          const read = await save(beforeDowngrade, [
-            { repository: "fixture/a", access: "read" },
-            { repository: "fixture/b", access: "read" },
-          ]);
-          assert.deepEqual((await original.readExecution()).identity, original.original.identity);
-          requireTimelyGit(original.target);
-          const replacement = await deployPolicy();
-          deadlines.set(replacement.target.sandboxId, replacement.deadlineWallMs);
-          assert.equal(replacement.agent.id, agent.id);
-          assert.notEqual(replacement.revision.id, original.revision.id);
-          assert.notEqual(replacement.target.sandboxId, original.target.sandboxId);
-          assert.notEqual(
-            replacement.supervisor.workloadPodUid,
-            original.supervisor.workloadPodUid,
-          );
-          assert.notEqual(
-            replacement.supervisor.supervisorPodUid,
-            original.supervisor.supervisorPodUid,
-          );
-          const current = await loadPolicy(replacement, read, "read-only");
-          assert.notEqual(current.provider, installed.provider);
-          assert.notEqual(current.hash, installed.hash);
-          assert.notEqual(current.configInstance, installed.configInstance);
-
-          await retire(original, installed.provider, index);
-          requireTimelyGit(original.target);
-          await peer.prove("after-downgrade");
-          successor = replacement;
-          successorProvider = current.provider;
-          return replacement;
-        },
-        nativeCallbackBaseline,
-        !app,
-      );
-      assert.ok(successor && successorProvider && replacementIndex !== undefined);
-      assert.notEqual(
-        permissive.index,
-        originalIndex,
-        "restricted deployment must issue its own credential",
-      );
-      // [] withdraws desired authority, but this Driver cannot launch deny-all.
-      // An unrelated save that omits the field must retain the explicit list.
-      const beforeClear = await readPolicy();
-      const cleared = await save(beforeClear, []);
-      const omitted: SandboxPolicyViewWire["policy"] = await request("PUT", policyPath, {
-        expectedVersion: cleared.version,
-        additions: cleared.additions,
-      });
-      assert.equal(omitted.version, cleared.version + 1);
-      assert.equal(omitted.repositoryNetworkPolicy, undefined);
-      const persisted = await readPolicy();
-      assert.equal(persisted.policy.version, omitted.version);
-      assert.deepEqual(persisted.policy.repositoryNetworkPolicy, []);
-      assert.equal(persisted.defaultsRevisionId, successor.revision.id);
-      assert.equal(persisted.deployedPolicyVersion, beforeClear.deployedPolicyVersion);
-
-      const beforeRefusal = origin.snapshot();
-      const revisions = await request("GET", `${path}/revisions`);
-      await request("POST", `${path}/deploy`, undefined, emptyDeployRefusal);
-      assert.deepEqual(await request("GET", `${path}/revisions`), revisions);
-      assert.equal(origin.snapshot().issued, beforeRefusal.issued);
-      assert.deepEqual((await successor.readExecution()).identity, successor.original.identity);
-      assert.equal((await request("GET", path)).activeRevisionId, successor.revision.id);
-
-      // A refused deploy does not revoke the still-running predecessor. Stop the
-      // exact active revision and require both generations to be fully retired.
-      await stop(successor);
-      await retire(successor, successorProvider, replacementIndex);
-      await retire(original, installed.provider, originalIndex);
-      const quiet = origin.snapshot();
-      const observationEnds = Date.now() + 2_000;
-      await observeUntil(
-        "absence of a late Git grant after Stop",
-        t.signal,
-        async () => {
-          const snapshot = origin.snapshot();
-          assert.equal(
-            snapshot.issued,
-            beforeRefusal.issued,
-            "Stop must not issue a late credential",
-          );
-          assert.equal(
-            snapshot.requests,
-            quiet.requests,
-            "No late upstream request may follow Stop",
-          );
-          if (app) {
-            assert.ok(
-              [originalIndex, replacementIndex].every(
-                (index) => snapshot.tokens.find((token) => token.index === index)?.revoked === true,
-              ),
-              "Both primary credentials must remain revoked",
-            );
-            assert.ok(
-              snapshot.tokens.every(
-                (token) => token.revoked === (token.index !== peer.credentialIndex),
-              ),
-            );
-          } else {
-            assert.ok(snapshot.tokens.every((token) => !token.revoked));
-          }
-          return Date.now() >= observationEnds ? true : undefined;
-        },
-        5_000,
-      );
-      assert.deepEqual((await readPolicy()).policy.repositoryNetworkPolicy, []);
-      await peer.prove("after-stop");
-      if (credential.kind === "token") {
-        await refuseClassicToken(t, fixture, peer.deployed.target, peer.exec, credential);
+        const fetched = await observe(repository, fetch, reads);
+        assert.equal(fetched.oid, pushed.oid);
+        evidence.push({ repository, ref, pushed, fetched });
       }
-      await stop(peer.deployed);
-      await retire(peer.deployed, peer.provider, peer.credentialIndex, {
-        path: peer.deployed.path,
-        workspace: peer.workspace,
-        agentId: peer.deployed.agent.id,
-      });
-      assert.equal(await callbacks.read(), 0);
-      t.diagnostic(
-        "Saved Git ACL clear persisted; deploy refused deny-all and explicit Stop retired both generations",
+      assert.equal(new Set(evidence.map(({ pushed }) => pushed.oid)).size, 2);
+      const event = "saved-git-acl-peer-controls";
+      t.diagnostic(JSON.stringify({ event, stage, credentialIndex: peerIndex, refs: evidence }));
+      assert.deepEqual(await readPeer(), generation);
+      assert.equal(await callbacks.read(), nativeCallbackBaseline);
+    };
+    await prove("before");
+    if (credential.kind === "token") {
+      await assertTokensAbsentFromWorkload(
+        t,
+        peerExec,
+        deployed.target,
+        [credential.value, credential.replacement],
+        "peer",
       );
+    }
+    return {
+      deployed,
+      workspace: independent.workspace,
+      provider,
+      credentialIndex: peerIndex,
+      prove,
+      exec: peerExec,
+    };
+  };
+  const peer = await startPeer();
+  let successor: Deployed | undefined;
+  let successorProvider: string | undefined;
+  const { originalIndex, replacementIndex } = await exerciseSavedGitAcl(
+    t,
+    fixture,
+    exec,
+    original,
+    async (index) => {
+      requireTimelyGit(original.target);
+      const beforeDowngrade = await readPolicy();
+      assert.equal(beforeDowngrade.policy.version, write.version);
+      assert.equal(beforeDowngrade.defaultsRevisionId, original.revision.id);
+      const read = await save(beforeDowngrade, [
+        { repository: "fixture/a", access: "read" },
+        { repository: "fixture/b", access: "read" },
+      ]);
+      assert.deepEqual((await original.readExecution()).identity, original.original.identity);
+      requireTimelyGit(original.target);
+      const replacement = await deployPolicy();
+      deadlines.set(replacement.target.sandboxId, replacement.deadlineWallMs);
+      assert.equal(replacement.agent.id, agent.id);
+      assert.notEqual(replacement.revision.id, original.revision.id);
+      assert.notEqual(replacement.target.sandboxId, original.target.sandboxId);
+      assert.notEqual(replacement.supervisor.workloadPodUid, original.supervisor.workloadPodUid);
+      assert.notEqual(
+        replacement.supervisor.supervisorPodUid,
+        original.supervisor.supervisorPodUid,
+      );
+      const current = await loadPolicy(replacement, read, "read-only");
+      assert.notEqual(current.provider, installed.provider);
+      assert.notEqual(current.hash, installed.hash);
+      assert.notEqual(current.configInstance, installed.configInstance);
+
+      await retire(original, installed.provider, index);
+      requireTimelyGit(original.target);
+      await peer.prove("after-downgrade");
+      successor = replacement;
+      successorProvider = current.provider;
+      return replacement;
+    },
+    nativeCallbackBaseline,
+    !app,
+  );
+  assert.ok(successor && successorProvider && replacementIndex !== undefined);
+  assert.notEqual(
+    permissive.index,
+    originalIndex,
+    "restricted deployment must issue its own credential",
+  );
+  // [] withdraws desired authority, but this Driver cannot launch deny-all.
+  // An unrelated save that omits the field must retain the explicit list.
+  const beforeClear = await readPolicy();
+  const cleared = await save(beforeClear, []);
+  const omitted: SandboxPolicyViewWire["policy"] = await request("PUT", policyPath, {
+    expectedVersion: cleared.version,
+    additions: cleared.additions,
+  });
+  assert.equal(omitted.version, cleared.version + 1);
+  assert.equal(omitted.repositoryNetworkPolicy, undefined);
+  const persisted = await readPolicy();
+  assert.equal(persisted.policy.version, omitted.version);
+  assert.deepEqual(persisted.policy.repositoryNetworkPolicy, []);
+  assert.equal(persisted.defaultsRevisionId, successor.revision.id);
+  assert.equal(persisted.deployedPolicyVersion, beforeClear.deployedPolicyVersion);
+
+  const beforeRefusal = origin.snapshot();
+  const revisions = await request("GET", `${path}/revisions`);
+  await request("POST", `${path}/deploy`, undefined, emptyDeployRefusal);
+  assert.deepEqual(await request("GET", `${path}/revisions`), revisions);
+  assert.equal(origin.snapshot().issued, beforeRefusal.issued);
+  assert.deepEqual((await successor.readExecution()).identity, successor.original.identity);
+  assert.equal((await request("GET", path)).activeRevisionId, successor.revision.id);
+
+  // A refused deploy does not revoke the still-running predecessor. Stop the
+  // exact active revision and require both generations to be fully retired.
+  await stop(successor);
+  await retire(successor, successorProvider, replacementIndex);
+  await retire(original, installed.provider, originalIndex);
+  const quiet = origin.snapshot();
+  const observationEnds = Date.now() + 2_000;
+  await observeUntil(
+    "absence of a late Git grant after Stop",
+    t.signal,
+    async () => {
+      const snapshot = origin.snapshot();
+      assert.equal(snapshot.issued, beforeRefusal.issued, "Stop must not issue a late credential");
+      assert.equal(snapshot.requests, quiet.requests, "No late upstream request may follow Stop");
+      if (app) {
+        assert.ok(
+          [originalIndex, replacementIndex].every(
+            (index) => snapshot.tokens.find((token) => token.index === index)?.revoked === true,
+          ),
+          "Both primary credentials must remain revoked",
+        );
+        assert.ok(
+          snapshot.tokens.every(
+            (token) => token.revoked === (token.index !== peer.credentialIndex),
+          ),
+        );
+      } else {
+        assert.ok(snapshot.tokens.every((token) => !token.revoked));
+      }
+      return Date.now() >= observationEnds ? true : undefined;
+    },
+    5_000,
+  );
+  assert.deepEqual((await readPolicy()).policy.repositoryNetworkPolicy, []);
+  await peer.prove("after-stop");
+  if (credential.kind === "token") {
+    await refuseClassicToken(t, fixture, peer.deployed.target, peer.exec, credential);
+  }
+  await stop(peer.deployed);
+  await retire(peer.deployed, peer.provider, peer.credentialIndex, {
+    path: peer.deployed.path,
+    workspace: peer.workspace,
+    agentId: peer.deployed.agent.id,
+  });
+  assert.equal(await callbacks.read(), 0);
+  t.diagnostic(
+    "Saved Git ACL clear persisted; deploy refused deny-all and explicit Stop retired both generations",
+  );
 }
 
 if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
