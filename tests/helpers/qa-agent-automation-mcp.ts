@@ -896,16 +896,25 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       );
       assert.equal(remove.status, 204);
       pending.delete(held.id);
+      // A paused job that never ran has no native history to retain after deletion.
       assert.equal(
         (await request("GET", `/${held.id}/runs?limit=20`)).status,
-        200,
-        "history ownership remains readable after deletion",
+        404,
+        "a deleted job that never ran has no retained native history",
       );
       await attest([`${networkPeer.url}/approved`, `${networkPeer.url}/blocked`]);
       native = await observer();
     }
 
     await deletePaused(pausedJob);
+    // The completed recurring job has a real native run; retirement must preserve access to it.
+    const retained = await request("GET", `/${pausedJob.id}/runs?limit=20`);
+    assert.equal(retained.status, 200, "completed job history remains readable after deletion");
+    assert.ok(Check(AgentAutomationRunsPageSchema, retained.data));
+    assert.ok(
+      retained.data.runs.some((entry) => entry.runId === run.runId),
+      "retained history must contain the exact completed recurring MCP run",
+    );
     const standing = await create("Paused standing grant", {
       enabled: false,
       schedule: { kind: "every", everyMs: 86_400_000 },
