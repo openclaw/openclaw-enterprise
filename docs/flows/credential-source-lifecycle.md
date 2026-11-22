@@ -59,7 +59,7 @@ OCC requires exact `credential_source:operate` for a new binding to a ready Sour
 
 ### 4. Resolve the source at dispatch
 
-`apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker.ts:resolveRevisionSecretContext`
+`apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker/revision-inputs.ts:createRevisionCredentialResolver`
 
 For source types supported by deployment, the worker rechecks actor and Agent grants, selected Driver identity, source ownership, and withdrawal state before Compute prepares the Sandbox. Kubernetes checks supported source types and deployment restrictions before release. The managed Source path does not reach this worker dispatch yet.
 
