@@ -2398,10 +2398,20 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   color: var(--muted);
   font-size: var(--text-sm);
 }
-/* The job's own safe reason for a failure, beside the status line. */
+/* The job's own safe reason for a failure, beside the status line. A note a running job
+   names — an actionable wait, or unavailable deployment details — keeps the normal text
+   colour: it is guidance beside the checkpoint, not a failure. */
 .provisioning-reason {
   margin: var(--space-3) 0 0;
   color: var(--danger);
+}
+.provisioning-reason[data-note] {
+  color: inherit;
+}
+/* The completed Agent's page, offered when Create stays on the form because the deployment
+   read was refused. */
+.provisioning-offer {
+  margin: var(--space-3) 0 0;
 }
 .deployment-progress {
   display: grid;

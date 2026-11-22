@@ -29,16 +29,28 @@ export type ProvisioningProgressOutcome = "succeeded" | "failed" | "stopped" | "
 
 export interface ProvisioningProgressView {
   readonly section: HTMLElement;
+  /** The phase line focus moves to when a request runs; focus stays there across polls. */
+  readonly statusLine: HTMLElement;
   /** Shows the line for a new attempt; a retry resets the status and the elapsed time. */
   begin(): void;
   /** Reports one poll's answer, moving the line only as far as the job's own reply does. */
   report(job: ProvisioningJob): void;
+  /**
+   * Shows one note beside the checkpoint — an actionable wait the job names, or that
+   * deployment details are unavailable. Not a live region: the phase line stays the one
+   * announcement, and the note changes without moving the checkpoint.
+   */
+  note(text: string | null): void;
   /**
    * Reports the terminal answer and stops the line. The bar shows the safe failure reason
    * and names the last confirmed checkpoint when the reply identifies one. The form keeps
    * the recovery action.
    */
   finish(job: ProvisioningJob, outcome: ProvisioningProgressOutcome): void;
+  /**
+   * Offers the completed Agent's page when Create stays on the form. Cleared by begin().
+   */
+  offer(node: HTMLAnchorElement | null): void;
   /** Hides the line when no job answer can drive it. */
   reset(): void;
 }
@@ -112,9 +124,11 @@ function outcomeHeading(checkpoint: number, outcome: "failed" | "stopped" | "sup
 export function createProvisioningProgress(): ProvisioningProgressView {
   const phase = element("p", { className: "provisioning-phase", role: "status" });
   const elapsed = element("p", { className: "provisioning-elapsed", "aria-hidden": "true" });
-  // The job's own safe reason for a failure. Not a live region: the form's error line already
-  // announces it, and the heading above says that provisioning failed.
+  // The job's own safe reason for a failure, and the note a running job names (an actionable
+  // wait, or unavailable deployment details). Not a live region: the phase line above is the
+  // one announcement, and the form's error line already announces a failure's reason.
   const reason = element("p", { className: "provisioning-reason", hidden: true });
+  const offerSlot = element("div", { className: "provisioning-offer" });
   const section = element(
     "section",
     {
@@ -124,6 +138,7 @@ export function createProvisioningProgress(): ProvisioningProgressView {
     },
     element("div", { className: "provisioning-progress-head" }, phase, elapsed),
     reason,
+    offerSlot,
   );
   let startedAt = 0;
   // The furthest checkpoint any poll confirmed. Phases are monotonic per job, so a poll that
@@ -133,14 +148,17 @@ export function createProvisioningProgress(): ProvisioningProgressView {
 
   return {
     section,
+    statusLine: phase,
     begin() {
       startedAt = Date.now();
       confirmed = 0;
       section.removeAttribute("data-outcome");
       setHidden(section, false);
       setHidden(reason, true);
+      delete reason.dataset.note;
       setText(phase, CHECKPOINTS[0]);
       setText(elapsed, elapsedText(0));
+      offerSlot.replaceChildren();
     },
     report(job: ProvisioningJob) {
       // Admission can return a previously finished job. Only finish() interprets its checkpoint.
@@ -157,6 +175,17 @@ export function createProvisioningProgress(): ProvisioningProgressView {
       // keeps the last confirmed message, rather than inferring the next checkpoint started.
       setText(elapsed, elapsedText(Date.now() - startedAt));
     },
+    note(text) {
+      setText(reason, text ?? "");
+      setHidden(reason, !text);
+      // A note is guidance beside the checkpoint, not a failure reason: it keeps the normal
+      // text colour, and finish() clears the marker when a reason takes the line back.
+      if (text) {
+        reason.dataset.note = "true";
+      } else {
+        delete reason.dataset.note;
+      }
+    },
     finish(job: ProvisioningJob, outcome: ProvisioningProgressOutcome) {
       section.dataset.outcome = outcome;
       if (outcome === "succeeded") {
@@ -171,6 +200,10 @@ export function createProvisioningProgress(): ProvisioningProgressView {
       const message = outcome === "failed" ? job.error?.message : undefined;
       setText(reason, message ?? "");
       setHidden(reason, !message);
+      delete reason.dataset.note;
+    },
+    offer(node) {
+      offerSlot.replaceChildren(...(node ? [node] : []));
     },
     reset() {
       setHidden(section, true);

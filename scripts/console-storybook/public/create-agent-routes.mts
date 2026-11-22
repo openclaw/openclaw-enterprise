@@ -47,6 +47,9 @@ type CreateScenario = {
   provisioningPhases?: readonly AgentProvisioningStatusWire["phase"][];
   malformedProvisioningReply?: "revision-id" | "error-message";
   provisioningNamesDeploymentWait?: boolean;
+  // The first deployment's read is refused for this caller (404): Create completes on the
+  // form and offers the Agent's page instead of opening it.
+  provisionedDeploymentRefused?: boolean;
 };
 
 type CreateDependencies = {
@@ -231,37 +234,41 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
       }
       if (revision) {
         saveRevision(revision);
-        deployments.set(revision.id, {
-          deploymentId: revision.id,
-          namespaceId,
-          agentId: saved.id,
-          status: scenario.provisionedDeploymentStatus ?? "queued",
-          cleanup: null,
-          progress:
-            scenario.provisionedDeploymentAttempt === undefined
-              ? initialDeploymentProgress(
-                  scenario.provisionedDeploymentStatus ?? "queued",
-                  createdAt,
-                )
-              : {
-                  lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
-                  nextAttemptAt: createdAt,
-                },
-          reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
-          error:
-            scenario.provisionedDeploymentStatus !== "failed"
-              ? null
-              : scenario.provisionedDeploymentStopped
-                ? {
-                    code: "REVISION_STOPPED",
-                    message: deploymentFailureMessages.stopped,
-                  }
-                : (scenario.provisionedDeploymentError ?? {
-                    code: "DEPENDENCY_UNAVAILABLE",
-                    message: deploymentFailureMessages.dependencyUnavailable,
-                  }),
-          warnings: [],
-        });
+        // A refused scenario stores no deployment, so the read answers 404 and the completed
+        // form offers the Agent's page instead of opening a deployment this caller may not read.
+        if (!scenario.provisionedDeploymentRefused) {
+          deployments.set(revision.id, {
+            deploymentId: revision.id,
+            namespaceId,
+            agentId: saved.id,
+            status: scenario.provisionedDeploymentStatus ?? "queued",
+            cleanup: null,
+            progress:
+              scenario.provisionedDeploymentAttempt === undefined
+                ? initialDeploymentProgress(
+                    scenario.provisionedDeploymentStatus ?? "queued",
+                    createdAt,
+                  )
+                : {
+                    lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
+                    nextAttemptAt: createdAt,
+                  },
+            reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
+            error:
+              scenario.provisionedDeploymentStatus !== "failed"
+                ? null
+                : scenario.provisionedDeploymentStopped
+                  ? {
+                      code: "REVISION_STOPPED",
+                      message: deploymentFailureMessages.stopped,
+                    }
+                  : (scenario.provisionedDeploymentError ?? {
+                      code: "DEPENDENCY_UNAVAILABLE",
+                      message: deploymentFailureMessages.dependencyUnavailable,
+                    }),
+            warnings: [],
+          });
+        }
       }
       const job: ProvisioningJob = {
         requestId,
@@ -318,10 +325,13 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
       if (retrySuffix === undefined && method === "GET") {
         current.reads += 1;
         if (current.status !== "failed") {
+          // A refused deployment read needs one running handoff read before the job succeeds,
+          // so the form has asked and been refused before its completion shows the offer.
+          const succeedsAt = scenario.provisionedDeploymentRefused ? 3 : 1;
           current.status =
             scenario.provisionedDeploymentStatus === "running"
               ? "running"
-              : current.reads > 1
+              : current.reads > succeedsAt
                 ? scenario.provisionedDeploymentStatus === "failed" ||
                   scenario.provisioningCancelledByStop
                   ? "failed"

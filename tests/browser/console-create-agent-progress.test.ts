@@ -15,6 +15,7 @@ import { routeInstallationProvisioning } from "./console-agents-test-support.ts"
 import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   createModelCredentialSecret,
+  recordMeterPaints,
   runProvisioningPolls,
   waitForProvisioningFailure,
 } from "./console-agents-ui-test-support.ts";
@@ -135,36 +136,6 @@ function barState(page: Page) {
   });
 }
 
-// Records each message the status line paints, with the elapsed line beside it, so one run can
-// assert the whole progression. runProvisioningPolls pauses the page clock, so each paint is
-// deterministic; the elapsed values only need to move forward. A message the line repaints
-// unchanged is not recorded twice.
-async function recordMeterPaints(page: Page) {
-  await page.evaluate(() => {
-    globalThis.statusPaints = [];
-    const snapshot = () => {
-      const section = globalThis.document.querySelector(".provisioning-progress");
-      if (!(section instanceof HTMLElement) || section.hidden) {
-        return;
-      }
-      const phase = section.querySelector(".provisioning-phase")?.textContent ?? "";
-      const last = globalThis.statusPaints.at(-1);
-      if (last?.phase === phase) {
-        return;
-      }
-      globalThis.statusPaints.push({
-        phase,
-        elapsed: section.querySelector(".provisioning-elapsed")?.textContent ?? "",
-      });
-    };
-    new globalThis.MutationObserver(snapshot).observe(globalThis.document.body, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-    });
-  });
-}
-
 test("Create Agent's status line names each checkpoint the job's reply confirms", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
@@ -187,7 +158,8 @@ test("Create Agent's status line names each checkpoint the job's reply confirms"
     work.job("succeeded", { phase: "handoff", ...handedOff }),
   ];
   const served = await routeProvisioningJob(page, fixture, work, reads);
-  // The deployment read after handoff is refused, so the status line keeps its bare sentence.
+  // The deployment read after handoff is refused, so Create stays on the form when the job
+  // succeeds: the completed line offers the Agent's page instead of forcing it open.
   await page.route(
     `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
     (route) =>
@@ -209,8 +181,10 @@ test("Create Agent's status line names each checkpoint the job's reply confirms"
     reads.length,
   );
   assert.equal(served.reads, reads.length);
-  // Success opens the created Agent, so the line's final paint is only in the record.
-  await page.waitForURL((url) => new URL(url).searchParams.get("revision") === revisionId);
+  // The refusal keeps the reader on the form; the line completes there and offers the Agent.
+  assert.equal(new URL(page.url()).pathname, "/console/agents/new");
+  const offer = page.getByRole("link", { name: "Open Agent" });
+  await offer.waitFor();
   const paints = await page.evaluate(() => globalThis.statusPaints);
   assert.deepEqual(
     paints.map((paint) => paint.phase),
@@ -231,6 +205,10 @@ test("Create Agent's status line names each checkpoint the job's reply confirms"
   assert.ok(first && last, "Expected the line's first and final paints");
   assert.match(first.elapsed, /^Elapsed \d+:\d\d$/u);
   assert.notEqual(first.elapsed, last.elapsed);
+  // The offer opens the Agent's configuration tab, the page this caller can read.
+  await offer.click();
+  await page.waitForURL((url) => new URL(url).searchParams.get("revision") === revisionId);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
 });
 
 test("a failed provisioning job names its last confirmed checkpoint and a retry starts the line over", async (t) => {
@@ -483,17 +461,66 @@ test("an unreadable phase keeps the status line's last confirmed message", async
     work.job("running", { phase: "transport" }),
     work.job("running", { phase: undefined }),
   ];
-  await routeProvisioningJob(page, fixture, work, reads);
-  await trackSettledFetches(page);
+  // The clock is not installed: the page polls in real one-second intervals, and the third
+  // read is held open so the view is inspected while the job is mid-poll — after the
+  // unreadable reply was processed, before any later answer could repaint the line.
+  await routeProvisioningJob(page, fixture, work, null);
+  let servedReads = 0;
+  let admittedRequestId = "";
+  let releaseHeld: (() => void) | undefined;
+  const held = new Promise<void>((release) => {
+    releaseHeld = release;
+  });
+  await page.route(`**${work.url}`, async (route) => {
+    const index = servedReads;
+    servedReads += 1;
+    if (index >= 2) {
+      await held;
+    }
+    const read = reads[Math.min(index, reads.length - 1)];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { ...read, requestId: admittedRequestId },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      }),
+    });
+  });
   await recordMeterPaints(page);
-  await runProvisioningPolls(
-    page,
-    () => page.getByRole("button", { name: "Create Agent", exact: true }).click(),
-    work.url,
-    reads.length,
+  const admitted = page.waitForResponse(
+    (reply) =>
+      reply.request().method() === "POST" &&
+      new URL(reply.url()).pathname === `/namespaces/${namespace.id}/agents/provision`,
   );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const acceptedReply = await admitted;
+  assert.equal(acceptedReply.status(), 202);
+  admittedRequestId = ((await acceptedReply.json()).data.provisioning as { requestId: string })
+    .requestId;
+  // Focus moved to the sticky line when the request started; it stays there across polls.
+  const focusIsPhaseLine = () =>
+    page.evaluate(
+      () => globalThis.document.activeElement?.classList.contains("provisioning-phase") === true,
+    );
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector(".provisioning-phase")?.textContent ===
+      "Runtime credentials created.",
+  );
+  assert.equal(await focusIsPhaseLine(), true);
+  // Real one-second polls: the unreadable reply arrives on the second poll and is processed,
+  // then the third poll opens and is held. Four seconds covers all three on a loaded host.
+  await page.waitForTimeout(4_000);
+  assert.equal(servedReads >= 3, true, `expected the held poll to open (read ${servedReads})`);
+  // The whole Create view shows one live checkpoint: the sticky line keeps the last confirmed
+  // message through the unreadable reply, no other status repeats or contradicts it, and the
+  // saved-resource line stays empty because nothing was saved.
   const state = await meterState(page);
   assert.equal(state.phase, "Runtime credentials created.");
+  assert.equal(await page.locator("#create-agent-form ~ p[role=status]").textContent(), "");
+  assert.equal(await page.getByText("Runtime credentials created.").count(), 1);
+  assert.equal(await focusIsPhaseLine(), true);
   const paints = await page.evaluate(() => globalThis.statusPaints);
   const messages = paints.map((paint) => paint.phase);
   // The unreadable poll repaints nothing: the record ends on the confirmed message.
@@ -501,6 +528,7 @@ test("an unreadable phase keeps the status line's last confirmed message", async
     "Waiting for the controller worker…",
     "Runtime credentials created.",
   ]);
+  releaseHeld?.();
 });
 
 test("a refused provisioning request shows no status line", async (t) => {

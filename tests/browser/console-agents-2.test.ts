@@ -7,6 +7,7 @@ import {
   openAdvancedSettings,
   assertAgentNameTaken,
   optionValues,
+  recordMeterPaints,
   runProvisioningPolls,
   waitForProvisioningFailure,
   createAgentThroughForm,
@@ -98,26 +99,6 @@ const defaultCodexPreset = JSON.parse(
 );
 const createConsoleAppFixture = (t: TestContext, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
-
-declare global {
-  var provisioningWrites: string[];
-}
-
-// Runs in the page. Keep repeated writes: the status is live and each update can be announced.
-function recordProvisioningWrites(prefixes: string[]) {
-  const writes: string[] = [];
-  globalThis.provisioningWrites = writes;
-  new MutationObserver((records) => {
-    for (const { target, addedNodes } of records) {
-      if (target instanceof Element && target.getAttribute("role") === "status") {
-        const text = Array.from(addedNodes, (node) => node.textContent).join("");
-        if (prefixes.some((prefix) => text.startsWith(prefix))) {
-          writes.push(text);
-        }
-      }
-    }
-  }).observe(document.body, { childList: true, subtree: true });
-}
 
 function admission(requests: readonly ProvisionAgentBody[], attempt: number): ProvisionAgentBody {
   const request = requests[attempt - 1];
@@ -1295,6 +1276,9 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
     job: { agentId: string; revisionId?: string; error: { code?: string; message: string } };
     text: string;
     stopped?: boolean;
+    // The sticky line's heading when the job stopped: with the checkpoint a readable reply
+    // confirmed, or the bare sentence when the reply names none.
+    stoppedHeading?: string;
     link?: string;
     href: string | null;
     read?: ReturnType<typeof unreadable>;
@@ -1325,6 +1309,8 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
       },
       text: "The Agent was stopped before its first deployment finished. Open this Agent and deploy a new version when you want it running.",
       stopped: true,
+      // The reply confirmed the handoff checkpoint, so the heading names it.
+      stoppedHeading: "Provisioning stopped after the first deployment was handed off.",
       link: "Open Agent and deployment details",
       href: revisionHref,
     },
@@ -1332,6 +1318,8 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
       job: cancelled(kept.id, "stopped"),
       text: "Provisioning was cancelled because the Agent was stopped. Open this Agent and deploy a version when you want it running.",
       stopped: true,
+      // The cancelled job's reply carries the Configuration phase, so the heading names it.
+      stoppedHeading: "Provisioning stopped after Configuration and Agent created.",
       href: keptHref,
     },
     {
@@ -1423,7 +1411,8 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
         [`/namespaces/${namespace.id}/agents/provision`],
       );
     } else if (c.stopped) {
-      await page.getByText("Provisioning stopped.", { exact: true }).waitFor();
+      assert.ok(c.stoppedHeading);
+      await page.getByText(c.stoppedHeading, { exact: true }).waitFor();
       assert.equal(
         await page.getByText(/Provisioning failed|Create a new Agent|correct the cause/i).count(),
         0,
@@ -1714,33 +1703,48 @@ for (const mode of ["unavailable", "refused"] as const) {
     await page.getByRole("button", { name: "Start without Preset" }).click();
     await page.getByLabel("Agent name").fill("Quota Agent");
     await enterManualModel(page, "test-model-key");
-    await page.evaluate(recordProvisioningWrites, ["Provisioning", "The Namespace"]);
-    await runProvisioningPolls(
-      page,
-      () => page.getByRole("button", { name: "Create Agent" }).click(),
-      work.url,
-      observations.length,
+    // Drive the polls by hand so the wait is asserted while the job still runs: the failure
+    // that ends the job replaces the note with its own reason. The admission answer arrives
+    // before the clock moves, so the loop's first one-second poll exists to fire.
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
+    const admitted = page.waitForResponse(
+      (reply) =>
+        reply.request().method() === "POST" &&
+        new URL(reply.url()).pathname === `/namespaces/${namespace.id}/agents/provision`,
     );
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    assert.equal((await admitted).status(), 202);
+    await page.clock.runFor(1_000);
+    await waitForIdleFetches(page);
+    const note = page.locator(".provisioning-progress .provisioning-reason");
+    // The sticky line keeps the checkpoint; the note beside it carries the actionable wait,
+    // or the refusal's explanation. The saved-resource line stays empty: nothing was saved.
+    const expectedNote =
+      mode === "refused" ? "Deployment details are unavailable." : POD_QUOTA_FULL;
+    await note.filter({ hasText: expectedNote }).waitFor();
+    assert.equal(
+      await page.locator(".provisioning-phase").textContent(),
+      "First deployment handed off.",
+    );
+    assert.equal(await page.locator("#create-agent-form ~ p[role=status]").textContent(), "");
+    // The remaining polls: the second quota read, then the failure that ends the job. The
+    // clock stays under this test's control; runProvisioningPolls would reinstall it.
+    await page.clock.runFor(1_000);
+    await waitForIdleFetches(page);
+    await page.clock.runFor(1_000);
+    await waitForIdleFetches(page);
+    await page.clock.resume();
     await waitForProvisioningFailure(page);
     assert.equal(served.reads, observations.length);
     assert.equal(new URL(page.url()).pathname, "/console/agents/new");
-    assert.deepEqual(
-      await page.evaluate(() => globalThis.provisioningWrites),
-      mode === "refused"
-        ? [
-            "Provisioning request accepted.",
-            "Provisioning queued…",
-            "Provisioning Agent… Deployment details are unavailable.",
-          ]
-        : ["Provisioning request accepted.", "Provisioning queued…", POD_QUOTA_FULL],
-    );
   });
 }
 
 // A revision read Restriction can refuse the first deployment to a caller its provisioning job
 // still answers (tests/integration/postgres-agent-provisioning.test.ts). That caller would find
 // nothing on the Deployment tab, so the form keeps following the job, asks once whether the
-// deployment is readable, and opens the Agent when the job succeeds, as before handoff opened it.
+// deployment is readable, and completes on the form when the job succeeds: the deployment opens
+// only after a read this caller could make, so the line offers the Agent's page instead.
 test("Dedicated Agent creation keeps following the job when the first deployment is unreadable", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1788,6 +1792,13 @@ test("Dedicated Agent creation keeps following the job when the first deployment
     work.url,
     observations.length,
   );
+  // The refusal keeps the reader on the form: the completed line offers the Agent's page
+  // instead of the form forcing it open, and the reader chooses to open it.
+  assert.equal(new URL(page.url()).pathname, "/console/agents/new");
+  await page.getByText("Agent ready.", { exact: true }).waitFor();
+  const offer = page.getByRole("link", { name: "Open Agent" });
+  await offer.waitFor();
+  await offer.click();
   await page.waitForURL((location) => location.pathname === `/console/agents/${agent.id}`);
   const location = new URL(page.url());
   assert.equal(location.searchParams.get("revision"), revision.id);
@@ -1843,8 +1854,13 @@ for (const leave of [false, true]) {
     await enterManualModel(page, "test-model-key");
     await trackSettledFetches(page);
     await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
+    const admitted = page.waitForResponse(
+      (candidate) =>
+        candidate.request().method() === "POST" &&
+        new URL(candidate.url()).pathname === `/namespaces/${namespace.id}/agents/provision`,
+    );
     await page.getByRole("button", { name: "Create Agent" }).click();
-    await page.getByText("Provisioning queued…").waitFor();
+    assert.equal((await admitted).status(), 202);
     // Admission answered queued. The next poll reads the handoff and starts the deployment read;
     // the browser must receive its 200 headers before the clock moves again, so the check is
     // cancelled with its body open, not before it was answered.
@@ -2067,9 +2083,10 @@ test("Create preserves the admitted version when the operator resends the same p
 });
 
 // Create rereads the provisioning job every second, and a started job goes back to queued
-// between worker retries. The status line keeps one label once the job has started and is
-// written only when that label changes (finding 1424: it flipped between "Provisioning
-// Agent…" and "Provisioning queued…" and was rewritten on every read).
+// between worker retries. The sticky line keeps one message once the job has started: its
+// checkpoint only moves forward, so a queued retry repaints nothing (finding 1424: the line
+// flipped between "Provisioning Agent…" and "Provisioning queued…" and was rewritten on
+// every read).
 test("Dedicated Agent creation keeps one provisioning label while the job retries", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2090,7 +2107,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-  await page.evaluate(recordProvisioningWrites, ["Provisioning"]);
+  await recordMeterPaints(page);
   await runProvisioningPolls(
     page,
     () => page.getByRole("button", { name: "Create Agent" }).click(),
@@ -2099,13 +2116,19 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   );
   await waitForProvisioningFailure(page);
   assert.equal(served.reads, reads.length);
-  assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
-    "Provisioning request accepted.",
-    "Provisioning queued…",
-    // One label across the retries, carrying the checkpoint the job confirmed; a queued
-    // retry keeps it instead of reverting to the bare wording.
-    "Provisioning Agent… Configuration and Agent created.",
-  ]);
+  // One message across the retries: the record holds one paint per confirmed checkpoint, the
+  // queued retry repaints nothing, and the terminal heading names the checkpoint once.
+  const paints = await page.evaluate(() => globalThis.statusPaints);
+  assert.deepEqual(
+    paints.map((paint) => paint.phase),
+    [
+      "Waiting for the controller worker…",
+      "Configuration and Agent created.",
+      "Agent provisioning failed after Configuration and Agent created.",
+    ],
+  );
+  // The saved-resource line stayed empty for the whole run: nothing was saved.
+  assert.equal(await page.locator("#create-agent-form ~ p[role=status]").textContent(), "");
 });
 
 test("Agent creation rejects non-object native Configuration JSON before Configuration or Agent writes", async (t) => {

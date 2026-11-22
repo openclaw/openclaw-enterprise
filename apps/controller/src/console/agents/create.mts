@@ -233,7 +233,6 @@ interface ProvisioningAttempt {
 }
 
 type ProvisioningContext = Pick<CreateAgentContext, "request" | "namespaceId" | "isCurrent"> & {
-  status: HTMLElement;
   progress: ProvisioningProgressView;
 };
 type ProvisioningJob = ReturnType<typeof provisioningJob>;
@@ -490,20 +489,6 @@ function provisioningStatusText(status: string) {
   }
 }
 
-// The last pre-deployment checkpoint the job confirmed, appended to the status line. The
-// phase names the last phase the worker completed, so a readable phase confirms that
-// checkpoint exists; a missing, unreadable or admitted phase keeps the generic wording.
-function provisioningCheckpointText(job: ProvisioningJob, started: boolean) {
-  const generic = provisioningStatusText(started ? "running" : job.status);
-  const checkpoint =
-    job.phase === "configuration"
-      ? "Configuration and Agent created."
-      : job.phase === "transport"
-        ? "Runtime credentials created."
-        : null;
-  return checkpoint === null ? generic : `${generic} ${checkpoint}`;
-}
-
 // The server's own sentence for a refused request, unless it is a catch-all answer (finding
 // 1609). Among 5xx answers only a 503 whose code the API sends before admission refuses the
 // request (finding 1635); any other 5xx, including a 503 without such a code, leaves its
@@ -620,7 +605,6 @@ function jobDeploymentWait(job: ProvisioningJob) {
 
 async function waitForProvisioning({
   request,
-  status,
   progress,
   first,
   namespaceId,
@@ -653,7 +637,6 @@ async function waitForProvisioning({
         throw new DOMException("View closed", "AbortError");
       }
       if (readable) {
-        status.textContent = "Agent created. Opening its first deployment…";
         return { agentId, revisionId, tab: "deployment" as const };
       }
       deploymentRefused = readable === false;
@@ -662,11 +645,8 @@ async function waitForProvisioning({
     // A refusal also clears detail from the earlier job read, which may predate an access
     // change. The line explains the missing detail and keeps following the job (ask 3): the
     // job's own wait text is dropped, not the job.
-    setText(
-      status,
-      deploymentRefused
-        ? `${provisioningCheckpointText(current, started)} Deployment details are unavailable.`
-        : (jobDeploymentWait(current) ?? provisioningCheckpointText(current, started)),
+    progress.note(
+      deploymentRefused ? "Deployment details are unavailable." : jobDeploymentWait(current),
     );
     progress.report(current);
     await nextPoll;
@@ -703,12 +683,6 @@ async function waitForProvisioning({
   );
   // A failed job's reason leads the form's error line, so its status line would only repeat
   // that it failed (finding 2423).
-  status.textContent =
-    neutralOutcome === "stopped"
-      ? "Provisioning stopped."
-      : current?.status === "failed"
-        ? ""
-        : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
     throw new ProvisioningFailure(current, neutralOutcome, cancelledAgent === "unknown");
   }
@@ -721,7 +695,10 @@ async function waitForProvisioning({
   return {
     agentId: current.agentId,
     revisionId: current.revisionId,
-    tab: "configuration" as const,
+    // A refused deployment read keeps the reader on the form: the deployment tab belongs to a
+    // caller who may read it, so the completed line offers the Agent's page instead of the
+    // form forcing it open.
+    tab: deploymentRefused ? undefined : ("configuration" as const),
   };
 }
 
@@ -748,14 +725,12 @@ class ProvisioningFailure extends Error {
 
 async function finishProvisioningAttempt({
   request,
-  status,
   progress,
   namespaceId,
   attempt,
   retryUrl,
   isCurrent,
 }: ProvisioningContext & { attempt: ProvisioningAttempt; retryUrl?: string | undefined }) {
-  status.textContent = "Submitting provisioning request…";
   progress.begin();
   const provisionPath = `${namespacePath(namespaceId)}/agents/provision`;
   const provisioned =
@@ -780,11 +755,9 @@ async function finishProvisioningAttempt({
     return job;
   }
   const accepted = observeJob(provisioned);
-  status.textContent = "Provisioning request accepted.";
   progress.report(accepted);
   return waitForProvisioning({
     request,
-    status,
     progress,
     first: accepted,
     namespaceId,
@@ -3723,7 +3696,8 @@ function renderAgentForm(
         active === document.body ||
         ("disabled" in active && active.disabled) ||
         active === savedStatus ||
-        active === feedback)
+        active === feedback ||
+        active === provisioningMeter.statusLine)
     ) {
       line.tabIndex = -1;
       line.focus({ preventScroll: true });
@@ -4015,20 +3989,27 @@ function renderAgentForm(
       mutationStarted = true;
       const finishing = finishProvisioningAttempt({
         request,
-        status: savedStatus,
         progress: provisioningMeter,
         namespaceId,
         attempt,
         retryUrl,
         isCurrent: context.isCurrent,
       });
-      focusFeedbackLine(savedStatus);
+      focusFeedbackLine(provisioningMeter.statusLine);
       const { agentId, revisionId, tab } = await finishing;
       if (!context.isCurrent()) {
         return;
       }
       provisioningAttempt = null;
       repositories.recordSuccessfulSave();
+      if (tab === undefined) {
+        // The deployment read was refused, so Create does not force the Agent's page open: the
+        // completed line offers it, and the reader chooses.
+        provisioningMeter.offer(
+          link("Open Agent", `agents/${agentId}?revision=${revisionId}&tab=configuration`, context),
+        );
+        return;
+      }
       context.navigate(`agents/${agentId}?revision=${revisionId}&tab=${tab}`);
     } catch (cause) {
       const error = {

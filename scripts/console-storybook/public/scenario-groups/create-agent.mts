@@ -88,6 +88,9 @@ type CreateAgentScenario = {
   oauthPending?: true;
   observabilityDenied?: true;
   provisionedDeploymentStopped?: true;
+  // The first deployment's read is refused for this caller, so the completed form offers the
+  // Agent's page instead of opening it.
+  provisionedDeploymentRefused?: true;
   provisioningCancelledByStop?: true;
   provisioningNamesDeploymentWait?: true;
   readOnlyPermissionSummary?: true;
@@ -1102,6 +1105,21 @@ export const createAgentProvisioningScenarios = {
       "Watch the message advance as each phase completes; at handoff the page opens the new Agent's Deployment tab.",
     ],
     gap: "Simulated UI proof: the phases and deployment wait are fixture answers, not a real controller or cluster.",
+  },
+  createProvisioningDeploymentRefused: {
+    group: "Pages/Create Agent",
+    name: "Provisioning completed, deployment unreadable",
+    path: create,
+    actions: readyForm,
+    provisioningPhases: ["admitted", "configuration", "handoff"],
+    provisionedDeploymentRefused: true,
+    description:
+      "The first deployment's read is refused for this caller, so nothing opens by itself when the job succeeds: the completed status line stays in the sticky bar and offers Open Agent, which the reader selects to reach the Agent's Configuration tab. The deployment tab belongs to a caller who may read it.",
+    steps: [
+      "Click Create Agent and wait for the line to say the Agent is ready.",
+      "Confirm nothing opened by itself, and that the line offers Open Agent beside the buttons; select it to reach the Agent's Configuration tab.",
+    ],
+    gap: "Simulated UI proof: the refused read is a fixture answer, not a real Restriction.",
   },
   createPending: {
     group: "Pages/Create Agent",
