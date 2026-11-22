@@ -95,13 +95,13 @@ and optional public PEM `caBundle`. Require an exact normalized HTTPS URL
 and exact host addresses (/32 or /128). Refuse stdio, wildcard destinations,
 credentials, private keys and redirects to unapproved origins. Attest identical anonymous actions.
 
-Derive the TCP port from the URL (default 443). Add only listed IP/port pairs
-to Gateway and dedicated Codex Agent NetworkPolicies.
-Retain default-deny egress and unrelated required workload routes. Validate TLS
-hostname and chain. Project the public CA only into the relevant workload:
-merge it with required Gateway Node trust via `NODE_EXTRA_CA_CERTS` and with
-dedicated Codex PEM trust via `CODEX_CA_CERTIFICATE`. These roots affect workload-wide TLS trust. Keep model credentials out of the dedicated
-Gateway. Refuse a topology that cannot enforce these boundaries.
+Derive the TCP port from the URL (default 443). Add listed endpoint IP/port
+pairs only to the Gateway NetworkPolicy. Validate TLS hostname and chain; merge
+the public automation CA only into Gateway Node trust via `NODE_EXTRA_CA_CERTS`,
+which affects Gateway-wide trust. Dedicated Agents receive no automation-specific
+endpoint rule, CA map/mount or `CODEX_CA_CERTIFICATE`. Retain default-deny,
+independent model/workload routes and unrelated Codex trust. Keep model credentials
+out of the dedicated Gateway; refuse unenforceable topologies.
 
 Native administrators and chat remain trusted writers outside OCC. OCC does
 not adopt native jobs. The pinned [operator execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
