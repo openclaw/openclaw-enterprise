@@ -220,16 +220,17 @@ verify the selected revision, Pod UID, container ID, actual image, guarded
 launcher/version, effective policy and trust configuration. Require a fresh
 deployment if the guard is missing. Refuse absent or stale evidence.
 
-For Kubernetes, open a controller-private, single-use loopback WebSocket
-tunnel to the exact Pod through the Kubernetes `pods/proxy` GET operation.
-The Driver owns Kubernetes authentication and TLS. The transport exposes
-instance assertion and close operations. Recheck Pod UID, container ID and
-image after handshake and before RPC dispatch. An Agent-wide Service can route
-to another revision during cutover. Pin one connection through the eligibility
-read and mutation, then close it. On replacement, stop dispatch. After a
-possibly sent write, return `UNKNOWN_OUTCOME` without reconnecting or replaying.
-Runtime details belong
-to the Driver and Harness. Submit the contract before implementation.
+Kubernetes Compute provisions a revision-owned Service and private operator
+HTTPRoute through the existing Envoy authentication, trusted headers, scopes
+and NetworkPolicy. This requires no new RBAC or public operation. Select the
+exact Namespace, Agent and revision. Before and after the WebSocket handshake,
+require a nonempty ready endpoint set: every ready EndpointSlice targetRef UID
+and the sole live revision Gateway Pod UID must match the verified Pod.
+Recheck container and image identity. Refuse mismatches or rollover. Keep one
+connection through eligibility read and mutation, then close it. After a
+possibly sent write, return `UNKNOWN_OUTCOME` without reconnect or replay.
+The Agent-wide chat route cannot qualify. Clean up the Service and HTTPRoute
+when retiring the revision. Submit this contract before implementation.
 
 Before **every** native Gateway process spawn, including supervisor respawn
 and kubelet container restart, the launcher verifies the effective plugin
@@ -284,7 +285,7 @@ Retire the job or deny at the service to withdraw a running grant.
   atomicity, failed-create cleanup racing with binding, Agent deletion with
   sibling retention, and history access after deletion. Use the actual packaged
   Harnesses and real endpoint, credential, model and database evidence for
-  their relevant criteria. A native CRUD fixture alone cannot qualify execution.
+  their relevant criteria.
 
 - **AC6. Runtime and egress.** On both Harnesses, prove TLS with the projected CA
   and rejection of an untrusted certificate, wrong hostname, sibling IP and
