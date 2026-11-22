@@ -93,7 +93,11 @@ async function proxyServer(
       const rest = buffered.subarray(end + 4);
       const upstream = connect(443, modelAddress);
       sockets.add(upstream);
-      upstream.once("close", () => sockets.delete(upstream));
+      socket.once("close", () => upstream.destroy());
+      upstream.once("close", () => {
+        sockets.delete(upstream);
+        socket.destroy();
+      });
       upstream.on("error", () => socket.destroy());
       upstream.once("connect", () => {
         observation.forwarded = true;
