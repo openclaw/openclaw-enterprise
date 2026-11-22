@@ -1351,6 +1351,15 @@ async function repositoryGitJourney(
         assert.equal(wire.world.writes, writes, "cold verification did not replay credentials");
         assert.equal(state.installed, installed);
 
+        // The previous worker has joined. Let its replacement recover interrupted cleanup
+        // without waiting for this fixture revision's work lease to expire.
+        await expireWorkLease(f.observerPool, {
+          namespaceId: revision.namespaceId,
+          revisionId: revision.id,
+          keyLike: `agent_revision:${revision.id}:repository_cleanup:%`,
+          state: "claimed",
+        });
+
         // A second process recovers the durable cleanup handoff. Only the new expiry
         // cases supply the model attachment and use the driver’s OpenShell identity checks.
         await replaceRuntime();
