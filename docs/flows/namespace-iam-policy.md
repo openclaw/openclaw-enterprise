@@ -56,12 +56,10 @@ graph TD
 
 ### 1. Route admission and permission selection
 
-`apps/controller/src/index.ts` admits and resolves the caller before dispatch.
-OCC uses the selected IAM Driver to check Installation `administer` and exact
-Namespace `read`. Delegation requires both checks even when the caller can
-access the target.
-`apps/controller/src/http/permission-metadata.ts:routePermissionMetadata` documents
-these checks in OpenAPI.
+`apps/controller/src/index.ts` admits the caller. The selected IAM Driver checks
+Installation `administer` and exact Namespace `read`. Delegation requires both
+grants even when the caller can access the target.
+`apps/controller/src/http/permission-metadata.ts:routePermissionMetadata` documents these grants.
 
 ### 2. Role and AccessBinding commands reach the controller
 
