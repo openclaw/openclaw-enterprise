@@ -282,7 +282,7 @@ export interface ComputeDriver extends Driver {
   /** Enforces Gateway administration restrictions for managed Agent revisions. */
   readonly supportsGatewayManagedMode?: true;
   readonly capability: "compute";
-  /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */
+  /** Deployment must observe and provision Agent-owned runtime credentials before saving a revision. */
   readonly requiresAgentRuntimeCredentials?: true;
   /** Default: platform admission policy. Driver ownership preserves native logging settings. */
   readonly runtimeLogging?: "platform" | "driver";

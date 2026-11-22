@@ -1,8 +1,16 @@
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
+import pg from "pg";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { databaseUrl } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import {
   type AgentRevision,
+  type ComputeDriver,
+  type SandboxDriver,
   type RepositoryNetworkGrant,
   type SandboxNetworkGrant,
   type SandboxPolicy,
@@ -629,4 +637,306 @@ export async function editStoredRepositoryGrants(
   const forbidden = await inject("PUT", path, { ...withdrawal, expectedVersion: cleared.version });
   assert.equal(forbidden.statusCode, 403, forbidden.body);
   assert.deepEqual(await stored(), cleared);
+}
+
+export async function verifyScopedDeploymentTransition(
+  fixture: PolicyApp & { sandboxDriver: SandboxDriver },
+) {
+  const { namespace, agent, revision, original } = await policyEditor(fixture);
+  const { inject, state } = fixture;
+  const next = { ...original, version: original.version + 1, repositoryNetworkPolicy: [] };
+  await state.transact((unit) => unit.sandboxPolicies.save(next, original.version));
+  Object.assign(fixture.sandboxDriver, { admitRepositoryNetworkPolicy: () => ({}) });
+  Object.assign(fixture.computeDriver, {
+    validateProtectedRepositoryNetworkPolicy: async () => {},
+  });
+  const deploy = () => inject("POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`);
+  const denied = async () => {
+    const result = await deploy();
+    assert.equal(result.statusCode, 409, result.body);
+    assert.match(result.json().error.message, /Create a new Agent/);
+    const rows = await state.read((view) =>
+      view.revisions.listRevisionMetadata(namespace.id, agent.id),
+    );
+    assert.deepEqual(
+      rows.map(({ id }) => id),
+      [revision.id],
+    );
+  };
+  // A legacy Worker may still claim a queued unscoped revision without an active pointer.
+  await denied();
+  const stopped: string[] = [];
+  Object.assign(fixture.computeDriver, {
+    async stopRevision(old: Readonly<AgentRevision>) {
+      stopped.push(old.id);
+    },
+  });
+  const readWork = () =>
+    state.read((view) => view.operations.findWork(`agent_revision:${revision.id}:reconcile`));
+  const release = Promise.withResolvers<void>();
+  const compute: ComputeDriver = fixture.computeDriver;
+  const prepare = compute.prepareRevision.bind(compute);
+  let delayed = false;
+  compute.prepareRevision = async (...args) => {
+    if (!delayed) {
+      delayed = true;
+      await release.promise;
+    }
+    return prepare(...args);
+  };
+  assert.equal(compute.requiresStoppedPredecessors, undefined);
+  const create = () =>
+    createControllerWorker({
+      pool: new pg.Pool({ connectionString: databaseUrl }),
+      drivers: createBackendWorkerDrivers(fixture.computeDriver, [], {
+        secretDriver: fixture.controller.selectedDriver("secret"),
+      }),
+      maxAttempts: 4,
+      leaseDurationMs: 90000,
+      pollIntervalMs: 20,
+      emit() {},
+    });
+  const worker = create();
+  const replacement = create();
+  try {
+    await worker.start();
+    await waitFor("an unscoped write is in flight", async () => delayed || undefined);
+    const expired = await fixture.pool.query(
+      "UPDATE occ.controller_work SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE revision_id=$1 AND state='claimed'",
+      [revision.id],
+    );
+    assert.equal(expired.rowCount, 1);
+    await replacement.start();
+    await waitFor("legacy deployment is active", async () => {
+      const old = await state.read((view) => view.agents.findAgent(namespace.id, agent.id));
+      const work = await readWork();
+      if (work?.state === "failed_permanent") {
+        throw new Error(String(work.reasonCode));
+      }
+      return old?.activeRevisionId === revision.id && work?.state === "succeeded"
+        ? true
+        : undefined;
+    });
+    await denied();
+    const request = await inject("POST", `/namespaces/${namespace.id}/agents/${agent.id}/stop`);
+    assert.equal(request.statusCode, 202, request.body);
+
+    await waitFor("legacy stop has retired the active revision", async () => {
+      const old = await state.read((view) => view.agents.findAgent(namespace.id, agent.id));
+      return old && !old.activeRevisionId ? true : undefined;
+    });
+    assert.ok(stopped.includes(revision.id));
+    // The claim was recovered and Stop completed while the old Driver call is parked.
+    // Its write could still reach the same Gateway, so no scoped revision may be created.
+    await denied();
+  } finally {
+    release.resolve();
+    await Promise.all([worker.stop(), replacement.stop()]);
+  }
+}
+
+async function createScopedDeployment(fixture: PolicyApp) {
+  const { inject, state } = fixture;
+  const starter = await fixture.deployAgent("setup");
+  const { namespace, secretRef } = starter;
+  const root = "/namespaces/" + namespace.id;
+  const config = await inject("GET", root + "/configurations/" + starter.agent.configurationId);
+  assert.equal(config.statusCode, 200);
+  const credential = await inject("POST", root + "/secrets", {
+    name: "synthetic-channel",
+    value: "synthetic",
+  });
+  assert.equal(credential.statusCode, 201);
+  const source = credential.json().data.ref;
+  const bound = await inject("POST", root + "/configurations", {
+    kind: "agent",
+    values: config.json().data.values,
+    secretBindings: { CHANNEL_TOKEN: { source, delivery: { type: "env" } } },
+  });
+  assert.equal(bound.statusCode, 201);
+  const created = await inject("POST", root + "/agents", {
+    name: "scoped channel",
+    executionMode: "dedicated",
+    configurationId: bound.json().data.id,
+    harnessAuth: { method: "api_key", source: secretRef },
+  });
+  assert.equal(created.statusCode, 201);
+  const agent = created.json().data;
+  await state.transact(async (unit) => {
+    const p = await unit.sandboxPolicies.find(namespace.id, agent.id);
+    assert.ok(p);
+    await unit.sandboxPolicies.save(
+      { ...p, repositoryNetworkPolicy: [], version: p.version + 1 },
+      p.version,
+    );
+  });
+  return {
+    namespace,
+    agent,
+    source,
+    deploy: () => inject("POST", root + "/agents/" + agent.id + "/deploy"),
+  };
+}
+
+export async function verifyChannelPolicyHandoff(
+  fixture: PolicyApp & { sandboxDriver: SandboxDriver },
+) {
+  const { state, computeDriver, sandboxDriver, controller } = fixture;
+  const { namespace, agent, source, deploy } = await createScopedDeployment(fixture);
+  const { pool } = fixture;
+  const writer = await pool.connect();
+  const pid = (await writer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+  let revocation: Promise<void> | undefined;
+  let revoked = false;
+  const calls: string[] = [];
+  const revoke = async () => {
+    await writer.query("BEGIN");
+    try {
+      await writer.query("SET LOCAL lock_timeout = '10s'");
+      await writer.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespace.id]);
+      await writer.query(
+        "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'operate','secret',$3,'deny')",
+        ["restriction-" + randomUUID(), namespace.id, source.id],
+      );
+      await writer.query("COMMIT");
+      revoked = true;
+    } catch (error) {
+      await writer.query("ROLLBACK");
+      throw error;
+    }
+  };
+  const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
+  channel.validateCredentials = async (_values, use) => {
+    await use("CHANNEL_TOKEN", "channel", async () => {
+      calls.push(revoked ? "after revocation" : "before revocation");
+      // A provider waiting on this writer must not keep the Namespace locked.
+      await revocation;
+    });
+  };
+  controller.registerDriver(channel);
+  controller.selectDriver("channel", channel.id);
+  Object.assign(sandboxDriver, { admitRepositoryNetworkPolicy: () => ({}) });
+  Object.assign(computeDriver, {
+    validateProtectedRepositoryNetworkPolicy: async () => {
+      if (revocation) {
+        return;
+      }
+      revocation = revoke();
+      await waitFor("the permission change is waiting on the admission lock", async () => {
+        const result = await pool.query<{ waiting: boolean }>(
+          "SELECT cardinality(pg_blocking_pids($1))>0 AS waiting",
+          [pid],
+        );
+        return result.rows[0]?.waiting || undefined;
+      });
+    },
+  });
+  // Hold the controller's continuation after rollback until the waiting writer
+  // commits. This exposes any credential handoff performed in the unlocked gap.
+  const tx = state.transact.bind(state);
+  state.transact = async (work) => {
+    try {
+      return await tx(work);
+    } catch (error) {
+      await revocation;
+      throw error;
+    }
+  };
+  try {
+    const reply = await deploy();
+    assert.ok(revoked);
+    assert.equal(reply.statusCode, 403, reply.body);
+    assert.deepEqual(calls, ["before revocation"]);
+    const denied = await deploy();
+    assert.equal(denied.statusCode, 403, denied.body);
+    assert.deepEqual(calls, ["before revocation"]);
+    const revisions = await state.read((view) =>
+      view.revisions.listRevisionMetadata(namespace.id, agent.id),
+    );
+    assert.deepEqual(revisions, []);
+  } finally {
+    state.transact = tx;
+    try {
+      await revocation;
+    } finally {
+      writer.release();
+    }
+  }
+}
+
+export async function verifyDeploymentAuthorityAfterWait(
+  fixture: PolicyApp,
+  boundary: "channel" | "admission",
+): Promise<void> {
+  const { state, pool, controller, computeDriver } = fixture;
+  const { namespace, agent, source, deploy } = await createScopedDeployment(fixture);
+  const writer = await pool.connect();
+  let response: ReturnType<typeof deploy> | undefined;
+  let channelCalls = 0;
+  let computeChecks = 0;
+  try {
+    const {
+      rows: [session],
+    } = await writer.query<{ pid: number; isolation: string }>(
+      "SELECT pg_backend_pid() AS pid, current_setting('default_transaction_isolation') AS isolation",
+    );
+    assert.ok(session);
+    assert.equal(session.isolation, "repeatable read");
+    await writer.query("BEGIN");
+    await writer.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      "occ:iam-configuration",
+    ]);
+
+    if (boundary === "channel") {
+      const channel = new SlackChannelDriver(async () =>
+        assert.fail("Unexpected provider request"),
+      );
+      channel.validateCredentials = async (_values, use) => {
+        await use("CHANNEL_TOKEN", "channel", async () => {
+          channelCalls += 1;
+        });
+      };
+      controller.registerDriver(channel);
+      controller.selectDriver("channel", channel.id);
+    }
+    Object.assign(computeDriver, {
+      validateProtectedRepositoryNetworkPolicy: async () => {
+        computeChecks += 1;
+      },
+    });
+    response = deploy();
+    // The reader must already be blocked by this exact writer before the revocation commits.
+    await waitFor("deployment waits for the IAM writer", async () => {
+      const { rowCount } = await pool.query(
+        `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+           AND $1 = ANY(pg_blocking_pids(pid))`,
+        [session.pid],
+      );
+      return rowCount === 1 || undefined;
+    });
+    const [action, kind, id] =
+      boundary === "channel" ? ["operate", "secret", source.id] : ["deploy", "agent", agent.id];
+    await writer.query(
+      `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
+       VALUES ($1, $2, $3, $4, $5, 'deny')`,
+      [`restriction-${randomUUID()}`, namespace.id, action, kind, id],
+    );
+    await writer.query("COMMIT");
+    const result = await response;
+    const revisions = await state.read((view) =>
+      view.revisions.listRevisionMetadata(namespace.id, agent.id),
+    );
+    assert.deepEqual(
+      { channelCalls, computeChecks, status: result.statusCode, revisionCount: revisions.length },
+      { channelCalls: 0, computeChecks: 0, status: 403, revisionCount: 0 },
+    );
+    assert.equal(result.json().error.code, "FORBIDDEN");
+  } finally {
+    try {
+      await writer.query("ROLLBACK");
+    } finally {
+      writer.release();
+      await response;
+    }
+  }
 }
