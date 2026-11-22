@@ -25,6 +25,7 @@ runtime image's pinned Claude Code binary for each turn, so tools run in the
 gateway Pod as they do for every embedded Agent. Every selectable model must be
 `anthropic/*` with the same policy; a dedicated Agent, another provider, or
 `openai`-style fallbacks are refused at save or deployment with `400 INVALID_REQUEST`.
+The runtime needs Kubernetes Compute; SSH and Docker Compute refuse it at save.
 The [console](console/create-and-deploy.md) does not offer the choice yet; set it
 in the Configuration.
 

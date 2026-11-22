@@ -27,6 +27,7 @@ import {
   configurationSettingMessage,
   gatewayPasswordRequirement,
   keyedSettingPath,
+  refuseClaudeCodeRuntime,
 } from "@openclaw-enterprise/occ";
 import {
   HARNESS_WORKSPACE,
@@ -659,6 +660,9 @@ export class DockerComputeDriver implements ComputeDriver {
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
   ): void {
+    // Docker Compute prepares none of the Claude Code runtime's managed settings, sealed
+    // configuration or telemetry denial.
+    refuseClaudeCodeRuntime(configuration, callerSettingError, "Docker Compute");
     validateGatewayToolPolicy(configuration, callerSettingError, options);
   }
 

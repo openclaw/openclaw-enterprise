@@ -25,6 +25,26 @@ import {
 } from "./docker-compute-fixture.ts";
 
 export function registerWorkspaceCases() {
+  // Docker Compute prepares none of the Claude Code runtime's managed settings, sealed
+  // configuration or telemetry denial, so the runtime is refused at save with a setting-named error.
+  test("Docker Compute refuses the Claude Code agent runtime and names the setting", () => {
+    const driver = dockerDriver();
+    const runtime = (id: string): OpenClawConfigurationDocument => ({
+      agents: {
+        defaults: {
+          model: "anthropic/claude-sonnet-4-5",
+          models: { "anthropic/claude-sonnet-4-5": { agentRuntime: { id } } },
+        },
+      },
+    });
+    assert.throws(() => driver.validateConfiguration(runtime("claude-cli")), {
+      name: "ConfigurationHarnessError",
+      message:
+        'Configuration setting agents.defaults.models["anthropic/claude-sonnet-4-5"].agentRuntime.id selects claude-cli, the Claude Code agent runtime, which runs only on Kubernetes Compute, not Docker Compute: set it to openclaw.',
+    });
+    assert.doesNotThrow(() => driver.validateConfiguration(runtime("openclaw")));
+  });
+
   // These checks exercise the real Driver at Docker's API boundary. Container exit
   // status is an external observation; native file writes are covered separately by
   // the shared initializer and selected real-runtime Agent journey.
