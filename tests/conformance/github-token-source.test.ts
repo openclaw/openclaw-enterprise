@@ -13,6 +13,7 @@ import {
 import {
   GitHubTokenSourceError,
   createGitHubTokenLoanSource,
+  createGitHubTokenMaterialReader,
   githubTokenLoanMaximumMs,
 } from "../../apps/controller/src/drivers/repo/github/access/token-loan.ts";
 import { compileOpenShellBoundGitRule } from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
@@ -38,7 +39,7 @@ const fakeOther = {
 const tokenAuthority = { kind: "github-token", tokenSecret: "repository-token" } as const;
 
 function tokenRegistryInput(): Record<string, unknown> & {
-  repositories: { namespaces: Record<string, unknown>[] }[];
+  repositories: (Record<string, unknown> & { namespaces: Record<string, unknown>[] })[];
 } {
   return {
     version: 1,
@@ -362,4 +363,63 @@ test("every token class but fine-grained fails the loan with a named diagnostic"
     (error: unknown) =>
       error instanceof GitHubTokenSourceError && error.reason === "token_unreadable",
   );
+});
+
+test("the native material reader lends without a row and turns stale on replacement", async (t) => {
+  const { path, replace } = await secretFile(t, fakeFineGrained);
+  let now = Date.parse("2030-01-01T00:10:00Z");
+  const clock = { now: () => now };
+  const audit: unknown[] = [];
+  const loans = createGitHubTokenLoanSource({
+    path,
+    secretName: "repository-token",
+    clock,
+    audit: (event) => audit.push(event),
+  });
+  const reader = createGitHubTokenMaterialReader<null, { key: { source: { id: string } } }>(
+    loans,
+    clock,
+  );
+  const source = { key: { source: { id: "repository-git:admission-1" } } };
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const warm = await reader.readWarm(null, source);
+  assert.ok(warm);
+  assert.match(warm.preparationAttemptId, uuid);
+  assert.match(warm.materialVersion, uuid);
+  const remaining = warm.usableUntil - now;
+  assert.ok(remaining >= 1_800_000 && remaining <= githubTokenLoanMaximumMs, String(remaining));
+  const bytes = warm.open();
+  assert.equal(bytes.toString("ascii"), fakeFineGrained);
+  bytes.fill(0);
+  assert.throws(() => warm.open(), /already opened/);
+  const installed = {
+    preparationAttemptId: warm.preparationAttemptId,
+    materialVersion: warm.materialVersion,
+  };
+  // Current within its loan, across the next renewal window, and never past its end.
+  assert.equal((await reader.current(null, source, installed))?.usableUntil, warm.usableUntil);
+  now += 1_800_000;
+  assert.equal((await reader.current(null, source, installed))?.usableUntil, warm.usableUntil);
+  const renewed = await reader.readWarm(null, source);
+  assert.ok(renewed && renewed.materialVersion !== warm.materialVersion);
+  now = warm.usableUntil;
+  assert.equal(await reader.current(null, source, installed), undefined);
+  // Another source never shares a version.
+  const other = await reader.readWarm(null, { key: { source: { id: "repository-git:admission-2" } } });
+  assert.ok(other && renewed && other.materialVersion !== renewed.materialVersion);
+  // Replacement: the installed version turns stale at once; the next loan carries the new value.
+  const before = { preparationAttemptId: renewed!.preparationAttemptId, materialVersion: renewed!.materialVersion };
+  now = renewed!.usableUntil - 1_800_000;
+  assert.ok(await reader.current(null, source, before));
+  await replace(fakeReplacement);
+  assert.equal(await reader.current(null, source, before), undefined);
+  const next = await reader.readWarm(null, source);
+  assert.equal(next?.open().toString("ascii"), fakeReplacement);
+  // A classic token fails the loan: no material, and no value in the audit.
+  await replace(fakeOther.classic);
+  assert.equal(await reader.readWarm(null, source), undefined);
+  const recorded = JSON.stringify(audit);
+  for (const value of [fakeFineGrained, fakeReplacement, fakeOther.classic]) {
+    assert.equal(recorded.includes(value), false);
+  }
 });

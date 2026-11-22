@@ -95,6 +95,19 @@ export type GitHubRepositoryRegistry = GitHubRepositoryRegistryFields &
       }
   );
 
+/** The App form of the registry: what App issuance, installation checks and fixtures read. */
+export type GitHubAppRepositoryRegistry = Extract<GitHubRepositoryRegistry, { appId: string }>;
+
+/** Narrow a loaded registry to the App form; a token registry has no App to issue from. */
+export function requireGitHubAppRegistry(
+  registry: GitHubRepositoryRegistry,
+): GitHubAppRepositoryRegistry {
+  if (registry.authority !== undefined) {
+    throw new Error("github-app-registry-required");
+  }
+  return registry;
+}
+
 const secretNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 // The network policy enforces Git paths only: a token registration grants nothing else.
 const tokenRegistrationPermissions = new Set(["metadata", "contents"]);

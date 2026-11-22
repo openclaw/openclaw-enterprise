@@ -16,7 +16,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   resolveGitHubRepositoryBinding,
-  type GitHubRepositoryRegistry,
+  type GitHubAppRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import {
   OpenShellSandboxDriver,
@@ -88,8 +88,8 @@ async function configureProtectedOpenShellGit(t: TestContext) {
     address: "10.43.0.50",
     port: 8080,
   } satisfies NonNullable<KubernetesComputeDriverOptions["network"]["providerHarness"]>;
-  const registry: Omit<GitHubRepositoryRegistry, "repositories"> & {
-    repositories: GitHubRepositoryRegistry["repositories"][number][];
+  const registry: Omit<GitHubAppRepositoryRegistry, "repositories"> & {
+    repositories: GitHubAppRepositoryRegistry["repositories"][number][];
   } = {
     version: 1,
     backendId: "github-primary",

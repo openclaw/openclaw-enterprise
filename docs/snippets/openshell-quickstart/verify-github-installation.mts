@@ -10,7 +10,8 @@ import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
   resolveSelectedRepositoryGrant,
-  type GitHubRepositoryRegistry,
+  requireGitHubAppRegistry,
+  type GitHubAppRepositoryRegistry,
 } from "/app/apps/controller/src/drivers/repo/github/access/registry.ts";
 import {
   prepareProviderScope,
@@ -83,7 +84,7 @@ function matchesId(value: unknown, expected: string): boolean {
 
 function installationGet(
   options: RequestOptions,
-  expected: Pick<GitHubRepositoryRegistry, "appId" | "githubInstallationId">,
+  expected: Pick<GitHubAppRepositoryRegistry, "appId" | "githubInstallationId">,
   assertCurrent: () => void,
 ): Promise<InstallationReply> {
   return new Promise((resolve, reject: (reason: unknown) => void) => {
@@ -198,7 +199,7 @@ async function verify() {
   const registryJson: unknown = JSON.parse(
     readFileSync("/etc/openclaw/repository-registry/registry.json", "utf8"),
   );
-  const registry = validateGitHubRepositoryRegistry(registryJson);
+  const registry = requireGitHubAppRegistry(validateGitHubRepositoryRegistry(registryJson));
   const binding = resolveGitHubRepositoryBinding(registry, {
     namespaceId,
     repositoryRef,

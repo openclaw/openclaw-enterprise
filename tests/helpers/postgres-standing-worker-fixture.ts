@@ -9,6 +9,7 @@ import { databaseUrl } from "./postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "./postgres-agent-app.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { requireGitHubAppRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
@@ -87,7 +88,7 @@ export async function setupStandingWorkerAuthority(
     gateway: { listen: "127.0.0.1:0" },
   });
   const registry = {
-    ...credentials.registry,
+    ...requireGitHubAppRegistry(credentials.registry),
     allowStandingApprovals: true as const,
     repositories: credentials.registry.repositories.map((repository) => ({
       ...repository,

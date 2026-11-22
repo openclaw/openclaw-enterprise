@@ -11,7 +11,10 @@ import type { Pool } from "pg";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import {
+  requireGitHubAppRegistry,
+  validateGitHubRepositoryRegistry,
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import {
@@ -67,7 +70,7 @@ export async function standingGitOrigin(
   const tls = gh.tls;
   const backendId = "prepared-standing";
   const registrationName = "oce-prepared-git";
-  const registry = validateGitHubRepositoryRegistry({
+  const registry = requireGitHubAppRegistry(validateGitHubRepositoryRegistry({
     version: 1,
     backendId,
     providerInstanceId: "fixture-provider",
@@ -110,7 +113,7 @@ export async function standingGitOrigin(
             ],
           },
         ],
-  });
+  }));
   const directory = await temporaryDirectory(t, "standing-peer-");
   const controlSocket = join(directory, "control.sock");
   const privateKeyPath = join(directory, "app.pem");

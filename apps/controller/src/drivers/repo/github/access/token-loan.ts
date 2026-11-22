@@ -1,7 +1,13 @@
+import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { classifyGitHubToken } from "./static-token.ts";
 import type { GitHubTokenClass } from "./types.ts";
+import type {
+  CurrentTokenVersion,
+  InstalledTokenVersion,
+  TokenMaterialReader,
+} from "../../../../backends/token-service/material.ts";
 
 /** The endpointless Provider refuses credential material lent for longer (its existing check). */
 export const githubTokenLoanMaximumMs = 3_600_000;
@@ -68,7 +74,26 @@ export function createGitHubTokenLoanSource(options: GitHubTokenLoanSourceOption
   const { path, secretName } = options;
   const clock = options.clock ?? Date;
   return Object.freeze({
-    async lend(input: { readonly revisionId: string; readonly loanMs?: number }): Promise<GitHubTokenLoan> {
+    /** Reads only the Secret file's generation, never its bytes. */
+    async version(): Promise<string> {
+      try {
+        const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+        try {
+          const stat = await file.stat({ bigint: true });
+          return `${stat.dev}:${stat.ino}:${stat.ctimeNs}`;
+        } finally {
+          await file.close();
+        }
+      } catch {
+        throw new GitHubTokenSourceError(secretName, "token_unreadable");
+      }
+    },
+    async lend(input: {
+      readonly revisionId: string;
+      readonly loanMs?: number;
+      /** An absolute loan end; still never more than one hour away. */
+      readonly untilMs?: number;
+    }): Promise<GitHubTokenLoan> {
       let bytes: Buffer;
       let secretVersion: string;
       try {
@@ -104,7 +129,10 @@ export function createGitHubTokenLoanSource(options: GitHubTokenLoanSourceOption
           throw new GitHubTokenSourceError(secretName, "token_class_refused", tokenClass);
         }
         const now = clock.now();
-        const requested = Math.min(input.loanMs ?? githubTokenLoanMaximumMs, githubTokenLoanMaximumMs);
+        const requested = Math.min(
+          input.untilMs !== undefined ? input.untilMs - now : (input.loanMs ?? githubTokenLoanMaximumMs),
+          githubTokenLoanMaximumMs,
+        );
         if (!Number.isSafeInteger(requested) || requested < 1000) {
           throw new RangeError("A token loan lasts 1 s to 1 h.");
         }
@@ -130,6 +158,94 @@ export function createGitHubTokenLoanSource(options: GitHubTokenLoanSourceOption
       } finally {
         bytes.fill(0);
       }
+    },
+  });
+}
+
+/** Renewal cadence: a loan made in window k ends at the end of window k+1 (30 to 60 minutes). */
+export const githubTokenLoanWindowMs = 1_800_000;
+
+/** A version-4-shaped UUID from loan metadata (source, window, Secret file generation). */
+function loanUuid(...parts: readonly string[]): string {
+  const hex = createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+  const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+type TokenLoanSource = ReturnType<typeof createGitHubTokenLoanSource>;
+
+/**
+ * The native material reader for a token source, in place of App token rows: it keeps no copy
+ * of the value in the database and needs no migration. Attempt and material identifiers are
+ * derived from the source, the loan window and the Secret file generation, so the sender's
+ * installed version stays current for its loan and turns stale when the Secret is replaced.
+ * The caller's transaction still holds the live session lock; no material row is locked.
+ */
+export function createGitHubTokenMaterialReader<Transaction, Source extends { readonly key: { readonly source: { readonly id: string } } }>(
+  loans: TokenLoanSource,
+  clock: { now(): number } = Date,
+): TokenMaterialReader<Transaction, Source> {
+  const identity = (source: Source, window: number, secretVersion: string) => ({
+    preparationAttemptId: loanUuid("github-token-loan", source.key.source.id, String(window)),
+    materialVersion: loanUuid("github-token-material", source.key.source.id, String(window), secretVersion),
+    usableUntil: (window + 2) * githubTokenLoanWindowMs,
+  });
+  return Object.freeze({
+    async readWarm(_tx: Transaction, source: Source) {
+      const window = Math.floor(clock.now() / githubTokenLoanWindowMs);
+      let loan: GitHubTokenLoan;
+      try {
+        loan = await loans.lend({
+          revisionId: source.key.source.id,
+          untilMs: (window + 2) * githubTokenLoanWindowMs,
+        });
+      } catch {
+        // The named diagnostic is the loan source's audit and report; the route waits for material.
+        return undefined;
+      }
+      const current = identity(source, window, loan.secretVersion);
+      let value: string | undefined = loan.value;
+      return Object.freeze({
+        ...current,
+        usableUntil: Date.parse(loan.usableUntil),
+        open() {
+          if (value === undefined) {
+            throw new Error("Token loan material was already opened.");
+          }
+          const bytes = Buffer.from(value, "ascii");
+          value = undefined;
+          return bytes;
+        },
+      });
+    },
+    async current(
+      _tx: Transaction,
+      source: Source,
+      installed: InstalledTokenVersion,
+    ): Promise<(CurrentTokenVersion & { readonly open?: never }) | undefined> {
+      if (!installed?.preparationAttemptId || !installed.materialVersion) {
+        return undefined;
+      }
+      let secretVersion: string;
+      try {
+        secretVersion = await loans.version();
+      } catch {
+        return undefined;
+      }
+      const now = clock.now();
+      const window = Math.floor(now / githubTokenLoanWindowMs);
+      // The installed loan stays current until it ends, unless the Secret was replaced.
+      for (const candidate of [window, window - 1]) {
+        const version = identity(source, candidate, secretVersion);
+        if (
+          version.preparationAttemptId === installed.preparationAttemptId &&
+          version.materialVersion === installed.materialVersion &&
+          version.usableUntil > now
+        ) {
+          return Object.freeze(version);
+        }
+      }
+      return undefined;
     },
   });
 }
