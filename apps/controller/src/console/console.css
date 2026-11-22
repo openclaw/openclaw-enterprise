@@ -1114,6 +1114,34 @@ p {
 .collection-toolbar > input[type="search"] {
   max-width: 360px;
 }
+.agent-list-toolbar {
+  container-type: inline-size;
+}
+.agent-search-keys,
+.agent-name-keys {
+  display: none;
+  margin-inline-end: auto;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.agent-list-toolbar kbd {
+  font: inherit;
+  display: inline-block;
+  min-width: var(--space-5);
+  padding-inline: var(--space-1);
+  text-align: center;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+@container (min-width: 760px) {
+  input:focus + .agent-search-keys:not([hidden]),
+  .agent-list-toolbar:has(~ div .agent-table td:first-child > a:focus-visible) .agent-name-keys {
+    display: flex;
+  }
+}
 /* Section, card and badge patterns (UX plan C4). A section is a heading, an optional description
    and its content; it is not a card. Cards live inside sections. */
 .section {
