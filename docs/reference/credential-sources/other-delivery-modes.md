@@ -8,7 +8,7 @@ The **OpenShell Credential Gateway** is a separate credential service. When sele
 
 - **Static Credential Gateway Source:** `openai` supports dedicated OpenClaw and Codex model keys, `codex-pat` supports dedicated Codex, and `bearer-token` supports one API endpoint. OCC copies the referenced Secret into an OpenShell Provider. Editing the Secret alone does not update that copy.
 - **Credential Gateway OAuth Source:** for example, a Sandbox tool can use `oauth2-client-credentials` to call an OAuth API. The [Credential Refresh Driver](../drivers/credential-refresh.md) configures OpenShell with issuer material; OpenShell obtains and renews the access token while the tool keeps its placeholder. `oauth2-refresh-token` and experimental `codex-oauth` device login still use this Driver. Device starts commit audit with source and session writes; see the [device authorization flow](../../flows/credential-source-refresh.md#device-authorization-and-configuration).
-- **Protected static Secret delivery:** for protected inference, OCC authorizes a matching request, and the trusted resolver reads the current Secret value. The trusted sender adds the approved credential header to that request; the Harness does not receive the Secret.
+- **Protected static Secret delivery:** this contract requires a qualified sender. OCC authorizes the request, a trusted resolver reads the current Secret, and the sender adds the approved credential header. The Harness does not receive the Secret. Bundled OpenShell refuses new protected static OpenAI Sources and revisions with `409 RESOURCE_CONFLICT`. See [protected static inference](protected-inference.md#bundled-openshell-admission).
 - **Prepared GitHub token:** for `github-app-metadata`, TokenService renews installation tokens in the background. An authorized Credential Proxy request can also start or join issuance for its exact registered grant.
 - **Credential-free repository metadata:** `credential-free-repository-metadata` permits an admitted repository identity read without reading a Secret or adding a credential header. Request and response controls still apply.
 
@@ -25,6 +25,8 @@ OpenShell is a development integration. See the
    `credential_source:create` on the Namespace and `secret:operate` on each
    referenced Secret. A protected metadata source requires `agent:operate`
    on the active, dedicated Agent named by `config.agent_id` in that Namespace.
+
+The protected GitHub metadata example requires a qualified sender and Sandbox that enforce the protected exchange. Stock OpenShell does not provide this path; see [protected-exchange requirements](../../design/credential-proxy.md#which-checks-does-openshell-provide).
 
 Replace the sample IDs and Secret reference. Execution authority admits every process in that execution.
 
