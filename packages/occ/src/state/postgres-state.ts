@@ -293,6 +293,22 @@ interface TransactionContext {
   nativeIAM: { readonly state: PersistedNativeIAMState; readonly statement: number } | undefined;
 }
 
+type TransactionWork<T> =
+  | { readonly mode: "read"; readonly work: (state: PlatformReadView) => Promise<T> }
+  | { readonly mode: "read-context"; readonly work: (context: TransactionContext) => Promise<T> }
+  | {
+      readonly mode: "write" | "read-committed";
+      readonly work: (state: PlatformUnitOfWork, context: TransactionContext) => Promise<T>;
+    };
+
+const SNAPSHOT_BEGIN = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
+const TRANSACTION_BEGIN = {
+  read: SNAPSHOT_BEGIN,
+  "read-context": SNAPSHOT_BEGIN,
+  write: "BEGIN",
+  "read-committed": "BEGIN ISOLATION LEVEL READ COMMITTED",
+} as const;
+
 const PERMISSION_ACTIONS = new Set<string>(PLATFORM_PERMISSION_ACTIONS);
 const RESOURCE_KINDS = new Set<string>(PLATFORM_RESOURCE_KINDS);
 const AUDIT_METADATA_KEY = "__occAuditMetadata";
@@ -1398,18 +1414,21 @@ export class PostgresPlatformState implements PlatformStateStore {
     const auditWriteTimeoutMs = options.auditWriteTimeoutMs;
     this.auditSink = {
       append: async (event) =>
-        this.execute(false, async (state, context) => {
-          if (auditWriteTimeoutMs !== undefined) {
-            // A local setting leaves other transactions on the pooled connection unaffected.
-            await context.client.query(
-              `SELECT pg_catalog.set_config(name,
+        this.execute({
+          mode: "write",
+          work: async (state, context) => {
+            if (auditWriteTimeoutMs !== undefined) {
+              // A local setting leaves other transactions on the pooled connection unaffected.
+              await context.client.query(
+                `SELECT pg_catalog.set_config(name,
                  CASE WHEN setting::integer = 0 THEN $1::text
                       ELSE LEAST(setting::integer, $1::integer)::text END, true)
                FROM pg_catalog.pg_settings WHERE name IN ('statement_timeout', 'lock_timeout')`,
-              [String(auditWriteTimeoutMs)],
-            );
-          }
-          await state.audit.append(event);
+                [String(auditWriteTimeoutMs)],
+              );
+            }
+            await state.audit.append(event);
+          },
         }),
     };
   }
@@ -1430,12 +1449,15 @@ export class PostgresPlatformState implements PlatformStateStore {
       // cannot silently acquire a new client after the original operation ends.
       return current.lifetime.run(() => this.readNativeIAMState(current, installationId));
     }
-    return this.execute(true, async (_state, context) => {
-      const installation = await this.currentInstallation(context);
-      if (installation === undefined && this.bootstrapNativeIAM !== undefined) {
-        return this.bootstrapNativeIAM;
-      }
-      return this.readNativeIAMState(context, installationId);
+    return this.execute({
+      mode: "read-context",
+      work: async (context) => {
+        const installation = await this.currentInstallation(context);
+        if (installation === undefined && this.bootstrapNativeIAM !== undefined) {
+          return this.bootstrapNativeIAM;
+        }
+        return this.readNativeIAMState(context, installationId);
+      },
     });
   }
 
@@ -1726,18 +1748,16 @@ export class PostgresPlatformState implements PlatformStateStore {
   }
 
   async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
-    return this.execute(true, async (state, context) =>
-      work(createPlatformReadView(state, context.lifetime)),
-    );
+    return this.execute({ mode: "read", work });
   }
 
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state));
+    return this.execute({ mode: "write", work: async (state) => work(state) });
   }
 
   /** Observe changes committed while acquiring locks, regardless of the connection default. */
   async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state), true);
+    return this.execute({ mode: "read-committed", work: async (state) => work(state) });
   }
 
   /**
@@ -1804,9 +1824,9 @@ export class PostgresPlatformState implements PlatformStateStore {
     ) {
       throw new ScopeViolationError("The Installation authority request is invalid.");
     }
-    return this.execute(
-      false,
-      async (state, context) => {
+    return this.execute({
+      mode: "read-committed",
+      work: async (state, context) => {
         const statement =
           intent === "read"
             ? "SELECT pg_catalog.pg_advisory_xact_lock_shared(pg_catalog.hashtextextended($1, 0))"
@@ -1829,8 +1849,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         await this.requireInstallation(context, installationId);
         return work(state);
       },
-      true,
-    );
+    });
   }
 
   queryInTransaction(
@@ -1943,11 +1962,10 @@ export class PostgresPlatformState implements PlatformStateStore {
   ): Promise<T> {
     const { readCommitted, ...queueOverrides } = options;
     const queueOptions = { ...this.queueOptions, ...queueOverrides };
-    return this.execute(
-      false,
-      async (state, context) => work(state, this.bindQueue(context, queueOptions)),
-      readCommitted,
-    );
+    return this.execute({
+      mode: readCommitted ? "read-committed" : "write",
+      work: async (state, context) => work(state, this.bindQueue(context, queueOptions)),
+    });
   }
 
   /**
@@ -2000,11 +2018,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     ]);
   }
 
-  private async execute<T>(
-    readOnly: boolean,
-    work: (state: PlatformUnitOfWork, context: TransactionContext) => Promise<T>,
-    readCommitted = false,
-  ): Promise<T> {
+  private async execute<T>(transaction: TransactionWork<T>): Promise<T> {
     let client: PostgresClient;
     try {
       client = await this.pool.connect();
@@ -2042,13 +2056,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         throw transportError;
       }
       try {
-        await client.query(
-          readOnly
-            ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
-            : readCommitted
-              ? "BEGIN ISOLATION LEVEL READ COMMITTED"
-              : "BEGIN",
-        );
+        await client.query(TRANSACTION_BEGIN[transaction.mode]);
       } catch (error) {
         // A BEGIN abandoned by a client query timeout may still be in flight on this
         // connection; every later statement would queue behind it. Never reuse it.
@@ -2089,14 +2097,24 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         installation: undefined,
         installationLoaded: false,
-        readOnly,
+        readOnly: transaction.mode === "read" || transaction.mode === "read-context",
         statements: 0,
         nativeIAM: undefined,
       };
-      const activeUnit = bindPlatformUnitOfWork(this.repositories(context), lifetime);
-      unit = activeUnit;
-      this.contexts.set(activeUnit, context);
-      const result = await this.currentTransaction.run(context, () => work(activeUnit, context));
+      let run: () => Promise<T>;
+      if (transaction.mode === "read") {
+        const { work } = transaction;
+        const repositories = this.repositories(context);
+        run = async () => work(createPlatformReadView(repositories, lifetime));
+      } else if (transaction.mode === "read-context") {
+        run = () => transaction.work(context);
+      } else {
+        const activeUnit = bindPlatformUnitOfWork(this.repositories(context), lifetime);
+        unit = activeUnit;
+        this.contexts.set(activeUnit, context);
+        run = () => transaction.work(activeUnit, context);
+      }
+      const result = await this.currentTransaction.run(context, run);
       await lifetime.finish();
       if (transportError) {
         throw transportError;

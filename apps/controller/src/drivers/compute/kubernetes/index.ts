@@ -14647,37 +14647,135 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
-  private gatewayRouteBackendRef(service: ManagedKubernetesObject<"Service">): KubernetesRecord {
+  private gatewayRouteBackendRef(
+    serviceName: string,
+    port = this.options.network.gatewayPort,
+  ): KubernetesRecord {
     return {
       group: "",
       kind: "Service",
-      name: service.metadata.name,
-      port: this.options.network.gatewayPort,
+      name: serviceName,
+      port,
     };
   }
 
-  private gatewayRootRouteRule(
-    service: ManagedKubernetesObject<"Service">,
-    path: string,
-    access: "operator" | "browser" | "node",
-    match: "Exact" | "PathPrefix",
+  private gatewayRewriteRouteRule(
+    serviceName: string,
+    {
+      access,
+      path,
+      target = "/",
+      match = "Exact",
+      method,
+    }: {
+      readonly access: "operator" | "browser" | "node" | "node-transfer" | "chat";
+      readonly path: string;
+      readonly target?: string;
+      readonly match?: "Exact" | "PathPrefix";
+      readonly method?: "POST";
+    },
   ): KubernetesRecord {
     return {
-      matches: [{ path: { type: match, value: path } }],
+      matches: [
+        {
+          ...(method === undefined ? {} : { method }),
+          path: { type: match, value: path },
+        },
+      ],
       filters: [
         {
           type: "URLRewrite",
           urlRewrite: {
             path:
               match === "Exact"
-                ? { type: "ReplaceFullPath", replaceFullPath: "/" }
-                : { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
+                ? { type: "ReplaceFullPath", replaceFullPath: target }
+                : { type: "ReplacePrefixMatch", replacePrefixMatch: target },
           },
         },
         this.gatewayRouteHeaderFilter(access),
       ],
-      backendRefs: [this.gatewayRouteBackendRef(service)],
+      ...(access === "chat" && { timeouts: { request: "660s", backendRequest: "600s" } }),
+      backendRefs: [this.gatewayRouteBackendRef(serviceName)],
     };
+  }
+
+  private gatewayRouteRules(
+    revision: AgentRevision,
+    serviceName: string,
+    access: "operator" | "node" | "sandbox",
+  ): KubernetesRecord[] {
+    if (access === "sandbox") {
+      return [
+        {
+          // Upstream's public shell and renderer only use the separate sandbox listener.
+          matches: ["GET", "HEAD"].map((method) => ({
+            method,
+            path: { type: "PathPrefix", value: "/" },
+          })),
+          filters: [this.gatewayRouteHeaderFilter("node")],
+          backendRefs: [
+            this.gatewayRouteBackendRef(serviceName, this.options.network.gatewayPort + 1),
+          ],
+        },
+      ];
+    }
+
+    const path = this.gatewayRoutePath(revision);
+    if (access === "operator") {
+      const rules = [this.gatewayRewriteRouteRule(serviceName, { access, path })];
+      if (this.getGatewayBrowserEndpoint(revision) !== undefined) {
+        const browserPath = `/native-browser${path}`;
+        rules.push(
+          this.gatewayRewriteRouteRule(serviceName, { access: "browser", path: browserPath }),
+          this.gatewayRewriteRouteRule(serviceName, {
+            access: "browser",
+            path: `${browserPath}/`,
+            match: "PathPrefix",
+          }),
+        );
+      }
+      rules.push(
+        this.gatewayRewriteRouteRule(serviceName, {
+          access,
+          path: `${path}/`,
+          match: "PathPrefix",
+        }),
+      );
+      return rules;
+    }
+
+    const nodePath = `${path}/node`;
+    const rules = [
+      this.gatewayRewriteRouteRule(serviceName, { access, path: nodePath }),
+      this.gatewayRewriteRouteRule(serviceName, {
+        access,
+        path: `${nodePath}/__openclaw__/worker`,
+        target: "/__openclaw__/worker",
+      }),
+    ];
+    if (revision.harness.id === "codex") {
+      rules.push(
+        this.gatewayRewriteRouteRule(serviceName, {
+          access: "node-transfer",
+          path: `${nodePath}/__openclaw__/native-hook/`,
+          target: "/__openclaw__/native-hook/",
+          match: "PathPrefix",
+          method: "POST",
+        }),
+      );
+    }
+    for (const transfer of ["worker-bundle/v1", "worker-transfer/v1"]) {
+      const target = `/__openclaw__/${transfer}/`;
+      rules.push(
+        this.gatewayRewriteRouteRule(serviceName, {
+          access: "node-transfer",
+          path: `${nodePath}${target}`,
+          target,
+          match: "PathPrefix",
+        }),
+      );
+    }
+    return rules;
   }
 
   private verifyGatewayRoutingConfiguration(revision: {
@@ -14801,139 +14899,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             sectionName: access === "sandbox" ? "sandbox" : GATEWAY_LISTENER_SECTION,
           },
         ],
-        rules:
-          access === "sandbox"
-            ? [
-                {
-                  // This origin serves only upstream's public shell/renderer listener.
-                  // It must never fall through to the administrative Gateway backend.
-                  matches: ["GET", "HEAD"].map((method) => ({
-                    method,
-                    path: { type: "PathPrefix", value: "/" },
-                  })),
-                  filters: [this.gatewayRouteHeaderFilter("node")],
-                  backendRefs: [
-                    {
-                      group: "",
-                      kind: "Service",
-                      name: service.metadata.name,
-                      port: this.options.network.gatewayPort + 1,
-                    },
-                  ],
-                },
-              ]
-            : [
-                this.gatewayRootRouteRule(
-                  service,
-                  `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
-                  access,
-                  "Exact",
-                ),
-                ...(access === "operator" && this.getGatewayBrowserEndpoint(revision) !== undefined
-                  ? [
-                      this.gatewayRootRouteRule(
-                        service,
-                        `/native-browser${this.gatewayRoutePath(revision)}`,
-                        "browser",
-                        "Exact",
-                      ),
-                      this.gatewayRootRouteRule(
-                        service,
-                        `/native-browser${this.gatewayRoutePath(revision)}/`,
-                        "browser",
-                        "PathPrefix",
-                      ),
-                    ]
-                  : []),
-                ...(access === "node"
-                  ? [
-                      {
-                        matches: [
-                          {
-                            path: {
-                              type: "Exact",
-                              value: `${this.gatewayRoutePath(revision)}/node/__openclaw__/worker`,
-                            },
-                          },
-                        ],
-                        filters: [
-                          {
-                            type: "URLRewrite",
-                            urlRewrite: {
-                              path: {
-                                type: "ReplaceFullPath",
-                                replaceFullPath: "/__openclaw__/worker",
-                              },
-                            },
-                          },
-                          this.gatewayRouteHeaderFilter("node"),
-                        ],
-                        backendRefs: [this.gatewayRouteBackendRef(service)],
-                      },
-                      ...(revision.harness.id === "codex"
-                        ? [
-                            {
-                              matches: [
-                                {
-                                  method: "POST",
-                                  path: {
-                                    type: "PathPrefix",
-                                    value: `${this.gatewayRoutePath(revision)}/node/__openclaw__/native-hook/`,
-                                  },
-                                },
-                              ],
-                              filters: [
-                                {
-                                  type: "URLRewrite",
-                                  urlRewrite: {
-                                    path: {
-                                      type: "ReplacePrefixMatch",
-                                      replacePrefixMatch: "/__openclaw__/native-hook/",
-                                    },
-                                  },
-                                },
-                                this.gatewayRouteHeaderFilter("node-transfer"),
-                              ],
-                              backendRefs: [this.gatewayRouteBackendRef(service)],
-                            },
-                          ]
-                        : []),
-                      ...["worker-bundle/v1", "worker-transfer/v1"].map((transferPath) => ({
-                        matches: [
-                          {
-                            path: {
-                              type: "PathPrefix",
-                              value: `${this.gatewayRoutePath(revision)}/node/__openclaw__/${transferPath}/`,
-                            },
-                          },
-                        ],
-                        filters: [
-                          {
-                            type: "URLRewrite",
-                            urlRewrite: {
-                              path: {
-                                type: "ReplacePrefixMatch",
-                                replacePrefixMatch: `/__openclaw__/${transferPath}/`,
-                              },
-                            },
-                          },
-                          this.gatewayRouteHeaderFilter("node-transfer"),
-                        ],
-                        backendRefs: [this.gatewayRouteBackendRef(service)],
-                      })),
-                    ]
-                  : []),
-                ...(access === "operator"
-                  ? [
-                      this.gatewayRootRouteRule(
-                        service,
-                        `${this.gatewayRoutePath(revision)}/`,
-                        access,
-                        "PathPrefix",
-                      ),
-                    ]
-                  : []),
-              ],
+        rules: this.gatewayRouteRules(revision, service.metadata.name, access),
       },
     };
   }
@@ -14991,32 +14957,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               },
             ],
             rules: [
-              {
-                matches: [
-                  {
-                    method: "POST",
-                    path: { type: "Exact", value: new URL(chatEndpoint.url).pathname },
-                  },
-                ],
-                filters: [
-                  {
-                    type: "URLRewrite",
-                    urlRewrite: {
-                      path: { type: "ReplaceFullPath", replaceFullPath: "/v1/chat/completions" },
-                    },
-                  },
-                  this.gatewayRouteHeaderFilter("chat"),
-                ],
-                timeouts: { request: "660s", backendRequest: "600s" },
-                backendRefs: [
-                  {
-                    group: "",
-                    kind: "Service",
-                    name: chatName,
-                    port: this.options.network.gatewayPort,
-                  },
-                ],
-              },
+              this.gatewayRewriteRouteRule(chatName, {
+                access: "chat",
+                method: "POST",
+                path: new URL(chatEndpoint.url).pathname,
+                target: "/v1/chat/completions",
+              }),
             ],
           },
         },
