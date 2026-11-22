@@ -19,7 +19,7 @@ policy. Policy and audit commit in the same State transaction.
 - Trigger: controller startup with an `iam` configuration, `POST /api/auth/accounts`,
   each create in a Namespace, and `POST /namespaces/:namespaceId/agents/:agentId/deploy`
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`
-- Source: `apps/controller/src/index.ts:requiredPermissions`
+- Source: `apps/controller/src/http/permission-metadata.ts:routePermissionMetadata`
 - Source: `apps/controller/src/http/iam.ts:iamHandlers`
 - Assumptions: the caller is admitted to the Installation, the selected IAM
   Driver implements Namespace policy management, and the requested Namespace
@@ -56,12 +56,12 @@ graph TD
 
 ### 1. Route admission and permission selection
 
-`apps/controller/src/index.ts:requiredPermissions`
-
 `apps/controller/src/index.ts` admits and resolves the caller before dispatch.
 OCC uses the selected IAM Driver to check Installation `administer` and exact
 Namespace `read`. Delegation requires both checks even when the caller can
 access the target.
+`apps/controller/src/http/permission-metadata.ts:routePermissionMetadata` documents
+these checks in OpenAPI.
 
 ### 2. Role and AccessBinding commands reach the controller
 
