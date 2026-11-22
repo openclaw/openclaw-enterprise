@@ -2,12 +2,29 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assertNetworkProxyAcceptance,
   assertSourceRef,
   requiredEnvironmentsForLane,
   selectLane,
   validateEnvironmentPolicy,
   validateFullIntegrationPreflight,
 } from "../../scripts/ci/full-integration-preflight.ts";
+import {
+  networkProxyAcceptance,
+  slackRead,
+  validateAcceptanceHello,
+  verifyAcceptanceIdentities,
+  verifyAcceptanceSource,
+} from "../../scripts/ci/network-proxy-acceptance.ts";
+import {
+  acceptanceAuthor,
+  captureAcceptanceRoots,
+  reconcileAcceptanceActivity,
+} from "../../scripts/ci/network-proxy-acceptance-ledger.ts";
+import {
+  assertObservedActivityPersists,
+  recordAcceptanceTap,
+} from "../../scripts/ci/network-proxy-acceptance-run.ts";
 
 import {
   approvalApi,
@@ -17,6 +34,208 @@ import {
   mainOnlyPolicies,
   mainRun,
 } from "./full-integration-approval-fixture.ts";
+
+test("network proxy acceptance is limited to the approved Slack dispatch boundary", () => {
+  const allowed = {
+    INPUT_NETWORK_PROXY_ACCEPTANCE: "true",
+    GITHUB_EVENT_NAME: "workflow_dispatch",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_RUN_ATTEMPT: "1",
+    INPUT_LANE: "slack",
+  };
+  assert.doesNotThrow(() => assertNetworkProxyAcceptance(allowed));
+  for (const change of [
+    { INPUT_NETWORK_PROXY_ACCEPTANCE: "yes" },
+    { GITHUB_EVENT_NAME: "schedule" },
+    { GITHUB_REF: "refs/heads/other" },
+    { GITHUB_RUN_ATTEMPT: "2" },
+    { INPUT_LANE: "all" },
+  ]) {
+    assert.throws(() => assertNetworkProxyAcceptance({ ...allowed, ...change }), {
+      message: /first-attempt main dispatch/,
+    });
+  }
+  assert.doesNotThrow(() =>
+    assertNetworkProxyAcceptance({ INPUT_NETWORK_PROXY_ACCEPTANCE: "false" }),
+  );
+});
+
+test("network proxy acceptance refuses a changed PR head or missing exact-head green checks", async () => {
+  const source = networkProxyAcceptance.source;
+  let head = source;
+  let smoke = "success";
+  const read = async (url: string) => {
+    if (url.includes("/pulls/")) {
+      return Response.json({
+        state: "open",
+        draft: false,
+        user: { login: "kevinlin-openai" },
+        head: { sha: head, repo: { full_name: networkProxyAcceptance.repository } },
+      });
+    }
+    if (url.includes("/actions/runs/")) {
+      return Response.json({
+        id: networkProxyAcceptance.ciRun,
+        path: ".github/workflows/ci.yml",
+        event: "pull_request",
+        head_sha: source,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "success",
+        check_suite_id: networkProxyAcceptance.ciSuite,
+      });
+    }
+    const check_runs = [
+      ["CI Required", 137044220983],
+      ["First Agent Smoke", 137042487295],
+    ].map(([name, id]) => ({
+      id,
+      name,
+      head_sha: source,
+      status: "completed",
+      conclusion: name === "First Agent Smoke" ? smoke : "success",
+      app: { id: networkProxyAcceptance.actionsApp, slug: "github-actions" },
+      check_suite: { id: networkProxyAcceptance.ciSuite },
+      details_url: `https://github.com/${networkProxyAcceptance.repository}/actions/runs/${networkProxyAcceptance.ciRun}/job/${id}`,
+    }));
+    return Response.json({ total_count: check_runs.length, check_runs });
+  };
+  await verifyAcceptanceSource("synthetic-read-token", read);
+  head = "0".repeat(40);
+  await assert.rejects(verifyAcceptanceSource("synthetic-read-token", read), /exact head changed/);
+  head = source;
+  smoke = "failure";
+  await assert.rejects(verifyAcceptanceSource("synthetic-read-token", read), /First Agent Smoke/);
+});
+
+test("network proxy acceptance stops on mismatched protected Slack identities before channel access", async () => {
+  const calls: string[] = [];
+  const read = async (url: string, init?: RequestInit) => {
+    calls.push(new URL(url).pathname);
+    const receiver = new Headers(init?.headers).get("authorization") === "Bearer receiver";
+    return Response.json({
+      ok: true,
+      team_id: networkProxyAcceptance.team,
+      user_id: receiver ? networkProxyAcceptance.receiver : "UWRONG",
+    });
+  };
+  await assert.rejects(
+    verifyAcceptanceIdentities("receiver", "sender", networkProxyAcceptance.channel, read),
+    /fixture identities/,
+  );
+  assert.deepEqual(calls, ["/api/auth.test", "/api/auth.test"]);
+});
+
+test("acceptance ledger counts null-user Gateway roots and replies on pre-existing threads", async () => {
+  const receiver = {
+    user: null,
+    bot_id: networkProxyAcceptance.receiverBot,
+    app_id: networkProxyAcceptance.app,
+  };
+  const sender = {
+    user: networkProxyAcceptance.sender,
+    bot_id: networkProxyAcceptance.senderBot,
+    app_id: networkProxyAcceptance.senderApp,
+  };
+  assert.equal(acceptanceAuthor(receiver), "receiver");
+  const read = async (method: string) =>
+    method === "conversations.history"
+      ? {
+          messages: [
+            { ts: "101.000002", ...sender },
+            { ts: "101.000001", ...receiver },
+            { ts: "100.000001", reply_count: 1, latest_reply: "102.000001" },
+          ],
+        }
+      : { messages: [{ ts: "102.000001", thread_ts: "100.000001", ...receiver }] };
+  const inventory = { "100.000001": { replies: 0, latest: null } };
+  assert.deepEqual(await reconcileAcceptanceActivity("observer", "101.000000", inventory, read), {
+    total: 3,
+    receiver: 2,
+    sender: 1,
+    seenIds: ["101.000001", "101.000002", "102.000001"],
+  });
+  await assert.rejects(
+    reconcileAcceptanceActivity("observer", "101.000000", inventory, async () => ({
+      messages: [],
+      has_more: true,
+    })),
+    /cursor is incomplete/,
+  );
+  assert.throws(() => acceptanceAuthor({ user: "UOTHER" }), /Unexpected/);
+});
+
+test("acceptance root baseline completes a mature three-page channel inventory", async () => {
+  const roots = Array.from({ length: 560 }, (_, index) => ({
+    ts: `${1000 - index}.000001`,
+    reply_count: 0,
+  }));
+  let calls = 0;
+  const read = async (_method: string, _token: string, fields: Record<string, string>) => {
+    calls++;
+    const offset = Number(fields.cursor ?? 0);
+    const next = offset + 200 < roots.length ? String(offset + 200) : "";
+    return {
+      messages: roots.slice(offset, offset + 200),
+      has_more: !!next,
+      response_metadata: { next_cursor: next },
+    };
+  };
+  assert.equal(
+    Object.keys(await captureAcceptanceRoots("observer", "2000.000000", read)).length,
+    560,
+  );
+  assert.equal(calls, 4, "three pages plus the pagination-consistency check");
+});
+
+test("acceptance refuses extra Socket Mode consumers and never retries a Slack write method", async () => {
+  validateAcceptanceHello({
+    type: "hello",
+    num_connections: 1,
+    connection_info: { app_id: networkProxyAcceptance.app },
+  });
+  assert.throws(
+    () =>
+      validateAcceptanceHello({
+        type: "hello",
+        num_connections: 2,
+        connection_info: { app_id: networkProxyAcceptance.app },
+      }),
+    { message: /exactly the approved isolated app connection/ },
+  );
+  let calls = 0;
+  await assert.rejects(
+    slackRead("chat.postMessage", "synthetic", {}, async () => {
+      calls++;
+      return Response.json({ ok: true });
+    }),
+    { message: /Only approved Slack read methods/ },
+  );
+  assert.equal(calls, 0);
+});
+
+test("acceptance TAP evidence distinguishes selected skips from unrelated filtered skips", () => {
+  const result = {
+    tests: 0,
+    pass: 0,
+    skipped: 0,
+    selected: [] as string[],
+    selectedSkipped: [] as string[],
+  };
+  recordAcceptanceTap(result, "ok 1 - unrelated # SKIP test name does not match", ["selected"]);
+  recordAcceptanceTap(result, "ok 2 - selected # SKIP missing prerequisite", ["selected"]);
+  assert.deepEqual(result.selected, []);
+  assert.deepEqual(result.selectedSkipped, ["selected"]);
+});
+
+test("acceptance refuses disappearance of an already observed new root or reply", () => {
+  const previous = { seen: ["101.000001"], observed: { total: 1, sender: 0, receiver: 1 } };
+  assert.throws(
+    () =>
+      assertObservedActivityPersists(previous, { seenIds: [], total: 0, sender: 0, receiver: 0 }),
+    /disappeared/,
+  );
+});
 
 const credentialedLanes = [
   "qa-matrix",

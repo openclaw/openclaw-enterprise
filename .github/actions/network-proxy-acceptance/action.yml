@@ -1,0 +1,170 @@
+name: Exact-head network proxy acceptance
+description: Run the approved PR 6856 proof inside the existing protected Slack job.
+inputs:
+  github-token:
+    description: Read-only GitHub token for source and approval checks.
+    required: true
+  model-key:
+    description: Approved integration API key.
+    required: true
+  codex-pat:
+    description: Canonical protected CODEX_ACCESS_TOKEN for QA, qualified before any post.
+    required: true
+  slack-app-token:
+    description: Approved receiver app token.
+    required: true
+  slack-bot-token:
+    description: Approved receiver bot token.
+    required: true
+  slack-sender-token:
+    description: Approved sender bot token.
+    required: true
+  channel-id:
+    description: Approved public channel ID.
+    required: true
+  model:
+    description: Authorized model.
+    required: true
+  codex-model:
+    description: Canonical QA Codex model selected for the repository PAT.
+    required: true
+  node-base-image:
+    description: Approved immutable controller build input.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: "24.22.1"
+    - name: Revalidate the protected dispatch and exact green source after acquiring concurrency
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_LANE: slack
+        INPUT_NETWORK_PROXY_ACCEPTANCE: "true"
+      run: node scripts/ci/network-proxy-acceptance.ts admit
+    - name: Arm the durable one-shot post marker
+      id: arm
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_LANE: slack
+        INPUT_NETWORK_PROXY_ACCEPTANCE: "true"
+      run: node scripts/ci/network-proxy-acceptance.ts arm
+    - name: Persist the marker before any possible post
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: network-proxy-acceptance-posts-9ffc8947c06954644ceb08da25164adbc8a184ab
+        path: ${{ runner.temp }}/network-proxy-acceptance/post-marker.json
+        if-no-files-found: error
+        retention-days: 90
+    - name: Confirm the durable marker before any write-capable Slack credential
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: node scripts/ci/network-proxy-acceptance.ts confirm
+    - name: Verify protected fixture identities without connecting or posting
+      shell: bash
+      env:
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+        SLACK_SENDER_TOKEN: ${{ inputs.slack-sender-token }}
+        SLACK_CHANNEL_ID: ${{ inputs.channel-id }}
+      run: node scripts/ci/network-proxy-acceptance.ts identity
+    - name: Verify the standard API-key model binding without Slack credentials
+      shell: bash
+      env:
+        OPENAI_API_KEY: ${{ inputs.model-key }}
+        OCC_TEST_OPENAI_MODEL: ${{ inputs.model }}
+      run: node scripts/ci/network-proxy-acceptance.ts model
+    - name: Check and close the isolated Socket Mode preflight connection
+      shell: bash
+      env:
+        SLACK_APP_TOKEN: ${{ inputs.slack-app-token }}
+      run: node scripts/ci/network-proxy-acceptance.ts hello
+    - name: Checkout only the approved candidate separately
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: openclaw/openclaw-enterprise
+        ref: 9ffc8947c06954644ceb08da25164adbc8a184ab
+        path: network-proxy-candidate
+        persist-credentials: false
+    - uses: ./.github/actions/setup-pnpm-store-cache
+      with:
+        package-manager-file: network-proxy-candidate/package.json
+        lockfile-path: network-proxy-candidate/pnpm-lock.yaml
+        node-version: "24.22.1"
+        cache-mode: restore
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version-file: network-proxy-candidate/go.mod
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+    - uses: ./.github/actions/setup-ci-tools
+      with:
+        profile: full
+    - name: Install candidate dependencies without integration credentials
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_LANE: slack
+        INPUT_NETWORK_PROXY_ACCEPTANCE: "true"
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+      run: node scripts/ci/network-proxy-acceptance.ts setup
+    - name: Run zero-post transport and isolation, then verify shutdown
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_LANE: slack
+        INPUT_NETWORK_PROXY_ACCEPTANCE: "true"
+        OPENAI_API_KEY: ${{ inputs.model-key }}
+        SLACK_APP_TOKEN: ${{ inputs.slack-app-token }}
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+        SLACK_CHANNEL_ID: ${{ inputs.channel-id }}
+        OCC_TEST_OPENAI_MODEL: ${{ inputs.model }}
+        NODE_BASE_IMAGE: ${{ inputs.node-base-image }}
+      run: node scripts/ci/network-proxy-acceptance.ts zero
+    - name: Qualify canonical QA Codex PAT and shipped-runtime admission before any post
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_LANE: slack
+        INPUT_NETWORK_PROXY_ACCEPTANCE: "true"
+        CODEX_PAT: ${{ inputs.codex-pat }}
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+        OCC_TEST_QA_CODEX_MODEL: ${{ inputs.codex-model }}
+        NODE_BASE_IMAGE: ${{ inputs.node-base-image }}
+      run: node scripts/ci/network-proxy-acceptance.ts qa-preflight
+    - name: Run fail-stop topology, Helm, and named QA stages with cumulative 2/4/7 reconciliation
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_LANE: slack
+        INPUT_NETWORK_PROXY_ACCEPTANCE: "true"
+        OPENAI_API_KEY: ${{ inputs.model-key }}
+        CODEX_PAT: ${{ inputs.codex-pat }}
+        SLACK_APP_TOKEN: ${{ inputs.slack-app-token }}
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+        SLACK_SENDER_TOKEN: ${{ inputs.slack-sender-token }}
+        SLACK_CHANNEL_ID: ${{ inputs.channel-id }}
+        OCC_TEST_OPENAI_MODEL: ${{ inputs.model }}
+        OCC_TEST_QA_CODEX_MODEL: ${{ inputs.codex-model }}
+        NODE_BASE_IMAGE: ${{ inputs.node-base-image }}
+      run: node scripts/ci/network-proxy-acceptance.ts postings
+    - name: Confirm cleanup and write the distinct acceptance receipt
+      id: cleanup
+      if: ${{ always() && steps.arm.outcome == 'success' }}
+      shell: bash
+      run: node scripts/ci/network-proxy-acceptance.ts cleanup
+    - name: Retain the distinct acceptance receipt
+      if: ${{ always() && steps.arm.outcome == 'success' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: network-proxy-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/network-proxy-acceptance/receipt.json
+        if-no-files-found: error
+        retention-days: 7
+    - name: Keep the acceptance concurrency slot while owned cleanup is unconfirmed
+      if: ${{ failure() && steps.cleanup.outcome == 'failure' }}
+      shell: bash
+      timeout-minutes: 30
+      run: sleep 1800

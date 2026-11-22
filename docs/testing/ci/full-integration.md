@@ -29,6 +29,36 @@ dispatcher's [team approval](configuration.md#environments). The ordinary PR
 and merge-group checks still provide targeted premerge feedback. QA Advisory
 has its own schedule.
 
+## One-off network proxy acceptance
+
+After maintainer review, use the protected one-off mode only for PR #6856 at
+`9ffc8947c06954644ceb08da25164adbc8a184ab`:
+
+```sh
+gh workflow run full-integration.yml --ref main -f lane=slack -F network_proxy_acceptance=true
+```
+
+The protected approval binds that exact green candidate as fully privileged
+trusted code. The mode expires on 2026-11-29 and cannot select another ref or
+lane. It uses the existing protected Slack concurrency group and fixture
+reservation. Before a Gateway starts, identity checks must match the approved
+receiver, sender, team and public channel; the isolated hello must report one
+connection and close. The integration API key and canonical protected
+`CODEX_ACCESS_TOKEN` are qualified before any visible post. The published runtime remains
+immutable for Gateway and Harness; the controller comes from the candidate.
+
+The intended visible-message budget is cumulative 2/4/7 across topology, Helm,
+and named QA stages, after zero-post transport and QA-auth qualification. The
+ledger observes roots and changed threads; it is not a Slack-side hard cap.
+Subscriptions are unverified, so off-channel writes and transient between-poll
+activity are not observable. The user accepted those risks. A durable marker is
+created before write-capable credentials are used. Do not rerun or redispatch
+after the marker or an uncertain send; cleanup and the separate acceptance
+receipt must complete before releasing the fixture reservation. This mode does
+not merge the implementation or bypass the RFC human-review/manual-merge hold.
+See the [protected acceptance flow](../../flows/github-actions-testing/network-proxy-acceptance.md)
+for source execution and ownership.
+
 ## Scenarios
 
 First-attempt scheduled and manual `all` runs can [reuse qualified CI results](#results-and-limits).

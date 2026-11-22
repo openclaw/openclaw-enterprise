@@ -130,14 +130,25 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
   assert.equal(execution.concurrency, undefined);
   assert.deepEqual(
     new Set(Object.keys(dispatcher.jobs)),
-    new Set(["manual-approval", "preflight", "execute", "reject-selection"]),
+    new Set([
+      "manual-approval",
+      "preflight",
+      "execute",
+      "execute-network-proxy-acceptance",
+      "reject-selection",
+    ]),
   );
   assert.equal(present(dispatcher.jobs.preflight).concurrency, undefined);
   assert.equal(present(dispatcher.jobs["manual-approval"]).concurrency, undefined);
   assert.equal(execute.needs, "preflight");
   assert.equal(execute.uses, "./.github/workflows/full-integration-execution.yml");
   assert.deepEqual(execution.on, {
-    workflow_call: { inputs: { lane: { type: "string", default: "" } } },
+    workflow_call: {
+      inputs: {
+        lane: { type: "string", default: "" },
+        network_proxy_acceptance: { type: "boolean", default: false },
+      },
+    },
   });
   assert.equal(record(execute.with).lane, "${{ inputs.lane || '' }}");
   assert.equal(execute.secrets, "inherit");
@@ -259,6 +270,115 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
   assert.equal(workflowCondition(reject.if, manualDocs), true);
 });
 
+test("one-off proxy acceptance preserves normal Slack and scopes extra read permissions to acceptance", async () => {
+  const dispatcher = await readWorkflow("full-integration");
+  const execution = await readWorkflow("full-integration-execution");
+  const slack = present(execution.jobs.slack);
+  const acceptance = present(execution.jobs["slack-network-proxy-acceptance"]);
+  const group = {
+    group: "full-integration-slack-live",
+    "cancel-in-progress": false,
+    queue: "max",
+  };
+  assert.deepEqual(record(slack.concurrency), group);
+  assert.deepEqual(record(acceptance.concurrency), group);
+  assert.equal(slack.environment, "integration-main");
+  assert.equal(acceptance.environment, "integration-main");
+  assert.equal(
+    acceptance.env,
+    undefined,
+    "Acceptance must not inject job-global integration credentials",
+  );
+  assert.equal(record(acceptance.permissions)["pull-requests"], "read");
+  assert.equal(record(acceptance.permissions).checks, "read");
+  assert.equal(
+    record(present(dispatcher.jobs["execute-network-proxy-acceptance"]).permissions)[
+      "pull-requests"
+    ],
+    "read",
+  );
+  assert.equal(
+    record(present(dispatcher.jobs["execute-network-proxy-acceptance"]).permissions).checks,
+    "read",
+  );
+  assert.equal(
+    slack.permissions,
+    undefined,
+    "Normal Slack token permissions must remain unchanged",
+  );
+  assert.ok(
+    array(slack.steps)
+      .map(record)
+      .some((step) => step.uses === "./.github/actions/run-ci-lane"),
+  );
+  assert.ok(
+    array(acceptance.steps)
+      .map(record)
+      .some((step) => step.uses === "./.github/actions/network-proxy-acceptance"),
+  );
+  assert.ok(execution.jobs["network-proxy-acceptance-aggregate"]);
+  const acceptanceContext = {
+    github: {
+      repository: mainRun.GITHUB_REPOSITORY,
+      ref: mainRun.GITHUB_REF,
+      ref_type: "branch",
+      event_name: "workflow_dispatch",
+      run_attempt: "1",
+    },
+    inputs: { lane: "slack", network_proxy_acceptance: true },
+    needs: { preflight: { result: "success", outputs: { selected_lane: "slack" } } },
+  };
+  for (const job of [present(dispatcher.jobs["execute-network-proxy-acceptance"]), acceptance]) {
+    assert.equal(workflowCondition(job.if, acceptanceContext), true);
+    for (const patch of [
+      { inputs: { ...acceptanceContext.inputs, network_proxy_acceptance: false } },
+      { github: { ...acceptanceContext.github, event_name: "schedule" } },
+      { github: { ...acceptanceContext.github, run_attempt: "2" } },
+      { needs: { preflight: { result: "failure", outputs: { selected_lane: "slack" } } } },
+    ]) {
+      assert.equal(workflowCondition(job.if, { ...acceptanceContext, ...patch }), false);
+    }
+  }
+  assert.equal(
+    workflowCondition(present(execution.jobs["full-aggregate"]).if, {
+      always: () => true,
+      inputs: { network_proxy_acceptance: true },
+      needs: { preflight: { outputs: { selected_lane: "slack" }, result: "success" } },
+      github: { event_name: "workflow_dispatch" },
+    }),
+    false,
+  );
+  const action = await readLaneAction("network-proxy-acceptance");
+  const index = (name: string) => action.findIndex((step) => step.name === name);
+  assert.ok(
+    index("Persist the marker before any possible post") <
+      index("Verify protected fixture identities without connecting or posting"),
+  );
+  assert.ok(
+    index("Confirm the durable marker before any write-capable Slack credential") <
+      index("Verify protected fixture identities without connecting or posting"),
+  );
+  const cleanup = action.find((step) => step.id === "cleanup");
+  assert.equal(
+    present(cleanup).env,
+    undefined,
+    "Unconditional cleanup must not receive Slack tokens",
+  );
+  const zero = present(
+    action.find((step) => step.run === "node scripts/ci/network-proxy-acceptance.ts zero"),
+  );
+  assert.equal(
+    record(zero.env).SLACK_SENDER_TOKEN,
+    undefined,
+    "Zero-post candidate work must not receive the sender credential",
+  );
+  const checkout = present(
+    action.find((step) => record(step.with ?? {}).path === "network-proxy-candidate"),
+  );
+  assert.equal(record(checkout.with).ref, "9ffc8947c06954644ceb08da25164adbc8a184ab");
+  assert.equal(record(checkout.with)["persist-credentials"], false);
+});
+
 test("OpenShell waits for its protected-input warm export before source builds", async (t) => {
   const execution = await readWorkflow("full-integration-execution");
   const warmer = await readWorkflow("ci-image-cache");
@@ -360,7 +480,15 @@ type Workflow = ReturnType<typeof parseWorkflow>;
 function assertLaneAdmission(workflow: Workflow, execution: Workflow) {
   const jobs = [...Object.entries(workflow.jobs), ...Object.entries(execution.jobs)].filter(
     ([name]) =>
-      !["manual-approval", "preflight", "full-aggregate", "reject-selection"].includes(name),
+      ![
+        "manual-approval",
+        "preflight",
+        "full-aggregate",
+        "reject-selection",
+        "execute-network-proxy-acceptance",
+        "slack-network-proxy-acceptance",
+        "network-proxy-acceptance-aggregate",
+      ].includes(name),
   );
   assert.ok(jobs.length > 0);
   for (const [name, job] of jobs) {
@@ -618,7 +746,10 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   const jobsWithQueue = Object.entries(workflow.jobs)
     .filter(([, job]) => optionalField(job.concurrency, "queue") !== undefined)
     .map(([lane]) => lane);
-  assert.deepEqual(jobsWithQueue.sort(), ["preflight", ...queuedLanes].sort());
+  assert.deepEqual(
+    jobsWithQueue.sort(),
+    ["preflight", ...queuedLanes, "slack-network-proxy-acceptance"].sort(),
+  );
   const resourceQueues = new Set<string>();
   for (const lane of queuedLanes) {
     const job = present(workflow.jobs[lane]);

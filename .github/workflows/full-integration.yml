@@ -24,6 +24,11 @@ on:
           - logging-collector
           - k3d-otel
           - all
+      network_proxy_acceptance:
+        description: Run one-off acceptance for PR 6856 at the approved exact head (Slack lane only).
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -36,7 +41,7 @@ env:
 
 jobs:
   manual-approval:
-    name: Approve manual integration
+    name: ${{ inputs.network_proxy_acceptance && 'Approve PR 6856 9ffc8947 acceptance (subscriptions unknown; off-channel risk)' || 'Approve manual integration' }}
     if: ${{ github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -45,6 +50,9 @@ jobs:
     steps:
       - name: Record required team approval
         run: echo "Required team approval received; preflight verifies the dispatcher."
+      - name: Record accepted subscription uncertainty
+        if: ${{ inputs.network_proxy_acceptance }}
+        run: echo "Protected approval binds the exact green PR 6856 candidate as fully privileged trusted same-UID code. The user gave informed authorization for the intended seven-post budget. Receiver subscriptions, off-channel writes, and transient between-poll posts/deletions are unobservable; the ledger is observational and is not a Slack-side hard cap."
 
   preflight:
     needs: manual-approval
@@ -70,6 +78,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           INPUT_LANE: ${{ inputs.lane }}
+          INPUT_NETWORK_PROXY_ACCEPTANCE: ${{ inputs.network_proxy_acceptance }}
         run: |
           node scripts/ci/full-integration-preflight.ts
       - name: Scheduled preflight diagnostic (${{ steps.select.outputs.failure_stage || 'unknown' }})
@@ -79,7 +88,7 @@ jobs:
   execute:
     name: Execute
     needs: preflight
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && needs.preflight.result == 'success' && ((github.event_name == 'schedule' && github.run_attempt == '1' && needs.preflight.outputs.selected_lane == 'all') || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && needs.preflight.outputs.selected_lane != '' && needs.preflight.outputs.selected_lane != 'docs' && needs.preflight.outputs.selected_lane == inputs.lane)) }}
+    if: ${{ !cancelled() && !inputs.network_proxy_acceptance && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && needs.preflight.result == 'success' && ((github.event_name == 'schedule' && github.run_attempt == '1' && needs.preflight.outputs.selected_lane == 'all') || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && needs.preflight.outputs.selected_lane != '' && needs.preflight.outputs.selected_lane != 'docs' && needs.preflight.outputs.selected_lane == inputs.lane)) }}
     concurrency:
       # Only an eligible full tick enters the automatic execution queue.
       group: ${{ github.event_name == 'workflow_dispatch' && format('full-integration-manual-{0}', github.run_id) || 'full-integration' }}
@@ -87,6 +96,22 @@ jobs:
     uses: ./.github/workflows/full-integration-execution.yml
     with:
       lane: ${{ inputs.lane || '' }}
+    secrets: inherit
+
+  execute-network-proxy-acceptance:
+    name: Execute approved network proxy acceptance
+    needs: preflight
+    if: ${{ !cancelled() && inputs.network_proxy_acceptance == true && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && inputs.lane == 'slack' && needs.preflight.result == 'success' && needs.preflight.outputs.selected_lane == 'slack' }}
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+      pull-requests: read
+      checks: read
+    uses: ./.github/workflows/full-integration-execution.yml
+    with:
+      lane: slack
+      network_proxy_acceptance: true
     secrets: inherit
 
   reject-selection:
