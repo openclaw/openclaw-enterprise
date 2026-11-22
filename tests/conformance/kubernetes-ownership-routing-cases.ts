@@ -275,6 +275,17 @@ export function registerKubernetesOwnershipRoutingCases(): void {
   test("owned reads preserve missing resources and reject mismatched workload identity", async (t) => {
     let observed: typeof ownedDeployment | undefined;
     const absentArtifacts = new Map([
+      ...(["gateway", "agent"] as const).map(
+        (role) =>
+          [
+            `/apis/networking.k8s.io/v1/namespaces/${namespace}/networkpolicies/allow-automation-mcp-${role}-rev-${revisionSuffix}-${agentSuffix}`,
+            "networkpolicies",
+          ] as const,
+      ),
+      [
+        `${tenantPath}/configmaps/automation-trust-agent-${agentSuffix}-rev-${revisionSuffix}`,
+        "configmaps",
+      ],
       [`${tenantPath}/configmaps/harness-trust-${agentSuffix}-rev-${revisionSuffix}`, "configmaps"],
       [`${tenantPath}/configmaps/${gatewayName}-rev-${revisionSuffix}`, "configmaps"],
       [
@@ -311,7 +322,11 @@ export function registerKubernetesOwnershipRoutingCases(): void {
         }
         const absentKind = absentArtifacts.get(pathname);
         if (method === "GET" && absentKind !== undefined) {
-          return kubernetesNotFound(absentKind, pathname.split("/").at(-1) ?? "");
+          return kubernetesNotFound(
+            absentKind,
+            pathname.split("/").at(-1) ?? "",
+            absentKind === "networkpolicies" ? "networking.k8s.io" : undefined,
+          );
         }
         if (method === "DELETE" && pathname === deploymentPath) {
           observed = undefined;

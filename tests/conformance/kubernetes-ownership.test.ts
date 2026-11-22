@@ -212,6 +212,17 @@ async function ownershipLifecycleFixture(t: TestContext, name: string) {
       `${policyPaths}/allow-gateway-channels-${agentDigest}`,
       { kind: "NetworkPolicy", methods: { prepare: ["GET"] } },
     ],
+    ...(["gateway", "agent"] as const).map(
+      (role) =>
+        [
+          `${policyPaths}/allow-automation-mcp-${role}-rev-${revisionDigest}-${agentDigest}`,
+          { kind: "NetworkPolicy", methods: { stop: ["GET"] } },
+        ] as const,
+    ),
+    [
+      `${namespacePath}/configmaps/automation-trust-agent-${agentDigest}-rev-${revisionDigest}`,
+      { kind: "ConfigMap", methods: { stop: ["GET"] } },
+    ],
     [
       `${namespacePath}/serviceaccounts/agent-${agentDigest}`,
       { kind: "ServiceAccount", methods: { prepare: ["GET", "PATCH"] } },

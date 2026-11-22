@@ -634,6 +634,7 @@ export async function checkContainmentStopOrder() {
           deploymentPresent = false;
         },
       },
+      networking: { readNamespacedNetworkPolicy: readAbsentStopResource },
       objects: {},
     }),
   });
@@ -755,6 +756,7 @@ function stopOrderFixture(id: string) {
           fixture.deploymentPresent = false;
         },
       },
+      networking: { readNamespacedNetworkPolicy: readAbsentStopResource },
       objects: {},
     }),
   });
@@ -954,6 +956,7 @@ export async function checkProviderStopTermination() {
       apps: {
         readNamespacedDeployment: readAbsentStopResource,
       },
+      networking: { readNamespacedNetworkPolicy: readAbsentStopResource },
       objects: {},
     }),
   });

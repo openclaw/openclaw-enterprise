@@ -169,14 +169,14 @@ function retirementFixture(
             assert.ok(
               metadata.name === gatewayName ||
                 metadata.name === nodeName ||
-                /^chat-[a-f0-9]{12}-rev-[a-f0-9]{12}$/.test(metadata.name),
+                /^(?:chat|automation)-[a-f0-9]{12}-rev-[a-f0-9]{12}$/.test(metadata.name),
             );
           }
           let uid = kind + "-node-uid";
           if (metadata.name === gatewayName) {
             uid = "route-uid";
           }
-          if (metadata.name.startsWith("chat-")) {
+          if (/^(?:chat|automation)-/.test(metadata.name)) {
             uid = metadata.name + "-route-uid";
           }
           observe({
@@ -380,22 +380,27 @@ export async function checkGatewayRetirement() {
     });
   }
 
-  function expectChatRetirement(revision: AgentRevision) {
-    const name = `chat-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-    assert.deepEqual(deletions, [
-      [
-        "HTTPRoute",
-        {
-          spec: {
-            apiVersion: "gateway.networking.k8s.io/v1",
-            kind: "HTTPRoute",
-            metadata: { name, namespace },
+  function expectRevisionRouteRetirement(revision: AgentRevision) {
+    const names = ["automation", "chat"].map(
+      (prefix) => `${prefix}-${digest(revision.agentId)}-rev-${digest(revision.id)}`,
+    );
+    assert.deepEqual(
+      deletions,
+      names.flatMap((name) => [
+        [
+          "HTTPRoute",
+          {
+            spec: {
+              apiVersion: "gateway.networking.k8s.io/v1",
+              kind: "HTTPRoute",
+              metadata: { name, namespace },
+            },
+            body: { preconditions: { uid: name + "-route-uid", resourceVersion: "1" } },
           },
-          body: { preconditions: { uid: name + "-route-uid", resourceVersion: "1" } },
-        },
-      ],
-      ["Service", { name, namespace, body: { preconditions: { uid: name + "-service-uid" } } }],
-    ]);
+        ],
+        ["Service", { name, namespace, body: { preconditions: { uid: name + "-service-uid" } } }],
+      ]),
+    );
     deletions.length = 0;
   }
 
@@ -415,7 +420,7 @@ export async function checkGatewayRetirement() {
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
   assert.deepEqual(fixture.nodeResources(), activeNodeResources);
   await driver["removeRetiredGateway"](candidate, target);
-  expectChatRetirement(candidate);
+  expectRevisionRouteRetirement(candidate);
 
   // Once activation replaces the Gateway, the same endpoint belongs to the new
   // revision. Retiring the predecessor must leave it usable by the new node.
@@ -426,7 +431,7 @@ export async function checkGatewayRetirement() {
     assert.equal(resource.metadata.annotations?.["openclaw.dev/agent-revision-id"], candidate.id);
   }
   await driver["removeRetiredGateway"](active, target);
-  expectChatRetirement(active);
+  expectRevisionRouteRetirement(active);
   await driver["removeRetiredGateway"](candidate, target);
   assert.deepEqual(deletions.slice(0, 2), [
     [

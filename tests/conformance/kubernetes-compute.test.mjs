@@ -2132,9 +2132,10 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
         desiredRuntimeState: "running",
       };
       const view = {
-        namespaces: { findNamespace: () => tenant },
+        namespaces: { findNamespace: () => tenant, lockNamespace: () => tenant },
         agents: {
           findAgent: () => agent,
+          lockAgent: () => agent,
           // This Sandbox topology does not qualify for cross-redeployment recovery.
         },
         revisions: {
@@ -2151,6 +2152,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
         },
         workspaceSetups: { find: () => undefined },
         credentialSources: { listCredentialWithdrawals: () => [] },
+        agentAutomations: { list: () => [] },
       };
       const events = [];
       const worker = new ControllerWorker({
@@ -2177,6 +2179,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
         ],
       });
       worker.state.read = (read) => read(view);
+      worker.state.transact = (update) => update(view);
       worker.queue.findWorkAttempt = () => undefined;
       worker.queue.heartbeat = () => ({ ageMs: 100 });
       const deferred = [];
