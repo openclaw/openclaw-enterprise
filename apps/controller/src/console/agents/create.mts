@@ -16,7 +16,12 @@ import type {
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
-import { type RequestOptions, requestFailure, responseFields } from "../api-client.mjs";
+import {
+  namedDenial,
+  type RequestOptions,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
 import { sameValue } from "../carry.mjs";
 import defaultCodexPreset from "../default-codex-preset.mjs";
 import {
@@ -37,7 +42,13 @@ import {
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
-import { agentCreateDenied, CONFIGURATION_CREATE_REFUSED, notIncluded } from "./access-reasons.mjs";
+import {
+  ACCESS_NOT_INCLUDED,
+  agentCreateDenied,
+  askAdministratorTo,
+  CONFIGURATION_CREATE_REFUSED,
+  notIncluded,
+} from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -183,6 +194,7 @@ export interface CreateAgentDraft {
   savedSecret: SecretMetadata | undefined;
   savedCredentialSource: RegisteredCredential | undefined;
   savedConfiguration: SavedConfiguration | undefined;
+  agentSaveAccessRefused?: true;
 }
 
 interface ProvisioningAttempt {
@@ -201,6 +213,32 @@ type ProvisioningJob = ReturnType<typeof provisioningJob>;
 const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
 const AGENT_NAME_TAKEN_FIELD = "Another Agent in this Namespace has this name.";
+
+function agentSaveAccessRefusal(cause: unknown, namespaceId: string, administrator: boolean) {
+  const denial = namedDenial(cause);
+  // Use only the API's caller-denial sentences for permissions checked by Agent save.
+  const referenceGrant =
+    /^Not authorized: this needs ((Secret|CredentialSource|Configuration) (?:read|operate|update) on (?:\2 [A-Za-z0-9][A-Za-z0-9_.:-]{0,127}|a \2 this request uses))\. Ask an Installation administrator to grant it\.$/.exec(
+      denial ?? "",
+    )?.[1];
+  const namespaceGrant = ["this Namespace", `Namespace ${namespaceId}`].some(
+    (namespace) =>
+      denial ===
+        `Not authorized: this needs Agent create in ${namespace}. Only an Installation administrator can create Agents: ask one to create it.` ||
+      denial ===
+        `Not authorized: a Restriction in ${namespace} denies Agent create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the Agent in another Namespace.`,
+  );
+  const permission =
+    referenceGrant ?? (namespaceGrant ? "Agent create in this Namespace" : undefined);
+  const reason = permission ? `This action needs ${permission}.` : ACCESS_NOT_INCLUDED;
+  const accessHelp = administrator
+    ? permission
+      ? " Check the grant and any applicable restrictions."
+      : ""
+    : ` ${askAdministratorTo(referenceGrant ? "grant it" : "check your access")}`;
+  return `Agent creation was refused. ${reason}${accessHelp} Once access is restored, select Create Agent again in this draft.`;
+}
+
 // The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
 // recheck skips any open form, because a reload would discard it (finding 2012).
 let recheckOpenForm: (() => void) | null = null;
@@ -2128,9 +2166,11 @@ function renderAgentForm(
   let createPending = false;
   let outcomeUnknown = false;
   let rejectedAgentAttempt:
-    | { kind: "ordinary" }
+    | { kind: "ordinary"; accessRefused: boolean }
     | { kind: "repository-scoped"; repositoryPolicy: "current" | "reloading" | "reload-required" }
-    | undefined;
+    | undefined = draft.agentSaveAccessRefused
+    ? { kind: "ordinary", accessRefused: true }
+    : undefined;
   let savedSecret = draft.savedSecret;
   let savedConfiguration = draft.savedConfiguration;
   let savedAgent: SavedAgent | undefined;
@@ -2373,7 +2413,14 @@ function renderAgentForm(
     { className: "form-actions" },
     // Cancel is the explicit discard; other exits keep the draft (finding 1902).
     button("Cancel", () => {
-      if (!isTouched() || window.confirm("Discard this draft?")) {
+      const confirmation =
+        savedConfiguration &&
+        !savedAgent &&
+        rejectedAgentAttempt?.kind === "ordinary" &&
+        rejectedAgentAttempt.accessRefused
+          ? `Discard this draft? Configuration ${savedConfiguration.id} will remain saved. A new draft can save another Configuration.`
+          : "Discard this draft?";
+      if (!isTouched() || window.confirm(confirmation)) {
         context.setDiscardOnExit(true);
         context.navigate("agents");
       }
@@ -2552,6 +2599,9 @@ function renderAgentForm(
     savedSecret,
     savedCredentialSource,
     savedConfiguration,
+    ...(rejectedAgentAttempt?.kind === "ordinary" && rejectedAgentAttempt.accessRefused
+      ? { agentSaveAccessRefused: true }
+      : {}),
     // A restored form has no password field (it is never kept), so the Secret this form saved
     // from it becomes the chosen model credential (finding 1934).
     ...(passwordAuth && savedSecret
@@ -4059,6 +4109,7 @@ function renderAgentForm(
     let mutationStarted = false;
     let creatingSecret = false;
     let postingRegistration = false;
+    let postingAgent = false;
     const requestedSecretName = requestedModelSecretName();
     let refusedInConfiguration = false;
     try {
@@ -4209,6 +4260,7 @@ function renderAgentForm(
       let createdServicePrincipalId: string | undefined;
       if (!savedAgent) {
         mutationStarted = true;
+        postingAgent = true;
         const created = responseFields(
           await request(`${namespacePath(namespaceId)}/agents`, {
             method: "POST",
@@ -4224,6 +4276,7 @@ function renderAgentForm(
             },
           }),
         );
+        postingAgent = false;
         // The next step grants this principal access to the selected Secrets. Confirm the
         // response belongs to this create before using it, and leave an uncertain write locked.
         const { id, servicePrincipalId } = created;
@@ -4344,6 +4397,12 @@ function renderAgentForm(
       if (postingRegistration && knownRejection) {
         registrationRefusal = registrationProblem.trim();
       }
+      const ordinaryAgentAccessRefused =
+        postingAgent &&
+        error.status === 403 &&
+        savedConfiguration !== undefined &&
+        !savedAgent &&
+        repositoryBindings.length === 0;
       // A refused grant on a saved Agent shows this text only to an Installation administrator (a
       // member sees MEMBER_GRANT_REFUSED below), so its denial names nobody to ask (finding 2113).
       const detail = credentialRegistration
@@ -4366,7 +4425,7 @@ function renderAgentForm(
         if (repositoryBindings.length) {
           requireRepositoryReload();
         } else {
-          rejectedAgentAttempt = { kind: "ordinary" };
+          rejectedAgentAttempt = { kind: "ordinary", accessRefused: ordinaryAgentAccessRefused };
         }
         if (rejectedAgentAttempt?.kind === "repository-scoped") {
           recoveryMessage.textContent = `Repository-scoped Agent creation returned a known rejection. Configuration ${savedConfiguration.id} remains saved. Reload current repository choices to refresh policy before retrying, or start a new draft. Starting a new draft does not delete this Configuration.`;
@@ -4399,10 +4458,13 @@ function renderAgentForm(
         error.status === 403;
       credentialGrantRefused ||= memberGrantRefused;
       refusedInConfiguration = !savedConfiguration && showChannelBindingRefusal(cause);
+      const accessRefusal = ordinaryAgentAccessRefused
+        ? agentSaveAccessRefusal(cause, namespaceId, context.installationAdmin === true)
+        : undefined;
       feedback.textContent =
         refusedInConfiguration || confirmedSecretConflict
           ? ""
-          : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
+          : (memberGrantRefused ? MEMBER_GRANT_REFUSED : (accessRefusal ?? detail)) +
             guidance +
             (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
       if (!refusedInConfiguration && !confirmedSecretConflict && !savedAgent) {

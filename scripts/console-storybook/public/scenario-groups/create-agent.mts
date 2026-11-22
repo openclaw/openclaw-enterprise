@@ -436,6 +436,37 @@ export const createAgentFormScenarios = {
     ],
     gap: "The Secret answer is simulated; the API still authorizes Agent create and the Secrets it binds.",
   },
+  createAgentSaveRefused: {
+    group: "Pages/Create Agent",
+    name: "Agent save refused after saving a Configuration",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs Secret operate on Secret sec_demo_model. Ask an Installation administrator to grant it.",
+        once: true,
+      },
+    ],
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#provider-credential-secret", value: "Demo model API key" },
+      { selector: "#agent-model", value: "gpt-5.6-sol" },
+      click("Create Agent"),
+    ],
+    description:
+      "The Configuration saves and the Agent save is refused because the administrator lacks Secret operate.",
+    steps: [
+      "Read the refusal, the Secret operate requirement, and the saved Configuration ID.",
+      "Select Cancel and read what remains saved. Dismiss the confirmation to keep the draft.",
+      "Select Create Agent again. The fixture now allows the Agent save and reuses the Configuration.",
+    ],
+  },
   createRepositoryNotConfigured: {
     group: "Pages/Create Agent",
     name: "Repository access not set up",

@@ -7,8 +7,10 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Route } from "playwright";
 
+import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import {
   type AgentResponse,
+  type ConfigurationResponse,
   NamespaceListResponse,
   type NamespaceWire,
   type SecretWire,
@@ -17,7 +19,7 @@ import {
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { authorizationDenials, createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { restrict } from "../helpers/iam-grants.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   deniedCreateSecretOption,
   focusedId,
@@ -457,6 +459,168 @@ test("a draft that saved its Configuration keeps it when a permission retry refu
     authorizationDenials(fixture.auditSink, "openclaw.agents.repository_options.list").length,
     0,
   );
+});
+
+for (const persona of ["member", "administrator"] as const) {
+  test(`${persona === "member" ? "a member" : "an administrator"} can retry an Agent save refused after saving its Configuration`, async (t) => {
+    const { fixture, namespace, secret } = await setup(t);
+    const member =
+      persona === "member"
+        ? await fixture.createNamespaceMember(
+            "member-secret-operate",
+            namespace.id,
+            memberWriteWithout(["operate", "secret"]),
+          )
+        : undefined;
+    const memberOperate =
+      member && grantSecretOperate(fixture, namespace.id, member.principal, [secret.id]);
+    const { page } = await newPage(t, fixture);
+    const answers = apiResponses(page, fixture.origin);
+    const scope = `/namespaces/${namespace.id}`;
+    const configurationUrl = fixture.origin + scope + "/configurations";
+    const agentUrl = fixture.origin + scope + "/agents";
+    let restriction: ReturnType<typeof restrict> | undefined;
+    // Change only Secret operate after validation and the Configuration write have completed.
+    await page.route(
+      agentUrl,
+      async (route) => {
+        if (memberOperate) {
+          memberOperate.revoke(secret.id);
+        } else {
+          restriction = restrict(fixture.policy, "operate", "secret", {
+            namespaceId: namespace.id,
+            resourceId: secret.id,
+          });
+        }
+        await route.continue();
+      },
+      { times: 1 },
+    );
+
+    await login(
+      page,
+      fixture,
+      `/console/agents/new?namespace=${namespace.id}`,
+      member?.credentials ?? fixture.credentials,
+    );
+    await fillDefaultPreset(page, secret, "Kept Agent");
+    const submit = page.getByRole("button", { name: "Create Agent", exact: true });
+    const configSaved = responseTo(page, "POST", configurationUrl);
+    const agentRefused = responseTo(page, "POST", agentUrl);
+    await submit.click();
+
+    const configurationResponse = await configSaved;
+    assert.equal(configurationResponse.status(), 201);
+    const { data: configuration }: ConfigurationResponse = await configurationResponse.json();
+    const refusalResponse = await agentRefused;
+    assert.equal(refusalResponse.status(), 403);
+    const { error, meta }: ErrorResponse = await refusalResponse.json();
+    assert.equal(error.code, "FORBIDDEN");
+    const requirement = `Secret operate on Secret ${secret.id}`;
+    assert.ok(error.message.startsWith(`Not authorized: this needs ${requirement}.`));
+    const alert = page
+      .getByRole("alert")
+      .filter({ hasText: requirement })
+      .or(page.getByRole("alert").filter({ hasText: "Your access does not include this action." }));
+    await alert.waitFor();
+    const text = await alert.innerText();
+    assert.match(text, /^Agent creation was refused\./);
+    assert.ok(text.includes(requirement), text);
+    assert.ok(
+      text.includes("Once access is restored, select Create Agent again in this draft."),
+      text,
+    );
+    assert.ok(meta?.requestId && text.includes(meta.requestId));
+    if (member) {
+      assert.match(text, /Ask an Installation administrator to grant it/);
+    } else {
+      assert.match(text, /Check the grant and any applicable restrictions/);
+      assert.doesNotMatch(text, /Ask an Installation administrator/);
+    }
+    await page
+      .getByRole("status")
+      .filter({
+        hasText: `Configuration saved: ${configuration.id}. Retries reuse these resources.`,
+      })
+      .waitFor();
+    assert.equal(await page.getByLabel("API key Secret", { exact: true }).isDisabled(), true);
+    assert.deepEqual((await fixture.request("GET", scope + "/agents")).data, []);
+
+    const confirmation = page.waitForEvent("dialog");
+    const cancelClick = page.getByRole("button", { name: "Cancel", exact: true }).click();
+    const dialog = await confirmation;
+    const warning = dialog.message();
+    await dialog.dismiss();
+    await cancelClick;
+    assert.equal(
+      warning,
+      `Discard this draft? Configuration ${configuration.id} will remain saved. A new draft can save another Configuration.`,
+    );
+
+    if (member) {
+      grantSecretOperate(fixture, namespace.id, member.principal, [secret.id]);
+    } else {
+      assert.ok(restriction);
+      liftRestriction(fixture.policy, restriction);
+    }
+    const agentSaved = responseTo(page, "POST", agentUrl);
+    await submit.click();
+    const agentResponse = await agentSaved;
+    assert.equal(agentResponse.status(), 201);
+    const { data: agent }: AgentResponse = await agentResponse.json();
+    assert.equal(agent.configurationId, configuration.id);
+    assert.deepEqual(agent.harnessAuth, { method: "api_key", source: secret.ref });
+    await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
+    assert.deepEqual(
+      answers.filter((answer) => /^POST .*\/(agents(?:\/validate)?|configurations) /.test(answer)),
+      [
+        `POST ${scope}/agents/validate 204`,
+        `POST ${scope}/configurations 201`,
+        `POST ${scope}/agents 403`,
+        `POST ${scope}/agents 201`,
+      ],
+    );
+  });
+}
+
+test("an unrecognized Agent denial stays generic and an uncertain retry keeps the draft locked", async (t) => {
+  const { fixture, namespace, secret } = await setup(t);
+  const member = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
+  const { page } = await newPage(t, fixture);
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  const unrelatedText = "Not authorized: this needs Secret operate on an unrelated resource.";
+  await page.route(
+    agentUrl,
+    (route) => route.fulfill(apiErrorResponse(403, "FORBIDDEN", unrelatedText)),
+    { times: 1 },
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await fillDefaultPreset(page, secret, "Member Agent");
+  const submit = page.getByRole("button", { name: "Create Agent", exact: true });
+  const refused = responseTo(page, "POST", agentUrl);
+  await submit.click();
+  assert.equal((await refused).status(), 403);
+  const refusal = page
+    .getByRole("alert")
+    .filter({ hasText: "Your access does not include this action." });
+  await refusal.waitFor();
+  assert.doesNotMatch(await refusal.innerText(), /Secret operate|unrelated resource/);
+  await waitForEnabled(submit);
+
+  // Simulate losing the answer to the next Agent POST. The earlier known refusal no longer
+  // establishes that the same draft is safe to retry.
+  await page.route(agentUrl, (route) => route.abort("failed"), { times: 1 });
+  await submit.click();
+  await page.getByRole("alert").filter({ hasText: "Outcome unknown." }).waitFor();
+  assert.equal(await submit.isDisabled(), true);
+  assert.equal(await refusal.isVisible(), false);
+  const confirmation = page.waitForEvent("dialog");
+  const cancelClick = page.getByRole("button", { name: "Cancel", exact: true }).click();
+  const dialog = await confirmation;
+  const warning = dialog.message();
+  await dialog.dismiss();
+  await cancelClick;
+  assert.equal(warning, "Discard this draft?");
 });
 
 test("a temporary Installation read failure keeps an administrator off the member path", async (t) => {
