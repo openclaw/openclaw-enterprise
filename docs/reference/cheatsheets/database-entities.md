@@ -182,7 +182,7 @@ Pins the saved OAuth configuration and the HTTPS destinations that can receive t
 
 ### `oauth_clients`
 
-Identifies an independently managed OAuth client and its approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
+Identifies an independently managed OAuth client. A connection template version defines the approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
 
 - `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
 - `token_url`, `revocation_url`, `token_endpoint_auth_method`
