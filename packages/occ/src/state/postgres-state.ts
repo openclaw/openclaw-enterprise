@@ -895,6 +895,7 @@ function revisionFromRow(
       namespaceId: metadata.namespaceId,
       executionAdmission,
       harnessAuth,
+      ...(admitted.plugins === undefined ? {} : { plugins: admitted.plugins }),
       ...(admitted.credential_deployment === undefined
         ? {}
         : { credentialDeployment: admitted.credential_deployment }),
@@ -4237,7 +4238,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           ...(found.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
         });
       },
-      createRevision: async (input, firstDeploymentDigest) => {
+      createRevision: async (input, firstDeploymentDigest, selectedPluginBindings) => {
         const revision = immutableCopy(input);
         await this.requireInitialized(context);
         try {
@@ -4305,7 +4306,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           owner.backendId !== revision.backendId ||
           revision.gatewayManagedMode !== owner.gatewayManagedMode ||
           !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-          !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
+          !credentialSourcesMatch(owner, revision, selectedPluginBindings)
         ) {
           throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
         }

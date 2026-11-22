@@ -1,3 +1,4 @@
+import type { SelectedPluginBinding } from "../plugin-credential-bindings.ts";
 import {
   admitRepositoryNetworkPolicy,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
@@ -461,14 +462,55 @@ function agentCredentialSourceReference(
   return (bindings ?? []).some(({ sourceId }) => sourceId === credentialSourceId);
 }
 
-/** A revision freezes exactly the owner's non-model sources, in order. */
+/** Compare the revision with the independent Source selections reported during admission. */
 export function credentialSourcesMatch(
-  bindings: readonly AgentCredentialSourceBinding[] | undefined,
-  snapshots: readonly CredentialSourceSnapshot[] | undefined,
+  owner: Readonly<Agent>,
+  revision: Readonly<AgentRevision>,
+  selected: readonly SelectedPluginBinding[] = [],
 ): boolean {
-  const owner = (bindings ?? []).map(({ sourceId }) => sourceId);
-  const frozen = (snapshots ?? []).map(({ sourceId }) => sourceId);
-  return owner.length === frozen.length && owner.every((sourceId, i) => sourceId === frozen[i]);
+  const explicit = (owner.credentialSources ?? []).map(({ sourceId }) => sourceId);
+  const frozen = (revision.credentialSources ?? []).map(({ sourceId }) => sourceId);
+  if (!explicit.every((sourceId, index) => frozen[index] === sourceId)) {
+    return false;
+  }
+  const bindings = (revision.credentialDeployment?.bindings ?? []).filter(
+    (binding) => binding.consumer.kind === "plugin",
+  );
+  if (
+    (selected.length > 0 || bindings.length > 0) &&
+    (!isDeepStrictEqual(revision.plugins?.plugins, owner.plugins) ||
+      !isDeepStrictEqual(revision.plugins?.driver, owner.pluginDriver))
+  ) {
+    return false;
+  }
+  const expectedBindings = new Map<string, string>();
+  const expectedSources = new Set(explicit);
+  for (const { pluginId, requirement, connection, sourceId } of selected) {
+    const key = JSON.stringify([pluginId, requirement, connection]);
+    if (!owner.plugins?.[pluginId]?.enabled || expectedBindings.has(key)) {
+      return false;
+    }
+    expectedBindings.set(key, sourceId);
+    expectedSources.add(sourceId);
+  }
+  for (const binding of bindings) {
+    if (binding.consumer.kind !== "plugin" || binding.sourceRef.namespaceId !== owner.namespaceId) {
+      return false;
+    }
+    const key = JSON.stringify([
+      binding.consumer.pluginId,
+      binding.consumer.requirement,
+      binding.consumer.connection,
+    ]);
+    if (expectedBindings.get(key) !== binding.sourceRef.id || !expectedBindings.delete(key)) {
+      return false;
+    }
+  }
+  return (
+    expectedBindings.size === 0 &&
+    frozen.length === expectedSources.size &&
+    frozen.every((id) => expectedSources.delete(id))
+  );
 }
 
 export function validCredentialSourceSnapshots(value: unknown): boolean {
@@ -513,6 +555,7 @@ export function validStandaloneCredentialDeployment(
     | "credentialDeployment"
     | "harnessAuth"
     | "credentialSources"
+    | "plugins"
   >,
 ): boolean {
   if (revision.executionAdmission.mode !== "standalone") {
@@ -520,29 +563,62 @@ export function validStandaloneCredentialDeployment(
   }
   const auth = revision.harnessAuth;
   const policy = revision.credentialDeployment;
-  if (
-    auth.method !== "credential_source" ||
-    !isNonEmptyString(auth.tokenServiceInstanceId) ||
-    policy === undefined
-  ) {
+  const snapshots = revision.credentialSources ?? [];
+  if (!policy || policy.bindings.length === 0) {
     return false;
   }
-  const snapshot = revision.credentialSources?.find(({ sourceId }) => sourceId === auth.sourceId);
-  if (
-    snapshot === undefined ||
-    snapshot.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
-    snapshot.sourceType !== auth.sourceType
-  ) {
-    return false;
+  const used = new Set<string>();
+  let modelBindings = 0;
+  const pluginConsumers = new Set<string>();
+  for (const binding of policy.bindings) {
+    const snapshot = snapshots.find(({ sourceId }) => sourceId === binding.sourceRef.id);
+    if (
+      !snapshot ||
+      !isNonEmptyString(snapshot.tokenServiceInstanceId) ||
+      binding.sourceRef.kind !== "credential_source" ||
+      binding.sourceRef.namespaceId !== revision.namespaceId
+    ) {
+      return false;
+    }
+    used.add(snapshot.sourceId);
+    if (binding.consumer.kind === "model") {
+      modelBindings++;
+      if (
+        modelBindings !== 1 ||
+        auth.method !== "credential_source" ||
+        snapshot.sourceId !== auth.sourceId ||
+        snapshot.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
+        snapshot.sourceType !== auth.sourceType
+      ) {
+        return false;
+      }
+    } else if (binding.consumer.kind === "plugin") {
+      const injection = policy.injectionPolicies.find(
+        ({ bindingRef }) => bindingRef === binding.bindingRef,
+      );
+      const key = JSON.stringify([
+        binding.consumer.pluginId,
+        binding.consumer.requirement,
+        binding.consumer.connection,
+      ]);
+      if (
+        snapshot.sourceType !== "static" ||
+        revision.plugins?.plugins[binding.consumer.pluginId]?.enabled !== true ||
+        pluginConsumers.has(key) ||
+        !injection ||
+        injection.allowedRequests.some(({ requestPolicy }) => requestPolicy?.type !== "http")
+      ) {
+        return false;
+      }
+      pluginConsumers.add(key);
+    } else {
+      return false;
+    }
   }
-  const binding = policy.bindings[0];
+  const managedHarness =
+    auth.method === "credential_source" && auth.tokenServiceInstanceId !== undefined;
   return (
-    revision.credentialSources?.length === 1 &&
-    policy.bindings.length === 1 &&
-    binding?.consumer.kind === "model" &&
-    binding.sourceRef.kind === "credential_source" &&
-    binding.sourceRef.namespaceId === revision.namespaceId &&
-    binding.sourceRef.id === auth.sourceId
+    (managedHarness ? modelBindings === 1 : modelBindings === 0) && used.size === snapshots.length
   );
 }
 
@@ -1503,6 +1579,10 @@ function repositories(
           .sort((a, b) => a.id.localeCompare(b.id))
           .map((template) => immutableCopy(template)),
       ),
+    findStaticConnectionTemplateVersion: async (templateId, version) => {
+      const found = snapshot.connectionTemplateVersions.get(versionKey(templateId, version));
+      return found?.mode === "static_bearer" ? immutableCopy(found) : undefined;
+    },
     findOAuthConnectionTemplateVersion: async (templateId, version) => {
       const found = snapshot.connectionTemplateVersions.get(versionKey(templateId, version));
       return found === undefined || found.mode === "static_bearer"
@@ -3480,7 +3560,7 @@ function repositories(
         ...(older.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
       });
     },
-    createRevision: async (input, firstDeploymentDigest) => {
+    createRevision: async (input, firstDeploymentDigest, selectedPluginBindings) => {
       const revision = immutableCopy(input);
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
@@ -3491,7 +3571,7 @@ function repositories(
         owner.backendId !== revision.backendId ||
         revision.gatewayManagedMode !== owner.gatewayManagedMode ||
         !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-        !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
+        !credentialSourcesMatch(owner, revision, selectedPluginBindings)
       ) {
         throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
       }

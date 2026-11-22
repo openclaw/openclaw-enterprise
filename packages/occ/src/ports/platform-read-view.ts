@@ -58,6 +58,7 @@ export const platformReadMethods = deepFreeze({
     "listConnectionTemplates",
     "hasOtherConnectionIssuer",
     "countNamespaceConnectionTemplates",
+    "findStaticConnectionTemplateVersion",
     "findOAuthConnectionTemplateVersion",
     "listOAuthClientCleanups",
     "listOAuthClients",

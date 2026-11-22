@@ -182,8 +182,8 @@ export interface ControllerOptions {
     readonly configuration: Readonly<Record<string, unknown>>;
     readonly harness: RevisionHarnessDescriptor;
   }) => ModelCredentialPreset | undefined;
-  /** Composition reviews the selected implementations for this first managed-model policy. */
-  readonly supportsModelCredentialDeployment?: (input: {
+  /** Composition qualifies the selected implementations for the complete admitted credential policy. */
+  readonly supportsCredentialDeployment?: (input: {
     readonly sandbox: SandboxDriver;
     readonly proxy: CredentialProxyDriver;
     readonly policy: DeploymentPolicy;
@@ -1007,6 +1007,8 @@ export function createControllerComposition(
     harnessAuth: harnessAuthOperations,
     repositoryPolicy,
     validateSavedAgentTopology,
+    pluginDriver: (harnessId, forConfiguration) =>
+      drivers.pluginDriver(harnessId, forConfiguration),
     validateAgentPlugins: agentPlugins.validateAgentPlugins,
     guardAgentProvisioning: (state, namespaceId, agentId) =>
       provisioningWorker.guardAgentProvisioning(state, namespaceId, agentId),
@@ -1096,7 +1098,7 @@ export function createControllerComposition(
     configuration: configurationOperations,
     modelPolicyAgent,
     modelCredentialPreset: options.modelCredentialPreset,
-    supportsModelCredentialDeployment: options.supportsModelCredentialDeployment,
+    supportsCredentialDeployment: options.supportsCredentialDeployment,
     sandboxNetworkPolicyCeiling,
     ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),

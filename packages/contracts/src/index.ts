@@ -1802,6 +1802,8 @@ export type {
   TokenServiceDriver,
 } from "./drivers/token-service/index.ts";
 
+export { intersectCredentialRequests } from "./deployment-request-match.ts";
+
 export {
   credentialProxyRoutingDetails,
   networkGrantAdmissionDetails,

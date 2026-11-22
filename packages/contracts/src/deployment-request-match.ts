@@ -1,8 +1,9 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
+import type { ConnectionEndpoint } from "./connection-templates.ts";
 import type { ErrorDetail } from "./api/common.ts";
 import type { DeploymentRequestMatch, DeploymentRequestPolicy } from "./credential-deployment.ts";
-import { networkMatchDetails, SandboxNetworkGrantSchema } from "./sandbox-policy.ts";
+import { networkMatchDetails, SandboxNetworkGrantSchema, validDnsHost } from "./sandbox-policy.ts";
 import { validRequestPath } from "./request-path.ts";
 
 type Destination = Pick<DeploymentRequestMatch, "host" | "ports">;
@@ -123,6 +124,46 @@ export function requestCovered(
     )
     .flatMap((limit) => limit.ports);
   return portsCovered(match.ports, allowedPorts);
+}
+
+/** Narrow reviewed consumer requests to the exact destinations authorized for its Source. */
+export function intersectCredentialRequests(
+  reviewed: readonly DeploymentRequestMatch[],
+  destinations: readonly (ConnectionEndpoint & { readonly method: string | null })[],
+): DeploymentRequestMatch[] {
+  const matches: DeploymentRequestMatch[] = [];
+  for (const rule of reviewed) {
+    for (const destination of destinations) {
+      const { host, port, path } = destination;
+      if (
+        destination.method !== null &&
+        (rule.requestPolicy?.type !== "http" || rule.requestPolicy.method !== destination.method)
+      ) {
+        continue;
+      }
+      const ports = [{ from: port, to: port }];
+      if (
+        !validDnsHost(host) ||
+        !hostCovered(host, rule.host) ||
+        !Number.isInteger(port) ||
+        !portsCovered(ports, rule.ports)
+      ) {
+        continue;
+      }
+      let policy = rule.requestPolicy;
+      if (!pathCovered(policy?.path ?? "/**", path)) {
+        if (policy?.type !== "http" || !pathCovered(path, policy.path)) {
+          continue;
+        }
+        policy = { ...policy, path };
+      }
+      const match = { ...rule, host, ports, ...(policy && { requestPolicy: policy }) };
+      if (!requestCovered(match, matches)) {
+        matches.push(match);
+      }
+    }
+  }
+  return matches;
 }
 
 function destinationsOverlap(a: Destination, b: Destination): boolean {

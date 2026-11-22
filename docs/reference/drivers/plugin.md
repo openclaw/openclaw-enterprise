@@ -67,13 +67,12 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   `credentialSlots` in a dedicated Agent's plugin capabilities.
   `selectedBindings({pluginId, selection})` reports selected Source
   IDs as `[requirement][connection]` before source or release validation. The
-  OpenClaw Driver uses the `default` connection for each selected slot. This
-  reporter does not yet have an OCC admission caller.
+  OpenClaw Driver uses the `default` connection for each selected slot. Agent save
+  and deployment admission use this reporter to resolve exact Source authority.
   `validate(selections, sources, modelSourceId)` checks public Source metadata,
   the reviewed release and slot, and refuses the Source that authenticates the
-  model. Existing Agent callers project raw Sources without their Template pin,
-  so they refuse static Sources until the selection workflow supplies pinned
-  metadata.
+  model. OCC supplies metadata with the exact approved Template pin for each
+  selected Source.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a

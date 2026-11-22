@@ -17,6 +17,8 @@ import {
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { managedCliInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -624,6 +626,7 @@ test(
       JSON.stringify([
         { action: "create", resourceKind: "agent" },
         { action: "deploy", resourceKind: "agent" },
+        { action: "update", resourceKind: "agent" },
         { action: "read", resourceKind: "configuration" },
         { action: "read", resourceKind: "namespace" },
       ]),
@@ -1246,9 +1249,10 @@ test(
     assert.equal(sandbox, runtime.sandboxDriver);
     const credentialSourceDelivery = credentialSourceDeliveryBinding(runtime);
     assert.ok(credentialSourceDelivery);
+    const nativeOptions = installationControllerOptions(runtime.installation);
     const nativeController = new OpenClawController(controller.installation, {
       state,
-      ...installationControllerOptions(runtime.installation),
+      ...nativeOptions,
       credentialSourceDelivery,
       namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
       backends: runtime.installation.backend,
@@ -1267,7 +1271,50 @@ test(
     );
     installSelectedSandboxDrivers(nativeController, runtime);
     assert.equal(nativeController.selectedDriver("credential_proxy_delivery"), proxy);
+    const pluginDriver = new OCCPluginDriver();
+    nativeController.installPluginDrivers([pluginDriver]);
     const nativeApp = createApp(nativeController);
+
+    // The real Managed Plugin Driver reports the selected Source before placement.
+    // A Plugin Source needs an approved exact Template pin even though a generic Source does not.
+    const google = managedCliInstalls.find(
+      ({ packageName }) => packageName === "oce-google-workspace",
+    );
+    assert.ok(google);
+    const googleSlot = Object.keys(google.credentials)[0]!;
+    const googleTemplate = await inject(
+      "POST",
+      "/connection-templates",
+      {
+        namespaceId,
+        displayName: "Gmail Plugin access",
+        mode: "static_bearer",
+        destinations: [
+          { method: "GET", host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/**" },
+        ],
+      },
+      nativeApp,
+    );
+    assert.equal(googleTemplate.statusCode, 201, googleTemplate.body);
+    const googleTemplateId = googleTemplate.json().data.id;
+    const googleMaterial = randomUUID();
+    material.push(googleMaterial);
+    const googleSourceResponse = remember(
+      await inject(
+        "POST",
+        `${base}/credential-sources`,
+        {
+          name: "Gmail Source",
+          type: "static",
+          connectionTemplateId: googleTemplateId,
+          connectionTemplateVersion: 1,
+          secret: { opaque: googleMaterial },
+        },
+        nativeApp,
+      ),
+    );
+    assert.equal(googleSourceResponse.statusCode, 201, googleSourceResponse.body);
+    const googleSource = googleSourceResponse.json().data;
     const nativeMaterial = randomUUID();
     material.push(nativeMaterial);
     const enrolledNative = remember(
@@ -1285,6 +1332,109 @@ test(
     );
     assert.equal(enrolledNative.statusCode, 201, enrolledNative.body);
     const nativeSource = enrolledNative.json().data;
+
+    // Tenant Secret metadata persists the Kubernetes UID, which PostgreSQL requires to be a UUID.
+    assert.equal(Reflect.set(core, "secretUid", randomUUID()), true);
+    const modelSecret = await inject(
+      "POST",
+      `${base}/secrets`,
+      { name: `Plugin model key ${randomUUID()}`, value: randomUUID() },
+      nativeApp,
+    );
+    assert.equal(modelSecret.statusCode, 201, modelSecret.body);
+    const pluginAgentResponse = await inject(
+      "POST",
+      `${base}/agents`,
+      {
+        name: `Plugin Agent ${randomUUID()}`,
+        configurationId,
+        executionMode: "dedicated",
+        harnessAuth: { method: "api_key", source: modelSecret.json().data.ref },
+      },
+      nativeApp,
+    );
+    assert.equal(pluginAgentResponse.statusCode, 201, pluginAgentResponse.body);
+    const pluginAgent = pluginAgentResponse.json().data;
+    const selection = {
+      configurationId,
+      plugins: {
+        [google.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: google.releaseSha256,
+            credentials: { [googleSlot]: googleSource.id },
+          },
+        },
+      },
+    };
+    const deniedSelection = await memberRequest(
+      "PATCH",
+      `${base}/agents/${pluginAgent.id}`,
+      selection,
+      nativeApp,
+    );
+    assert.equal(deniedSelection.statusCode, 403, deniedSelection.body);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$2 AND resource_kind='credential_source' AND resource_id=$3",
+          [namespaceId, pluginAgent.servicePrincipalId, googleSource.id],
+        )
+      ).rows[0].count,
+      0,
+    );
+    const unpinnedSelection = {
+      configurationId,
+      plugins: {
+        [google.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: google.releaseSha256,
+            credentials: { [googleSlot]: nativeSource.id },
+          },
+        },
+      },
+    };
+    const refusedPin = await inject(
+      "PATCH",
+      `${base}/agents/${pluginAgent.id}`,
+      unpinnedSelection,
+      nativeApp,
+    );
+    assert.equal(refusedPin.statusCode, 409, refusedPin.body);
+    assert.match(refusedPin.json().error.message, /approved exact Connection Template version/);
+
+    // This selected native installation has no Credential Gateway. The Plugin Driver still
+    // refuses placement, so C6 must not save the selection, grant Source use, or queue a revision.
+    const refusedPlacement = await inject(
+      "PATCH",
+      `${base}/agents/${pluginAgent.id}`,
+      selection,
+      nativeApp,
+    );
+    assert.equal(refusedPlacement.statusCode, 400, refusedPlacement.body);
+    assert.match(refusedPlacement.json().error.message, /OpenShell Sandbox and Credential Gateway/);
+    const unchangedAgent = await inject(
+      "GET",
+      `${base}/agents/${pluginAgent.id}`,
+      undefined,
+      nativeApp,
+    );
+    assert.equal(unchangedAgent.statusCode, 200, unchangedAgent.body);
+    assert.equal(Object.hasOwn(unchangedAgent.json().data, "plugins"), false);
+    assert.equal(Object.hasOwn(unchangedAgent.json().data, "credentialSources"), false);
+    const noEffects = await pool.query(
+      `SELECT
+      (SELECT count(*)::int FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$2 AND resource_kind='credential_source' AND resource_id = ANY($3::text[])) AS grants,
+      (SELECT count(*)::int FROM occ.agent_revisions WHERE namespace_id=$1 AND agent_id=$4) AS revisions`,
+      [
+        namespaceId,
+        pluginAgent.servicePrincipalId,
+        [googleSource.id, nativeSource.id],
+        pluginAgent.id,
+      ],
+    );
+    assert.deepEqual(noEffects.rows[0], { grants: 0, revisions: 0 });
 
     // Guided provisioning cannot supply the network grants that staged delivery requires.
     // Exact Source authorization must still precede that refusal, and neither request may queue work or create resources.
@@ -1556,6 +1706,113 @@ test(
     ]);
 
     assert.ok(revision);
+    // This checks only the PostgreSQL structural validator. Start with the actual admitted
+    // model revision and enrolled pinned Source, then compose a candidate Plugin binding;
+    // native Plugin placement and successful Fastify deployment remain unsupported.
+    const storedSpec = (
+      await pool.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [revision.id])
+    ).rows[0].admitted_spec;
+    const pinnedSource = await nativeController.transact((unit) =>
+      unit.credentialSources.findCredentialSource(namespaceId, googleSource.id),
+    );
+    assert.ok(pinnedSource?.ownerCapability === "token_service");
+    assert.equal(pinnedSource.tokenServiceInstanceId, instanceId);
+    const mixedSpec = structuredClone(storedSpec);
+    const pluginRequest = {
+      binary: "/usr/local/lib/oce/plugins/google/bin/gog",
+      host: "gmail.googleapis.com",
+      ports: [{ from: 443, to: 443 }],
+      requestPolicy: { type: "http", method: "GET", path: "/gmail/v1/users/**" },
+    };
+    const pluginBinding = {
+      bindingRef: "plugin-structural-check",
+      sourceRef: { kind: "credential_source", namespaceId, id: googleSource.id },
+      consumer: {
+        kind: "plugin",
+        pluginId: google.id,
+        requirement: googleSlot,
+        connection: "default",
+      },
+      projection: {
+        environment: google.credentials[googleSlot]!.delivery.env,
+        presentation: "bearer",
+      },
+    };
+    mixedSpec.plugins = {
+      driver: { id: pluginDriver.id, implementation: pluginDriver.implementation },
+      plugins: selection.plugins,
+    };
+    mixedSpec.credential_sources.push({
+      sourceId: googleSource.id,
+      sourceType: "static",
+      tokenServiceInstanceId: instanceId,
+    });
+    mixedSpec.credential_deployment.networkAccessPolicy.allowed.push(pluginRequest);
+    mixedSpec.credential_deployment.bindings.push(pluginBinding);
+    mixedSpec.credential_deployment.injectionPolicies.push({
+      bindingRef: pluginBinding.bindingRef,
+      allowedRequests: [pluginRequest],
+    });
+    const structurallyValid = async (spec: unknown) =>
+      (
+        await pool.query(
+          "SELECT occ.standalone_credential_deployment_is_valid($1::jsonb,$2) AS valid",
+          [JSON.stringify(spec), namespaceId],
+        )
+      ).rows[0].valid;
+    assert.equal(
+      await structurallyValid(mixedSpec),
+      true,
+      "a mixed policy preserves the exact model/Harness linkage",
+    );
+    const missingModel = structuredClone(mixedSpec);
+    missingModel.credential_deployment.bindings.shift();
+    missingModel.credential_deployment.injectionPolicies.shift();
+    missingModel.credential_sources.shift();
+    assert.equal(
+      await structurallyValid(missingModel),
+      false,
+      "managed Harness auth requires its model binding",
+    );
+    const numericRef = structuredClone(mixedSpec);
+    numericRef.credential_deployment.bindings[1].bindingRef = "1";
+    numericRef.credential_deployment.injectionPolicies[1].bindingRef = 1;
+    assert.equal(
+      await structurallyValid(numericRef),
+      false,
+      "an injection bindingRef must be a JSON string",
+    );
+    const mcp = structuredClone(mixedSpec);
+    const rpc = { type: "mcp", method: "tools/call", path: "/gmail/v1/users/me", toolName: "read" };
+    mcp.credential_deployment.networkAccessPolicy.allowed.at(-1).requestPolicy = rpc;
+    mcp.credential_deployment.injectionPolicies[1].allowedRequests[0].requestPolicy = rpc;
+    // Both request lists pass the preexisting shape validator; the Plugin-specific guard
+    // must refuse this otherwise well-formed MCP policy.
+    const mcpShape = await pool.query(
+      "SELECT occ.deployment_request_matches_have_valid_shape($1::jsonb) AS network, occ.deployment_request_matches_have_valid_shape($2::jsonb) AS injection",
+      [
+        JSON.stringify(mcp.credential_deployment.networkAccessPolicy.allowed),
+        JSON.stringify(mcp.credential_deployment.injectionPolicies[1].allowedRequests),
+      ],
+    );
+    assert.deepEqual(mcpShape.rows[0], { network: true, injection: true });
+    assert.equal(
+      await structurallyValid(mcp),
+      false,
+      "MCP cannot express the required transport conjunction",
+    );
+    const duplicate = structuredClone(mixedSpec);
+    duplicate.credential_deployment.bindings.push({
+      ...pluginBinding,
+      bindingRef: "duplicate",
+      projection: { environment: "OTHER_TOKEN", presentation: "bearer" },
+    });
+    duplicate.credential_deployment.injectionPolicies.push({
+      bindingRef: "duplicate",
+      allowedRequests: [pluginRequest],
+    });
+    assert.equal(await structurallyValid(duplicate), false, "Plugin consumer keys must be unique");
+
     // Simulate an admitted deployment that reached staged delivery. The retained ConfigMap and
     // native Provider are transport state, not substitutes for the Stop or Proxy decisions.
     const compute = runtime.computeDriver as unknown as FixtureDriver;

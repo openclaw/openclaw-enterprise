@@ -1489,6 +1489,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preStaticSourceTemplateAssociation"],
+      [90, "prePluginCredentialDeployment"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1944,6 +1945,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preStaticSourceTemplateAssociation"],
+      [90, "prePluginCredentialDeployment"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2489,6 +2491,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preStaticSourceTemplateAssociation"],
+      [90, "prePluginCredentialDeployment"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2782,6 +2785,7 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preStaticSourceTemplateAssociation"],
+      [90, "prePluginCredentialDeployment"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2809,6 +2813,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [90, "CREATE FUNCTION"],
                 [88, "CREATE TRIGGER"],
                 [87, "ALTER TABLE"],
                 [86, "CREATE TRIGGER"],

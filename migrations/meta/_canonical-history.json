@@ -721,6 +721,14 @@
       "tag": "0090_static_source_template_association",
       "breakpoints": true,
       "sha256": "af81d6c5b5807f58edb7392d43cca66800b31dfc6a1a9615cf40dadf45987a00"
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1787000000091,
+      "tag": "0091_plugin_credential_deployment",
+      "breakpoints": true,
+      "sha256": "16edda24faf40ebdebae4cd577279ecc660b3b0022bf8d7742922308050f050c"
     }
   ],
   "initialSchemaStates": {
@@ -918,10 +926,13 @@
       "9c8a688ad0661bed070db68aa3ad8e9645ec0af3d4e52c68d9fec86f4b6498d4",
       "9f6742f932065b4ee9b26cc16f4db7805a74e70b465eb0d60c09ebda61464c4f",
       "ad40d34c9b4c886c6a193e46a54314b124b4ee180878ebe37265284d1c1b3056"
+    ],
+    "4e69635d86ac0e73bc2b26db9b042c954e1c01553e97b5c70a90601b3979f506": [
+      "e9e22f13966e0ea40f892f1ec3718983d1b9f29b979744379ffa670205e78f13"
     ]
   },
   "catalogs": {
-    "completed": "eb1a8416f21ef42f4397283a55883247a7fe7aa99162a0bffbeb446985e097b3",
+    "completed": "4e69635d86ac0e73bc2b26db9b042c954e1c01553e97b5c70a90601b3979f506",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -986,7 +997,8 @@
     "preRepositoryNetworkPolicy": "fba152519ec5acd43443a58546f900db80e483ba5b41d9f4af293abaae4212fd",
     "preStandaloneCredentialDeployment": "4c974fa824c55127bc3af850db325edf37d7e2bc91fe2872b5474c6b237da438",
     "preStaticConnectionTemplates": "602e4fbe38884d045da8334ae658d22890d2eb7b87c7eefc21ebe9a691d887bf",
-    "preStaticSourceTemplateAssociation": "d7d57933e74466375e7f243cfbe72c411ac7f33571f5f26bc3094074a06ad8f6"
+    "preStaticSourceTemplateAssociation": "d7d57933e74466375e7f243cfbe72c411ac7f33571f5f26bc3094074a06ad8f6",
+    "prePluginCredentialDeployment": "eb1a8416f21ef42f4397283a55883247a7fe7aa99162a0bffbeb446985e097b3"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

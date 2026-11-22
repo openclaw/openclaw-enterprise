@@ -230,11 +230,11 @@ export function installationControllerOptions(
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
   | "modelCredentialPreset"
-  | "supportsModelCredentialDeployment"
+  | "supportsCredentialDeployment"
 > {
   return {
     modelCredentialPreset: resolveModelCredentialPreset,
-    supportsModelCredentialDeployment: supportsOpenShellModelCredentialDeployment,
+    supportsCredentialDeployment: supportsOpenShellModelCredentialDeployment,
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
     repositoryNetworkPolicyCeiling: installation?.repositoryNetworkPolicyCeiling ?? [],

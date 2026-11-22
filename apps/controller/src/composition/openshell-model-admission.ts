@@ -5,7 +5,7 @@ import { assertOpenShellInjectionPolicy } from "../drivers/credential-proxy/open
 
 /** Review the first native model route without claiming strict executable or Bearer matching. */
 export const supportsOpenShellModelCredentialDeployment: NonNullable<
-  ControllerOptions["supportsModelCredentialDeployment"]
+  ControllerOptions["supportsCredentialDeployment"]
 > = ({ sandbox, proxy, policy }): boolean => {
   if (
     !(sandbox instanceof OpenShellSandboxDriver) ||

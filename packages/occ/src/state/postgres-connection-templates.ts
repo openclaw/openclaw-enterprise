@@ -194,6 +194,15 @@ export function postgresConnectionTemplates(
         )
       ).rows.length > 0,
     listConnectionTemplates: async () => Object.freeze(await selectTemplates("", [])),
+    findStaticConnectionTemplateVersion: async (templateId, version) => {
+      const [row] = (
+        await client.query(
+          "SELECT template_id AS id, version AS current_version, destinations AS static_destinations, created_at AS static_created_at FROM occ.static_key_template_versions WHERE template_id=$1 AND version=$2",
+          [templateId, version],
+        )
+      ).rows;
+      return row === undefined ? undefined : immutableCopy(staticVersionFromRow(row as Row));
+    },
     findOAuthConnectionTemplateVersion: async (templateId, version) => {
       const [row] = (
         await client.query(

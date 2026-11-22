@@ -1,3 +1,4 @@
+import type { SelectedPluginBinding } from "../plugin-credential-bindings.ts";
 import type {
   AgentReadRepository,
   AgentRevisionReadRepository,
@@ -123,5 +124,6 @@ export interface AgentRevisionRepository extends AgentRevisionReadRepository {
   createRevision(
     revision: AgentRevision,
     firstDeploymentDigest?: string,
+    selectedPluginBindings?: readonly SelectedPluginBinding[],
   ): Promise<Readonly<AgentRevision>>;
 }

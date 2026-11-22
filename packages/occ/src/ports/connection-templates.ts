@@ -11,6 +11,10 @@ export interface ConnectionTemplateReadRepository {
   hasOtherConnectionIssuer(issuer: string): Promise<boolean>;
   countNamespaceConnectionTemplates(namespaceId: string): Promise<number>;
   listConnectionTemplates(): Promise<readonly Readonly<ConnectionTemplate>[]>;
+  findStaticConnectionTemplateVersion(
+    templateId: string,
+    version: number,
+  ): Promise<Readonly<Extract<ConnectionTemplateVersion, { mode: "static_bearer" }>> | undefined>;
   findOAuthConnectionTemplateVersion(
     templateId: string,
     version: number,

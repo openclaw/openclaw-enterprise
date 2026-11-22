@@ -147,6 +147,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 89 && completedCount > 89) {
     return "preStaticSourceTemplateAssociation";
   }
+  if (count === 90 && completedCount > 90) {
+    return "prePluginCredentialDeployment";
+  }
   if (count === completedCount) {
     return "completed";
   }
