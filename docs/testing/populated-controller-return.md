@@ -190,6 +190,48 @@ compatible pair does not qualify later schema changes or a deployment of current
 main. Recheck migration, restore and saved-configuration compatibility when
 selecting another pair; retain those limits with the evidence.
 
+## Qualify distinct controller and runtime images
+
+For this separate test, use the [ordinary TUI upgrade inputs](kubernetes.md#run-an-isolated-upgrade-qualification-lane).
+Unset the sign-in, controller return and online migration rehearsal flags. From
+the repository root, run the following in a shell you can reuse for cleanup.
+The last command checks that one fresh proof records both upgrades and the final
+handoff, in order.
+
+```sh
+run_dir="$(mktemp -d)" && (
+  node --env-file="$TEST_ENV_FILE" --input-type=module-typescript -e '
+    for (const role of ["CONTROLLER", "RUNTIME"]) {
+      const key = `OCC_TEST_PRODUCTION_UPGRADE_${role}_IMAGE`;
+      if (!process.env[key]?.trim()) throw new Error(`Missing ${key}`);
+    }' || exit
+  node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.ts --lane production-tui --state "$run_dir/state.json" || exit
+  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
+    --state "$run_dir/state.json" --results "$run_dir/results.json" || exit
+  set -- "$run_dir"/oce-production-tui-*/proof.json
+  test "$#" -eq 1 && test -f "$1" || exit 1
+  jq -es '
+    ["Independent controller upgrade retained Agent revisions",
+     "Independent runtime image upgrade and fresh model reply",
+     "Final production setup attachable"] as $required |
+    length == 1 and ([.[0].rows[].row | select(. as $r | $required | index($r))] == $required)
+  ' "$1"
+)
+```
+
+Require exit zero and `true`. [Retain the private observations](#retain-ordinary-upgrade-observations).
+After either outcome, save the image mapping and clean up if state exists.
+
+```sh
+if [ -n "$run_dir" ] && [ -f "$run_dir/state.json" ]; then
+  install -m 600 "$run_dir/state.json" "$run_dir/state-before-cleanup.json"
+  node scripts/ci/cleanup.ts --state "$run_dir/state.json"
+fi
+```
+
+Keep the environment file and run directory private. Retain state if cleanup fails. Local
+imports can change digests. This lane cannot qualify registry deployment or live EKS.
+
 ## Retain ordinary upgrade observations
 
 The [ordinary TUI upgrade lane](kubernetes.md#run-an-isolated-upgrade-qualification-lane) samples authenticated `GET /installation` through the operator Pod’s
@@ -197,6 +239,8 @@ HTTPS proxy. The runtime window starts before the deliberate interruption and
 includes the checks while both controllers are stopped and the single resume.
 Its success flag covers that sequence. Later fleet checks and model replies have
 their own results. Both receipts use the sample outcomes and cadence described above.
+
+In the distinct-image production TUI upgrade test, the independent controller-only phase selects the primary running Agent using `--verify-agent` and `--verify-agent-namespace`. It compares `agent-continuity.json` and `agent-continuity-after.json` to verify that the Agent remains in the same namespace with the same identity and saved active revision. The test reports whether the Gateway Pod was replaced and records the Gateway container’s restart count (`null` if unknown) before and after the upgrade. A healthy Pod replacement is allowed. The two observations cannot establish uninterrupted service during the upgrade.
 
 The ordinary controller upgrade also writes `controller-api-endpoints.json`.
 This read-only observer surrounds the unchanged HTTP sampler. It binds the API
