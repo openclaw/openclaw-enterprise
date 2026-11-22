@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { TestContext } from "node:test";
 
 import { openShellGatewayErrorForm } from "../../scripts/ci/reporter-measurements.ts";
@@ -12,6 +14,7 @@ import {
   runRunnerSync,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
+import { codexSessionBindingStatusCommand } from "../helpers/plugin-gateway-session-evidence.ts";
 
 const retentionKind = "openshell-git-retention";
 
@@ -43,8 +46,76 @@ async function readMeasurementResult(resultsPath: string) {
   return { artifact, summary, file, measurements, receipts };
 }
 
+function checkSerializedCodexBinding(root: string) {
+  const bare = "openshell-gateway-12345678-1234-1234-1234-123456789abc";
+  const scoped = `agent:main:${bare}`;
+  const [, evalFlag, program, key, mode] = codexSessionBindingStatusCommand(bare);
+  assert.equal(key, scoped);
+  assert.equal(mode, "binding-status");
+  const useFixtureDatabases = `
+    const sqlite = require("node:sqlite");
+    const Database = sqlite.DatabaseSync;
+    sqlite.DatabaseSync = class extends Database {
+      constructor(path, options) {
+        require("node:assert/strict").equal(options.readOnly, true);
+        super(require("node:path").basename(path), options);
+      }
+    };
+  `;
+  const read = (selectedMode: string = mode) =>
+    execFileSync(process.execPath, [evalFlag, useFixtureDatabases + program, key, selectedMode], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+  const sessions = new DatabaseSync(join(root, "openclaw-agent.sqlite"));
+  const state = new DatabaseSync(join(root, "openclaw.sqlite"));
+  try {
+    sessions.exec(
+      "CREATE TABLE session_nodes(session_key TEXT PRIMARY KEY, current_session_id TEXT)",
+    );
+    state.exec(`CREATE TABLE plugin_state_entries(
+      plugin_id TEXT, namespace TEXT, entry_key TEXT PRIMARY KEY, value_json TEXT, expires_at INTEGER
+    )`);
+    const sessionId = "synthetic-session";
+    const threadId = "synthetic-thread";
+    const binding = { version: 1, state: "active", sessionId, binding: { threadId } };
+    const insertSession = sessions.prepare("INSERT INTO session_nodes VALUES (?, ?)");
+    const put = state.prepare(`
+      INSERT OR REPLACE INTO plugin_state_entries VALUES ('codex', 'app-server-thread-bindings', ?, ?, ?)
+    `);
+    const putBinding = (sessionKey: string, value: string, expires: number | null = null) =>
+      put.run(
+        `session-key:main:${createHash("sha256").update(sessionKey).digest("base64url")}`,
+        value,
+        expires,
+      );
+    insertSession.run(bare, sessionId);
+    putBinding(bare, JSON.stringify(binding));
+    assert.equal(read(), "unknown");
+    assert.equal(read("conversation-reply"), '{"failure":"session_missing"}');
+    insertSession.run(scoped, sessionId);
+    assert.equal(read(), "unknown");
+    putBinding(scoped, JSON.stringify({ ...binding, sessionId: "previous-session" }));
+    assert.equal(read(), "unknown");
+    putBinding(scoped, JSON.stringify(binding), Date.now() - 1);
+    assert.equal(read(), "unknown");
+    putBinding(scoped, "{");
+    assert.equal(read(), "unknown");
+    putBinding(scoped, JSON.stringify(binding));
+    assert.equal(read(), "bound");
+    assert.equal(read("conversation-reply"), JSON.stringify({ sessionId, threadId }));
+    state.exec("DROP TABLE plugin_state_entries");
+    assert.equal(read(), "unknown");
+  } finally {
+    sessions.close();
+    state.close();
+  }
+}
+
 export async function checkAllowlistedMeasurements(t: TestContext) {
   const root = await createRunnerFixture(t);
+  checkSerializedCodexBinding(root);
   const resultsPath = join(root, "results/measurements.json");
   const measurement = (value: unknown) => `openclaw-ci-measurement ${JSON.stringify(value)}`;
   const measurements = (kind: string, samples: readonly Record<string, unknown>[]) =>
@@ -900,6 +971,21 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
         gatewayReply(json, incomplete.replace("incomplete_turn", "unknown")),
         measurement({ ...gateway, replyForm: "secretauthvalue-invalid" }),
         measurement({ ...gateway, status: 503, replyForm: "incomplete-turn" }),
+        measurement({
+          ...gateway,
+          replyForm: "json-internal-error",
+          bindingStatus: "bound",
+          threadId: forbidden,
+        }),
+        measurement({ ...gateway, replyForm: "json-internal-error", bindingStatus: "unknown" }),
+        measurement({ ...gateway, replyForm: "json-internal-error", bindingStatus: forbidden }),
+        measurement({
+          ...gateway,
+          turn: 2,
+          replyForm: "json-internal-error",
+          bindingStatus: "bound",
+        }),
+        measurement({ ...gateway, replyForm: "incomplete-turn", bindingStatus: "bound" }),
         measurement({ ...openshellPhase, detail: "secretauthvalue-phase-detail" }),
         measurement({ ...openshellPhase, stage: "secretauthvalue-phase-stage" }),
         measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
@@ -1060,6 +1146,11 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
       gateway,
       gateway,
       { ...gateway, status: 503 },
+      { ...gateway, replyForm: "json-internal-error", bindingStatus: "bound" },
+      { ...gateway, replyForm: "json-internal-error", bindingStatus: "unknown" },
+      { ...gateway, replyForm: "json-internal-error" },
+      { ...gateway, turn: 2, replyForm: "json-internal-error" },
+      { ...gateway, replyForm: "incomplete-turn" },
       openshellPhase,
       unavailableTurnover,
       unexercisedTurnover,

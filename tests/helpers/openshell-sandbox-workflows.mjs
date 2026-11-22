@@ -51,6 +51,7 @@ import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mj
 import { selectPolicyProbeCommand } from "./openshell-policy-probe.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { assertNativeCronRunSucceeded } from "./native-cron-evidence.ts";
+import { codexSessionBindingStatusCommand } from "./plugin-gateway-session-evidence.ts";
 import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import {
   assertCodexPolicyChild,
@@ -5260,7 +5261,39 @@ async function gatewayTurnObservation(topology, before, request) {
   return { ...observation, qualification: openShellTurnoverQualification(observation) };
 }
 
-async function requestGatewayTurns(context, topology, harnessId, recordCheckpoint, testContext) {
+async function readGatewayBindingStatus(topology, sessionKey, signal) {
+  const pod = topology.gatewayPod?.metadata?.name;
+  if (!pod || !topology.gatewayPlacement || signal.aborted) {
+    return "unknown";
+  }
+  try {
+    const { stdout } = await executeFile(
+      "kubectl",
+      fixture.kubectlArguments([
+        "-n",
+        topology.gatewayPlacement,
+        "exec",
+        pod,
+        "-c",
+        "gateway",
+        "--",
+        ...codexSessionBindingStatusCommand(sessionKey),
+      ]),
+      { signal, timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 1024 },
+    );
+    return stdout === "bound" ? "bound" : "unknown";
+  } catch {
+    // An unavailable binding read must preserve the original HTTP failure.
+  }
+  return "unknown";
+}
+
+async function requestGatewayTurns(
+  context,
+  topology,
+  harnessId,
+  { recordCheckpoint, testContext, readFailureBinding } = {},
+) {
   const observationReady = testContext
     ? await topology.enableTurnoverLogging(testContext.signal).catch(() => false)
     : false;
@@ -5331,19 +5364,23 @@ async function requestGatewayTurns(context, topology, harnessId, recordCheckpoin
       recordCheckpoint?.("credential-absence", nonces.length);
       assert.equal(body.includes(modelCredential), false);
       assert.equal(body.includes(gatewayPassword), false);
-      recordCheckpoint?.(
-        "http-status",
-        nonces.length,
-        response.status,
-        openShellGatewayErrorForm(response, body),
-      );
+      const replyForm = recordCheckpoint ? openShellGatewayErrorForm(response, body) : undefined;
+      recordCheckpoint?.("http-status", nonces.length, response.status, replyForm);
       if (response.status !== 200) {
         request.finishedAtMs = Date.now();
-        const diagnostic = await gatewayTurnFailureDiagnostic(topology, gatewayPassword).catch(
-          () => "",
-        );
+        const diagnostic = gatewayTurnFailureDiagnostic(topology, gatewayPassword).catch(() => "");
+        if (
+          readFailureBinding &&
+          harnessId === "codex" &&
+          nonces.length === 1 &&
+          response.status === 500 &&
+          replyForm === "json-internal-error"
+        ) {
+          const bindingStatus = await readFailureBinding(sessionKey).catch(() => "unknown");
+          recordCheckpoint?.("http-status", 1, 500, replyForm, bindingStatus);
+        }
         assert.fail(
-          `Gateway ${harnessId} turn ${nonces.length}: HTTP ${response.status}, expected 200.${diagnostic}`,
+          `Gateway ${harnessId} turn ${nonces.length}: HTTP ${response.status}, expected 200.${await diagnostic}`,
         );
       }
       recordCheckpoint?.("response-nonce", nonces.length);
@@ -9899,11 +9936,8 @@ export function registerProviderLifecycleTest(workflow) {
         await measureOpenShellStage(testContext, "initial-model", async () => {
           let failure = { checkpoint: "gateway-setup", turn: 0, status: null };
           try {
-            await requestGatewayTurns(
-              context,
-              topology,
-              "codex",
-              (checkpoint, turn, status, replyForm) => {
+            await requestGatewayTurns(context, topology, "codex", {
+              recordCheckpoint: (checkpoint, turn, status, replyForm, bindingStatus) => {
                 if (checkpoint === null) {
                   failure = null;
                   return;
@@ -9912,17 +9946,27 @@ export function registerProviderLifecycleTest(workflow) {
                   checkpoint,
                   turn,
                   replyForm,
+                  bindingStatus,
                   status:
                     Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
                 };
               },
-              workflow === "refresh" ? testContext : undefined,
-            );
+              testContext: workflow === "refresh" ? testContext : undefined,
+              readFailureBinding:
+                workflow === "credentials"
+                  ? (sessionKey) =>
+                      readGatewayBindingStatus(topology, sessionKey, testContext.signal)
+                  : undefined,
+            });
           } catch (error) {
             if (failure) {
-              testContext.diagnostic(
-                `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-gateway-turn-failure", ...failure })}`,
-              );
+              try {
+                testContext.diagnostic(
+                  `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-gateway-turn-failure", ...failure })}`,
+                );
+              } catch {
+                // Diagnostic output must preserve the Gateway failure.
+              }
             }
             throw error;
           }

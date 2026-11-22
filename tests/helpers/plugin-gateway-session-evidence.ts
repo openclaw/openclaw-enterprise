@@ -999,7 +999,8 @@ function sessionEvidenceInGateway() {
 }
 
 function codexSessionBindingInGateway() {
-  const qa = process.argv[2] === "conversation-reply";
+  const statusOnly = process.argv[2] === "binding-status";
+  const qa = statusOnly || process.argv[2] === "conversation-reply";
   try {
     /* eslint-disable @typescript-eslint/no-require-imports -- The serialized Gateway program runs under node -e. */
     const assert: typeof import("node:assert/strict") = require("node:assert/strict");
@@ -1015,10 +1016,11 @@ function codexSessionBindingInGateway() {
       readOnly: true,
     });
     try {
-      const session = sessions
-        .prepare("SELECT current_session_id FROM session_nodes WHERE session_key = ?")
-        .get(sessionKey);
-      if (qa && !session) {
+      const readSession = sessions.prepare(
+        "SELECT current_session_id FROM session_nodes WHERE session_key = ?",
+      );
+      const session = readSession.get(sessionKey);
+      if (qa && !statusOnly && !session) {
         process.stdout.write('{"failure":"session_missing"}');
         process.exit(0);
       }
@@ -1060,7 +1062,12 @@ function codexSessionBindingInGateway() {
       ) {
         throw new Error();
       }
-      process.stdout.write(JSON.stringify({ sessionId: session.current_session_id, threadId }));
+      if (statusOnly) {
+        assert.equal(readSession.get(sessionKey)?.current_session_id, session.current_session_id);
+        process.stdout.write("bound");
+      } else {
+        process.stdout.write(JSON.stringify({ sessionId: session.current_session_id, threadId }));
+      }
     } finally {
       sessions.close();
       state.close();
@@ -1069,7 +1076,7 @@ function codexSessionBindingInGateway() {
     if (!qa) {
       throw error;
     }
-    process.stdout.write('{"error":"Conversation reply unavailable."}');
+    process.stdout.write(statusOnly ? "unknown" : '{"error":"Conversation reply unavailable."}');
   }
 }
 
@@ -1109,6 +1116,11 @@ type ConversationReplyOptions = {
 const sessionEvidenceScript = `(${sessionEvidenceInGateway.toString()})();`;
 const codexSessionBindingScript = `(${codexSessionBindingInGateway.toString()})();`;
 const conversationReplyScript = `try { ${sessionEvidenceScript} } catch { process.stdout.write('{"error":"Conversation reply unavailable."}'); }`;
+
+export function codexSessionBindingStatusCommand(sessionKey: string): GatewayCommand {
+  // The Gateway scopes the fixture's bare HTTP session key to the main agent.
+  return ["node", "-e", codexSessionBindingScript, `agent:main:${sessionKey}`, "binding-status"];
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);

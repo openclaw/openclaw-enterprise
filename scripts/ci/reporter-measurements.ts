@@ -249,7 +249,15 @@ function safeMeasurement(value: unknown): object | undefined {
       status === 500 &&
       isChoice(value.replyForm, ["plain-internal-error", "incomplete-turn", "json-internal-error"])
     ) {
-      return { kind, checkpoint, turn, status, replyForm: value.replyForm };
+      const { replyForm, bindingStatus } = value;
+      if (
+        turn === 1 &&
+        replyForm === "json-internal-error" &&
+        isChoice(bindingStatus, ["bound", "unknown"])
+      ) {
+        return { kind, checkpoint, turn, status, replyForm, bindingStatus };
+      }
+      return { kind, checkpoint, turn, status, replyForm };
     }
     return { kind, checkpoint, turn, status };
   }
