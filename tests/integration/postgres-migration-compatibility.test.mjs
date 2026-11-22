@@ -1470,7 +1470,10 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preStaticConnectionTemplates"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preRepositoryNetworkPolicy"],
+      [87, "preStandaloneCredentialDeployment"],
+      [88, "preStaticConnectionTemplates"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1653,12 +1656,185 @@ registerPostgresMigrationTransactionCommandCases({
 });
 
 test(
+  "Canonical repository policy migration preserves stock TokenService metadata and revision egress",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "egress_repository_policy", { prefix: 86 });
+    const namespace = `ns_${randomUUID()}`;
+    const { agent, revision } = await seedCanonicalAgent(db, namespace, {
+      computeAdmission: true,
+      executionAdmission: true,
+      harnessSettings: true,
+    });
+    // Model a static source owned by the registered Token Service instance.
+    const installation = `ins_${randomUUID()}`;
+    const instance = randomUUID();
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installation],
+    );
+    await db.app.query(
+      `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
+       VALUES($1,$2,'occ-token-service','registration-fixture')`,
+      [installation, instance],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(
+        id,namespace_id,name,type,config,owner_capability,state,created_at,
+        token_service_instance_id
+      ) VALUES($1,$2,'Registered source','static','{}','token_service','ready',now(),$3)`,
+      [`cs_${randomUUID()}`, namespace, instance],
+    );
+    const successor = `rev_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.agent_revisions (
+        id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at
+      )
+      SELECT $1,namespace_id,agent_id,2,admitted_spec,backend_id,now()
+      FROM occ.agent_revisions WHERE id=$2`,
+      [successor, revision],
+    );
+    // Stock 0084 allows the retired predecessor and current revision to retain
+    // receipts for the same Sandbox. The repository policy migration must preserve both.
+    for (const revisionId of [revision, successor]) {
+      await db.app.query(
+        `INSERT INTO occ.egress_installations
+          (sender_id,sandbox_id,namespace_id,revision_id,agent_id,installation)
+        VALUES ('migration-sender','migration-sandbox',$1,$2,$3,$4)`,
+        [
+          namespace,
+          revisionId,
+          agent,
+          {
+            sender: { id: "migration-sender" },
+            sandboxId: "migration-sandbox",
+            plan: { execution: { namespaceId: namespace, revisionId, agentId: agent } },
+          },
+        ],
+      );
+      if (revisionId === revision) {
+        assert.equal(
+          (
+            await db.app.query(
+              "UPDATE occ.egress_installations SET retired=true WHERE revision_id=$1",
+              [revision],
+            )
+          ).rowCount,
+          1,
+        );
+      }
+    }
+    const readEgress = async (database = db) =>
+      (await database.app.query("SELECT * FROM occ.egress_installations ORDER BY retired")).rows;
+    const readPolicy = async (database = db) =>
+      (
+        await database.app.query("SELECT document FROM occ.sandbox_policies WHERE agent_id=$1", [
+          agent,
+        ])
+      ).rows[0].document;
+    const readStatic = async (database = db) => ({
+      instances: (await database.app.query("SELECT * FROM occ.token_service_instances")).rows,
+      sources: (await database.app.query("SELECT * FROM occ.credential_sources")).rows,
+    });
+    const egress = await readEgress();
+    const policy = await readPolicy();
+    const staticMetadata = await readStatic();
+    assert.equal(staticMetadata.instances.length, 1);
+    assert.equal(staticMetadata.sources.length, 1);
+    assert.equal(staticMetadata.sources[0].token_service_instance_id, instance);
+    assert.equal(staticMetadata.sources[0].owner_capability, "token_service");
+    assert.equal(staticMetadata.sources[0].driver_id, null);
+    const before = await historySnapshot(db);
+    const stockArchive = await dumpHistoryArchive(fixture, db);
+    assert.deepEqual(
+      egress.map(({ revision_id, retired }) => [revision_id, retired]),
+      [
+        [successor, false],
+        [revision, true],
+      ],
+    );
+    assert.equal(before.receipts.length, 86);
+    assert.deepEqual(await runHistoryCommand(db, "production", "--check"), {
+      ok: true,
+      history: "preRepositoryNetworkPolicy",
+    });
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preRepositoryNetworkPolicy",
+    });
+    await assertCompletedHistory(db, before.receipts);
+    assert.deepEqual(await readEgress(), egress);
+    assert.deepEqual(await readPolicy(), policy);
+    assert.deepEqual(await readStatic(), staticMetadata);
+
+    // The archived 0086 database has the same official receipts and qualified restore catalog.
+    const upgraded = await restoreHistoryArchive(context, fixture, stockArchive);
+    const restoredReceipts = await historyReceipts(upgraded.migrator);
+    assert.deepEqual(restoredReceipts, before.receipts);
+    assert.deepEqual(await runHistoryCommand(upgraded, "production", "--check"), {
+      ok: true,
+      history: "preRepositoryNetworkPolicy",
+    });
+    assert.deepEqual(await runHistoryCommand(upgraded, "production"), {
+      ok: true,
+      history: "preRepositoryNetworkPolicy",
+    });
+    assert.deepEqual(await runHistoryCommand(upgraded, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
+    assert.deepEqual(await historyReceipts(upgraded.migrator), await historyReceipts(db.migrator));
+    assert.deepEqual(await readStatic(upgraded), staticMetadata);
+    assert.deepEqual(await readEgress(upgraded), egress);
+    assert.deepEqual(await readPolicy(upgraded), policy);
+
+    const saved = {
+      ...policy,
+      version: policy.version + 1,
+      repositoryNetworkPolicy: [{ repository: "example/project", access: "read" }],
+    };
+    assert.equal(
+      (
+        await db.app.query(
+          "UPDATE occ.sandbox_policies SET version=$1,document=$2 WHERE agent_id=$3",
+          [saved.version, saved, agent],
+        )
+      ).rowCount,
+      1,
+    );
+    const after = await historySnapshot(db);
+    assert.deepEqual(await runHistoryCommand(db, "production"), { ok: true, history: "completed" });
+    assert.deepEqual(await historySnapshot(db), after);
+    assert.deepEqual(await readEgress(), egress);
+    assert.deepEqual(await readPolicy(), saved);
+    assert.deepEqual(await readStatic(), staticMetadata);
+
+    const restored = await restoreHistoryArchive(
+      context,
+      fixture,
+      await dumpHistoryArchive(fixture, db),
+    );
+    assert.deepEqual(await runHistoryCommand(restored, "production"), {
+      ok: true,
+      history: "completed",
+    });
+    assert.deepEqual(await historyReceipts(restored.migrator), after.receipts);
+    assert.deepEqual(await readStatic(restored), staticMetadata);
+    assert.deepEqual(await readEgress(restored), egress);
+    assert.deepEqual(await readPolicy(restored), saved);
+  },
+);
+
+test(
   "Canonical migration commands preserve main data and serialize fresh/repeat runners",
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     for (const schemas of [false, true]) {
-      void context.test(
+      const subtest = context.test(
         `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
         async (child) => {
           const db = await historyDatabase(child, fixture, "fresh", { schemas });
@@ -1687,6 +1863,7 @@ test(
           assert.deepEqual(await historySnapshot(db), after);
         },
       );
+      subtests.push(subtest);
     }
     // Gaps: 26, 60 and 61 have no named history; 27 is covered by the rollback case.
     const histories = await coveringNewestPrefix("populated canonical", 62, [
@@ -1747,10 +1924,13 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preStaticConnectionTemplates"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preRepositoryNetworkPolicy"],
+      [87, "preStandaloneCredentialDeployment"],
+      [88, "preStaticConnectionTemplates"],
     ]);
     for (const [prefix, history] of histories) {
-      void context.test(`populated canonical ${history}`, async (child) => {
+      const subtest = context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         const namespaceId = await seedCanonicalData(db, {
           preset: prefix >= 25,
@@ -1865,8 +2045,239 @@ test(
           ).rows[0].allowed,
           true,
         );
+        if (prefix === 87) {
+          // An app-role writer can bypass OCC. A valid broader network allowance must still
+          // cover every injected request, and standalone execution cannot add repository delivery.
+          const original = (
+            await db.app.query(
+              "SELECT id,agent_id,admitted_spec FROM occ.agent_revisions WHERE namespace_id=$1 ORDER BY revision_number LIMIT 1",
+              [namespaceId],
+            )
+          ).rows[0];
+          const sourceId = `cs_${randomUUID()}`;
+          const instanceId = randomUUID();
+          const source = { sourceId, sourceType: "static", tokenServiceInstanceId: instanceId };
+          await db.app.query(
+            `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
+             SELECT id,$1,'fixture-token-service','fixture-store' FROM occ.installation`,
+            [instanceId],
+          );
+          await db.app.query(
+            `INSERT INTO occ.credential_sources
+             (id,namespace_id,name,type,config,owner_capability,token_service_instance_id,
+              state,created_at)
+             VALUES($1,$2,'Model key','static','{"provider_preset":"openai"}',
+                    'token_service',$3,'ready',now())`,
+            [sourceId, namespaceId, instanceId],
+          );
+          await db.app.query(
+            "UPDATE occ.agents SET harness_auth=$1::jsonb,credential_sources=$2::jsonb WHERE id=$3",
+            [
+              JSON.stringify({ method: "credential_source", sourceId }),
+              JSON.stringify([{ sourceId }]),
+              original.agent_id,
+            ],
+          );
+          const request = {
+            binary: "/usr/bin/model-client",
+            host: "api.openai.com",
+            ports: [{ from: 442, to: 444 }],
+            requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+          };
+          const spec = {
+            ...original.admitted_spec,
+            execution_admission: { version: 8, mode: "standalone" },
+            sandbox_driver_id: "sandbox",
+            harness_auth: { method: "credential_source", ...source },
+            credential_sources: [source],
+            credential_deployment: {
+              driver: {
+                id: "sandbox",
+                implementation: "openshell",
+                configurationId: "a".repeat(64),
+              },
+              proxyDriverId: "staged-proxy",
+              networkAccessPolicy: {
+                allowed: [400, 443].map((from, index) => ({
+                  ...request,
+                  host: "*.openai.com",
+                  ports: [{ from, to: index === 0 ? 442 : 500 }],
+                  requestPolicy: { type: "http", method: "POST", path: "/v1/**" },
+                })),
+              },
+              bindings: [
+                {
+                  bindingRef: "model",
+                  sourceRef: { kind: "credential_source", namespaceId, id: sourceId },
+                  consumer: { kind: "model", providerId: "openai" },
+                  projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+                },
+              ],
+              injectionPolicies: [{ bindingRef: "model", allowedRequests: [request] }],
+            },
+          };
+          const insert = (value, number) =>
+            db.app.query(
+              `INSERT INTO occ.agent_revisions
+               (id,namespace_id,agent_id,revision_number,backend_id,admitted_spec,admitted_at)
+               SELECT $1,namespace_id,agent_id,$2,backend_id,$3::jsonb,now()
+               FROM occ.agent_revisions WHERE id=$4`,
+              [`rev_${randomUUID()}`, number, JSON.stringify(value), original.id],
+            );
+          await insert(spec, 2);
+          // Canonical escaped UTF-8 and spaces remain valid wire-path segments.
+          const escapedPath = structuredClone(spec);
+          escapedPath.credential_deployment.injectionPolicies[0].allowedRequests[0].requestPolicy.path =
+            "/v1/caf%C3%A9%20responses";
+          escapedPath.credential_deployment.networkAccessPolicy.allowed.push({
+            binary: request.binary,
+            host: "*.openai.com",
+            ports: [{ from: 600, to: 600 }],
+          });
+          await insert(escapedPath, 3);
+          // The Worker requires an admitted Sandbox, and runtime policy validation refuses
+          // dot segments, normalized Unicode dots, escaped punctuation, and invalid UTF-8.
+          const missingSandbox = structuredClone(spec);
+          delete missingSandbox.sandbox_driver_id;
+          await assert.rejects(insert(missingSandbox, 4), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
+          await assert.rejects(insert({ ...spec, sandbox_driver_id: " " }, 4), {
+            code: "23514",
+          });
+          for (const path of [
+            "/v1/../responses",
+            "/v1/%EF%BC%8E/responses",
+            "/v1/%2E/responses",
+            "/v1/%C3/responses",
+          ]) {
+            const malformedPath = structuredClone(spec);
+            malformedPath.credential_deployment.injectionPolicies[0].allowedRequests[0].requestPolicy.path =
+              path;
+            await assert.rejects(insert(malformedPath, 4), {
+              code: "23514",
+              constraint: "agent_revisions_execution_admission",
+            });
+          }
+          // Keep injection coverage intact so these refusals distinguish malformed match shape.
+          for (const binary of ["/app/../model-client", "/app//model-client", "/app/"]) {
+            const malformedBinary = structuredClone(spec);
+            for (const allowed of malformedBinary.credential_deployment.networkAccessPolicy
+              .allowed) {
+              allowed.binary = binary;
+            }
+            malformedBinary.credential_deployment.injectionPolicies[0].allowedRequests[0].binary =
+              binary;
+            await assert.rejects(insert(malformedBinary, 4), {
+              code: "23514",
+              constraint: "agent_revisions_execution_admission",
+            });
+          }
+          const malformedHost = structuredClone(spec);
+          for (const allowed of malformedHost.credential_deployment.networkAccessPolicy.allowed) {
+            allowed.host = "api..openai.com";
+          }
+          malformedHost.credential_deployment.injectionPolicies[0].allowedRequests[0].host =
+            "api..openai.com";
+          await assert.rejects(insert(malformedHost, 4), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
+          // A raw allowance overlapping an HTTP allowance would weaken its request restriction.
+          const mixedSelectors = structuredClone(spec);
+          const { binary, host, ports } =
+            mixedSelectors.credential_deployment.networkAccessPolicy.allowed[0];
+          mixedSelectors.credential_deployment.networkAccessPolicy.allowed.push({
+            binary,
+            host,
+            ports,
+          });
+          await assert.rejects(insert(mixedSelectors, 4), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
+          // The app role cannot insert a revision without its exact durable delivery owner.
+          const malformedOwner = structuredClone(spec);
+          malformedOwner.credential_deployment.driver.configurationId = "not-a-digest";
+          await assert.rejects(insert(malformedOwner, 4), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
+          const uncovered = structuredClone(spec);
+          uncovered.credential_deployment.injectionPolicies[0].allowedRequests[0].host =
+            "unapproved.example.test";
+          await assert.rejects(insert(uncovered, 4), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
+          const repository = {
+            driver: { id: "repo", implementation: "github" },
+            deadlineWallMs: 1,
+            bindings: [
+              {
+                repositoryRef: "repo",
+                profile: "git-write",
+                backendId: "github",
+                grant: { providerInstanceId: "github", repositoryId: "repo", grantId: "grant" },
+              },
+            ],
+          };
+          assert.equal(
+            (
+              await db.app.query(
+                "SELECT occ.repository_credentials_are_valid($1::jsonb) AS valid",
+                [JSON.stringify(repository)],
+              )
+            ).rows[0].valid,
+            true,
+          );
+          await assert.rejects(insert({ ...spec, repository_credentials: repository }, 4), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
+          // A valid saved repository policy and reader marker cannot be combined with
+          // standalone v8, even when an application-role writer bypasses OCC.
+          const currentPolicy = (
+            await db.app.query("SELECT document FROM occ.sandbox_policies WHERE agent_id=$1", [
+              original.agent_id,
+            ])
+          ).rows[0].document;
+          const savedPolicy = {
+            ...currentPolicy,
+            version: currentPolicy.version + 1,
+            repositoryNetworkPolicy: [],
+          };
+          await db.app.query(
+            "UPDATE occ.sandbox_policies SET version=$1,document=$2 WHERE agent_id=$3",
+            [savedPolicy.version, savedPolicy, original.agent_id],
+          );
+          await assert.rejects(
+            insert(
+              {
+                ...spec,
+                execution_admission: {
+                  ...spec.execution_admission,
+                  repositoryNetworkPolicyVersion: 1,
+                },
+                sandbox_policy: {
+                  version: savedPolicy.version,
+                  repositoryNetworkPolicy: {
+                    version: 1,
+                    grants: [],
+                    identity: '{"version":1,"grants":[]}',
+                  },
+                },
+              },
+              4,
+            ),
+            { code: "23514", constraint: "agent_revisions_execution_admission" },
+          );
+        }
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -2015,6 +2426,7 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     // Prefixes 63 to 74 are not listed, so the guard starts at 75.
     for (const [prefix, history] of await coveringNewestPrefix("Provider continuation", 75, [
       [32, "backendTerminology"],
@@ -2056,9 +2468,12 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preStaticConnectionTemplates"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preRepositoryNetworkPolicy"],
+      [87, "preStandaloneCredentialDeployment"],
+      [88, "preStaticConnectionTemplates"],
     ])) {
-      void context.test(history, async (child) => {
+      const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
         await installProviderCompletedHistory(db);
         // Stock Drizzle appends later canonical migrations while retaining Provider fingerprints.
@@ -2073,7 +2488,9 @@ test(
         // Approver storage appends to either continuation without rewriting existing receipts.
         await assertCompletedHistory(db, receipts);
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -2147,21 +2564,59 @@ test(
     }
     await assertCredentialSchemaPrivileges(restored.app);
 
-    // An archive from the preceding completed schema must upgrade and remain recognizable.
-    const previous = await historyDatabase(context, fixture, "previous", { prefix: 85 });
+    // A database restored at 0084 may have subsequently taken stock 0085.
+    const prefix = await historyDatabase(context, fixture, "restored84", { prefix: 84 });
+    await prefix.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES ('restore-human','principal','restore-fixture','human')",
+    );
     const upgraded = await restoreHistoryArchive(
       context,
       fixture,
-      await dumpHistoryArchive(fixture, previous),
+      await dumpHistoryArchive(fixture, prefix),
     );
+    await installCanonicalPrefix(upgraded, 85);
+    const at85 = await logicalRestoreSnapshot(upgraded);
+    assert.equal(at85.receipts.length, 85);
+    assert.equal(at85.identities.length, 1);
+    assert.deepEqual(await runHistoryCommand(upgraded, "production", "--require-current"), {
+      ok: false,
+      code: "MIGRATION_HISTORY_PENDING",
+    });
     assert.deepEqual(await runHistoryCommand(upgraded, "production"), {
+      ok: true,
+      history: "preTokenServiceSourceOwnership",
+    });
+    const current = await logicalRestoreSnapshot(upgraded);
+    context.diagnostic(
+      `Upgraded restored prefix 84 via 85: ${catalogDigest(await migrationCatalog(upgraded.migrator))}`,
+    );
+    assert.deepEqual(current.receipts, native.receipts);
+    assert.deepEqual(current.identities, at85.identities);
+    for (const flag of ["--require-current", undefined]) {
+      assert.deepEqual(await runHistoryCommand(upgraded, "production", flag), {
+        ok: true,
+        history: "completed",
+      });
+      assert.deepEqual(await logicalRestoreSnapshot(upgraded), current);
+    }
+
+    // The immediately preceding completed archive must upgrade through the production command.
+    const staticPredecessor = await historyDatabase(context, fixture, "static_predecessor", {
+      prefix: 88,
+    });
+    const staticUpgrade = await restoreHistoryArchive(
+      context,
+      fixture,
+      await dumpHistoryArchive(fixture, staticPredecessor),
+    );
+    assert.deepEqual(await runHistoryCommand(staticUpgrade, "production"), {
       ok: true,
       history: "preStaticConnectionTemplates",
     });
     context.diagnostic(
-      `Upgraded restored prefix 85: ${catalogDigest(await migrationCatalog(upgraded.migrator))}`,
+      `Upgraded restored prefix 88: ${catalogDigest(await migrationCatalog(staticUpgrade.migrator))}`,
     );
-    assert.deepEqual(await runHistoryCommand(upgraded, "production", "--check"), {
+    assert.deepEqual(await runHistoryCommand(staticUpgrade, "production", "--check"), {
       ok: true,
       history: "completed",
     });
@@ -2217,6 +2672,7 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     // Prefixes 63 to 74 are not listed, so the guard starts at 75.
     for (const [prefix, history] of await coveringNewestPrefix("rollback", 75, [
       [0, "empty"],
@@ -2266,9 +2722,12 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
-      [85, "preStaticConnectionTemplates"],
+      [85, "preTokenServiceSourceOwnership"],
+      [86, "preRepositoryNetworkPolicy"],
+      [87, "preStandaloneCredentialDeployment"],
+      [88, "preStaticConnectionTemplates"],
     ])) {
-      void context.test(`prefix ${prefix} transaction`, async (child) => {
+      const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
         if (prefix) {
           await seedCanonicalData(db, {
@@ -2294,6 +2753,11 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [88, "CREATE TRIGGER"],
+                [87, "ALTER TABLE"],
+                [86, "CREATE TRIGGER"],
+                [85, "ALTER TABLE"],
+                [84, "GRANT"],
                 [83, "GRANT"],
                 [82, "CREATE TRIGGER"],
                 [81, "GRANT"],
@@ -2321,6 +2785,20 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 88) {
+          // Abort 0089 after it has created the static version table and its current-version FK.
+          failAt =
+            "IF to_regclass('occ.static_key_template_versions') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 87) {
+          // Abort 0088 after its new validator functions exist, before it replaces constraints.
+          failAt =
+            "IF to_regprocedure('occ.standalone_credential_deployment_is_valid(jsonb,text)') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 86) {
+          // Abort 0087 after it has installed the new reader-version constraint.
+          failAt = `IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conrelid='occ.agent_revisions'::regclass
+            AND conname='agent_revisions_repository_policy_reader_version'
+          ) THEN RETURN; END IF;`;
         } else if (prefix >= 58) {
           failAt =
             "IF to_regclass('occ.credential_delivery_reductions') IS NULL THEN RETURN; END IF;";
@@ -2366,7 +2844,9 @@ test(
         });
         await assertCompletedHistory(db, before.receipts);
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -2582,6 +3062,41 @@ test(
         }
         await assertHistoryRefused(db);
       });
+    }
+    for (const slot of [85, 86]) {
+      void context.test(
+        `unpublished repository policy at occupied migration slot ${slot}`,
+        async (child) => {
+          const db = await historyDatabase(child, fixture, "repository_policy_preview");
+          const journal = JSON.parse(
+            await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
+          );
+          // Apply the exact policy SQL with the occupied timestamp, as the preview did.
+          const policy = journal.entries[86];
+          const stock = journal.entries[slot - 1];
+          const entries = [
+            ...journal.entries.slice(0, slot - 1),
+            { ...policy, idx: stock.idx, when: stock.when },
+          ];
+          await installCanonicalPrefix(db, entries.length, { entries });
+          const before = await historySnapshot(db);
+          assert.equal(before.receipts.length, slot);
+          assert.equal(Number(before.receipts.at(-1).created_at), stock.when);
+          assert.equal(before.receipts.at(-1).hash, manifest.entries[86].sha256);
+          assert.notEqual(before.receipts.at(-1).hash, manifest.entries[slot - 1].sha256);
+          await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+          if (slot === 86) {
+            // Both migrations applied, but in the opposite order. Even a matching
+            // end schema cannot certify the sequence of writes on this installation.
+            entries.push({ ...stock, idx: policy.idx, when: policy.when });
+            await installCanonicalPrefix(db, entries.length, { entries });
+            const swapped = await historyReceipts(db.migrator);
+            assert.equal(swapped.length, 87);
+            assert.equal(swapped.at(-1).hash, manifest.entries[85].sha256);
+            await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+          }
+        },
+      );
     }
     void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");

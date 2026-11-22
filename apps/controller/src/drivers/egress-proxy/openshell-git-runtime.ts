@@ -1,3 +1,4 @@
+import { openShellGitNetworkDefaults } from "../sandbox/openshell-git-network-policy.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -282,16 +283,6 @@ interface EntryState {
 /** The runtime image's PATH, then the draft helper's directory. The image's own `gh` stays
  * first: the broker `gh` shim beside the helper has no repository manifest in this sandbox. */
 const OPENSHELL_GIT_DRAFT_PATH = `/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${REPOSITORY_CLIENT_BIN}`;
-const binaries = [
-  "/usr/bin/git",
-  "/usr/lib/git-core/git-remote-https",
-  "/usr/lib/git-core/git-remote-http",
-  "/usr/libexec/git-core/git-remote-https",
-  "/usr/libexec/git-core/git-remote-http",
-  "/usr/bin/curl",
-  "/usr/local/bin/node",
-  "/usr/bin/node",
-];
 const OBSERVE_TIMEOUT_MS = 5000;
 const REFRESH_INTERVAL_MS = 10_000;
 // A failed read is observed again after 1 s, doubling to this cap. A replaced OpenShell
@@ -367,11 +358,7 @@ function gitProvider(
     executionId,
     ...delivery,
     ...(observedHookPreview && { observedHookPreview }),
-    binaries: delivery.installationId
-      ? [...binaries, "/usr/bin/gh", "/usr/local/bin/gh"]
-      : binaries,
-    gitOrigin: "https://github.com",
-    apiOrigin: "https://api.github.com",
+    ...openShellGitNetworkDefaults(delivery),
   });
 }
 
@@ -1129,10 +1116,11 @@ export class OpenShellGitRuntime {
 
   /** Deliver one release, and open ordinary authorization only on the same launcher's ACK.
    * A lost response may mean the workload started. Block and retire this family, never resend. */
-  async releasePreview(
+  async releasePreview<T>(
     revisionId: string,
     startupId: string,
-    deliver: () => Promise<boolean>,
+    release: { prepare: () => Promise<T>; deliver: (prepared: T) => Promise<boolean> },
+    signal: AbortSignal = this.stopped.signal,
   ): Promise<void> {
     const entry = this.states.get(revisionId)?.entry;
     const preview = entry?.preview;
@@ -1142,29 +1130,59 @@ export class OpenShellGitRuntime {
       entry.blocked ||
       !entry.installed ||
       preview.release ||
-      preview.hook.startupId !== startupId ||
+      preview.hook?.startupId !== startupId ||
       (!preview.mandatory && !isDeepStrictEqual(entry.installed.observedHook, preview.hook))
     ) {
       throw new Error("Cannot release this preview startup.");
     }
+    const fence = entry.fence;
+    const installed = entry.installed;
+    const canSend = () =>
+      !signal.aborted &&
+      !this.stopped.signal.aborted &&
+      !entry.blocked &&
+      entry.fence === fence &&
+      preview.hook?.startupId === startupId;
+    preview.release = "preparing";
+    let prepared: T;
+    try {
+      prepared = await release.prepare();
+      if (!canSend() || !isDeepStrictEqual(installed, entry.installed)) {
+        throw new Error("Cannot release this preview startup.");
+      }
+    } catch (error) {
+      // Compute may need a fresh installation observation. This attempt sent nothing.
+      delete preview.release;
+      throw error;
+    }
+
     preview.release = "sending";
     try {
-      const signal = AbortSignal.any([
+      const dispatchSignal = AbortSignal.any([
+        signal,
         this.stopped.signal,
         AbortSignal.timeout(this.observeTimeoutMs),
       ]);
-      await this.fenced(entry, signal);
-      await this.persist(entry, signal);
-      const releaseIsCurrent = () =>
-        !signal.aborted &&
-        !entry.blocked &&
-        preview.hook?.startupId === startupId &&
-        preview.release === "sending";
-      if (!releaseIsCurrent() || !(await deliver()) || !releaseIsCurrent()) {
+      await this.persist(entry, dispatchSignal);
+      if (canSend()) {
+        await this.fenced(entry, dispatchSignal);
+      }
+      const current = () => !dispatchSignal.aborted && canSend() && preview.release === "sending";
+      // Persisting send intent can advance the enrollment phase of the same installation.
+      const sendingInstallation = installed.enrollment
+        ? { ...installed, enrollment: { ...installed.enrollment, release: "sending" } }
+        : installed;
+      if (
+        !current() ||
+        (!isDeepStrictEqual(installed, entry.installed) &&
+          !isDeepStrictEqual(sendingInstallation, entry.installed)) ||
+        !(await release.deliver(prepared)) ||
+        !current()
+      ) {
         throw new Error("The preview release was not acknowledged.");
       }
       preview.release = "acknowledged";
-      await this.persist(entry, signal);
+      await this.persist(entry, dispatchSignal);
     } catch (error) {
       this.block(entry, "preview_release_unconfirmed");
       throw error;
@@ -1357,13 +1375,15 @@ export class OpenShellGitRuntime {
     // Keep the tombstone to prevent adoption/recreation under the same execution identity,
     // in this process and, through the store, in any later one. The entry itself is dropped
     // once its Sandbox is gone; its reason stays.
-    void this.entries.get(revisionId)?.then(
-      (entry) => {
-        entry.blocked ??= "withdrawn";
-        entry.installed = undefined;
-      },
-      () => {},
-    );
+    const entry = this.states.get(revisionId)?.entry;
+    if (entry) {
+      this.markWithdrawn(entry);
+    } else {
+      void this.entries.get(revisionId)?.then(
+        (pending) => this.markWithdrawn(pending),
+        () => {},
+      );
+    }
     this.recordWithdrawal({ revisionId });
   }
 
@@ -1389,16 +1409,18 @@ export class OpenShellGitRuntime {
   }
 
   withdrawNamespace(namespaceId: string): void {
-    for (const pending of this.entries.values()) {
-      void pending.then(
-        (entry) => {
-          if (entry.revision.namespaceId === namespaceId) {
-            entry.blocked ??= "withdrawn";
-            entry.installed = undefined;
-          }
-        },
-        () => {},
-      );
+    const withdraw = (entry: Entry) => {
+      if (entry.revision.namespaceId === namespaceId) {
+        this.markWithdrawn(entry);
+      }
+    };
+    for (const [revisionId, pending] of this.entries) {
+      const entry = this.states.get(revisionId)?.entry;
+      if (entry) {
+        withdraw(entry);
+      } else {
+        void pending.then(withdraw, () => {});
+      }
     }
     this.recordWithdrawal({ namespaceId });
   }
@@ -1412,6 +1434,11 @@ export class OpenShellGitRuntime {
       }
     }
     await this.routes?.withdraw({ namespaceId });
+  }
+
+  private markWithdrawn(entry: Entry): void {
+    entry.blocked ??= "withdrawn";
+    entry.installed = undefined;
   }
 
   /** The store's tombstone keeps any other worker from adopting the routes; this process's

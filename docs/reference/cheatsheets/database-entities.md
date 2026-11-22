@@ -166,7 +166,7 @@ Stores the scope, authentication method, and current version of each Connection 
 
 ### `static_key_template_versions`
 
-Stores each immutable static bearer approval, including the exact HTTP method, host, port, and path of every approved destination.
+Stores each immutable static Bearer approval, including the exact HTTP method, host, and port, plus the exact path or subtree for each approved destination.
 
 - `template_id`, `version`, `destinations`, `created_at`
 
@@ -222,7 +222,7 @@ Binds an Installation to its selected TokenService Driver and private-store iden
 
 ### `credential_sources`
 
-Records each source owner. Gateway and Proxy sources identify their Driver. Internal static registrations identify their TokenService instance and its private receipt; saved accounts retain their existing Token Service owner.
+Records each source owner. Gateway and Proxy sources identify their Driver. Managed static Sources identify their TokenService instance; saved accounts retain their existing Token Service owner.
 
 - `id`
 - `namespace_id`
@@ -232,7 +232,7 @@ Records each source owner. Gateway and Proxy sources identify their Driver. Inte
 - `egress` (optional admitted source and versioned resolver references)
 - `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
 - `driver_id` (Gateway and Proxy sources)
-- `token_service_instance_id`, `registration`, `registration_dispatched_at` (internal static registrations)
+- `token_service_instance_id` (managed static Source owner)
 - `state`
 - `created_at`
 

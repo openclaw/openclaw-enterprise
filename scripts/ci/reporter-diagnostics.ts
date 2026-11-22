@@ -592,6 +592,30 @@ export function projectFailureDiagnostic(
       lastHttpStatus: safeStatus(diagnostic.lastHttpStatus),
     };
   }
+  if (diagnostic.kind === "observability-installation-probe") {
+    const { phase, reason, status } = diagnostic;
+    if (phase === "fetch") {
+      return {
+        kind: "observability-installation-probe",
+        phase,
+        reason: includes(
+          ["timeout", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND", "ECONNRESET"],
+          reason,
+        )
+          ? reason
+          : undefined,
+      };
+    }
+    if (phase === "body") {
+      return {
+        kind: "observability-installation-probe",
+        phase,
+        reason: includes(["timeout", "invalid-json"], reason) ? reason : undefined,
+        status: safeStatus(status),
+      };
+    }
+    return undefined;
+  }
   if (diagnostic.kind === "observability-installation-status") {
     const status = safeStatus(diagnostic.status);
     return status === undefined

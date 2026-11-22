@@ -108,10 +108,15 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    **Open draft** and **Browser chat settings**. In **Browser chat off,
    read-only caller**, it asks you to ask someone who can edit the
    Configuration and offers no settings link.
-5. Open **Components / Workspace / Keep unsaved files**. Choose Instructions and
-   User context. Each keeps its edits and Unsaved indicator. Read every file's
-   role description. Save one file, then Reload another; each action affects
-   that file alone. Return through another Agent tab and check selection survives.
+5. Open **Components / Workspace / Workspace Navigation** (Keep unsaved files).
+   Clear User context.
+   Switch files and check their role descriptions and Unsaved indicators.
+   Check that selection survives switching Agent tabs. Select Instructions,
+   open Namespaces and go Back. The draft survives and warns that AGENTS.md
+   changed. Enter `Previous guidance` and repeat that round trip. The warning
+   stays visible and Save stays enabled. Enter `Updated guidance` to match
+   the simulated file. The warning clears and Save is disabled. Edit and save
+   AGENTS.md, then reload USER.md. Each action affects only its file.
 6. Repeat file selection on a phone using **Workspace file**. Check the editor
    fits the screen. Check Missing file, Save needs Agent operate, Write outcome
    unknown, and Reread keeps a focused editor's caret. A deployment poll must

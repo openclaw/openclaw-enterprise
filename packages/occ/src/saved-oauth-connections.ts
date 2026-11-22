@@ -1,3 +1,4 @@
+import { iamPolicyOperation } from "./iam-policy-operations.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -123,7 +124,6 @@ interface SavedConnectionDependencies
   readonly iamPolicyDriver: (
     method: "createNamespaceAccessBinding" | "createNamespaceRole",
   ) => IAMDriver;
-  readonly iamPolicyOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly connectionTokenIssuer: () => Pick<
     OAuthRefreshTokenIssuer,
     "status" | "maintain" | "retire"
@@ -700,7 +700,7 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
     const role = await state.iamPolicy.getRole(namespaceId, roleId);
     if (role === undefined) {
       const roleDriver = deps.iamPolicyDriver("createNamespaceRole");
-      await deps.iamPolicyOperation(() =>
+      await iamPolicyOperation(() =>
         roleDriver.createNamespaceRole!(
           { policy: state.iamPolicy },
           { id: roleId, namespaceId, name: "Connected account owner", permissions },
@@ -717,7 +717,7 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
         "The connected account owner Role requires exactly credential source read and operate.",
       );
     }
-    await deps.iamPolicyOperation(() =>
+    await iamPolicyOperation(() =>
       driver.createNamespaceAccessBinding!(
         { policy: state.iamPolicy },
         {
