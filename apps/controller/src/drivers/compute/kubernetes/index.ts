@@ -3453,7 +3453,7 @@ function gatewayDocumentBeforeNodeDeny(
   if (nodes === undefined) {
     delete gateway.nodes;
   } else {
-    gateway.nodes = structuredClone(nodes);
+    gateway.nodes = structuredClone(nodes) as OpenClawConfigurationValue;
   }
   return earlier;
 }
