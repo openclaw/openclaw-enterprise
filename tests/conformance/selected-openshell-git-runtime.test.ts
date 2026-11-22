@@ -459,11 +459,14 @@ async function releaseHeldGit(
   );
   assert.ok(receiptReads.some((r) => r.provider === "openai" && r.operation === "model-observe"));
   assert.equal(await lookup(), undefined, "installed material is held until launch ACK");
-  await f.runtime.releasePreview(revision.id, startupId, async () => {
-    activity.releases += 1;
-    assert.equal(preview.release, "sending");
-    assert.equal(await lookup(), undefined, "sending is not acknowledged");
-    return true;
+  await f.runtime.releasePreview(revision.id, startupId, {
+    prepare: async () => {},
+    deliver: async () => {
+      activity.releases += 1;
+      assert.equal(preview.release, "sending");
+      assert.equal(await lookup(), undefined, "sending is not acknowledged");
+      return true;
+    },
   });
   assert.equal(preview.release, "acknowledged");
   const scope = await lookup();
@@ -475,9 +478,12 @@ async function releaseHeldGit(
   assert.equal(scope.repositoryId, revision.repositoryCredentials!.bindings[0]!.grant.repositoryId);
   assert.equal(scope.pushRef, "refs/heads/review/task");
   await assert.rejects(
-    f.runtime.releasePreview(revision.id, startupId, async () => {
-      activity.releases += 1;
-      return true;
+    f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => {
+        activity.releases += 1;
+        return true;
+      },
     }),
     /Cannot release this preview startup/,
   );
@@ -687,6 +693,62 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
     return update(...args);
   };
   await releaseHeldGit(held, t);
+
+  await t.test("refuses a stale installation at the same startup and fence", async (t) => {
+    const { f, store, revision, startupId, entry, preview, reconcile } = await heldGit(t);
+    await reconcile();
+    const installed = entry.installed;
+    assert.ok(installed);
+    const fence = entry.fence;
+    const reading = deferred();
+    const resume = deferred();
+    const owns = store.owns.bind(store);
+    let pause = true;
+    store.owns = async (...args) => {
+      if (pause) {
+        pause = false;
+        reading.resolve();
+        await resume.promise;
+      }
+      return owns(...args);
+    };
+    let deliveries = 0;
+    const outcome = f.runtime
+      .releasePreview(revision.id, startupId, {
+        prepare: async () => installed.supervisorSessionId,
+        deliver: async () => {
+          deliveries++;
+          return true;
+        },
+      })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    try {
+      await Promise.race([reading.promise, outcome.then(() => assert.fail("no final fence read"))]);
+      assert.equal(store.rows.get(revision.id)?.observed?.enrollment?.release, "sending");
+
+      // Refresh the real local observation while the release waits for its store read.
+      // A supervisor control reconnect leaves the held Harness process and route fence intact.
+      const replacementSession = "replacement-control-session";
+      assert.notEqual(installed.supervisorSessionId, replacementSession);
+      f.supervisor.supervisorSessionId = replacementSession;
+      await reconcile();
+      assert.equal(entry.installed?.supervisorSessionId, replacementSession);
+      assert.equal(preview.hook?.startupId, startupId);
+      assert.equal(entry.fence, fence);
+      assert.equal(store.rows.get(revision.id)?.fence, fence);
+    } finally {
+      resume.resolve();
+      await outcome;
+    }
+    assert.equal(deliveries, 0, "a stale installation must not reach the launcher");
+    const refusal = await outcome;
+    assert.ok(refusal instanceof Error);
+    assert.match(refusal.message, /The preview release was not acknowledged/);
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+  });
 });
 test("bundled live Git refuses historical v5 installation scope before any effect", async (t) => {
   const { revision: selected } = await selectedV5(t);
@@ -3147,4 +3209,89 @@ test("Git preparation refuses broad or noncanonical workspace trust before provi
     );
     assert.equal(f.calls.providerWrites, 0);
   }
+});
+for (const scope of ["revision", "Namespace"] as const) {
+  test(`Protected Git sends no release after same-turn ${scope} withdrawal`, async (t) => {
+    const { f, revision, startupId, reconcile } = await heldGit(t);
+    await reconcile();
+    assert.equal(f.runtime.route(revision.id).state, "installed");
+
+    const signing = deferred();
+    const signed = deferred();
+    let posts = 0;
+    const release = f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      {
+        prepare: () => {
+          signing.resolve();
+          return signed.promise;
+        },
+        deliver: async () => {
+          posts++;
+          return true;
+        },
+      },
+      t.signal,
+    );
+    const outcome = release.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await Promise.race([signing.promise, outcome.then(() => assert.fail("signing did not start"))]);
+
+    // Wake the signing continuation first. Withdrawal in the same turn must
+    // already be visible when that continuation decides whether to send.
+    signed.resolve();
+    if (scope === "revision") {
+      f.runtime.withdraw(revision.id);
+    } else {
+      f.runtime.withdrawNamespace(revision.namespaceId);
+    }
+    const refusal = await outcome;
+    assert.equal(posts, 0);
+    assert.ok(refusal instanceof Error);
+    assert.match(refusal.message, /Cannot release this preview startup/);
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+    assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "withdrawn" });
+  });
+}
+
+test("a signing failure holds the same launcher for a fresh protected Git release", async (t) => {
+  const { f, revision, startupId, reconcile, lookup } = await heldGit(t);
+  await reconcile();
+  await assert.rejects(
+    f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {
+        throw new Error("recipient evidence expired");
+      },
+      deliver: async () => assert.fail("an unsigned release cannot be sent"),
+    }),
+    /recipient evidence expired/,
+  );
+  assert.equal(await lookup(), undefined);
+  await f.runtime.releasePreview(revision.id, startupId, {
+    prepare: async () => startupId,
+    deliver: async (id) => id === startupId,
+  });
+  assert.equal((await lookup())?.executionId, revision.id);
+});
+
+test("a second Worker withdrawing Git during signing prevents the launcher POST", async (t) => {
+  const { f, store, revision, startupId, reconcile } = await heldGit(t);
+  await reconcile();
+  let posts = 0;
+  await assert.rejects(
+    f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {
+        await store.withdraw({ revisionId: revision.id });
+      },
+      deliver: async () => {
+        posts++;
+        return true;
+      },
+    }),
+    { message: /OpenShell Git route was closed by another worker/ },
+  );
+  assert.equal(posts, 0);
 });

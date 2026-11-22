@@ -1,3 +1,7 @@
+import {
+  openShellGitEndpoints,
+  type OpenShellGitNetworkTarget,
+} from "../sandbox/openshell-git-network-policy.ts";
 import type { RepositoryGitRecipient } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -17,9 +21,7 @@ import {
 } from "../sandbox/openshell-gateway-client.ts";
 
 /** Operator-owned scope; never populate this from a workload request. */
-export type OpenShellPreparedGitDelivery =
-  | { readonly repository: string; readonly installationId?: never }
-  | { readonly repository?: never; readonly installationId: string };
+export type OpenShellPreparedGitDelivery = OpenShellGitNetworkTarget;
 
 export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
   readonly workspace: string;
@@ -250,46 +252,7 @@ export class OpenShellPreparedGitProvider {
       ],
       // This profile bounds transport, not credential placement or GitHub permissions. Release
       // must independently verify the mandatory request phase, verified TLS and sole recipient.
-      endpoints: scope.installationId
-        ? [
-            {
-              host: git.hostname,
-              port: 443,
-              protocol: "rest",
-              rules: [
-                { allow: { method: "GET", path: "/**/info/refs" } },
-                { allow: { method: "POST", path: "/**/git-upload-pack" } },
-                { allow: { method: "POST", path: "/**/git-receive-pack" } },
-              ],
-            },
-            {
-              host: api.hostname,
-              port: 443,
-              protocol: "rest",
-              access: "NETWORK_ACCESS_PRESET_FULL",
-            },
-            {
-              host: api.hostname,
-              port: 443,
-              protocol: "graphql",
-              path: "/graphql",
-              access: "NETWORK_ACCESS_PRESET_FULL",
-            },
-          ]
-        : [
-            {
-              host: git.hostname,
-              port: Number(git.port || 443),
-              protocol: "rest",
-              path: "/" + scope.repository + ".git/**",
-            },
-            {
-              host: api.hostname,
-              port: Number(api.port || 443),
-              protocol: "rest",
-              path: "/repos/" + scope.repository + "/pulls",
-            },
-          ],
+      endpoints: openShellGitEndpoints(git, api, scope),
       binaries: this.scope.binaries,
       inferenceCapable: false,
       annotations: { [OWNER]: this.fingerprint, [GIT_REVISION]: scope.executionId },
