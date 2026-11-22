@@ -7,7 +7,6 @@ import {
   revisionCredentialSourceSnapshot,
 } from "@openclaw-enterprise/contracts";
 import type { LegacyEgressProxyDriver } from "@openclaw-enterprise/contracts";
-import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
 import { installationDriverConfigurations } from "./composition/installation-config.ts";
 import {
