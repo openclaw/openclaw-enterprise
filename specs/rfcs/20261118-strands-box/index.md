@@ -33,6 +33,23 @@ every process in its Sandbox may use it. A compromised tool can push to the same
 as the shell even though neither can retrieve the token. Use separate Agents when processes
 need different rights.
 
+### Interim preview for a dedicated Codex API key
+
+The in-Pod Sandbox currently delivers an ordinary API key to Codex. We propose an optional
+`policy.network.experimentalOpenAiModelCredential` setting for installations that trust every
+contained process to spend model quota. Leave existing behavior unchanged when it is off.
+
+Only the separate supervisor container mounts the selected key, read-only. Box reads
+`env://OPENAI_API_KEY` and gives Codex a fresh placeholder. The receiver must refuse a missing
+or malformed placeholder. Limit external requests to `POST https://api.openai.com/v1/responses`
+on port 443. Reject other authentication modes, aliases and additional destinations. Rotation
+requires stopping the old execution and admitting a new Agent revision.
+
+Qualify this path with a real Codex reply, a check for key exposure in the workload, and denied
+requests from inside Box. This preview uses ordinary API-key admission. It provides no Git or
+Credential Source support and cannot satisfy RFC-0023 grants, withdrawal or disclosure controls.
+The protected design below still requires held launch and separate qualification.
+
 ## Goals
 
 <a id="goal-startup"></a>
