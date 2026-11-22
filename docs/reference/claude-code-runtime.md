@@ -38,6 +38,10 @@ and WebFetch. File, shell and web fetch work therefore follows `tools.deny`,
 `tools.allow`, the tool profile and their `byProvider` entries. A side question
 runs with no Claude Code tools.
 
+A `write` deny alone does not stop file changes: the model still has `edit` and
+`apply_patch`. To remove the file tools, deny all three, or deny `group:fs`,
+which also removes `ls` and `read`. Shell tools such as `exec` can still write files.
+
 OpenClaw skips this mediation when the exec host is `node`: Claude Code then
 gets its full native tool set, outside tool policy. OCE refuses that pair at
 save and deployment with `400 INVALID_REQUEST`, naming `tools.exec.host` or the
@@ -57,7 +61,9 @@ writable from the Agent's private gateway state claim.
 Claude Code's native WebSearch tool stays on by default. The search runs at
 the model provider, on the endpoint that already receives the conversation, so
 it opens no new egress from the gateway Pod. It works only where that endpoint
-offers Anthropic's server-side web search. Turn it off with either setting:
+offers Anthropic's server-side web search. On an endpoint without it, each
+search fails with an error from the endpoint, so deny `web_search` there. Turn
+it off with either setting:
 
 - deny `web_search` in tool policy, for example `tools.deny: ["web_search"]`;
 - set `tools.web.search.enabled` to `false`.
@@ -114,13 +120,25 @@ process in the gateway container can change either directory:
   variables that would move a credential or settings store elsewhere, such as
   `CLAUDE_SECURESTORAGE_CONFIG_DIR` and `ANTHROPIC_PROFILE`.
 
+OCE writes the credential to one file in the Pod, `managed-settings.json` in the
+memory-backed volume. The value is also in the environment of the init
+container and, as for every `api_key` binding, of the gateway process. Claude
+Code reads it from the managed settings. The gateway's uid, which the model's tools
+share, can read that file, so a tool can copy the credential to a writable path.
+For example, a move of `/etc/claude-code` into the home directory fails, but
+first copies `managed-settings.json` there.
+
 The image installs the binary at `/opt/oce/claude-code/bin/claude`, outside
 `PATH`, and only this check adds that directory to the gateway's `PATH`. Other
 Agents' gateways therefore cannot start Claude Code, also not through a chat
 command such as `/model --runtime claude-cli`. A binary missing from the image or not at the pinned
 `OCE_CLAUDE_CODE_VERSION` also holds the gateway with `UNAVAILABLE`. Both checks
-are logged as startup phase `claude-code-runtime`. Model egress rules are unchanged:
-the endpoint must be reachable on public TCP/443.
+are logged as startup phase `claude-code-runtime`.
+
+Model egress rules are unchanged: the gateway reaches public addresses on
+TCP/443 only (see [Kubernetes networking](drivers/kubernetes-compute/networking-and-isolation.md#networking)).
+An endpoint in the cluster, at a private address or on another port needs an
+egress NetworkPolicy for the gateway Pod, which the operator adds.
 
 ## Telemetry and model pins
 
@@ -133,7 +151,9 @@ small/fast, subagent and classifier models) to the primary model. Claude Code
 therefore calls only the admitted model. `CLAUDE_CODE_MAX_RETRIES` is `4`: it
 bounds Claude Code's own retries of a failed model request, of every kind,
 because by default it retries a rejected credential for about three minutes. An
-authentication failure now ends the turn within about 10 seconds.
+authentication failure now ends the turn within about 10 seconds. A short
+background run of Claude Code can follow a turn in the same Pod. It reads the
+same managed settings, so its retries have the same bound.
 
 Telemetry is off by default. Deployment admission sets the OpenClaw setting
 `telemetry.enabled` to `false` when it is unset. Then the file also sets
@@ -143,7 +163,8 @@ no OpenTelemetry exporter. The pinned binary then runs at its essential-traffic 
 reporting, feature-flag or update requests. To opt in, set
 `telemetry.enabled: true` or use the Console toggle in
 [Collaboration and safety](../guides/console/configuration-plugins-and-files.md).
-The setting applies to every agent runtime that OCE configures; Codex keeps its
+With telemetry on, Claude Code also sends connectivity checks to the model
+endpoint. The setting applies to every agent runtime that OCE configures; Codex keeps its
 OpenTelemetry export off in all cases.
 
 ## Conversation state
@@ -152,7 +173,7 @@ Claude Code keeps each session's transcript under `$HOME/.claude/projects`, and
 OpenClaw resumes a conversation by its session ID. Compute mounts that directory
 from the Agent's private gateway state claim, so a conversation continues after a
 gateway restart or redeploy. It is the only writable path under `$HOME/.claude`;
-the rest is the read-only skeleton. The skeleton and the managed settings that
-carry the credential exist only in the Pod's memory-backed volume, and the init
-container writes them again when the Pod starts. Deleting the Agent deletes the
+the rest is the read-only skeleton. The init container writes the skeleton and
+the managed settings to the memory-backed volume again each time the Pod
+starts. Deleting the Agent deletes the
 claim and its transcripts.
