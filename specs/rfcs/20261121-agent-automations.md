@@ -95,19 +95,22 @@ has `url`, exact host `egressCidrs` (/32 or /128) and optional public PEM
 `caBundle`. Refuse stdio, wildcard destinations, credentials and private keys;
 attest identical anonymous actions.
 
-Compute renders a server-owned opaque Gateway loopback route and exact mapping
-bound to the original HTTPS target, revision, grant and CA; public source remains
-original. A Gateway Node supervisor listens before Doctor/native startup, forwards
-only to that target with verified TLS. Before each upstream request, resolve the
-approved hostname and refuse addresses outside admitted exact endpoint CIDRs;
-separate model443 egress makes NetworkPolicy alone insufficient. Enforce strict
-method, route and headers with bounded streaming, and refuse all 3xx without
-Location or replay. Expose no
-generic URL/CONNECT, auth or cookie forwarding. Bind, fail, hold and attest the
-proxy and mapping throughout the lifecycle.
+Compute renders server-owned opaque Gateway loopback routes. Each grant binds
+the full canonical enabled route map and every endpoint attestation to original
+HTTPS targets, revision and CAs. Public source remains original; successor changes
+invalidate standing grants. Native discovery may initialize/list enabled siblings
+before cap filtering; forbidden tool calls remain denied.
 
-Derive the TCP port from the URL (default 443). Add listed endpoint IP/port
-pairs only to the Gateway NetworkPolicy. Validate upstream TLS hostname and chain;
+Before Doctor/native startup, a Gateway Node supervisor listens and forwards only
+to fixed targets with verified TLS. Resolve the approved hostname, refuse addresses
+outside admitted endpoint CIDRs, and pin the actual upstream socket to the checked
+address without a second lookup. Separate model TCP/443 egress makes NetworkPolicy
+alone insufficient. Enforce strict method/route/headers and bounded streaming;
+refuse all 3xx without Location/replay, generic URL/CONNECT, auth or cookie
+forwarding. Bind, fail, hold and attest the proxy/map throughout the lifecycle.
+
+The URL determines TCP port (default 443); only the Gateway NetworkPolicy
+receives listed endpoint IP/port pairs. Validate upstream TLS hostname and chain;
 supply the public automation CA only to the fixed target's proxy TLS request. Never
 expand process-wide Gateway/model or dedicated Agent trust. Dedicated Agents receive
 no automation-specific endpoint rule, CA map/mount or `CODEX_CA_CERTIFICATE`.
@@ -121,10 +124,9 @@ require origin checks in addition to tool names.
 
 ## Goals and non-goals
 
-Support one-shot, interval and cron schedules, CRUD, pause/resume, native
-normalization and history. Exclude immediate execution, new result destinations,
-scripts, event triggers, service-principal HTTP access, Console controls and CLI
-commands. Scheduler housekeeping and failure notices can occur.
+Support one-shot, interval and cron, CRUD, pause/resume, native normalization and
+history. Exclude immediate execution, new destinations, scripts, triggers,
+service-principal HTTP, Console and CLI. Scheduler housekeeping/failure notices can occur.
 
 ## Authorization and interface
 
