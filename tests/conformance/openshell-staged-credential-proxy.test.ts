@@ -460,12 +460,15 @@ async function fixture(t: TestContext) {
     id: "backend",
     client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient: client }),
   } as unknown as Backend<OpenShellGateway>;
-  const proxy = new OpenShellCredentialProxyDriver({
-    id: selectedSandbox.id,
-    implementation: selectedSandbox.implementation,
-    backend,
-    sandbox: selectedSandbox,
-  });
+  const createProxy = (tokenServiceImplementation: string) =>
+    new OpenShellCredentialProxyDriver({
+      id: selectedSandbox.id,
+      implementation: selectedSandbox.implementation,
+      backend,
+      sandbox: selectedSandbox,
+      tokenServiceImplementation,
+    });
+  const proxy = createProxy("occ/token-service");
   // Exercise the admitted runtime provider key separately from the catalog ModelProvider ID.
   // This controlled Gateway fixture does not qualify a real Agent or native enforcement.
   const revision = completeSandboxRevision({
@@ -643,6 +646,7 @@ async function fixture(t: TestContext) {
   return {
     client,
     proxy,
+    createProxy,
     context,
     sandbox,
     state,
@@ -657,7 +661,7 @@ async function fixture(t: TestContext) {
   };
 }
 
-test("staged OpenShell Proxy resolves the current pushed version and reuses it without another transfer", async (t) => {
+test("staged OpenShell Proxy accepts OCC TokenService and reuses the current pushed version without another transfer", async (t) => {
   const f = await fixture(t);
   const first = await f.configure();
   assert.deepEqual(first, {
@@ -685,6 +689,13 @@ test("staged OpenShell Proxy resolves the current pushed version and reuses it w
   assert.equal(f.state.creates.length, 1);
   assert.equal(f.state.attaches.length, 1);
   assert.equal(f.state.updates.length, 0);
+});
+
+test("staged OpenShell Proxy rejects an unsupported TokenService before resolving or mutating the Gateway", async (t) => {
+  const f = await fixture(t);
+  assert.throws(() => f.createProxy("openshell/token-service"), {
+    message: "Native credential delivery requires the OCC TokenService implementation.",
+  });
 });
 
 test("staged OpenShell Proxy refreshes a retained Provider for the next deployment", async (t) => {

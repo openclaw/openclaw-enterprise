@@ -53,9 +53,14 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   constructor(selection: {
     readonly id: string;
     readonly implementation: string;
+    readonly tokenServiceImplementation: string;
     readonly backend: Backend<OpenShellGateway>;
     readonly sandbox: SandboxDriver;
   }) {
+    // TODO(OpenShell TokenService): Add its shared-Provider path when that implementation is available.
+    if (selection.tokenServiceImplementation !== "occ/token-service") {
+      throw new Error("Native credential delivery requires the OCC TokenService implementation.");
+    }
     if (
       !selection.id ||
       selection.id !== selection.sandbox.id ||

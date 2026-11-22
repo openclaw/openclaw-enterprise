@@ -1538,12 +1538,14 @@ async function composeInstallationConfiguration(
   }
   const createCredentialDeliveryProxy = async (
     pairedSandbox: SandboxDriver,
+    tokenServiceImplementation: string,
   ): Promise<CredentialProxyDriver> => {
     const { OpenShellCredentialProxyDriver } =
       await import("../drivers/credential-proxy/openshell.ts");
     return new OpenShellCredentialProxyDriver({
       id: pairedSandbox.id,
       implementation: pairedSandbox.implementation,
+      tokenServiceImplementation,
       backend: openShell!,
       sandbox: pairedSandbox,
     });
@@ -1627,7 +1629,10 @@ async function composeInstallationConfiguration(
     const deliveryProxy =
       tokenServiceSelection === undefined
         ? undefined
-        : await createCredentialDeliveryProxy(capabilities.sandbox);
+        : await createCredentialDeliveryProxy(
+            capabilities.sandbox,
+            tokenServiceSelection.implementation,
+          );
     const owner = new InstalledDriver(
       {
         ...sandbox,
@@ -1674,7 +1679,10 @@ async function composeInstallationConfiguration(
     !boxPackage &&
     options.createSandboxDriver === undefined
   ) {
-    const deliveryProxy = await createCredentialDeliveryProxy(sandboxDriver);
+    const deliveryProxy = await createCredentialDeliveryProxy(
+      sandboxDriver,
+      tokenServiceSelection.implementation,
+    );
     credentialDeliveryRegistration = new InstalledDriver(
       {
         id: sandboxDriver.id,

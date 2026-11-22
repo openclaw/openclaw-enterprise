@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-21
+updated: 2026-11-22
 last_updated_session: 01a1eae9-8497-74d2-a9c7-9bc93809e94a
 ---
 
@@ -61,7 +61,9 @@ OCC requires exact `credential_source:operate` for a new binding to a ready Sour
 
 ### 4. Resolve the source at dispatch
 
-`apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker.ts:resolveRevisionSecretContext`
+`apps/controller/src/composition/installation-config.ts:composeInstallationConfiguration`, `apps/controller/src/drivers/credential-proxy/openshell.ts:OpenShellCredentialProxyDriver`, `apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker.ts:resolveRevisionSecretContext`
+
+Composition passes the Installation-selected TokenService implementation to the native Proxy. The Proxy accepts only OCC TokenService and rejects unsupported implementations during construction, before credential resolution or Gateway access.
 
 Worker checks actor and Agent grants, selected Driver identity, Source ownership, and withdrawal state. It asks Compute for the placed Sandbox Namespace and gives the Proxy a resolver bound to the exact Source reference and TokenService instance. Compute makes the authenticated Gateway operator route available for node enrollment and provisions an idle Sandbox with the credential route withheld. The Proxy creates and attaches the Provider, then Sandbox applies the admitted credential rule through OpenShell UpdateConfig, using the revision UUID as the native replay ID. After policy and Provider status checks succeed, Sandbox completes initial workspace setup and prepares fresh launch inputs. The idle supervisor receives the launch arguments through the bounded command encoding. Worker commits the selected revision and authorizes the Agent and exact Source once before activation. The Sandbox starts the Harness. Compute reconciles workspace-node enrollment and waits for authenticated readiness before publishing user chat and delegated browser routes.
 
@@ -98,6 +100,7 @@ Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged
 
 ## Changelog
 
+- 2026-11-22 08:39: Bind native delivery to the selected OCC TokenService implementation before Gateway access. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - f3a2121af)
 - 2026-11-21 22:19: Integrate TokenService-owned Source enrollment and Worker startup with native Proxy delivery and cleanup. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 86772f7b5)
 - 2026-11-21 22:05: Refresh retained pushed Providers during configuration and confirm Gateway authority before cleanup. (authoring-run/068f73af-8c65-4481-b861-0f2d1fc3fb46 - 82926b330)
 - 2026-11-21 21:55: Reconcile TokenService-owned enrollment with staged Agent admission and startup. (01a1ec21-b384-7472-887f-945ae0ab16fc - 91de87598)
