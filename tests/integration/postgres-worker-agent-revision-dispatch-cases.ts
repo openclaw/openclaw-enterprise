@@ -250,7 +250,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           if (settlement === "permanent") {
             await queue.fail(claim, { code: "INVALID_TARGET" });
           } else {
-            await fixture.expireClaim({ id: revision.id, idempotencyKey }, claim.claimToken);
+            await fixture.expireClaim({ idempotencyKey }, claim.claimToken);
             const recovered = await queue.recoverStale();
             assert.ok(recovered.failed.some((work) => work.idempotencyKey === idempotencyKey));
           }
