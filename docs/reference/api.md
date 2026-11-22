@@ -1651,7 +1651,7 @@ Example response
         ],
         "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
         "tokenUrl": "https://accounts.example.com/token",
-        "version": 1
+        "version": 2
       },
       "displayName": "Example account",
       "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -2098,7 +2098,7 @@ Example response
       ],
       "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
       "tokenUrl": "https://accounts.example.com/token",
-      "version": 1
+      "version": 2
     },
     "displayName": "Example account",
     "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -2286,7 +2286,7 @@ Example response
       ],
       "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
       "tokenUrl": "https://accounts.example.com/token",
-      "version": 1
+      "version": 2
     },
     "displayName": "Engineering account",
     "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -2420,7 +2420,7 @@ Example response
         ],
         "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
         "tokenUrl": "https://accounts.example.com/token",
-        "version": 1
+        "version": 2
       },
       "displayName": "Example account",
       "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
@@ -2509,7 +2509,7 @@ Example response
     {
       "clientId": "example-client",
       "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-      "connectionTemplateVersion": 1,
+      "connectionTemplateVersion": 2,
       "createdAt": "2026-10-01T12:00:00.000Z",
       "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
       "destinations": [
@@ -2715,6 +2715,7 @@ Example response
       "displayName": "Example provider client",
       "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "issuer": "https://accounts.example.com",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
       "tokenEndpointAuthMethod": "client_secret_basic",
       "tokenUrl": "https://accounts.example.com/token"
     }
@@ -2808,6 +2809,7 @@ Example response
     "displayName": "Example provider client",
     "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
     "issuer": "https://accounts.example.com",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
     "tokenEndpointAuthMethod": "client_secret_basic",
     "tokenUrl": "https://accounts.example.com/token"
   },
@@ -2929,6 +2931,7 @@ Example response
     "displayName": "Example provider client",
     "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
     "issuer": "https://accounts.example.com",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
     "tokenEndpointAuthMethod": "client_secret_basic",
     "tokenUrl": "https://accounts.example.com/token"
   },

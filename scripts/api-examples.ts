@@ -244,6 +244,7 @@ const oauthClient = {
   issuer: "https://accounts.example.com",
   tokenUrl: "https://accounts.example.com/token",
   id: oauthClientId,
+  namespaceId,
   createdAt: time,
 };
 const connectionTemplateInput = {
@@ -269,7 +270,7 @@ const createdConnectionTemplate = {
 };
 const connectionTemplate = {
   ...createdConnectionTemplate,
-  current: { ...createdConnectionTemplate.current, oauthClientId },
+  current: { ...createdConnectionTemplate.current, version: 2, oauthClientId },
 };
 const mcpServerUrl = "https://tools.example.com/mcp";
 const discovered = {
@@ -296,7 +297,7 @@ const savedAccount = {
   credentialSourceId: source.id,
   ownerPrincipalId: userId,
   connectionTemplateId,
-  connectionTemplateVersion: 1,
+  connectionTemplateVersion: 2,
   createdAt: time,
 };
 
