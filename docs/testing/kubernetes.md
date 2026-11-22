@@ -345,31 +345,12 @@ and `OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE`. One input fails. Omit both to s
 
 ### Run an isolated upgrade qualification lane
 
-Set `OCC_TEST_OPENAI_MODEL`. Verify provenance for compatible prior and distinct
-reviewed candidate controller and runtime digests. A disposable Pod selects the
-incumbent image’s worker probe for installation. The upgrade uses the candidate
-chart. Install Docker, k3d, kubectl, Helm, yq, and Go.
+The scheduled TUI job covers revision cutover. To qualify upgrades, set
+`OCC_TEST_OPENAI_MODEL` and both upgrade images. Verify provenance and compatibility
+of the incumbent and candidate digests. Installation probes the incumbent Worker.
+Upgrades use the candidate chart. Install Docker, k3d, kubectl, Helm, yq, jq and Go.
 
-```sh
-run_dir="$(mktemp -d)"
-node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.ts --lane production-tui --state "$run_dir/state.json" && \
-  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
-    --state "$run_dir/state.json" --results "$run_dir/results.json"
-```
-
-Before removing the runner, [retain both private availability receipts](populated-controller-return.md#retain-ordinary-upgrade-observations).
-
-After success or failure, save the private image mapping if needed and clean up:
-
-```sh
-install -m 600 "$run_dir/state.json" "$run_dir/state-before-cleanup.json"
-node scripts/ci/cleanup.ts --state "$run_dir/state.json"
-```
-
-Retain the state if cleanup fails. Do not publish the state or environment file.
-Confirm evidence includes both upgrades and a fresh model reply. Imported local
-references can differ from registry digests; this does not prove exact registry
-reference deployment or live EKS behavior.
+Follow the [qualification and cleanup procedure](populated-controller-return.md#qualify-distinct-controller-and-runtime-images).
 
 ## Two-cluster validation
 
