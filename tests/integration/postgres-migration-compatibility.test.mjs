@@ -1487,6 +1487,7 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
+      [88, "preNativeGitDelivery"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1938,6 +1939,7 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
+      [88, "preNativeGitDelivery"],
     ]);
     for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
@@ -1954,24 +1956,31 @@ test(
           prefix === 59
             ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
             : undefined;
-        const before = await canonicalData(db);
         const receipts = await historyReceipts(db.migrator);
-        assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
-          ok: true,
-          history,
-        });
-        assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
-        await assertSourceOwners?.();
-        await assertCompletedHistory(db, receipts);
-        await assertUpgradedRevisionReadable(db);
-        assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
-        // Upgrading an existing revision must never invent a recoverable first-deployment intent.
-        const existingBindings = await db.app.query(
-          "SELECT first_deployment_digest FROM occ.agent_revisions",
-        );
-        assert.ok(existingBindings.rows.length > 0);
-        assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
-        await assertUpgradedAuthentication(db);
+        const upgrade = async () => {
+          const before = await canonicalData(db);
+          assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+            ok: true,
+            history,
+          });
+          assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
+          await assertSourceOwners?.();
+          await assertCompletedHistory(db, receipts);
+          if (prefix !== 88) {
+            await assertUpgradedRevisionReadable(db);
+          }
+          assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
+          // Upgrading an existing revision must never invent a recoverable first-deployment intent.
+          const existingBindings = await db.app.query(
+            "SELECT first_deployment_digest FROM occ.agent_revisions",
+          );
+          assert.ok(existingBindings.rows.length > 0);
+          assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
+          await assertUpgradedAuthentication(db);
+        };
+        if (prefix !== 88) {
+          await upgrade();
+        }
         if (history === "preHumanAuthenticationResults") {
           await assertSignInResultStorage(db.app);
         }
@@ -2055,7 +2064,7 @@ test(
           ).rows[0].allowed,
           true,
         );
-        if (prefix === 87) {
+        if (prefix === 87 || prefix === 88) {
           // An app-role writer can bypass OCC. A valid broader network allowance must still
           // cover every injected request, and standalone execution cannot add repository delivery.
           const original = (
@@ -2258,31 +2267,41 @@ test(
             version: currentPolicy.version + 1,
             repositoryNetworkPolicy: [],
           };
-          await db.app.query(
-            "UPDATE occ.sandbox_policies SET version=$1,document=$2 WHERE agent_id=$3",
-            [savedPolicy.version, savedPolicy, original.agent_id],
-          );
-          await assert.rejects(
-            insert(
-              {
-                ...spec,
-                execution_admission: {
-                  ...spec.execution_admission,
-                  repositoryNetworkPolicyVersion: 1,
-                },
-                sandbox_policy: {
-                  version: savedPolicy.version,
-                  repositoryNetworkPolicy: {
-                    version: 1,
-                    grants: [],
-                    identity: '{"version":1,"grants":[]}',
+          // Keep this refused write probe from changing the later upgrade's policy fixture.
+          await db.app.query("BEGIN");
+          try {
+            await db.app.query(
+              "UPDATE occ.sandbox_policies SET version=$1,document=$2 WHERE agent_id=$3",
+              [savedPolicy.version, savedPolicy, original.agent_id],
+            );
+            await assert.rejects(
+              insert(
+                {
+                  ...spec,
+                  execution_admission: {
+                    ...spec.execution_admission,
+                    repositoryNetworkPolicyVersion: 1,
+                  },
+                  sandbox_policy: {
+                    version: savedPolicy.version,
+                    repositoryNetworkPolicy: {
+                      version: 1,
+                      grants: [],
+                      identity: '{"version":1,"grants":[]}',
+                    },
                   },
                 },
-              },
-              4,
-            ),
-            { code: "23514", constraint: "agent_revisions_execution_admission" },
-          );
+                4,
+              ),
+              { code: "23514", constraint: "agent_revisions_execution_admission" },
+            );
+          } finally {
+            await db.app.query("ROLLBACK");
+          }
+        }
+        if (prefix === 88) {
+          // Preserve populated standalone v8 snapshots that already passed the 0088 check.
+          await upgrade();
         }
       });
     }
@@ -2478,6 +2497,7 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
+      [88, "preNativeGitDelivery"],
     ])) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2742,6 +2762,7 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
+      [88, "preNativeGitDelivery"],
     ])) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2769,6 +2790,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [88, "CREATE FUNCTION"],
                 [87, "ALTER TABLE"],
                 [86, "CREATE TRIGGER"],
                 [85, "ALTER TABLE"],
@@ -2800,6 +2822,10 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 88) {
+          // Abort 0089 after replacing the execution check, while installing the session guard.
+          failAt =
+            "IF to_regprocedure('occ.repository_git_network_admission_is_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 87) {
           // Abort 0088 after its new validator functions exist, before it replaces constraints.
           failAt =
@@ -3027,6 +3053,8 @@ test(
       join(migrationsDirectory, "0025_repository_credentials.sql"),
       "utf8",
     );
+    const completedCount = manifest.entries.length;
+    const nextTimestamp = manifest.entries.at(-1).when + 1;
     const cases = [
       ["partial", 19, null],
       [
@@ -3041,8 +3069,8 @@ test(
       ],
       [
         "future-receipt",
-        25,
-        "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(repeat('f',64),9999999999999)",
+        completedCount,
+        `INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(repeat('f',64),${nextTimestamp})`,
       ],
       ["catalog-object", 25, "CREATE TABLE occ.unexplained(id integer)"],
       [
@@ -3107,6 +3135,89 @@ test(
         },
       );
     }
+    const nativePreviewSql = await readFile(
+      join(
+        repositoryRoot,
+        "tests/fixtures/migrations/native-git-preview/0088_native_git_delivery.sql",
+      ),
+    );
+    const nativePreviewHash = "19319a8b5bf7d714437a563b863f6ab3ead8a4ecefc3ed1d065a62cfe1d4e5e1";
+    assert.equal(createHash("sha256").update(nativePreviewSql).digest("hex"), nativePreviewHash);
+    void context.test("standalone and native Git receipts in reverse order", async (child) => {
+      const db = await historyDatabase(child, fixture, "reversed_native", {
+        prefix: manifest.entries.length,
+      });
+      const receipts = await historyReceipts(db.migrator);
+      const [standalone, native] = receipts.slice(-2);
+      assert.deepEqual(
+        [standalone, native].map(({ hash }) => hash),
+        manifest.entries.slice(-2).map(({ sha256 }) => sha256),
+      );
+      // A correct final catalog cannot qualify receipts published in the wrong order.
+      await db.migrator.query(
+        `UPDATE drizzle.__drizzle_migrations
+           SET hash = CASE id WHEN $1 THEN $3 ELSE $4 END
+           WHERE id IN ($1, $2)`,
+        [standalone.id, native.id, native.hash, standalone.hash],
+      );
+      await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+    });
+    for (const [prefix, label] of [
+      [85, "premerge repository ACL and native Git receipts"],
+      [87, "premerge native Git in standalone credential deployment slot"],
+    ]) {
+      void context.test(label, async (child) => {
+        const db = await historyDatabase(child, fixture, "oldnative", { prefix });
+        const directory = await mkdtemp(join(tmpdir(), "openclaw-premerge-native-"));
+        const entries = [];
+        const expected = [];
+        try {
+          await mkdir(join(directory, "meta"));
+          if (prefix === 85) {
+            // This preview installed repository policy and native Git one slot earlier.
+            const { sha256, ...policy } = manifest.entries[86];
+            const bytes = await readFile(join(migrationsDirectory, `${policy.tag}.sql`));
+            assert.equal(createHash("sha256").update(bytes).digest("hex"), sha256);
+            entries.push({
+              ...policy,
+              idx: 86,
+              when: policy.when - 1,
+              tag: "0086_repository_network_policy",
+            });
+            expected.push([sha256, entries[0].when]);
+            await writeFile(join(directory, `${entries[0].tag}.sql`), bytes);
+          }
+          const { sha256: _standaloneHash, ...standalone } = manifest.entries[87];
+          assert.equal(standalone.tag, "0088_standalone_credential_deployment");
+          const native = {
+            ...standalone,
+            idx: prefix + 1 + entries.length,
+            when: prefix === 85 ? standalone.when - 1 : standalone.when,
+            tag: prefix === 85 ? "0087_native_git_delivery" : "0088_native_git_delivery",
+          };
+          entries.push(native);
+          expected.push([nativePreviewHash, native.when]);
+          await writeFile(join(directory, `${native.tag}.sql`), nativePreviewSql);
+          await writeFile(
+            join(directory, "meta/_journal.json"),
+            JSON.stringify({ version: "7", dialect: "postgresql", entries }),
+          );
+          await migrate(drizzle(db.migrator), { migrationsFolder: directory });
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+        const before = await historySnapshot(db);
+        assert.equal(before.receipts.length, prefix + expected.length);
+        assert.deepEqual(
+          before.receipts
+            .slice(-expected.length)
+            .map(({ hash, created_at }) => [hash, Number(created_at)]),
+          expected,
+        );
+        await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+      });
+    }
+
     void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");
       const journal = JSON.parse(

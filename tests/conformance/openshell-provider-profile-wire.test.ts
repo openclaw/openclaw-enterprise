@@ -10,6 +10,292 @@ import {
   checkOpenShellGitProviders,
   OpenShellGitRouteError,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts";
+import {
+  OpenShellPreparedGitProvider,
+  OpenShellPreparedGitProviderError,
+  type OpenShellPreparedGitScope,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import { compileOpenShellBoundGitRule } from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
+
+test("the Sandbox wire policy binds exact Git routes to an endpointless Provider", async (t) => {
+  const scope = {
+    workspace: "profile-acl",
+    workspaceId: "workspace-id",
+    sandbox: "sandbox",
+    executionId: "revision-1",
+    installationId: "42",
+    gitOrigin: "https://github.com",
+    apiOrigin: "https://api.github.com",
+    binaries: ["/usr/bin/git", "/usr/lib/git-core/git-remote-https"],
+  } satisfies OpenShellPreparedGitScope;
+  let addedProfileField: Record<string, unknown> | undefined;
+  let wireSpec: unknown;
+  let member = false;
+  let anotherProvider: string | undefined;
+  let pageToken: string | undefined;
+  const { client, world } = await gitExpiryGateway(t, {
+    model: "model",
+    workspace: scope.workspace,
+    sandbox: scope.sandbox,
+    revisionId: scope.executionId,
+    deadline: "2030-01-01T00:00:00Z",
+    platformProfile: false,
+    configure(methods: Record<string, (request: Record<string, unknown>) => unknown>) {
+      const getProfile = methods.GetProviderProfile!;
+      methods.GetProviderProfile = (request) => {
+        const response = getProfile(request) as { profile: Record<string, unknown> } | undefined;
+        return response && addedProfileField
+          ? { profile: { ...response.profile, ...addedProfileField } }
+          : response;
+      };
+      methods.ListWorkspaceMembers = () => ({
+        members: member ? [{ principal_subject: "other-writer" }] : [],
+      });
+      methods.ListSandboxes = () => ({
+        sandboxes: [
+          { metadata: { id: "sandbox-id", workspace: scope.workspace }, spec: wireSpec },
+          {
+            metadata: { id: "unrelated", workspace: scope.workspace },
+            spec: { providers: anotherProvider ? [anotherProvider] : [] },
+          },
+        ],
+        next_page_token: pageToken,
+      });
+      methods.CreateSandbox = (request) => {
+        wireSpec = request.spec;
+        return {
+          sandbox: {
+            metadata: { id: "sandbox-id", name: scope.sandbox, workspace: scope.workspace },
+            spec: request.spec,
+          },
+        };
+      };
+    },
+  });
+  const signal = AbortSignal.timeout(10_000);
+  const binding = await new OpenShellPreparedGitProvider(client, {
+    ...scope,
+    nativeGit: "v1",
+  }).bootstrap(signal);
+  const profile = await client.getProviderProfile(scope.workspace, binding.profile, signal);
+  assert.ok(profile?.definition);
+  assert.deepEqual(profile.definition.endpoints, []);
+  assert.deepEqual(profile.definition.binaries ?? [], []);
+  assert.deepEqual(profile.definition.credentials, [
+    {
+      name: "installation_token",
+      env_vars: ["GITHUB_TOKEN"],
+      required: true,
+      auth_style: "bearer",
+      header_name: "authorization",
+      stable_placeholder: true,
+    },
+  ]);
+
+  const read = { repository: "fixture/a", access: "read" } as const;
+  const write = { repository: "fixture/b", access: "write" } as const;
+  const rule = compileOpenShellBoundGitRule([write, read], binding.provider, scope.binaries);
+  assert.deepEqual(
+    compileOpenShellBoundGitRule([read, write], binding.provider, scope.binaries),
+    rule,
+  );
+  await client.createSandbox(
+    {
+      name: scope.sandbox,
+      workspace: scope.workspace,
+      requestId: "7dfed2b8-8cef-4513-ab04-020baf3ccbf3",
+      labels: {},
+      annotations: {},
+      serviceExposures: [],
+      spec: { providers: [binding.provider], policy: { network_policies: { [rule.name]: rule } } },
+    },
+    signal,
+  );
+  assert.deepEqual(wireSpec, {
+    providers: [binding.provider],
+    policy: {
+      network_policies: {
+        "repository-git-network": {
+          name: "repository-git-network",
+          binaries: [{ path: "/usr/bin/git" }, { path: "/usr/lib/git-core/git-remote-https" }],
+          endpoints: [
+            {
+              host: "github.com",
+              port: 443,
+              path: "/fixture/a.git/**",
+              protocol: "rest",
+              enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+              credential_binding: { provider: binding.provider },
+              rules: [
+                {
+                  allow: {
+                    method: "GET",
+                    path: "/fixture/a.git/info/refs",
+                    query: { service: { glob: "git-upload-pack" } },
+                  },
+                },
+                { allow: { method: "POST", path: "/fixture/a.git/git-upload-pack" } },
+              ],
+            },
+            {
+              host: "github.com",
+              port: 443,
+              path: "/fixture/b.git/**",
+              protocol: "rest",
+              enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+              credential_binding: { provider: binding.provider },
+              rules: [
+                {
+                  allow: {
+                    method: "GET",
+                    path: "/fixture/b.git/info/refs",
+                    query: { service: { glob: "git-upload-pack" } },
+                  },
+                },
+                { allow: { method: "POST", path: "/fixture/b.git/git-upload-pack" } },
+                {
+                  allow: {
+                    method: "GET",
+                    path: "/fixture/b.git/info/refs",
+                    query: { service: { glob: "git-receive-pack" } },
+                  },
+                },
+                { allow: { method: "POST", path: "/fixture/b.git/git-receive-pack" } },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  const exclusive = () =>
+    client.readExclusivePreviewWorkspace(scope.workspace, "sandbox-id", signal, binding.provider);
+  assert.equal(await exclusive(), true, "an unrelated Sandbox may coexist");
+  anotherProvider = binding.provider;
+  assert.equal(await exclusive(), false, "a second attachment refuses material");
+  anotherProvider = undefined;
+  pageToken = "another-page";
+  assert.equal(await exclusive(), false, "a partial inventory cannot establish exclusivity");
+  pageToken = undefined;
+  member = true;
+  assert.equal(await exclusive(), false, "the workspace must have isolated writers");
+
+  // An endpointless managed Git credential still overlaps if offered as an ordinary Provider.
+  await assert.rejects(
+    checkOpenShellGitProviders(client, scope.workspace, [binding.provider], signal),
+    {
+      name: OpenShellGitRouteError.name,
+      reason: "provider_overlap",
+    },
+  );
+  const legacy = await new OpenShellPreparedGitProvider(client, scope).bootstrap(signal);
+  assert.notEqual(legacy.profile, binding.profile);
+  const legacyProfile = await client.getProviderProfile(scope.workspace, legacy.profile, signal);
+  assert.deepEqual(legacyProfile?.definition?.endpoints, [
+    {
+      host: "github.com",
+      port: 443,
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      rules: [
+        { allow: { method: "GET", path: "/**/info/refs" } },
+        { allow: { method: "POST", path: "/**/git-upload-pack" } },
+        { allow: { method: "POST", path: "/**/git-receive-pack" } },
+      ],
+    },
+    {
+      host: "api.github.com",
+      port: 443,
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_FULL",
+    },
+    {
+      host: "api.github.com",
+      port: 443,
+      protocol: "graphql",
+      path: "/graphql",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_FULL",
+    },
+  ]);
+  assert.deepEqual(
+    legacyProfile?.definition?.binaries,
+    scope.binaries.map((path) => ({ path })),
+  );
+
+  // If readback after import introduces a network allow, stop before creating the Provider.
+  const providerCreates = world.providerCreates.length;
+  for (const [field, value] of Object.entries({
+    endpoints: [{ host: "github.com", port: 443 }],
+    binaries: [{ path: "/usr/bin/git" }],
+  })) {
+    addedProfileField = { [field]: value };
+    await assert.rejects(
+      new OpenShellPreparedGitProvider(client, {
+        ...scope,
+        executionId: `unexpected-${field}`,
+        nativeGit: "v1",
+      }).bootstrap(signal),
+      { name: OpenShellPreparedGitProviderError.name, outcome: "unknown" },
+    );
+    assert.equal(world.providerCreates.length, providerCreates);
+  }
+});
+
+test("the Git rule compiler rejects nonconcrete grants and transport paths", () => {
+  const provider = "oce-github-installation-0123456789abcdef0123456789abcdef";
+  const binaries = ["/usr/lib/git-core/git-remote-https"];
+  const read = { repository: "fixture/a", access: "read" };
+  for (const grants of [
+    [],
+    [Object.assign({}, read, { branch: "main" })],
+    [Object.create(read) as unknown],
+    [{ ...read, access: "admin" }],
+    [read, { ...read, access: "write" }],
+    ...[
+      "a_b/repo",
+      "Fixture/a",
+      "fixture/.repo",
+      "fixture/a.git",
+      "fixture/..",
+      "fixture/a\n",
+      "fixture/a*",
+      "fixture/a%2Fb",
+    ].map((repository) => [{ ...read, repository }]),
+    Array.from({ length: 33 }, (_, i) => ({ ...read, repository: `fixture/r${i}` })),
+  ]) {
+    assert.throws(
+      () =>
+        compileOpenShellBoundGitRule(
+          grants as Parameters<typeof compileOpenShellBoundGitRule>[0],
+          provider,
+          binaries,
+        ),
+      /repository|grant/i,
+    );
+  }
+  assert.throws(
+    () =>
+      compileOpenShellBoundGitRule([{ ...read, access: "read" }], "ordinary-provider", binaries),
+    /installation Git Provider/,
+  );
+  for (const paths of [
+    [],
+    ["git"],
+    ["/usr/*/git"],
+    ["/usr/../bin/git"],
+    ["/usr/./bin/git"],
+    ["/usr//bin/git"],
+    ["/usr/bin/git/"],
+  ]) {
+    assert.throws(
+      () => compileOpenShellBoundGitRule([{ ...read, access: "read" }], provider, paths),
+      /exact Git transport binary/,
+    );
+  }
+});
 
 test("provider profile wire defaults preserve Git overlap enforcement", async (t) => {
   const workspace = "profile-wire";

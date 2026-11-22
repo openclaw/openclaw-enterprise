@@ -617,6 +617,13 @@
       "when": 1787000000088,
       "tag": "0088_standalone_credential_deployment",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1787000000089,
+      "tag": "0089_native_git_delivery",
+      "breakpoints": true
     }
   ]
 }

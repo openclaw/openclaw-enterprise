@@ -1,3 +1,4 @@
+import { fixtureRelease } from "../helpers/inspected-workspace-release.ts";
 import { loadedProxyInstallation } from "../helpers/loaded-proxy-installation.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { createOccApi, exportTenants, importTenants } from "../../scripts/split-layout-tenants.ts";
@@ -153,7 +154,7 @@ class OpenShellGitComputeDriver extends KubernetesComputeDriver {
 // enrollment and a Gateway node selector (deployment admission refuses dedicated Agents
 // otherwise, finding 2349).
 /** @param {typeof KubernetesComputeDriver} [Driver] */
-function kubernetesCompute(Driver = KubernetesComputeDriver, selection = {}) {
+function kubernetesCompute(Driver = KubernetesComputeDriver, selection = {}, inspected = false) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
@@ -167,7 +168,9 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, selection = {}) {
         envoyNamespace: "envoy",
       },
       authentication: { mode: "inCluster" },
-      images: { gateway: "gateway:local", agent: "agent:local", requireImmutableDigest: false },
+      images: inspected
+        ? { ...fixtureRelease, requireImmutableDigest: true }
+        : { gateway: "gateway:local", agent: "agent:local", requireImmutableDigest: false },
       resources: {
         gateway: resources,
         agent: resources,
@@ -179,6 +182,7 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, selection = {}) {
         gatewayNodeSelector: { "oce-role": "control" },
       },
       network: {
+        ...(inspected && { pluginStatusProxySourceCidrs: ["127.0.0.1/32"] }),
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
         gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
@@ -269,6 +273,7 @@ function repositoryDriver(registry, Driver = GitHubRepositoryPolicy) {
 async function fixture(
   t,
   {
+    inspected = false,
     compute = kubernetesCompute(),
     repositories = true,
     harness = "openclaw",
@@ -371,7 +376,9 @@ async function fixture(
   assert.equal(namespaceResponse.status, 201, JSON.stringify(namespaceResponse));
   const namespace = namespaceResponse.data;
   const native = createHarnessConfiguration(harness, "gpt-5.1");
-  delete native.gateway.auth;
+  if (!inspected) {
+    delete native.gateway.auth;
+  }
   const configurationResponse = await initial.request(
     "POST",
     `/namespaces/${namespace.id}/configurations`,
@@ -1254,6 +1261,7 @@ async function protectedOpenShellComposition(
     installedProfile,
     sandboxNetworkPolicyCeiling = [],
     runtimeAuthCompute = false,
+    inspected = false,
     repositoryNetworkPolicyCeiling,
     repositoryAdmission = repositoryNetworkPolicyCeiling === undefined ? undefined : "selected",
     configureRegistry,
@@ -1278,6 +1286,7 @@ async function protectedOpenShellComposition(
   const namespaceLifecycleBindings = [];
   const f = await fixture(t, {
     harness,
+    inspected,
     compute: kubernetesCompute(
       credentialGateway ? GatewayHarnessComputeDriver : ProtectedGitComputeDriver,
     ),
@@ -1394,11 +1403,30 @@ async function protectedOpenShellComposition(
     proxy = loaded.proxyDriver;
     t.after(() => owner.close());
   }
-  if (runtimeAuthCompute) {
-    const compute = kubernetesCompute(KubernetesComputeDriver, {
-      id: "runtime-admission-kubernetes",
-      protectedDriver: owner,
-    });
+  if (credentialGateway) {
+    const catalog = new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/bin/codex"], ...(toolBinaries && { toolBinaries }) },
+      { id: "openshell-credentials", backend },
+    );
+    f.controller.registerDriver(catalog);
+    f.controller.selectDriver(catalog.capability, catalog.id);
+  }
+  if (runtimeAuthCompute || inspected) {
+    const compute = kubernetesCompute(
+      KubernetesComputeDriver,
+      {
+        id: "runtime-admission-kubernetes",
+        protectedDriver: owner,
+        ...(inspected && {
+          credentialGatewayDriver: f.controller.selectedDriver("credential_gateway"),
+        }),
+      },
+      inspected,
+    );
+    if (inspected) {
+      compute.resolveSandboxNamespace =
+        GatewayHarnessComputeDriver.prototype.resolveSandboxNamespace;
+    }
     f.controller.registerDriver(compute);
     f.controller.selectDriver("compute", compute.id);
   }
@@ -1409,14 +1437,6 @@ async function protectedOpenShellComposition(
   f.controller.selectDriver("sandbox", sandbox.id);
   if (credentialProxy) {
     f.controller.selectDriver("credential_proxy", proxy.id);
-  }
-  if (credentialGateway) {
-    const catalog = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/bin/codex"], ...(toolBinaries && { toolBinaries }) },
-      { id: "openshell-credentials", backend },
-    );
-    f.controller.registerDriver(catalog);
-    f.controller.selectDriver(catalog.capability, catalog.id);
   }
   if (credentialRefresh) {
     const refresh = new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend });
@@ -1494,6 +1514,10 @@ test("first repository policy save requires affirmative admission of the exact d
   );
   selectedCompute.admitsProtectedRepositoryNetworkPolicySave = admit;
   const sandbox = f.controller.selectedDriver("sandbox");
+  Object.assign(sandbox, {
+    admitRepositoryNetworkPolicy: undefined,
+    validateProtectedRepositoryNetworkPolicy: undefined,
+  });
   assert.equal((await put([grant])).status, 409);
   // This fixture opts in on the Sandbox contract. The bundled Driver still refuses.
   sandbox.admitRepositoryNetworkPolicy = (_policy, network) => network.defaults;
