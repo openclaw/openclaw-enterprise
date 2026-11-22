@@ -358,6 +358,7 @@ function attachedGitExpires(
         assert.ok(r.harnessAuth.method === "credential_source");
         assert.equal(r.harnessAuth.sourceId, model);
         assert.ok(context.harnessAuth.method === "credential_source");
+        assert.ok(context.harnessAuth.source);
         assert.equal(context.harnessAuth.source.id, model);
         assert.equal(
           world.id,
