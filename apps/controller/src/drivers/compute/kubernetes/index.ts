@@ -26,6 +26,7 @@ import {
   ManagedOpenShellHarnessRuntime,
   type HarnessResources,
   type HarnessRuntime,
+  WORKLOAD_TERMINATION_TIMEOUT_MS,
 } from "./harness/runtime.ts";
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
@@ -1364,7 +1365,6 @@ function settledSchedulingConflict(
   );
 }
 
-const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
 // A yielding stop asks the queue whether other Work waits at most once a second.
 const WORKLOAD_TERMINATION_YIELD_CHECK_MS = 1_000;
@@ -4406,6 +4406,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
         ),
+      // A stop renders no Harness requirements; the status read needs only the Harness port.
+      harnessStatusContext: async ({ revision, namespace }) => ({
+        ...(await this.sandboxNamespaceContext(
+          this.sandboxNamespaceForRevision(revision, namespace),
+          namespace,
+        )),
+        revision,
+        requirements: {
+          environment: [{ name: "APP_SERVER_PORT", value: String(AGENT_TRANSPORT_PORT) }],
+        },
+        transportToken: await this.sandboxTransportTokenText(revision),
+      }),
     };
     this.nativeHarness = new KubernetesHarnessRuntime(harnessResources);
     this.selectedHarness = createHarnessRuntime(harnessResources, this.sandboxDriver);

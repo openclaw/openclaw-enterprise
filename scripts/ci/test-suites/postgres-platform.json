@@ -143,8 +143,8 @@
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
         "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",
-        "memory State admits only unprotected revisions with repository network policy",
-        "PostgreSQL saves repository network policy and fences scoped revision admission by execution mode",
+        "memory State admits both execution modes with repository network policy",
+        "PostgreSQL saves repository network policy and binds reader markers for both execution modes",
         "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
         "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",
         "PostgreSQL guarded first deployment persists one private receipt and one reconcile work"
@@ -633,6 +633,7 @@
     {
       "path": "tests/integration/postgres-agent-sandbox-policy.test.mjs",
       "expectedTests": [
+        "PostgreSQL rejects scoped SandboxPolicy saves after IAM revocation during an advisory lock wait",
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
         "Agent policy HTTP preserves and withdraws stored repository grants",
