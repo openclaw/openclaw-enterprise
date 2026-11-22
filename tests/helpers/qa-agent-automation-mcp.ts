@@ -1279,6 +1279,7 @@ async function startNetworkPeer(f: Fixture, agent: Agent, token: string) {
               runAsUser: 1000,
               runAsGroup: 1000,
               fsGroup: 1000,
+              seccompProfile: { type: "RuntimeDefault" },
             },
             containers: [
               {
@@ -1313,7 +1314,66 @@ async function startNetworkPeer(f: Fixture, agent: Agent, token: string) {
       metadata: { name, namespace },
       spec: { selector: { "qa.oce.dev/mcp": name }, ports: [{ port: 8443, targetPort: 8443 }] },
     });
-    await f.kubectl("-n", namespace, "rollout", "status", `deployment/${name}`, "--timeout=120s");
+    try {
+      await f.kubectl("-n", namespace, "rollout", "status", `deployment/${name}`, "--timeout=120s");
+    } catch {
+      // Project only fixed categories from this peer's events before cleanup. Raw
+      // Kubernetes event messages can contain resource data and must not be reported.
+      let categories = ["event-read-unavailable"];
+      try {
+        const events = asRecord(
+          JSON.parse(await f.kubectl("-n", namespace, "get", "events", "-o", "json")),
+        );
+        const items = Array.isArray(events?.items) ? events.items : [];
+        const projected = items.flatMap((value) => {
+          const event = asRecord(value);
+          const object = asRecord(event?.involvedObject);
+          const objectName = object?.name;
+          const kind = ["Deployment", "ReplicaSet", "Pod"].find(
+            (candidate) => candidate === object?.kind,
+          );
+          if (
+            typeof objectName !== "string" ||
+            (objectName !== name && !objectName.startsWith(`${name}-`)) ||
+            !kind
+          ) {
+            return [];
+          }
+          const reason = [
+            "FailedCreate",
+            "FailedScheduling",
+            "FailedMount",
+            "Failed",
+            "BackOff",
+            "Unhealthy",
+          ].find((candidate) => candidate === event?.reason);
+          if (!reason) {
+            return [];
+          }
+          const message = typeof event?.message === "string" ? event.message : "";
+          let category = "other";
+          if (/podsecurity|seccompProfile/i.test(message)) {
+            category = "restricted-pod-security";
+          } else if (/quota|insufficient/i.test(message)) {
+            category = "resource-capacity";
+          } else if (/image|pull/i.test(message)) {
+            category = "image";
+          } else if (/mount|volume/i.test(message)) {
+            category = "volume";
+          } else if (/readiness|probe/i.test(message)) {
+            category = "readiness";
+          }
+          return [`${kind}:${reason}:${category}`];
+        });
+        categories = [...new Set(projected)].sort().slice(0, 8);
+        if (categories.length === 0) {
+          categories = ["no-matching-warning-event"];
+        }
+      } catch {
+        // Keep the fixed unavailable marker when the event read itself fails.
+      }
+      throw new Error(`MCP peer rollout failed; event categories: ${categories.join(",")}`);
+    }
     const peerPods = JSON.parse(
       await f.kubectl("-n", namespace, "get", "pods", "-l", `qa.oce.dev/mcp=${name}`, "-o", "json"),
     ).items;
