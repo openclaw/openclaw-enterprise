@@ -148,7 +148,7 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-At save and deploy, [`selectedPluginBindings`](../../packages/occ/src/plugin-credential-bindings.ts) asks the Plugin Driver for selected Source IDs. OCC authorizes exact Source `operate`, resolves the approved Template version or OAuth consent, and supplies authorized references to `describeDeployment`. No separate Agent Source attachment is needed.
+At preflight, save, and deploy, [`selectedPluginBindings`](../../packages/occ/src/plugin-credential-bindings.ts) asks the Plugin Driver for selected Source IDs. OCC authorizes exact Source `operate`, resolves the approved Template version or OAuth consent, and supplies authorized references to `describeDeployment`. No separate Agent Source attachment is needed.
 
 [`admitAgentDeployment`](../../packages/occ/src/agent-deployment-admission.ts) intersects reviewed credential requests with each exact pin and keeps public requests separate. Native Plugin placement and the OpenShell delivery Proxy currently refuse this topology; OAuth also lacks a staged resolver, and MCP lacks enforceable transport/RPC conjunction.
 

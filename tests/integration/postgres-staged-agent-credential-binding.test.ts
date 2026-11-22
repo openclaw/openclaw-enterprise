@@ -1367,6 +1367,31 @@ test(
         },
       },
     };
+    // The member can update this Agent and operate its existing model Secret, but cannot
+    // operate the selected Plugin Source. The denial must reach that exact Source check.
+    const modelOperateRole = await inject(
+      "POST",
+      `${base}/iam/roles`,
+      {
+        name: "Exact model Secret operator",
+        permissions: [{ action: "operate", resourceKind: "secret" }],
+      },
+      nativeApp,
+    );
+    assert.equal(modelOperateRole.statusCode, 201, modelOperateRole.body);
+    const modelOperateGrant = await inject(
+      "POST",
+      `${base}/iam/access-bindings`,
+      {
+        subjectKind: "identity",
+        subjectId: authorId,
+        roleId: modelOperateRole.json().data.id,
+        resourceKind: "secret",
+        resourceId: modelSecret.json().data.ref.id,
+      },
+      nativeApp,
+    );
+    assert.equal(modelOperateGrant.statusCode, 201, modelOperateGrant.body);
     const deniedSelection = await memberRequest(
       "PATCH",
       `${base}/agents/${pluginAgent.id}`,
@@ -1374,6 +1399,22 @@ test(
       nativeApp,
     );
     assert.equal(deniedSelection.statusCode, 403, deniedSelection.body);
+    const selectionDenial = await pool.query(
+      `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+       FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2 AND actor_id=$3
+         AND action='openclaw.agents.update' AND kind='authorization_denial' AND outcome='denied'
+         AND details->'__occAuditMetadata'->>'requestId'=$4`,
+      [namespaceId, pluginAgent.id, authorId, deniedSelection.json().meta.requestId],
+    );
+    assert.deepEqual(selectionDenial.rows, [
+      {
+        authorization: {
+          principalId: authorId,
+          action: "operate",
+          resource: { kind: "credential_source", namespaceId, id: googleSource.id },
+        },
+      },
+    ]);
     assert.equal(
       (
         await pool.query(
@@ -1395,6 +1436,32 @@ test(
         },
       },
     };
+    // Create preflight performs the same Source authorization and exact-pin checks without
+    // saving a Configuration, Agent, or Agent-principal grant.
+    const preflight = (plugins: object) => ({
+      configuration: { kind: "agent", values: createHarnessConfiguration("openclaw", "gpt-4.1") },
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key" },
+      plugins,
+    });
+    const deniedPreflight = await memberRequest(
+      "POST",
+      `${base}/agents/validate`,
+      preflight(selection.plugins),
+      nativeApp,
+    );
+    assert.equal(deniedPreflight.statusCode, 403, deniedPreflight.body);
+    const unpinnedPreflight = await inject(
+      "POST",
+      `${base}/agents/validate`,
+      preflight(unpinnedSelection.plugins),
+      nativeApp,
+    );
+    assert.equal(unpinnedPreflight.statusCode, 409, unpinnedPreflight.body);
+    assert.match(
+      unpinnedPreflight.json().error.message,
+      /approved exact Connection Template version/,
+    );
     const refusedPin = await inject(
       "PATCH",
       `${base}/agents/${pluginAgent.id}`,

@@ -203,6 +203,9 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       );
     }
     if (operationId === "validateAgentCreate") {
+      permissions.push(
+        requirement("operate", "credential_source", "request_body", "bound_credential_source"),
+      );
       return permissions;
     }
     if (provisioning) {
@@ -358,13 +361,16 @@ function permissionDescription(
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }
       if (condition === "bound_credential_source") {
+        if (operationId === "validateAgentCreate") {
+          return `Requires ${action} permission on each ${name} submitted at a Plugin connection.`;
+        }
         if (operationId === "createAgent") {
-          return `Requires ${action} permission on each ${name} listed in credentialSources or named by a credential-source harnessAuth.`;
+          return `Requires ${action} permission on each ${name} listed in credentialSources, named by a credential-source harnessAuth, or selected at a Plugin connection.`;
         }
         if (operationId === "updateAgent") {
-          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
+          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update. Submitting Plugin selections also checks current and submitted Plugin Sources; submitting credentialSources checks the selected Plugin Sources.`;
         }
-        return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
+        return `Requires ${action} permission on each ${name} the Agent lists, names in harnessAuth, or selects at a Plugin connection.`;
       }
       if (condition === "saved_sandbox_policy_for_deployment") {
         return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions or an explicit repository network policy list, including an empty list.`;
@@ -415,7 +421,7 @@ function permissionDescription(
       operationId === "deployAgentFirst"
         ? "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. "
         : "";
-    return `${prefix}${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
+    return `${prefix}${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists or selects at a Plugin connection.`;
   }
   return description;
 }

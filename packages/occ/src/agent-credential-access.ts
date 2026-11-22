@@ -42,6 +42,7 @@ import {
 } from "./errors.ts";
 import { iamPolicyOperation, type IAMPolicyOperations } from "./iam-policy-operations.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
 
 type AgentOperateSource = SecretReference | CredentialSourceReference;
 
@@ -214,10 +215,11 @@ export function createAgentCredentialAccess({
 
   /** Plugin connections require an exact approved Source Template version or completed OAuth consent. */
   async function authorizePluginCredentialSources(
-    state: PlatformUnitOfWork,
+    state: PlatformReadView,
     principalId: string,
     namespaceId: string,
     bindings: readonly SelectedPluginBinding[],
+    resolveSource: (sourceId: string) => Promise<Readonly<CredentialSource> | undefined>,
     resolved: readonly CredentialSource[] = [],
   ): Promise<{
     readonly sources: readonly CredentialSource[];
@@ -234,7 +236,7 @@ export function createAgentCredentialAccess({
       let source = existing.get(sourceId);
       if (source === undefined) {
         await authorizeSourceOperate(principalId, namespaceId, sourceId);
-        source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
+        source = await resolveSource(sourceId);
       }
       if (!source || source.state !== "ready" || source.ownerCapability !== "token_service") {
         throw new ResourceStateConflictError(
@@ -338,6 +340,7 @@ export function createAgentCredentialAccess({
       principalId,
       agent.namespaceId,
       selected,
+      (sourceId) => state.credentialSources.lockCredentialSource(agent.namespaceId, sourceId),
       attached,
     );
     const sources = [
@@ -486,22 +489,18 @@ export function createAgentCredentialAccess({
     return created;
   }
 
-  /** Save only exact Source-use grants for the Agent principal; release only OCC-owned grants. */
-  async function reconcilePluginSourceGrants(
+  /** Ensure exact Source-use grants for every submitted Plugin selection. */
+  async function grantSelectedPluginSources(
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
-    previous: readonly string[],
     selected: readonly string[],
   ): Promise<void> {
-    const prior = new Set(previous);
-    const current = new Set(selected);
-    const added = selected.filter((id) => !prior.has(id));
     const created = await ensureAgentOperateGrants(
       state,
       agent.namespaceId,
       agent,
-      added.map((id) => ({ kind: "credential_source", namespaceId: agent.namespaceId, id })),
+      selected.map((id) => ({ kind: "credential_source", namespaceId: agent.namespaceId, id })),
     );
     for (const binding of created) {
       await state.audit.append({
@@ -524,57 +523,6 @@ export function createAgentCredentialAccess({
           subjectKind: binding.subjectKind,
           subjectId: binding.subjectId,
           roleId: binding.roleId,
-          reason: "agent_plugin_selection",
-          agentId: agent.id,
-        },
-      });
-    }
-    for (const id of previous) {
-      if (
-        current.has(id) ||
-        agent.credentialSources?.some(({ sourceId }) => sourceId === id) ||
-        (agent.harnessAuth?.method === "credential_source" && agent.harnessAuth.sourceId === id)
-      ) {
-        continue;
-      }
-      const bindingId = `binding_${agent.id}_${id}_operate`;
-      const binding = await state.iamPolicy.getAccessBinding(agent.namespaceId, bindingId);
-      if (
-        !binding ||
-        binding.subjectKind !== "identity" ||
-        binding.subjectId !== agent.servicePrincipalId ||
-        binding.resourceKind !== "credential_source" ||
-        binding.resourceId !== id
-      ) {
-        continue;
-      }
-      const driver = iamPolicy.iamPolicyDriver("deleteNamespaceAccessBinding");
-      if (
-        driver.namespacePolicyTransaction !== "platform-unit-of-work" ||
-        !(await driver.deleteNamespaceAccessBinding!(
-          { policy: state.iamPolicy },
-          agent.namespaceId,
-          bindingId,
-        ))
-      ) {
-        throw new ResourceStateConflictError(
-          "The Agent's exact Plugin Source grant could not be removed.",
-        );
-      }
-      await state.audit.append({
-        id: `aud_${crypto.randomUUID()}`,
-        installationId,
-        namespaceId: agent.namespaceId,
-        occurredAt: timestamp(),
-        kind: "mutation",
-        actorId: principalId,
-        source: "occ",
-        action: "openclaw.iam.access_bindings.delete",
-        resource: { kind: "credential_source", id, namespaceId: agent.namespaceId },
-        outcome: "success",
-        details: {
-          bindingId,
-          subjectId: agent.servicePrincipalId,
           reason: "agent_plugin_selection",
           agentId: agent.id,
         },
@@ -653,7 +601,7 @@ export function createAgentCredentialAccess({
     authorizePluginCredentialSources,
     admitCredentialSources,
     ensureAgentOperateGrants,
-    reconcilePluginSourceGrants,
+    grantSelectedPluginSources,
     grantDeployedAgentSources,
   };
 }
