@@ -3,9 +3,7 @@
 Deploy an Agent into a ready Namespace and verify model execution. Complete
 [control-plane installation](production-installation.md) and its authenticated
 API check. Run commands from the repository root, retaining credentials and
-Kubernetes context. For Secret-backed authentication, you or an Installation
-administrator must [grant the Agent access to the model Secret](#grant-the-agent-access-to-its-model-secret)
-before deployment.
+Kubernetes context. See [credential grants at deployment](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
 
 Use Bash, Python 3, kubectl, and the OCC CLI for the commands below. For browser
 deployment, prepare the Namespace and follow the
@@ -311,23 +309,22 @@ For OCE-managed accounts, use the account/Backend binding in
 [Harness authentication](../../reference/agents.md#harness-authentication).
 
 ```bash
+unset AGENT_ID
 : "${AGENT_EXECUTION_MODE:?choose embedded or dedicated above}"
 : "${HARNESS_SECRET_ID:?set the OCC Secret ID containing the credential}"
 export HARNESS_SECRET_ID
 export HARNESS_AUTH_METHOD='api_key' # Or codex_pat for Dedicated Codex.
 printf '{"name":"production-agent","configurationId":"%s","executionMode":"%s","harnessAuth":{"method":"%s","source":{"kind":"secret","namespaceId":"%s","id":"%s"}}}\n' \
-  "$CONFIGURATION_ID" "$AGENT_EXECUTION_MODE" "$HARNESS_AUTH_METHOD" "$NAMESPACE_ID" "$HARNESS_SECRET_ID" > agent.json
+  "$CONFIGURATION_ID" "$AGENT_EXECUTION_MODE" "$HARNESS_AUTH_METHOD" "$NAMESPACE_ID" "$HARNESS_SECRET_ID" > agent.json &&
 AGENT_RESPONSE="$(occ agent create --file agent.json --output json)" &&
 AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')" &&
-AGENT_SERVICE_PRINCIPAL_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servicePrincipalId"])')" &&
-export AGENT_ID AGENT_SERVICE_PRINCIPAL_ID
+export AGENT_ID
 ```
 
 ### Check saved settings for local model verification
 
-If you used either example unchanged, continue to the grant below. To use a
-local check with a reused or customized Configuration, check the settings that
-the saved Agent references before granting model Secret access or deploying.
+For a local check with a reused or customized Configuration, check the saved
+settings before deployment or a manual grant. Otherwise, [deploy](#prepare-transport-credentials-and-deploy).
 The caller needs `read` on the Agent and its Namespace Configuration. Set
 `AGENT_ID` to the saved Agent's ID and pass `tui` or `http`.
 
@@ -366,33 +363,35 @@ print("Saved Configuration matches the chosen check.")
 PYTHON
 ```
 
-A match confirms the saved fields. Complete the required grants and deployment,
-then [verify a model reply](#verify-production-workloads).
+After a match, [deploy](#prepare-transport-credentials-and-deploy) and
+[verify a model reply](#verify-production-workloads).
 
 ### Grant the Agent access to its model Secret
 
-The deploying caller and the Agent's service principal both need `operate` on
-the exact Secret. To grant the Agent access, use a credential with Installation
-`administer`, `read` on this Namespace, and `read` on the exact Secret. The fresh
-bootstrap service key has these permissions with native IAM unless a Restriction
-denies access. If you use a more limited credential, give `NAMESPACE_ID`,
-`AGENT_ID`, and `HARNESS_SECRET_ID` to an Installation administrator. They can
-look up the service principal and then run the commands below. Kubernetes
-RoleBindings do not grant OCC access.
+With transactional native IAM, [deploy](#prepare-transport-credentials-and-deploy)
+to grant access. A refused deployment writes no grant. If the IAM Driver manages
+policy outside OCC, grant the Agent `operate` on the exact Secret before deployment. Check [policy-write support](../../reference/drivers/iam.md#namespace-policy-operations).
+
+For a manual native IAM grant, you need Installation `administer` and `read`
+on the Namespace, Agent, and exact Secret. The bootstrap service key has these grants unless a
+Restriction denies access. Otherwise, give `NAMESPACE_ID`, `AGENT_ID`, and
+`HARNESS_SECRET_ID` to an Installation administrator. Kubernetes RoleBindings
+do not grant OCC access.
+
+Find a Role with exactly this permission.
 
 ```bash
-export NAMESPACE_ID AGENT_ID HARNESS_SECRET_ID
-export OCC_NAMESPACE="$NAMESPACE_ID"
-AGENT_LOOKUP="$(occ agent get "$AGENT_ID" --output json)" &&
-AGENT_SERVICE_PRINCIPAL_ID="$(printf '%s' "$AGENT_LOOKUP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servicePrincipalId"])')" &&
-export AGENT_SERVICE_PRINCIPAL_ID
+unset IAM_ROLE_ID
+export OCC_NAMESPACE="${NAMESPACE_ID:?}" &&
+occ iam role list --output json
 ```
 
-Create the Role once per Namespace, or use `occ iam role list --output json` to
-find a Role with exactly the permission shown and export its ID as `IAM_ROLE_ID`:
+On error, stop. Export a matching Role ID as `IAM_ROLE_ID`, or create one.
 
 ```bash
-cat > model-secret-role.json <<'JSON'
+unset IAM_ROLE_ID
+export OCC_NAMESPACE="${NAMESPACE_ID:?}" &&
+cat > model-secret-role.json <<'JSON' &&
 {"name":"Use a model Secret","permissions":[{"action":"operate","resourceKind":"secret"}]}
 JSON
 IAM_ROLE_RESPONSE="$(occ iam role create --file model-secret-role.json --output json)" &&
@@ -400,37 +399,63 @@ IAM_ROLE_ID="$(printf '%s' "$IAM_ROLE_RESPONSE" | python3 -c 'import json,sys; p
 export IAM_ROLE_ID
 ```
 
-Bind the Role to this Agent and this Secret, then read the stored binding:
+Put `occ` on `PATH`. Python cannot use Bash aliases or functions.
 
 ```bash
-: "${NAMESPACE_ID:?}" "${AGENT_SERVICE_PRINCIPAL_ID:?}" "${IAM_ROLE_ID:?}" "${HARNESS_SECRET_ID:?}"
-python3 -c 'import json,os; print(json.dumps({"subjectKind":"identity","subjectId":os.environ["AGENT_SERVICE_PRINCIPAL_ID"],"roleId":os.environ["IAM_ROLE_ID"],"resourceKind":"secret","resourceId":os.environ["HARNESS_SECRET_ID"]}))' > model-secret-binding.json &&
-IAM_BINDING_RESPONSE="$(occ iam access-binding create --file model-secret-binding.json --output json)" &&
-IAM_BINDING_ID="$(printf '%s' "$IAM_BINDING_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')" &&
-export IAM_BINDING_ID
+(
+export OCC_NAMESPACE="${NAMESPACE_ID:?}" &&
+python3 - "${AGENT_ID:?}" "${IAM_ROLE_ID:?}" "${HARNESS_SECRET_ID:?}" <<'PYTHON'
+import json, os, subprocess, sys, tempfile
 
-IAM_BINDING="$(occ iam access-binding get "${IAM_BINDING_ID:?}" --output json)" &&
-printf '%s' "$IAM_BINDING" | python3 -c '
-import json, os, sys
-binding = json.load(sys.stdin)
+agent_id, role_id, secret_id = sys.argv[1:]
+namespace = os.environ["OCC_NAMESPACE"]
+
+def occ(*args):
+    return json.loads(subprocess.check_output(["occ", *args, "--output", "json"]))
+
+agent = occ("agent", "get", agent_id)
+principal = agent["servicePrincipalId"]
+if (agent["id"] != agent_id or agent["namespaceId"] != namespace
+        or not isinstance(principal, str) or not principal.strip()):
+    sys.exit("Check the Agent ID, Namespace and service principal.")
+harness_auth = agent.get("harnessAuth")
+secret = {"kind": "secret", "namespaceId": namespace, "id": secret_id}
+if not isinstance(harness_auth, dict) or harness_auth.get("source") != secret:
+    sys.exit("The Agent does not name this model Secret.")
+
+role = occ("iam", "role", "get", role_id)
+if (role["id"] != role_id or role["namespaceId"] != namespace
+        or role["permissions"] != [{"action": "operate", "resourceKind": "secret"}]):
+    sys.exit("Check the Role ID, Namespace and permissions.")
+
 expected = {
-    "namespaceId": os.environ["NAMESPACE_ID"],
     "subjectKind": "identity",
-    "subjectId": os.environ["AGENT_SERVICE_PRINCIPAL_ID"],
-    "roleId": os.environ["IAM_ROLE_ID"],
+    "subjectId": principal,
+    "roleId": role_id,
     "resourceKind": "secret",
-    "resourceId": os.environ["HARNESS_SECRET_ID"],
+    "resourceId": secret_id,
 }
+with tempfile.TemporaryDirectory() as directory:
+    request_path = os.path.join(directory, "model-secret-binding.json")
+    with open(request_path, "w") as request:
+        json.dump(expected, request)
+    binding_id = occ("iam", "access-binding", "create", "--file", request_path)["id"]
+if not isinstance(binding_id, str) or not binding_id.strip():
+    sys.exit("Missing binding ID.")
+binding = occ("iam", "access-binding", "get", binding_id)
+expected.update(id=binding_id, namespaceId=namespace)
 if any(binding.get(key) != value for key, value in expected.items()):
     sys.exit("Binding does not match this Agent and Secret.")
 print("Exact Agent Secret binding is stored")
-'
+PYTHON
+)
 ```
 
-Continue only after the confirmation. If a create response is lost, inspect
-`occ iam role list --output json` or `occ iam access-binding list --output json`
-before retrying; duplicate bindings can coexist. The stored binding does not
-override a matching Restriction. See [Namespace IAM policy](../../reference/authorization.md#manage-namespace-policy).
+Continue only after confirmation. Before retrying an uncertain create or failed
+verification, list Roles or bindings with `occ iam role list --output json` or
+`occ iam access-binding list --output json`. Check the binding's Agent service
+principal, Role, and exact Secret. Duplicate bindings can coexist. Restrictions
+still apply. See [Namespace IAM policy](../../reference/authorization.md#manage-namespace-policy).
 
 ### Prepare transport credentials and deploy
 
@@ -453,9 +478,10 @@ Secrets; follow [Slack setup](../integrations/slack.md). Keep credential values
 out of Helm values, Installation YAML, Configurations, shell history, and this
 repository.
 
-Deployment requires `deploy` on this Agent and `read` on its saved
-Configuration. Both the caller and the Agent's service principal need `operate`
-on the model Secret and each Configuration `secretBindings` Secret.
+To deploy, you need `deploy` on the exact Agent, `read` on its saved
+Configuration, and `operate` on the model Secret and each Configuration
+`secretBindings` Secret. The Agent's service principal needs `operate` on those
+Secrets. See [Agent credential grants](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
 
 For this new, stopped Agent, review the saved Configuration and note its
 `generation`. Keep the caller identity, Namespace ID, Agent ID, Configuration ID,
@@ -482,10 +508,12 @@ If the reply is lost, [recover the original first-deployment receipt](../topics/
 with the same caller and recorded inputs. A missing receipt leaves the outcome
 unknown. Do not submit another deployment.
 
-A receipt identifies the admitted revision. Repeat the status check until it
-reports `succeeded` or `failed`. If status access is denied, ask an Installation
-administrator for `read` on that `agent_revision`. After success, verify workspace
-access and a model response below.
+Poll the receipt's `revisionId` until status is `succeeded` or
+[`failed`](../../reference/agents.md#deployment-status). On failure, follow
+`error.message`. If it requires a new deployment, use [Update and deploy](../topics/agent-revisions.md#update-and-deploy)
+and set `REVISION_ID` to the `id` from `occ agent deploy` before checking status.
+If denied, ask an Installation administrator for `read` on that
+`agent_revision`. After success, verify workspace access and a model reply.
 
 ## Verify workspace access
 
@@ -525,9 +553,18 @@ operator environment and return here to clean up temporary credentials.
 
 ## End the operator session
 
-After model verification, remove only temporary delivery copies created by
-these guides. The command leaves a caller-supplied `OCC_SERVICE_KEY_FILE` and
-the protected original `OCC_BOOTSTRAP_KEY_FILE` untouched:
+For HTTP verification, stop the port-forward in its shell with Ctrl+C. Clean up
+any fetched [password copy](../operate/model-verification.md#verify-rejection-and-a-real-response)
+in the shell that fetched it, even after an early stop. Keep supplied files.
+
+In the **deployment operator shell**, unset `OCC_SERVICE_KEY_FILE`.
+
+```bash
+unset OCC_SERVICE_KEY_FILE
+```
+
+In the **original Installation shell**, remove the temporary bootstrap copy below.
+Keep its path variables set and preserve the original key.
 
 ```bash
 case "${OCC_SERVICE_KEY_DIRECTORY:-}" in
@@ -544,17 +581,6 @@ case "${OCC_SERVICE_KEY_DIRECTORY:-}" in
   *) printf '%s\n' 'Service-key directory was not created by this guide; nothing was deleted.' >&2 ;;
 esac
 unset OCC_SERVICE_KEY_FILE OCC_SERVICE_KEY_DIRECTORY
-
-case "${SECRET_DIRECTORY:-}" in
-  /tmp/occ-agent-transport.[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]])
-    if [ -d "$SECRET_DIRECTORY" ] && [ ! -L "$SECRET_DIRECTORY" ]; then
-      rm -f -- "$SECRET_DIRECTORY/app-server-token" "$SECRET_DIRECTORY/gateway-password" &&
-      rmdir -- "$SECRET_DIRECTORY"
-    fi ;;
-  '') ;;
-  *) printf '%s\n' 'Transport directory was not created by this guide; nothing was deleted.' >&2 ;;
-esac
-unset SECRET_DIRECTORY
 ```
 
 This does not revoke the service key or delete the Kubernetes Secrets. Keep
@@ -565,8 +591,8 @@ the original in protected bootstrap storage; bootstrap will not reissue it.
 After model verification, optionally [enable native admin access](native-admin.md)
 and [configure this Agent's exact origin](native-admin.md#configure-each-agent).
 You need a browser session with exact-Agent `administer` permission. Add the
-returned origin to `gateway.controlUi.allowedOrigins` and deploy again; then
-open **Native admin UI** and verify the native UI loads.
+returned origin to `gateway.controlUi.allowedOrigins`, [deploy again](../topics/agent-revisions.md#update-and-deploy),
+and verify **Native admin UI** loads.
 
 ## Related
 
