@@ -108,4 +108,6 @@ Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` wit
 
 ## Delete a source
 
-DELETE requires `credential_source:delete` and returns `409` while the Source is referenced. TokenService removes the Source and credential from its custody. Retained OpenShell Providers keep credential copies that can remain usable; see [implementation status](../credential-sources.md#implementation-status) for retirement work. Success returns `204` after Source removal and completion audit. An uncertain removal can leave the Source in `deleting` for retry. If removal succeeds but the completion audit fails, the Source remains gone; retry returns `403` or `404` depending on the caller's remaining authority.
+DELETE requires `credential_source:delete` and returns `409` while blocking references remain. OCC marks the Source `deleting`. If an OpenShell Credential Proxy is selected, OCC asks it to retire its owned Provider and profile before TokenService removes the Source and credential from custody. If Proxy retirement fails, DELETE returns `503` and retains the Source and credential for retry. Success returns `204` after Source removal and completion audit. An uncertain removal can leave the Source in `deleting` for retry. If removal succeeds but the completion audit fails, the Source remains gone; retry returns `403` or `404` depending on the caller's remaining authority.
+
+If an Installation restarts without the Proxy selected, deletion follows the no-Proxy path. A previously retained Provider copy can remain after Source deletion.

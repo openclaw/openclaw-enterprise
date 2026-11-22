@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+
 import type {
   DeploymentCredentialBinding,
   CredentialInjectionPolicy,
@@ -29,8 +30,10 @@ import {
   openShellNetworkRouteMayOverlap,
   sameOpenShellPolicy,
 } from "../sandbox/openshell-policy.ts";
+import { statusCode } from "../sandbox/openshell-gateway-errors.ts";
 
 const NAMESPACE_ID = "openclaw.dev/namespace-id";
+const GRPC_FAILED_PRECONDITION = 9;
 const DELIVERY_OWNER = "openclaw.dev/credential-proxy-delivery";
 const STATIC_DELIVERY = "static";
 const TOKEN_SERVICE_OWNER = "openclaw.dev/token-service";
@@ -55,6 +58,15 @@ export class OpenShellCredentialDeliveryRefusedError extends DependencyUnavailab
 
 function refuse(): never {
   throw new OpenShellCredentialDeliveryRefusedError();
+}
+
+function deliveryOwnership(source: CredentialSourceReference): Record<string, string> {
+  return {
+    [MANAGED_BY_LABEL]: MANAGED_BY,
+    [SOURCE_ID_LABEL]: source.id,
+    [NAMESPACE_ID]: source.namespaceId,
+    [DELIVERY_OWNER]: STATIC_DELIVERY,
+  };
 }
 
 function profileFor(binding: DeploymentCredentialBinding): OpenShellProviderProfile {
@@ -89,12 +101,7 @@ function profileForSource(
     endpoints: [],
     binaries: [],
     inferenceCapable: false,
-    annotations: {
-      [MANAGED_BY_LABEL]: MANAGED_BY,
-      [SOURCE_ID_LABEL]: sourceRef.id,
-      [NAMESPACE_ID]: sourceRef.namespaceId,
-      [DELIVERY_OWNER]: STATIC_DELIVERY,
-    },
+    annotations: deliveryOwnership(sourceRef),
   };
 }
 
@@ -197,6 +204,67 @@ export async function readOwnedOpenShellPushedProvider(input: {
   return provider;
 }
 
+/** Retire only the Proxy-owned copy and profile; OpenShell refuses a Provider still in use. */
+export async function retireOccTokenServiceProviderCopy(input: {
+  readonly client: Pick<
+    OpenShellGatewayClient,
+    | "getWorkspace"
+    | "getProvider"
+    | "getProviderProfile"
+    | "deleteProvider"
+    | "deleteProviderProfile"
+  >;
+  readonly workspace: string;
+  readonly source: CredentialSourceReference;
+  readonly signal: AbortSignal;
+  readonly retainIfAttached?: boolean;
+}): Promise<void> {
+  const { client, workspace, source, signal } = input;
+  const owner = await client.getWorkspace(workspace, signal);
+  if (!owner) {
+    return;
+  }
+  if (
+    owner.name !== workspace ||
+    !owner.id ||
+    owner.labels[MANAGED_BY_LABEL] !== MANAGED_BY ||
+    owner.labels[NAMESPACE_ID] !== source.namespaceId
+  ) {
+    refuse();
+  }
+  const name = openShellProviderName(source.id);
+  const provider = await client.getProvider(workspace, name, signal);
+  const profile = await client.getProviderProfile(workspace, name, signal);
+  if (
+    (provider && !ownsDeliveryProvider(provider, source, workspace)) ||
+    (profile &&
+      (profile.id !== name || !isDeepStrictEqual(profile.annotations, deliveryOwnership(source))))
+  ) {
+    refuse();
+  }
+  if (provider) {
+    try {
+      await client.deleteProvider(workspace, name, signal);
+    } catch (error) {
+      const details = asRecord(error)?.details;
+      const attached = `provider '${name}' is attached to sandbox(es): `;
+      if (
+        input.retainIfAttached &&
+        statusCode(error) === GRPC_FAILED_PRECONDITION &&
+        typeof details === "string" &&
+        details.startsWith(attached) &&
+        details.slice(attached.length).trim().length > 0
+      ) {
+        return;
+      }
+      throw error;
+    }
+  }
+  if (profile) {
+    await client.deleteProviderProfile(workspace, name, signal);
+  }
+}
+
 /** Reuse the Proxy's Provider copy, or initialize it from an authorized OCC TokenService Source. */
 export async function prepareOccTokenServiceProviderCopy(input: {
   readonly client: Pick<
@@ -265,12 +333,7 @@ export async function prepareOccTokenServiceProviderCopy(input: {
     workspace,
     name: profile.id,
     type: profile.id,
-    labels: {
-      [MANAGED_BY_LABEL]: MANAGED_BY,
-      [SOURCE_ID_LABEL]: binding.sourceRef.id,
-      [NAMESPACE_ID]: input.namespaceId,
-      [DELIVERY_OWNER]: STATIC_DELIVERY,
-    },
+    labels: deliveryOwnership(binding.sourceRef),
     credentials: { [binding.projection.environment]: resolved.credential },
     config: { [SOURCE_VERSION]: resolved.version },
     ...(resolved.expiresAt && {

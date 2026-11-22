@@ -1488,6 +1488,7 @@ test(
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
+      [89, "preStaticSourceTemplateAssociation"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1942,6 +1943,7 @@ test(
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
+      [89, "preStaticSourceTemplateAssociation"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2486,6 +2488,7 @@ test(
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
+      [89, "preStaticSourceTemplateAssociation"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2778,6 +2781,7 @@ test(
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
+      [89, "preStaticSourceTemplateAssociation"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

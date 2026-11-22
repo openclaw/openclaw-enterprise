@@ -1,13 +1,25 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+import test, { type TestContext } from "node:test";
+import pg from "pg";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
-import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
+import {
+  createOpenShellBackend,
+  openShellProviderName,
+} from "../../apps/controller/src/backends/openshell.ts";
+import {
+  credentialSourceDeliveryBinding,
+  installationControllerOptions,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import type {
   CredentialProxyDriver,
   CredentialSourceReference,
@@ -27,10 +39,140 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
+import { digest } from "../helpers/kubernetes-routed-scenarios.mjs";
+import type { FixtureDriver } from "../helpers/kubernetes-workspace-setup.ts";
+import { createDedicatedDeployKubernetesFixture } from "../conformance/kubernetes-dedicated-deploy-fixture.ts";
+import { bindWireServer } from "../conformance/openshell-gateway-wire-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
+
+type Wire = Record<string, unknown>;
+
+async function controlledRetirementTransport(
+  t: TestContext,
+  namespaceId: string,
+  workspace: string,
+) {
+  const copies = new Map<string, { provider?: Wire; profile?: Wire }>();
+  let refused = false;
+  let reads = 0;
+  const methods: Record<string, (request: Wire) => Wire | undefined> = {
+    GetWorkspace: (request) => {
+      reads++;
+      assert.equal(request.name, workspace);
+      return {
+        workspace: {
+          metadata: {
+            id: "controlled-workspace",
+            name: workspace,
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/namespace-id": namespaceId,
+            },
+          },
+        },
+      };
+    },
+    GetSandbox: () => undefined,
+    GetProvider: (request) => {
+      const copy = copies.get(String(request.name));
+      return copy?.provider && { provider: copy.provider };
+    },
+    GetProviderProfile: (request) => {
+      const copy = copies.get(String(request.id));
+      return copy?.profile && { profile: copy.profile };
+    },
+    DeleteProvider: (request) => {
+      if (refused) {
+        throw Object.assign(new Error("Controlled native retirement refusal"), {
+          code: grpc.status.FAILED_PRECONDITION,
+        });
+      }
+      const copy = copies.get(String(request.name));
+      if (copy) {
+        delete copy.provider;
+      }
+      return { outcome: "DELETION_OUTCOME_COMPLETED" };
+    },
+    DeleteProviderProfile: (request) => {
+      const copy = copies.get(String(request.id));
+      if (copy) {
+        delete copy.profile;
+      }
+      return { outcome: "DELETION_OUTCOME_COMPLETED" };
+    },
+  };
+  const service = openShellService(
+    grpc.loadPackageDefinition(
+      loader.loadSync(
+        join(
+          import.meta.dirname,
+          "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+        ),
+        { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+      ),
+    ),
+  );
+  const server = new grpc.Server();
+  server.addService(
+    Object.fromEntries(
+      Object.keys(methods).map((name) => {
+        const definition = service[name];
+        assert.ok(definition);
+        return [name, definition];
+      }),
+    ),
+    Object.fromEntries(
+      Object.entries(methods).map(([name, handler]) => [
+        name,
+        (call: { request: Wire }, done: Grpc.sendUnaryData<Wire>) => {
+          try {
+            const reply = handler(call.request);
+            done(reply ? null : { code: grpc.status.NOT_FOUND }, reply);
+          } catch (error) {
+            done(error as Error);
+          }
+        },
+      ]),
+    ),
+  );
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  t.after(() => {
+    client.close();
+    server.forceShutdown();
+  });
+  return {
+    client,
+    seed(sourceId: string) {
+      const name = openShellProviderName(sourceId);
+      const ownership = {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/credential-source-id": sourceId,
+        "openclaw.dev/namespace-id": namespaceId,
+        "openclaw.dev/credential-proxy-delivery": "static",
+      };
+      copies.set(name, {
+        provider: {
+          metadata: { id: randomUUID(), name, workspace, resource_version: "1", labels: ownership },
+          type: name,
+          profile_workspace: workspace,
+          config: { oce_source_version: randomUUID() },
+        },
+        profile: { id: name, resource_version: "1", annotations: ownership },
+      });
+    },
+    get reads() {
+      return reads;
+    },
+    set refused(value: boolean) {
+      refused = value;
+    },
+  };
+}
 
 test(
   "public managed Source enrollment preserves custody and admits an authorized staged Agent",
@@ -197,6 +339,50 @@ test(
       connectionTemplateVersion: 1,
       secret: { opaque: selectedMaterial },
     };
+    // A Template scoped to the first ready Namespace is unavailable in another real Namespace.
+    const otherNamespace = await inject("POST", "/namespaces", { name: `Other ${randomUUID()}` });
+    assert.equal(otherNamespace.statusCode, 201, otherNamespace.body);
+    const otherNamespaceId: string = otherNamespace.json().data.id;
+    await controller.handleNamespaceLifecycle(principal.id, otherNamespaceId, "ready");
+    const otherBase = `/namespaces/${otherNamespaceId}`;
+    const foreign = remember(await inject("POST", `${otherBase}/credential-sources`, selectedBody));
+    assert.equal(foreign.statusCode, 404, foreign.body);
+    assert.deepEqual(
+      sourceCountsBeforeCustody,
+      [],
+      "foreign Template selection must fail before custody",
+    );
+    assert.deepEqual((await inject("GET", `${otherBase}/credential-sources`)).json().data, []);
+
+    // Installation-wide Templates are available in either ready Namespace.
+    const installedTemplate = await inject("POST", "/connection-templates", {
+      displayName: "Installed API access",
+      mode: "static_bearer",
+      destinations: [{ method: "GET", host: "api.example.test", port: 443, path: "/shared/**" }],
+    });
+    assert.equal(installedTemplate.statusCode, 201, installedTemplate.body);
+    const installedTemplateId: string = installedTemplate.json().data.id;
+    const installedSource = remember(
+      await inject("POST", `${otherBase}/credential-sources`, {
+        ...selectedBody,
+        name: "Installed Source",
+        connectionTemplateId: installedTemplateId,
+      }),
+    );
+    assert.equal(installedSource.statusCode, 201, installedSource.body);
+    assert.equal(installedSource.json().data.connectionTemplateId, installedTemplateId);
+    assert.equal(installedSource.json().data.connectionTemplateVersion, 1);
+    assert.equal(
+      (await inject("DELETE", `${otherBase}/credential-sources/${installedSource.json().data.id}`))
+        .statusCode,
+      204,
+    );
+    assert.equal(
+      (await inject("DELETE", `/connection-templates/${installedTemplateId}`)).statusCode,
+      204,
+    );
+    sourceCountsBeforeCustody.length = 0;
+
     const incomplete = remember(
       await inject("POST", `${base}/credential-sources`, {
         ...selectedBody,
@@ -204,13 +390,6 @@ test(
       }),
     );
     assert.equal(incomplete.statusCode, 400, incomplete.body);
-    const stale = remember(
-      await inject("POST", `${base}/credential-sources`, {
-        ...selectedBody,
-        connectionTemplateVersion: 2,
-      }),
-    );
-    assert.equal(stale.statusCode, 409, stale.body);
     const mixed = remember(
       await inject("POST", `${base}/credential-sources`, {
         ...selectedBody,
@@ -246,15 +425,31 @@ test(
     });
     assert.equal(advanced.statusCode, 200, advanced.body);
     assert.equal(advanced.json().data.current.version, 2);
+    // v1 still exists, but new enrollment must select the approved current version.
+    const custodyBeforeStale = sourceCountsBeforeCustody.length;
+    const stale = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        name: "Historical selection",
+      }),
+    );
+    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(
+      sourceCountsBeforeCustody.length,
+      custodyBeforeStale,
+      "historical selection must fail before additional custody",
+    );
+    const selectedReplacement = randomUUID();
+    material.push(selectedReplacement);
     const selectedUpdate = remember(
       await inject("PATCH", `${base}/credential-sources/${selectedId}`, {
-        secret: { opaque: selectedMaterial },
+        secret: { opaque: selectedReplacement },
       }),
     );
     assert.equal(selectedUpdate.statusCode, 200, selectedUpdate.body);
     assert.equal(notifications.length, 1);
     assert.equal(notifications[0]?.notification.sourceRef.id, selectedId);
-    assert.equal(notifications[0]?.resolved.credential, selectedMaterial);
+    assert.equal(notifications[0]?.resolved.credential, selectedReplacement);
     const selectedRead = remember(await inject("GET", `${base}/credential-sources/${selectedId}`));
     const selectedList = remember(await inject("GET", `${base}/credential-sources`));
     assert.equal(selectedRead.statusCode, 200, selectedRead.body);
@@ -449,7 +644,7 @@ test(
     );
     const session = await signInToControllerApp(app, { email, password });
     const memberRequest = (
-      method: "GET" | "POST" | "PATCH",
+      method: "GET" | "POST" | "PATCH" | "DELETE",
       url: string,
       payload?: object,
       selectedApp = app,
@@ -1008,8 +1203,6 @@ test(
     const baseline = installation.drivers.sandbox.configuration.policy.networkPolicies[0]!;
     baseline.name = "baseline";
     baseline.endpoints[0]!.host = "baseline.example.test";
-    const runtime = await loadInstallationFile(t, installation);
-    assert.ok(runtime);
     // Substitute the Kubernetes SDK transport only. The selected Compute still performs its
     // real Namespace, workload, Secret ownership, and runtime-credential admission operations.
     const kubernetesNamespace = core.addNamespace(namespaceId);
@@ -1019,6 +1212,18 @@ test(
       apiVersion: "v1",
       kind: "Namespace",
     });
+    // The native transport is controlled. Real Source routes, PostgreSQL, TokenService,
+    // the selected OpenShell Proxy, and its production gRPC client remain in the path.
+    const nativeTransport = await controlledRetirementTransport(
+      t,
+      namespaceId,
+      kubernetesNamespace,
+    );
+    const runtime = await loadInstallationFile(t, installation, {
+      createOpenShellBackend: (definition) =>
+        createOpenShellBackend(definition, { gatewayClient: nativeTransport.client }),
+    });
+    assert.ok(runtime);
     assert.ok(
       Reflect.set(
         runtime.computeDriver,
@@ -1039,9 +1244,12 @@ test(
     const proxy = credentialDeliveryRegistration.require("credential_proxy_delivery");
     assert.ok(proxy instanceof OpenShellCredentialProxyDriver);
     assert.equal(sandbox, runtime.sandboxDriver);
+    const credentialSourceDelivery = credentialSourceDeliveryBinding(runtime);
+    assert.ok(credentialSourceDelivery);
     const nativeController = new OpenClawController(controller.installation, {
       state,
       ...installationControllerOptions(runtime.installation),
+      credentialSourceDelivery,
       namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
       backends: runtime.installation.backend,
       recordOperations: true,
@@ -1221,6 +1429,77 @@ test(
         .statusCode,
       204,
     );
+
+    const retirementMaterial = randomUUID();
+    material.push(retirementMaterial);
+    const retirementSource = remember(
+      await inject(
+        "POST",
+        `${base}/credential-sources`,
+        {
+          name: "Native retirement source",
+          type: "static",
+          config: { provider_preset: "openai" },
+          secret: { opaque: retirementMaterial },
+        },
+        nativeApp,
+      ),
+    );
+    assert.equal(retirementSource.statusCode, 201, retirementSource.body);
+    const retirementId = retirementSource.json().data.id;
+    const retirementPath = `${base}/credential-sources/${retirementId}`;
+    // This controlled copy represents a Proxy-owned Provider retained after a deployment.
+    nativeTransport.seed(retirementId);
+    const nativeReadsBeforeGuard = nativeTransport.reads;
+    const boundSourcePath = `${base}/credential-sources/${nativeSource.id}`;
+    const unauthorizedRetirement = remember(
+      await memberRequest("DELETE", boundSourcePath, undefined, nativeApp),
+    );
+    assert.equal(unauthorizedRetirement.statusCode, 403, unauthorizedRetirement.body);
+    const stillBound = remember(await inject("DELETE", boundSourcePath, undefined, nativeApp));
+    assert.equal(stillBound.statusCode, 409, stillBound.body);
+    assert.equal(nativeTransport.reads, nativeReadsBeforeGuard);
+
+    // A native refusal must stop before TokenService mutates its authoritative custody.
+    const custodyBeforeRefusal = structuredClone([...core.secrets]);
+    nativeTransport.refused = true;
+    const refusedRetirement = remember(
+      await inject("DELETE", retirementPath, undefined, nativeApp),
+    );
+    assert.equal(refusedRetirement.statusCode, 503, refusedRetirement.body);
+    assert.equal(
+      remember(await inject("GET", retirementPath, undefined, nativeApp)).json().data.state,
+      "deleting",
+    );
+    assert.deepEqual([...core.secrets], custodyBeforeRefusal);
+    const deliveryName = openShellProviderName(retirementId);
+    const readProvider = () =>
+      nativeTransport.client.getProvider(
+        kubernetesNamespace,
+        deliveryName,
+        AbortSignal.timeout(5_000),
+      );
+    const readProfile = () =>
+      nativeTransport.client.getProviderProfile(
+        kubernetesNamespace,
+        deliveryName,
+        AbortSignal.timeout(5_000),
+      );
+    assert.ok(await readProvider());
+    assert.ok(await readProfile());
+
+    nativeTransport.refused = false;
+    const completedRetirement = remember(
+      await inject("DELETE", retirementPath, undefined, nativeApp),
+    );
+    assert.equal(completedRetirement.statusCode, 204, completedRetirement.body);
+    assert.equal(
+      remember(await inject("GET", retirementPath, undefined, nativeApp)).statusCode,
+      404,
+    );
+    assert.equal(core.secrets.size, custodyBeforeRefusal.length - 1);
+    assert.equal(await readProvider(), undefined);
+    assert.equal(await readProfile(), undefined);
     const networking = `${base}/agents/${dedicatedId}/sandbox-policy/networking`;
     const editing = await inject("PATCH", `${networking}/editing`, { enabled: true }, nativeApp);
     assert.equal(editing.statusCode, 200, editing.body);
@@ -1275,6 +1554,135 @@ test(
         ],
       },
     ]);
+
+    assert.ok(revision);
+    // Simulate an admitted deployment that reached staged delivery. The retained ConfigMap and
+    // native Provider are transport state, not substitutes for the Stop or Proxy decisions.
+    const compute = runtime.computeDriver as unknown as FixtureDriver;
+    const targetName = `credential-target-${digest(dedicatedId)}-rev-${digest(revision.id)}`;
+    const stopTransport = createDedicatedDeployKubernetesFixture(
+      {
+        namespace: kubernetesNamespace,
+        gatewayName: `gateway-${digest(dedicatedId)}`,
+        state: { gatewayAppliesBinding: false },
+        revision,
+        sandboxDriver: sandbox,
+        clock: undefined,
+      },
+      (save) => {
+        save({
+          apiVersion: "v1",
+          kind: "Namespace",
+          metadata: namespaceObject.metadata,
+          status: namespaceObject.status,
+        });
+        const target = compute.manifest(
+          "v1",
+          "ConfigMap",
+          targetName,
+          {
+            namespaceId,
+            agentId: dedicatedId,
+            servicePrincipalId: revision.servicePrincipalId,
+            revisionId: revision.id,
+          },
+          { name: kubernetesNamespace, plane: "control" },
+        );
+        save({
+          ...target,
+          metadata: { ...target.metadata, uid: "controlled-target-uid", resourceVersion: "1" },
+          immutable: true,
+          data: { sandboxId: "controlled-sandbox" },
+        });
+      },
+    );
+    const { KubernetesObjectApi } = createRequire(
+      new URL("../../apps/controller/package.json", import.meta.url),
+    )("@kubernetes/client-node");
+    assert.ok(
+      Reflect.set(
+        compute,
+        "apiClients",
+        Promise.resolve({
+          ...stopTransport.clients,
+          core: {
+            ...stopTransport.clients.core,
+            async listNamespacedPod() {
+              return { items: [] };
+            },
+          },
+          objects: Object.assign(
+            Object.create(KubernetesObjectApi.prototype),
+            stopTransport.clients.objects,
+            {
+              async list() {
+                return { items: [] };
+              },
+            },
+          ),
+          version: {
+            async getCode() {
+              return { gitVersion: "v1.35.0" };
+            },
+          },
+        }),
+      ),
+    );
+    nativeTransport.seed(nativeSource.id);
+    const custodyBeforeStop = structuredClone([...core.secrets]);
+    // The admitted deployment can have materialized a copy before its next queued retry.
+    // Defer that test-owned retry so the Stop work is the caller that cleans the revision.
+    const deferred = await pool.query(
+      "UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour' WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND idempotency_key=$4 AND state='queued'",
+      [namespaceId, dedicatedId, revision.id, `agent_revision:${revision.id}:reconcile`],
+    );
+    assert.equal(deferred.rowCount, 1);
+    const stopped = remember(
+      await inject("POST", `${base}/agents/${dedicatedId}/stop`, undefined, nativeApp),
+    );
+    assert.equal(stopped.statusCode, 202, stopped.body);
+    const worker = createControllerWorker({
+      pool: new pg.Pool({ connectionString: databaseUrl }),
+      computeDriver: compute,
+      pollIntervalMs: 15,
+      emit() {},
+    });
+    try {
+      await worker.start();
+      const result = await waitFor("the Agent Stop work to complete", async () => {
+        const rows = await pool.query(
+          "SELECT state, reason_code FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND agent_target='stopped' ORDER BY created_at DESC LIMIT 1",
+          [namespaceId, dedicatedId],
+        );
+        return ["succeeded", "failed_permanent"].includes(rows.rows[0]?.state)
+          ? rows.rows[0]
+          : undefined;
+      });
+      assert.equal(result.state, "succeeded", result.reason_code);
+    } finally {
+      await worker.stop();
+    }
+    const nativeProvider = openShellProviderName(nativeSource.id);
+    assert.equal(
+      await nativeTransport.client.getProvider(kubernetesNamespace, nativeProvider, t.signal),
+      undefined,
+    );
+    assert.equal(
+      await nativeTransport.client.getProviderProfile(
+        kubernetesNamespace,
+        nativeProvider,
+        t.signal,
+      ),
+      undefined,
+    );
+    assert.equal(stopTransport.objects.has(stopTransport.key("ConfigMap", targetName)), false);
+    assert.deepEqual([...core.secrets], custodyBeforeStop);
+    assert.equal(
+      remember(
+        await inject("GET", `${base}/credential-sources/${nativeSource.id}`, undefined, nativeApp),
+      ).statusCode,
+      200,
+    );
 
     for (const value of material) {
       assert.equal(
