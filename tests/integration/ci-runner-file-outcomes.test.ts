@@ -585,6 +585,82 @@ test("run records failed, skipped, todo, and passed dispositions separately", as
   );
 });
 
+test("run reports only settled released-controller history statuses", async (t) => {
+  const root = await createRunnerFixture(t);
+  const resultsPath = join(root, "results/released-history.json");
+  const helper = new URL("../helpers/released-controller-history.ts", import.meta.url);
+  const kind = "released-controller-history";
+  const privateValue = "synthetic-private-command-output";
+  const malformed = `{"kind":${JSON.stringify(kind)},"status":${JSON.stringify(privateValue)}`;
+  const completed = JSON.stringify({
+    event: "migration.checked",
+    history: "completed",
+    extra: privateValue,
+  });
+  const refused = JSON.stringify({
+    event: "migration.failed",
+    code: "MIGRATION_HISTORY_UNSUPPORTED",
+    extra: privateValue,
+  });
+  const outcomes = [
+    { code: 0, stdout: completed },
+    { code: 1, stderr: `${privateValue}\n${refused}\n` },
+    { code: 0, stdout: `${completed}\n${completed}` },
+    { code: 0, stdout: `{"event":${privateValue}` },
+    { code: 0, stderr: completed },
+    { code: 0, stdout: completed, stderr: refused },
+    { code: 1, stderr: `${privateValue} text containing ${refused}` },
+    { code: 1, stdout: completed, stderr: refused },
+    { code: 1, stderr: `${refused}\n${refused}` },
+    // Valid-looking events cannot establish a result after interruption or Docker failure.
+    { code: 0, killed: true, stdout: completed },
+    { code: 1, signal: "SIGTERM", stderr: refused },
+    { code: "ABORT_ERR", stdout: completed },
+    { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", stdout: completed },
+    ...[124, 125, 126, 127, 137, 143].map((code) => ({ code, stdout: completed })),
+  ];
+  await writeSingleFileRunnerLane(
+    root,
+    "released-history",
+    "tests/integration/released-history.test.ts",
+    `import test from "node:test";
+import { releasedControllerHistoryStatus } from ${JSON.stringify(helper.href)};
+test("released history measurements", (t) => {
+  const prefix = "openclaw-ci-measurement ";
+  const kind = ${JSON.stringify(kind)};
+  const privateValue = ${JSON.stringify(privateValue)};
+  for (const outcome of ${JSON.stringify(outcomes)}) {
+    const status = releasedControllerHistoryStatus({
+      killed: false, signal: null, stdout: "", stderr: "", ...outcome,
+    });
+    if (status !== undefined) {
+      t.diagnostic(prefix + JSON.stringify({ kind, status, argv: privateValue }));
+    }
+  }
+  t.diagnostic(prefix + JSON.stringify({ kind, status: privateValue }));
+  t.diagnostic(prefix + ${JSON.stringify(malformed)});
+});`,
+  );
+  const result = runRunnerSync(
+    laneArgs(root, "released-history", "state/released-history.jsonl", resultsPath),
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.signal, null);
+  const artifact = await readFile(resultsPath, "utf8");
+  const summary = JSON.parse(artifact) as RunSummary;
+  assert.deepEqual(
+    onlyFile(summary).measurements,
+    ["current", "unsupported", ...Array.from({ length: 7 }, () => "unconfirmed")].map((status) => ({
+      kind,
+      status,
+    })),
+  );
+  for (const output of [result.stdout, result.stderr, artifact]) {
+    assert.equal(output.includes(privateValue), false);
+  }
+});
+
 test("run keeps the enrollment operation pending when the parent is interrupted", async (t) => {
   const root = await createRunnerFixture(t);
   const helper = new URL("../helpers/keycloak-enrollment-wait.ts", import.meta.url);
