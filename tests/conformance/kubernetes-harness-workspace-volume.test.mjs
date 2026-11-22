@@ -9,6 +9,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { codexLaunchEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { routedRevision, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
 
 const nodeName = "workspace-node-111111111111-222222222222";
@@ -179,6 +180,69 @@ test("saved scratch admissions preserve legacy launch selection and reject misor
     assert.throws(
       () => driver.scratchAdmission(saved(invalid)),
       /scratch volume admission is invalid/,
+    );
+  }
+});
+
+test("OAuth recovery is selected for new OpenShell revisions without changing saved programs", () => {
+  for (const bindings of [undefined, [operatorBinding]]) {
+    const driver = scratchCompute(bindings);
+    const revision = routedRevision(driver, {
+      sandboxDriverId: "scratch-openshell",
+      harnessAuth: {
+        method: "credential_source",
+        sourceId: "source-fixture",
+        sourceType: "codex-oauth",
+        credentialGatewayId: "openshell-credentials",
+        loginMode: "chatgptAuthTokens",
+      },
+    });
+    assert.equal(driver.codexLaunch(revision, driver.sandboxDriver).openShellProgram, "oauth");
+    assert.equal(driver.runtimeAdmission(revision), undefined);
+    const old = {
+      ...revision,
+      compute: {
+        ...revision.compute,
+        admission: revision.compute.admission.replace(
+          "openshell-codex-oauth-launch:v1:",
+          "openshell-codex-launch:v1:",
+        ),
+      },
+    };
+    // A retry of the old revision must keep its old command, including node setup.
+    const saved = driver.codexLaunch(old, driver.sandboxDriver);
+    assert.equal(saved.openShellProgram, "ordinary");
+    for (const withNode of [false, true]) {
+      assert.equal(
+        codexLaunchEntrypoint({ ...saved, withNode, workspaceSetup: true }),
+        codexLaunchEntrypoint({
+          providerOwned: true,
+          protected: false,
+          openShellProgram: "ordinary",
+          withNode,
+          workspaceSetup: true,
+        }),
+      );
+    }
+    assert.throws(
+      () =>
+        driver.codexLaunch(
+          {
+            ...revision,
+            harnessAuth: { ...revision.harnessAuth, loginMode: "codex_pat" },
+          },
+          driver.sandboxDriver,
+        ),
+      /Compute admission is invalid/,
+    );
+    assert.throws(
+      () =>
+        driver.codexLaunch(revision, {
+          ...driver.sandboxDriver,
+          implementation: "strands-box",
+          provisionHarness: () => {},
+        }),
+      /Compute admission is invalid/,
     );
   }
 });

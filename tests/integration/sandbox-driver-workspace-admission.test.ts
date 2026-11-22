@@ -22,6 +22,8 @@ import {
   type CredentialSource,
   type CredentialSourceLoginMode,
 } from "../../packages/contracts/src/index.ts";
+import { createCodexStartup, login, probe } from "../fixtures/codex-native-startup.mjs";
+import { answeredOpenShellFallback } from "../fixtures/codex-rest-fallback.mjs";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import {
   captureOpenShellHarness,
@@ -369,6 +371,9 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
     { loginMode: "codex_pat", hasSetup: true, admitted: false },
     { loginMode: "codex_pat", hasSetup: false, admitted: false },
     { loginMode: "chatgptAuthTokens", hasSetup: true, admitted: true },
+    { loginMode: "chatgptAuthTokens", hasSetup: false, admitted: true },
+    { loginMode: "chatgptAuthTokens", hasSetup: true, admitted: false },
+    { loginMode: "chatgptAuthTokens", hasSetup: false, admitted: false },
   ];
   for (const { loginMode, hasSetup, admitted } of cases) {
     await t.test(`${loginMode}, setup ${hasSetup}, new admission ${admitted}`, async (t) => {
@@ -436,7 +441,7 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
       );
       admitRevisionHarness(compute, revision);
       if (!admitted) {
-        // Pre-upgrade PAT revisions did not save a Compute admission.
+        // Legacy revisions did not save a Compute launch selection.
         delete revision.compute.admission;
       }
       const workspaceSetup = {
@@ -485,10 +490,10 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
       const { name, spec } = capturedRequest(capture.request);
       const command = commandArguments(spec.command);
       const { loader, supervisor, codex } = inspectOpenShellCodexCommand(t, command, {
-        compact: admitted && (hasSetup || loginMode === "codex_pat"),
+        compact: admitted,
         current: admitted,
       });
-      if (!admitted) {
+      if (!admitted && loginMode === "codex_pat") {
         // Stock 0.1.6 Compute and OpenShell at 4d68b3b7 render these exact commands.
         // Revisions with initial setup embed that release's workspace verifier.
         assert.equal(
@@ -504,10 +509,20 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
         assert.match(supervisor, new RegExp(workspaceSetup.id));
         assert.doesNotMatch(supervisor, /Private initial Agent instructions/);
       }
-      assert.equal(
-        codex.includes("unsupported_l7_protocol"),
-        admitted && loginMode === "codex_pat",
-      );
+      // Execute the actual child emitted by Compute and OpenShell. Only native
+      // Codex output is scripted: this proves command selection, not live inference.
+      const runtime = createCodexStartup(t, {
+        loginMode,
+        providerPat: loginMode === "codex_pat",
+        native: [
+          ...(loginMode === "codex_pat" ? [login()] : []),
+          probe(answeredOpenShellFallback()),
+        ],
+      });
+      runtime.start(codex);
+      runtime.assertNativeScriptConsumed();
+      assert.equal(runtime.appServerStarts, admitted ? 1 : 0);
+      assert.equal(runtime.marker(), admitted ? "ready\n" : undefined);
       const environment = asRecord(spec.environment);
       assert.ok(environment);
       assert.equal(environment.CODEX_LOGIN_MODE, loginMode);

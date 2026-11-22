@@ -12,6 +12,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -95,6 +96,7 @@ export function createCodexStartup(
   {
     native,
     providerPat = false,
+    openShellOAuth = false,
     loginMode = providerPat ? "codex_pat" : "api_key",
     protectedInference,
     transportToken: tokenMode = protectedInference ? "verifier" : "raw",
@@ -191,7 +193,15 @@ export function createCodexStartup(
         ...(providerPat ? { OCE_CODEX_CREDENTIAL_SOURCE: "1" } : {}),
         ...(loginMode === "codex_pat"
           ? { CODEX_ACCESS_TOKEN: providerPat ? providerPlaceholder : "at-fixture-token" }
-          : { OPENAI_API_KEY: "fixture-api-key" }),
+          : loginMode === "chatgptAuthTokens"
+            ? {
+                CODEX_ACCESS_TOKEN: "synthetic-oauth-alias",
+                OCE_CODEX_CHATGPT_ACCOUNT: JSON.stringify({
+                  accountId: "fixture-account",
+                  planType: "plus",
+                }),
+              }
+            : { OPENAI_API_KEY: "fixture-api-key" }),
         OPENCLAW_HARNESS_MODEL: "codex/gpt-4.1",
         OPENCLAW_AGENT_REVISION_ID: revisionId,
         ...(protectedInference
@@ -239,6 +249,7 @@ export function createCodexStartup(
             throw new Error("no plugin runtime payload is configured");
           },
           writeFileSync,
+          renameSync,
         };
       }
       if (specifier === "node:http") {
@@ -401,6 +412,7 @@ export function createCodexStartup(
         providerOwned: true,
         protected: Boolean(protectedInference),
         ...(providerPat && { openShellProgram: "pat" }),
+        ...(openShellOAuth && { openShellProgram: "oauth" }),
       }),
     ) {
       vm.runInNewContext(entrypoint, sandbox);
@@ -486,7 +498,10 @@ export function createCodexStartup(
 export async function checkCodexStartup(t, scenario) {
   const runtime = createCodexStartup(t, {
     ...scenario,
-    native: scenario.native ?? [login(), probe(scenario.events, scenario.result)],
+    native: scenario.native ?? [
+      ...(scenario.loginMode === "chatgptAuthTokens" ? [] : [login()]),
+      probe(scenario.events, scenario.result),
+    ],
   });
   if (scenario.protectedInference === "missing") {
     assert.throws(() => runtime.start(), /protected inference profile is invalid/);

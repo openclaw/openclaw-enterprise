@@ -182,11 +182,11 @@ OpenShell blocks nested bubblewrap; model readiness does not prove shell executi
 `codexLaunchEntrypoint` selects by revision, authentication, protection and workspace node.
 Existing revisions retain encoding; new PAT/workspace setup children are packed on first use.
 
-For a [PAT source](../reference/drivers/openshell-credential-gateway.md#source-type-catalog),
-`prepareHarnessAuth` selects native login. Startup verifies login using a placeholder in private `auth.json`.
-`openShellPatRecovery` requires exact upgrade refusals, a later same-thread HTTPS fallback,
-then a nonempty answer and tool-free completion. Terminal HTTPS 401/403 leaves the Harness
-unready with `AUTHENTICATION_FAILED`.
+`prepareHarnessAuth` selects native [PAT login](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+with a placeholder in private `auth.json`. PAT and new unprotected source-backed
+OAuth revisions share [HTTPS recovery checks](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
+Terminal HTTPS 401/403 leaves the Harness unready (`AUTHENTICATION_FAILED`).
+
 `requireModelSourceDestination` checks immutable `config.authorized_base_url` before binding
 the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
 URL plus `/**`, preserving `/api/v1` prefixes. `attachForRevision` translates native
@@ -421,6 +421,9 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 ## Changelog
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+
+- 2026-11-19 16:30: Trace OAuth recovery and preserve prior commands. (authoring-run/175f2356-f027-463a-b193-9c54d1b4d5f5 - d2c15aacb40dcd5fcb91e1a1a9ffc047314dfdeb)
+
 - 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
 
 - 2026-11-19 09:27: Trace the packaged tool grant and exact Sandbox adoption. (authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a - ec602263727fa848a921a86d755cb38293bfab76)
