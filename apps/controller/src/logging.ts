@@ -108,6 +108,7 @@ const ALLOWED_FIELDS = new Set([
   "status",
   "step",
   "stopYields",
+  "tokenClass",
   "validationCategory",
   "workId",
 ]);
@@ -310,6 +311,15 @@ function safeNumber(key: string, value: number): number | undefined {
   return value;
 }
 
+const GITHUB_TOKEN_CLASSES = new Set([
+  "fine-grained",
+  "classic",
+  "oauth",
+  "app-user",
+  "app-installation",
+  "unknown",
+]);
+
 function safeScalar(key: string, value: unknown): string | number | boolean | undefined {
   if (
     [
@@ -333,6 +343,10 @@ function safeScalar(key: string, value: unknown): string | number | boolean | un
     ["stage", "firstFailureStage", "validationKind", "validationCode", "publication"].includes(key)
   ) {
     return safeCode(value);
+  }
+  if (key === "tokenClass") {
+    // A refused repository token's class, read from its documented prefix: never the token.
+    return typeof value === "string" && GITHUB_TOKEN_CLASSES.has(value) ? value : undefined;
   }
   if (key === "stopYields") {
     return typeof value === "number" && value >= 0 ? safeNumber(key, value) : undefined;

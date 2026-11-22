@@ -443,11 +443,17 @@ test("the native material reader lends without a row and turns stale on replacem
   // A classic token fails the loan: no material, and no value in the audit.
   await replace(fakeOther.classic);
   assert.equal(await reader.readWarm(null, source), undefined);
+  // The waiting route reads again at every pass; the same refused file is reported once.
+  assert.equal(await reader.readWarm(null, source), undefined);
   // The operator is told why, by fixed reason and class: the Worker reports this refusal.
   assert.deepEqual(
     refused.map(({ reason, tokenClass }) => [reason, tokenClass]),
     [["token_class_refused", "classic"]],
   );
+  // A new refused file generation is a new refusal.
+  await replace(fakeOther.classic);
+  assert.equal(await reader.readWarm(null, source), undefined);
+  assert.equal(refused.length, 2);
   const recorded = JSON.stringify(audit);
   for (const value of [fakeFineGrained, fakeReplacement, fakeOther.classic]) {
     assert.equal(recorded.includes(value), false);

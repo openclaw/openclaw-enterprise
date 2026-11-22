@@ -26,13 +26,21 @@ export class GitHubTokenSourceError extends Error {
   readonly reason: keyof typeof refusals;
   /** Only the class read from the documented prefix. */
   readonly tokenClass: GitHubTokenClass | undefined;
-  constructor(secretName: string, reason: keyof typeof refusals, tokenClass?: GitHubTokenClass) {
+  /** The refused Secret file generation, when the file could be read; never derived from bytes. */
+  readonly secretVersion: string | undefined;
+  constructor(
+    secretName: string,
+    reason: keyof typeof refusals,
+    tokenClass?: GitHubTokenClass,
+    secretVersion?: string,
+  ) {
     super(
       `repository token Secret ${secretName} ${refusals[reason]}` +
         (tokenClass && reason === "token_class_refused" ? ` (found ${tokenClass}).` : "."),
     );
     this.reason = reason;
     this.tokenClass = tokenClass;
+    this.secretVersion = secretVersion;
   }
 }
 
@@ -122,11 +130,16 @@ export function createGitHubTokenLoanSource(options: GitHubTokenLoanSourceOption
         const end = bytes.at(-1) === 0x0a ? bytes.length - 1 : bytes.length;
         const token = bytes.subarray(0, end);
         if (!token.length || token.length > 16384 || !token.every((b) => b >= 0x21 && b <= 0x7e)) {
-          throw new GitHubTokenSourceError(secretName, "token_malformed");
+          throw new GitHubTokenSourceError(secretName, "token_malformed", undefined, secretVersion);
         }
         const tokenClass = classifyGitHubToken(token);
         if (tokenClass !== "fine-grained") {
-          throw new GitHubTokenSourceError(secretName, "token_class_refused", tokenClass);
+          throw new GitHubTokenSourceError(
+            secretName,
+            "token_class_refused",
+            tokenClass,
+            secretVersion,
+          );
         }
         const now = clock.now();
         const requested = Math.min(
@@ -189,9 +202,11 @@ export function createGitHubTokenMaterialReader<
 >(
   loans: TokenLoanSource,
   clock: { now(): number } = Date,
-  /** Told of each refused loan (unreadable, malformed or wrong class): names, never bytes. */
+  /** Told of a refused loan (unreadable, malformed or wrong class): names, never bytes. Once per
+   * refused Secret file generation and reason, since a waiting route reads at every pass. */
   refused?: (error: GitHubTokenSourceError) => void,
 ): TokenMaterialReader<Transaction, Source> {
+  let reported: string | undefined;
   const identity = (source: Source, window: number, secretVersion: string) => ({
     preparationAttemptId: loanUuid("github-token-loan", source.key.source.id, String(window)),
     materialVersion: loanUuid(
@@ -212,12 +227,18 @@ export function createGitHubTokenMaterialReader<
           untilMs: (window + 2) * githubTokenLoanWindowMs,
         });
       } catch (error) {
-        // The route waits for material; the operator gets the named diagnostic.
+        // The route waits for material; the operator gets the named diagnostic once.
         if (error instanceof GitHubTokenSourceError) {
-          refused?.(error);
+          const refusal = `${error.secretVersion ?? "unreadable"} ${error.reason}`;
+          if (refusal !== reported) {
+            reported = refusal;
+            refused?.(error);
+          }
         }
         return undefined;
       }
+      // A refusal after a successful loan is reported again.
+      reported = undefined;
       const current = identity(source, window, loan.secretVersion);
       let value: string | undefined = loan.value;
       return Object.freeze({
