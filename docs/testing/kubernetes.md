@@ -296,21 +296,23 @@ TLS and SHA-256 checks stay enabled.
 
 ### Native workspace identity
 
-Prepare native runtime and Envoy images, then set both `OCC_TEST_RUNTIME_IMAGE`
-and `OCC_TEST_WORKSPACE_ENVOY_IMAGE`:
+Prepare native/Envoy images (`OCC_TEST_RUNTIME_IMAGE`, `OCC_TEST_WORKSPACE_ENVOY_IMAGE`)
+and a fresh [migrated disposable database](postgresql.md#other-postgresql-suites)
+(`OCC_TEST_DATABASE_URL`) using the limited application role:
 
 ```sh
 node --test tests/integration/workspace-files-native.test.ts
 ```
 
-This checks file access without model calls. It does not prove Kubernetes
-routing policies, PostgreSQL or worker execution. Selecting only one image fails.
+Checks file access, PostgreSQL ownership, ControllerWorker reconciliation and Docker
+Gateway replacement; no model calls. Compute is a fixture; OCC restart and
+Kubernetes routing/cutover remain unproved. Partial image selection fails.
 
 ### Native Gateway sharing
 
-The `gateway-routing` lane checks native browser access, `agent:operate` chat,
+`gateway-routing` checks native browser access, `agent:operate` chat,
 administration denial, and WebSocket closure after permission withdrawal or
-session expiry. Its combined QA journey adds real Keycloak sign-in. See
+session expiry. Combined QA adds real Keycloak sign-in. See
 [Native Agent browser tests](native-agent-browser.md) for selection, prerequisites,
 cleanup, and proof boundaries. These tests do not qualify automatic account
 enrollment, Git, or OpenShell.
