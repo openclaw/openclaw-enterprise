@@ -25,7 +25,10 @@ runtime image's pinned Claude Code binary for each turn, so tools run in the
 gateway Pod as they do for every embedded Agent. Every selectable model must be
 `anthropic/*` with the same policy; a dedicated Agent, another provider, or
 `openai`-style fallbacks are refused at save or deployment with `400 INVALID_REQUEST`.
-The runtime needs Kubernetes Compute; SSH and Docker Compute refuse it at save.
+OCE prepares the runtime only when the selected models resolve to it: a
+`claude-cli` policy on a provider that no selected model uses has no effect.
+The runtime needs Kubernetes Compute; SSH and Docker Compute refuse it at save
+and at deployment.
 The [console](console/create-and-deploy.md) does not offer the choice yet; set it
 in the Configuration.
 
@@ -45,9 +48,10 @@ which also removes `ls` and `read`. Shell tools such as `exec` can still write f
 OpenClaw skips this mediation when the exec host is `node`: Claude Code then
 gets its full native tool set, outside tool policy. OCE refuses that pair at
 save and deployment with `400 INVALID_REQUEST`, naming `tools.exec.host` or the
-`agents.entries.<id>.tools.exec.host` that is `node`. A session can also be set
-to a node with `/exec host=node node=<id>`, which no setting governs, so the
-gateway denies the node command that runs Claude Code
+`agents.entries.<id>.tools.exec.host` that is `node`. A session can also be put
+on a node without a setting: the `/exec host=node node=<id>` directive, or
+`sessions.patch` or `sessions.create` with a node. The gateway therefore denies
+the node command that runs Claude Code
 (`gateway.nodes.commands.deny` gets `agent.cli.claude.run.v1`), and such a turn
 fails.
 
@@ -129,9 +133,13 @@ For example, a move of `/etc/claude-code` into the home directory fails, but
 first copies `managed-settings.json` there.
 
 The image installs the binary at `/opt/oce/claude-code/bin/claude`, outside
-`PATH`, and only this check adds that directory to the gateway's `PATH`. Other
-Agents' gateways therefore cannot start Claude Code, also not through a chat
-command such as `/model --runtime claude-cli`. A binary missing from the image or not at the pinned
+`PATH`, and only this check adds that directory to the gateway's `PATH`. In a
+gateway that did not select the runtime, OpenClaw therefore cannot start Claude
+Code by its command name, also not after a chat command such as
+`/model --runtime claude-cli`. This does not stop a model's shell tool: in any
+Agent it can run the file by its full path. In a gateway that did not select
+the runtime, it then runs without the managed settings, and with only the
+credentials that the tool can already read. A binary missing from the image or not at the pinned
 `OCE_CLAUDE_CODE_VERSION` also holds the gateway with `UNAVAILABLE`. Both checks
 are logged as startup phase `claude-code-runtime`.
 
