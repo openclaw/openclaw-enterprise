@@ -48,6 +48,131 @@ function canonical(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+const publicToolKeys = new Set([
+  "profile",
+  "allow",
+  "alsoAllow",
+  "deny",
+  "codeMode",
+  "toolSearch",
+  "gatewayPolicy",
+]);
+const publicGatewayPolicyKeys = new Set(["allow", "actions", "automations"]);
+const nativeToolName = /^(?:\*|[A-Za-z][A-Za-z0-9_.:-]*(?:\*)?)$/u;
+
+function publicNames(value: unknown): readonly string[] | undefined {
+  if (value === undefined) {
+    return [];
+  }
+  return Array.isArray(value) &&
+    value.every((entry) => typeof entry === "string" && nativeToolName.test(entry))
+    ? value
+    : undefined;
+}
+
+function publicToolPolicy(
+  tools: Record<string, unknown>,
+  gatewayPolicy: Record<string, unknown>,
+  name: string,
+): Record<string, unknown> | undefined {
+  if (
+    Object.keys(tools).some((key) => !publicToolKeys.has(key)) ||
+    Object.keys(gatewayPolicy).some((key) => !publicGatewayPolicyKeys.has(key)) ||
+    (tools.profile !== undefined &&
+      (typeof tools.profile !== "string" ||
+        !["minimal", "coding", "messaging", "full"].includes(tools.profile)))
+  ) {
+    return undefined;
+  }
+  const allow = publicNames(tools.allow);
+  const alsoAllow = publicNames(tools.alsoAllow);
+  const deny = publicNames(tools.deny);
+  if (!allow || !alsoAllow || !deny) {
+    return undefined;
+  }
+  const actions = asRecord(gatewayPolicy.actions);
+  if (gatewayPolicy.actions !== undefined && !actions) {
+    return undefined;
+  }
+  const selectedActions = publicNames(actions?.[name]);
+  if (!selectedActions) {
+    return undefined;
+  }
+  const automations = asRecord(gatewayPolicy.automations);
+  if (
+    gatewayPolicy.automations !== undefined &&
+    (!automations ||
+      Object.keys(automations).some((key) => key !== "scope" && key !== "allowCommandJobs") ||
+      (automations.scope !== undefined && automations.scope !== "caller") ||
+      (automations.allowCommandJobs !== undefined &&
+        typeof automations.allowCommandJobs !== "boolean"))
+  ) {
+    return undefined;
+  }
+  return {
+    profile: tools.profile,
+    allow,
+    alsoAllow,
+    deny,
+    codeMode: tools.codeMode,
+    toolSearch: tools.toolSearch,
+    actions: selectedActions,
+    automations:
+      automations === undefined
+        ? undefined
+        : {
+            scope: automations.scope,
+            allowCommandJobs: automations.allowCommandJobs,
+          },
+  };
+}
+
+function publicPluginActivation(value: unknown): Record<string, unknown> | undefined {
+  const plugins = asRecord(value);
+  if (!plugins || (plugins.enabled !== undefined && typeof plugins.enabled !== "boolean")) {
+    return undefined;
+  }
+  const allow = publicNames(plugins.allow);
+  const deny = publicNames(plugins.deny);
+  const entries = asRecord(plugins.entries);
+  if (!allow || !deny || (plugins.entries !== undefined && !entries)) {
+    return undefined;
+  }
+  const activation: Record<string, boolean | undefined> = {};
+  for (const [id, value] of Object.entries(entries ?? {})) {
+    const entry = asRecord(value);
+    if (
+      !noMcpPluginIds.has(id) ||
+      !entry ||
+      Object.keys(entry).some((key) => key !== "enabled") ||
+      (entry.enabled !== undefined && typeof entry.enabled !== "boolean")
+    ) {
+      return undefined;
+    }
+    activation[id] = entry.enabled;
+  }
+  const slots = asRecord(plugins.slots);
+  if (
+    plugins.slots !== undefined &&
+    (!slots ||
+      Object.keys(slots).some((key) => key !== "memory" && key !== "contextEngine") ||
+      (slots.memory !== undefined && slots.memory !== "memory-core" && slots.memory !== "none") ||
+      (slots.contextEngine !== undefined && slots.contextEngine !== "legacy"))
+  ) {
+    return undefined;
+  }
+  return {
+    enabled: plugins.enabled,
+    allow,
+    deny,
+    entries: activation,
+    slots:
+      slots === undefined
+        ? undefined
+        : { memory: slots.memory, contextEngine: slots.contextEngine },
+  };
+}
+
 function defaultNamespaceIsStaticOnly(revision: Readonly<AgentRevision>): boolean {
   const configuration = revision.configuration;
   if (Object.keys(revision.plugins?.plugins ?? {}).length > 0) {
@@ -247,7 +372,13 @@ export function nativeAutomationPolicy(
     if (revision.harness.mode === "dedicated" && codex?.defaultToolsApprovalMode !== "approve") {
       return undefined;
     }
-    if (codex && Object.keys(codex).some((key) => key !== "defaultToolsApprovalMode")) {
+    if (
+      (server.codex !== undefined && !codex) ||
+      (codex &&
+        (Object.keys(codex).some((key) => key !== "defaultToolsApprovalMode") ||
+          (codex.defaultToolsApprovalMode !== undefined &&
+            codex.defaultToolsApprovalMode !== "approve")))
+    ) {
       return undefined;
     }
     const rawNames = new Set<string>();
@@ -262,16 +393,45 @@ export function nativeAutomationPolicy(
       if (!allow.includes(name)) {
         continue;
       }
-      const { toolFilter: _filter, ...serverIdentity } = server;
-      const { gatewayPolicy: _policy, ...nativeTools } = tools;
-      const { allow: _allow, actions: _actions, ...gatewayControls } = gatewayPolicy!;
-      const actions = asRecord(gatewayPolicy?.actions);
+      // TODO: Remove this refusal only after genuine dedicated scheduled MCP
+      // qualification proves approved execution without permission escalation.
+      if (revision.harness.mode === "dedicated") {
+        return undefined;
+      }
+      const policy = publicToolPolicy(tools, gatewayPolicy!, name);
+      const pluginActivation = publicPluginActivation(configuration.plugins);
+      if (
+        !policy ||
+        !pluginActivation ||
+        nodePluginTools?.enabled !== false ||
+        nodeControls?.allowSkills !== false ||
+        Object.values(runtimeImages).some((image) => !immutableImage.test(image)) ||
+        (server.enabled !== undefined && server.enabled !== true) ||
+        (server.sslVerify !== undefined && server.sslVerify !== true) ||
+        (server.supportsParallelToolCalls !== undefined &&
+          typeof server.supportsParallelToolCalls !== "boolean") ||
+        [server.connectionTimeoutMs, server.requestTimeoutMs].some(
+          (value) =>
+            value !== undefined &&
+            (typeof value !== "number" || !Number.isFinite(value) || value < 0),
+        )
+      ) {
+        return undefined;
+      }
       const binding = createHash("sha256")
         .update(
           canonical({
             serverName,
             raw,
-            server: serverIdentity,
+            server: {
+              enabled: server.enabled,
+              transport,
+              connectionTimeoutMs: server.connectionTimeoutMs,
+              requestTimeoutMs: server.requestTimeoutMs,
+              supportsParallelToolCalls: server.supportsParallelToolCalls,
+              sslVerify: server.sslVerify,
+              codexApproval: codex?.defaultToolsApprovalMode,
+            },
             servicePrincipalId: revision.servicePrincipalId,
             harness: { id: revision.harness.id, mode: revision.harness.mode },
             runtimeImages,
@@ -280,15 +440,14 @@ export function nativeAutomationPolicy(
               kind: "trusted-anonymous-endpoint-v1",
               endpoint: endpointDescriptor,
             },
-            harnessAuth: revision.harnessAuth,
             nodeControls: {
               pluginToolsEnabled: nodePluginTools?.enabled,
               allowSkills: nodeControls?.allowSkills,
             },
             // Other approved operations may be added without widening this grant.
-            policy: { nativeTools, gatewayControls, actions: actions?.[name] },
+            policy,
             // Plugin activation can change the non-MCP tool namespace before cron starts.
-            pluginNamespace: { plugins: configuration.plugins, managedPlugins: revision.plugins },
+            pluginNamespace: pluginActivation,
           }),
         )
         .digest("hex");
