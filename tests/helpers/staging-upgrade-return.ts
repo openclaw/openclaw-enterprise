@@ -358,7 +358,7 @@ type ExternalRequest = (
 ) => Promise<ProductionTuiResponse>;
 
 // These observations describe the fixture's authenticated HTTPS route. They do
-// not establish continuous availability between requests or gate the upgrade.
+// not establish continuous availability between requests or gate the action.
 export async function measureUpgradeAvailability<T>(
   request: ExternalRequest,
   installationId: string,
@@ -367,7 +367,8 @@ export async function measureUpgradeAvailability<T>(
   record: (details: object) => Promise<void>,
   receiptName:
     | "forward-api-availability.json"
-    | "runtime-api-availability.json" = "forward-api-availability.json",
+    | "runtime-api-availability.json"
+    | "return-api-availability.json" = "forward-api-availability.json",
 ) {
   const samples: {
     phase: "before" | "during" | "after";
@@ -1585,7 +1586,7 @@ export async function rehearsePopulatedReturn({
     helmRevision: candidateRelease.version,
   });
 
-  await phase("Stop both candidate writers", async () => {
+  const stopCandidateWriters = async () => {
     await custody.assertPostgres();
     await custody.assertRelease();
     for (const { component, deploymentUID } of candidatePods) {
@@ -1608,8 +1609,8 @@ export async function rehearsePopulatedReturn({
       async () => (await pods()).length === 0 && (await candidateConnections()) === "0",
     );
     await assertNoCandidateWriters();
-  });
-  await phase("Restore the candidate archive and reject the stale archive", async () => {
+  };
+  const restoreCandidateArchive = async () => {
     const receipts = await migrationReceipts(originalDatabase);
     assert.ok(receipts.length > 0, "no candidate migration receipts");
     await dump(candidateArchive);
@@ -1627,13 +1628,8 @@ export async function rehearsePopulatedReturn({
       agentIdentity(accepted),
       await databaseAgents(restoredDatabase),
     );
-  });
-
-  await phase("Check the restored database with the previous controller", () =>
-    checkMigration(previous, previousJob, restoredDatabase, "return-compatibility"),
-  );
-
-  await phase("Return to the previous Helm revision on the restored database", async () => {
+  };
+  const rollBackHelm = async () => {
     await localCluster.assertCluster();
     await custody.assertRelease();
     await assertNoCandidateWriters();
@@ -1642,7 +1638,25 @@ export async function rehearsePopulatedReturn({
     await custody.assertRelease();
     await helm("rollback", release, String(baselineRelease.version), "--wait", "--timeout=5m");
     await verifyInstallation();
-  });
+  };
+  await measureUpgradeAvailability(
+    externalRequest,
+    installationId,
+    directory,
+    async () => {
+      await phase("Stop both candidate writers", stopCandidateWriters);
+      await phase(
+        "Restore the candidate archive and reject the stale archive",
+        restoreCandidateArchive,
+      );
+      await phase("Check the restored database with the previous controller", () =>
+        checkMigration(previous, previousJob, restoredDatabase, "return-compatibility"),
+      );
+      await phase("Return to the previous Helm revision on the restored database", rollBackHelm);
+    },
+    (details) => record("Return API availability observations", details),
+    "return-api-availability.json",
+  );
   const returned = await helmStatus();
   assert.equal(returned.info.status, "deployed");
   await custody.bindRelease(returned.version);

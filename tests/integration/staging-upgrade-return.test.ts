@@ -1195,6 +1195,8 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
   // Even zero elapsed time has the initial opportunity. The closed endpoint
   // includes a slot exactly at settlement; neither may create a fake sample.
   const failure = new Error("synchronous failure");
+  const runtimeReceiptName = "runtime-api-availability.json";
+  const runtimePath = join(directory, runtimeReceiptName);
   for (const duration of [0, 1_000]) {
     await assert.rejects(
       measureUpgradeAvailability(
@@ -1206,14 +1208,12 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
           throw failure;
         },
         async () => {},
-        "runtime-api-availability.json",
+        runtimeReceiptName,
       ),
       (error: unknown) => error === failure,
     );
     assert.deepEqual(await readFile(controllerPath), controllerBytes);
-    const failed = JSON.parse(
-      await readFile(join(directory, "runtime-api-availability.json"), "utf8"),
-    );
+    const failed = JSON.parse(await readFile(runtimePath, "utf8"));
     assert.equal(failed.cadence.scheduledSlots, duration === 0 ? 1 : 2);
     assert.equal(failed.cadence.unprobedSlots, failed.cadence.scheduledSlots);
     assert.equal(failed.cadence.probedSlots, 0);
@@ -1222,6 +1222,54 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
       ["before", "after"],
     );
   }
+
+  // A failed return retains its outage observation and leaves both earlier
+  // receipts intact, even when the final authenticated read succeeds.
+  const runtimeBytes = await readFile(runtimePath);
+  const restoreFailure = new Error("archive restore failed");
+  const statuses = [200, 503, 200];
+  let returnPhaseRecord: object | undefined;
+  await assert.rejects(
+    measureUpgradeAvailability(
+      async () => {
+        const status = statuses.shift();
+        assert.ok(status !== undefined);
+        return { status, body: { data: { id: "original-installation" } } };
+      },
+      "original-installation",
+      directory,
+      async () => {
+        throw restoreFailure;
+      },
+      async (details) => {
+        returnPhaseRecord = details;
+      },
+      "return-api-availability.json",
+    ),
+    (error: unknown) => error === restoreFailure,
+  );
+  const returnEvidence = JSON.parse(
+    await readFile(join(directory, "return-api-availability.json"), "utf8"),
+  );
+  assert.deepEqual(returnPhaseRecord, returnEvidence);
+  assert.equal(returnEvidence.complete, true);
+  assert.equal(returnEvidence.upgradeSucceeded, false);
+  assert.deepEqual(
+    returnEvidence.samples.map(
+      ({ phase, status, outcome }: { phase: string; status: number; outcome: string }) => [
+        phase,
+        status,
+        outcome,
+      ],
+    ),
+    [
+      ["before", 200, "ok"],
+      ["during", 503, "http-error"],
+      ["after", 200, "ok"],
+    ],
+  );
+  assert.deepEqual(await readFile(controllerPath), controllerBytes);
+  assert.deepEqual(await readFile(runtimePath), runtimeBytes);
 });
 
 test(
