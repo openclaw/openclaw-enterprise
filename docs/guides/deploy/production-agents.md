@@ -25,6 +25,11 @@ occ namespace list
 export NAMESPACE_ID='<ID of the selected Namespace>'
 ```
 
+If you lose the reply to `occ namespace create`, check `occ namespace list` and
+`occ namespace get ID` with the same connection options. The request may still
+commit, or permissions may hide the Namespace. If the outcome is unclear, ask
+an Installation administrator to check the audit log before you retry.
+
 The worker creates a separate Kubernetes namespace labeled
 `openclaw.dev/namespace=$NAMESPACE_ID`. As soon as that namespace exists, record
 its name and grant the tenant RoleBindings below before waiting for the OCC
