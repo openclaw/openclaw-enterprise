@@ -150,7 +150,7 @@ export class HarnessExposureSweep {
     emit({ event: "worker.harness-exposure-withdrawn", ...fields });
   }
 
-  /** A terminal deployment can leave its revision's exposure available for diagnosis. */
+  /** Withdraw exposure from a failed candidate whose Sandbox is kept for diagnosis. */
   async enqueueFailedCandidate(
     claim: Pick<ClaimedWork, "namespaceId" | "agentId" | "revisionId">,
   ): Promise<void> {
