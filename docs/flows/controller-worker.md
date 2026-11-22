@@ -248,7 +248,7 @@ with that code; other work keeps its attempt budget.
 
 `apps/controller/src/worker.ts:ControllerWorker.finalize`,
 `apps/controller/src/worker.ts:ControllerWorker.commitRevisionTransition`,
-`apps/controller/src/worker.ts:ControllerWorker.finishPublishedRevision`,
+`apps/controller/src/worker.ts:ControllerWorker.finishRevisionTransition`,
 `apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
 
 After claim renewal, one transaction records Namespace readiness or deletion,

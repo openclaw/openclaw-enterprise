@@ -5936,6 +5936,16 @@ export class ControllerWorker {
       };
     }
     const transition = await this.commitRevisionTransition(claim, resolved, refusedStopRecheckMs);
+    await this.finishRevisionTransition(claim, transition, resolved, outcome, failureLogFields);
+  }
+
+  private async finishRevisionTransition(
+    claim: ClaimedWork,
+    transition: RevisionTransition,
+    resolved: RevisionDispatchResult,
+    outcome: Outcome,
+    failureLogFields?: Readonly<Record<string, string | number>>,
+  ): Promise<void> {
     if (transition.kind === "stopped") {
       const stoppedCandidate = transition.revision;
       await this.closeRevisionCredentials(claim, stoppedCandidate);
@@ -5969,7 +5979,74 @@ export class ControllerWorker {
       }
     }
     if (transition.kind === "published") {
-      await this.finishPublishedRevision(claim, transition.revision, resolved);
+      const activated = transition.revision;
+      const compute = this.compute;
+      try {
+        const current = await this.state.read((view) =>
+          view.agents.findAgent(claim.namespaceId, claim.agentId!),
+        );
+        if (current?.desiredRuntimeState !== "running") {
+          await this.closeRevisionCredentials(claim, activated);
+          await this.stopYieldingDrain(claim, activated);
+          await this.retireEarlierRevisions(claim, activated);
+          await this.completeStoppedRevisionWork(claim, activated, "REVISION_STOPPED");
+          return;
+        }
+        if (
+          resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
+          (activated.executionAdmission.version === 6 ||
+            (activated.executionAdmission.version === 5 &&
+              activated.egressPlan?.repositoryGitAuthorization === "online-request"))
+        ) {
+          // Re-enter normal preparation after custody can install material. Do not mark this
+          // deployment ready, retire a predecessor, or release traffic at the held boundary.
+          await this.finalizeRevision(claim, { outcome: "pending", code: resolved.code });
+          return;
+        }
+        if (this.shouldActivateAfterCommit(compute)) {
+          if (activated.repositoryCredentials !== undefined) {
+            await this.assertRepositoryAuthority(claim, activated);
+            this.repositoryCredentials.validate(activated);
+          }
+          await this.withClaimHeartbeat(claim, (signal) =>
+            this.stagedRevision(claim, "activateRevision", activated, signal, resolved.context),
+          );
+        }
+        await this.assertRepositoryGitMaterial(claim, activated);
+        await this.retireEarlierRevisions(claim, activated);
+      } catch (error) {
+        if (error instanceof WorkClaimLostError) {
+          throw error;
+        }
+        if (error instanceof RepositoryCredentialAuthorityError) {
+          await this.finalizeRevision(
+            claim,
+            repositoryFailure(error),
+            computeCleanupLogFields(error),
+          );
+          return;
+        }
+        if (error instanceof ComputeStopYieldedError) {
+          // The Agent stopped after activation and its stop yielded: the next pass repeats it as
+          // the stopped Agent's active revision, then retires the earlier ones.
+          await this.finalizeRevision(
+            claim,
+            { outcome: "pending", code: "AGENT_STOP_YIELDED" },
+            computeCleanupLogFields(error),
+          );
+          return;
+        }
+        await this.finalizeRevision(
+          claim,
+          error instanceof ActivationFailedError ||
+            error instanceof KubernetesSecretWriteForbiddenError
+            ? { outcome: "permanent", code: error.code }
+            : activationPendingResult(error),
+          revisionFailureLogFields(error),
+        );
+        return;
+      }
+      await this.completeActivatedRevision(claim, resolved);
       return;
     }
     let stopYields: number | undefined;
@@ -6126,80 +6203,6 @@ export class ControllerWorker {
       }
       return { kind: "attempt-recorded" };
     }, this.queueOptions);
-  }
-
-  private async finishPublishedRevision(
-    claim: ClaimedWork,
-    activated: Readonly<AgentRevision>,
-    resolved: RevisionDispatchResult,
-  ): Promise<void> {
-    const compute = this.compute;
-    try {
-      const current = await this.state.read((view) =>
-        view.agents.findAgent(claim.namespaceId, claim.agentId!),
-      );
-      if (current?.desiredRuntimeState !== "running") {
-        await this.closeRevisionCredentials(claim, activated);
-        await this.stopYieldingDrain(claim, activated);
-        await this.retireEarlierRevisions(claim, activated);
-        await this.completeStoppedRevisionWork(claim, activated, "REVISION_STOPPED");
-        return;
-      }
-      if (
-        resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
-        (activated.executionAdmission.version === 6 ||
-          (activated.executionAdmission.version === 5 &&
-            activated.egressPlan?.repositoryGitAuthorization === "online-request"))
-      ) {
-        // Re-enter normal preparation after custody can install material. Do not mark this
-        // deployment ready, retire a predecessor, or release traffic at the held boundary.
-        await this.finalizeRevision(claim, { outcome: "pending", code: resolved.code });
-        return;
-      }
-      if (this.shouldActivateAfterCommit(compute)) {
-        if (activated.repositoryCredentials !== undefined) {
-          await this.assertRepositoryAuthority(claim, activated);
-          this.repositoryCredentials.validate(activated);
-        }
-        await this.withClaimHeartbeat(claim, (signal) =>
-          this.stagedRevision(claim, "activateRevision", activated, signal, resolved.context),
-        );
-      }
-      await this.assertRepositoryGitMaterial(claim, activated);
-      await this.retireEarlierRevisions(claim, activated);
-    } catch (error) {
-      if (error instanceof WorkClaimLostError) {
-        throw error;
-      }
-      if (error instanceof RepositoryCredentialAuthorityError) {
-        await this.finalizeRevision(
-          claim,
-          repositoryFailure(error),
-          computeCleanupLogFields(error),
-        );
-        return;
-      }
-      if (error instanceof ComputeStopYieldedError) {
-        // The Agent stopped after activation and its stop yielded: the next pass repeats it as
-        // the stopped Agent's active revision, then retires the earlier ones.
-        await this.finalizeRevision(
-          claim,
-          { outcome: "pending", code: "AGENT_STOP_YIELDED" },
-          computeCleanupLogFields(error),
-        );
-        return;
-      }
-      await this.finalizeRevision(
-        claim,
-        error instanceof ActivationFailedError ||
-          error instanceof KubernetesSecretWriteForbiddenError
-          ? { outcome: "permanent", code: error.code }
-          : activationPendingResult(error),
-        revisionFailureLogFields(error),
-      );
-      return;
-    }
-    await this.completeActivatedRevision(claim, resolved);
   }
 
   /**
