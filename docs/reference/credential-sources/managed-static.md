@@ -23,7 +23,44 @@ If the private-store write cannot be confirmed, registration can fail while leav
 
 Before starting, select OCC TokenService and an OpenShell Sandbox registration that also exposes `credential_proxy_delivery`; see [supported Driver selections](../drivers/selection.md#supported-selections). Selecting legacy `drivers.credential_proxy` makes the policy PUT below return `409`; omit that selection. This path admits exactly one Source and no repository credentials.
 
-1. Create a same-Namespace [Agent Configuration](../configuration.md) with `kind: "agent"`. Configure its model and explicit inference endpoint. For this example, use provider `openai`, protocol `openai-responses`, and base URL `https://api.openai.com/v1`.
+This example covers dedicated OpenClaw. Codex requires a separate Configuration; see [implementation status](../credential-sources.md#implementation-status) for coverage.
+
+1. Send `POST /namespaces/:namespaceId/configurations` to create a same-Namespace [Agent Configuration](../configuration.md#create-read-update-and-delete). Use a model your account can access and replace the illustrative limits and costs with its actual catalog metadata:
+
+   ```json
+   {
+     "kind": "agent",
+     "values": {
+       "agents": {
+         "defaults": {
+           "model": { "primary": "openai/example-model" },
+           "models": {
+             "openai/example-model": { "agentRuntime": { "id": "openclaw" } }
+           }
+         }
+       },
+       "models": {
+         "providers": {
+           "openai": {
+             "api": "openai-responses",
+             "baseUrl": "https://api.openai.com/v1",
+             "models": [
+               {
+                 "id": "example-model",
+                 "contextWindow": 128000,
+                 "maxTokens": 8192,
+                 "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+               }
+             ]
+           }
+         }
+       }
+     }
+   }
+   ```
+
+   The response returns the Configuration ID for the next step.
+
 2. [Create the Agent](../agents.md#supported-operations) with `POST /namespaces/:namespaceId/agents`, using that Configuration and dedicated execution. The current API requires the Source in both fields; [the intended flow](../credential-sources.md#intended-credential-flow) selects it once:
 
    ```json
