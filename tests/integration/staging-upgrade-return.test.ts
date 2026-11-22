@@ -197,7 +197,7 @@ import("./" + entry);
     runFixtureCommand(process.execPath, args, { cwd: directory, timeout: 10_000 }),
     /does not declare support for production migration mode arguments/u,
   );
-  await assert.rejects(stat(entryReceipt), { code: "ENOENT" });
+  await assert.rejects(readFile(entryReceipt), { code: "ENOENT" });
   await declareMigration(`NODE_ENV=production ${command}`);
   await runFixtureCommand(process.execPath, args, { cwd: directory, timeout: 10_000 });
   assert.deepEqual(JSON.parse(await readFile(entryReceipt, "utf8")), ["--check"]);
