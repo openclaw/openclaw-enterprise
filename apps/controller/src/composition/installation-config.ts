@@ -1,6 +1,9 @@
 import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
+import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
+import { supportsOpenShellModelCredentialDeployment } from "./openshell-model-admission.ts";
+import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
   openShellProxyConfiguration,
@@ -34,11 +37,16 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   isSupportedPermission,
+  parseRepositoryNetworkPolicyCeiling,
   PERMISSION_ACTIONS,
+  RepositoryNetworkPolicyAdmissionError,
   RESOURCE_KINDS,
   validateSandboxNetworkGrants,
 } from "@openclaw-enterprise/contracts";
-import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
+import type {
+  RepositoryNetworkPolicyCeiling,
+  SandboxNetworkGrant,
+} from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { createHash, X509Certificate } from "node:crypto";
@@ -154,6 +162,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 export interface InstallationStartupConfiguration {
   readonly repository?: SelectedDriverConfiguration;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   /** RFC-0026 configured Roles, Groups, and Group bindings; see the configuration reference. */
   readonly iam?: InstallationIAMConfiguration;
   readonly occ: { readonly cluster: string };
@@ -216,13 +225,19 @@ export function installationControllerOptions(
   ControllerOptions,
   | "driverConfigurations"
   | "sandboxNetworkPolicyCeiling"
+  | "repositoryNetworkPolicyCeiling"
   | "iamConfiguration"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
+  | "modelCredentialPreset"
+  | "supportsModelCredentialDeployment"
 > {
   return {
+    modelCredentialPreset: resolveModelCredentialPreset,
+    supportsModelCredentialDeployment: supportsOpenShellModelCredentialDeployment,
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
+    repositoryNetworkPolicyCeiling: installation?.repositoryNetworkPolicyCeiling ?? [],
     ...(installation?.iam === undefined ? {} : { iamConfiguration: installation.iam }),
     ...(installation?.runtime === undefined
       ? {}
@@ -280,6 +295,26 @@ export interface InstallationRuntimeDrivers {
     backendId: string;
   }>;
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
+}
+
+/** Bind Source retirement to the concrete selected Proxy and its Sandbox placement. */
+export function credentialSourceDeliveryBinding(
+  drivers: InstallationRuntimeDrivers | undefined,
+): ControllerOptions["credentialSourceDelivery"] {
+  if (!drivers?.credentialDeliveryRegistration) {
+    return undefined;
+  }
+  return async (proxy, namespace, source, signal) => {
+    const compute = drivers.computeDriver;
+    if (!(proxy instanceof OpenShellCredentialProxyDriver) || !compute.resolveSandboxNamespace) {
+      throw new DependencyUnavailableError(
+        "The selected credential delivery Proxy cannot retire this Source.",
+      );
+    }
+    const placed = await compute.resolveSandboxNamespace(namespace);
+    signal.throwIfAborted();
+    await proxy.retireSource(placed, source, signal);
+  };
 }
 
 /**
@@ -859,6 +894,24 @@ export async function loadInstallationConfiguration(options: {
   }
 }
 
+function loadRepositoryNetworkPolicyCeiling(
+  value: unknown,
+): RepositoryNetworkPolicyCeiling | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return parseRepositoryNetworkPolicyCeiling(value);
+  } catch (error) {
+    if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
+      throw error;
+    }
+    throw new InstallationFieldError([
+      { path: error.path, code: "INVALID_VALUE", message: error.message },
+    ]);
+  }
+}
+
 async function composeInstallationConfiguration(
   options: Parameters<typeof loadInstallationConfiguration>[0],
   loaded: { externalOwner?: InstalledDriver },
@@ -889,7 +942,8 @@ async function composeInstallationConfiguration(
     configuration.occ === undefined &&
     configuration.drivers === undefined &&
     configuration.backend === undefined &&
-    configuration.presets === undefined
+    configuration.presets === undefined &&
+    configuration.repositoryNetworkPolicyCeiling === undefined
   ) {
     return undefined;
   }
@@ -902,6 +956,9 @@ async function composeInstallationConfiguration(
   if (sandboxNetworkPolicyCeiling !== undefined) {
     validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
   }
+  const repositoryNetworkPolicyCeiling = loadRepositoryNetworkPolicyCeiling(
+    configuration.repositoryNetworkPolicyCeiling,
+  );
   const observability = observabilityConfiguration(configuration.observability);
   const iamSettings = iamConfiguration(configuration.iam);
   const runtime = runtimeConfiguration(configuration.runtime);
@@ -1403,6 +1460,7 @@ async function composeInstallationConfiguration(
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
     ...(sandboxNetworkPolicyCeiling === undefined ? {} : { sandboxNetworkPolicyCeiling }),
+    ...(repositoryNetworkPolicyCeiling === undefined ? {} : { repositoryNetworkPolicyCeiling }),
     ...(iamSettings === undefined ? {} : { iam: iamSettings }),
     presets: Object.freeze({ includeDefaults }),
     logging,
@@ -1532,12 +1590,12 @@ async function composeInstallationConfiguration(
   }
   const createCredentialDeliveryProxy = async (
     pairedSandbox: SandboxDriver,
+    tokenServiceImplementation: string,
   ): Promise<CredentialProxyDriver> => {
-    const { OpenShellCredentialProxyDriver } =
-      await import("../drivers/credential-proxy/openshell.ts");
     return new OpenShellCredentialProxyDriver({
       id: pairedSandbox.id,
       implementation: pairedSandbox.implementation,
+      tokenServiceImplementation,
       backend: openShell!,
       sandbox: pairedSandbox,
     });
@@ -1621,7 +1679,10 @@ async function composeInstallationConfiguration(
     const deliveryProxy =
       tokenServiceSelection === undefined
         ? undefined
-        : await createCredentialDeliveryProxy(capabilities.sandbox);
+        : await createCredentialDeliveryProxy(
+            capabilities.sandbox,
+            tokenServiceSelection.implementation,
+          );
     const owner = new InstalledDriver(
       {
         ...sandbox,
@@ -1668,7 +1729,10 @@ async function composeInstallationConfiguration(
     !boxPackage &&
     options.createSandboxDriver === undefined
   ) {
-    const deliveryProxy = await createCredentialDeliveryProxy(sandboxDriver);
+    const deliveryProxy = await createCredentialDeliveryProxy(
+      sandboxDriver,
+      tokenServiceSelection.implementation,
+    );
     credentialDeliveryRegistration = new InstalledDriver(
       {
         id: sandboxDriver.id,
@@ -1747,6 +1811,7 @@ async function composeInstallationConfiguration(
           }
         : {}),
       ...(protectedDriver === undefined ? {} : { protectedDriver }),
+      ...(credentialDeliveryRegistration === undefined ? {} : { credentialDeliveryRegistration }),
       preparedTokens: tokenService,
       ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
         ? {}

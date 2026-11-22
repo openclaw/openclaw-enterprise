@@ -11,7 +11,7 @@ import {
 } from "../../scripts/ci/container-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { prependPath, writeCommand } from "../helpers/fake-commands.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 function field<K extends PropertyKey>(value: unknown, key: K): unknown {
   return (value as Record<K, unknown>)[key];

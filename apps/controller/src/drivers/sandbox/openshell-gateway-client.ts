@@ -127,6 +127,8 @@ export interface OpenShellSandboxResponse {
   readonly restartCount?: number;
   /** Authenticated 0.1.5 supervisor configuration report, not evidence a request used it. */
   readonly configurationAdmission?: Readonly<Record<string, unknown>>;
+  /** Explicit Gateway activation state; absence is not evidence that a target is idle. */
+  readonly configurationActivated?: boolean;
   readonly mainProcessInstanceId?: string;
   readonly mainProcessStartedAt?: string;
   readonly serviceUrls: Readonly<Record<string, string>>;
@@ -786,6 +788,12 @@ function createSandboxValidationCategory(
     return "RESOURCE_METADATA_FORBIDDEN";
   }
   if (grpcStatus === 9) {
+    if (
+      details ===
+      "caller driver config is disabled; a gateway administrator must enable allow_driver_config"
+    ) {
+      return "CALLER_DRIVER_CONFIG_DISABLED";
+    }
     // b2069a2 resource_admission.rs reports the kind and name before a fixed label
     // refusal. Classify the exact shape without retaining names or supplier text.
     if (
@@ -1255,6 +1263,9 @@ function sandboxResponse(
     labels: stringMap(metadata?.labels, "Sandbox labels"),
     annotations: stringMap(metadata?.annotations, "Sandbox annotations"),
     ...(spec === undefined ? {} : { spec: Object.freeze({ ...spec }) }),
+    ...(typeof status?.configuration_activated === "boolean" && {
+      configurationActivated: status.configuration_activated,
+    }),
     ...(status?.configuration_activated === true &&
       asRecord(status.configuration_admission) && {
         configurationAdmission: asRecord(status.configuration_admission)!,
@@ -2456,6 +2467,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           type: request.type,
           profile_workspace: request.workspace,
           credentials: { ...request.credentials },
+          ...(request.config === undefined ? {} : { config: { ...request.config } }),
         },
         workspace_scope: { workspace: request.workspace },
         credential_expiration_times: Object.fromEntries(
@@ -2470,9 +2482,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     );
     return {
       ...providerResponse(response.provider, "UpdateProvider"),
-      ...(Array.isArray(response.target_receipts) &&
+      ...((response.target_receipts === undefined || Array.isArray(response.target_receipts)) &&
         typeof response.mutation_id === "string" && {
-          targetReceipts: response.target_receipts,
+          targetReceipts: response.target_receipts ?? [],
           mutationId: response.mutation_id,
         }),
     };

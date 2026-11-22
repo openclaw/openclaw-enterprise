@@ -155,27 +155,34 @@ OCC deletes an OAuth row when the matching browser callback consumes it. Device 
 
 ### `connection_templates`
 
-Stores the scope and current version of each OAuth connection template.
+Stores the scope, authentication method, and current version of each Connection Template.
 
 - `id`
 - `namespace_id`
 - `display_name`
-- `current_version`
+- `current_version`, `static_key`
+- `current_oauth_version`, `current_static_version` (generated current-version references)
 - `created_at`
+
+### `static_key_template_versions`
+
+Stores each immutable static Bearer template version, including the exact HTTP method, host, and port, plus the exact path or subtree for each allowed destination.
+
+- `template_id`, `version`, `destinations`, `created_at`
 
 ### `oauth_connection_template_versions`
 
-Pins the approved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
+Pins the saved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
 
 - `template_id`, `version`, `oauth_client_id`, `mode`
 - `issuer`, `authorization_url`, `token_url`, `revocation_url`
 - `scopes`, `authorization_parameters`, `observed_metadata`
-- `destinations` (exact host, port, and path for each approved HTTPS destination)
+- `destinations` (exact host, port, and path for each allowed HTTPS destination)
 - `created_at`
 
 ### `oauth_clients`
 
-Identifies an independently managed OAuth client and its approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
+Identifies an independently managed OAuth client. A connection template version defines the approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
 
 - `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
 - `token_url`, `revocation_url`, `token_endpoint_auth_method`
@@ -215,7 +222,7 @@ Binds an Installation to its selected TokenService Driver and private-store iden
 
 ### `credential_sources`
 
-Records each source owner. Gateway and Proxy sources identify their Driver. Internal static registrations identify their TokenService instance and its private receipt; saved accounts retain their existing Token Service owner.
+Records each source owner. Gateway and Proxy sources identify their Driver. Managed static Sources identify their TokenService instance; saved accounts retain their existing Token Service owner.
 
 - `id`
 - `namespace_id`
@@ -225,7 +232,7 @@ Records each source owner. Gateway and Proxy sources identify their Driver. Inte
 - `egress` (optional admitted source and versioned resolver references)
 - `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
 - `driver_id` (Gateway and Proxy sources)
-- `token_service_instance_id`, `registration`, `registration_dispatched_at` (internal static registrations)
+- `token_service_instance_id` (managed static Source owner)
 - `state`
 - `created_at`
 

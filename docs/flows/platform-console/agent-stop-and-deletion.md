@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-19
-last_updated_session: authoring-run/74f10e49-0bf9-4d4c-b682-4c4317ad0408
+updated: 2026-11-20
+last_updated_session: authoring-run/428a2ef4-6974-4fd7-bad2-6f7f6099e5bd
 ---
 
 # Console Agent stop and deletion
@@ -38,7 +38,7 @@ graph TD
     G -->|accepted or uncertain| H["Refresh exact Agent"]
     G -->|denied| I["Show access denied"]
     H -->|exists| J["Show current Agent state"]
-    J -->|known deleting and manual request| E
+    J -->|known deleting, retry available and reader chooses| E
     H -->|not found| K["Return to Agents list"]
   end
 ```
@@ -69,7 +69,7 @@ hides the Stop or Delete row, and the card when neither remains. If the dialog i
 confirmation, focuses Cancel and keeps the row. A missing answer keeps the rows; late advice cannot recall a request.
 
 `apps/controller/src/console/agents/stop.mts:createAgentStop` sends a bodyless `POST` to the
-Agent’s `/stop` route. OCC’s `packages/occ/src/index.ts:stopAgent` checks Agent `operate`,
+Agent’s `/stop` route. OCC’s `packages/occ/src/agent-termination.ts:stopAgent` checks Agent `operate`,
 persists the requested stopped state, and queues reconciliation. Success means admission,
 not that Compute has shut down. Cancel restores focus to the invoking button; submission focuses
 **Refresh stop status**. A `403` about grants shows the Console's refusal with the Agent's name
@@ -111,8 +111,8 @@ reference covers worker shutdown and preservation of versions, credentials, and 
 **Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
 exact Agent URL. The controller requires Agent `delete`. A `403` shows the Console's
 refusal with the Agent's name and the Request ID, or the API's text when the refusal is not
-about grants. Delete Agent stays unavailable, described by it, until a permission answer read
-after the refusal allows delete. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
+about grants. The first Delete stays unavailable, described by the refusal, until a permission
+read started after the refusal allows delete. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
 rereads the exact Agent every few seconds; **Refresh deletion status** reads it
 on demand. A read error stops polling. Only a not-found read after
 an accepted or uncertain request, or when an already-deleting Agent is opened,
@@ -128,12 +128,21 @@ work stays unchanged; terminal work can restart under the controller's existing
 current-permission and retry-ownership checks. The view does not infer a worker
 outcome from the Agent's deleting state or add a separate status contract.
 
+If a repeated DELETE returns a grant-related `403`, **Request deletion again** stays
+unavailable. The refusal explains why and includes the Request ID. Background polling
+checks status only. **Refresh deletion status** also rechecks permissions if the same
+Agent is still deleting and the refusal remains. Only a permission read started after
+the refusal that confirms `delete: true` restores retry. A failed read or a status
+response alone cannot do so. After the grant is restored, refresh or reload the page.
+Neither sends a DELETE. Other refusals, such as retry ownership, keep the API's
+explanation and do not impose this grant restriction.
+
 An uncertain initial or repeated deletion blocks writes until a successful exact
 Agent read. A deleting read clears that guard even when the view was already deleting;
 a failed read does not. Cancel returns focus to the repeat-request button, and
 successful writes retain status refresh. The browser never retries DELETE automatically.
 
-`packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
+`packages/occ/src/agent-termination.ts:deleteAgent` owns deletion admission. The
 [Agent deletion reference](../../reference/agents.md#deletion) covers
 worker cleanup and the Namespace-owned resources it preserves.
 
@@ -166,7 +175,7 @@ Agent to choose advice for an idle Agent, an earlier stop request, or a new stop
 With `--if-active-revision`, it validates the revision ID and sends one bodyless
 POST with `expectedActiveRevisionId`, without the advisory GET. The HTTP route
 `apps/controller/src/http/agents.ts:stopAgent` passes the query to
-`packages/occ/src/index.ts:stopAgent`. OCC rechecks exact-Agent `operate` under
+`packages/occ/src/agent-termination.ts:stopAgent`. OCC rechecks exact-Agent `operate` under
 the lock and rejects a guard mismatch before changing state or queuing work.
 The [stop reference](../../reference/agents.md#identity-and-deployment)
 defines the admission conditions and recovery steps. A refusal or uncertain
@@ -184,9 +193,10 @@ still means requested intent, not completed shutdown.
 
 ## Debugging and Verification
 
-- On repeat `403`, follow the API’s retry-ownership explanation. For ordinary
-  denials, check `delete` on the exact Agent; Agent `read` and
-  `operate` do not authorize deletion. Any failed repeat pauses polling until a manual action. Use the displayed request ID when present.
+- For a grant-related repeat `403`, check `delete` on the exact Agent; Agent `read`
+  and `operate` do not authorize deletion. For another repeat `403`, follow the API's
+  explanation. Any failed repeat pauses polling until a manual action. Use the displayed
+  Request ID when present.
 - An accepted deletion remains in progress until the exact Agent read reports
   not found. A failed refresh does not establish whether cleanup finished.
 
@@ -208,6 +218,8 @@ controller persistence or Compute shutdown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 17:34: Distinguish a denied deletion retry from status readback in the accompanying change. (authoring-run/428a2ef4-6974-4fd7-bad2-6f7f6099e5bd - acbfc35811e8929485813bbd315f5d12f71a4028)
 
 - 2026-11-19 14:00: Trace optional guarded CLI stop admission in the accompanying uncommitted change. (authoring-run/74f10e49-0bf9-4d4c-b682-4c4317ad0408 - 4bfefb4bf60b43dfb2e6fcc010be60270474e726)
 

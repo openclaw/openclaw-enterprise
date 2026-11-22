@@ -4,6 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { startPluginRequestGuard } from "../../apps/controller/src/plugin-request-guard.ts";
 import {
@@ -20,6 +21,56 @@ import {
   openShellMiddlewareClient,
   token,
 } from "../helpers/openshell-online-wire.mjs";
+
+type WebSocketFrame = {
+  preflight_decision?: { action?: number; reason_code?: string };
+};
+
+function observeWebSocket(
+  client: ReturnType<typeof openShellMiddlewareClient>,
+  { authorization, timeout = 5_000 }: { authorization?: string; timeout?: number } = {},
+) {
+  const metadata = new grpc.Metadata();
+  if (authorization) {
+    metadata.set("authorization", authorization);
+  }
+  const stream = client.EvaluateWebSocketSession(metadata, { deadline: Date.now() + timeout });
+  const frames: WebSocketFrame[] = [];
+  stream.on("data", (frame: WebSocketFrame) => frames.push(frame));
+  // grpc-js emits the error before the final status for non-OK calls.
+  stream.on("error", () => undefined);
+  const end = new Promise<void>((resolve) => stream.once("end", resolve));
+  let finished = false;
+  const terminal = new Promise<{ code: number; details: string }>((resolve) => {
+    stream.once("status", (result: { code: number; details: string }) => {
+      finished = true;
+      resolve(result);
+    });
+  }).then(async (result) => {
+    if (result.code === grpc.status.OK) {
+      await end;
+    }
+    return result;
+  });
+  return {
+    stream,
+    frames,
+    terminal,
+    get finished() {
+      return finished;
+    },
+  };
+}
+
+function assertHttpOnly(frames: WebSocketFrame[]) {
+  assert.deepEqual(
+    frames.map((frame) => [
+      frame.preflight_decision?.action,
+      frame.preflight_decision?.reason_code,
+    ]),
+    [[3, "http_only"]],
+  );
+}
 
 test("the standalone guard refuses startup without supervisor trust settings", () => {
   const entry = fileURLToPath(
@@ -512,15 +563,78 @@ test("the signed OpenShell request guard intersects the source envelope with the
     assert.equal(await evaluate(denied), 2);
   }
 
-  const metadata = new grpc.Metadata();
-  metadata.set("authorization", signed);
-  const session = client.EvaluateWebSocketSession(metadata, { deadline: Date.now() + 5_000 });
-  const decision = new Promise<{ preflight_decision: { action: number } }>((resolve, reject) => {
-    session.once("data", resolve);
-    session.once("error", reject);
+  await t.test("timely WebSocket preflights preserve both refusals", async () => {
+    const matching = observeWebSocket(client, { authorization: signed });
+    matching.stream.end({ preflight: { context } });
+    assert.equal((await matching.terminal).code, grpc.status.OK);
+    assertHttpOnly(matching.frames);
+
+    for (const preflight of [
+      { context: { ...context, sandbox_id: "other-runtime" } },
+      { context: { workspace: context.workspace, request_id: context.request_id } },
+    ]) {
+      const invalid = observeWebSocket(client, { authorization: signed });
+      invalid.stream.end({ preflight });
+      const result = await invalid.terminal;
+      assert.equal(result.code, grpc.status.PERMISSION_DENIED);
+      assert.equal(result.details, "Supervisor required.");
+      assert.deepEqual(invalid.frames, []);
+    }
   });
-  session.end({ preflight: { context } });
-  assert.equal((await decision).preflight_decision.action, 3);
+
+  await t.test(
+    "256 silent WebSocket preflights leave HTTP capacity for both Sandboxes",
+    async () => {
+      // A unary call warms the same client connection before the 256 streams occupy
+      // one Sandbox's entire WebSocket share.
+      assert.equal(await evaluate(request), 1);
+      const other = "other-runtime";
+      const otherCaller = token(keys, "supervisor", other, managedPluginMiddlewareAudience);
+      const otherRequest = { ...request, context: { ...context, sandbox_id: other } };
+      const sessions = Array.from({ length: 256 }, () =>
+        observeWebSocket(client, { authorization: signed }),
+      );
+      const overflow = observeWebSocket(client, { authorization: signed });
+      // If the WebSocket pool is full, even a mismatched frame receives the
+      // immediate HTTP-only denial. It would fail the identity check if admitted.
+      overflow.stream.end({ preflight: { context: otherRequest.context } });
+      try {
+        const [sameDecision, otherDecision, overflowStatus] = await Promise.all([
+          evaluate(request),
+          evaluate(otherRequest, otherCaller),
+          overflow.terminal,
+        ]);
+        assert.equal(sessions.filter((session) => !session.finished).length, 256);
+        assert.equal(overflowStatus.code, grpc.status.OK);
+        assertHttpOnly(overflow.frames);
+        assert.equal(otherDecision, 1, "other Sandbox HTTP decision");
+        assert.equal(sameDecision, 1, "same Sandbox HTTP decision");
+        // Wait for the server's terminal replies before checking capacity again.
+        // Client-side cancellation status alone does not establish server cleanup.
+        for (const session of sessions) {
+          session.stream.end({ preflight: { context } });
+        }
+        await Promise.all(
+          sessions.map(async (session) => {
+            assert.equal((await session.terminal).code, grpc.status.OK);
+            assertHttpOnly(session.frames);
+          }),
+        );
+      } finally {
+        for (const session of sessions) {
+          if (!session.finished) {
+            session.stream.cancel();
+          }
+        }
+        await Promise.all(sessions.map((session) => session.terminal));
+      }
+
+      const afterCompletion = observeWebSocket(client, { authorization: signed });
+      afterCompletion.stream.end({ preflight: { context: otherRequest.context } });
+      assert.equal((await afterCompletion.terminal).code, grpc.status.PERMISSION_DENIED);
+      assert.deepEqual(afterCompletion.frames, []);
+    },
+  );
 });
 
 test("the plugin request guard ends a WebSocket preflight that never arrives", async (t) => {
@@ -549,43 +663,66 @@ test("the plugin request guard ends a WebSocket preflight that never arrives", a
   const sandbox = "fixture-runtime-1";
   const signed = token(keys, "supervisor", sandbox, managedPluginMiddlewareAudience);
 
-  // No supervisor identity is a refusal, not a stream the guard holds open.
-  const anonymousStarted = Date.now();
-  const anonymous = client.EvaluateWebSocketSession(new grpc.Metadata(), {
-    deadline: Date.now() + 5_000,
+  await t.test("anonymous silence ends with permission denied", async () => {
+    // A missing supervisor identity is refused before waiting for a frame.
+    const anonymousStarted = performance.now();
+    const anonymous = observeWebSocket(client);
+    const anonymousStatus = await anonymous.terminal;
+    assert.ok(performance.now() - anonymousStarted < 1_500, "anonymous stream waited for client");
+    assert.equal(anonymousStatus.code, grpc.status.PERMISSION_DENIED);
+    assert.deepEqual(anonymous.frames, []);
   });
-  const anonymousError = await new Promise<unknown>((resolve) => {
-    anonymous.once("data", () => {
-      resolve(new Error("anonymous preflight received a decision"));
-    });
-    anonymous.once("error", resolve);
-  });
-  const anonymousElapsed = Date.now() - anonymousStarted;
-  assert.ok(anonymousElapsed < 1_000, `anonymous websocket stayed open for ${anonymousElapsed} ms`);
-  assert.ok(
-    typeof anonymousError === "object" && anonymousError !== null && "code" in anonymousError,
-  );
-  assert.equal(anonymousError.code, grpc.status.PERMISSION_DENIED);
 
-  // The client deadline is 5 seconds. A pass means the guard applied its own
-  // decision budget and denied the upgrade without a preflight message.
-  const metadata = new grpc.Metadata();
-  metadata.set("authorization", signed);
-  const silentStarted = Date.now();
-  const silent = client.EvaluateWebSocketSession(metadata, { deadline: Date.now() + 5_000 });
-  const silentResult = await new Promise<unknown>((resolve) => {
-    silent.once("data", resolve);
-    silent.once("error", resolve);
+  await t.test("signed silence ends with one HTTP-only denial", async () => {
+    const started = performance.now();
+    const silent = observeWebSocket(client, { authorization: signed });
+    const status = await silent.terminal;
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed >= 350 && elapsed < 1_500, `signed silence lasted ${elapsed} ms`);
+    assert.equal(status.code, grpc.status.OK);
+    assertHttpOnly(silent.frames);
   });
-  const silentElapsed = Date.now() - silentStarted;
-  assert.ok(silentElapsed < 1_500, `silent websocket stayed open for ${silentElapsed} ms`);
-  assert.ok(
-    typeof silentResult === "object" &&
-      silentResult !== null &&
-      "preflight_decision" in silentResult &&
-      typeof silentResult.preflight_decision === "object" &&
-      silentResult.preflight_decision !== null &&
-      "action" in silentResult.preflight_decision,
+
+  await t.test(
+    "signed silence ends with one HTTP-only denial and ignores a late frame",
+    async () => {
+      // Keep the client writable past the guard's 400 ms budget and attempt a
+      // mismatched frame. The call must have only one HTTP-only terminal result.
+      const silentStarted = performance.now();
+      const silent = observeWebSocket(client, { authorization: signed });
+      const late = delay(500).then(() => {
+        silent.stream.end({ preflight: { context: { sandbox_id: "other-runtime" } } });
+      });
+      const [{ silentStatus, silentElapsed }] = await Promise.all([
+        silent.terminal.then((status) => ({
+          silentStatus: status,
+          silentElapsed: performance.now() - silentStarted,
+        })),
+        late,
+      ]);
+      assert.ok(
+        silentElapsed >= 350 && silentElapsed < 1_500,
+        `signed silence lasted ${silentElapsed} ms`,
+      );
+      assert.equal(silentStatus.code, grpc.status.OK);
+      assertHttpOnly(silent.frames);
+    },
   );
-  assert.equal(silentResult.preflight_decision.action, 3);
+
+  await t.test("the caller deadline can end the preflight sooner", async () => {
+    // The peer can end the call sooner. Its own deadline may beat the guard's
+    // final denial to the wire, but cannot yield a successful preflight action.
+    const shortStarted = performance.now();
+    const short = observeWebSocket(client, { authorization: signed, timeout: 125 });
+    const shortStatus = await short.terminal;
+    assert.ok(performance.now() - shortStarted < 350, "earlier client deadline was exceeded");
+    assert.ok(
+      shortStatus.code === grpc.status.OK || shortStatus.code === grpc.status.DEADLINE_EXCEEDED,
+    );
+    // The denial frame can arrive even if the caller's deadline wins before
+    // the successful trailers arrive.
+    if (shortStatus.code === grpc.status.OK || short.frames.length > 0) {
+      assertHttpOnly(short.frames);
+    }
+  });
 });

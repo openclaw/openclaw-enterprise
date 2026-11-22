@@ -258,6 +258,9 @@ export function createOpenShellOnlineHttpAuthority(
   };
   let pending = 0;
   const sandboxPending = new Map<string, number>();
+  // Waiting for a WebSocket frame must never consume HTTP authorization slots.
+  let pendingPreflights = 0;
+  const sandboxPreflights = new Map<string, number>();
   server.addService(service.SupervisorMiddleware!.service, {
     Describe(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
       const description =
@@ -284,8 +287,6 @@ export function createOpenShellOnlineHttpAuthority(
     },
     ...(options.httpPolicySet !== undefined && {
       EvaluateWebSocketSession(call: ServerDuplexStream<Wire, Wire>) {
-        // Refuse before waiting. A silent stream otherwise holds the call until
-        // the peer closes it. The budget and in-flight caps match HTTP.
         const startedAt = performance.now();
         const expiresAt = startedAt + Math.min(budgetMs, Number(call.getDeadline()) - Date.now());
         const expired = () => !(performance.now() < expiresAt);
@@ -294,74 +295,74 @@ export function createOpenShellOnlineHttpAuthority(
           call.write({ preflight_decision: { action: 3, reason_code: "http_only" } });
           call.end();
         };
-        if (!sandboxId) {
+        const refuseIdentity = () =>
           call.emit("error", {
             code: status.PERMISSION_DENIED,
             message: "Supervisor required.",
           });
+
+        if (call.cancelled) {
           return;
         }
+        if (!sandboxId) {
+          refuseIdentity();
+          return;
+        }
+        const held = sandboxPreflights.get(sandboxId) ?? 0;
         if (
           expired() ||
-          pending >= pendingDecisionCapacity ||
-          (sandboxPending.get(sandboxId) ?? 0) >= pendingDecisionSandboxShare
+          pendingPreflights >= pendingDecisionCapacity ||
+          held >= pendingDecisionSandboxShare
         ) {
           denyUpgrade();
           return;
         }
-        pending += 1;
-        sandboxPending.set(sandboxId, (sandboxPending.get(sandboxId) ?? 0) + 1);
+
+        pendingPreflights += 1;
+        sandboxPreflights.set(sandboxId, held + 1);
         let settled = false;
         const release = () => {
           if (settled) {
-            return;
+            return false;
           }
           settled = true;
           clearTimeout(timer);
-          pending -= 1;
-          const held = (sandboxPending.get(sandboxId) ?? 1) - 1;
-          if (held <= 0) {
-            sandboxPending.delete(sandboxId);
+          pendingPreflights -= 1;
+          const remaining = sandboxPreflights.get(sandboxId)! - 1;
+          if (remaining === 0) {
+            sandboxPreflights.delete(sandboxId);
           } else {
-            sandboxPending.set(sandboxId, held);
+            sandboxPreflights.set(sandboxId, remaining);
           }
-          call.removeListener("cancelled", onCancel);
+          call.removeListener("cancelled", release);
+          call.removeListener("error", release);
           call.removeListener("data", onData);
-          call.removeListener("error", onStreamError);
+          return true;
         };
         const onData = (event: Wire) => {
-          const preflight = record(event.preflight);
-          if (expired() || record(preflight.context).sandbox_id !== sandboxId) {
-            release();
-            call.emit("error", {
-              code: status.PERMISSION_DENIED,
-              message: "Supervisor required.",
-            });
+          if (!release() || call.cancelled) {
             return;
           }
-          release();
+          // A delayed timer cannot make an expired frame an identity failure.
+          if (!expired() && record(record(event.preflight).context).sandbox_id !== sandboxId) {
+            refuseIdentity();
+            return;
+          }
           denyUpgrade();
-        };
-        const onCancel = () => {
-          release();
-        };
-        const onStreamError = () => {
-          release();
         };
         const timer = setTimeout(
           () => {
-            release();
-            if (!call.cancelled) {
+            if (release() && !call.cancelled) {
               denyUpgrade();
             }
           },
-          Math.max(0, expiresAt - performance.now()),
+          Math.max(0, Math.ceil(expiresAt - performance.now())),
         );
-        call.once("cancelled", onCancel);
+        call.once("cancelled", release);
+        call.once("error", release);
         call.once("data", onData);
-        call.once("error", onStreamError);
         if (call.cancelled) {
-          onCancel();
+          release();
         }
       },
     }),

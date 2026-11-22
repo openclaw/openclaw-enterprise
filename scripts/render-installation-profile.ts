@@ -2093,7 +2093,7 @@ function buildRendered(
               limits: { cpu: "4", memory: "6Gi" },
             },
             namespace: {
-              quota: { pods: "10" },
+              quota: { pods: "20" },
               containerDefaults: {
                 requests: { cpu: "100m", memory: "128Mi" },
                 limits: { cpu: "4", memory: "2Gi" },
