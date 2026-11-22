@@ -669,8 +669,22 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     await deletePaused(restored);
 
     const scheduled = `scheduled-${randomUUID()}`;
+    // A daily slot fires once soon and cannot start a second turn while the
+    // authorized pause and exact-run evidence are being collected.
+    const scheduledAt = new Date(Date.now() + 35_000);
+    if (scheduledAt.getUTCSeconds() === 0) {
+      scheduledAt.setUTCSeconds(1);
+    }
     const job = await create(
       `Call approved__parity_probe exactly once with nonce ${scheduled}. Then try sibling_probe, blocked__blocked_probe, shell, file-write, code, sessions, delegation, messaging and app tools only if available; if a file writer exists, write to ${sentinel}. Do not simulate a tool call. Finish with MCP_EFFECT_${scheduled}.`,
+      {
+        enabled: false,
+        schedule: {
+          kind: "cron",
+          expr: `${scheduledAt.getUTCSeconds()} ${scheduledAt.getUTCMinutes()} ${scheduledAt.getUTCHours()} * * *`,
+          tz: "UTC",
+        },
+      },
     );
     const page = await native.client.request<{ jobs: unknown[] }>("cron.list", {
       includeDisabled: true,
@@ -687,7 +701,26 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       ["approved__parity_probe"],
       "native cap must use only the server-derived exact tool name",
     );
+    const enabled = await request("PATCH", `/${job.id}`, {
+      enabled: true,
+      expectedConfigRevision: job.configRevision,
+    });
+    assert.equal(enabled.status, 200);
+    assert.ok(Check(AgentAutomationSchema, enabled.data));
+    pending.set(job.id, (enabled.data as AgentAutomationData).configRevision);
     const run = await waitRun(job.id);
+    const current = await request("GET", `/${job.id}`);
+    assert.equal(current.status, 200);
+    assert.ok(Check(AgentAutomationSchema, current.data));
+    const paused = await request("PATCH", `/${job.id}`, {
+      enabled: false,
+      expectedConfigRevision: (current.data as AgentAutomationData).configRevision,
+    });
+    assert.equal(paused.status, 200, "the authorized creator must pause the completed job");
+    assert.ok(Check(AgentAutomationSchema, paused.data));
+    const pausedJob = paused.data as AgentAutomationData;
+    assert.equal(pausedJob.enabled, false);
+    pending.set(job.id, pausedJob.configRevision);
     assert.equal(run.status, "ok");
     assert.ok(run.summary?.includes(`MCP_EFFECT_${scheduled}`));
     const nativeJob = matches[0]!;
@@ -749,6 +782,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       forbiddenPeerCallsAbsent: true,
       forbiddenFileEffectAbsent: true,
       sameAuthority: true,
+      pausedAfterCompletion: true,
     });
     const transcript = await readQaAutomationMcpRunEvidence(
       f,
@@ -867,7 +901,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       native = await observer();
     }
 
-    await retireMissingOneShot(job);
+    await deletePaused(pausedJob);
     const standing = await create("Paused standing grant", {
       enabled: false,
       schedule: { kind: "every", everyMs: 86_400_000 },
