@@ -75,7 +75,7 @@ supervisor and Provider status. See the
 [Git execution trust boundary](../repository-credentials/protected-openshell-git.md#execution-identity).
 
 Build a Harness image containing `/opt/oce/runtime/openshell-bootstrap.cjs` and
-select it by immutable reference. OCE development and CI pin OpenShell v0.1.8.
+select it by immutable reference. See the [OpenShell development and CI pin](openshell-sandbox.md).
 For the prototype, verify that the OpenShell gateway enables
 `SandboxUpdates.UpdateSandbox` and that its Compute Driver applies updates to
 image, command, environment, labels and annotations with resource-version checks.
