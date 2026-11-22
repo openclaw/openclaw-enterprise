@@ -225,33 +225,33 @@ Registry load refuses a token source with any registration lacking `nativeGit: "
 
 ### Attribution and audit
 
-GitHub attributes commits, pushes and its audit entries to the token's owner, not an App. OCE records each loan, renewal and withdrawal with the source, Secret reference and version, Namespace, Agent, revision, repositories and times. It never records the value or a digest of it.
+GitHub attributes commits, pushes and its audit entries to the token's owner, not an App. OCE records each loan, renewal and withdrawal with the source, Secret reference and the mounted Secret file's generation, Namespace, Agent, revision, repositories and times. It never records the value or a digest of it.
 
 ### Interface changes for this amendment
 
 - **APIs and IAM:** No changes.
-- **Database entities:** None intended. If native material custody needs a row without a provider expiry, that migration is a separate decision.
-- **Driver contracts:** The Repo Driver registry gains the token authority. The prepared-token contract gains a static token kind without a provider expiry. The Sandbox rule compiler and the Credential Proxy accept the token's Provider in place of the installation Provider.
+- **Database entities:** None. The token gets no prepared-token row: each loan is derived from the source, the loan window and the mounted Secret file's generation. Without a row there is no row lock against a concurrent retirement; the live-session lock alone guards it.
+- **Driver contracts:** The Repo Driver registry gains the token authority. The Sandbox rule compiler and the Credential Proxy accept the token's Provider in place of the installation Provider. The prepared-token kinds are unchanged.
+- **Installation configuration:** One Helm value names the token Secret and its key, as `repositoryCredentials.appKeySecretName` does for the App key. Only the Worker mounts it.
 
 ### Decisions for review
 
 Each decision is independent.
 
 1. Admit a fine-grained token as a supported production source for native Git.
-2. Choose the registry shape. Recommended: a discriminator that replaces the App fields and keeps authority and grants in one fingerprinted document.
+2. Choose the registry shape. Recommended: a discriminator that replaces the App fields, with the Secret named by a Helm value as the App key is. The chart mounts Secrets into the Worker and does not read the registry, so a Secret name in the registry would need a second copy in the values and a check that both agree.
 
    ```json
-   "authority": { "kind": "github-token", "tokenSecret": "repository-token" }
+   "authority": { "kind": "github-token" }
    ```
 
-   Alternative: an Installation setting beside the App key reference, with the registry's App fields absent. It keeps the Secret name out of the shared registry but splits the authority across two documents.
-
-   ```json
-   "repositoryCredentials": { "tokenSecretName": "repository-token" }
+   ```yaml
+   repositoryCredentials:
+     tokenSecretName: repository-token
+     tokenKey: token
    ```
 
-3. Require no database migration.
-4. Add `github_static_token` to the prepared-token kinds.
+3. Require no database migration and no new prepared-token kind.
 
 ### Acceptance criteria for this amendment
 
