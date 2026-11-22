@@ -1759,7 +1759,9 @@ async function admitProtectedSession(
     assert.deepEqual(bindings, [binding]);
   }
   assert.equal(mode === 9, nativePolicy !== undefined);
-  const admissionAuthorization =
+  const admissionAuthorization: NonNullable<
+    AgentRevision["egressPlan"]
+  >["repositoryGitAuthorization"] =
     mode === 9
       ? "network-policy"
       : mode === 6
