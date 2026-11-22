@@ -51,6 +51,10 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
 import {
+  NODE_CLAUDE_CODE_RUN_COMMAND,
+  renderedGatewayNodes,
+} from "../helpers/kubernetes-gateway-nodes.ts";
+import {
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   EMBEDDED_API_KEY_REQUIRED,
   unsupportedChannelRefusal,
@@ -4389,9 +4393,10 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     assert.deepEqual(rendered.gateway.nodes, {
       commands: {
         ...(nodes === undefined ? {} : { allow: ["camera.snap"] }),
-        deny: [...(nodes === undefined ? [] : ["sms.send"]), "agent.cli.claude.run.v1"],
+        deny: [...(nodes === undefined ? [] : ["sms.send"]), NODE_CLAUDE_CODE_RUN_COMMAND],
       },
     });
+    assert.deepEqual(rendered.gateway.nodes, renderedGatewayNodes(nodes));
     if (modelEndpoint !== undefined) {
       assert.equal(rendered.agents.defaults.model, "codex/openai-compatible/gpt-5");
       assert.equal(revision.configuration.agents.defaults.model, "codex/gpt-5");
@@ -6085,9 +6090,7 @@ async function exerciseEmbeddedReplacement(scenario) {
         "openclaw.json"
       ],
     );
-    assert.deepEqual(rendered.gateway.nodes, {
-      commands: { deny: ["agent.cli.claude.run.v1"] },
-    });
+    assert.deepEqual(rendered.gateway.nodes, renderedGatewayNodes());
     // Claude Code's admin-managed settings carry the credential and outrank every other
     // tier, and the model's tools run as the Gateway's uid. Only the settings init mounts
     // the Memory volume writable; the Gateway sees it read-only at /etc/claude-code.
@@ -6209,7 +6212,7 @@ async function exerciseEmbeddedReplacement(scenario) {
           "openclaw.json"
         ],
       ).gateway.nodes,
-      { commands: { deny: ["agent.cli.claude.run.v1"] } },
+      renderedGatewayNodes(),
     );
   }
   const probeConfiguration = JSON.parse(gatewayEnvironment.OPENCLAW_HARNESS_PROBE_CONFIG.value);

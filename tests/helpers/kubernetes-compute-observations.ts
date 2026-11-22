@@ -10,6 +10,7 @@ import {
   resources,
   waitFor,
 } from "./kubernetes-compute-real.mjs";
+import { renderedGatewayNodes } from "./kubernetes-gateway-nodes.ts";
 
 type WireObject = Record<string, unknown>;
 type GatewaySnapshot = Pick<
@@ -185,6 +186,7 @@ function expectedGatewayDocument(snapshot: GatewaySnapshot): WireObject {
       : {}),
     gateway: {
       ...spread(configuredGateway),
+      nodes: renderedGatewayNodes(optionalField(configuredGateway, "nodes")),
       // Compute renders an all-interfaces listener for an omitted or auto bind.
       bind: "lan",
       trustedProxies: ["127.0.0.1/32"],

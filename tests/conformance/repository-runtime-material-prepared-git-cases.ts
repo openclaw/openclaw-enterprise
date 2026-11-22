@@ -16,6 +16,7 @@ import {
   jsonRecord,
 } from "./repository-runtime-material-fixture.ts";
 import { preparedNativeDocument } from "./repository-runtime-material-observations.ts";
+import { withRenderedGatewayNodes } from "../helpers/kubernetes-gateway-nodes.ts";
 
 function isArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value);
@@ -54,7 +55,9 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   jsonRecord(models[0]).id = "openai-compatible/gpt-5";
   assert.deepEqual(
     gatewayConfiguration,
-    expectedGatewayConfiguration,
+    // Compute denies the Claude Code node command in every Gateway, independently of
+    // repository material.
+    withRenderedGatewayNodes(expectedGatewayConfiguration),
     "repository material does not change the separate Gateway's execution configuration",
   );
   assert.equal(JSON.stringify(f.revision.configuration), original);

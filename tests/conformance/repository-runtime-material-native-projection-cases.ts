@@ -9,6 +9,7 @@ import {
   present,
   recordField,
 } from "./repository-runtime-material-fixture.ts";
+import { withRenderedGatewayNodes } from "../helpers/kubernetes-gateway-nodes.ts";
 import {
   parseRecord,
   preparedCodexManifest,
@@ -124,7 +125,7 @@ test("Kubernetes projects the repository client into native exec paths without c
     recordField(recordField(recordField(expected.agents, "entries"), "own-exec"), "tools"),
     "exec",
   ).pathPrepend = [shim, "/operator/bin", "/shared/bin"];
-  assert.deepEqual(parseRecord(preparedNativeDocument(f)), expected);
+  assert.deepEqual(parseRecord(preparedNativeDocument(f)), withRenderedGatewayNodes(expected));
   assert.deepEqual(f.revision.configuration, original);
 });
 
@@ -139,13 +140,18 @@ test("Kubernetes supplies a native repository exec prefix when no tools configur
       const original = structuredClone(f.revision.configuration);
       deepFreeze(f.revision.configuration);
       await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-      assert.deepEqual(parseRecord(preparedNativeDocument(f)), {
-        ...original,
-        models: {
-          providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
-        },
-        tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
-      });
+      assert.deepEqual(
+        parseRecord(preparedNativeDocument(f)),
+        withRenderedGatewayNodes({
+          ...original,
+          models: {
+            providers: {
+              openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" },
+            },
+          },
+          tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
+        }),
+      );
       assert.deepEqual(f.revision.configuration, original);
     });
   }
@@ -163,12 +169,17 @@ test("Kubernetes preserves native exec settings without repository bindings", as
       const document = JSON.stringify(f.revision.configuration);
       deepFreeze(f.revision.configuration);
       await f.driver.prepareRevision(f.revision, f.context(runtimeBindings));
-      assert.deepEqual(parseRecord(preparedNativeDocument(f)), {
-        ...parseRecord(document),
-        models: {
-          providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
-        },
-      });
+      assert.deepEqual(
+        parseRecord(preparedNativeDocument(f)),
+        withRenderedGatewayNodes({
+          ...parseRecord(document),
+          models: {
+            providers: {
+              openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" },
+            },
+          },
+        }),
+      );
       assert.equal(JSON.stringify(f.revision.configuration), document);
     });
   }
