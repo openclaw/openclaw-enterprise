@@ -546,8 +546,8 @@ export function renderAgentList(context: AgentListContext) {
           element(
             "span",
             {
-              className: "resource-id agent-deployment-note",
-              ...(failure ? { title: failure } : {}),
+              className: "agent-deployment-note",
+              ...(failure ? { title: failure, "data-tone": "danger" } : {}),
             },
             failure ??
               (neutral ? `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.` : "Serving health unverified"),
@@ -1195,7 +1195,7 @@ export function renderAgentList(context: AgentListContext) {
         // On a phone each cell shows its column's name (console.css, `data-label`).
         element(
           "td",
-          { "data-label": "Execution mode" },
+          { className: "agent-execution-mode", "data-label": "Execution mode" },
           item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
         ),
         current,

@@ -1225,7 +1225,8 @@ const authoredScenarios = {
       "The list shows the newest visible failure beside the current version, without asserting serving health. The failure keeps to one line, so the row keeps its height when the read lands; its title and the Agent page give the whole text.",
     steps: [
       'Current version reads "v6", not an ID, and the latest deployment reads "v7 · Failed": the words the Agent page uses.',
-      "Hover the one-line failure to read its whole text.",
+      "Compare the current version with the failed deployment. The failure reason uses the error color. Hover it to read the full message.",
+      "Tab between the Agent and version links. Check the highlight follows the row and the focused link has its own outline.",
       "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
     ],
   } satisfies LocalScenario,
