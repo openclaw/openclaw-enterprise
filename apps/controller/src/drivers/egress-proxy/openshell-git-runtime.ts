@@ -2418,7 +2418,8 @@ export class OpenShellGitRuntime {
           grantId: material.grantId,
           ...("scope" in material
             ? {
-                installationId: material.installationId,
+                // Token material returned above: this route always has an App installation.
+                installationId: material.installationId!,
                 ...(material.scope === "github-repository"
                   ? { scope: material.scope, repositories: material.repositories }
                   : { scope: material.scope }),

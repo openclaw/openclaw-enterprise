@@ -997,18 +997,25 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           materialVersion,
           sessionId: current.session.sessionId,
           apiOrigin: this.authority.split("#")[0]!,
-          ...(grant.profile === "github-installation" || grant.profile === "github-repository"
+          ...(grant.profile === "github-repository"
             ? {
-                ...(grant.profile === "github-repository"
-                  ? { scope: grant.profile, repositories: grant.repositories }
-                  : { scope: grant.profile }),
+                scope: grant.profile,
+                repositories: grant.repositories,
                 grantId: grant.id,
+                // A token registry's material names its source; App material its installation.
                 ...("tokenSource" in grant
                   ? { tokenSource: grant.tokenSource }
                   : { installationId: grant.installationId }),
                 providerInstanceId: current.session.binding.grant.providerInstanceId,
               }
-            : {
+            : grant.profile === "github-installation"
+              ? {
+                  scope: grant.profile,
+                  grantId: grant.id,
+                  installationId: grant.installationId,
+                  providerInstanceId: current.session.binding.grant.providerInstanceId,
+                }
+              : {
                 ...current.session.binding.grant,
                 repository: grant.repository,
                 pushRef: grant.pushRef,

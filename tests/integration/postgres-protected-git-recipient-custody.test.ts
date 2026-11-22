@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
 import test, { type TestContext } from "node:test";
 import {
@@ -753,6 +756,115 @@ test(
       ).rows,
       [{ state: "committed", custody: "current", material_version: material.materialVersion }],
     );
+  },
+);
+
+test(
+  "a token registry lends the mounted token to a native v9 session with no material row",
+  requiresPostgres,
+  async (t) => {
+    const f = await fixture(t, { sessionLifetimeMs: 600_000 });
+    await disposeNativeSession(f);
+    const { namespaceId } = f.revision;
+    const entries = [
+      { repositoryRef: "source", repository: "fixture/repository", repositoryId: "73" },
+    ];
+    const peer = await standingGitOrigin(t, namespaceId, 600_000, undefined, false, {
+      entries,
+      selectedRepositoryIds: ["73"],
+      permissions: { contents: "write", metadata: "read" },
+    });
+    // The same registration with the token authority in place of the App fields.
+    const { appId: _appId, githubInstallationId: _installationId, ...fields } = peer.registry;
+    const registry = {
+      ...fields,
+      backendId: f.registry.backendId,
+      authority: { kind: "github-token" as const },
+    };
+    const binding = resolveGitHubRepositoryBinding(registry, {
+      namespaceId,
+      repositoryRef: "source",
+      profile: "github-repository",
+    });
+    const driver = {
+      id: "native-custody",
+      implementation: "openshell",
+      configurationId: "c".repeat(64),
+    };
+    const grants = [{ repository: "fixture/repository", access: "write" }] as const;
+    const { installation, revisionId, sessionId } = await admitProtectedSession(
+      f,
+      driver,
+      binding,
+      { mode: 9, nativePolicy: admitRepositoryNetworkPolicy(grants, grants) },
+    );
+    const { observed } = await recordBootstrapRoute(
+      f,
+      new PostgresOpenShellGitRouteStore(f.pool),
+      installation,
+      revisionId,
+    );
+    // Fake values only. The Worker's projected Secret is a private file it re-reads per loan.
+    const fake = (prefix: string, fill: string) => prefix + fill.repeat(64 / fill.length);
+    const directory = await temporaryDirectory(t, "token-source-");
+    const tokenPath = join(directory, "token");
+    const swap = async (value: string) => {
+      const staged = join(directory, "token.next");
+      await writeFile(staged, value, { mode: 0o440 });
+      await rename(staged, tokenPath);
+    };
+    await swap(fake("github_pat_", "FAKE0first"));
+    const reports: [string, unknown][] = [];
+    const owner = await f.startOwner({
+      controlSocket: undefined,
+      registry,
+      repositoryGitCustody: selectBundledRepositoryGitCustody(driver),
+      privateKeyPath: undefined,
+      tokenPath,
+      custodyKeyPath: peer.custodyKeyPath,
+      apiOrigin: peer.gh.origin,
+      ca: peer.tls.ca,
+      report: (code: string, context: unknown) => reports.push([code, context]),
+    });
+    const authority = owner.protectedGit?.networkPolicy;
+    assert.ok(authority);
+    const route = { revisionId, fence: 1, observed };
+    // No maintenance pass and no App issuance: the first read lends the mounted token.
+    const first = await authority.readMaterial(route, t.signal);
+    assert.ok(first && "value" in first, "the selected native recipient reads the lent token");
+    assert.equal(first.value, fake("github_pat_", "FAKE0first"));
+    assert.equal(first.scope, "github-repository");
+    assert.equal(first.sessionId, sessionId);
+    assert.equal(first.tokenSource, registry.providerInstanceId);
+    assert.equal("installationId" in first, false);
+    assert.deepEqual(first.repositories, [{ repositoryId: "73", repository: "fixture/repository" }]);
+    assert.ok(Date.parse(first.expiresAt) - Date.now() <= 3_600_000, "a loan ends within 1 h");
+    await owner.maintain();
+    assert.equal(peer.gh.issuesOfTokens.length, 0, "a token source never asks an App to issue");
+    // No family or attempt row, so no stored copy of the token: no migration is involved.
+    assert.deepEqual(
+      (
+        await f.pool.query(
+          `SELECT count(*)::int AS n FROM occ.prepared_github_families
+           WHERE source#>>'{session,revisionId}'=$1`,
+          [revisionId],
+        )
+      ).rows,
+      [{ n: 0 }],
+    );
+    // Replacement: the next read lends the new value under a new material version.
+    await swap(fake("github_pat_", "FAKE1second"));
+    const second = await authority.readMaterial(route, t.signal);
+    assert.ok(second && "value" in second);
+    assert.equal(second.value, fake("github_pat_", "FAKE1second"));
+    assert.notEqual(second.materialVersion, first.materialVersion);
+    // A classic token is refused with a named diagnostic and no material.
+    await swap(fake("ghp_", "FAKE2classic"));
+    assert.deepEqual(await authority.readMaterial(route, t.signal), { absent: "unprepared" });
+    assert.deepEqual(reports, [
+      ["PREPARED_GITHUB_TOKEN_REFUSED", { reason: "token_class_refused", tokenClass: "classic" }],
+    ]);
+    assert.equal(JSON.stringify(reports).includes("FAKE2classic"), false);
   },
 );
 

@@ -13,7 +13,7 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { preparedGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/access/prepared-configuration.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
-import type { PostgresPool } from "@openclaw-enterprise/occ";
+import type { PostgresPool } from "../../packages/occ/src/index.ts";
 import {
   GitHubTokenSourceError,
   createGitHubTokenLoanSource,

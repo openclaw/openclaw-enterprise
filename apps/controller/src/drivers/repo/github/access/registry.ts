@@ -746,6 +746,18 @@ export function createGitHubRepositoryDeliveryResolver(
 }
 
 export function resolveSelectedRepositoryGrant(
+  registry: GitHubAppRepositoryRegistry,
+  namespaceId: string,
+  revisionId: string,
+  bindings: readonly AdmittedRepositoryBinding[],
+): GitHubRepositoryGrant;
+export function resolveSelectedRepositoryGrant(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+  revisionId: string,
+  bindings: readonly AdmittedRepositoryBinding[],
+): GitHubRepositoryGrant | GitHubRepositoryTokenGrant;
+export function resolveSelectedRepositoryGrant(
   registry: GitHubRepositoryRegistry,
   namespaceId: string,
   revisionId: string,
