@@ -88,10 +88,11 @@ For Kubernetes workload problems, operators can use the
 When a Kubernetes deployment fails with `DEPENDENCY_UNAVAILABLE` after its
 retries, the worker log's `worker.compute-prepare-failed` events for that
 version name the code, preparation step and reason. The log Collector exports
-the code but not the step or reason. `KUBERNETES_OWNERSHIP_CONFLICT` means the
-driver refused an object it does not own, such as a Deployment with the Agent's
-workload name but no OCE ownership labels. The driver never adopts it; delete
-it, then deploy again.
+the code but not the step or reason.
+
+`KUBERNETES_OWNERSHIP_CONFLICT` means the Driver could not verify an object’s
+ownership or configuration. Leave it in place. Ask the cluster operator to
+identify its owner and resolve the conflict with them before deploying again.
 
 For a dedicated Agent, a connected workspace node alone does not establish
 enrollment: OCC must record its device through setup handoff. If deployment
@@ -138,90 +139,100 @@ out hidden limits. Unreadable outer limits remain unknown until verified through
 authorized infrastructure tooling. OCE runtime descriptions and diagnostics do
 not measure effective capacity.
 
-## An embedded Gateway reports an unverifiable state owner
+<span id="an-embedded-gateway-reports-an-unverifiable-state-owner" class="anchor-alias"></span>
 
-A hard stop can leave the old Gateway's locks on the Agent's volume. In either
-Gateway managed mode, OCE can recover a verified Docker predecessor
-or the first eligible Kubernetes container in the same Pod. A new Pod cannot
-verify a killed Pod's owner. An older image may also lack a record of the
-original PID 1 start time. If the replacement reports an unverifiable owner,
-follow this procedure.
+## A Gateway or Harness cannot verify that the state lock holder stopped
 
-A dedicated Gateway does not recover a killed container's locks. On
-Kubernetes it holds unready on `gateway-state-lock`; the deployment fails with
-`RUNTIME_STATE_LOCK_UNVERIFIED` while the Pod waits. `occ agent logs AGENT_ID
---source gateway` shows `The Gateway cannot start: …` with the holder. If the
-holder stops cleanly, the Gateway restarts after its next 5-minute check;
-otherwise use the same procedure, which stops the Agent first.
+After a hard stop, an embedded Gateway in either managed mode can recover locks
+from a verified Docker predecessor or the first eligible Kubernetes container in
+the same Pod. A replacement Pod cannot verify the former holder. Older images
+may lack the original PID 1 start time.
 
-A dedicated Harness Pod killed during Doctor or native setup (node failure, or
-an OpenShell Sandbox stopped while still starting) can leave
-its workspace node state locked. Later versions fail with
-`RUNTIME_STATE_LOCK_UNVERIFIED`; until OCE deletes their Pods, `occ agent logs
-AGENT_ID --source agent` shows `The Harness cannot start: …` with the holder. For
-the Harness Deployment that Kubernetes Compute creates, use the same procedure
-with these changes:
+A dedicated Gateway cannot recover a killed container's locks. On Kubernetes,
+it stays unready on `gateway-state-lock` and deployment fails with
+`RUNTIME_STATE_LOCK_UNVERIFIED`. Check `occ agent logs AGENT_ID --source gateway`
+for the holder in `The Gateway cannot start`. When the locks clear, the Gateway
+restarts after its next five-minute check.
 
-- Step 1: The holder is usually an earlier version's deleted Pod. Record the Pod
-  name from the log's `holder N at POD_NAME/pid-ns` text, not the current Pod.
-  Before you stop the Agent (stopping deletes the Harness Deployment), find the Deployment's volume mount at
-  `/home/node/.openclaw-node` and record its claim, `workspace-node-…` subPath
-  and the Pod's `securityContext`. After the stop, `kubectl get pods -A -l openclaw.dev/agent=AGENT_ID`
-  must list no Pod, including `Terminating` Pods, and the holder Pod must not
-  exist. Kubernetes removes a Pod only after its kubelet reports that the
-  containers stopped, unless someone force-deleted the Pod, deleted its node or
-  tainted the node `node.kubernetes.io/out-of-service`; `kubectl get nodes`
-  shows every node Ready without that taint. If one of these occurred, or a
-  node is unreachable, keep the Agent stopped until the
-  infrastructure operator verifies on the node that the holder's containers
-  exited.
-- Step 2: Start the maintenance container from the Harness image with the
-  Harness Pod's `runAsUser` and `runAsGroup`. Do not set `fsGroup`, unless you
-  also copy the Harness Pod's `fsGroupChangePolicy: OnRootMismatch`. With the
-  default policy, the kubelet gives the group read and write access to every
-  file on the claim, and the next version fails `workspace-baseline` with
-  `Runtime pin store owner is unsafe`. Mount only the subPath, not the claim
-  root, at the same path, and set `OPENCLAW_STATE_DIR` to
-  `/home/node/.openclaw-node`. The lock file names depend on this path. A
-  Harness has no profile.
-- Step 3: Run the inspection and `--confirm` in the same container, for example
-  a Pod that sleeps, with `kubectl exec` for each command. A new Pod can change
-  the lock files' metadata, and OpenClaw then reports a changed record.
-- If a version already fails with `Runtime pin store owner is unsafe`, stop the
-  Agent and verify as in step 1. From a maintenance container without `fsGroup`, run
-  `chmod -R go-rwx,g-s /home/node/.openclaw-node`, then deploy again.
+A dedicated Harness killed during Doctor or native setup can leave its workspace
+node state locked. Later deployments can fail with `RUNTIME_STATE_LOCK_UNVERIFIED`.
+Read `occ agent logs AGENT_ID --source agent` and find the holder in
+`The Harness cannot start` before OCE deletes the failed Pod. The Harness steps
+below apply only to Deployments that Kubernetes Compute creates. For an
+OpenShell Sandbox or another Harness topology, ask the infrastructure operator
+for its recovery procedure.
 
-1. Record the Agent, state volume and original container ID. On Kubernetes,
-   also record the Pod UID and node, and save the Gateway Deployment's manifest. Stop the Agent in OCC and verify with the
-   compute provider that the exact container exited. A missing Pod or expired
-   heartbeat alone cannot establish this. A force-deleted holder Pod leaves no
-   container ID: record its name from the log's `holder N at POD_NAME/pid-ns`
-   text, and the infrastructure operator verifies that the container runtime on
-   its node lists no sandbox or container for it, for example with
-   `crictl pods --name POD_NAME`. If its node is unreachable, keep the
-   Agent stopped until the infrastructure operator verifies shutdown.
-   [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
-2. Keep other writers off the volume. Start a maintenance container from the
-   Gateway's pinned image as its runtime user. Mount the retained volume and,
-   on Docker, the configuration at the Gateway's paths, and use its state
-   directory and profile. On Kubernetes, copy from the saved manifest the Pod's
-   `securityContext`, `prepare-private-state` init container and volumes, and
-   the `gateway` container's mounts and `OPENCLAW_STATE_DIR`, but leave out the
-   configuration ConfigMaps: the stop deleted them and `recover-lock` does not
-   need them. Without the init container the command fails with
-   `No safe OpenClaw temp root is available`. Inspect the holders without
-   starting a Gateway.
+1. Record the Agent, state volume and original container ID if available. On
+   Kubernetes, use `holder N at POD_NAME/pid-ns` from the log to identify each
+   holder Pod. It may be an earlier version's Pod. Record its namespace, name,
+   UID when available and original node. Save the Gateway Deployment manifest
+   for Gateway recovery. For Harness recovery, record the pinned Harness image,
+   Pod `securityContext`, and claim and `workspace-node-…` subPath mounted at
+   `/home/node/.openclaw-node`. Stopping the Agent deletes the Harness Deployment.
+
+   [Stop the Agent in OCC](../../reference/agents/deployment.md#stop-and-resume).
+   On Docker, verify that the exact original container exited. On Kubernetes,
+   check the Agent's workload namespaces for any remaining Agent Pods, including
+   terminating Pods, and verify that each holder Pod is absent. Pod absence or
+   an expired heartbeat cannot prove container shutdown.
+
+   The infrastructure operator must check both runtime inventories on each
+   holder Pod's original Kubernetes node.
+
+   ```sh
+   crictl pods -o json
+   crictl ps -a -o json
+   ```
+
+   Match the former Pod by namespace, name and recorded UID when available. Use
+   sandbox IDs and Pod labels in the inventories to identify its containers. Keep
+   the Agent stopped and all locks intact if identification is uncertain, either
+   check fails, the node is unreachable or any Agent Pod, matching sandbox or
+   matching container remains.
+
+2. Keep other writers off the volume. For Gateway recovery, use the pinned
+   Gateway image, runtime user, state directory and profile. Mount the retained
+   volume and, on Docker, its configuration at the original paths. On Kubernetes,
+   leave the saved Deployment unchanged. Create a maintenance Pod with the saved
+   Pod `securityContext` and `prepare-private-state` init container. Copy only
+   the `runtime-state`, `runtime-temporary` and `openclaw-gateway-state` volumes
+   if present in the saved manifest. Copy their corresponding mounts and any
+   subPaths from `prepare-private-state` to the init container and from `gateway`
+   to the maintenance container. Copy `OPENCLAW_STATE_DIR` from `gateway`. Do not
+   copy configuration, credential, trust or plugin volumes or mounts. If the
+   layout does not match, keep the Agent stopped and ask the infrastructure
+   operator for recovery guidance. In the maintenance Pod only, remove the init
+   script's configuration file copy and the `chmod` for that file if present.
+   Keep all directory preparation and mode changes on private state directories.
+   Without the init container, recovery fails with
+   `No safe OpenClaw temp root is available`.
+
+   For Harness recovery, use the pinned Harness image and its `runAsUser` and
+   `runAsGroup`. Mount only the recorded subPath at `/home/node/.openclaw-node`
+   and set `OPENCLAW_STATE_DIR` to that path. A Harness has no profile. Omit
+   `fsGroup`, or copy the original Pod's `fsGroup` and `fsGroupChangePolicy`
+   together into the maintenance Pod only when the policy is `OnRootMismatch`.
+   The default policy can change permissions across the claim and cause
+   `Runtime pin store owner is unsafe`.
+
+   Inspect the locks without starting a Gateway or Harness.
 
    ```sh
    node /app/openclaw.mjs gateway recover-lock --json
    ```
 
-3. Match every reported holder to the stopped workload. If any holder could
-   still write or cannot be identified, leave all locks in place. Otherwise repeat the
-   command with `--confirm` and the exact `confirmation` fingerprint from the
-   inspection. If OpenClaw reports a changed record, inspect and verify its holders again.
-4. Exit the maintenance container, deploy the Agent again and send a chat
-   message to verify it can use its retained state.
+3. Match every reported holder to the stopped workload. Leave all locks intact if
+   any holder is unidentified or could still write. Otherwise, repeat the command
+   with `--confirm` and the exact `confirmation` fingerprint from the inspection.
+   For Harness recovery, run both commands in the same maintenance container.
+   If OpenClaw reports a changed record, inspect and verify the holders again.
+4. Exit the maintenance container, deploy the Agent again and send a chat message
+   to verify it can use its retained state.
+
+If the Kubernetes Compute Harness Deployment already fails with
+`Runtime pin store owner is unsafe`, stop the Agent and verify shutdown as in
+step 1. Mount only the recorded subPath in a maintenance container without
+`fsGroup`, then run `chmod -R go-rwx,g-s /home/node/.openclaw-node` and deploy again.
 
 ## A save or deployment lost its response
 
@@ -263,8 +274,9 @@ the few seconds this takes, then `running`; chat usually answers again within a
 minute. A plain `starting`, with no code, is a first start. A Harness that keeps
 exiting stays `HARNESS_RESTARTING` with a growing restart number while OpenShell
 backs off (up to three minutes between attempts), and the version's diagnostics
-lead with a failed `agent` `sandbox` check with that code. Read the [Sandbox
-logs](agent-logs.md#sandbox-source) for the cause.
+lead with a failed `agent` `sandbox` check with that code. Read
+[OpenShell sandbox and supervisor logs](#read-openshell-sandbox-and-supervisor-logs)
+to investigate repeated exits.
 
 OCE does not replace a Sandbox whose Pod was deleted or evicted, or that a node
 restart stopped. The Agent stays `active` while every chat fails. `occ agent get`
@@ -281,29 +293,47 @@ command, exact-content adoption can fail; deploy the Agent again.
 
 ## Read OpenShell sandbox and supervisor logs
 
-The [Sandbox source](agent-logs.md#sandbox-source) shows only what the OpenShell
-gateway recorded. An operator with `pods/log` access to the Agent's Kubernetes
-namespace can read the Harness output and the supervisor's own log. Each
-version's Sandbox has two Pods that share an `openshell.ai/sandbox-id`: the
-Harness Pod, which keeps OCC's `openclaw.dev/revision` label, and the
-supervisor Pod, labeled `openshell.ai/boundary-role=supervisor`:
+The [Sandbox source](agent-logs.md#sandbox-source) shows what the OpenShell
+gateway recorded. For stock OpenShell's two-Pod topology, confirm your current
+Kubernetes context, the workload's Kubernetes namespace and its Agent revision ID.
+Use Bash and `jq` with `list pods` and
+`get pods/log` permissions in that namespace. **These logs bypass OCC redaction.**
+Inspect them locally and remove sensitive values before sharing.
 
 ```bash
-REVISION_ID=<revision-id>
-HARNESS_SELECTOR="openclaw.dev/workload-role=agent,openclaw.dev/revision=$REVISION_ID"
-NS="$(kubectl get pod -A -l "$HARNESS_SELECTOR" \
-  -o jsonpath='{.items[*].metadata.namespace}' | cut -d' ' -f1)"
-SANDBOX_ID="$(kubectl -n "${NS:?no Harness Pod for this revision}" get pod -l "$HARNESS_SELECTOR" \
-  -o jsonpath='{.items[*].metadata.annotations.openshell\.ai/sandbox-id}' | cut -d' ' -f1)"
-kubectl -n "$NS" logs --all-containers --tail=200 -l "$HARNESS_SELECTOR"
-kubectl -n "$NS" logs --all-containers --tail=200 \
-  -l "openshell.ai/sandbox-id=${SANDBOX_ID:?no Sandbox ID on the Harness Pod},openshell.ai/boundary-role=supervisor"
+(
+  ns='<workload-namespace>'
+  revision='<agent-revision-id>'
+
+  one_pod() {
+    local pods
+    pods=$(kubectl -n "$ns" get pods -l "$1" -o json) || {
+      echo "$2 Pod lookup failed" >&2
+      return 1
+    }
+    jq -ce --arg role "$2" '
+      .items | if length == 0 then error("No matching \($role) Pod")
+               elif length > 1 then error("Multiple matching \($role) Pods")
+               else .[0].metadata end' <<<"$pods"
+  }
+
+  harness=$(one_pod "openclaw.dev/workload-role=agent,openclaw.dev/revision=$revision" Harness) || exit 1
+  id=$(jq -er '.annotations["openshell.ai/sandbox-id"] // empty' <<<"$harness") &&
+    [[ $id =~ ^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$ ]] || {
+      echo 'Missing or invalid Sandbox ID on the Harness Pod' >&2
+      exit 1
+    }
+  supervisor=$(one_pod "openshell.ai/sandbox-id=$id,openshell.ai/boundary-role=supervisor" supervisor) || exit 1
+  harness_name=$(jq -er '.name' <<<"$harness") || exit 1
+  supervisor_name=$(jq -er '.name' <<<"$supervisor") || exit 1
+
+  kubectl get --raw "/api/v1/namespaces/$ns/pods/$harness_name/log?container=agent&tailLines=200" || exit 1
+  kubectl get --raw "/api/v1/namespaces/$ns/pods/$supervisor_name/log?container=supervisor&tailLines=200"
+)
 ```
 
-`no Harness Pod for this revision` means the version never started a Sandbox or
-its Pods are gone; read the
-[deployment status](../../reference/agents.md#deployment-status) instead.
-
-`kubectl -n "$NS" get sandbox,pod -l "openshell.ai/sandbox-id=$SANDBOX_ID"`
-shows the Sandbox and its supervisor Pod. This output bypasses OCC's log
-redaction, so handle it as sensitive.
+A failed lookup leaves Pod presence unknown. An empty list means no Pod matches
+now. Check the namespace, Agent revision and
+[deployment status](../../reference/agents.md#deployment-status). If either
+lookup matches multiple Pods or the Harness has no usable Sandbox ID, resolve
+the workload identity before reading logs.
