@@ -1,3 +1,5 @@
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
+import { secretOperation } from "./secret-operations.ts";
 import { createHash } from "node:crypto";
 import {
   credentialFreeMetadataType,
@@ -81,6 +83,7 @@ interface CredentialSourceDependencies {
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority" | "canRead">;
   readonly sourceDrivers: Pick<
     CredentialSourceDrivers,
+    | "assertCredentialSourceOwnerSelected"
     | "credentialGatewayDriver"
     | "credentialRefreshDriver"
     | "credentialNamespace"
@@ -100,15 +103,9 @@ interface CredentialSourceDependencies {
     | "staticSourceLifecycleMatches"
   >;
   readonly hasProxy: () => boolean;
-  readonly assertCredentialSourceOwnerSelected: () => void;
   readonly secretDriver: (driverId: string) => SecretDriver;
-  readonly secretOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly getNamespace: (principalId: string, namespaceId: string) => Promise<Readonly<Namespace>>;
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    resource: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
+  readonly bindCreator: IAMPolicyOperations["bindCreator"];
   readonly nextSourceId: () => string;
   readonly timestamp: () => string;
   readonly tokenService: () => Pick<TokenService, "register">;
@@ -246,24 +243,6 @@ export function auditUncommittedCredentialEffect(
 }
 
 export function createCredentialSourceOperations(dependencies: CredentialSourceDependencies) {
-  // TODO: Remove this staging-only check when managed Source HTTP handlers invoke the manager.
-  async function authorizeCredentialSourceWrite(
-    principalId: string,
-    namespaceId: string,
-    credentialSourceId?: string,
-  ): Promise<void> {
-    namespaceIdentity(namespaceId);
-    await dependencies.authority.authorize(
-      principalId,
-      credentialSourceId === undefined ? "create" : "update",
-      {
-        kind: "credential_source",
-        id: credentialSourceId ?? namespaceId,
-        namespaceId,
-      },
-    );
-  }
-
   /**
    * Registration records the source as `registering` before the gateway write, so an uncertain
    * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
@@ -333,7 +312,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     // while this write waited stops it before it leaves a durable Owner binding or grant.
     await dependencies.authority.authorize(principalId, "create", target);
     // An Installation property, so it is reported before any Namespace state.
-    dependencies.assertCredentialSourceOwnerSelected();
+    dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
     const protectedType = dependencies.egressAdmission
       .protectedSourceTypes()
       .find((p) => p.type.type === input.type);
@@ -608,9 +587,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         );
       }
       const withValue = secretDriver.withValue.bind(secretDriver);
-      values[field] = await dependencies.secretOperation(() =>
-        withValue(secret, async (value) => value),
-      );
+      values[field] = await secretOperation(() => withValue(secret, async (value) => value));
     }
     return values;
   }
@@ -700,7 +677,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       );
       const source = isManagedTokenServiceSource(recorded) ? undefined : recorded;
       if (source?.ownerCapability !== "token_service") {
-        dependencies.assertCredentialSourceOwnerSelected();
+        dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
       }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
@@ -862,7 +839,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         await state.savedConnections.recordTokenSchedule(namespace.id, source.id, "due");
         return { managedSource: source };
       }
-      dependencies.assertCredentialSourceOwnerSelected();
+      dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.rotate);
       }
@@ -968,6 +945,31 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     }
   }
 
+  /** Resolve the immutable Source identity for an exact update without requiring a read grant. */
+  async function credentialSourceUpdateIdentity(
+    principalId: string,
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<{ readonly managed: boolean; readonly type: string }> {
+    namespaceIdentity(namespaceId);
+    return dependencies.transactions.transact(async (state) => {
+      const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
+      await dependencies.authority.authorize(principalId, "update", resource);
+      await exactNamespace(state, namespaceId);
+      const source = await state.credentialSources.lockCredentialSource(
+        namespaceId,
+        credentialSourceId,
+      );
+      await dependencies.authority.authorize(principalId, "update", resource);
+      if (!source) {
+        throw new ScopeViolationError(
+          "The credential source does not belong to the exact Namespace.",
+        );
+      }
+      return { managed: isManagedTokenServiceSource(source), type: source.type };
+    });
+  }
+
   async function readCredentialSource(
     principalId: string,
     namespaceId: string,
@@ -984,13 +986,16 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         namespaceId,
         credentialSourceId,
       );
-      if (!found || isManagedTokenServiceSource(found)) {
+      if (!found) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
       }
       return { namespace: exact, source: found };
     });
+    if (isManagedTokenServiceSource(source)) {
+      return credentialSourceMetadata(source);
+    }
     if (source.ownerCapability === "token_service") {
       const refresh = await dependencies.readConnectionStatus(namespaceId, source.id);
       return credentialSourceMetadata(source, {
@@ -1053,24 +1058,22 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     namespaceId: string,
   ): Promise<readonly Readonly<CredentialSourceMetadata>[]> {
     const namespace = await dependencies.getNamespace(principalId, namespaceId);
-    return dependencies.transactions.read(async (state) => {
-      const readable: Readonly<CredentialSourceMetadata>[] = [];
-      for (const source of await state.credentialSources.listCredentialSources(namespace.id)) {
-        if (isManagedTokenServiceSource(source)) {
-          continue;
-        }
-        if (
-          await dependencies.authority.canRead(principalId, {
-            kind: "credential_source",
-            id: source.id,
-            namespaceId: namespace.id,
-          })
-        ) {
-          readable.push(credentialSourceMetadata(source));
-        }
+    const catalog = await dependencies.transactions.read((state) =>
+      state.credentialSources.listCredentialSources(namespace.id),
+    );
+    const readable: Readonly<CredentialSourceMetadata>[] = [];
+    for (const source of catalog) {
+      if (
+        await dependencies.authority.canRead(principalId, {
+          kind: "credential_source",
+          id: source.id,
+          namespaceId: namespace.id,
+        })
+      ) {
+        readable.push(credentialSourceMetadata(source));
       }
-      return Object.freeze(readable);
-    });
+    }
+    return Object.freeze(readable);
   }
 
   async function authorizedCredentialSource(
@@ -1108,7 +1111,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
   }
 
   return {
-    authorizeCredentialSourceWrite,
+    credentialSourceUpdateIdentity,
     createCredentialSource,
     updateCredentialSource,
     rotateCredentialSource,

@@ -1,3 +1,4 @@
+import { admitRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
 import type {
   WorkspaceSetupRepository,
   SandboxPolicyRepository,
@@ -46,6 +47,7 @@ import { cancelledDeviceAuthorization } from "../device-authorization.ts";
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  isCanonicalRepositoryGrantList,
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
@@ -1060,16 +1062,6 @@ function assertProtectedEgressSource(
   }
 }
 
-function validTokenServiceRegistration(value: unknown): boolean {
-  return (
-    isPlainRecord(value) &&
-    Object.keys(value).every((key) => key === "backendRef") &&
-    (value.backendRef === undefined ||
-      (isPlainRecord(value.backendRef) &&
-        Object.values(value.backendRef).every((item) => typeof item === "string")))
-  );
-}
-
 /** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
 function assertCredentialSource(source: CredentialSource): void {
   if (source.egress !== undefined) {
@@ -1082,19 +1074,9 @@ function assertCredentialSource(source: CredentialSource): void {
       ? source.egress === undefined &&
         source.driverId === undefined &&
         (source.tokenServiceInstanceId === undefined
-          ? source.type === "oauth2-refresh-token" &&
-            source.registration === undefined &&
-            source.registrationDispatchedAt === undefined
+          ? source.type === "oauth2-refresh-token"
           : source.type !== "oauth2-refresh-token" &&
-            (source.registration === undefined ||
-              validTokenServiceRegistration(source.registration)) &&
-            (source.registrationDispatchedAt === undefined ||
-              (Number.isFinite(Date.parse(source.registrationDispatchedAt)) &&
-                Date.parse(source.registrationDispatchedAt) >= Date.parse(source.createdAt))) &&
-            (source.state !== "registering" || source.registration === undefined) &&
-            (source.state !== "ready" ||
-              (source.registration !== undefined &&
-                source.registrationDispatchedAt !== undefined)) &&
+            (source.state === "ready" || source.state === "deleting") &&
             Object.keys(source.secrets).length === 0)
       : (source.ownerCapability === "credential_gateway" ||
           (source.ownerCapability === "credential_proxy" && source.egress !== undefined)) &&
@@ -2509,29 +2491,6 @@ function repositories(
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
-    setCredentialSourceRegistrationDispatch: async (
-      namespaceId,
-      credentialSourceId,
-      dispatchedAt,
-    ) => {
-      const current = await findCredentialSource(namespaceId, credentialSourceId);
-      if (
-        current?.ownerCapability !== "token_service" ||
-        current.tokenServiceInstanceId === undefined ||
-        current.registration !== undefined ||
-        current.state !== (dispatchedAt === undefined ? "deleting" : "registering") ||
-        (current.registrationDispatchedAt === undefined) === (dispatchedAt === undefined)
-      ) {
-        return false;
-      }
-      const { registrationDispatchedAt: _, ...rest } = current;
-      const saved = immutableCopy(
-        dispatchedAt === undefined ? rest : { ...rest, registrationDispatchedAt: dispatchedAt },
-      );
-      assertCredentialSource(saved);
-      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
-      return true;
-    },
     updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (
@@ -2546,24 +2505,12 @@ function repositories(
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
-    markCredentialSourceReady: async (namespaceId, credentialSourceId, registration, config) => {
+    markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (current === undefined || current.state !== "registering") {
         return undefined;
       }
-      if (
-        config !== undefined &&
-        (current.ownerCapability !== "token_service" ||
-          current.tokenServiceInstanceId === undefined)
-      ) {
-        return undefined;
-      }
-      const saved = immutableCopy({
-        ...current,
-        state: "ready" as const,
-        ...(registration === undefined ? {} : { registration }),
-        ...(config === undefined ? {} : { config }),
-      });
+      const saved = immutableCopy({ ...current, state: "ready" as const });
       assertCredentialSource(saved);
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
@@ -2774,6 +2721,7 @@ function repositories(
   };
 
   const sandboxPolicies: SandboxPolicyRepository = {
+    supportsRepositoryNetworkPolicy: true,
     find: async (namespaceId, agentId) => {
       const value = snapshot.sandboxPolicies.get(agentKey(namespaceId, agentId));
       return value === undefined ? undefined : immutableCopy(value);
@@ -2796,6 +2744,17 @@ function repositories(
       ) {
         throw new ScopeViolationError("Invalid SandboxPolicy ownership or version.");
       }
+      const grants = policy.repositoryNetworkPolicy;
+      if (grants !== undefined && !isCanonicalRepositoryGrantList(grants)) {
+        throw new ScopeViolationError("Repository network policy grants must be canonical.");
+      }
+      if (
+        (existing.repositoryNetworkPolicy !== undefined && grants === undefined) ||
+        (policy.version === existing.version &&
+          !isDeepStrictEqual(grants, existing.repositoryNetworkPolicy))
+      ) {
+        throw new ScopeViolationError("Invalid repository network policy transition.");
+      }
       const application = policy.application;
       const previousApplication = existing.application;
       if (
@@ -2811,6 +2770,13 @@ function repositories(
         const revision = (snapshot.revisions.get(key) ?? []).find(
           ({ id }) => id === application.revisionId,
         );
+        if (
+          grants !== undefined ||
+          revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
+          application.snapshot.repositoryNetworkPolicy !== undefined
+        ) {
+          throw new ScopeViolationError("Repository network policy requires a new deployment.");
+        }
         if (
           revision === undefined ||
           application.policyVersion !== policy.version ||
@@ -3416,6 +3382,20 @@ function repositories(
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
       await assertSecretBindingsAvailable(secrets, revision.namespaceId, secretBindings);
       const key = agentKey(revision.namespaceId, revision.agentId);
+      const policy = snapshot.sandboxPolicies.get(key);
+      const grants = policy?.repositoryNetworkPolicy;
+      const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+      if (admittedPolicy !== undefined && revision.executionAdmission.mode !== "unprotected") {
+        throw new ScopeViolationError("Repository network policy requires unprotected execution.");
+      }
+      if (
+        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
+      ) {
+        throw new ScopeViolationError(
+          "Revision repository network policy must match the saved policy.",
+        );
+      }
       const previous = snapshot.revisions.get(key) ?? [];
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");

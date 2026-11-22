@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-12"
-last_updated_session: "authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9"
+updated: "2026-11-22"
+last_updated_session: "authoring-run/11295583-8a4b-4157-9cd9-4c7a768ae999"
 ---
 
 # Audit ledger flow
@@ -168,6 +168,10 @@ Nested controller mutations use the current unit of work. The transaction scope
 keeps any registered compensation callbacks with that unit. Definite failures
 run compensation. OCC propagates an unknown commit before invoking these callbacks.
 
+PostgreSQL binds the read projection directly to the transaction lifetime.
+A write binds the unit of work and registers it for audit and Native IAM
+operations on the same client.
+
 After the callback returns, State closes admission to repository operations and
 waits for already admitted operations to settle before committing. On failure it
 attempts rollback if the transaction remains marked started, COMMIT is not
@@ -265,6 +269,7 @@ to the same session, Agent, and window.
 
 ## Changelog
 
+- 2026-11-22 10:38: Trace how PostgreSQL binds repository methods for read and write transactions. (authoring-run/11295583-8a4b-4157-9cd9-4c7a768ae999 - b766b8ed991110ad86ce9e44adb59215ddb91293)
 - 2026-11-12 16:19: Explain how Native IAM counts Agent audit grants for account and key management. (authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9 - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 16:19: Trace how composition supplies the Agent audit reader and verifies its IAM Driver. (authoring-run/0262148b-40f3-48c2-a3e1-546feb2e265b - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 15:31: Trace how a successful Agent read saves the verified Agent and Namespace IDs. (authoring-run/bb7f16b1-d73b-4957-b5bb-212692e7ada9 - 8658496ea654b960bebabca40d18c7d71994db50)

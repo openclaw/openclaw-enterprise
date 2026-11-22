@@ -32,6 +32,7 @@ import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/con
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { OpenShellSandboxConfigurationFailure } from "../../sandbox/openshell-sandbox-errors.ts";
 import { networkPolicySpecToJson, resolverEgress } from "../../kubernetes/network-policy.ts";
+import { podQuotaFull, podQuotaRefusal } from "../../kubernetes/pod-quota.ts";
 import {
   KubernetesRequestTimeout,
   unreachableSocketCause,
@@ -218,6 +219,7 @@ import {
   RuntimeLogsForbiddenByClusterError,
   runtimeFailureCause,
   SandboxNamespaceRefusedError,
+  SandboxPodQuotaExceededError,
   SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
@@ -684,6 +686,31 @@ interface GatewayConfigurationSnapshot {
   readonly nativeWorkerNodeId?: string;
 }
 
+interface DeploymentInput {
+  readonly name: string;
+  readonly ownership: Ownership;
+  readonly namespace: KubernetesNamespaceAddress;
+  readonly images: { readonly runtime: string; readonly workspaceSetup: string };
+  readonly serviceAccountName: string;
+  readonly role: "gateway" | "agent";
+  readonly environment: Readonly<Record<string, string>>;
+  readonly loggingLevel: LoggingLevel;
+  readonly configuration?: GatewayConfigurationSnapshot | undefined;
+  readonly embedded?: boolean | undefined;
+  readonly workloadServicePrincipalId?: string | undefined;
+  readonly harnessAuth?: PreparedHarnessAuth | undefined;
+  readonly enabledChannels?: PreparedChannelRouting | undefined;
+  readonly secretEnvironment?: readonly SecretEnvironmentProjection[] | undefined;
+  readonly pluginRuntime?: PluginRuntimeSnapshot | undefined;
+  readonly pluginWarnings?: readonly PluginDeploymentWarning[] | undefined;
+  readonly workspaceSetup?: WorkspaceSetup | undefined;
+  readonly repositoryMaterial?: ResolvedRepositoryMaterialSpec | undefined;
+  readonly nativeRuntime?: NativeRuntimeSnapshot | undefined;
+  readonly providerEndpoint?: SandboxHarnessEndpoint | undefined;
+  readonly codexLaunch?: CodexLaunch | undefined;
+  readonly scratch?: KubernetesScratchVolume | undefined;
+}
+
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
 const PROXY_CODEX_LAUNCH = "explicit-proxy-codex-launch:v1:";
 const OPENSHELL_CODEX_LAUNCH = "openshell-codex-launch:v1:";
@@ -1083,6 +1110,25 @@ function repositoryBrokerPublicCaPath(
     );
   }
   return `${withCa[0]?.directory}/${REPOSITORY_BROKER_CA_BUNDLE}`;
+}
+
+function repositoryBrokerCaVariables(
+  environment: readonly { readonly name: string }[],
+  material: ResolvedRepositoryMaterialSpec | undefined,
+): readonly { readonly name: string; readonly value: string }[] {
+  const caPath = material === undefined ? undefined : repositoryBrokerPublicCaPath(material);
+  if (caPath === undefined) {
+    return [];
+  }
+  const conflict = environment.find(({ name }) =>
+    REPOSITORY_BROKER_CA_ENVIRONMENT.some((variable) => variable === name),
+  );
+  if (conflict !== undefined) {
+    throw new ConfigurationFailure(
+      `Repository credential broker CA delivery cannot replace explicit ${conflict.name} environment configuration.`,
+    );
+  }
+  return REPOSITORY_BROKER_CA_ENVIRONMENT.map((name) => ({ name, value: caPath }));
 }
 
 interface RuntimeCredentialSecretSpec {
@@ -2224,38 +2270,6 @@ function validateCodexSeccompProfile(value: unknown): string {
     );
   }
   return profile;
-}
-
-// The API server's quota refusal, `exceeded quota: <name>, requested: <resource>=<quantity>[,...],
-// used: ..., limited: ...`, lists only the resources over their limit.
-const QUOTA_REFUSAL = /\bexceeded quota: ([^\s,]+), requested: ([^\s,]+(?:,[^\s,]+)*), used: /u;
-const POD_QUOTA_RESOURCES = ["pods", "count/pods"] as const;
-
-// The ResourceQuota a Pod creation refusal names when that quota had no Pods left.
-function podQuotaRefusal(message: unknown): string | undefined {
-  const refusal = typeof message === "string" ? QUOTA_REFUSAL.exec(message) : null;
-  return refusal?.[2]?.split(",").some((entry) => {
-    const resource = entry.split("=", 1)[0];
-    return POD_QUOTA_RESOURCES.some((name) => name === resource);
-  })
-    ? refusal[1]
-    : undefined;
-}
-
-// True when a ResourceQuota's status shows its Pods all used: a Pod needs one more.
-function podQuotaFull(quota: unknown): boolean {
-  const status = asRecord(asRecord(quota)?.status);
-  const hard = asRecord(status?.hard);
-  const used = asRecord(status?.used);
-  return POD_QUOTA_RESOURCES.some((resource) => {
-    const limit = hard?.[resource];
-    const count = used?.[resource];
-    return (
-      typeof limit === "string" &&
-      typeof count === "string" &&
-      (compareResourceQuantities(count, limit) ?? -1) >= 0
-    );
-  });
 }
 
 // The kubelet's waiting reasons while it cannot pull a container image: ErrImagePull on a
@@ -7498,28 +7512,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
         await this.prepareRevisionStage("gateway_deployment", () =>
           this.reconcile(
-            this.deployment(
-              gatewayName,
-              gatewayOwnership,
-              gatewayNamespace,
-              this.workloadImages(revision, "gateway"),
-              gatewayAccountName,
-              "gateway",
+            this.deployment({
+              name: gatewayName,
+              ownership: gatewayOwnership,
+              namespace: gatewayNamespace,
+              images: this.workloadImages(revision, "gateway"),
+              serviceAccountName: gatewayAccountName,
+              role: "gateway",
               environment,
-              configuration.loggingLevel,
+              loggingLevel: configuration.loggingLevel,
               configuration,
               embedded,
-              embedded ? revision.servicePrincipalId : undefined,
-              embedded ? deliveredHarnessAuth : undefined,
-              channels,
-              gatewaySecretEnvironment,
+              workloadServicePrincipalId: embedded ? revision.servicePrincipalId : undefined,
+              harnessAuth: embedded ? deliveredHarnessAuth : undefined,
+              enabledChannels: channels,
+              secretEnvironment: gatewaySecretEnvironment,
               pluginRuntime,
-              [],
               workspaceSetup,
-              repositoryConsumer?.role === "gateway" ? repositoryMaterial : undefined,
-              undefined,
+              repositoryMaterial:
+                repositoryConsumer?.role === "gateway" ? repositoryMaterial : undefined,
               providerEndpoint,
-            ),
+            }),
             gatewayOwnership,
             gatewayNamespace,
           ),
@@ -7829,6 +7842,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
             };
             return { ...result, runtimeFailure };
           }
+          if (error instanceof SandboxPodQuotaExceededError) {
+            // A full Pod quota refused the provider's temporary workspace preparation Pod. Wait
+            // with the reason Compute gives its own refused Pods; the next pass prepares again.
+            return incomplete("NAMESPACE_POD_QUOTA_EXCEEDED");
+          }
           if (!(error instanceof SandboxWorkspaceSetupRefusedError)) {
             throw error;
           }
@@ -8098,34 +8116,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         return ready();
       }
-      const agentDeployment = this.deployment(
-        revisionName,
-        revisionOwnership,
+      const agentDeployment = this.deployment({
+        name: revisionName,
+        ownership: revisionOwnership,
         namespace,
-        this.workloadImages(revision, "agent"),
-        agentName,
-        "agent",
-        launch.environment,
-        configuration.loggingLevel,
-        undefined,
-        false,
-        undefined,
-        deliveredHarnessAuth,
-        undefined,
-        [],
+        images: this.workloadImages(revision, "agent"),
+        serviceAccountName: agentName,
+        role: "agent",
+        environment: launch.environment,
+        loggingLevel: configuration.loggingLevel,
+        harnessAuth: deliveredHarnessAuth,
         pluginRuntime,
-        [],
         workspaceSetup,
-        repositoryConsumer?.role === "agent" ? repositoryMaterial : undefined,
+        repositoryMaterial: repositoryConsumer?.role === "agent" ? repositoryMaterial : undefined,
         nativeRuntime,
-        undefined,
-        {
+        codexLaunch: {
           ...codexLaunch,
           withNode: node !== undefined,
           workspaceSetup: workspaceSetup !== undefined,
         },
-        this.scratchAdmission(revision).binding,
-      );
+        scratch: this.scratchAdmission(revision).binding,
+      });
       if (node !== undefined) {
         if (nativeRuntime === undefined) {
           this.addWorkspaceNode(agentDeployment, node.name, node.ca, revision, nodeSetupFile);
@@ -8409,27 +8420,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
             namespace,
           );
           await this.reconcileChannelNetworkPolicy(revision, channels, namespace);
+          const images = this.workloadImages(revision, "gateway");
+          const environment = launch.environment;
+          const configuration = this.gatewayConfiguration(admittedRevision);
           await this.reconcile(
-            this.deployment(
-              gatewayName,
-              gatewayOwnership,
+            this.deployment({
+              name: gatewayName,
+              ownership: gatewayOwnership,
               namespace,
-              this.workloadImages(revision, "gateway"),
-              agentName,
-              "gateway",
-              launch.environment,
-              this.gatewayConfiguration(admittedRevision).loggingLevel,
-              this.gatewayConfiguration(admittedRevision),
-              true,
-              revision.servicePrincipalId,
-              deliveredHarnessAuth,
-              channels,
-              gatewaySecretEnvironment,
+              images,
+              serviceAccountName: agentName,
+              role: "gateway",
+              environment,
+              loggingLevel: configuration.loggingLevel,
+              configuration,
+              embedded: true,
+              workloadServicePrincipalId: revision.servicePrincipalId,
+              harnessAuth: deliveredHarnessAuth,
+              enabledChannels: channels,
+              secretEnvironment: gatewaySecretEnvironment,
               pluginRuntime,
-              [],
               workspaceSetup,
               repositoryMaterial,
-            ),
+            }),
             gatewayOwnership,
             namespace,
           );
@@ -8524,30 +8537,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
       environment: Readonly<Record<string, string>>,
       withNode = false,
     ) =>
-      this.deployment(
-        revisionName,
-        { ...ownership, revisionId: revision.id },
+      this.deployment({
+        name: revisionName,
+        ownership: { ...ownership, revisionId: revision.id },
         namespace,
-        this.workloadImages(revision, "agent"),
-        agentName,
-        "agent",
+        images: this.workloadImages(revision, "agent"),
+        serviceAccountName: agentName,
+        role: "agent",
         environment,
-        configuration.loggingLevel,
-        undefined,
-        false,
-        undefined,
-        activatedHarnessAuth,
-        undefined,
-        [],
+        loggingLevel: configuration.loggingLevel,
+        harnessAuth: activatedHarnessAuth,
         pluginRuntime,
-        [],
         workspaceSetup,
-        sandboxDriver === undefined ? repositoryMaterial : undefined,
+        repositoryMaterial: sandboxDriver === undefined ? repositoryMaterial : undefined,
         nativeRuntime,
-        undefined,
-        { ...codexLaunch, withNode, workspaceSetup: workspaceSetup !== undefined },
-        this.scratchAdmission(revision).binding,
-      );
+        codexLaunch: { ...codexLaunch, withNode, workspaceSetup: workspaceSetup !== undefined },
+        scratch: this.scratchAdmission(revision).binding,
+      });
     let providerEndpoint: SandboxHarnessEndpoint | undefined;
     const harnessRuntime = this.harnessForRevision(revision);
     if (harnessRuntime.kind === "kubernetes") {
@@ -8682,28 +8688,22 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name);
     await this.reconcile(
-      this.deployment(
-        gatewayName,
-        gatewayOwnership,
-        gatewayNamespace,
-        this.workloadImages(revision, "gateway"),
-        gatewayName,
-        "gateway",
-        {},
-        configuration.loggingLevel,
+      this.deployment({
+        name: gatewayName,
+        ownership: gatewayOwnership,
+        namespace: gatewayNamespace,
+        images: this.workloadImages(revision, "gateway"),
+        serviceAccountName: gatewayName,
+        role: "gateway",
+        environment: {},
+        loggingLevel: configuration.loggingLevel,
         configuration,
-        false,
-        undefined,
-        undefined,
-        channels,
-        gatewaySecretEnvironment,
+        enabledChannels: channels,
+        secretEnvironment: gatewaySecretEnvironment,
         pluginRuntime,
-        [],
         workspaceSetup,
-        undefined,
-        undefined,
         providerEndpoint,
-      ),
+      }),
       gatewayOwnership,
       gatewayNamespace,
     );
@@ -12233,24 +12233,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
     }
     environment.push(...this.sandboxEnvironmentVariables(auth.environment));
-    if (repositoryMaterial !== undefined) {
-      const brokerCa = repositoryBrokerPublicCaPath(repositoryMaterial);
-      if (brokerCa !== undefined) {
-        const conflict = environment.find(({ name }) =>
-          REPOSITORY_BROKER_CA_ENVIRONMENT.includes(
-            name as (typeof REPOSITORY_BROKER_CA_ENVIRONMENT)[number],
-          ),
-        );
-        if (conflict !== undefined) {
-          throw new ConfigurationFailure(
-            `Repository credential broker CA delivery cannot replace explicit ${conflict.name} environment configuration.`,
-          );
-        }
-        environment.push(
-          ...REPOSITORY_BROKER_CA_ENVIRONMENT.map((name) => ({ name, value: brokerCa })),
-        );
-      }
-    }
+    environment.push(...repositoryBrokerCaVariables(environment, repositoryMaterial));
     if (this.options.executionCluster !== undefined) {
       environment.push({ name: "OPENCLAW_REMOTE_PLUGIN_STATUS", value: "true" });
     }
@@ -14659,37 +14642,135 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
-  private gatewayRouteBackendRef(service: ManagedKubernetesObject<"Service">): KubernetesRecord {
+  private gatewayRouteBackendRef(
+    serviceName: string,
+    port = this.options.network.gatewayPort,
+  ): KubernetesRecord {
     return {
       group: "",
       kind: "Service",
-      name: service.metadata.name,
-      port: this.options.network.gatewayPort,
+      name: serviceName,
+      port,
     };
   }
 
-  private gatewayRootRouteRule(
-    service: ManagedKubernetesObject<"Service">,
-    path: string,
-    access: "operator" | "browser" | "node",
-    match: "Exact" | "PathPrefix",
+  private gatewayRewriteRouteRule(
+    serviceName: string,
+    {
+      access,
+      path,
+      target = "/",
+      match = "Exact",
+      method,
+    }: {
+      readonly access: "operator" | "browser" | "node" | "node-transfer" | "chat";
+      readonly path: string;
+      readonly target?: string;
+      readonly match?: "Exact" | "PathPrefix";
+      readonly method?: "POST";
+    },
   ): KubernetesRecord {
     return {
-      matches: [{ path: { type: match, value: path } }],
+      matches: [
+        {
+          ...(method === undefined ? {} : { method }),
+          path: { type: match, value: path },
+        },
+      ],
       filters: [
         {
           type: "URLRewrite",
           urlRewrite: {
             path:
               match === "Exact"
-                ? { type: "ReplaceFullPath", replaceFullPath: "/" }
-                : { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
+                ? { type: "ReplaceFullPath", replaceFullPath: target }
+                : { type: "ReplacePrefixMatch", replacePrefixMatch: target },
           },
         },
         this.gatewayRouteHeaderFilter(access),
       ],
-      backendRefs: [this.gatewayRouteBackendRef(service)],
+      ...(access === "chat" && { timeouts: { request: "660s", backendRequest: "600s" } }),
+      backendRefs: [this.gatewayRouteBackendRef(serviceName)],
     };
+  }
+
+  private gatewayRouteRules(
+    revision: AgentRevision,
+    serviceName: string,
+    access: "operator" | "node" | "sandbox",
+  ): KubernetesRecord[] {
+    if (access === "sandbox") {
+      return [
+        {
+          // Upstream's public shell and renderer only use the separate sandbox listener.
+          matches: ["GET", "HEAD"].map((method) => ({
+            method,
+            path: { type: "PathPrefix", value: "/" },
+          })),
+          filters: [this.gatewayRouteHeaderFilter("node")],
+          backendRefs: [
+            this.gatewayRouteBackendRef(serviceName, this.options.network.gatewayPort + 1),
+          ],
+        },
+      ];
+    }
+
+    const path = this.gatewayRoutePath(revision);
+    if (access === "operator") {
+      const rules = [this.gatewayRewriteRouteRule(serviceName, { access, path })];
+      if (this.getGatewayBrowserEndpoint(revision) !== undefined) {
+        const browserPath = `/native-browser${path}`;
+        rules.push(
+          this.gatewayRewriteRouteRule(serviceName, { access: "browser", path: browserPath }),
+          this.gatewayRewriteRouteRule(serviceName, {
+            access: "browser",
+            path: `${browserPath}/`,
+            match: "PathPrefix",
+          }),
+        );
+      }
+      rules.push(
+        this.gatewayRewriteRouteRule(serviceName, {
+          access,
+          path: `${path}/`,
+          match: "PathPrefix",
+        }),
+      );
+      return rules;
+    }
+
+    const nodePath = `${path}/node`;
+    const rules = [
+      this.gatewayRewriteRouteRule(serviceName, { access, path: nodePath }),
+      this.gatewayRewriteRouteRule(serviceName, {
+        access,
+        path: `${nodePath}/__openclaw__/worker`,
+        target: "/__openclaw__/worker",
+      }),
+    ];
+    if (revision.harness.id === "codex") {
+      rules.push(
+        this.gatewayRewriteRouteRule(serviceName, {
+          access: "node-transfer",
+          path: `${nodePath}/__openclaw__/native-hook/`,
+          target: "/__openclaw__/native-hook/",
+          match: "PathPrefix",
+          method: "POST",
+        }),
+      );
+    }
+    for (const transfer of ["worker-bundle/v1", "worker-transfer/v1"]) {
+      const target = `/__openclaw__/${transfer}/`;
+      rules.push(
+        this.gatewayRewriteRouteRule(serviceName, {
+          access: "node-transfer",
+          path: `${nodePath}${target}`,
+          target,
+          match: "PathPrefix",
+        }),
+      );
+    }
+    return rules;
   }
 
   private verifyGatewayRoutingConfiguration(revision: {
@@ -14813,139 +14894,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             sectionName: access === "sandbox" ? "sandbox" : GATEWAY_LISTENER_SECTION,
           },
         ],
-        rules:
-          access === "sandbox"
-            ? [
-                {
-                  // This origin serves only upstream's public shell/renderer listener.
-                  // It must never fall through to the administrative Gateway backend.
-                  matches: ["GET", "HEAD"].map((method) => ({
-                    method,
-                    path: { type: "PathPrefix", value: "/" },
-                  })),
-                  filters: [this.gatewayRouteHeaderFilter("node")],
-                  backendRefs: [
-                    {
-                      group: "",
-                      kind: "Service",
-                      name: service.metadata.name,
-                      port: this.options.network.gatewayPort + 1,
-                    },
-                  ],
-                },
-              ]
-            : [
-                this.gatewayRootRouteRule(
-                  service,
-                  `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
-                  access,
-                  "Exact",
-                ),
-                ...(access === "operator" && this.getGatewayBrowserEndpoint(revision) !== undefined
-                  ? [
-                      this.gatewayRootRouteRule(
-                        service,
-                        `/native-browser${this.gatewayRoutePath(revision)}`,
-                        "browser",
-                        "Exact",
-                      ),
-                      this.gatewayRootRouteRule(
-                        service,
-                        `/native-browser${this.gatewayRoutePath(revision)}/`,
-                        "browser",
-                        "PathPrefix",
-                      ),
-                    ]
-                  : []),
-                ...(access === "node"
-                  ? [
-                      {
-                        matches: [
-                          {
-                            path: {
-                              type: "Exact",
-                              value: `${this.gatewayRoutePath(revision)}/node/__openclaw__/worker`,
-                            },
-                          },
-                        ],
-                        filters: [
-                          {
-                            type: "URLRewrite",
-                            urlRewrite: {
-                              path: {
-                                type: "ReplaceFullPath",
-                                replaceFullPath: "/__openclaw__/worker",
-                              },
-                            },
-                          },
-                          this.gatewayRouteHeaderFilter("node"),
-                        ],
-                        backendRefs: [this.gatewayRouteBackendRef(service)],
-                      },
-                      ...(revision.harness.id === "codex"
-                        ? [
-                            {
-                              matches: [
-                                {
-                                  method: "POST",
-                                  path: {
-                                    type: "PathPrefix",
-                                    value: `${this.gatewayRoutePath(revision)}/node/__openclaw__/native-hook/`,
-                                  },
-                                },
-                              ],
-                              filters: [
-                                {
-                                  type: "URLRewrite",
-                                  urlRewrite: {
-                                    path: {
-                                      type: "ReplacePrefixMatch",
-                                      replacePrefixMatch: "/__openclaw__/native-hook/",
-                                    },
-                                  },
-                                },
-                                this.gatewayRouteHeaderFilter("node-transfer"),
-                              ],
-                              backendRefs: [this.gatewayRouteBackendRef(service)],
-                            },
-                          ]
-                        : []),
-                      ...["worker-bundle/v1", "worker-transfer/v1"].map((transferPath) => ({
-                        matches: [
-                          {
-                            path: {
-                              type: "PathPrefix",
-                              value: `${this.gatewayRoutePath(revision)}/node/__openclaw__/${transferPath}/`,
-                            },
-                          },
-                        ],
-                        filters: [
-                          {
-                            type: "URLRewrite",
-                            urlRewrite: {
-                              path: {
-                                type: "ReplacePrefixMatch",
-                                replacePrefixMatch: `/__openclaw__/${transferPath}/`,
-                              },
-                            },
-                          },
-                          this.gatewayRouteHeaderFilter("node-transfer"),
-                        ],
-                        backendRefs: [this.gatewayRouteBackendRef(service)],
-                      })),
-                    ]
-                  : []),
-                ...(access === "operator"
-                  ? [
-                      this.gatewayRootRouteRule(
-                        service,
-                        `${this.gatewayRoutePath(revision)}/`,
-                        access,
-                        "PathPrefix",
-                      ),
-                    ]
-                  : []),
-              ],
+        rules: this.gatewayRouteRules(revision, service.metadata.name, access),
       },
     };
   }
@@ -15003,32 +14952,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               },
             ],
             rules: [
-              {
-                matches: [
-                  {
-                    method: "POST",
-                    path: { type: "Exact", value: new URL(chatEndpoint.url).pathname },
-                  },
-                ],
-                filters: [
-                  {
-                    type: "URLRewrite",
-                    urlRewrite: {
-                      path: { type: "ReplaceFullPath", replaceFullPath: "/v1/chat/completions" },
-                    },
-                  },
-                  this.gatewayRouteHeaderFilter("chat"),
-                ],
-                timeouts: { request: "660s", backendRequest: "600s" },
-                backendRefs: [
-                  {
-                    group: "",
-                    kind: "Service",
-                    name: chatName,
-                    port: this.options.network.gatewayPort,
-                  },
-                ],
-              },
+              this.gatewayRewriteRouteRule(chatName, {
+                access: "chat",
+                method: "POST",
+                path: new URL(chatEndpoint.url).pathname,
+                target: "/v1/chat/completions",
+              }),
             ],
           },
         },
@@ -17342,30 +17271,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
-  private deployment(
-    name: string,
-    ownership: Ownership,
-    namespace: KubernetesNamespaceAddress,
-    images: { readonly runtime: string; readonly workspaceSetup: string },
-    serviceAccountName: string,
-    role: "gateway" | "agent",
-    environment: Readonly<Record<string, string>>,
-    loggingLevel: LoggingLevel,
-    configuration?: GatewayConfigurationSnapshot,
+  private deployment({
+    name,
+    ownership,
+    namespace,
+    images,
+    serviceAccountName,
+    role,
+    environment,
+    loggingLevel,
+    configuration,
     embedded = false,
-    workloadServicePrincipalId?: string,
-    harnessAuth?: PreparedHarnessAuth,
-    enabledChannels: PreparedChannelRouting | undefined = undefined,
-    secretEnvironment: readonly SecretEnvironmentProjection[] = [],
-    pluginRuntime?: PluginRuntimeSnapshot,
-    pluginWarnings: readonly PluginDeploymentWarning[] = [],
-    workspaceSetup?: WorkspaceSetup,
-    repositoryMaterial?: ResolvedRepositoryMaterialSpec,
-    nativeRuntime?: NativeRuntimeSnapshot,
-    providerEndpoint?: SandboxHarnessEndpoint,
-    codexLaunch?: CodexLaunch,
-    scratch?: KubernetesScratchVolume,
-  ): ManagedKubernetesObject {
+    workloadServicePrincipalId,
+    harnessAuth,
+    enabledChannels,
+    secretEnvironment = [],
+    pluginRuntime,
+    pluginWarnings = [],
+    workspaceSetup,
+    repositoryMaterial,
+    nativeRuntime,
+    providerEndpoint,
+    codexLaunch,
+    scratch,
+  }: DeploymentInput): ManagedKubernetesObject {
     const image = images.runtime;
     const providerOwnsHarness = codexLaunch?.providerOwned === true;
     if (nativeRuntime !== undefined && (embedded || role !== "agent")) {
@@ -17618,7 +17547,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       const packages = [];
       for (const install of managedInstalls) {
         const selection = selections[install.id];
-        if (!selection || (!selection.enabled && role !== "gateway")) {
+        if (!selection) {
           continue;
         }
         const binding =
@@ -17627,11 +17556,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           kind: install.kind,
           packageName: install.packageName,
           slotId: Object.keys(install.credentials)[0],
-          ...(role === "gateway" && { id: install.id }),
+          id: install.id,
           ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
           ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
-          ...(role === "gateway" &&
-            binding?.approvalToolNames.length && { approvalToolNames: binding.approvalToolNames }),
+          ...(binding?.approvalToolNames.length && {
+            approvalToolNames: binding.approvalToolNames,
+          }),
         });
       }
       if (packages.length > 0) {
@@ -17944,23 +17874,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
       variables.push(...harnessAuth.environment);
     }
-    if (embedded && repositoryMaterial !== undefined) {
-      const brokerCa = repositoryBrokerPublicCaPath(repositoryMaterial);
-      if (brokerCa !== undefined) {
-        const existingCaPolicy = variables.find((variable) =>
-          REPOSITORY_BROKER_CA_ENVIRONMENT.includes(
-            variable.name as (typeof REPOSITORY_BROKER_CA_ENVIRONMENT)[number],
-          ),
-        );
-        if (existingCaPolicy !== undefined) {
-          throw new ConfigurationFailure(
-            `Repository credential broker CA delivery cannot replace explicit ${existingCaPolicy.name} environment configuration.`,
-          );
-        }
-        variables.push(
-          ...REPOSITORY_BROKER_CA_ENVIRONMENT.map((name) => ({ name, value: brokerCa })),
-        );
-      }
+    if (embedded) {
+      variables.push(...repositoryBrokerCaVariables(variables, repositoryMaterial));
     }
     if (workspaceSetup !== undefined && (embedded || role === "agent")) {
       const workspace = embedded
@@ -18051,15 +17966,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (harness !== undefined) {
       variables.push(...harness.environment);
     }
-    const names = new Set<string>();
-    for (const variable of variables) {
-      if (names.has(variable.name)) {
-        throw new ConfigurationFailure(
-          `Workload environment variable ${variable.name} is duplicated.`,
-        );
-      }
-      names.add(variable.name);
-    }
+    this.requireDistinctEnvironment(variables);
     const port =
       role === "agent" && runtime !== undefined
         ? AGENT_TRANSPORT_PORT

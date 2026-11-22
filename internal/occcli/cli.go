@@ -826,6 +826,12 @@ func (app *application) agentCommand() *cobra.Command {
 			}
 			revision, err := client.DeployAgent(namespace, args[0], overrides)
 			if err != nil {
+				if lostDeploymentReply(err) {
+					notices := command.ErrOrStderr()
+					fmt.Fprintln(notices, "Deployment outcome is unconfirmed. Another deploy can create a second revision.")
+					fmt.Fprintf(notices, "Keep the same connection options and use these read-only commands, replacing REVISION_ID with the matching revision ID.\n  occ --namespace %s agent revisions %s\n  occ --namespace %s agent deployment-status %s REVISION_ID\n", namespace, args[0], namespace, args[0])
+					fmt.Fprintln(notices, "Your request may still commit, permissions may hide its revision, or another caller may deploy concurrently. Leave the outcome unresolved if you cannot identify your revision.")
+				}
 				return err
 			}
 			if err := app.printItems(revision, false, []column{
@@ -1179,6 +1185,17 @@ func revisionSummary(client *occclient.Client, namespace, agentID, revisionID st
 		}
 		cursor = page.NextCursor
 	}
+}
+
+// Ordinary deploy has no keyed receipt. Give read-only guidance after a lost
+// connection or interrupted request. Keep HTTP and certificate errors intact.
+func lostDeploymentReply(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		return op.Op == "read" || op.Op == "write"
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error, overridesFile string) {

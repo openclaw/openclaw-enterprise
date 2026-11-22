@@ -94,7 +94,7 @@ import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 
 interface ProvisioningRequestDependencies {
-  readonly installationId: () => string;
+  readonly installationId: string;
   readonly resourceValues: Pick<ControllerResourceValues, "now" | "timestamp" | "nextIdentifier">;
   readonly requestAuditId: () => string | undefined;
   readonly backendId: (value: BackendRef | undefined) => BackendRef;
@@ -309,7 +309,6 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         input.namespaceId,
         configurationInput,
         () => new ProvisioningSecretDriverError(),
-        undefined,
         () => authorizeProvisioningRequest(principalId, input.namespaceId),
       );
       return { configurationInput, reservedAgentId };
@@ -476,7 +475,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       });
       await state.audit.append({
         id: `aud_${crypto.randomUUID()}`,
-        installationId: dependencies.installationId(),
+        installationId: dependencies.installationId,
         namespaceId: namespace.id,
         occurredAt: resourceValues.timestamp(),
         kind: "mutation",
@@ -565,7 +564,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       if (requestId !== undefined) {
         await state.audit.append({
           id: `aud_${crypto.randomUUID()}`,
-          installationId: dependencies.installationId(),
+          installationId: dependencies.installationId,
           namespaceId,
           occurredAt: resourceValues.timestamp(),
           kind: "mutation",
@@ -679,7 +678,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     });
     await authority.authorize(principalId, "administer", {
       kind: "installation",
-      id: dependencies.installationId(),
+      id: dependencies.installationId,
     });
   }
 
