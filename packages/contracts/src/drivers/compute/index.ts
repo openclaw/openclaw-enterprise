@@ -9,7 +9,7 @@ import type {
   CredentialPolicyWithdrawalOptions,
   EgressInstallation,
 } from "../credential-proxy/index.ts";
-import type { Driver, SelectedDriverRegistration } from "../index.ts";
+import type { Driver, DriverRegistrationRef, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
   AgentRevision,
@@ -28,6 +28,7 @@ import type {
   ServiceAccountCredential,
 } from "../../index.ts";
 import type {
+  AdmittedRepositoryBinding,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryExecutionIdentity,
@@ -43,6 +44,7 @@ import type {
   SandboxNamespaceContext,
   SandboxHarnessObservation,
 } from "../sandbox/index.ts";
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
 export interface AgentChatCompletionsEndpoint {
@@ -220,6 +222,22 @@ export interface ComputePreflightResult {
 export type RepositoryWorkerRestartDisposition =
   "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
 
+/** Current desired topology and exact proposed policy, when saving. */
+export interface ProtectedRepositoryNetworkPolicySaveContext {
+  readonly harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "version" | "mode">>;
+  readonly sandboxDriverId: string;
+  /** The selected registration that owns both Sandbox and Credential Proxy. */
+  readonly protectedDriver: DriverRegistrationRef;
+  readonly repositoryBindings: readonly AdmittedRepositoryBinding[];
+  /** GET can probe an explicit empty list. PUT supplies the complete proposed list for admission. */
+  readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
+  readonly harnessCredentialSource: Readonly<{
+    type: string;
+    ownerCapability: "credential_gateway" | "credential_proxy";
+    driverId: string;
+  }>;
+}
+
 export interface ComputeDriver extends Driver {
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
@@ -243,8 +261,17 @@ export interface ComputeDriver extends Driver {
     source?: SelectedDriverRegistration | "stored",
   ): void;
   /**
-   * Side-effect-free check that Compute preserves the explicit repository policy boundary
-   * on the selected execution topology. Throw or reject for an unsupported topology.
+   * Confirm support for protected repository policies on the selected topology with inspected
+   * transport. When supplied, admit the exact proposed policy. Use only local Driver state.
+   * Only an affirmative result admits a save. Release still requires frozen revision admission.
+   */
+  admitsProtectedRepositoryNetworkPolicySave?(
+    context: ProtectedRepositoryNetworkPolicySaveContext,
+  ): true | false;
+  /**
+   * Side-effect-free placement check on a frozen revision, including protected runtime inputs.
+   * During deployment admission OCC also invokes the selected Sandbox's independent frozen
+   * policy validator. Throw or reject for an unsupported topology.
    */
   validateProtectedRepositoryNetworkPolicy?(
     context: ProtectedRepositoryNetworkPolicyContext,

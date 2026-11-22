@@ -8,6 +8,8 @@ type NamespaceRule = { path: "/namespaces" } & (
       method?: "GET";
       status: number;
       code?: ErrorCode;
+      skip?: number;
+      once?: true;
       hold?: never;
       data?: never;
     }
@@ -398,7 +400,7 @@ export const namespacesScenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "Creation succeeded in the simulated fixture. The dialog distinguishes provisioning from readiness and offers the new Namespace's Agents.",
+      "Creation succeeded in the simulated fixture. The dialog offers Open Agents after the created Namespace appears in the list.",
   },
   namespaceCreateUnreadable: {
     group: "Pages/Namespaces",
@@ -413,7 +415,21 @@ export const namespacesScenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "The caller may create Namespaces but not read them. The dialog says the Namespace was created and that their access does not include viewing it, and offers only Done.",
+      "This create-only caller's list omits the new Namespace. The dialog confirms creation, says the Namespace is unavailable to view, and offers Done.",
+  },
+  namespaceCreateAccessUnconfirmed: {
+    group: "Pages/Namespaces",
+    name: "Created with access unconfirmed",
+    path: "/console/namespaces",
+    rules: [
+      { path: "/namespaces", status: 503, code: "DEPENDENCY_UNAVAILABLE", skip: 1, once: true },
+    ],
+    description:
+      "Creation succeeded. The first access check failed, so the full name stays visible and Check access again repeats only the read.",
+    steps: [
+      "Create customer_support_north_america_service_reliability_and_escalations_production. The confirmation shows the full name and says access could not be confirmed.",
+      "Select Check access again. The next read finds the created Namespace and offers Open Agents.",
+    ],
   },
   namespacesDenied: {
     group: "Pages/Namespaces",

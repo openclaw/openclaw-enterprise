@@ -3334,6 +3334,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: min(72rem, calc(100% - 2 * var(--space-4)));
   height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
+#create-namespace-description {
+  overflow-wrap: anywhere;
+}
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
 }

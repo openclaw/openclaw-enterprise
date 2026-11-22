@@ -146,16 +146,11 @@ details…** and **Back to Agents**. Back cancels once. Refocus waits. Other Age
 routes delay loading 400 ms. Other visits or Refresh delay it 250 ms. Visible
 loading lasts at least 300 ms.
 
-Return and refocus keep views inert. **Still checking…** appears after one
+Return and refocus hold views inert. **Still checking…** appears after one
 second. Up to 16 views retain drafts and disclosures by route, Namespace, and
-session. Changed reads, new Namespace access, and Refresh rebuild. Cancelling
-a return preserves its view. Refresh discards it even if cancelled.
-
-`namespaces.mts:renderNamespaces` filters readable names and IDs. Refocus
-restores query and focus after admission, honoring focus moved during the
-check. Back scrolls the readable link into view.
-
-Discovery, passwords, writes, and incomplete or failed reads prevent reuse.
+session. Changed reads, newly readable Namespaces, and Refresh rebuild. Cancelled
+returns preserve views. Cancelled Refresh discards them.
+Discovery, passwords, mutations, and pending or failed reads prevent reuse.
 Read-only POSTs permit reuse.
 
 `console.mts:revalidateMountedAgent` checks session, Namespace, Agent, and detail
@@ -181,11 +176,11 @@ Changed users or session keys clear private state. Missing sessions
 [open sign-in](platform-console/sign-in-return.md).
 
 `GET /namespaces` selects the URL Namespace or first ready, readable Namespace.
-Unreadable IDs stay unavailable. Unscoped Agent URLs require matching Agent and
-selected or probed Namespace IDs plus a nonempty Configuration ID. Malformed
-replies cannot establish absence. Back restarts interrupted lookups.
-`shell.mts:namespaceSelector` hides choices during admission. An open drawer
-blocks scrolling. Widening past 760 px closes it without focusing its toggle.
+Unreadable IDs stay unavailable. Unscoped Agent URLs require matching requested
+Agent and selected or probed Namespace IDs plus a nonempty Configuration ID.
+Malformed replies cannot establish absence. Back restarts interrupted lookups.
+`shell.mts:namespaceSelector` hides choices during admission. Widening past 760 px
+closes the drawer without focusing its toggle. An open drawer blocks scrolling.
 `createShell` preserves navigation presses across renders. Namespace switches
 return Agent detail and creation to Agents.
 
@@ -197,23 +192,22 @@ return Agent detail and creation to Agents.
 
 Agent and Secret requests use the selected Namespace. OCC filters Installation
 Namespaces and exact Agents by read permission. The Console requests Agents
-only for a readable Namespace.
+only in readable Namespaces.
 `GET /backends` ignores selection and requires Installation `administer` before
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
-`secrets.mts:renderSecrets` lists metadata and reads the exact Secret's
-`consumers` and advisory `callerPermissions` before showing actions. Agent
-names come from the readable list. Known references disable Delete and the
-server rechecks them. `console.mjs:takeLinkedSecret` retains the linked ID
-until shown. As the [Secrets guide](../guides/console/secrets.md) explains,
-create and replacement require Namespace readiness. Writes use the tracked
-client and Secret API.
+[`secrets.mts:renderSecrets`](../guides/console/secrets.md) lists metadata.
+Actions follow reads of the selected Secret's `consumers` and advisory `callerPermissions`.
+Only readable Agents show names. References disable Delete. The server rechecks.
+`console.mts:takeLinkedSecret` retains linked IDs until shown. Creation and
+replacement require Namespace readiness. Writes use the tracked client and Secret API.
 
-After recheck or Back, `console.mts:loadPage` keeps the Secrets query for the
-same session and Namespace. `renderSecrets` filters authorized rows. On refocus,
-`focusInShownView` restores the search selection or matches the focused Secret ID.
-Focus falls back to search. **Refresh** clears the query.
+After revalidation or Back, `console.mts:loadPage` restores Namespaces and
+Secrets searches within their session and scope. Both filter readable names
+and IDs locally. `focusInShownView` restores the text selection or row focus by ID unless
+the reader moved focus. Missing Secrets return focus to search. Back reveals
+the opened Namespace. **Refresh** clears search.
 
 `secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
 and clears it after the request, dismissal, or view retention
@@ -224,21 +218,20 @@ status read after an uncertain delete; a denial never confirms removal.
 Replacement hands delivery to explicit Agent deployment or CredentialSource
 update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
 
-`namespaces.mts:renderNamespaces` submits validated names with `POST /namespaces`.
-`OpenClawController.createNamespace` authorizes and queues provisioning.
-`perform` audits. Open Agents requires relisting. Closing refocuses the opener.
-A 403 disables it for that account until Refresh (`fromRefresh`). Pending writes
-block dismissal. A 400 marks the name. Conflicts retain input. Inspect unconfirmed
-responses.
+[`namespaces.mts:renderNamespaces`](../guides/console/create-namespace.md) validates names.
+`OpenClawController.createNamespace` authorizes `POST /namespaces` and queues
+provisioning. `perform` audits. After 201, `namespaces.mts:confirmCreation`
+offers **Open Agents** for exact list membership, another GET for uncertainty,
+or **Done** for omissions and denials. Closing refocuses the opener. A create
+403 disables creation for that account until Refresh.
 
 `namespace-deletion.mts` blocks navigation and dismissal during writes. OCC
-rechecks IAM and contents (20 blocker IDs per kind). `202` starts three-second
-polling. `404` removes the row, repairs selection, and moves focus from a
-disappearing search toolbar to the outcome. `403` signals lost access.
-`readStatus` requires exact ID and scalar
-[NamespaceSchema status](../../packages/contracts/src/api/resources.ts).
-Failed or invalid reads close confirmation. **Status unknown** prompts
-[**Refresh status**](../guides/console/delete-namespace.md) to restore status and actions.
+rechecks IAM and contents (20 blocker IDs per kind). After 202, polling runs
+every three seconds. A 404 removes the row and repairs selection. If the focused
+search toolbar disappears, the result receives focus. A 403 signals lost access.
+`readStatus` requires the exact ID and scalar [NamespaceSchema status](../../packages/contracts/src/api/resources.ts).
+Failed or invalid reads close confirmation. For **Status unknown**,
+[**Refresh status**](../guides/console/delete-namespace.md) restores confirmed actions.
 
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
@@ -304,10 +297,10 @@ rejected cursors clear rows.
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
-On navigation, `loadPage` moves focus from the body to the destination heading
-with `preventScroll`. An Agent opened from the list focuses its heading as it renders.
-Focused controls retain focus. Tabs use one Tab stop and arrow navigation.
-Navigation, Namespace changes, and logout invalidate reads by generation. Refocus coalesces events.
+After navigation, `loadPage` moves focus from the body to the destination
+heading with `preventScroll`. Agents opened from the list focus their heading.
+Controls keep focus. Tabs use one Tab stop and arrow keys. Navigation, Namespace
+changes, and logout invalidate reads by generation. Refocus coalesces events.
 `revalidateMountedAgent` rereads session, Namespace, Agent, version, and
 [permissions](platform-console/agent-stop-and-deletion.md#stop-agent).
 `apps/controller/src/console/agents/detail.mts:syncHarnessRead` refreshes Sandbox
@@ -326,12 +319,13 @@ Console remembers the Configuration editor with selected text. The next
 successful foreground check can refocus that editor in the same view. Newer
 focus or selections take precedence. Draft save baselines stay Namespace-scoped.
 
-Admission failures clear affected content. A current protected `401` clears
-all private state. `pagehide` clears private DOM, previews, and drafts even for
-BFCache. Persisted `pageshow` reloads. Failure views show local reasons and
-`req_<UUID>` IDs. Backend text appears only in an API refusal that names a 400
-field or rule or a typed 409 state. The Console sets it as plain text.
-Installation-wide Backend denial clears previews across Namespaces.
+Other admission failures clear affected content;
+a current protected `401` clears all private state. `pagehide` clears
+private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
+a fresh load. Failure views show local reasons and `req_<UUID>` request IDs. The
+only backend text they show is a refusal the API explains (a 400 naming the field or
+rule, a typed 409 naming the state), set as text. Backend authorization denial clears every retained preview,
+including other Namespace selections, because the permission is Installation-wide.
 
 The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
 acceptance, uncertainty, and replay guards. `agents/deletion.mts:refreshStatus` owns polling: 404 returns to Agents;
@@ -386,8 +380,13 @@ gateway startup and file availability.
 
 - 2026-11-22 11:39: Trace Namespace cleanup and keyboard focus. (authoring-run/7befa996-8a20-4b54-9c7c-5d7d18dd0095 - 5768ebdac724be812904dba59ae1c31f749f6bec)
 
+- 2026-11-22 11:28: Clarify Namespace list results. (authoring-run/d86bdf09-8b77-410f-8646-4feb7a9071cf - 5aa97a22d8d7d1ed8ca31a18d9892ad0313e24c6)
+
 - 2026-11-22 11:22: Trace Namespace search and return focus. (authoring-run/25d72135-b5b4-456b-a1c3-25c6dfee5cb1 - d687874b7213584ff916a22cdfccdce48bfe1fc8)
+
 - 2026-11-22 11:17: Trace Secrets search restoration. (authoring-run/6a1f921d-e68d-4ad9-a9b0-733f9344099e - b4bf1f79813c391977b4f58eb92e5241a8eaa8b8)
+
+- 2026-11-22 11:16: Trace the read after Namespace creation. (authoring-run/4f0bae81-577e-4c6c-b34e-daa95bc82a3c - ad54d29adb562767e830020c504302479159c578)
 
 - 2026-11-22 08:59: Trace keyboard search. (authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c - f3996c521e94d8bf18ff9018069c699dda6913c6)
 
