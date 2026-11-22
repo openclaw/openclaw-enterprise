@@ -2,7 +2,7 @@
 
 Installation administrators can publish a connection template for the Installation or one Namespace. They can also register an OAuth client in either scope. A registration inherits the selected template’s availability, issuer, token URL and optional revocation URL. A Namespace template can use an Installation client or a client in the same Namespace.
 
-For planned static Bearer templates and shared Plugin credential Sources, see [credential implementation status](credential-sources.md#implementation-status).
+The API schema includes `static_bearer`, but creating that template is not implemented and currently returns `500 INTERNAL_ERROR`. Use an OAuth template. See [credential implementation status](credential-sources.md#implementation-status) for planned Plugin delivery.
 
 In Console, open **Credentials → Connection templates**. Choose **Create connection template** and set **Template availability** to the whole Installation or a particular Namespace. Select a compatible OAuth client or choose **Create template and register OAuth client**.
 
@@ -28,12 +28,12 @@ A new template starts with **No template limit** (`scopes: []`). Select **Limit 
 
 Use `POST /connection-templates` with one of these setup methods.
 
-- With `mode: manual`, supply the issuer, OAuth URLs, scopes and a nonempty `destinations` array. Each object has a host, port and path, for example `{"host":"mail.example.test","port":443,"path":"/inbox/**"}`. A credentialed request must match all three in one row. The plugin and deployed request policy determine the allowed operations.
+- With `mode: manual`, supply the issuer, OAuth URLs, scopes and a nonempty `destinations` array. Each object has a host, port and path, for example `{"host":"mail.example.test","port":443,"path":"/inbox/**"}`. Each row describes an approved destination. Agent delivery of saved OAuth credentials is not yet supported.
 - With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the approved issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
 
 A template may be saved before a client exists. Associate a compatible `oauthClientId` before using it for consent. Use `PATCH /connection-templates/{connectionTemplateId}` with the full configuration to change its approved values. This creates an immutable version. Changing only `displayName` renames the template. To remove a template, select the trash icon beside it in **Credentials → Connection templates**. Check its name and availability, then choose **Delete connection template**. Its OAuth client stays registered.
 
-Existing accounts use the current manual destinations for their template and issuer. Adding a host can send existing accounts’ access tokens there for requests their plugin and Agent policy permit. Running Agents apply changes when their senders reconcile. To use a different issuer or switch between manual and MCP setup, connect the account again. An MCP account also retains its exact server and protected resource.
+The connections list reports the current manual destinations for the account’s template and issuer. Updating destinations does not deliver the account to an Agent. To use a different issuer or switch between manual and MCP setup, connect the account again. An MCP account also retains its exact server and protected resource.
 
 Changing the template’s default OAuth client applies to future connections. Existing grants continue to refresh with their original registration and its current secret.
 
@@ -41,7 +41,7 @@ See the [API reference](api.md#connections) for request and response fields.
 
 ## Connect an account
 
-OCC handles browser consent and the callback. After exchange, OCC registers the grant with the Token Service. It returns a stable account reference and renews the access token using the original client registration. Users can connect an account before an administrator configures a Credential Gateway for Agent delivery.
+OCC handles browser consent and the callback. Its internal Token Service registrar and issuer store and renew the grant using the original client registration. OCC returns a stable account reference. Agent attachment and delivery of a saved OAuth account are not yet supported; configuring a Credential Gateway does not enable them.
 
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires

@@ -67,8 +67,8 @@ Harness configuration selects the Agent's execution topology:
   tenant namespace, with separate ServiceAccounts and storage. They communicate through
   authenticated app-server transport. The Gateway uses fully qualified Harness
   Service DNS and the paired node for workspace operations. Codex accepts an
-  Agent-scoped model API key or a managed ChatGPT service-account credential,
-  and permits `openai/` or `codex/` models.
+  Agent-scoped API key, a managed ChatGPT account credential, or a supported
+  Credential Source, and permits `openai/` or `codex/` models.
 - **Dedicated native OpenClaw:** The gateway and paired OpenClaw Harness run in
   separate Pods with separate ServiceAccounts. Compute issues a node-only setup
   credential through the gateway and stores the resulting device identity on the

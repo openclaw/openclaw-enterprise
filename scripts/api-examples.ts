@@ -193,23 +193,6 @@ const sessionKey = "example-session-binding-not-a-credential";
 
 const connectionTemplateId = id("ctp");
 const inferenceConnectionTemplateId = "ctp_223e4567-e89b-42d3-a456-426614174000";
-const inferenceConnectionTemplateValues = {
-  mode: "static_bearer",
-  destinations: [
-    { host: "inference.example.com", port: 443, path: "/v1/responses", method: "POST" },
-  ],
-};
-const inferenceConnectionTemplate = {
-  id: inferenceConnectionTemplateId,
-  displayName: "Research inference",
-  createdAt: time,
-  current: {
-    ...inferenceConnectionTemplateValues,
-    templateId: inferenceConnectionTemplateId,
-    version: 1,
-    createdAt: time,
-  },
-};
 const modelProviderSettings = {
   displayName: "Research inference",
   baseUrl: "https://inference.example.com/v1",
@@ -268,11 +251,10 @@ const connectionTemplateInput = {
   issuer: oauthClient.issuer,
   authorizationUrl: "https://accounts.example.com/authorize",
   tokenUrl: oauthClient.tokenUrl,
-  oauthClientId,
   scopes: ["profile.read"],
   destinations: [{ host: "api.example.com", port: 443, path: "/profile" }],
 };
-const connectionTemplate = {
+const createdConnectionTemplate = {
   id: connectionTemplateId,
   namespaceId,
   displayName: "Example account",
@@ -284,6 +266,10 @@ const connectionTemplate = {
     version: 1,
     createdAt: time,
   },
+};
+const connectionTemplate = {
+  ...createdConnectionTemplate,
+  current: { ...createdConnectionTemplate.current, oauthClientId },
 };
 const mcpServerUrl = "https://tools.example.com/mcp";
 const discovered = {
@@ -378,8 +364,9 @@ export const requestExamples = {
     expectedSettingsFingerprint: modelProvider.settingsFingerprint,
   },
   createConnectionTemplate: {
-    ...inferenceConnectionTemplateValues,
-    displayName: inferenceConnectionTemplate.displayName,
+    ...connectionTemplateInput,
+    namespaceId,
+    displayName: connectionTemplate.displayName,
   },
   updateConnectionTemplate: { displayName: "Engineering account" },
   discoverConnectionTemplate: { serverUrl: mcpServerUrl },
@@ -519,7 +506,7 @@ export const responseExamples = {
   },
   listConnectionTemplates: [connectionTemplate],
   getConnectionTemplate: connectionTemplate,
-  createConnectionTemplate: inferenceConnectionTemplate,
+  createConnectionTemplate: createdConnectionTemplate,
   updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
   discoverConnectionTemplate: discovered,
   listOAuthClients: [oauthClient],

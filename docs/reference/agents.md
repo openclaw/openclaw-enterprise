@@ -176,10 +176,10 @@ Changing the binding does not clear historical Agent revisions. For a request th
 never created an Agent, see
 [clear legacy bindings](settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
-For dedicated Codex with a Credential Gateway, use
-`{ "method": "credential_source", "sourceId": "cs_…" }`; see
-[credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
-It must also be listed in `credentialSources`.
+For dedicated OpenClaw or Codex, use
+`{ "method": "credential_source", "sourceId": "cs_…" }` with a supported
+TokenService and Credential Proxy or legacy Credential Gateway. List it in
+`credentialSources`; see [Source grants](credential-sources.md#bind-a-source-to-an-agent).
 
 Replacing a revision from or to managed credential delivery currently returns `409` before queueing. Complete Stop before deploying again. See [implementation status](credential-sources.md#implementation-status).
 

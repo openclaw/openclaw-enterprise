@@ -6,10 +6,10 @@ kind: reference/driver
 
 ## Overview
 
-`CredentialGatewayDriver` holds credentials outside the Agent workload and
-applies them to the Agent's outbound requests. OpenClaw Control Plane (OCC) owns
-the [credential source](../credential-sources.md) record, its Secret references,
-authorization, and Agent bindings. The Driver owns the stored copy of the value,
+`CredentialGatewayDriver` is the legacy delivery contract. It holds credentials
+outside the Agent workload and applies them to outbound requests. OpenClaw Control
+Plane (OCC) owns the legacy [Source](../credential-sources.md) record, its Secret
+references, authorization, and Agent bindings. The Driver owns the stored copy of the value,
 the source-type catalog, and how a credential reaches a request. The paired
 [SandboxDriver](sandbox.md) consumes the Driver's attachments for each Agent revision when
 it creates the Harness, and [Compute](compute.md) waits for those attachments

@@ -6,8 +6,8 @@ kind: reference/driver
 
 ## Overview
 
-`CredentialRefreshDriver` mints and re-mints the tokens of `refresh`-type
-[credential sources](../credential-sources.md). A refresh type, such as an
+`CredentialRefreshDriver` is the legacy renewal contract for Gateway-owned
+`refresh`-type [credential sources](../credential-sources.md). A refresh type, such as an
 OAuth2 client-credentials source, has an issuer and long-lived refresh
 material, such as a client secret or refresh token. The Driver holds that
 material, obtains an access token from the issuer, and obtains a new one before

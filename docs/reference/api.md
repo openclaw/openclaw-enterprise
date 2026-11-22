@@ -1732,16 +1732,22 @@ Create an Installation-wide or Namespace-scoped connection template
 Example request
 ```json
 {
+  "authorizationUrl": "https://accounts.example.com/authorize",
   "destinations": [
     {
-      "host": "inference.example.com",
-      "method": "POST",
-      "path": "/v1/responses",
+      "host": "api.example.com",
+      "path": "/profile",
       "port": 443
     }
   ],
-  "displayName": "Research inference",
-  "mode": "static_bearer"
+  "displayName": "Example account",
+  "issuer": "https://accounts.example.com",
+  "mode": "manual",
+  "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+  "scopes": [
+    "profile.read"
+  ],
+  "tokenUrl": "https://accounts.example.com/token"
 }
 ```
 
@@ -1822,21 +1828,28 @@ Example response
   "data": {
     "createdAt": "2026-10-01T12:00:00.000Z",
     "current": {
+      "authorizationParameters": {},
+      "authorizationUrl": "https://accounts.example.com/authorize",
       "createdAt": "2026-10-01T12:00:00.000Z",
       "destinations": [
         {
-          "host": "inference.example.com",
-          "method": "POST",
-          "path": "/v1/responses",
+          "host": "api.example.com",
+          "path": "/profile",
           "port": 443
         }
       ],
-      "mode": "static_bearer",
-      "templateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+      "issuer": "https://accounts.example.com",
+      "mode": "manual",
+      "scopes": [
+        "profile.read"
+      ],
+      "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+      "tokenUrl": "https://accounts.example.com/token",
       "version": 1
     },
-    "displayName": "Research inference",
-    "id": "ctp_223e4567-e89b-42d3-a456-426614174000"
+    "displayName": "Example account",
+    "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
