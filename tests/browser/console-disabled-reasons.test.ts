@@ -19,6 +19,7 @@ import { AGENT_CREATE_DENIED, DIAGNOSTICS_DENIED } from "../helpers/refusal-acce
 import {
   AGENT_READ,
   accessibleDescription,
+  apiRequests,
   detailUrl,
   expectReachableReason,
   grantInstallationAdministration,
@@ -26,6 +27,8 @@ import {
   login,
   nativeValues,
   newPage,
+  nonAuthWriteRequests,
+  settlePageRequests,
   shippedPreset,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -224,6 +227,8 @@ test("an appointed administrator without Namespace action grants gets neutral ac
   const fixture = await createConsoleAppFixture(t);
   const installation = await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Shared research", { ready: true });
+  // The appointed administrator has no Agent read grant, even though the Namespace has an Agent.
+  const hiddenAgent = await fixture.createAgent(namespace.id, "Private Agent", nativeValues("pa"));
   const account = await fixture.createNamespaceMember("appointed-admin", namespace.id, [
     ["read", "namespace"],
   ]);
@@ -252,11 +257,35 @@ test("an appointed administrator without Namespace action grants gets neutral ac
   });
 
   const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const agentListPath = `/namespaces/${namespace.id}/agents`;
+  const listResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === agentListPath && response.request().method() === "GET",
+  );
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, account.credentials);
+  assert.equal((await listResponse).status(), 200);
   await expectReachableReason(
     page,
     page.getByRole("button", { name: "Create Agent", exact: true }),
     AGENT_CREATE_ACCESS_CHECK,
+  );
+  assert.equal(
+    await page.getByRole("heading", { name: /^No Agents/ }).textContent(),
+    "No Agents to show",
+  );
+  await page
+    .getByText("Agents you can read in this Namespace appear here.", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByText(hiddenAgent.name, { exact: true }).count(), 0);
+  assert.equal(await page.getByText(hiddenAgent.id, { exact: true }).count(), 0);
+  await settlePageRequests(page);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.deepEqual(
+    requests
+      .filter(({ path }) => /^\/namespaces\/[^/]+\/agents(?:[/?]|$)/.test(path))
+      .map(({ path }) => path.split("?")[0]),
+    [agentListPath],
   );
   await page.goto(`${fixture.origin}/console/secrets?namespace=${namespace.id}`);
   await expectReachableReason(

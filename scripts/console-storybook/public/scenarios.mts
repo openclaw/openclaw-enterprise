@@ -575,7 +575,7 @@ const authoredScenarios = {
     emptyAgents: true,
     readOnlyPermissionSummary: true,
     description:
-      "A member without Agent create sees no shared Agents. Create Agent is disabled and asks the member to have an Installation administrator check their access.",
+      "A member without Agent create sees no readable Agents. Create Agent is disabled and asks the member to have an Installation administrator check their access.",
   } satisfies LocalScenario,
   agentsCreateBlockedByRestriction: {
     group: "Pages/Agents",
@@ -848,7 +848,7 @@ const authoredScenarios = {
     emptyAgents: true,
     readOnlyPermissionSummary: true,
     description:
-      "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
+      "When the caller cannot create Agents and sees no readable Agents, the page explains which Agents appear here.",
   } satisfies LocalScenario,
   agentsNamespaceProvisioning: {
     group: "Pages/Agents",
