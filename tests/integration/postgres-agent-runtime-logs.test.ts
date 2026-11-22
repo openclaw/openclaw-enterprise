@@ -211,6 +211,7 @@ test(
     const marker = "replacement runtime operational output";
     const viewAction = "openclaw.agents.runtime_logs.view";
     const downloadAction = "openclaw.agents.runtime_logs.download";
+    // Count unexpected runtime-log actions too; the new row must match the requested action exactly.
     const readIsolatedAudits = () =>
       pool.query<
         RuntimeLogAuditRow & {
@@ -223,8 +224,8 @@ test(
       >(
         `SELECT id, action, actor_id, namespace_id, resource_kind, resource_id, kind, outcome, details
          FROM occ.audit_events
-         WHERE resource_id = $1 AND action IN ($2, $3)`,
-        [isolated.agent.id, viewAction, downloadAction],
+         WHERE resource_id = $1 AND action LIKE 'openclaw.agents.runtime_logs.%'`,
+        [isolated.agent.id],
       );
 
     // Each request must account for one fresh admission, even when a later read returns 503.
