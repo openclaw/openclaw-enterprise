@@ -56,7 +56,7 @@ async function createManualDraft(
 }
 
 test(
-  "static Connection Templates preserve approved request destinations across scoped CRUD and immutable versions",
+  "static Connection Templates preserve configured request destinations across scoped CRUD and immutable versions",
   requiresPostgres,
   async (t) => {
     const { app, controller, inject, pool, state } = await createPostgresAgentApp(t, options);
@@ -74,7 +74,7 @@ test(
       { method: "POST", host: "api.example.test", port: 443, path: "/v1/**" },
     ];
     const settings = { mode: "static_bearer", destinations };
-    // The administrator approves whole request rows. Reordering, casing, and duplicate rows
+    // The administrator configures whole request rows. Reordering, casing, and duplicate rows
     // cannot change the canonical policy or erase the distinction between HTTP methods.
     const installed = await inject("POST", "/connection-templates", {
       displayName: "Shared API key",
@@ -140,7 +140,7 @@ test(
       method: "POST",
       url: "/connection-templates",
       headers: session,
-      payload: { displayName: "Unapproved API key", ...settings },
+      payload: { displayName: "Unauthorized API key", ...settings },
     });
     assert.equal(denied.statusCode, 403, denied.body);
     const deniedUse = await app.inject({
@@ -154,7 +154,7 @@ test(
     const read = await inject("GET", path);
     assert.equal(read.statusCode, 200, read.body);
     assert.deepEqual(read.json().data.current.destinations, destinations);
-    // An approval must be usable by the same exact/subtree matcher that checks credential policy.
+    // Configured paths must work with the exact/subtree matcher that checks credential policy.
     const invalidPaths = ["/v1/*", "/v1/../models", "/v1/%EF%BC%8F"];
     for (const invalidPath of invalidPaths) {
       const refused = await inject("PATCH", path, {
@@ -177,7 +177,7 @@ test(
     assert.equal(changed.statusCode, 200, changed.body);
     assert.equal(changed.json().data.current.version, 2);
     assert.deepEqual(changed.json().data.current.destinations, next);
-    // An older approved version remains unchanged after the current policy advances.
+    // An older saved version remains unchanged after the current configuration advances.
     const history = await pool.query(
       "SELECT version, destinations FROM occ.static_key_template_versions WHERE template_id=$1 ORDER BY version",
       [shared.id],

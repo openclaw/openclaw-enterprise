@@ -6,6 +6,7 @@ import { oauthDeleteButton } from "./oauth-deletion.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 import {
   availabilityLabel,
+  isOAuthTemplate,
   type OAuthTemplate,
   availableInNamespace,
   oauthClients,
@@ -44,7 +45,9 @@ export function renderOAuthClients(
         return;
       }
       clients = data;
-      templates = saved.filter((item) => availableInNamespace(item, currentNamespace));
+      templates = saved
+        .filter(isOAuthTemplate)
+        .filter((item) => availableInNamespace(item, currentNamespace));
       const visibleClients = data.filter((item) => availableInNamespace(item, currentNamespace));
       redirectUri = meta?.redirectUri;
       showRows(
@@ -87,9 +90,12 @@ export function renderOAuthClients(
           namespaces,
           currentNamespace,
           clients,
+          oauthOnly: true,
           onSaved(saved) {
-            templates.push(saved);
-            selectCreated(saved);
+            if (isOAuthTemplate(saved)) {
+              templates.push(saved);
+              selectCreated(saved);
+            }
           },
           onUnconfirmed() {
             recoveryNotice =

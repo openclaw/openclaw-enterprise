@@ -215,14 +215,22 @@ export function createConnectionTemplateFixture(
           return error(404, "RESOURCE_NOT_FOUND", "Connection template unavailable.");
         }
         const { displayName, ...config } = body;
-        previousVersions.push(template.current);
-        template.displayName = displayName;
-        template.current = {
-          ...config,
-          templateId: template.id,
-          version: template.current.version + 1,
-          createdAt,
-        };
+        if (typeof displayName === "string") {
+          template.displayName = displayName;
+        }
+        const sameStaticSettings =
+          config.mode === "static_bearer" &&
+          template.current.mode === "static_bearer" &&
+          JSON.stringify(config.destinations) === JSON.stringify(template.current.destinations);
+        if (config.mode !== undefined && !sameStaticSettings) {
+          previousVersions.push(template.current);
+          template.current = {
+            ...config,
+            templateId: template.id,
+            version: template.current.version + 1,
+            createdAt,
+          };
+        }
         if (mode === "unconfirmed-save" && isRecord(template.current)) {
           const current = { ...template.current };
           delete current.version;

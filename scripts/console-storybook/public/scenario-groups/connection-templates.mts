@@ -12,16 +12,37 @@ const discoverMcp = [
 export const connectionTemplateScenarios = {
   credentialsTemplateCatalog: {
     group: "Pages/Credentials",
-    name: "OAuth connection templates",
+    name: "Connection templates",
     steps: [
-      "Compare availability, assigned OAuth client, and current version for Google OAuth and Support MCP. Open Edit on either OAuth row and check the selected template.",
-      "The backing API fixture also contains the static Bearer Reporting API template. Confirm the OAuth catalog omits it and the OAuth Edit controls remain available.",
+      "Compare the authentication method, availability, details, and version for Google OAuth, Support MCP, and the static Bearer Reporting API template.",
+      "Open Edit on Reporting API to inspect its HTTP method, host, port, and exact path or subtree. Static templates do not have OAuth clients.",
       "Switch the Namespace in the header. Installation-wide templates remain available in every Namespace.",
     ],
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
     description:
-      "A mixed API fixture verifies that this OAuth-only catalog omits static Bearer templates.",
+      "A mixed catalog shows static Bearer and OAuth templates through the same resource workflow.",
+  },
+  credentialsStaticTemplateCreate: {
+    group: "Pages/Credentials",
+    name: "Create static Bearer template",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [
+      click("Create connection template"),
+      { selector: "#connection-template-authentication", value: "static_bearer" },
+    ],
+    description:
+      "Configure each HTTP method, host, port, and exact path or subtree without registering an OAuth client.",
+  },
+  credentialsStaticTemplateEdit: {
+    group: "Pages/Credentials",
+    name: "Edit static Bearer template",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [{ selector: 'button[aria-label="Edit Reporting API"]', click: true }],
+    description:
+      "Review the current destination. Saving destination changes creates a new immutable version; renaming preserves the current version.",
   },
   credentialsOAuthClientCatalog: {
     group: "Pages/Credentials",

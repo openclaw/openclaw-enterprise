@@ -166,18 +166,18 @@ Stores the scope, authentication method, and current version of each Connection 
 
 ### `static_key_template_versions`
 
-Stores each immutable static Bearer approval, including the exact HTTP method, host, and port, plus the exact path or subtree for each approved destination.
+Stores each immutable static Bearer template version, including the exact HTTP method, host, and port, plus the exact path or subtree for each allowed destination.
 
 - `template_id`, `version`, `destinations`, `created_at`
 
 ### `oauth_connection_template_versions`
 
-Pins the approved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
+Pins the saved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
 
 - `template_id`, `version`, `oauth_client_id`, `mode`
 - `issuer`, `authorization_url`, `token_url`, `revocation_url`
 - `scopes`, `authorization_parameters`, `observed_metadata`
-- `destinations` (exact host, port, and path for each approved HTTPS destination)
+- `destinations` (exact host, port, and path for each allowed HTTPS destination)
 - `created_at`
 
 ### `oauth_clients`

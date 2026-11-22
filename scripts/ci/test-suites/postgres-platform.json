@@ -209,7 +209,7 @@
     {
       "path": "tests/integration/postgres-connection-templates.test.ts",
       "expectedTests": [
-        "static Connection Templates preserve approved request destinations across scoped CRUD and immutable versions",
+        "static Connection Templates preserve configured request destinations across scoped CRUD and immutable versions",
         "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
         "an administrator registers OAuth clients against a pinned template and its availability",
         "OAuth client secret mutations refuse an enclosing controller transaction",
