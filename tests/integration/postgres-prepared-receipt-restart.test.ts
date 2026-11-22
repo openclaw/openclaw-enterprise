@@ -192,7 +192,8 @@ test(
     const gate = await gateApiHandshake(resources, gh.origin);
     const apiOrigin = gate.origin;
     // The original issuer and the sender pin the same API authority through this gate.
-    const issuerDir = await socketDirectory(resources, "issuer-");
+    const issuerUseSocketName = "prepared-git-use.sock";
+    const issuerDir = await socketDirectory(resources, "issuer-", { longest: issuerUseSocketName });
     const owner = await f.startOwner({ controlSocket: join(issuerDir, "control.sock"), apiOrigin });
     const real = createSystemClock();
     let observedWall: number | undefined;
@@ -201,7 +202,7 @@ test(
     const config = { ...base, gateway: { ...base.gateway, controlSocket } };
     const factory = createPreparedGitHubRegistryFactory({
       registry,
-      socketPath: join(issuerDir, "prepared-git-use.sock"),
+      socketPath: join(issuerDir, issuerUseSocketName),
       clock,
       limits: config.limits,
       gatewayOrigin: config.gateway.publicOrigin,
