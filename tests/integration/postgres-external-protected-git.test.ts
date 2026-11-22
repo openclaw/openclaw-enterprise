@@ -2492,6 +2492,7 @@ function externalGitJourney(
             () => peer.delivery.reconciliations >= pendingPasses + 2 || undefined,
             10_000,
           );
+          assertNoEffect();
           // With the route cleared, the same sender must refuse before calling authority.
           const decisions = peer.decisions.length;
           await deniedFetch();
