@@ -268,17 +268,17 @@ predecessor. In a separate transaction, `completeActivatedRevision()` rechecks
 selection and claim, appends evidence, and completes work. Retries recheck the
 active candidate before effects; claim loss cannot turn plugin failure into success.
 
-`finalizeAgentStop()` rechecks the claim, Agent owner, desired state, and
-active pointer before clearing the stopped version. A later deployment
-supersedes the stop, even if it still has that pointer. Version rows and
-runtime state remain. After commit, it records the
-[operation duration](../reference/metrics.md#shared-snapshots-and-outages),
-as `completeActivatedRevision()` does for activation.
+`finalizeAgentStop()` checks the claim, Agent owner, and desired state.
+It clears `activeRevisionId` only if it points to the stopped version.
+A later deployment supersedes the stop even with that pointer. Version
+rows and runtime state remain. After commit, successful stops that were
+not superseded and successful activations record
+[operation durations](../reference/metrics.md#shared-snapshots-and-outages).
 
 `finalizeAgentDeletion()` calls a restricted database function. It validates
 the live claim, records success, and removes the Agent and its
 [lifecycle records](../reference/controller/reconciliation.md#agent-lifecycle)
-in one transaction. The application role has no direct delete privilege.
+in one transaction. The application role cannot delete those records directly.
 
 `settleAgentTeardownAttempt()` writes IAM denials and lifecycle evidence
 before it settles Stop outcomes and Delete failures. A Stop that yields
