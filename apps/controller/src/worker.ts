@@ -654,8 +654,8 @@ type RuntimeSuccessor =
   | { readonly kind: "eligible" | "legacy-held"; readonly revision: Readonly<AgentRevision> };
 
 interface AgentStopDispatchResult extends DispatchResult {
-  readonly servicePrincipalId?: string;
-  readonly revisionId?: string;
+  readonly servicePrincipalId?: string | undefined;
+  readonly revisionId?: string | undefined;
 }
 
 interface CredentialWithdrawalAttempt {
@@ -3405,7 +3405,7 @@ export class ControllerWorker {
       result = {
         outcome: "success",
         code: "AGENT_DELETED",
-        abandonedProvisioningEffect,
+        ...(abandonedProvisioningEffect === undefined ? {} : { abandonedProvisioningEffect }),
       };
     } catch (error) {
       result = agentTeardownFailure(error);
@@ -3576,11 +3576,19 @@ export class ControllerWorker {
       await queue.fail(claim, { code: result.code });
     } else if (outcome === "pending") {
       // Both waits refund the attempt. A yielded stop records evidence only when it settles.
-      const options =
-        operation === "stop"
-          ? { delayMs: this.stopYieldRecheckMs(claim), recordEvidence: false }
-          : { delayMs: result.delayMs };
-      await queue.defer(claim, { code: result.code }, options);
+      if (operation === "stop") {
+        await queue.defer(
+          claim,
+          { code: result.code },
+          { delayMs: this.stopYieldRecheckMs(claim), recordEvidence: false },
+        );
+      } else {
+        await queue.defer(
+          claim,
+          { code: result.code },
+          result.delayMs === undefined ? {} : { delayMs: result.delayMs },
+        );
+      }
     } else {
       await queue.retry(claim, { code: result.code });
     }
