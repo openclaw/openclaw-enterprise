@@ -40,12 +40,13 @@ Before provisioning the Slack-enabled topology or posting, the test uses the Gat
 
 Put these settings in the private environment file:
 
-| Variable                          | Value                                                                            |
-| --------------------------------- | -------------------------------------------------------------------------------- |
-| `OCC_TEST_SLACK_CHANNEL_ID`       | Shared test channel.                                                             |
-| `SLACK_APP_TOKEN`                 | Gateway Socket Mode token, starting with `xapp-`.                                |
-| `SLACK_BOT_TOKEN`                 | Gateway bot token, starting with `xoxb-`.                                        |
-| `OCC_TEST_SLACK_SENDER_BOT_TOKEN` | Distinct sender bot token, starting with `xoxb-`; it stays with the test runner. |
+| Variable                          | Value                                                                                   |
+| --------------------------------- | --------------------------------------------------------------------------------------- |
+| `OCC_TEST_SLACK_CHANNEL_ID`       | Shared test channel.                                                                    |
+| `SLACK_APP_TOKEN`                 | Gateway Socket Mode token, starting with `xapp-`.                                       |
+| `SLACK_BOT_TOKEN`                 | Gateway bot token, starting with `xoxb-`.                                               |
+| `OCC_TEST_SLACK_SENDER_BOT_TOKEN` | Distinct sender bot token, starting with `xoxb-`; it stays with the test runner.        |
+| `OCC_TEST_CODEX_TOKEN_FILE`       | Optional private Codex service-account PAT file for the focused dedicated suites below. |
 
 ```sh
 OCC_TEST_SLACK_LIVE=1 \
@@ -55,6 +56,14 @@ OCC_TEST_SLACK_LIVE=1 \
 `OCC_TEST_SLACK_EVIDENCE_PATH` optionally retains the nonsecret delivery receipt
 outside the checkout. The test verifies the sender against Slack history and
 correlates the reply with one completed native Codex turn.
+
+`OCC_TEST_CODEX_TOKEN_FILE` selects Codex PAT authentication only for
+`harness-topology-k3d-slack-real.test.mjs` and
+`channel-egress-kubernetes-real.test.ts`. Use an owner-only mode-0600 file that
+passes the protected-file checks. Only the dedicated Harness receives the PAT;
+the Gateway does not. Dedicated startup performs a bounded model authentication
+probe even when a case requests no chat turn. The full Helm Slack runner still
+requires API-key authentication and does not accept this option.
 
 The same lane runs `channel-egress-kubernetes-real.test.ts` through normal Agent
 APIs and real workers. It covers distinct Driver generations, concurrent
