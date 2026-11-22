@@ -26,6 +26,7 @@ interface FixtureOptions {
   twoCluster: boolean;
   options: BuildOptions;
   routedOptions: BuildOptions;
+  binding?: ComputeAgentRevisionBinding;
 }
 
 // The fixture supplies raw values for the driver's timestamp validation cases.
@@ -104,6 +105,13 @@ interface FixtureState {
   initContainerStatuses?: FixtureContainerStatus[];
   noMainStatus?: boolean;
   restartDuringRead?: boolean;
+  afterLogRead?:
+    | "foreign-pod"
+    | "owned-pod"
+    | "missing-pod"
+    | "missing-uid"
+    | "missing-restart-count"
+    | "undeclared-container";
 }
 
 export function createRuntimeLogDriverFixture({
@@ -112,10 +120,12 @@ export function createRuntimeLogDriverFixture({
   twoCluster,
   options,
   routedOptions,
+  binding: suppliedBinding,
 }: FixtureOptions) {
-  const namespaceName = kubernetesNamespaceName(tenant.id);
+  const namespaceId = suppliedBinding?.namespace.id ?? tenant.id;
+  const namespaceName = kubernetesNamespaceName(namespaceId);
   const gatewayNamespaceName = twoCluster
-    ? kubernetesGatewayNamespaceName(tenant.id)
+    ? kubernetesGatewayNamespaceName(namespaceId)
     : namespaceName;
   const driver = createKubernetesComputeDriver(
     twoCluster
@@ -140,13 +150,15 @@ export function createRuntimeLogDriverFixture({
           runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
         }),
   );
-  const revision = routedRevision(driver, {
-    id: "revision-runtime-logs",
-    agentId: "agent-runtime-logs",
-    configurationId: "cfg_runtime_logs",
-    servicePrincipalId: "service-principal-runtime-logs",
-  });
-  const binding: ComputeAgentRevisionBinding = {
+  const revision =
+    suppliedBinding?.revision ??
+    routedRevision(driver, {
+      id: "revision-runtime-logs",
+      agentId: "agent-runtime-logs",
+      configurationId: "cfg_runtime_logs",
+      servicePrincipalId: "service-principal-runtime-logs",
+    });
+  const binding: ComputeAgentRevisionBinding = suppliedBinding ?? {
     namespace: { ...tenant, status: "ready" },
     agent: {
       id: revision.agentId,
@@ -232,17 +244,18 @@ export function createRuntimeLogDriverFixture({
     },
   });
   const calls: Call[] = [];
+  let observedLogRead: Role | undefined;
   const clientsFor = (plane: Plane) => ({
     core: {
       async listNamespace({ labelSelector }: { labelSelector: string }) {
-        assert.equal(labelSelector, `openclaw.dev/namespace=${tenant.id}`);
+        assert.equal(labelSelector, `openclaw.dev/namespace=${namespaceId}`);
         calls.push({ plane, call: "listNamespace" });
         return {
           apiVersion: "v1",
           kind: "NamespaceList",
           items: [
             {
-              ...driver["manifest"]("v1", "Namespace", namespaceName, { namespaceId: tenant.id }),
+              ...driver["manifest"]("v1", "Namespace", namespaceName, { namespaceId }),
               status: { phase: "Active" },
             },
           ],
@@ -251,7 +264,7 @@ export function createRuntimeLogDriverFixture({
       async readNamespace({ name }: { name: string }) {
         assert.equal(name, namespaceName);
         return {
-          ...driver["manifest"]("v1", "Namespace", namespaceName, { namespaceId: tenant.id }),
+          ...driver["manifest"]("v1", "Namespace", namespaceName, { namespaceId }),
           status: { phase: "Active" },
         };
       },
@@ -266,7 +279,34 @@ export function createRuntimeLogDriverFixture({
           ? "agent"
           : "gateway";
         calls.push({ plane, call: "listNamespacedPod", namespace, role });
-        const items = [pod(role)];
+        const current = pod(role);
+        let items = [current];
+        if (observedLogRead === role) {
+          if (state.afterLogRead === "foreign-pod") {
+            // The real label selector excludes a same-name replacement owned by
+            // another Agent. An empty list must not stand in for the old UID.
+            current.metadata.uid = `${role}-foreign-uid`;
+            current.metadata.labels["openclaw.dev/agent"] = "another-agent";
+            const labels = Object.entries(current.metadata.labels).map(
+              ([key, value]) => `${key}=${value}`,
+            );
+            if (!labelSelector.split(",").every((selector) => labels.includes(selector))) {
+              items = [];
+            }
+          } else if (state.afterLogRead === "missing-pod") {
+            items = [];
+          } else if (state.afterLogRead === "owned-pod") {
+            current.metadata.uid = `${role}-replacement-uid`;
+          } else if (state.afterLogRead === "missing-uid") {
+            Reflect.deleteProperty(current.metadata, "uid");
+          } else if (state.afterLogRead === "missing-restart-count") {
+            for (const container of current.status.containerStatuses) {
+              Reflect.deleteProperty(container, "restartCount");
+            }
+          } else if (state.afterLogRead === "undeclared-container") {
+            current.spec.containers = [];
+          }
+        }
         if (state.foreignPod) {
           // A Pod in the namespace that belongs to another Agent must never be accepted.
           const foreign = pod(role);
@@ -355,6 +395,7 @@ export function createRuntimeLogDriverFixture({
         }
         const role = request.container;
         state.restartCount[role] += state.restartDuringRead ? 1 : 0;
+        observedLogRead = role;
         return state.logs[role];
       },
     },

@@ -5587,6 +5587,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "The runtime log request does not match an owned Pod container.",
       );
     }
+    const restartCount = this.runtimeLogRestartCount(owned, request.container);
     const clients = await this.clients(target.plane);
     let raw: string;
     try {
@@ -5626,12 +5627,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (KUBELET_LOG_UNAVAILABLE.test(raw)) {
       raw = "";
     }
-    // Re-read after the log read so the caller can detect a replaced instance.
+    // A name-addressed read can race a Pod replacement. Require fresh ownership
+    // evidence before returning any bytes; an absent selector result is not the old Pod.
     const latest = (
       await this.runtimeLogStep(signal, () => this.revisionPods(revision, target, role))
     ).find((pod) => asRecord(pod.metadata)?.name === request.pod);
-    const latestStatus =
-      latest === undefined ? undefined : this.runtimePodStatus(latest, role, target);
+    if (
+      latest === undefined ||
+      !isNonEmptyString(asRecord(latest.metadata)?.uid) ||
+      !this.runtimeLogContainerNames(latest).includes(request.container)
+    ) {
+      throw new DependencyUnavailableError("The runtime log Pod is no longer available.");
+    }
+    const { uid: latestUid } = this.runtimePodStatus(latest, role, target);
+    const latestRestartCount = this.runtimeLogRestartCount(latest, request.container);
+    if (latestUid !== request.podUid || latestRestartCount !== restartCount) {
+      raw = "";
+    }
     const truncated = Buffer.byteLength(raw, "utf8") >= request.limitBytes;
     const lines = raw.split("\n");
     if (lines.at(-1) === "") {
@@ -5641,14 +5653,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       stream: {
         source: role,
         pod: request.pod,
-        podUid: latestStatus?.uid ?? request.podUid,
+        podUid: latestUid,
         container: request.container,
-        restartCount:
-          latestStatus?.containers.find(({ name }) => name === request.container)?.restartCount ??
-          this.runtimePodStatus(owned, role, target).containers.find(
-            ({ name }) => name === request.container,
-          )?.restartCount ??
-          0,
+        restartCount: latestRestartCount,
       },
       observedAt: new Date().toISOString(),
       lines: lines.map(kubernetesRuntimeLogLine),
@@ -5709,6 +5716,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       .map((container) => container?.name)
       .filter((name): name is string => isNonEmptyString(name))
       .slice(0, 16);
+  }
+
+  private runtimeLogRestartCount(pod: KubernetesRecord, container: string): number {
+    const status = asRecord(pod.status);
+    const observed =
+      findContainerStatus(status?.containerStatuses, container) ??
+      findContainerStatus(status?.initContainerStatuses, container);
+    const count = observed?.restartCount;
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+      throw new DependencyUnavailableError("The runtime log container identity is unavailable.");
+    }
+    return count;
   }
 
   private runtimePodStatus(

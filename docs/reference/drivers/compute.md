@@ -217,8 +217,12 @@ candidate in one transaction. After restart it resumes cleanup.
 Diagnostics read the requested revision without changing its deployment or running
 another model probe. OCC accepts up to 32 checks and validates timestamps and
 state. With platform logging, OCC applies its [Harness logging policy](../harness-execution.md#runtime-logging).
-The Driver rechecks workload ownership before each read. For a cluster `403`,
-raise `RuntimeLogsForbiddenByClusterError`. OCC redacts
+The Driver rechecks workload ownership before each read and reports the stream
+identity observed after the read. OCC rejects invalid container stream metadata
+and withholds the chunk's content when the observed Pod UID or restart count
+differs from the selected instance. Such a change produces a `stream_replaced`
+gap. See the [runtime log flow](../../flows/agent-runtime-logs.md#3-read-one-page).
+For a cluster `403`, raise `RuntimeLogsForbiddenByClusterError`. OCC redacts
 and limits each response to 512 KiB. A Driver-managed collector must supply its own
 access control, redaction, and delivery guarantees. With Driver-owned logging, OCC preserves
 the validated native settings and both runtime-description and log routes return

@@ -244,28 +244,41 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   if (decoded?.status === "expired") {
     leading.push(runtimeLogGap("cursor_expired", stream));
   }
+  const continuesView =
+    prior !== undefined && prior.pod === pod.name && prior.container === pod.container;
   const sameStream =
-    prior !== undefined &&
-    prior.pod === pod.name &&
-    prior.container === pod.container &&
-    prior.podUid === pod.uid &&
-    prior.restartCount === pod.restartCount;
+    continuesView && prior.podUid === pod.uid && prior.restartCount === pod.restartCount;
   if (prior !== undefined && !sameStream) {
     leading.push(runtimeLogGap("stream_replaced", stream));
   }
+  const priorWindow = prior?.containerWindow;
+  // An empty checkpoint without a baseline count is a request awaiting its first
+  // identity-verified read. Reuse its original duration, even after another race.
+  const pendingWindow =
+    continuesView &&
+    prior.lastTime === null &&
+    priorWindow?.seen === 0 &&
+    !priorWindow.truncated &&
+    priorWindow.baseTime === null &&
+    priorWindow.baseCount === undefined;
+  let requestedSeconds = query.sinceSeconds;
+  if (pendingWindow) {
+    requestedSeconds =
+      priorWindow.sinceTime === null
+        ? undefined
+        : (prior.issuedAt - Date.parse(priorWindow.sinceTime)) / 1000;
+  }
   const resume = sameStream && prior.lastTime !== null ? prior : undefined;
-  const checkpoint = sameStream ? prior.containerWindow : undefined;
+  const checkpoint = sameStream && !pendingWindow ? priorWindow : undefined;
   // A view that has delivered no line yet (a quiet container, or an empty
   // `sinceSeconds` window) continues from its previous page, not from the whole tail:
   // cursor polls need not repeat `sinceSeconds`, and a cursor reads newer lines only.
   // The bound starts at the previous read, not the end of its page: the cursor's
   // `issuedAt` is taken before the Driver read.
-  const quiet = sameStream && prior.lastTime === null ? prior : undefined;
+  const quiet = sameStream && !pendingWindow && prior.lastTime === null ? prior : undefined;
   // A view is audited once, before its first Driver read. Cursor polls inside a
   // view are not re-audited; an expired cursor starts a new view, and so does a
   // cursor whose Pod is gone (the audit row names the Pod that is read).
-  const continuesView =
-    prior !== undefined && prior.pod === pod.name && prior.container === pod.container;
   const viewId = continuesView ? prior.viewId : newRuntimeLogViewId();
   if (!continuesView) {
     await input.admitView({
@@ -295,15 +308,9 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
         ? secondsSince(Date.parse(resume.lastTime!))
         : quiet !== undefined
           ? secondsSince(quiet.issuedAt)
-          : query.sinceSeconds;
+          : requestedSeconds;
   const readStartedAt = now();
-  let windowSinceTime =
-    checkpoint !== undefined
-      ? checkpoint.sinceTime
-      : sinceSeconds === undefined
-        ? null
-        : new Date(readStartedAt - sinceSeconds * 1000).toISOString();
-  const chunk = validChunk(
+  const received = validChunk(
     await input.readLogs({
       source: sourceId,
       pod: pod.name,
@@ -317,29 +324,40 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     }),
     sourceId,
   );
-  const observedStream: RuntimeLogStream = {
-    source: sourceId,
-    pod: pod.name,
-    podUid:
-      typeof chunk.stream.podUid === "string" && /^[A-Za-z0-9-]{1,64}$/.test(chunk.stream.podUid)
-        ? chunk.stream.podUid
-        : pod.uid,
-    container: pod.container,
-    restartCount:
-      Number.isSafeInteger(chunk.stream.restartCount) && chunk.stream.restartCount! >= 0
-        ? chunk.stream.restartCount!
-        : pod.restartCount,
-  };
-  // The Driver re-reads the Pod after the log read; a changed instance means the
-  // lines may span two containers.
-  const replacedDuringRead =
-    observedStream.podUid !== pod.uid || observedStream.restartCount !== pod.restartCount;
+  const { podUid, restartCount } = received.stream;
+  if (
+    received.stream.pod !== pod.name ||
+    received.stream.container !== pod.container ||
+    typeof podUid !== "string" ||
+    !/^[A-Za-z0-9-]{1,64}$/.test(podUid) ||
+    typeof restartCount !== "number" ||
+    !Number.isSafeInteger(restartCount) ||
+    restartCount < 0
+  ) {
+    throw new RuntimeLogReadError("invalid_chunk");
+  }
+  const observedStream: RuntimeLogStream = { ...stream, podUid, restartCount };
+  const replacedDuringRead = podUid !== pod.uid || restartCount !== pod.restartCount;
+  // A gap cannot make bytes from an unproved instance safe to disclose. Keep the
+  // observed identity, but do not sanitize, hash, or return any of those bytes.
+  const chunk: AgentRuntimeLogChunk = replacedDuringRead
+    ? { ...received, lines: [], truncated: false }
+    : received;
   if (
     replacedDuringRead &&
     !leading.some((record) => record.type === "gap" && record.reason === "stream_replaced")
   ) {
     leading.push(runtimeLogGap("stream_replaced", observedStream));
   }
+  // A discarded read made no progress on the new instance. Checkpoint the empty
+  // prefix of its requested window, without carrying a time bound from the old stream.
+  const windowSeconds = replacedDuringRead ? requestedSeconds : sinceSeconds;
+  let windowSinceTime =
+    checkpoint !== undefined && !replacedDuringRead
+      ? checkpoint.sinceTime
+      : windowSeconds === undefined
+        ? null
+        : new Date(readStartedAt - windowSeconds * 1000).toISOString();
   // The byte limit cuts the final line; a partial line may end inside a token.
   const fetchedLines = chunk.truncated ? chunk.lines.slice(0, -1) : chunk.lines;
   // Relative seconds can round the next read outward. Canonicalize the observed
@@ -589,10 +607,12 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     // prefixes resume through their delivered time after draining, disclosing the reset.
     const retainCheckpoint =
       !skipStalled &&
-      (pageCut ||
-        (checkpoint !== undefined &&
+      (replacedDuringRead ||
+        pageCut ||
+        ((checkpoint !== undefined || pendingWindow) &&
           (!chunk.truncated || untimedPrefix) &&
-          (eligible.some(({ line }) => line.time === null) || lines.length === 0)));
+          (eligible.some(({ line }) => line.time === null) ||
+            (checkpoint !== undefined && lines.length === 0))));
     const prefix = completeLines.slice(0, prefixEnd);
     const ordered = orderedTimedLines(prefix);
     // Uncertain chronology also applies when BEGIN is first observed in this page.
@@ -755,7 +775,9 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
               baseHashes: dedupResume?.lastHashes.slice(-RUNTIME_LOG_MAX_FRONTIER_HASHES) ?? [],
               baseComplete: dedupResume?.frontierComplete === true,
               basePositional: positional,
-              ...(dedupResumeCount === undefined ? {} : { baseCount: dedupResumeCount }),
+              ...(!replacedDuringRead && dedupResumeCount !== undefined
+                ? { baseCount: dedupResumeCount }
+                : {}),
             },
           }
         : {}),

@@ -19,6 +19,7 @@ import {
   pollReader,
   syntheticPemTail,
 } from "../helpers/runtime-logs-content.ts";
+import type { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import { registerContainerCheckpointRecoveryCases } from "./runtime-logs-container-checkpoint-recovery-cases.ts";
 import {
   boundedPage,
@@ -44,6 +45,7 @@ type WalkProgress = Readonly<{
 }>;
 type WalkOptions = {
   tailLines: number;
+  previous?: boolean;
   cursor?: string | null;
   message?: string;
   onPage?: (response: WireResponse, page: number, progress: WalkProgress) => void | Promise<void>;
@@ -58,7 +60,7 @@ async function walkPages(route: LogRoute, options: WalkOptions) {
   while (progress.pages < 10) {
     const response = await boundedPage(
       route,
-      { tailLines: options.tailLines, cursor: progress.cursor },
+      { tailLines: options.tailLines, previous: options.previous, cursor: progress.cursor },
       options.message,
     );
     const page = progress.pages;
@@ -574,38 +576,203 @@ test("container changed byte-windows keep PEM masking conservative", async () =>
   assertTailMasked(carried.data);
 });
 
-test("container byte-window baselines reset when the Driver observes an instance change during read", async () => {
-  for (const changed of ["uid", "restart"]) {
-    const route = await logsRoute({ label: "container-window-reread" });
-    const { state } = route;
-    const time = recently();
-    state.lines = [
-      {
-        time: iso(Date.parse(time) + 100),
-        raw: JSON.stringify({ level: "info", message: "prior instance" }),
+// Apply the relative window against the backend clock on every read.
+function relativeBackendWindow(skew: number) {
+  return (underlying: ReturnType<typeof createRuntimeLogComputeDriver>): typeof underlying => {
+    assert.ok(underlying.readAgentRuntimeLogs);
+    const read = underlying.readAgentRuntimeLogs.bind(underlying);
+    return {
+      ...underlying,
+      async readAgentRuntimeLogs(binding, request) {
+        const chunk = await read(binding, request);
+        if (request.sinceSeconds === undefined) {
+          return chunk;
+        }
+        const floor = Date.now() - skew - request.sinceSeconds * 1000;
+        return {
+          ...chunk,
+          lines: chunk.lines.filter(({ time }) => time === null || Date.parse(time) >= floor),
+        };
       },
-    ];
-    const initial = await readPage(route, { tailLines: 60 });
-    state.lines = wireContainerRows(time);
-    if (changed === "uid") {
-      state.readPodUid = randomUUID();
-    } else {
-      state.readRestartCount = 1;
+    };
+  };
+}
+
+test("container byte-window baselines reset when the Driver observes an instance change during read", async (t) => {
+  freezeClock(t);
+  const syntheticPassword = "synthetic-window-password";
+  const outsideWindow = "outside initial window";
+  for (const previous of [false, true]) {
+    for (const changed of ["uid", "restart"]) {
+      for (const skew of [0, 2000]) {
+        const scenario = `${previous ? "previous" : "current"} container, changed ${changed}`;
+        await t.test(skew === 0 ? scenario : `${scenario}, backend clock behind`, async () => {
+          const now = Date.now();
+          const route = await logsRoute({
+            label: "container-window-reread",
+            state: { restartCount: 1 },
+            wrap: relativeBackendWindow(skew),
+          });
+          // All fixture rows fit the Driver tail, so the time filter decides which it returns.
+          const tailLines = 61;
+          const { state } = route;
+          let cursor: string | undefined;
+          if (!previous && skew === 0) {
+            state.lines = [{ time: iso(now - 4000), raw: gatewayJson("prior instance") }];
+            const initial = await readPage(route, { tailLines, previous });
+            assert.deepEqual(messages(initial.data), ["prior instance"]);
+            assert.ok(initial.data.cursor);
+            cursor = initial.data.cursor;
+          }
+          // The older row qualifies only when the continuation adds overlap.
+          const time = iso(now - (skew === 0 ? 5500 : 11000));
+          const workload = wireContainerRows(time);
+          workload[59] = {
+            time,
+            raw: gatewayJson(
+              wireContainerMessage(59).replace(
+                "diagnostic",
+                `diagnostic --db-password ${syntheticPassword}`,
+              ),
+            ),
+          };
+          const explicitWindow = previous || skew !== 0;
+          if (explicitWindow) {
+            workload.unshift({
+              time: iso(now - (skew === 0 ? 11000 : 12050)),
+              raw: gatewayJson(outsideWindow),
+            });
+          }
+          if (previous) {
+            state.previousLines = workload;
+          } else {
+            state.lines = workload;
+          }
+          state.readPodUid = changed === "uid" ? randomUUID() : state.podUid;
+          state.readRestartCount = state.restartCount + (changed === "restart" ? 1 : 0);
+          const replaced = await boundedPage(route, {
+            tailLines,
+            previous,
+            cursor,
+            sinceSeconds: explicitWindow ? 10 : undefined,
+          });
+          assert.equal(gapCount(replaced.data, "stream_replaced"), 1);
+          assert.equal(
+            replaced.data.records.length,
+            1,
+            "a replaced read must disclose only its gap",
+          );
+          assert.equal(replaced.data.withheld, 0);
+          assert.equal(replaced.data.truncated, false);
+          assert.ok(replaced.data.cursor);
+          // Both observations now agree on the new instance. Read its requested window.
+          t.mock.timers.tick(400);
+          state.podUid = state.readPodUid;
+          state.restartCount = state.readRestartCount;
+          delete state.readPodUid;
+          delete state.readRestartCount;
+          const { rows, lines, pages } = await drain(route, {
+            tailLines,
+            previous,
+            cursor: replaced.data.cursor,
+            onPage(response, page) {
+              assert.equal(gapCount(response.data, "stream_replaced"), 0);
+              assert.equal(gapCount(response.data, "window_exceeded"), 0);
+              assert.ok(!response.text.includes(outsideWindow));
+              assert.ok(!response.text.includes(syntheticPassword));
+              advances(response);
+              if (page === 0) {
+                t.mock.timers.tick(400);
+              }
+            },
+          });
+          assert.deepEqual(rows, range(60), "resume must deliver exactly the requested window");
+          assert.ok(pages > 1, "the unchanged instance still needs multiple byte-bounded pages");
+          assert.match(
+            lines.at(-1)?.message ?? "",
+            /^row=59; diagnostic --db-password \[redacted:key-value\]/,
+          );
+        });
+      }
     }
-    const replaced = await readPage(route, { tailLines: 60, cursor: initial.data.cursor });
-    assert.equal(replaced.data.truncated, true);
-    assert.ok(gapCount(replaced.data, "stream_replaced") > 0);
-    if (changed === "uid") {
-      assert.ok(state.readPodUid);
-      state.podUid = state.readPodUid;
-    } else {
-      assert.ok(state.readRestartCount !== undefined);
-      state.restartCount = state.readRestartCount;
-    }
-    const rest = await readPage(route, { tailLines: 60, cursor: replaced.data.cursor });
-    assert.equal(rest.status, 200);
-    assert.deepEqual([...rowIds(replaced.data), ...rowIds(rest.data)], range(60));
   }
+});
+
+test("container repeated read replacements preserve the requested window and untimed progress", async (t) => {
+  freezeClock(t);
+  const route = await logsRoute({
+    label: "container-window-repeat-replacement",
+    wrap: relativeBackendWindow(2000),
+  });
+  const { state } = route;
+  const tailLines = 2;
+  // The older timed row would qualify if the repeated race widened the window.
+  state.lines = [
+    { time: iso(Date.now() - 12050), raw: gatewayJson("outside recovered window") },
+    { time: null, raw: gatewayJson("ready --db-password synthetic-repeat-password") },
+  ];
+  state.readPodUid = randomUUID();
+  const first = await boundedPage(route, { tailLines, sinceSeconds: 10 });
+  assert.equal(gapCount(first.data, "stream_replaced"), 1);
+  assert.equal(first.data.records.length, 1);
+  assert.ok(first.data.cursor);
+
+  // Discovery is still stale. The second gap must carry the same request.
+  t.mock.timers.tick(400);
+  state.readPodUid = randomUUID();
+  const second = await boundedPage(route, { tailLines, cursor: first.data.cursor });
+  assert.equal(gapCount(second.data, "stream_replaced"), 1);
+  assert.equal(second.data.records.length, 1);
+  assert.ok(second.data.cursor);
+
+  t.mock.timers.tick(400);
+  state.podUid = state.readPodUid;
+  delete state.readPodUid;
+  const safe = await boundedPage(route, { tailLines, cursor: second.data.cursor });
+  assert.deepEqual(messages(safe.data), ["ready --db-password [redacted:key-value]"]);
+  assert.equal(gapCount(safe.data, "window_exceeded"), 0);
+  assert.equal(gapCount(safe.data, "stream_replaced"), 0);
+  assert.equal(safe.data.truncated, false);
+  assert.ok(safe.data.cursor);
+  const replay = await boundedPage(route, { tailLines, cursor: safe.data.cursor });
+  assert.deepEqual(replay.data.records, []);
+  assert.equal(
+    route.fixture.auditSink.events.filter(
+      ({ action }) => action === "openclaw.agents.runtime_logs.view",
+    ).length,
+    1,
+  );
+});
+
+test("container empty safe replacement pages continue as quiet views", async (t) => {
+  freezeClock(t);
+  const now = Date.now();
+  const route = await logsRoute({
+    label: "container-window-empty-replacement",
+    wrap: relativeBackendWindow(2000),
+  });
+  const { state } = route;
+  const tailLines = 10;
+  state.readRestartCount = state.restartCount + 1;
+  const replaced = await boundedPage(route, { tailLines, sinceSeconds: 10 });
+  assert.equal(gapCount(replaced.data, "stream_replaced"), 1);
+  assert.ok(replaced.data.cursor);
+  t.mock.timers.tick(400);
+  state.restartCount = state.readRestartCount;
+  delete state.readRestartCount;
+  const empty = await boundedPage(route, { tailLines, cursor: replaced.data.cursor });
+  assert.deepEqual(empty.data.records, []);
+  assert.equal(empty.data.truncated, false);
+  assert.ok(empty.data.cursor);
+
+  // The quiet poll should get new logs without reopening the whole initial window.
+  t.mock.timers.tick(400);
+  state.lines = [
+    { time: iso(now - 8000), raw: gatewayJson("older than quiet poll") },
+    { time: iso(now - 1600), raw: gatewayJson("new backend row") },
+  ];
+  const next = await boundedPage(route, { tailLines, cursor: empty.data.cursor });
+  assert.deepEqual(messages(next.data), ["new backend row"]);
 });
 
 test("container expanded byte-windows preserve valid conservative PEM cursors", async () => {
@@ -705,24 +872,7 @@ test("container checkpoint windows remain stable when relative seconds round out
   for (const skew of [0, 2000]) {
     const route = await logsRoute({
       label: "container-relative-window",
-      wrap: (underlying) => {
-        assert.ok(underlying.readAgentRuntimeLogs);
-        const read = underlying.readAgentRuntimeLogs.bind(underlying);
-        return {
-          ...underlying,
-          async readAgentRuntimeLogs(binding, request) {
-            const chunk = await read(binding, request);
-            if (request.sinceSeconds === undefined) {
-              return chunk;
-            }
-            const floor = Date.now() - skew - request.sinceSeconds * 1000;
-            return {
-              ...chunk,
-              lines: chunk.lines.filter(({ time }) => time === null || Date.parse(time) >= floor),
-            };
-          },
-        };
-      },
+      wrap: relativeBackendWindow(skew),
     });
     const now = Date.now();
     const rows = wireContainerRows(iso(now - (skew === 0 ? 1000 : 11000)));

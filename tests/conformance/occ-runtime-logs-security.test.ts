@@ -19,11 +19,18 @@ import {
   AgentRuntimeLogPageSchema,
   type AgentRuntimeLogPageWire,
 } from "../../packages/contracts/src/api/resources.ts";
-import type { Permission } from "../../packages/contracts/src/index.ts";
+import type {
+  ComputeAgentRevisionBinding,
+  ComputeDriver,
+  Permission,
+} from "../../packages/contracts/src/index.ts";
 import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
 import { denialsDuring } from "../helpers/console-audit-denials.ts";
 import { callerDenied, POLICY_RECOMMENDATIONS_NO_SANDBOX } from "../helpers/refusal-text.mjs";
 import { runtimeLogSourceUnavailable } from "../helpers/refusal-configuration-runtime.ts";
+import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
+import { options, routedOptions } from "../helpers/kubernetes-routed-options.ts";
+import { createRuntimeLogDriverFixture } from "./kubernetes-runtime-log-fixture.ts";
 import {
   administerGrants,
   createProviderSandboxDriver,
@@ -134,6 +141,88 @@ function driverReads(fixture: { computeDriver: Compute }) {
   return fixture.computeDriver.calls.filter(
     (call): call is Extract<ComputeCall, { operation: "read" }> => call.operation === "read",
   );
+}
+
+async function assertKubernetesRuntimeLogIdentity() {
+  const build = {
+    kubeconfigPath: conformanceKubeconfig.kubeconfigPath,
+    contextName: conformanceKubeconfig.context,
+    twoCluster: false,
+    options,
+    routedOptions,
+  };
+  const selection = createRuntimeLogDriverFixture(build).binding.revision.compute;
+  type KubernetesFixture = ReturnType<typeof createRuntimeLogDriverFixture>;
+  let current: KubernetesFixture | undefined;
+  let afterLogRead: KubernetesFixture["state"]["afterLogRead"];
+  const marker = "replacement workload operational output";
+  const runtime = (binding: ComputeAgentRevisionBinding) => {
+    if (current === undefined) {
+      current = createRuntimeLogDriverFixture({ ...build, binding });
+      if (afterLogRead !== undefined) {
+        current.state.afterLogRead = afterLogRead;
+      }
+      current.state.logs.gateway = `2026-09-30T12:00:00Z ${marker}\n`;
+    }
+    return current;
+  };
+  const observed = () => {
+    assert.ok(current);
+    return current;
+  };
+  // Lifecycle setup is in-memory. Runtime observations use the actual Kubernetes
+  // Driver with the API-created revision binding; only Kubernetes replies are fixtures.
+  const computeDriver: ComputeDriver = {
+    ...createRuntimeLogComputeDriver({ id: selection.id }),
+    implementation: selection.implementation,
+    describeAgentRuntime: (binding, signal, describeOptions) =>
+      runtime(binding).describeAgentRuntime(signal, describeOptions),
+    readAgentRuntimeLogs: (binding, request) => runtime(binding).readAgentRuntimeLogs(request),
+  };
+  const fixture = await createRuntimeLogFixture({ computeDriver });
+  for (afterLogRead of [
+    "foreign-pod",
+    "missing-pod",
+    "missing-uid",
+    "missing-restart-count",
+    "undeclared-container",
+    "owned-pod",
+    undefined,
+  ] as const) {
+    const target = await fixture.deployAgent(`Kubernetes log ${afterLogRead ?? "unchanged"}`);
+    for (const download of [false, true]) {
+      current = undefined;
+      const response = await fixture.request(
+        "GET",
+        target.logsPath(`source=gateway${download ? "&download=true" : ""}`),
+      );
+      assert.equal(
+        observed().calls.filter((entry) => entry.call === "readNamespacedPodLog").length,
+        1,
+        "the request must reach the production Kubernetes log reader",
+      );
+      if (afterLogRead === undefined) {
+        assert.equal(response.status, 200, response.text);
+        assert.ok(response.text.includes(marker));
+      } else {
+        assert.equal(response.text.includes(marker), false, String(afterLogRead));
+        if (afterLogRead === "owned-pod") {
+          assert.equal(response.status, 200, response.text);
+          assert.ok(response.text.includes("stream_replaced"));
+        } else {
+          apiError(response, 503, "RUNTIME_LOGS_UNAVAILABLE");
+        }
+      }
+    }
+  }
+  current = undefined;
+  const target = await fixture.deployAgent("Kubernetes declared container");
+  const undeclared = await fixture.request(
+    "GET",
+    target.logsPath("source=gateway&container=agent"),
+  );
+  assert.equal(undeclared.status, 400);
+  assert.equal(observed().calls.some((entry) => entry.call === "readNamespacedPodLog"), false);
 }
 
 test("runtime status and log reads enforce their permission tiers before any Driver call", async () => {
@@ -922,6 +1011,39 @@ test("runtime log failures are fixed, content-free and never read after an audit
   fixture.computeDriver.state.extraPods = [{ name: "Not A Pod!", uid: "x" }];
   const hostile = await fixture.request("GET", target.runtimePath);
   apiError(hostile, 503, "RUNTIME_LOGS_UNAVAILABLE");
+
+  // The same raw operational text is visible for an unchanged instance. Neither
+  // a valid changed identity nor malformed identity may release it through HTTP.
+  const state = fixture.computeDriver.state;
+  state.extraPods = [];
+  const identityTarget = await fixture.deployAgent("Runtime log identity");
+  const unchanged = await fixture.request("GET", identityTarget.logsPath());
+  assert.deepEqual(lineMessages(logPage(unchanged).records), [refusedContent]);
+  for (const identity of ["uid", "restart", "invalid-uid", "invalid-restart"] as const) {
+    delete state.readPodUid;
+    delete state.readRestartCount;
+    if (identity === "uid" || identity === "invalid-uid") {
+      state.readPodUid = identity === "uid" ? randomUUID() : "";
+    } else {
+      state.readRestartCount = identity === "restart" ? state.restartCount + 1 : -1;
+    }
+    for (const download of [false, true]) {
+      const response = await fixture.request(
+        "GET",
+        identityTarget.logsPath(`source=gateway${download ? "&download=true" : ""}`),
+      );
+      assertSensitiveValuesAbsent(response.text, download ? "runtimeDownload" : "runtimePage", {
+        REFUSED_CONTENT: refusedContent,
+      });
+      if (identity === "invalid-uid" || identity === "invalid-restart") {
+        apiError(response, 503, "RUNTIME_LOGS_UNAVAILABLE");
+      } else {
+        assert.equal(response.status, 200, response.text);
+        assert.ok(response.text.includes("stream_replaced"));
+      }
+    }
+  }
+  await assertKubernetesRuntimeLogIdentity();
 });
 
 // This embedded Agent revision has neither a Sandbox Driver nor a dedicated Agent container.

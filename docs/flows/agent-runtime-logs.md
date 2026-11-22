@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-11-20
-last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
+updated: 2026-11-22
+last_updated_session: authoring-run/9d322b49-797c-4910-bda7-a75a0eaba70a
 ---
 
 # Agent runtime logs flow
@@ -107,7 +107,13 @@ Agent, version and source (`runtime-logs/cursor.ts`). Select a listed Pod and ma
 init `container`. A different stream, missing or expired cursor (one hour),
 or departed Pod starts a new view. First record the admitting action in the `openclaw.agents.runtime_logs.view`
 access audit. The Driver rechecks Pod ownership and the declared container, then calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
-`previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. A never-started
+`previous`, a 1 MiB `limitBytes` and timestamps. After this name-addressed read,
+Kubernetes Compute requires a fresh revision-owned Pod, its UID, the declared
+container and an observed restart count. Missing identity evidence fails the read
+without content. A changed UID or restart count discards the fetched lines.
+OCC also rejects invalid stream metadata or a different Pod name or container.
+For a valid changed instance, OCC returns a `stream_replaced` gap without the
+chunk's lines; unchanged-instance lines continue through the normal pipeline. A never-started
 container's exact kubelet `400` waiting-to-start Status (`PodInitializing`,
 `ContainerCreating`) yields an empty page; logs are read first, so stale
 status cannot hide output. Other failures keep their mapping.
@@ -259,6 +265,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 11:17: Withhold container log bytes when post-read workload identity is missing or changed. (authoring-run/9d322b49-797c-4910-bda7-a75a0eaba70a - effdc1086231ba457bf519cb2bf45e07e840d17f)
 
 - 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 

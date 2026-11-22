@@ -203,5 +203,47 @@ test(
         ["authorization_denial", "denied"],
       ],
     );
+
+    // The production Fastify route must withhold an entire chunk whose reported
+    // instance changed during the read, even when its text passes the classifier.
+    const isolated = await deployAgent("Runtime log identity");
+    const isolatedLogs = `/namespaces/${isolated.namespace.id}/agents/${isolated.agent.id}/deployments/${isolated.revision.id}/runtime/logs?source=gateway`;
+    const marker = "replacement runtime operational output";
+    computeDriver.state.lines = [{ time: "2026-09-30T12:00:03Z", raw: marker }];
+    const stable = await inject("GET", isolatedLogs);
+    assert.equal(stable.statusCode, 200, stable.body);
+    assert.ok(stable.body.includes(marker));
+    for (const identity of ["uid", "restart", "unavailable"] as const) {
+      delete computeDriver.state.readPodUid;
+      delete computeDriver.state.readRestartCount;
+      if (identity === "restart") {
+        computeDriver.state.readRestartCount = computeDriver.state.restartCount + 1;
+      } else {
+        computeDriver.state.readPodUid = identity === "uid" ? randomUUID() : "";
+      }
+      for (const download of [false, true]) {
+        const response = await inject(
+          "GET",
+          `${isolatedLogs}${download ? "&download=true" : ""}`,
+        );
+        assert.equal(response.body.includes(marker), false, identity);
+        if (identity === "unavailable") {
+          assertApiError(response, 503, "RUNTIME_LOGS_UNAVAILABLE");
+        } else {
+          assert.equal(response.statusCode, 200, response.body);
+          assert.ok(response.body.includes("stream_replaced"));
+        }
+      }
+    }
+    const identityAudits = await pool.query<RuntimeLogAuditRow>(
+      `SELECT kind, actor_id, outcome, details FROM occ.audit_events
+       WHERE resource_id = $1 AND action LIKE 'openclaw.agents.runtime_logs.%'`,
+      [isolated.agent.id],
+    );
+    assert.equal(identityAudits.rowCount, 7);
+    assert.ok(
+      identityAudits.rows.every((row) => row.kind === "access" && row.outcome === "success"),
+    );
+    assert.equal(JSON.stringify(identityAudits.rows).includes(marker), false);
   },
 );
