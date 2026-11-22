@@ -8,7 +8,7 @@ author: freeqaz-openai
 
 - **ID:** RFC-20261119-repository-network-policy
 - **Created:** 2026-11-19
-- **Last updated:** 2026-11-20
+- **Last updated:** 2026-11-22, [personal access token amendment](#personal-access-token-amendment-2026-11-22-proposed) proposed.
 - **RFC PR:** [#6531](https://github.com/openclaw/openclaw-enterprise/pull/6531), originally submitted under RFC-0017.
 - **Related:** [Agent egress](0017-agent-egress-0x/index.md), [Driver configuration](0022-driver-configuration-contributions.md), [repository credentials](../../docs/reference/repository-credentials.md).
 
@@ -200,3 +200,59 @@ Develop Git and REST in parallel. Require installed AC-1–AC-5 for native Git a
 ## Rationale and alternatives
 
 Token permissions alone cannot express different network grants for Agents sharing installation coverage. A CLI wrapper leaves other clients unconstrained. A per-request Worker authorizer could enforce Git policy, but it adds an online dependency the native OpenShell matcher does not need. REST PR body restrictions still require a trusted validator.
+
+## Personal access token amendment (2026-11-22, proposed)
+
+Proposed in [issue #6993](https://github.com/openclaw/openclaw-enterprise/issues/6993). An Installation without a GitHub App cannot give an Agent repository access: the [registry](../../apps/controller/src/drivers/repo/github/access/registry.ts) requires `appId` and `githubInstallationId`, and the only static token path for Git is the [development-only backend](../../docs/reference/repository-credentials/development-token.md). This amendment admits one fine-grained personal access token per Installation as the credential behind native Git. It changes only the credential source; rules, bindings, readback and withdrawal remain as above. It depends on native Git delivery ([#6533](https://github.com/openclaw/openclaw-enterprise/pull/6533)). REST, GraphQL and draft PR grants remain App-only.
+
+### Source and scope
+
+- **Source.** One fine-grained token (prefix `github_pat_`) in an Installation-private Secret that only the Worker reads, as for the App key. The Worker classifies the value by prefix on every read and refuses every other class, including classic tokens. OCE makes no GitHub call to register it. The Installation operator registers, replaces and retires it through Installation configuration and the Secret store. No API reads or returns the value.
+- **Scope.** The Installation's `repositoryNetworkPolicyCeiling` is the source's explicit list of repositories and access. Effective access is that list, intersected with the Namespace's `github-repository` registration that selects `nativeGit: "v1"` and its `contents` permission, intersected with the Agent's saved list. OpenShell enforces the result per repository path and Git service. GitHub alone enforces the token's own repository selection and permissions, which may be wider or narrower. When they are narrower, GitHub refuses the forwarded request and Git reports GitHub's error.
+- **One authority per Installation.** A registry names either the App or the token. No repository is served by both, so no precedence rule is needed.
+
+### Custody, replacement and withdrawal
+
+- **Custody.** The value moves from the Secret to Worker memory to the endpointless Provider. It never enters the workload's environment, files or Git config; the workload sees the Provider's stable placeholder.
+- **Loan.** Each delivery is a loan that ends within one hour, the Provider's existing limit, and is renewed. The loan end is the custody `usableUntil` and the Provider's credential expiration time. The issuer never reports a provider expiry for a token, and status and documentation say that the loan ends, not that the token expires. The loan bounds OCE's delivery, not GitHub's acceptance of the token.
+- **Replace.** Each renewal reads the Secret's current version, as the App lifecycle does for its key. A replaced value reaches running Agents at the next renewal, within one loan, without a redeploy. The operator revokes the old token at GitHub afterward.
+- **Withdraw.** Narrowing an Agent's list follows **Withdraw** above: redeploy, verify the new policy by readback, and complete once the old Sandbox and its credential have retired. Removing every repository requires Stop until the OpenShell path can keep an Agent running without Git, as the prepared route does after [#6898](https://github.com/openclaw/openclaw-enterprise/pull/6898).
+- **Retire.** Withdraw the source's Agents, then remove the source. A revision whose source was removed receives no renewal, so its loan lapses within an hour; Stop retires it as lost authority. OCE cannot revoke a token at GitHub. Withdrawal replies and documentation state this.
+
+### Refusals
+
+Registry load refuses a token source with any registration lacking `nativeGit: "v1"`, a profile other than `github-repository`, `installationAccess`, standing approvals, `pushRefAllowlist`, `transport`, draft PR options, scoped REST or GraphQL. Each needs enforcement the network policy cannot provide for a token. A loan with the wrong token class fails with a named diagnostic, and deployment waits for credential material as it does for an unreadable App key.
+
+### Attribution and audit
+
+GitHub attributes commits, pushes and its audit entries to the token's owner, not an App. OCE records each loan, renewal and withdrawal with the source, Secret reference and version, Namespace, Agent, revision, repositories and times. It never records the value or a digest of it.
+
+### Interface changes for this amendment
+
+- **APIs and IAM:** No changes.
+- **Database entities:** None intended. If native material custody needs a row without a provider expiry, that migration is a separate decision.
+- **Driver contracts:** The Repo Driver registry gains the token authority. The prepared-token contract gains a static token kind without a provider expiry. The Sandbox rule compiler and the Credential Proxy accept the token's Provider in place of the installation Provider.
+
+### Decisions for review
+
+Each decision is independent.
+
+1. Admit a fine-grained token as a supported production source for native Git.
+2. Choose the registry shape. Recommended: a discriminator that replaces the App fields and keeps authority and grants in one fingerprinted document.
+
+   ```json
+   "authority": { "kind": "github-token", "tokenSecret": "repository-token" }
+   ```
+
+   Alternative: an Installation setting beside the App key reference, with the registry's App fields absent. It keeps the Secret name out of the shared registry but splits the authority across two documents.
+
+   ```json
+   "repositoryCredentials": { "tokenSecretName": "repository-token" }
+   ```
+
+3. Require no database migration.
+4. Add `github_static_token` to the prepared-token kinds.
+
+### Acceptance criteria for this amendment
+
+- **AC-8 (G1, G2).** On a saved Agent whose Installation uses a fine-grained token source, repeat AC-1 and AC-2 for Git. Search the workload's environment, files, Git config and process arguments for the token by digest and find none. Replace the Secret value; verify that the next renewal delivers it without a redeploy and that the origin observes the new value. Narrow the list; verify denial before forwarding, Provider readback and the Agent still running. Verify refusal of a classic token and of each refused registry option.
