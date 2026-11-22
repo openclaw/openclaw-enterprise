@@ -15,9 +15,15 @@ import {
 // verifies the complete profile, not just this name. Keep the installed observation schema and
 // existing narrow names; an installation recipient must agree with this distinct profile family.
 export const openShellInstallationGitProviderPrefix = "oce-github-installation-";
+/** The token source's endpointless Provider: the same profile family, a distinct credential. */
+export const openShellTokenGitProviderPrefix = "oce-github-token-";
 export const openShellGitDeliveryTransport = "openshell-repository-git/v1";
 const observedInstallationProfile =
-  "r.observed->>'provider' ~ '^" + openShellInstallationGitProviderPrefix + "[0-9a-f]{32}$'";
+  "r.observed->>'provider' ~ '^(" +
+  openShellInstallationGitProviderPrefix +
+  "|" +
+  openShellTokenGitProviderPrefix +
+  ")[0-9a-f]{32}$'";
 
 // The preview correlates a denial at the held launcher with the authenticated callback.
 // It cannot prove an operator will retain that hook. Strict senders never accept this branch.

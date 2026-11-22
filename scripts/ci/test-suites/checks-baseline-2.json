@@ -123,6 +123,7 @@
     "tests/conformance/repository-sessions-memory.test.ts",
     "tests/conformance/repository-credentials-github-token.test.ts",
     "tests/conformance/repository-credentials-registry.test.ts",
+    "tests/conformance/github-token-source.test.ts",
     "tests/integration/ci-openshell-preparation.test.ts",
     "tests/integration/ci-openshell.test.ts",
     "tests/conformance/repository-credentials-sessions.test.ts",
@@ -729,6 +730,9 @@
     },
     {
       "path": "tests/conformance/repository-credentials-registry.test.ts"
+    },
+    {
+      "path": "tests/conformance/github-token-source.test.ts"
     },
     {
       "path": "tests/conformance/repository-material-store.test.ts",

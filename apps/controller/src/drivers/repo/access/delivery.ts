@@ -4,14 +4,17 @@ import type { AdmittedRepositoryBinding, AgentRevision } from "@openclaw-enterpr
 export interface RepositoryGitDeliveryBinding {
   readonly binding: AdmittedRepositoryBinding;
   readonly delivery:
-    | {
+    | ({
         readonly scope: "github-repository";
         readonly repository?: never;
-        readonly installationId: string;
         readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
         readonly nativeGit?: "v1";
         readonly permissions: Readonly<Record<string, string>>;
-      }
+      } & (
+        | { readonly installationId: string; readonly tokenSource?: never }
+        /** The registry's token Secret name: native Git only, lent rather than issued. */
+        | { readonly installationId?: never; readonly tokenSource: string; readonly nativeGit: "v1" }
+      ))
     | { readonly repository: string; readonly installationId?: never }
     | { readonly repository?: never; readonly installationId: string };
   readonly repository?: {

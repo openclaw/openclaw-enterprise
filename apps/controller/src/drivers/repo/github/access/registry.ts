@@ -61,16 +61,50 @@ export interface GitHubInstallationAccess {
   }>[];
 }
 
-export interface GitHubRepositoryRegistry {
+/** A fine-grained token in an Installation-private Secret that only the Worker reads. */
+export interface GitHubTokenAuthority {
+  readonly kind: "github-token";
+  /** Kubernetes Secret name; never a value. */
+  readonly tokenSecret: string;
+}
+
+interface GitHubRepositoryRegistryFields {
   readonly version: 1;
   readonly backendId: string;
   readonly providerInstanceId: string;
-  readonly appId: string;
-  readonly githubInstallationId: string;
   readonly maximumDurationSeconds: number;
-  readonly allowStandingApprovals?: true;
   readonly repositories: readonly GitHubRepositoryRegistration[];
-  readonly installationAccess?: GitHubInstallationAccess;
+}
+
+/** One authority per registry: the GitHub App (no `authority`) or one token, never both. */
+export type GitHubRepositoryRegistry = GitHubRepositoryRegistryFields &
+  (
+    | {
+        readonly authority?: never;
+        readonly appId: string;
+        readonly githubInstallationId: string;
+        readonly allowStandingApprovals?: true;
+        readonly installationAccess?: GitHubInstallationAccess;
+      }
+    | {
+        readonly authority: GitHubTokenAuthority;
+        readonly appId?: never;
+        readonly githubInstallationId?: never;
+        readonly allowStandingApprovals?: never;
+        readonly installationAccess?: never;
+      }
+  );
+
+const secretNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// The network policy enforces Git paths only: a token registration grants nothing else.
+const tokenRegistrationPermissions = new Set(["metadata", "contents"]);
+
+function tokenAuthority(value: unknown): GitHubTokenAuthority {
+  const { kind, tokenSecret } = object(value, ["kind", "tokenSecret"]);
+  if (kind !== "github-token") {
+    return invalid();
+  }
+  return Object.freeze({ kind, tokenSecret: text(tokenSecret, secretNamePattern) });
 }
 
 const selectorPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -167,6 +201,7 @@ export function validateGitHubRepositoryRegistry(
     "version",
     "backendId",
     "providerInstanceId",
+    "authority",
     "appId",
     "githubInstallationId",
     "maximumDurationSeconds",
@@ -188,6 +223,15 @@ export function validateGitHubRepositoryRegistry(
     return invalid();
   }
   if (Object.hasOwn(root, "allowStandingApprovals") && root.allowStandingApprovals !== true) {
+    return invalid();
+  }
+  const authority = Object.hasOwn(root, "authority") ? tokenAuthority(root.authority) : undefined;
+  if (
+    authority &&
+    ["appId", "githubInstallationId", "allowStandingApprovals", "installationAccess"].some((key) =>
+      Object.hasOwn(root, key),
+    )
+  ) {
     return invalid();
   }
   const installationAccess = Object.hasOwn(root, "installationAccess")
@@ -281,6 +325,17 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
+      // A token authority admits only native Git with Git permissions; the network policy is its
+      // only scope, so every option it cannot enforce is refused here.
+      if (
+        authority &&
+        (!selected ||
+          policy.nativeGit !== "v1" ||
+          Object.hasOwn(policy, "allowStandingApproval") ||
+          Object.keys(permissions ?? {}).some((key) => !tokenRegistrationPermissions.has(key)))
+      ) {
+        return invalid();
+      }
       namespaceRows += 1;
       return Object.freeze({
         namespaceId: text(policy.namespaceId),
@@ -317,6 +372,16 @@ export function validateGitHubRepositoryRegistry(
   unique(repositories.map((entry) => entry.repositoryId));
   unique(repositories.map((entry) => entry.repository));
   repositories.sort((a, b) => a.repositoryRef.localeCompare(b.repositoryRef, "en"));
+  if (authority) {
+    return Object.freeze({
+      version: 1,
+      backendId,
+      providerInstanceId: text(root.providerInstanceId),
+      authority,
+      maximumDurationSeconds,
+      repositories: Object.freeze(repositories),
+    });
+  }
   return Object.freeze({
     version: 1,
     backendId,
@@ -395,8 +460,10 @@ function registryGrantId(
         version: registry.version,
         backendId: registry.backendId,
         providerInstanceId: registry.providerInstanceId,
-        appId: registry.appId,
-        githubInstallationId: registry.githubInstallationId,
+        // App registries keep their exact digest input; a token registry binds its authority.
+        ...(registry.authority
+          ? { authority: registry.authority }
+          : { appId: registry.appId, githubInstallationId: registry.githubInstallationId }),
         maximumDurationSeconds: registry.maximumDurationSeconds,
         ...fields,
       }),
@@ -412,7 +479,11 @@ export function resolveGitHubRepositoryBinding(
   const namespaceId = text(request.namespaceId);
   const repositoryRef = text(request.repositoryRef);
   const installation = registry.installationAccess;
-  if (installation && installation.repositoryRef === repositoryRef) {
+  if (
+    registry.authority === undefined &&
+    installation &&
+    installation.repositoryRef === repositoryRef
+  ) {
     const policy = installation.namespaces.find((entry) => entry.namespaceId === namespaceId);
     if (request.profile !== githubInstallationProfile || policy?.accessMode !== "installation") {
       throw new Error("repository-binding-not-authorized");
@@ -527,6 +598,7 @@ function standingApprovalScope(
   const registration = installation ? registry.installationAccess : repository;
   const policy = registration?.namespaces.find((p) => p.namespaceId === input.namespaceId);
   if (
+    registry.authority !== undefined ||
     registration?.repositoryRef !== input.binding.repositoryRef ||
     registry.allowStandingApprovals !== true ||
     policy?.allowStandingApproval !== true
@@ -602,16 +674,24 @@ export function createGitHubRepositoryDeliveryResolver(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
+      if (registry.authority && !nativeGit) {
+        throw new Error("A repository token source requires native Git with a network policy.");
+      }
       return Object.freeze({
         binding: state.bindings[0]!,
         delivery: Object.freeze({
           scope: "github-repository" as const,
-          installationId: registry.githubInstallationId,
+          ...(registry.authority
+            ? { tokenSource: registry.authority.tokenSecret }
+            : { installationId: registry.githubInstallationId }),
           repositories: scope.repositories,
           permissions: scope.permissions,
           ...(nativeGit && { nativeGit: "v1" as const }),
         }),
       });
+    }
+    if (registry.authority) {
+      throw new Error("A repository token source requires native Git with a network policy.");
     }
     if (!state || state.bindings.length !== 1 || !binding) {
       throw new Error("Repository Git delivery requires one admitted binding.");
@@ -656,6 +736,10 @@ export function resolveSelectedRepositoryGrant(
   revisionId: string,
   bindings: readonly AdmittedRepositoryBinding[],
 ): GitHubRepositoryGrant {
+  if (registry.authority) {
+    // App issuance only; a token source is lent, never issued.
+    throw new Error("selected-repository-grant-requires-github-app");
+  }
   const scope = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
   return Object.freeze({
     id: bindings[0]!.grant.grantId,

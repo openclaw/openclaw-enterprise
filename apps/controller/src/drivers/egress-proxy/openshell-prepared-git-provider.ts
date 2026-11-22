@@ -12,7 +12,10 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "@openclaw-enterprise/occ";
-import { openShellInstallationGitProviderPrefix } from "./openshell-repository-git-evidence.ts";
+import {
+  openShellInstallationGitProviderPrefix,
+  openShellTokenGitProviderPrefix,
+} from "./openshell-repository-git-evidence.ts";
 import {
   openShellExpectedProviderRule,
   verifyOpenShellRepositoryPolicy,
@@ -225,7 +228,13 @@ export class OpenShellPreparedGitProvider {
       !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(scope.sandbox) ||
       !scope.workspaceId ||
       !scope.executionId ||
-      (scope.installationId !== undefined
+      (scope.tokenSource !== undefined
+        ? !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(scope.tokenSource) ||
+          scope.installationId !== undefined ||
+          scope.repository !== undefined ||
+          scope.apiOrigin !== "https://api.github.com" ||
+          scope.gitOrigin !== "https://github.com"
+        : scope.installationId !== undefined
         ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
           scope.repository !== undefined ||
           scope.apiOrigin !== "https://api.github.com" ||
@@ -239,9 +248,12 @@ export class OpenShellPreparedGitProvider {
     ) {
       refuse();
     }
+    // Native Git binds an installation or a token Provider; a token has no other route.
     if (
-      scope.nativeGit !== undefined &&
-      (scope.nativeGit !== "v1" || scope.installationId === undefined)
+      (scope.nativeGit !== undefined &&
+        (scope.nativeGit !== "v1" ||
+          (scope.installationId === undefined && scope.tokenSource === undefined))) ||
+      (scope.tokenSource !== undefined && scope.nativeGit !== "v1")
     ) {
       refuse();
     }
@@ -262,7 +274,11 @@ export class OpenShellPreparedGitProvider {
           scope.workspaceId,
           scope.sandbox,
           scope.executionId,
-          scope.installationId ? ["github-installation", scope.installationId] : scope.repository,
+          scope.tokenSource !== undefined
+            ? ["github-token", scope.tokenSource]
+            : scope.installationId
+              ? ["github-installation", scope.installationId]
+              : scope.repository,
           git.origin,
           api.origin,
           scope.binaries,
@@ -274,9 +290,12 @@ export class OpenShellPreparedGitProvider {
       )
       .digest("hex")
       .slice(0, 48);
-    const prefix = scope.installationId
-      ? openShellInstallationGitProviderPrefix
-      : REPOSITORY_PROVIDER_PREFIX;
+    const prefix =
+      scope.tokenSource !== undefined
+        ? openShellTokenGitProviderPrefix
+        : scope.installationId
+          ? openShellInstallationGitProviderPrefix
+          : REPOSITORY_PROVIDER_PREFIX;
     this.provider = prefix + this.fingerprint.slice(0, 32);
     this.profile = {
       id: this.provider,
@@ -1070,7 +1089,8 @@ function preparedGitName(name: string, owner: string | undefined): boolean {
     owner !== undefined &&
     /^[0-9a-f]{48}$/.test(owner) &&
     (name === REPOSITORY_PROVIDER_PREFIX + hash ||
-      name === openShellInstallationGitProviderPrefix + hash)
+      name === openShellInstallationGitProviderPrefix + hash ||
+      name === openShellTokenGitProviderPrefix + hash)
   );
 }
 

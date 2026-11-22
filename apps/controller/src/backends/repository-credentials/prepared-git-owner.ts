@@ -202,7 +202,12 @@ export async function startPreparedGitHubGitOwner(
     throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
   }
   const selected = custodySelection.kind === "selected";
-  const registry = validateGitHubRepositoryRegistry(options.registry, options.backendId);
+  const loaded = validateGitHubRepositoryRegistry(options.registry, options.backendId);
+  if (loaded.authority !== undefined) {
+    // A token source is lent by its own owner (token-loan.ts), never issued with an App key.
+    throw new Error("PREPARED_REPOSITORY_TOKEN_SOURCE_HAS_NO_APP_ISSUER");
+  }
+  const registry = loaded;
   for (const repo of registry.repositories) {
     if (
       repo.namespaces.some(

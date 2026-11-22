@@ -121,6 +121,7 @@
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts": 300,
     "tests/conformance/repository-credentials-receive-pack.test.ts": 100,
     "tests/conformance/repository-credentials-registry.test.ts": 100,
+    "tests/conformance/github-token-source.test.ts": 100,
     "tests/conformance/repository-credentials-sessions.test.ts": 100,
     "tests/conformance/repository-credentials-source-boundary.test.ts": 9700,
     "tests/conformance/repository-credentials-tool-evidence.test.ts": 100,
