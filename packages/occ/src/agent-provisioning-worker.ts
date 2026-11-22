@@ -188,7 +188,7 @@ function provisioningFailureMessage(code: string, error: unknown): string {
 type RunEffect = NonNullable<AgentProvisioningWorkerOptions["runEffect"]>;
 
 interface ProvisioningWorkerDependencies {
-  readonly installationId: () => string;
+  readonly installationId: string;
   readonly now: () => Date;
   readonly timestamp: () => string;
   readonly nextId: (kind: "configuration" | "agent") => string;
@@ -469,7 +469,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       );
       await state.audit.append({
         id: `aud_${crypto.randomUUID()}`,
-        installationId: dependencies.installationId(),
+        installationId: dependencies.installationId,
         namespaceId: current.namespaceId,
         occurredAt: dependencies.timestamp(),
         kind: authorizationDenied ? "authorization_denial" : "mutation",
@@ -559,7 +559,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       if (!pending) {
         await state.audit.append({
           id: `aud_${crypto.randomUUID()}`,
-          installationId: dependencies.installationId(),
+          installationId: dependencies.installationId,
           namespaceId: record.namespaceId,
           occurredAt: dependencies.timestamp(),
           kind: "mutation",
@@ -596,7 +596,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     const record = await state.provisioning.checkpoint(claim, checkpoint);
     await state.audit.append({
       id: `aud_${crypto.randomUUID()}`,
-      installationId: dependencies.installationId(),
+      installationId: dependencies.installationId,
       namespaceId: record.namespaceId,
       occurredAt: dependencies.timestamp(),
       kind: "mutation",
