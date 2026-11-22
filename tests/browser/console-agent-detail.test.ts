@@ -2473,12 +2473,15 @@ for (const viewport of [
     );
     assert.deepEqual(listShifts, []);
 
-    // An empty Namespace does not invite creating under the note.
+    // With no readable Agents in this Namespace, the list scope is clear under the note.
     await page.goto(`${fixture.origin}/console/agents?namespace=${empty.id}`);
-    await page.getByRole("heading", { name: "No Agents are shared with you" }).waitFor();
+    assert.equal(
+      await page.getByRole("heading", { name: /^No Agents/ }).textContent(),
+      "No Agents to show",
+    );
     await note.waitFor();
     await page
-      .getByText("Agents in this Namespace that are shared with you appear here.")
+      .getByText("Agents you can read in this Namespace appear here.", { exact: true })
       .waitFor();
     assert.equal(await page.getByText(/Create an Agent in this Namespace/).count(), 0);
 

@@ -54,7 +54,9 @@ the primary action, and `--focus-ring` for keyboard focus. Inherit the body
 font, pair type sizes with their line heights (for example, `--text-md` with
 `--text-md--line-height`), and use the spacing and radius scales.
 The [token checks](../../tests/conformance/console-design-tokens.test.ts)
-cover these scales and the supported breakpoints.
+cover these scales and the supported 520, 760 and 1100 px viewport breakpoints.
+Run `node --test tests/conformance/console-design-tokens.test.ts` locally before
+pushing CSS changes.
 
 Navigation pairs the wordmark with a
 [mascot for dark surfaces](../../apps/controller/src/console/oce-mascot-inverse.png).

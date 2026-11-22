@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-22"
-last_updated_session: "authoring-run/c8a2f368-b5c6-464f-859b-7c81d28819ae"
+last_updated_session: "authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa"
 ---
 
 # Agent sandbox policy flow
@@ -29,6 +29,8 @@ graph TD
   Draft --> Preview["Preview draft<br/>without writes"]
   Preview -->|errors| Draft
   Preview -->|valid| U2["Review proposal"]
+  Cfg --> Grants["Choose repository grants<br/>or confirm deny all"]
+  Grants --> A
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
@@ -108,7 +110,8 @@ removes its policy and exact IAM access.
 
 The [repository policy editor](../reference/sandbox-policies.md#repository-network-policy)
 shows the saved grants and Namespace ceiling. Save the first list before
-deploying. The protected topology must admit the proposed list. Omission
+deploying. The protected topology must admit the proposed list, including
+an initial `[]` to deny all repositories. Omission
 retains the list and omits it from the response. For an explicit `[]`, OCC
 checks SandboxPolicy read before checking for a saved list. A reader can
 send empty lists in both fields to withdraw grants after Driver loss.
@@ -116,6 +119,15 @@ send empty lists in both fields to withdraw grants after Driver loss.
 PostgreSQL saves an explicit list at Read Committed. The PUT starts that
 transaction before OCC waits for the IAM configuration lock, and the
 authorization checks see revocations committed during the wait.
+
+`apps/controller/src/console/agents/sandbox-policy.mts:renderAgentSandboxPolicy`
+uses the GET hint and Namespace limits. Refresh updates version and limits.
+Refresh and rejected saves preserve the draft while saved grants match its
+starting list. If they change, discard the draft to edit the current list.
+PUT validates the list. The editor checks the returned Agent, Namespace,
+version and grants. Confirm deny-all and withdrawal. After an unscoped
+deployment, save policy on a new Agent before deploying. Use a compatible
+controller and Worker to stop an unreadable revision.
 
 Deployment rechecks the selected Repo scope, proxy and Driver identities across
 asynchronous validation before accessing credentials and inserting a revision.
@@ -265,11 +277,14 @@ counters, controls and empty rows.
 
 ## Changelog
 
+- 2026-11-22 13:25: Explain draft retention and recovery after a concurrent repository grant change. (authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa - 19ce90f1761a9da44d9a972c42d49686732a604a)
 - 2026-11-22 10:05: Document IAM currentness during Channel handoff and deployment admission. (authoring-run/c8a2f368-b5c6-464f-859b-7c81d28819ae - 00a5b1d2edc6de425e2e9d197bb0841a02f439e8)
 
 - 2026-11-22 09:55: Document transaction isolation for explicit repository policy saves. (authoring-run/0eda0b23-705a-489b-833d-3cde8916b691 - 42f0df7230de059d4a96da27298c911e22993cab)
 
 - 2026-11-22 09:28: Document the read check for explicit empty repository lists and omission from save responses. (authoring-run/df899b2b-1188-46fb-a341-5c7068e9208a - 8d738163780171c639367dbbccd9d9bb3a0ee63c)
+
+- 2026-11-21 08:16: Document Console repository choices, first-deployment eligibility and active revision recovery. (authoring-run/6ef4f22d-ce36-4d4c-941f-cb7a21afbb49 - 9cd9c344f9c57cd158dd74b87029a8266ca7cac2)
 
 - 2026-11-20 23:58: Document repository grant persistence and revision compatibility. (authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca - 0f4a2d3d3)
 

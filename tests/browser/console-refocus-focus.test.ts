@@ -53,7 +53,7 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 import { waitForResult, within } from "../helpers/wait-for.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -305,6 +305,166 @@ test("The Namespace selector keeps keyboard focus acquired during Agents list re
         : "the Namespace selector does not take focus from navigation",
     );
   }
+});
+
+test("Namespaces refocus keeps the active row control in view after the list changes", async (t) => {
+  const { fixture } = await createReadyConsoleNamespace(t, "Workshop");
+  for (let index = 0; index < 20; index += 1) {
+    await fixture.createNamespace(`Team ${String(index).padStart(2, "0")}`);
+  }
+
+  for (const width of [1440, 390]) {
+    const target = await fixture.createNamespace(`Team 20 at ${width}`, { ready: true });
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 }, ignoreHTTPSErrors: false },
+    });
+    await trackSettledFetches(page);
+    await login(page, fixture, "/console/namespaces");
+    const view = page.locator(settledView);
+    const row = view.getByRole("link", { name: target.name, exact: true });
+    const remove = view.getByRole("button", { name: `Delete ${target.name}`, exact: true });
+    await row.waitFor();
+    await waitForIdleFetches(page);
+    for (const [index, control] of [row, remove].entries()) {
+      await control.focus();
+      const name = `Added ${width} ${index}`;
+      await fixture.createNamespace(name);
+      await refocusHeld(t, page);
+      await view.getByRole("link", { name, exact: true }).waitFor();
+      assert.equal(await hasFocus(control), true, `same control at ${width}px`);
+      const box = await control.boundingBox();
+      assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `visible at ${width}px`);
+    }
+
+    await remove.focus();
+    assert.equal((await fixture.request("DELETE", `/namespaces/${target.id}`)).status, 202);
+    await refocusHeld(t, page);
+    await row.locator("xpath=ancestor::li").getByText("Deleting…", { exact: true }).waitFor();
+    await remove.waitFor({ state: "hidden" });
+    assert.equal(
+      await hasFocus(row),
+      true,
+      `the row link replaces the missing Delete at ${width}px`,
+    );
+    const box = await row.boundingBox();
+    assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `row link visible at ${width}px`);
+
+    const tabTarget =
+      width === 1440
+        ? page.getByRole("link", { name: "Agents", exact: true })
+        : page.getByRole("button", { name: "Open navigation", exact: true });
+    for (const changed of [false, true]) {
+      await waitForIdleFetches(page);
+      await tagView(page);
+      await row.focus();
+      if (changed) {
+        await fixture.createNamespace(`Changed ${width}`);
+      }
+      await refocusHeld(t, page, async () => {
+        await page.keyboard.press("Tab");
+        assert.equal(
+          await hasFocus(tabTarget),
+          true,
+          `Tab reaches the shell control at ${width}px`,
+        );
+      });
+      assert.equal(await viewTag(page), changed ? null : "kept");
+      assert.equal(await hasFocus(tabTarget), true, `the shell control keeps focus at ${width}px`);
+    }
+  }
+});
+
+test("Namespaces search uses current readable names and IDs without selecting a Namespace", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Support Operations");
+  const incoming = await fixture.createNamespace("Support Research");
+  const privateNamespace = await fixture.createNamespace("Private Finance");
+  const { credentials, principal } = await fixture.createNamespaceMember(
+    "namespace-search-reader",
+    namespace.id,
+    [["read", "namespace"]],
+  );
+  const { page } = await newPage(t, fixture, { context: { ignoreHTTPSErrors: false } });
+  await trackSettledFetches(page);
+  await login(page, fixture, "/console/namespaces", credentials);
+
+  const view = page.locator(settledView);
+  const search = view.getByRole("searchbox", { name: "Search Namespaces" });
+  const clear = view.getByRole("button", { name: "Clear search", exact: true });
+  const row = (name: string) => view.getByRole("link", { name, exact: true });
+  const rows = view.getByRole("list", { name: "Namespaces" }).getByRole("listitem");
+  const noMatch = view.getByRole("heading", { name: "No matching Namespaces" });
+  await row(namespace.name).waitFor();
+  await waitForIdleFetches(page);
+  const url = page.url();
+  const requests = apiRequests(page, fixture.origin);
+
+  await search.fill(`  ${namespace.id.toUpperCase()}  `);
+  assert.equal(await rows.count(), 1, "the admitted ID matches case-insensitively");
+  for (const query of [privateNamespace.name, privateNamespace.id]) {
+    await search.fill(query);
+    await noMatch.waitFor();
+    assert.equal(await row(privateNamespace.name).count(), 0);
+    assert.equal(await view.getByText(privateNamespace.id, { exact: true }).count(), 0);
+  }
+  await clear.click();
+  assert.equal(await search.inputValue(), "");
+  assert.equal(await hasFocus(search), true, "clearing returns focus to search");
+
+  await search.fill("sUpPoRt");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  assert.equal(await rows.count(), 1, "only one authorized name matches before the grant");
+  assert.equal(page.url(), url, "Enter in search does not open the only match");
+  assert.deepEqual(requests, [], "typing and clearing search send no API requests");
+
+  grantRole(fixture.policy, principal.id, {
+    id: "read-incoming-namespace",
+    namespaceId: incoming.id,
+    permissions: { namespace: ["read"] },
+  });
+  await refocusHeld(t, page);
+  await row(incoming.name).waitFor();
+  assert.equal(await hasFocus(search), true);
+  assert.equal(await search.inputValue(), "sUpPoRt");
+  assert.equal(await search.evaluate((input: HTMLInputElement) => input.selectionStart), 1);
+  assert.equal(await rows.count(), 2, "the new grant is reflected under the existing query");
+  assert.equal(
+    await row(incoming.name).locator("xpath=ancestor::li").getByText("Provisioning").count(),
+    1,
+  );
+
+  await row(incoming.name).focus();
+  restrict(fixture.policy, "read", "namespace", { namespaceId: incoming.id });
+  await refocusHeld(t, page);
+  assert.equal(await row(incoming.name).count(), 0);
+  assert.equal(
+    await hasFocus(page.getByRole("heading", { name: "Namespaces", exact: true })),
+    true,
+  );
+  assert.equal(await search.inputValue(), "sUpPoRt");
+
+  await fulfillMethod(
+    page,
+    `${fixture.origin}/namespaces`,
+    "GET",
+    apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."),
+  );
+  await refocus(page);
+  const retry = page.getByRole("button", { name: "Retry", exact: true });
+  await retry.waitFor();
+  assert.equal(await page.getByRole("searchbox", { name: "Search Namespaces" }).count(), 0);
+  await page.unroute(`${fixture.origin}/namespaces`);
+  await retry.click();
+  await search.waitFor();
+  assert.equal(await search.inputValue(), "", "retry cannot recover query from a discarded view");
+
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
+  await refocusHeld(t, page);
+  await view.getByRole("heading", { name: "No readable Namespaces" }).waitFor();
+  assert.equal(await search.count(), 0);
+  assert.equal(await noMatch.count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 const deploymentsRead = (namespace: NamespaceWire) =>
