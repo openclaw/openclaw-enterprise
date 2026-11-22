@@ -83,7 +83,6 @@ import {
   PersistedStateInvalidError,
   SandboxGatewayUnauthorizedError,
   SandboxGatewayUnavailableError,
-  SANDBOX_DELETION_UNCONFIRMED,
   operationRefusalHintCode,
   type OperationRefusalHintCode,
   RepositoryGitProfileUnsupportedError,
@@ -139,6 +138,7 @@ import {
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
 import { DeploymentTimings } from "./worker/deployment-timing.ts";
+import { HarnessExposureSweep } from "./worker/harness-exposure-sweep.ts";
 import {
   createRevisionCredentialResolver,
   revisionHarnessSourceId,
@@ -679,8 +679,6 @@ interface CredentialWithdrawalAttempt {
 interface CredentialWithdrawalDispatchResult extends DispatchResult {
   /** One entry per pending withdrawal this pass reached; absent when none was pending. */
   readonly attempts?: readonly CredentialWithdrawalAttempt[];
-  /** Earlier attempts already settled every withdrawal; this one changed nothing. */
-  readonly nothingPending?: boolean;
 }
 
 function unrevokedAttempts(
@@ -774,36 +772,10 @@ function credentialWithdrawalRecoveryDelayMs(recovery: number): number {
 }
 
 /**
- * Native Harness exposures the worker withdraws outside a preparation pass: a revision already
- * active when the worker starts, deployed by a controller that kept the exposure for the
- * Sandbox's lifetime (finding 1669), and a candidate that failed for good while its Sandbox
- * stays for diagnosis (finding 1672). Attempts: at once, then 30 s, 1, 2 and 4 min later; the
- * fifth failure is logged by code and the revision left until the next start.
- */
-const MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS = 5;
-const HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS = 30_000;
-/**
  * The sweep step runs on passes that follow an empty claim, and after this many claimed passes
  * in a row regardless, so a queue that is never empty cannot starve it (finding 1695).
  */
 const HARNESS_EXPOSURE_SWEEP_CLAIMED_PASSES = 5;
-
-interface PendingHarnessExposureWithdrawal {
-  readonly revision: Readonly<AgentRevision>;
-  attempts: number;
-  dueAt: number;
-}
-
-/** The code a failed exposure withdrawal is logged with; never the provider's text. */
-function harnessExposureWithdrawalCode(error: unknown): string {
-  if (error instanceof TransientDependencyError) {
-    return error.code;
-  }
-  const code = (error as { readonly code?: unknown } | null)?.code;
-  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)
-    ? code
-    : "HARNESS_EXPOSURE_WITHDRAWAL_FAILED";
-}
 
 /**
  * The operator guidance a failed stop, deletion or withdrawal logs with its code, as a fixed code
@@ -815,20 +787,6 @@ function refusalHintField(
 ): { readonly hintCode?: OperationRefusalHintCode } {
   const hintCode = terminal ? operationRefusalHintCode(code) : undefined;
   return hintCode === undefined ? {} : { hintCode };
-}
-
-/** A revision whose Sandbox Driver may hold a native Harness exposure for this Compute. */
-function holdsNativeHarnessExposure(
-  revision: Readonly<AgentRevision>,
-  compute: Pick<ComputeDriver, "id" | "implementation">,
-): boolean {
-  return (
-    revision.harness.mode === "dedicated" &&
-    revision.harness.id === "openclaw" &&
-    revision.sandboxDriverId !== undefined &&
-    revision.compute.id === compute.id &&
-    revision.compute.implementation === compute.implementation
-  );
 }
 
 /** A revision's first pending withdrawal, preferring one that does not await a replay. */
@@ -864,7 +822,12 @@ function sourceIdsByRequester(
 ): Map<string, string[]> {
   const grouped = new Map<string, string[]>();
   for (const { requestedBy, credentialSourceId } of attempts) {
-    grouped.set(requestedBy, [...(grouped.get(requestedBy) ?? []), credentialSourceId]);
+    const sourceIds = grouped.get(requestedBy);
+    if (sourceIds === undefined) {
+      grouped.set(requestedBy, [credentialSourceId]);
+    } else {
+      sourceIds.push(credentialSourceId);
+    }
   }
   return grouped;
 }
@@ -1299,10 +1262,7 @@ export class ControllerWorker {
   private readonly maxAttempts: number;
   private readonly convergenceTimeoutMs: number;
   private readonly maintenanceIntervalMs: number | undefined;
-  // Keyed by revision ID; undefined until the start-time listing has run.
-  private readonly harnessExposureWithdrawals = new Map<string, PendingHarnessExposureWithdrawal>();
-  private harnessExposureListed = false;
-  private harnessExposureListingFailures = 0;
+  private readonly harnessExposureSweep: HarnessExposureSweep;
   private claimedLastPass = false;
   private claimedPassesSinceSweep = 0;
   private readonly nativeRepositorySender: NativeRepositorySender | undefined;
@@ -1531,6 +1491,13 @@ export class ControllerWorker {
     ) {
       throw new Error("The bound repository admission owner is not selected or unavailable.");
     }
+    this.harnessExposureSweep = new HarnessExposureSweep({
+      state: this.state,
+      queue: this.queue,
+      compute: this.compute,
+      signal: this.abort.signal,
+      emit: (event) => this.emit(event),
+    });
     this.repositoryCredentials = new RepositoryCredentialLifecycle({
       state: this.state,
       queueOptions: this.queueOptions,
@@ -1709,7 +1676,7 @@ export class ControllerWorker {
           this.claimedPassesSinceSweep >= HARNESS_EXPOSURE_SWEEP_CLAIMED_PASSES
         ) {
           this.claimedPassesSinceSweep = 0;
-          await this.withdrawPendingHarnessExposure();
+          await this.harnessExposureSweep.step();
           await this.sweepConnectionRevocation();
           if (Date.now() >= this.nextClientCleanup) {
             this.nextClientCleanup = Date.now() + 30_000;
@@ -3721,59 +3688,22 @@ export class ControllerWorker {
       const agent = await this.state.read((view) =>
         view.agents.findAgent(claim.namespaceId, claim.agentId!),
       );
-      if (agent === undefined) {
-        await this.finalizeCredentialWithdrawal(claim, {
-          outcome: "success",
-          code: "WITHDRAWAL_REVISION_RETIRED",
-        });
-        return;
-      }
-      const { revision, pending } = await this.state.read(async (view) => {
-        const found = await view.revisions.findRevision(
-          claim.namespaceId,
-          claim.agentId!,
-          claim.revisionId!,
-        );
-        if (found === undefined) {
-          return { revision: found, pending: [] };
-        }
-        // Admission withdraws only sources the revision was admitted with.
-        const pendingWithdrawals: {
-          readonly withdrawal: Readonly<CredentialWithdrawal>;
-          readonly source: Readonly<CredentialSource>;
-        }[] = [];
-        for (const sourceId of revisionCredentialSourceIds(found)) {
-          const withdrawal = await view.credentialSources.findCredentialWithdrawal(
-            claim.namespaceId,
-            found.id,
-            sourceId,
-          );
-          const source = await view.credentialSources.findCredentialSource(
-            claim.namespaceId,
-            sourceId,
-          );
-          // A source's deletion removes its withdrawals, so it has nothing left to revoke.
-          if (withdrawal?.state === "pending" && source !== undefined) {
-            pendingWithdrawals.push({ withdrawal, source });
-          }
-        }
-        return { revision: found, pending: pendingWithdrawals };
-      });
+      const target = agent === undefined ? undefined : await this.readWithdrawalTarget(claim);
       // A retired revision took its Sandbox and attachments with it.
-      if (revision === undefined) {
+      if (agent === undefined || target === undefined) {
         await this.finalizeCredentialWithdrawal(claim, {
           outcome: "success",
           code: "WITHDRAWAL_REVISION_RETIRED",
         });
         return;
       }
+      const { revision, pending } = target;
       requested = pending.map(({ withdrawal }) => withdrawal);
       // Earlier attempts already revoked every requested source.
       if (pending.length === 0) {
         await this.finalizeCredentialWithdrawal(claim, {
           outcome: "success",
           code: "CREDENTIALS_WITHDRAWN",
-          nothingPending: true,
         });
         return;
       }
@@ -3805,26 +3735,26 @@ export class ControllerWorker {
           });
         }
       }
-      const authorized = allowed.map(({ withdrawal }) => withdrawal);
       if (allowed.length > 0) {
-        if (
-          revision.compute.id !== this.compute.id ||
-          revision.compute.implementation !== this.compute.implementation
-        ) {
-          await this.finalizeCredentialWithdrawal(claim, {
-            outcome: "permanent",
-            code: "COMPUTE_DRIVER_MISMATCH",
-            attempts: [...unrevokedAttempts(authorized, "COMPUTE_DRIVER_MISMATCH"), ...denied],
-          });
-          return;
-        }
-        const withdraw = this.compute.withdrawCredentialSource?.bind(this.compute);
+        const compute = this.compute;
+        const matchesCompute =
+          revision.compute.id === compute.id &&
+          revision.compute.implementation === compute.implementation;
+        const withdraw = matchesCompute
+          ? compute.withdrawCredentialSource?.bind(compute)
+          : undefined;
         if (withdraw === undefined) {
+          const code = matchesCompute
+            ? "CREDENTIAL_WITHDRAWAL_UNSUPPORTED"
+            : "COMPUTE_DRIVER_MISMATCH";
           await this.finalizeCredentialWithdrawal(claim, {
             outcome: "permanent",
-            code: "CREDENTIAL_WITHDRAWAL_UNSUPPORTED",
+            code,
             attempts: [
-              ...unrevokedAttempts(authorized, "CREDENTIAL_WITHDRAWAL_UNSUPPORTED"),
+              ...unrevokedAttempts(
+                allowed.map(({ withdrawal }) => withdrawal),
+                code,
+              ),
               ...denied,
             ],
           });
@@ -3862,14 +3792,9 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      // Confirmed revocations stand; every withdrawal not yet confirmed or denied retries,
-      // including one IAM failed to authorize, so no earlier denial stays its last reason. A
-      // Compute refusal that retrying cannot change (a configuration that cannot reach the
-      // Sandbox, or an object Compute does not own) fails them once instead, as a Compute
-      // mismatch does; a replay tries again. So does a Sandbox gateway that refuses the
-      // controller's identity (finding 1676): retrying cannot restore the Workspace role, and
-      // the reason names the fix instead of a generic failure. An identity the gateway could
-      // not authenticate keeps the reason but retries first (finding 1694).
+      // Keep confirmed results. Retry the remaining sources unless the Driver refused
+      // ownership, configuration, or a missing Workspace role. A transient gateway
+      // authentication failure still retries with its original code.
       const coded =
         error instanceof CredentialWithdrawalRefusedError ||
         error instanceof SandboxGatewayUnauthorizedError;
@@ -3895,29 +3820,54 @@ export class ControllerWorker {
     await this.finalizeCredentialWithdrawal(claim, result);
   }
 
+  private readWithdrawalTarget(claim: ClaimedWork) {
+    return this.state.read(async (view) => {
+      const { namespaceId } = claim;
+      const revision = await view.revisions.findRevision(
+        namespaceId,
+        claim.agentId!,
+        claim.revisionId!,
+      );
+      if (revision === undefined) {
+        return undefined;
+      }
+      const pending = [];
+      for (const sourceId of revisionCredentialSourceIds(revision)) {
+        const withdrawal = await view.credentialSources.findCredentialWithdrawal(
+          namespaceId,
+          revision.id,
+          sourceId,
+        );
+        const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
+        // Deleting a source removes its withdrawal rows.
+        if (withdrawal?.state === "pending" && source !== undefined) {
+          pending.push({ withdrawal, source });
+        }
+      }
+      return { revision, pending };
+    });
+  }
+
   private async finalizeCredentialWithdrawal(
     claim: ClaimedWork,
     dispatched: CredentialWithdrawalDispatchResult,
   ): Promise<void> {
-    let result = dispatched;
-    const terminal = ({ outcome }: CredentialWithdrawalDispatchResult) =>
-      outcome === "permanent" || (outcome === "retry" && claim.attemptCount >= this.maxAttempts);
-    await this.state.transactWithQueue(async (unit, queue) => {
+    const outcomeFor = ({ outcome }: CredentialWithdrawalDispatchResult) =>
+      this.outcomeWithAttemptLimit(claim, outcome);
+    const { result, outcome } = await this.state.transactWithQueue(async (unit, queue) => {
       requireClaimRenewal(await queue.heartbeat(claim));
-      result = dispatched;
-      let terminalFailure = terminal(result);
-      // A terminal failure's queue transition locks the Namespace and Agent for cleanup. Take
-      // them first, in admission order, before updating withdrawal rows: a concurrent
-      // withdrawal request locks the Namespace, then the Agent, then the same rows. Under those
-      // locks, a replay that took a denied withdrawal over during this pass is settled.
-      if (terminalFailure) {
+      let result = dispatched;
+      // Match admission's Namespace and Agent lock order before updating withdrawal rows.
+      // A concurrent replay can have reassigned a denial since dispatch.
+      if (outcomeFor(dispatched) === "permanent") {
         await this.lockClaimScope(unit, claim);
-        result = await this.withoutReassignedDenials(unit, claim, result);
-        terminalFailure = terminal(result);
+        result = await this.withoutReassignedDenials(unit, claim, dispatched);
       }
-      // Each row explains a withdrawal that is still pending, including after the last attempt.
+      const outcome = outcomeFor(result);
+      const terminalFailure = outcome === "permanent";
+      const attempts = result.attempts ?? [];
       const at = new Date().toISOString();
-      for (const attempt of result.attempts ?? []) {
+      for (const attempt of attempts) {
         await unit.credentialSources.recordCredentialWithdrawalAttempt(
           claim.namespaceId,
           claim.revisionId!,
@@ -3933,7 +3883,6 @@ export class ControllerWorker {
           );
         }
       }
-      const attempts = result.attempts ?? [];
       // Each confirmed revocation is audited as its requester's mutation in the pass that
       // confirmed it, so a later retry cannot lose it.
       const revokedBy = sourceIdsByRequester(attempts.filter(({ revoked }) => revoked));
@@ -3945,7 +3894,7 @@ export class ControllerWorker {
           credentialSourceIds,
         });
       }
-      if (result.outcome !== "retry" || terminalFailure) {
+      if (outcome !== "retry") {
         // Denials are final for this claim and audited once, against each denied requester.
         for (const attempt of attempts) {
           if (attempt.denial !== undefined) {
@@ -3958,27 +3907,25 @@ export class ControllerWorker {
             });
           }
         }
-        const unsettled = attempts.filter(
-          ({ revoked, denial }) => !revoked && denial === undefined,
+      }
+      if (terminalFailure) {
+        // A replay may have replaced the requester without changing the claim actor.
+        const failedBy = sourceIdsByRequester(
+          attempts.filter(({ revoked, denial }) => !revoked && denial === undefined),
         );
-        // A failure is audited against each unsettled withdrawal's requester, as a revocation
-        // is, so a withdrawal a replay took over is not attributed to the claim's actor.
-        if (terminalFailure) {
-          const failedBy = sourceIdsByRequester(unsettled);
-          if (attempts.length === 0) {
-            failedBy.set(claim.actorId, []);
-          }
-          for (const [actorId, credentialSourceIds] of failedBy) {
-            await this.appendCredentialWithdrawalAudit(unit, claim, {
-              actorId,
-              outcome: "failure",
-              code: result.code,
-              credentialSourceIds,
-            });
-          }
+        if (attempts.length === 0) {
+          failedBy.set(claim.actorId, []);
+        }
+        for (const [actorId, credentialSourceIds] of failedBy) {
+          await this.appendCredentialWithdrawalAudit(unit, claim, {
+            actorId,
+            outcome: "failure",
+            code: result.code,
+            credentialSourceIds,
+          });
         }
       }
-      if (result.outcome === "success") {
+      if (outcome === "success") {
         await queue.complete(claim);
       } else if (terminalFailure) {
         await queue.fail(claim, { code: result.code });
@@ -3988,18 +3935,18 @@ export class ControllerWorker {
       } else {
         await queue.retry(claim, { code: result.code });
       }
+      return { result, outcome };
     }, this.queueOptions);
-    this.passOutcome = terminal(result) ? "permanent" : result.outcome;
+    this.passOutcome = outcome;
     this.emit({
       event: "worker.completed",
       ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
-      // `outcome` is the queue's decision; a terminal retry (`permanent` here) has its recovery
-      // series queued (finding 1694).
+      // A retry at the attempt limit can queue a recovery series.
       result: result.outcome,
-      outcome: this.passOutcome,
+      outcome,
       code: result.code,
-      ...refusalHintField(terminal(result), result.code),
+      ...refusalHintField(outcome === "permanent", result.code),
     });
   }
 
@@ -4063,106 +4010,6 @@ export class ControllerWorker {
     return { ...result, attempts: settled };
   }
 
-  /**
-   * One bounded step of the native Harness exposure sweep per loop pass, before the claim, as
-   * stale-claim recovery runs. The first pass lists the revisions (one read, no claim): every
-   * active revision whose Sandbox Driver may hold the exposure, and every newer candidate whose
-   * deployment failed for good; the Kubernetes Driver declares no maintenance interval, so no
-   * pass would reach them otherwise. Each later pass withdraws for at most one due revision,
-   * so a provider that does not answer costs one bounded call per pass. The withdrawal is
-   * idempotent and churns nothing: a revision without the exposure is confirmed and dropped.
-   */
-  private async withdrawPendingHarnessExposure(): Promise<void> {
-    const compute = this.compute;
-    if (compute.withdrawHarnessExposure === undefined || this.stopping) {
-      return;
-    }
-    // Listed once per start, with bounded retries; candidates handed over by terminal
-    // failures share the map and are withdrawn whether or not the listing succeeded.
-    if (
-      !this.harnessExposureListed &&
-      this.harnessExposureListingFailures < MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS
-    ) {
-      let listed: Map<string, PendingHarnessExposureWithdrawal> | undefined;
-      try {
-        listed = await this.listHarnessExposureWithdrawals();
-      } catch {
-        if (this.stopping || this.abort.signal.aborted) {
-          return;
-        }
-        this.harnessExposureListingFailures += 1;
-        this.emit({
-          event: "worker.harness-exposure-sweep-failed",
-          code: "WORKER_UNAVAILABLE",
-          attempt: this.harnessExposureListingFailures,
-        });
-      }
-      if (listed !== undefined) {
-        this.harnessExposureListed = true;
-        for (const [revisionId, candidate] of listed) {
-          if (!this.harnessExposureWithdrawals.has(revisionId)) {
-            this.harnessExposureWithdrawals.set(revisionId, candidate);
-          }
-        }
-        if (this.harnessExposureWithdrawals.size > 0) {
-          this.emit({
-            event: "worker.harness-exposure-sweep",
-            pending: this.harnessExposureWithdrawals.size,
-          });
-        }
-      }
-    }
-    const now = Date.now();
-    const pending = [...this.harnessExposureWithdrawals.values()].find(
-      (candidate) => candidate.dueAt <= now,
-    );
-    if (pending === undefined) {
-      return;
-    }
-    const { revision } = pending;
-    const fields = {
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      revisionId: revision.id,
-    };
-    try {
-      await withComputeAbortSignal(this.abort.signal, () =>
-        compute.withdrawHarnessExposure!(revision, this.abort.signal),
-      );
-    } catch (error) {
-      if (this.stopping || this.abort.signal.aborted) {
-        return;
-      }
-      pending.attempts += 1;
-      const permanent = pending.attempts >= MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS;
-      if (permanent) {
-        this.harnessExposureWithdrawals.delete(revision.id);
-      } else {
-        pending.dueAt =
-          Date.now() + HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS * 2 ** (pending.attempts - 1);
-      }
-      const code = harnessExposureWithdrawalCode(error);
-      // A target that vanished between the Driver's read and its delete (a failed candidate
-      // retired by the next activation, or a role lost in between) is unconfirmed, not failed:
-      // the next attempt settles it through the Driver's absence check (finding 1696). An
-      // exposure dropped on its last attempt is a failure whatever the error, since nothing
-      // settles it before the next start.
-      this.emit({
-        event:
-          code === SANDBOX_DELETION_UNCONFIRMED && !permanent
-            ? "worker.harness-exposure-withdrawal-unconfirmed"
-            : "worker.harness-exposure-withdrawal-failed",
-        ...fields,
-        code,
-        attempt: pending.attempts,
-        outcome: permanent ? "permanent" : "retry",
-      });
-      return;
-    }
-    this.harnessExposureWithdrawals.delete(revision.id);
-    this.emit({ event: "worker.harness-exposure-withdrawn", ...fields });
-  }
-
   /** Whether this deployment waits for its native version's first GitHub token (finding 2415). */
   private gatesRepositoryGitMaterial(
     claim: ClaimedWork,
@@ -4212,96 +4059,10 @@ export class ControllerWorker {
    * revision is left alone: its exposure went with its readiness. The failure is already
    * committed, so a read that fails here only defers the withdrawal to the next start.
    */
-  private async scheduleFailedCandidateExposureWithdrawal(claim: ClaimedWork): Promise<void> {
-    if (
-      this.compute.withdrawHarnessExposure === undefined ||
-      claim.agentId === undefined ||
-      claim.revisionId === undefined
-    ) {
-      return;
-    }
-    const { agent, revision } = await this.state.read(async (view) => ({
-      agent: await view.agents.findAgent(claim.namespaceId, claim.agentId!),
-      revision: await view.revisions.findRevision(
-        claim.namespaceId,
-        claim.agentId!,
-        claim.revisionId!,
-      ),
-    }));
-    if (
-      revision === undefined ||
-      agent?.activeRevisionId === revision.id ||
-      !holdsNativeHarnessExposure(revision, this.compute)
-    ) {
-      return;
-    }
-    if (!this.harnessExposureWithdrawals.has(revision.id)) {
-      this.harnessExposureWithdrawals.set(revision.id, { revision, attempts: 0, dueAt: 0 });
-    }
-  }
-
-  private async listHarnessExposureWithdrawals(): Promise<
-    Map<string, PendingHarnessExposureWithdrawal>
-  > {
-    const listed = await this.state.read(async (view) => {
-      const found: {
-        readonly activeRevisionId: string | undefined;
-        readonly revisions: readonly Readonly<AgentRevision>[];
-      }[] = [];
-      for (const namespace of await view.namespaces.listNamespaces()) {
-        // A Namespace fails only from `provisioning` (no Agent ran in it), and `deleting`
-        // releases the provider Workspace with every Sandbox in it.
-        if (namespace.status !== "ready") {
-          continue;
-        }
-        for (const agent of await view.agents.listAgents(namespace.id)) {
-          const revisions = await view.revisions.listRevisions(namespace.id, agent.id);
-          const active = revisions.find(({ id }) => id === agent.activeRevisionId);
-          // Older revisions were retired when the active one activated; a newer candidate
-          // that failed keeps its Sandbox until the next activation retires it.
-          const candidates = revisions.filter(
-            (revision) =>
-              holdsNativeHarnessExposure(revision, this.compute) &&
-              (active === undefined ||
-                revision.id === active.id ||
-                revision.revision > active.revision),
-          );
-          if (candidates.length > 0) {
-            found.push({ activeRevisionId: agent.activeRevisionId, revisions: candidates });
-          }
-        }
-      }
-      return found;
-    });
-    const pending = new Map<string, PendingHarnessExposureWithdrawal>();
-    for (const { activeRevisionId, revisions } of listed) {
-      for (const revision of revisions) {
-        if (revision.id !== activeRevisionId) {
-          const deployment = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
-          if (deployment?.state !== "failed_permanent") {
-            continue;
-          }
-        }
-        pending.set(revision.id, { revision, attempts: 0, dueAt: 0 });
-      }
-    }
-    return pending;
-  }
-
   /**
-   * Withdrawal work that ran out of attempts on a retryable failure (an unreachable gateway, or
-   * one that has not confirmed revocation yet) queues one later series of attempts for its
-   * revision, in the transaction that fails it, or right after stale-claim recovery fails it
-   * (scheduleRecoveredCredentialWithdrawals). Compute without a maintenance interval (the
-   * Kubernetes Driver) has no pass that would re-queue it, so without this a dependency outage
-   * longer than the attempt budget would leave a token usable after the dependency recovers.
-   * The queued series keeps `withdrawalInProgress` true while it waits. Each series waits twice
-   * as long as the one before, up to five minutes, and the chain ends after
-   * MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES series. Where Compute schedules maintenance, each pass
-   * re-queues the withdrawal instead (recoverPendingCredentialWithdrawals). A revision whose
-   * pending withdrawals all await a replay gets none, and neither does one whose replay already
-   * queued an attempt (credentialWithdrawalNeedsAttempt). The Namespace and Agent are already
-   * locked here, as for any terminal failure.
+   * Compute without maintenance needs another attempt series after a retryable failure
+   * spends its budget. Call with the Namespace and Agent locked. The outstanding-work
+   * check lets a replay that queued an attempt first own recovery.
    */
   private async scheduleCredentialWithdrawalRecovery(
     unit: PlatformUnitOfWork,
@@ -4333,12 +4094,8 @@ export class ControllerWorker {
   }
 
   /**
-   * Stale-claim recovery fails withdrawal work whose lease ran out on its last attempt (its
-   * worker died, or a gateway call outlasted the lease) without the worker's final pass. Each
-   * such item gets its next series here, as if that pass had failed it, in its own transaction
-   * that takes the Namespace and Agent first. A replay queued in between wins (the
-   * outstanding-work check), so this never starts a second chain. An item that cannot be
-   * scheduled is reported and left for a replay; the others still are.
+   * Recover withdrawal work that lost its last lease before its finalizer could
+   * schedule another series. Each item takes its own Namespace and Agent locks.
    */
   private async scheduleRecoveredCredentialWithdrawals(
     failed: readonly ControllerWork[],
@@ -4626,16 +4383,8 @@ export class ControllerWorker {
   }
 
   /**
-   * A withdrawal recorded on a revision that was not yet the Agent's active one (a candidate
-   * still deploying) is refused with CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT, which
-   * awaits a replay (finding 2235). Once that revision's deployment activates it, the same
-   * attempt can reduce its policy, so the transaction that completes the deployment queues one
-   * attempt (finding 2242). That attempt takes the ordinary path: it rechecks each requester,
-   * and only a confirmed reduction marks a withdrawal revoked. Only the deployment claim calls
-   * this, and that claim completes once in this transaction, so it runs once per revision; the
-   * fixed key names the attempt, and none is queued beside an outstanding attempt. A proxy or
-   * plan that cannot reduce in place refuses with the same reason, so its candidate gets one
-   * more refused attempt (and failure audit) on activation, not a chain.
+   * Activation gets one extra attempt for a candidate withdrawal that would
+   * otherwise wait for a replay. A still-pending attempt retains the work.
    */
   private async queueActivatedRevisionWithdrawal(
     unit: PlatformUnitOfWork,
@@ -6424,7 +6173,7 @@ export class ControllerWorker {
       isCandidateDeployment(claim)
     ) {
       try {
-        await this.scheduleFailedCandidateExposureWithdrawal(claim);
+        await this.harnessExposureSweep.enqueueFailedCandidate(claim);
       } catch {
         // The failure is committed; the next start lists the candidate from its deployment.
       }

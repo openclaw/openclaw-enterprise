@@ -283,8 +283,8 @@ Sandbox and preparation omit RuntimeClass and PSA exemptions. Adoption, includin
 annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
 `APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure
-ends after confirmed deletion through `withdrawHarnessExposure`, adoption or
-recreation with `workspaceNodeEnrolled`.
+ends after [confirmed withdrawal](../../apps/controller/src/worker/harness-exposure-sweep.ts),
+adoption or recreation with `workspaceNodeEnrolled`.
 
 After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
 require the recorded release acknowledgment and authenticated WebSocket. Other
