@@ -1,10 +1,12 @@
 import type { PermissionAction, ResourceKind } from "../../packages/contracts/src/index.ts";
 import type { InstallationIAMConfiguration } from "../../packages/occ/src/index.ts";
 
+type StartupPermission = `${ResourceKind}:${PermissionAction}`;
+
 type StartupIAMConfiguration = {
-  roles: { id: string; permissions: string[] }[];
+  roles: { id: string; permissions: StartupPermission[] }[];
   defaultUserGroups: string[];
-  ownerRole: string;
+  ownerRole?: string;
   roleBindings: {
     group: string;
     role: string;
@@ -61,7 +63,9 @@ export function defaultUsersIAM({
       {
         id: "owner",
         permissions: Object.entries(NAMESPACE_ACTIONS).flatMap(([kind, actions]) =>
-          actions.map((action) => `${kind}:${action}`),
+          actions.map(
+            (action): StartupPermission => `${kind as keyof typeof NAMESPACE_ACTIONS}:${action}`,
+          ),
         ),
       },
     ],
