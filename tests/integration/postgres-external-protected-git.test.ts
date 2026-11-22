@@ -550,6 +550,7 @@ function externalGitJourney(
     let releaseReduction: (() => void) | undefined;
     let releaseTokenRetirement: (() => void) | undefined;
     let releaseStoppedBind: (() => void) | undefined;
+    let releaseHiddenObservation: (() => void) | undefined;
     let pauseStoppedBind = false;
     let stoppedBindEntered = false;
     const workerOutcomes: object[] = [];
@@ -623,6 +624,7 @@ function externalGitJourney(
       releaseTokenRetirement?.();
       releaseReduction?.();
       releaseStoppedBind?.();
+      releaseHiddenObservation?.();
       try {
         await stopWorker();
       } finally {
@@ -2332,6 +2334,20 @@ function externalGitJourney(
         );
       }
 
+      let hiddenObservationReached = false;
+      if (lostRotation) {
+        // Keep A's cached route until Git exercises the owner's refusal of pending B.
+        const hold = Promise.withResolvers<void>();
+        releaseHiddenObservation = hold.resolve;
+        peer.delivery.beforeRouteAssignment = async (hasRoute) => {
+          if (hasRoute || peer.delivery.installs !== 2) {
+            return;
+          }
+          delete peer.delivery.beforeRouteAssignment;
+          hiddenObservationReached = true;
+          await hold.promise;
+        };
+      }
       // Real owner deadlines: the 5-minute fixture token is inside the 10-minute renewal window.
       // Make the persisted next check due now for the owner's background loop, without
       // extending or editing a token or session deadline.
@@ -2453,21 +2469,34 @@ function externalGitJourney(
             assert.equal(denied.code, 128);
             assert.ok(/403/.test(denied.stderr.toString()), "sender refuses Git with HTTP 403");
           };
-          const decisions = peer.decisions.length;
-          await deniedFetch();
-          assert.deepEqual(peer.decisions.slice(decisions), [
-            {
-              operation: "advertise-upload-pack",
-              decision: { kind: "denied", reason: "unavailable" },
-            },
-          ]);
+          try {
+            await waitFor(
+              "reconciler observes no route while B is pending",
+              () => hiddenObservationReached || undefined,
+            );
+            const decisions = peer.decisions.length;
+            await deniedFetch();
+            assert.deepEqual(peer.decisions.slice(decisions), [
+              {
+                operation: "advertise-upload-pack",
+                decision: { kind: "denied", reason: "unavailable" },
+              },
+            ]);
+            assert.deepEqual(await readDelivery(), pending);
+          } finally {
+            releaseHiddenObservation?.();
+          }
           const pendingPasses = peer.delivery.reconciliations;
           await waitFor(
             "original lost B is observed without another installation attempt",
             () => peer.delivery.reconciliations >= pendingPasses + 2 || undefined,
             10_000,
           );
-          assertNoEffect();
+          // With the route cleared, the same sender must refuse before calling authority.
+          const decisions = peer.decisions.length;
+          await deniedFetch();
+          assert.equal(peer.decisions.length, decisions);
+          assert.deepEqual(await readDelivery(), pending);
           await f.stop();
           await transport!.close();
           await prepared.close();
@@ -3344,6 +3373,7 @@ function externalGitJourney(
       releaseTokenRetirement?.();
       releaseReduction?.();
       releaseStoppedBind?.();
+      releaseHiddenObservation?.();
       await f.stop();
     }
   };
