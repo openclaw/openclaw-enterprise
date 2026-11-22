@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-11-22
-last_updated_session: authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576
+last_updated_session: authoring-run/e04921d4-0e64-4748-963f-ea2bdbee1215
 ---
 
 # Controller Worker Flow
@@ -268,24 +268,21 @@ predecessor. In a separate transaction, `completeActivatedRevision()` rechecks
 selection and claim, appends evidence, and completes work. Retries recheck the
 active candidate before effects; claim loss cannot turn plugin failure into success.
 
-Stop finalization rechecks the live claim, Agent owner, and stopped desired state.
-After captured cleanup, it clears `activeRevisionId` only if it still identifies
-the stopped version, appends lifecycle-stop evidence, and completes the work
-without deleting version rows or persistent runtime state. A later deployment
-supersedes the stop even if it retains that pointer while preparing.
+`finalizeAgentStop()` rechecks the claim, Agent owner, desired state, and
+active pointer before clearing the stopped version. A later deployment
+supersedes the stop, even if it still has that pointer. Version rows and
+runtime state remain. After commit, it records the
+[operation duration](../reference/metrics.md#shared-snapshots-and-outages),
+as `completeActivatedRevision()` does for activation.
 
-After commit, `completeActivatedRevision()` and `finalizeAgentStop()` record
-[operation durations](../reference/metrics.md#shared-snapshots-and-outages)
-through `apps/controller/src/metrics/index.ts:createOccMetrics`.
+`finalizeAgentDeletion()` calls a restricted database function. It validates
+the live claim, records success, and removes the Agent and its
+[lifecycle records](../reference/controller/reconciliation.md#agent-lifecycle)
+in one transaction. The application role has no direct delete privilege.
 
-Deletion finalization uses a restricted database function instead of generic
-queue completion. In one transaction it validates the live claim, records
-lifecycle-delete success, and removes the Agent with the records the
-[Agent lifecycle reference](../reference/controller/reconciliation.md#agent-lifecycle)
-lists. An expired or replaced claim removes nothing; `occ_app` has no direct
-table-level delete privilege for these records.
-`finalizeAgentDeletion()` records committed `agent_delete` outcomes for the
-same metrics contract.
+`settleAgentTeardownAttempt()` writes IAM denials and lifecycle evidence
+before it settles Stop outcomes and Delete failures. A Stop that yields
+defers without an attempt record.
 
 ### 7. Defer, retry, or stop and hand off the next iteration
 
@@ -429,6 +426,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-22 10:30: Trace shared Agent Stop and Delete settlement. (authoring-run/e04921d4-0e64-4748-963f-ea2bdbee1215 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
 - 2026-11-22 09:29: Trace Read Committed for scoped deployment. (authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576 - db0227da135c6bf5e437038ec1fdbbfcc46ba548)
 - 2026-11-21 10:28: Trace scoped dispatch admission and recovery in the accompanying change. (authoring-run/3f3abf26-0aec-43e5-aa36-3aa72b38cf4a - a450dc92242a9d2e9f87da7e4fe8f8ea9dcd5e30)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

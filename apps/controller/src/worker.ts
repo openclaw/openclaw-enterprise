@@ -654,8 +654,8 @@ type RuntimeSuccessor =
   | { readonly kind: "eligible" | "legacy-held"; readonly revision: Readonly<AgentRevision> };
 
 interface AgentStopDispatchResult extends DispatchResult {
-  readonly agent?: Readonly<Agent>;
-  readonly revision?: Readonly<AgentRevision>;
+  readonly servicePrincipalId?: string;
+  readonly revisionId?: string;
 }
 
 interface CredentialWithdrawalAttempt {
@@ -880,14 +880,26 @@ function revisionHarnessSourceId(revision: Readonly<AgentRevision>): string | un
 }
 
 interface AgentDeletionDispatchResult extends DispatchResult {
-  readonly namespace?: Readonly<Namespace>;
-  readonly agent?: Readonly<Agent>;
-  readonly revisions?: readonly Readonly<AgentRevision>[];
   readonly delayMs?: number;
   readonly abandonedProvisioningEffect?: {
     readonly workId: string;
     readonly receipt: ProvisioningEffectReceipt;
   };
+}
+
+type AgentTeardownAttempt =
+  | { readonly operation: "stop"; readonly result: AgentStopDispatchResult }
+  | { readonly operation: "deletion"; readonly result: AgentDeletionDispatchResult };
+
+function agentTeardownFailure(error: unknown): DispatchResult {
+  if (error instanceof WorkClaimLostError) {
+    throw error;
+  }
+  // An unauthorized gateway cannot confirm the Sandbox is gone. Retry only if
+  // authentication can recover (finding 1694).
+  return error instanceof SandboxGatewayUnauthorizedError
+    ? { outcome: error.transient ? "retry" : "permanent", code: error.code }
+    : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
 }
 
 function positiveInteger(value: number, name: string): number {
@@ -3055,30 +3067,30 @@ export class ControllerWorker {
 
   private async processAgentStop(claim: ClaimedWork): Promise<void> {
     let result: AgentStopDispatchResult;
-    let stopping: Readonly<AgentRevision> | undefined;
+    let stoppingRevisionId: string | undefined;
     try {
       if (
         claim.agentId === undefined ||
         claim.agentTarget !== "stopped" ||
         claim.namespaceTarget !== undefined
       ) {
-        await this.finalizeAgentStop(claim, { outcome: "permanent", code: "INVALID_TARGET" });
-        return;
+        return await this.finalizeAgentStop(claim, {
+          outcome: "permanent",
+          code: "INVALID_TARGET",
+        });
       }
       const authorizedAgent = await this.state.read((view) =>
         view.agents.findAgent(claim.namespaceId, claim.agentId!),
       );
       if (authorizedAgent === undefined) {
-        await this.finalizeAgentStop(claim, {
+        return await this.finalizeAgentStop(claim, {
           outcome: "permanent",
           code: "INVALID_AGENT_OWNER",
         });
-        return;
       }
       const denied = await this.authorizeAgentAction(claim, authorizedAgent, "operate");
       if (denied !== undefined) {
-        await this.finalizeAgentStop(claim, { ...denied, agent: authorizedAgent });
-        return;
+        return await this.finalizeAgentStop(claim, denied);
       }
       // Admission may change desired state while IAM is consulted. Reload the exact
       // Agent immediately before any backend effect so a later deployment wins.
@@ -3094,44 +3106,41 @@ export class ControllerWorker {
         agent === undefined ||
         agent.servicePrincipalId !== authorizedAgent.servicePrincipalId
       ) {
-        await this.finalizeAgentStop(claim, {
+        return await this.finalizeAgentStop(claim, {
           outcome: "permanent",
           code: "INVALID_AGENT_OWNER",
         });
-        return;
       }
       if (agent.desiredRuntimeState !== "stopped") {
-        await this.finalizeAgentStop(claim, {
+        return await this.finalizeAgentStop(claim, {
           outcome: "success",
           code: "STOP_SUPERSEDED",
-          agent,
+          servicePrincipalId: agent.servicePrincipalId,
         });
-        return;
       }
       const active = revisions.find((revision) => revision.id === agent.activeRevisionId);
       if (agent.activeRevisionId !== undefined && active === undefined) {
-        await this.finalizeAgentStop(claim, {
+        return await this.finalizeAgentStop(claim, {
           outcome: "permanent",
           code: "INVALID_ACTIVE_REVISION",
-          agent,
         });
-        return;
       }
       if (active !== undefined && !revisionAdmittedBeforeWork(active, claim)) {
-        await this.finalizeAgentStop(claim, { outcome: "success", code: "STOP_SUPERSEDED", agent });
-        return;
+        return await this.finalizeAgentStop(claim, {
+          outcome: "success",
+          code: "STOP_SUPERSEDED",
+          servicePrincipalId: agent.servicePrincipalId,
+        });
       }
       const ownedByCompute = (revision: Readonly<AgentRevision>) =>
         revision.compute.id === this.compute.id &&
         revision.compute.implementation === this.compute.implementation;
       if (active !== undefined && !ownedByCompute(active)) {
-        await this.finalizeAgentStop(claim, {
+        return await this.finalizeAgentStop(claim, {
           outcome: "permanent",
           code: "COMPUTE_DRIVER_MISMATCH",
-          agent,
-          revision: active,
+          revisionId: active.id,
         });
-        return;
       }
       // A terminal candidate or a predecessor with failed retirement can still
       // own resources. Capture this Driver's history once; never include a later
@@ -3153,12 +3162,10 @@ export class ControllerWorker {
             revision.servicePrincipalId !== agent.servicePrincipalId,
         )
       ) {
-        await this.finalizeAgentStop(claim, {
+        return await this.finalizeAgentStop(claim, {
           outcome: "permanent",
           code: "INVALID_REVISION_OWNER",
-          agent,
         });
-        return;
       }
       if (cleanup.length > 0 && this.compute.bindAgent !== undefined) {
         await this.withClaimHeartbeat(claim, async () => {
@@ -3170,60 +3177,43 @@ export class ControllerWorker {
           view.agents.findAgent(claim.namespaceId, claim.agentId!),
         );
         if (current === undefined || current.servicePrincipalId !== agent.servicePrincipalId) {
-          await this.finalizeAgentStop(claim, {
+          return await this.finalizeAgentStop(claim, {
             outcome: "permanent",
             code: "INVALID_AGENT_OWNER",
           });
-          return;
         }
         if (current.desiredRuntimeState !== "stopped") {
-          await this.finalizeAgentStop(claim, {
+          return await this.finalizeAgentStop(claim, {
             outcome: "success",
             code: "STOP_SUPERSEDED",
-            agent: current,
+            servicePrincipalId: current.servicePrincipalId,
           });
-          return;
         }
         await this.closeRevisionCredentials(claim, revision);
         const afterClose = await this.state.read((view) =>
           view.agents.findAgent(claim.namespaceId, claim.agentId!),
         );
         if (afterClose?.desiredRuntimeState !== "stopped") {
-          await this.finalizeAgentStop(claim, {
+          return await this.finalizeAgentStop(claim, {
             outcome: "success",
             code: "STOP_SUPERSEDED",
-            ...(afterClose === undefined ? {} : { agent: afterClose }),
+            servicePrincipalId: afterClose?.servicePrincipalId,
           });
-          return;
         }
-        stopping = revision;
+        stoppingRevisionId = revision.id;
         await this.stopYieldingDrain(claim, revision);
       }
       result = {
         outcome: "success",
         code: active === undefined ? "AGENT_ALREADY_STOPPED" : "AGENT_STOPPED",
-        agent,
-        ...(active === undefined ? {} : { revision: active }),
+        servicePrincipalId: agent.servicePrincipalId,
+        revisionId: active?.id,
       };
     } catch (error) {
-      if (error instanceof WorkClaimLostError) {
-        throw error;
-      }
-      // The Sandbox gateway refused the controller's identity, so the Driver could not confirm
-      // the revision's Sandbox gone: retrying cannot help until an operator restores the role,
-      // so the stop fails with that code instead of recording the Sandbox stopped (finding 1676).
-      // An identity the gateway could not authenticate mends itself (a token file or signing
-      // key between refreshes), so it retries within the attempt budget first (finding 1694).
       result =
         error instanceof ComputeStopYieldedError
-          ? {
-              outcome: "pending",
-              code: "AGENT_STOP_YIELDED",
-              ...(stopping === undefined ? {} : { revision: stopping }),
-            }
-          : error instanceof SandboxGatewayUnauthorizedError
-            ? { outcome: error.transient ? "retry" : "permanent", code: error.code }
-            : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+          ? { outcome: "pending", code: "AGENT_STOP_YIELDED", revisionId: stoppingRevisionId }
+          : agentTeardownFailure(error);
     }
     await this.finalizeAgentStop(claim, result);
   }
@@ -3286,11 +3276,10 @@ export class ControllerWorker {
         claim.agentTarget !== "deleted" ||
         claim.namespaceTarget !== undefined
       ) {
-        await this.finalizeAgentDeletion(claim, {
+        return await this.finalizeAgentDeletion(claim, {
           outcome: "permanent",
           code: "INVALID_TARGET",
         });
-        return;
       }
       const resources = await this.state.read(async (view) => {
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
@@ -3307,26 +3296,20 @@ export class ControllerWorker {
       });
       const { namespace, agent, revisions, provisioning } = resources;
       if (namespace === undefined || agent === undefined) {
-        await this.finalizeAgentDeletion(claim, {
+        return await this.finalizeAgentDeletion(claim, {
           outcome: "permanent",
           code: "INVALID_AGENT_OWNER",
         });
-        return;
       }
       if (agent.status !== "deleting" || agent.desiredRuntimeState !== "stopped") {
-        await this.finalizeAgentDeletion(claim, {
+        return await this.finalizeAgentDeletion(claim, {
           outcome: "permanent",
           code: "INVALID_AGENT_STATE",
-          namespace,
-          agent,
-          revisions,
         });
-        return;
       }
       const denied = await this.authorizeAgentAction(claim, agent, "delete");
       if (denied !== undefined) {
-        await this.finalizeAgentDeletion(claim, { ...denied, namespace, agent, revisions });
-        return;
+        return await this.finalizeAgentDeletion(claim, denied);
       }
       if (
         revisions.some(
@@ -3336,14 +3319,10 @@ export class ControllerWorker {
             revision.servicePrincipalId !== agent.servicePrincipalId,
         )
       ) {
-        await this.finalizeAgentDeletion(claim, {
+        return await this.finalizeAgentDeletion(claim, {
           outcome: "permanent",
           code: "INVALID_REVISION_OWNER",
-          namespace,
-          agent,
-          revisions,
         });
-        return;
       }
       if (
         revisions.some(
@@ -3352,27 +3331,19 @@ export class ControllerWorker {
             revision.compute.implementation !== this.compute.implementation,
         )
       ) {
-        await this.finalizeAgentDeletion(claim, {
+        return await this.finalizeAgentDeletion(claim, {
           outcome: "permanent",
           code: "COMPUTE_DRIVER_MISMATCH",
-          namespace,
-          agent,
-          revisions,
         });
-        return;
       }
       if (
         this.compute.provisionAgentRuntimeCredentials !== undefined &&
         this.compute.deleteAgentRuntimeCredentials === undefined
       ) {
-        await this.finalizeAgentDeletion(claim, {
+        return await this.finalizeAgentDeletion(claim, {
           outcome: "permanent",
           code: "CREDENTIAL_DELETION_UNSUPPORTED",
-          namespace,
-          agent,
-          revisions,
         });
-        return;
       }
       const pendingProvisioningEffect =
         provisioning === undefined ? undefined : provisioningPendingEffect(provisioning);
@@ -3401,15 +3372,11 @@ export class ControllerWorker {
           settledProvisioningEffect !== undefined ||
           abandonAfterMs > 0
         ) {
-          await this.finalizeAgentDeletion(claim, {
+          return await this.finalizeAgentDeletion(claim, {
             outcome: "pending",
             code: "PROVISIONING_EFFECT_PENDING",
-            namespace,
-            agent,
-            revisions,
             ...(abandonAfterMs > 0 ? { delayMs: Math.ceil(abandonAfterMs) } : {}),
           });
-          return;
         }
         abandonedProvisioningEffect = {
           workId: provisioning.workId,
@@ -3438,21 +3405,10 @@ export class ControllerWorker {
       result = {
         outcome: "success",
         code: "AGENT_DELETED",
-        namespace,
-        agent,
-        revisions,
-        ...(abandonedProvisioningEffect === undefined ? {} : { abandonedProvisioningEffect }),
+        abandonedProvisioningEffect,
       };
     } catch (error) {
-      if (error instanceof WorkClaimLostError) {
-        throw error;
-      }
-      // As for a stop: a refused identity cannot confirm a Sandbox removed (finding 1676), and
-      // an unauthenticated one retries first (finding 1694).
-      result =
-        error instanceof SandboxGatewayUnauthorizedError
-          ? { outcome: error.transient ? "retry" : "permanent", code: error.code }
-          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+      result = agentTeardownFailure(error);
     }
     await this.finalizeAgentDeletion(claim, result);
   }
@@ -3525,27 +3481,11 @@ export class ControllerWorker {
       }
     } else {
       await this.state.transactWithQueue(async (unit, queue) => {
-        if ((await queue.heartbeat(claim)) === undefined) {
-          throw new WorkClaimLostError();
-        }
-        const terminalFailure = this.outcomeWithAttemptLimit(claim, result.outcome) === "permanent";
-        if (result.decision !== undefined) {
-          await this.appendAgentDenial(unit, claim, result, "deletion");
-        } else if (terminalFailure) {
-          await this.appendAgentDeletionOutcome(unit, claim, result);
-        }
-        if (terminalFailure) {
-          await queue.fail(claim, { code: result.code });
-        } else if (result.outcome === "pending") {
-          // Convergence waits do not consume the bounded failure budget.
-          await queue.defer(
-            claim,
-            { code: result.code },
-            result.delayMs === undefined ? {} : { delayMs: result.delayMs },
-          );
-        } else {
-          await queue.retry(claim, { code: result.code });
-        }
+        requireClaimRenewal(await queue.heartbeat(claim));
+        await this.settleAgentTeardownAttempt(unit, queue, claim, {
+          operation: "deletion",
+          result,
+        });
       }, this.queueOptions);
     }
     this.passOutcome = this.outcomeWithAttemptLimit(claim, result.outcome);
@@ -3561,77 +3501,37 @@ export class ControllerWorker {
     });
   }
 
-  private async appendAgentDeletionOutcome(
-    unit: PlatformUnitOfWork,
-    claim: ClaimedWork,
-    result: AgentDeletionDispatchResult,
-  ): Promise<void> {
-    if (this.installation === undefined || claim.agentId === undefined) {
-      throw new Error("The worker Agent deletion audit context is unavailable.");
-    }
-    await unit.audit.append({
-      id: `aud_${randomUUID()}`,
-      installationId: this.installation.id,
-      namespaceId: claim.namespaceId,
-      occurredAt: new Date().toISOString(),
-      kind: "mutation",
-      actorId: claim.actorId,
-      source: "occ",
-      action: "openclaw.agents.lifecycle.delete",
-      resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
-      iamDriverId: this.iamDriverId,
-      outcome: "failure",
-      details: {
-        computeDriverId: this.compute.id,
-        reasonCode: result.code,
-      },
-    });
-  }
-
   private async finalizeAgentStop(
     claim: ClaimedWork,
-    result: AgentStopDispatchResult,
+    observed: AgentStopDispatchResult,
   ): Promise<void> {
-    await this.state.transactWithQueue(async (unit, queue) => {
+    const result = await this.state.transactWithQueue(async (unit, queue) => {
+      let settled = observed;
       requireClaimRenewal(await queue.heartbeat(claim));
-      if (result.outcome === "success" && result.agent !== undefined) {
+      if (observed.outcome === "success" && observed.servicePrincipalId !== undefined) {
         const agent = await this.lockClaimAgent(unit, claim);
-        if (agent === undefined || agent.servicePrincipalId !== result.agent.servicePrincipalId) {
-          result = { outcome: "permanent", code: "INVALID_AGENT_OWNER" };
+        if (agent === undefined || agent.servicePrincipalId !== observed.servicePrincipalId) {
+          settled = { outcome: "permanent", code: "INVALID_AGENT_OWNER" };
         } else if (agent.desiredRuntimeState !== "stopped") {
           // A later deployment may retain the old active pointer while preparing.
           // Never clear it merely because the final exact stop call completed.
-          result = { ...result, code: "STOP_SUPERSEDED" };
-        } else if (result.revision !== undefined && agent.activeRevisionId === result.revision.id) {
+          settled = { ...observed, code: "STOP_SUPERSEDED" };
+        } else if (
+          observed.revisionId !== undefined &&
+          agent.activeRevisionId === observed.revisionId
+        ) {
           await unit.agents.compareAndClearActiveRevision(
             claim.namespaceId,
             agent.id,
-            result.revision.id,
+            observed.revisionId,
           );
         }
       }
-      const terminalFailure = this.outcomeWithAttemptLimit(claim, result.outcome) === "permanent";
-      if (result.decision !== undefined) {
-        await this.appendAgentDenial(unit, claim, result, "stop");
-      } else if (result.outcome === "success" || terminalFailure) {
-        await this.appendAgentStopOutcome(unit, claim, result);
-      }
-
-      if (result.outcome === "success") {
-        await queue.complete(claim);
-      } else if (terminalFailure) {
-        await queue.fail(claim, { code: result.code });
-      } else if (result.outcome === "pending") {
-        // A stop that yielded to due Work refunds its attempt and runs again after that Work.
-        // Repeated yields are not failures, so they record no evidence; the outcome does.
-        await queue.defer(
-          claim,
-          { code: result.code },
-          { delayMs: this.stopYieldRecheckMs(claim), recordEvidence: false },
-        );
-      } else {
-        await queue.retry(claim, { code: result.code });
-      }
+      await this.settleAgentTeardownAttempt(unit, queue, claim, {
+        operation: "stop",
+        result: settled,
+      });
+      return settled;
     }, this.queueOptions);
     this.passOutcome = this.outcomeWithAttemptLimit(claim, result.outcome);
     if (result.outcome === "success" && result.code !== "STOP_SUPERSEDED") {
@@ -3649,7 +3549,7 @@ export class ControllerWorker {
     this.emit({
       event: "worker.completed",
       ...agentWorkLogFields(claim),
-      revisionId: result.revision?.id,
+      revisionId: result.revisionId,
       // As for a deletion: `outcome` is the queue's decision (finding 1694).
       result: result.outcome,
       outcome: this.passOutcome,
@@ -3659,59 +3559,77 @@ export class ControllerWorker {
     });
   }
 
-  private async appendAgentStopOutcome(
+  private async settleAgentTeardownAttempt(
     unit: PlatformUnitOfWork,
+    queue: Pick<PostgresWorkQueue, "complete" | "fail" | "defer" | "retry">,
     claim: ClaimedWork,
-    result: AgentStopDispatchResult,
+    attempt: AgentTeardownAttempt,
   ): Promise<void> {
-    if (this.installation === undefined || claim.agentId === undefined) {
-      throw new Error("The worker Agent stop audit context is unavailable.");
+    const { operation, result } = attempt;
+    const outcome = this.outcomeWithAttemptLimit(claim, result.outcome);
+    if (result.decision !== undefined || outcome === "success" || outcome === "permanent") {
+      await this.appendAgentTeardownEvidence(unit, claim, attempt);
     }
-    await unit.audit.append({
-      id: `aud_${randomUUID()}`,
-      installationId: this.installation.id,
-      namespaceId: claim.namespaceId,
-      occurredAt: new Date().toISOString(),
-      kind: "mutation",
-      actorId: claim.actorId,
-      source: "occ",
-      action: "openclaw.agents.lifecycle.stop",
-      resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
-      iamDriverId: this.iamDriverId,
-      outcome: result.outcome === "success" ? "success" : "failure",
-      details: {
-        computeDriverId: this.compute.id,
-        reasonCode: result.code,
-        ...(result.revision === undefined ? {} : { revisionId: result.revision.id }),
-      },
-    });
+    if (outcome === "success") {
+      await queue.complete(claim);
+    } else if (outcome === "permanent") {
+      await queue.fail(claim, { code: result.code });
+    } else if (outcome === "pending") {
+      // Both waits refund the attempt. A yielded stop records evidence only when it settles.
+      const options =
+        operation === "stop"
+          ? { delayMs: this.stopYieldRecheckMs(claim), recordEvidence: false }
+          : { delayMs: result.delayMs };
+      await queue.defer(claim, { code: result.code }, options);
+    } else {
+      await queue.retry(claim, { code: result.code });
+    }
   }
 
-  private async appendAgentDenial(
+  private async appendAgentTeardownEvidence(
     unit: PlatformUnitOfWork,
     claim: ClaimedWork,
-    result: DispatchResult,
-    operation: "deletion" | "stop",
+    { operation, result }: AgentTeardownAttempt,
   ): Promise<void> {
     if (this.installation === undefined || claim.agentId === undefined) {
-      throw new Error(`The worker Agent ${operation} authorization context is unavailable.`);
+      const context = result.decision === undefined ? "audit" : "authorization";
+      throw new Error(`The worker Agent ${operation} ${context} context is unavailable.`);
     }
-    await unit.audit.append({
+    const envelope = {
       id: `aud_${randomUUID()}`,
       installationId: this.installation.id,
       namespaceId: claim.namespaceId,
       occurredAt: new Date().toISOString(),
-      kind: "authorization_denial",
       actorId: claim.actorId,
-      source: "occ",
-      action: operation === "deletion" ? "openclaw.agents.delete" : "openclaw.agents.stop",
-      resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
+      source: "occ" as const,
+      resource: { kind: "agent" as const, id: claim.agentId, namespaceId: claim.namespaceId },
       iamDriverId: this.iamDriverId,
-      ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
-      ...(result.decision === undefined ? {} : { decisionReason: result.decision.reason }),
-      reasonCode: result.code,
-      outcome: "denied",
-    });
+    };
+    const action = operation === "deletion" ? "delete" : "stop";
+    if (result.decision !== undefined) {
+      await unit.audit.append({
+        ...envelope,
+        kind: "authorization_denial",
+        action: `openclaw.agents.${action}`,
+        ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
+        decisionReason: result.decision.reason,
+        reasonCode: result.code,
+        outcome: "denied",
+      });
+    } else {
+      const revisionId = operation === "stop" ? result.revisionId : undefined;
+      await unit.audit.append({
+        ...envelope,
+        kind: "mutation",
+        action: `openclaw.agents.lifecycle.${action}`,
+        outcome: result.outcome === "success" ? "success" : "failure",
+        details: {
+          computeDriverId: this.compute.id,
+          reasonCode: result.code,
+          ...(revisionId === undefined ? {} : { revisionId }),
+        },
+      });
+    }
   }
 
   /**
