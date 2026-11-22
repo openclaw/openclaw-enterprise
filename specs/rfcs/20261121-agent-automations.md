@@ -220,13 +220,15 @@ verify the selected revision, Pod UID, container ID, actual image, guarded
 launcher/version, effective policy and trust configuration. Require a fresh
 deployment if the guard is missing. Refuse absent or stale evidence.
 
-Use an exact Pod proxy or a revision-specific route only if the Driver can
-prove that the WebSocket reached that instance (including handshake and identity
-recheck where required). An Agent-wide chat Service can route to another
-revision during cutover and cannot qualify. Use the same pinned connection
-through each operation, including eligibility read and mutation. If replacement
-invalidates the binding, stop dispatch. After a possibly sent write, return
-`UNKNOWN_OUTCOME` without reconnecting or replaying. Runtime details belong
+For Kubernetes, open a controller-private, single-use loopback WebSocket
+tunnel to the exact Pod through the Kubernetes `pods/proxy` GET operation.
+The Driver owns Kubernetes authentication and TLS. The transport exposes
+instance assertion and close operations. Recheck Pod UID, container ID and
+image after handshake and before RPC dispatch. An Agent-wide Service can route
+to another revision during cutover. Pin one connection through the eligibility
+read and mutation, then close it. On replacement, stop dispatch. After a
+possibly sent write, return `UNKNOWN_OUTCOME` without reconnecting or replaying.
+Runtime details belong
 to the Driver and Harness. Submit the contract before implementation.
 
 Before **every** native Gateway process spawn, including supervisor respawn
