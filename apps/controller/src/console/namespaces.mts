@@ -239,7 +239,9 @@ export function renderNamespaces(
             // page; focus left there goes to the outcome too.
             const active = document.activeElement;
             const focused =
-              row.contains(active) || (refocus && (!active || active === document.body));
+              row.contains(active) ||
+              (rows.size === 1 && searchToolbar.contains(active)) ||
+              (refocus && (!active || active === document.body));
             row.remove();
             rows.delete(item);
             updateMatches();

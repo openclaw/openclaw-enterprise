@@ -309,19 +309,20 @@ test("The Namespace selector keeps keyboard focus acquired during Agents list re
 
 test("Namespaces refocus keeps the active row control in view after the list changes", async (t) => {
   const { fixture } = await createReadyConsoleNamespace(t, "Workshop");
-  for (let index = 0; index < 22; index += 1) {
+  for (let index = 0; index < 20; index += 1) {
     await fixture.createNamespace(`Team ${String(index).padStart(2, "0")}`);
   }
 
   for (const width of [1440, 390]) {
+    const target = await fixture.createNamespace(`Team 20 at ${width}`, { ready: true });
     const { page } = await newPage(t, fixture, {
       context: { viewport: { width, height: 844 }, ignoreHTTPSErrors: false },
     });
     await trackSettledFetches(page);
     await login(page, fixture, "/console/namespaces");
     const view = page.locator(settledView);
-    const row = view.getByRole("link", { name: "Team 20", exact: true });
-    const remove = view.getByRole("button", { name: "Delete Team 20", exact: true });
+    const row = view.getByRole("link", { name: target.name, exact: true });
+    const remove = view.getByRole("button", { name: `Delete ${target.name}`, exact: true });
     await row.waitFor();
     await waitForIdleFetches(page);
     for (const [index, control] of [row, remove].entries()) {
@@ -335,10 +336,41 @@ test("Namespaces refocus keeps the active row control in view after the list cha
       assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `visible at ${width}px`);
     }
 
-    await row.focus();
-    await fixture.createNamespace(`Changed ${width}`);
-    await refocusHeld(t, page, () => page.keyboard.press("Tab"));
-    assert.equal(await hasFocus(row), false, "moving focus during the recheck leaves the old row");
+    await remove.focus();
+    assert.equal((await fixture.request("DELETE", `/namespaces/${target.id}`)).status, 202);
+    await refocusHeld(t, page);
+    await row.locator("xpath=ancestor::li").getByText("Deleting…", { exact: true }).waitFor();
+    await remove.waitFor({ state: "hidden" });
+    assert.equal(
+      await hasFocus(row),
+      true,
+      `the row link replaces the missing Delete at ${width}px`,
+    );
+    const box = await row.boundingBox();
+    assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `row link visible at ${width}px`);
+
+    const tabTarget =
+      width === 1440
+        ? page.getByRole("link", { name: "Agents", exact: true })
+        : page.getByRole("button", { name: "Open navigation", exact: true });
+    for (const changed of [false, true]) {
+      await waitForIdleFetches(page);
+      await tagView(page);
+      await row.focus();
+      if (changed) {
+        await fixture.createNamespace(`Changed ${width}`);
+      }
+      await refocusHeld(t, page, async () => {
+        await page.keyboard.press("Tab");
+        assert.equal(
+          await hasFocus(tabTarget),
+          true,
+          `Tab reaches the shell control at ${width}px`,
+        );
+      });
+      assert.equal(await viewTag(page), changed ? null : "kept");
+      assert.equal(await hasFocus(tabTarget), true, `the shell control keeps focus at ${width}px`);
+    }
   }
 });
 

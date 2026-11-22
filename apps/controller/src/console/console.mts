@@ -2242,6 +2242,12 @@ async function loadPage({
     // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
     // replacing the shell briefly leaves it on the body again.
     const restoreFocus = document.activeElement === document.body ? refocused : null;
+    // The Namespaces view is inert during the recheck. If Tab reached a shell control,
+    // match that control when the shell is replaced, including the phone navigation toggle.
+    const namespaceShellFocus =
+      retained && resumingView && current.feature === "namespaces" && !restoreFocus
+        ? focusInShownView()
+        : null;
     if (unchanged && retainedView && retainedState) {
       stopLoadingTimer();
       forgetRetainedView(taken);
@@ -2263,14 +2269,9 @@ async function loadPage({
       writeInFlight = retainedState.writeInFlight ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
-      restoreRefocus = () => restoreFocus?.restore(restoredShell.view);
+      restoreRefocus = () => (restoreFocus ?? namespaceShellFocus)?.restore(restoredShell.view);
       return;
     }
-    // Rebuilding replaces the shell too, so check whether focus moved before it can blur.
-    const namespaceRefocus =
-      current.feature === "namespaces" && retained && document.activeElement === document.body
-        ? refocused
-        : null;
     // The destination rebuilds: a retained view that did not match is stale from here on.
     forgetRetainedView(taken);
     // An Agent page renders hidden behind what is on screen (the opening panel, a held page or
@@ -2809,8 +2810,11 @@ async function loadPage({
         },
         items,
       );
-      const rebuiltView = shell.view;
-      restoreRefocus = () => namespaceRefocus?.restore(rebuiltView, { rebuilt: true });
+      const focus = restoreFocus ?? namespaceShellFocus;
+      if (retained && focus) {
+        const rebuiltView = shell.view;
+        restoreRefocus = () => focus.restore(rebuiltView, { rebuilt: restoreFocus !== null });
+      }
     } else if (current.feature === "secrets" && selectedNamespace !== null) {
       // Only carry the reader's filter into freshly admitted rows for the same owner and route.
       const previous =

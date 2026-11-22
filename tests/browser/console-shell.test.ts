@@ -8,6 +8,7 @@ import { waitFor } from "../helpers/wait-for.ts";
 import {
   accessibleDescription,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   newPage,
@@ -611,13 +612,12 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   // The keyboard reaches each row's link; the ring is drawn inside the table's clipped corners.
   const link = list.getByRole("link", { name: provisioning.name, exact: true });
   await page.locator("[data-create-namespace]").focus();
-  for (let step = 0; step < 6; step += 1) {
-    if (await link.evaluate((node) => node === globalThis.document.activeElement)) {
-      break;
-    }
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(page.getByRole("searchbox", { name: "Search Namespaces" })), true);
+  for (let step = 0; step < 5 && !(await hasFocus(link)); step += 1) {
     await page.keyboard.press("Tab");
   }
-  assert.equal(await link.evaluate((node) => node === globalThis.document.activeElement), true);
+  assert.equal(await hasFocus(link), true);
   const row = list.getByRole("listitem").filter({ hasText: provisioning.id });
   assert.deepEqual(await style(row, "outlineStyle", "outlineOffset"), {
     outlineStyle: "solid",
