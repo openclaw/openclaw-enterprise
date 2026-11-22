@@ -128,6 +128,30 @@
     },
     {
       "rule": "cross-package-source",
+      "from": "apps/controller/src/drivers/compute/agent-automation-guard.ts",
+      "to": "packages/contracts/src/api/plain-text.ts",
+      "specifier": "../../../../../packages/contracts/src/api/plain-text.ts",
+      "kind": "require",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Agent automation origin guard",
+      "reason": "Checkout CI and the in-image supervisor proof load the guard without workspace packages installed. The guard reads the dependency-free canonical Name pattern and character limit.",
+      "removeWhen": "The checkout and in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+    },
+    {
+      "rule": "unresolved-local-import",
+      "from": "apps/controller/src/drivers/compute/agent-automation-guard.ts",
+      "to": "packages/contracts/dist/api/plain-text.js",
+      "specifier": "../../../../../packages/contracts/dist/api/plain-text.js",
+      "kind": "require",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Agent automation origin guard",
+      "reason": "The compiled guard loads the emitted canonical Name vocabulary from the contracts project output. The authored-source graph excludes that output.",
+      "removeWhen": "The compiled guard uses a package export or build-output resolution is represented in the analyzer."
+    },
+    {
+      "rule": "cross-package-source",
       "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
       "to": "packages/contracts/src/runtime-failure.ts",
       "specifier": "../../../../../../packages/contracts/src/runtime-failure.ts",

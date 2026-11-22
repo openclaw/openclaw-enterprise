@@ -1,9 +1,24 @@
-import { NAME_MAX_CHARACTERS, Name } from "@openclaw-enterprise/contracts";
+import { createRequire } from "node:module";
 
-const automationNamePattern: unknown = Reflect.get(Name, "pattern");
-if (typeof automationNamePattern !== "string") {
-  throw new Error("The Name schema has no automation identity pattern.");
+// Checkout CI and the in-image supervisor proof load this renderer before workspace
+// packages are installed. Compiled callers use the contracts build output.
+const require = createRequire(import.meta.url);
+const nameVocabulary: unknown = new URL(import.meta.url).pathname.endsWith(".ts")
+  ? require("../../../../../packages/contracts/src/api/plain-text.ts")
+  : require("../../../../../packages/contracts/dist/api/plain-text.js");
+if (
+  typeof nameVocabulary !== "object" ||
+  nameVocabulary === null ||
+  !("PLAIN_TEXT_PATTERN" in nameVocabulary) ||
+  typeof nameVocabulary.PLAIN_TEXT_PATTERN !== "string" ||
+  !("NAME_MAX_CHARACTERS" in nameVocabulary) ||
+  typeof nameVocabulary.NAME_MAX_CHARACTERS !== "number" ||
+  !Number.isSafeInteger(nameVocabulary.NAME_MAX_CHARACTERS) ||
+  nameVocabulary.NAME_MAX_CHARACTERS <= 0
+) {
+  throw new Error("Invalid automation identity vocabulary.");
 }
+const { NAME_MAX_CHARACTERS, PLAIN_TEXT_PATTERN } = nameVocabulary;
 
 // These bundled plugins contain no MCP declarations at the qualified OpenClaw source.
 export const AUTOMATION_NO_MCP_PLUGIN_IDS = Object.freeze([
@@ -19,7 +34,7 @@ export const AGENT_AUTOMATION_GUARD_VERSION = "oce-automation-origin-v1";
 export const AGENT_AUTOMATION_ORIGIN_GUARD = String.raw`
 const AUTOMATION_GUARD_VERSION = ${JSON.stringify(AGENT_AUTOMATION_GUARD_VERSION)};
 const AUTOMATION_NAME_MAX_CHARACTERS = ${NAME_MAX_CHARACTERS};
-const AUTOMATION_NAME_PATTERN = new RegExp(${JSON.stringify(automationNamePattern)}, "u");
+const AUTOMATION_NAME_PATTERN = new RegExp(${JSON.stringify(PLAIN_TEXT_PATTERN)}, "u");
 const AUTOMATION_BUNDLED_PLUGIN_ROOT = "/app/node_modules/openclaw/dist/extensions";
 const AUTOMATION_BUNDLED_PLUGIN_IDS = ${JSON.stringify(AUTOMATION_NO_MCP_PLUGIN_IDS)};
 function assertCleanAutomationOrigins(env) {
