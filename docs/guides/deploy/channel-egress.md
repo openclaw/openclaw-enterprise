@@ -58,13 +58,23 @@ with their owner before starting the probe.
    permanent fleet rule.
 
 A successful probe verifies patch delivery for its own Gateway. Check the
-permanent fleet rule before starting an upgrade. If the script reports an
-unsettled create or cleanup, retain the probe name and the reported create attempts.
-Confirm that the command has stopped, then reconcile the create or delete with
-the Kubernetes operator. Inspect the reserved namespace and the NetworkPolicy
-with the same name in the Envoy namespace. Verify ownership before removing
-either resource. Reuse the name after both operations have settled and both
-resources are absent.
+permanent fleet rule separately before starting an upgrade.
+
+### If probe creation or cleanup is uncertain
+
+Keep the name reserved. Confirm that the command has stopped. Have the
+Kubernetes operator resolve any pending requests before manual cleanup.
+For the probe namespace and egress policy, match each remaining resource's `openclaw.dev/channel-probe-attempt`
+annotation to its own reported create attempt. Check its UID against any
+recorded UID. Stop if ownership is uncertain or a read fails.
+
+1. If the probe namespace remains, delete it with its UID as a precondition.
+   Confirm that the namespace is gone.
+2. In the Envoy namespace, confirm that no Pods match both Gateway ownership
+   labels for `$PROBE_NAME`. Keep the egress policy while any matching Pod remains.
+3. If the probe's egress NetworkPolicy remains in the Envoy namespace, delete
+   it with its UID as a precondition. Confirm that it is gone before reusing
+   the name.
 
 ## Enable channels in the Kubernetes and EKS quickstarts
 
