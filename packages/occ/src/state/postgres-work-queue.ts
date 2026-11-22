@@ -1311,7 +1311,8 @@ export class PostgresWorkQueue {
     // to this exact work item can explain its progress; unbound history is unknown.
     const found = await this.client.query(
       `SELECT event.occurred_at, event.details->>'reasonCode' AS reason_code,
-         event.details->>'refusal' AS refusal
+         event.details->>'refusal' AS refusal,
+         event.details->'candidateNotStarted' = 'true'::jsonb AS candidate_not_started
        FROM occ.controller_work AS work
        JOIN occ.audit_events AS event
          ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
@@ -1325,13 +1326,20 @@ export class PostgresWorkQueue {
       [nonempty(idempotencyKey, "Controller work idempotency key"), codes],
     );
     const row = found.rows[0] as
-      { occurred_at: Date | string; reason_code: string; refusal: string | null } | undefined;
+      | {
+          occurred_at: Date | string;
+          reason_code: string;
+          refusal: string | null;
+          candidate_not_started: boolean | null;
+        }
+      | undefined;
     return row === undefined
       ? undefined
       : Object.freeze({
           at: asDate(row.occurred_at),
           code: row.reason_code,
           ...(row.refusal === null ? {} : { refusal: row.refusal }),
+          ...(row.candidate_not_started === true ? { candidateNotStarted: true as const } : {}),
         });
   }
 
@@ -1546,7 +1554,7 @@ export class PostgresWorkQueue {
   async fail(
     claim: WorkClaim,
     failure: PermanentFailure,
-    options: { readonly continuingRevision?: true } = {},
+    options: { readonly continuingRevision?: true; readonly candidateNotStarted?: true } = {},
   ): Promise<void> {
     validateClaim(claim);
     const failureCode = safeFailureCode(failure.code);
@@ -1612,7 +1620,12 @@ export class PostgresWorkQueue {
            AND work.lease_expires_at > clock_timestamp()
          RETURNING work.*
        ), ${transferRepositoryCleanupSql("$7::boolean", "source.reason_code = 'REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED'")} ${SETTLE_PROVISIONING_FAILURE_SQL}
-       ${INSERT_EVIDENCE_CTE_SQL}
+       ${insertEvidenceCteSql({
+         details:
+           options.candidateNotStarted === true
+             ? "jsonb_build_object('candidateNotStarted', true)"
+             : "'{}'::jsonb",
+       })}
        SELECT EXISTS (SELECT 1 FROM source) AS claim_current,
          EXISTS (SELECT 1 FROM transitioned) AS failed`,
       [

@@ -597,20 +597,30 @@ async function probeInGateway(): Promise<void> {
       } catch {
         return failure("response_format");
       }
-      const choice = optionalFields(fields(body).choices)?.[0];
-      const result = optionalFields(optionalFields(choice)?.message)?.content;
+      const choices = optionalFields(body)?.choices;
+      const choice: unknown = Array.isArray(choices) ? choices[0] : undefined;
+      const message = optionalFields(optionalFields(choice)?.message);
+      if (message?.role !== "assistant" || message.refusal != null) {
+        return failure("response_format");
+      }
+      const result = message.content;
       let text = "";
       if (typeof result === "string") {
         text = result;
       } else if (Array.isArray(result)) {
         const parts: unknown[] = result;
-        text = parts
-          .map((part) => {
-            const text = optionalFields(part)?.text;
-            return typeof text === "string" ? text : optionalFields(text)?.value;
-          })
-          .filter((part) => typeof part === "string")
-          .join("");
+        for (const part of parts) {
+          const entry = optionalFields(part);
+          if (entry?.type !== "text" || entry.refusal != null) {
+            return failure("response_format");
+          }
+          const value =
+            typeof entry.text === "string" ? entry.text : optionalFields(entry.text)?.value;
+          if (typeof value !== "string") {
+            return failure("response_format");
+          }
+          text += value;
+        }
       }
       if (!text.trim()) {
         return failure("response_format");
@@ -640,7 +650,18 @@ async function probeInGateway(): Promise<void> {
       emit(proof);
       return;
     }
-    if (!proof.text.includes(`${nonce}`)) {
+    let answer = proof.text.trim();
+    if (answer.endsWith(".")) {
+      answer = answer.slice(0, -1).trimEnd();
+    }
+    const fence = /^```[a-z\d_-]{0,32}\r?\n([\s\S]*?)\r?\n```$/i.exec(answer)?.[1];
+    const quote = answer[0] ?? "";
+    if (fence !== undefined) {
+      answer = fence.trim();
+    } else if (["'", '"', "`"].includes(quote) && answer.endsWith(quote)) {
+      answer = answer.slice(1, -1).trim();
+    }
+    if (answer !== nonce) {
       emit(failure("nonce"));
       return;
     }
