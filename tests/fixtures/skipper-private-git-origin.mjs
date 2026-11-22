@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { IncomingMessage } from "node:http";
-import { createServer, get as httpsGet } from "node:https";
-import { checkServerIdentity } from "node:tls";
+import { createServer, get as httpsGet, request as httpsRequest } from "node:https";
+import { checkServerIdentity, createSecureContext } from "node:tls";
 import { isIP } from "node:net";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -390,6 +390,7 @@ export async function startSkipperPrivateGitOrigin({
       scopedPulls.set(name, pull);
       reply(201, pull);
     };
+    /** @type {Record<string, number>} */
     const counts = {};
     const count = (endpoint, status) => {
       const key = `${endpoint}:${status}`;
@@ -736,6 +737,81 @@ export async function startSkipperPrivateGitOrigin({
       ...(networkAcl && {
         network: {
           token: broadToken,
+          repositories: networkRepositories,
+          scopes: repositoryScopes.map((scope) => ({ ...scope })),
+          /**
+           * @param {number | undefined} index
+           * @param {string} repository
+           * @param {{ service: string, method: "GET" | "POST", body?: string }} options
+           * @returns {Promise<{ status?: number, type?: string }>}
+           */
+          async probeIssued(index, repository, { service, method, body }) {
+            assert.ok(
+              issuedNetwork && (index === undefined || issuedGit?.has(index)),
+              "missing controlled issuer credential",
+            );
+            assert.ok(networkRepositories.includes(repository));
+            assert.ok(["git-upload-pack", "git-receive-pack"].includes(service));
+            assert.ok(["GET", "POST"].includes(method));
+            assert.ok(method === "POST" ? typeof body === "string" : body === undefined);
+
+            const path = method === "POST" ? service : `info/refs?service=${service}`;
+            const secureContext = createSecureContext({ ca: tls.ca ?? tls.cert });
+            return new Promise((resolve, reject) => {
+              const request = httpsRequest(
+                {
+                  hostname: listener.address,
+                  port: listener.port,
+                  path: `/${repository}.git/${path}`,
+                  method,
+                  agent: false,
+                  secureContext,
+                  servername: isIP(advertisedHost) ? "" : advertisedHost,
+                  checkServerIdentity: (_host, cert) => checkServerIdentity(advertisedHost, cert),
+                  signal: AbortSignal.timeout(5000),
+                  ...(index === undefined
+                    ? {}
+                    : { auth: "x-access-token:" + issuedGit.get(index) }),
+                  headers: {
+                    host: new URL(origin).host,
+                    ...(body === undefined
+                      ? {}
+                      : {
+                          "content-type": `application/x-${service}-request`,
+                          "content-length": Buffer.byteLength(body),
+                        }),
+                  },
+                },
+                (response) => {
+                  response.resume();
+                  response.once("error", reject);
+                  response.once("end", () => {
+                    if (!response.complete) {
+                      reject(new Error("incomplete Git origin response"));
+                      return;
+                    }
+                    resolve({
+                      status: response.statusCode,
+                      type: response.headers["content-type"],
+                    });
+                  });
+                },
+              );
+              request.once("error", reject);
+              request.end(body);
+            });
+          },
+
+          /** @param {Buffer} output */
+          containsIssuedCredential(output) {
+            assert.ok(issuedNetwork);
+            return [...issuedGit.values()].some(
+              (token) =>
+                output.includes(token) ||
+                output.includes(Buffer.from(`x-access-token:${token}`).toString("base64")),
+            );
+          },
+
           shortenNextTokenForRenewal() {
             assert.ok(issuedNetwork && !shortenNextToken);
             shortenNextToken = true;
