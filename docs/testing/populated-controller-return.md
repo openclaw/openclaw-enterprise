@@ -198,6 +198,8 @@ includes the checks while both controllers are stopped and the single resume.
 Its success flag covers that sequence. Later fleet checks and model replies have
 their own results. Both receipts use the sample outcomes and cadence described above.
 
+In the distinct-image production TUI upgrade test, the independent controller-only phase selects the primary running Agent using `--verify-agent` and `--verify-agent-namespace`. It compares `agent-continuity.json` and `agent-continuity-after.json` to verify that the Agent remains in the same namespace with the same identity and saved active revision. The test reports whether the Gateway Pod was replaced and records the Gateway container’s restart count (`null` if unknown) before and after the upgrade. A healthy Pod replacement is allowed. The two observations cannot establish uninterrupted service during the upgrade.
+
 The ordinary controller upgrade also writes `controller-api-endpoints.json`.
 This read-only observer surrounds the unchanged HTTP sampler. It binds the API
 Service UID before the action and records the named Service, its labeled
