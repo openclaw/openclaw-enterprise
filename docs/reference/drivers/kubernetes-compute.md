@@ -22,19 +22,18 @@ and volumes; embedded OpenClaw shares one Pod. Experimental `executionCluster`
 places dedicated Harnesses in a second cluster;
 [cloud and complete runtime acceptance remain pending](../../testing/kubernetes.md#two-cluster-validation).
 
-New managed namespaces use `oce-` plus 15 hexadecimal characters of the Namespace
-ID’s SHA-256 digest. Legacy `oce-<slug>-<hash12>` names require exact tenant and
-OpenClaw manager labels plus the `namespace-id` annotation; the Driver never
-creates them. Wrong names or duplicate claims fail closed. Adoption retains names;
-OpenShell rejects names exceeding its Workspace limit.
+Managed namespace names use `oce-` plus 15 hexadecimal characters from the Namespace
+ID’s SHA-256 digest. The Driver can adopt, but never creates, legacy
+`oce-<slug>-<hash12>` names with exact tenant and OpenClaw manager labels and the
+`namespace-id` annotation. Adoption retains names. Wrong names or duplicate claims fail closed. OpenShell
+rejects names over its Workspace limit.
 
 OpenShell integrations ([operator](openshell-sandbox.md) or experimental
-[managed](kubernetes-openshell-compute.md)) own dedicated Codex and native
-OpenClaw Harness Pods. Internal execution classes share `occ/kubernetes`;
-Compute keeps other resources. Dedicated native OpenClaw requires a selected
-SandboxDriver that provisions the Harness and declares networking, filesystem, and
-process containment. Stock OpenShell cannot provide required credential and
-workload-identity projections; Agent deployment with OpenShell remains unsupported.
+[managed](kubernetes-openshell-compute.md)) own dedicated Codex and native OpenClaw
+Harness Pods. Internal execution classes share `occ/kubernetes`; Compute owns other resources.
+Dedicated native OpenClaw requires a selected SandboxDriver with Harness provisioning and
+networking, filesystem, and process containment. Stock OpenShell lacks required
+credential and workload-identity projections, so Agent deployment remains unsupported.
 
 HTTP chat defaults on for new single-cluster runtime revisions and uses a
 private exact-POST route with trusted-proxy chat authority. Explicit opt-out
@@ -50,10 +49,10 @@ Operator contracts:
 
 ### Execution modes
 
-Each Agent-owned gateway Deployment has exactly one desired replica and uses
-`Recreate`: Kubernetes stops the previous Pod before starting its replacement,
-so gateway rollout can cause transient downtime. Neither Kubernetes Deployment nor OCC routing provides node-level process
-fencing during partitions or manual replacement.
+Each Agent gateway Deployment uses one desired replica and `Recreate`: Kubernetes
+stops the previous Pod before starting its replacement, which can cause downtime.
+Kubernetes Deployment and OCC routing do not fence node processes during partitions
+or manual replacement.
 
 Harness configuration selects the Agent's execution topology:
 
@@ -82,44 +81,41 @@ Harness configuration selects the Agent's execution topology:
   in `/v1`. Secret-backed keys require `https://api.openai.com/v1`. Model URLs
   reject credentials, queries, fragments and wildcards.
 
-Dedicated replacement opts into the [exclusive preparation contract](compute.md#production-revision-stages):
-the worker stops predecessors before starting the new Harness. This permits RWO
-workspace storage with deployment downtime; restore previous
-configuration through a new version instead of restarting its old snapshot.
+For dedicated replacement, the worker follows the [exclusive preparation contract](compute.md#production-revision-stages)
+and stops predecessors before starting the new Harness. This supports RWO workspace
+storage with downtime. Restore configuration in a new version, not by restarting
+the old snapshot.
 
-Enabled external channels require dedicated execution. Unsupported Harness and
-execution-mode combinations fail deployment. Embedded OpenClaw is never
-delegated to OpenShell.
+Enabled external channels require dedicated execution; unsupported Harness and
+execution-mode combinations fail deployment. Embedded OpenClaw is never delegated to OpenShell.
 
-Stopping an Agent first deletes its exact gateway route and gateway runtime,
-then removes the dedicated Harness Deployment or delegates provider-owned
-Harness removal; Sandbox cleanup follows the [provisioning lifecycle](#sandbox-provisioning).
-Stop retains Agent-owned PersistentVolumeClaims and runtime credential Secrets;
-retirement removes resources for that Agent revision. Repeated stop
-observes exact ownership and converges when the runtime objects are already
-absent. For a staged revision, stop removes the bound Credential Proxy deployment after the Harness stops and retains the target record until removal succeeds.
+Stopping an Agent deletes its exact gateway route and runtime, then removes the
+dedicated Harness Deployment or delegates removal to its provider. Sandbox cleanup
+follows the [provisioning lifecycle](#sandbox-provisioning). Stop retains Agent-owned
+PersistentVolumeClaims and runtime credential Secrets; retirement removes revision
+resources. Repeated stop checks exact ownership and converges when runtime objects
+are absent. For a staged revision, stop removes the bound Credential Proxy deployment
+after the Harness stops and retains the target record until removal succeeds.
 
 ### Plugin startup status
 
-Compute-owned OpenClaw and Codex runtimes publish private startup results after
-attempting plugins and verifying configuration: Agent revision ID, runtime instance,
-successful selection IDs, and [warnings](../agent-plugins.md#lifecycle)
-(`PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED`) for disabled selections.
-Compute reads the exact workload through the authenticated Pod proxy under
-tenant-local RBAC; workloads receive no Kubernetes write credentials. The endpoint
-is not public. Ownership, startup identity, selection keys, and warning codes
-must match; missing, malformed, or foreign status cannot establish readiness.
+After attempting plugins and verifying configuration, Compute-owned OpenClaw and Codex
+runtimes privately report the Agent revision ID, runtime instance, successful selection
+IDs, and [warnings](../agent-plugins.md#lifecycle) (`PLUGIN_INSTALL_FAILED` or
+`PLUGIN_AUTH_REQUIRED`) for disabled selections. Compute reads the exact workload
+through the authenticated Pod proxy under tenant-local RBAC; workloads receive no
+Kubernetes write credentials. The endpoint is private. Ownership, startup identity, selection keys, and warning
+codes must match. Missing, malformed, or foreign status cannot establish readiness.
 
 Embedded OpenClaw disables failed plugins and their managed tool allowances before
 Gateway startup. Dedicated Codex applies current results before serving and
 refreshes them after changed restart results. Failed-only app bindings are disabled;
 successful selections retain admitted policy and required shared bindings.
 
-The Codex app-server credential derives from the Agent's transport Secret,
-Agent revision ID, and startup identity, so a gateway configured for the previous startup
-cannot authenticate to a restarted Agent. Its supervisor obtains the new status,
-applies the matching exclusions, and respawns the gateway process with the new
-credential, closing the interval before its next status poll.
+The Codex app-server credential derives from the Agent transport Secret, revision ID,
+and startup identity. A gateway from the previous startup cannot authenticate to a
+restarted Agent. Before its next status poll, the supervisor obtains new status,
+applies matching exclusions, and respawns the gateway with the new credential.
 
 The worker commits warnings with successful deployment under its live claim;
 restarts recompute status. No receipt ConfigMaps, finalizers, failure latches, or
@@ -128,15 +124,13 @@ installations remain unchanged; rollback is not promised.
 
 ### Current runtime diagnostics
 
-Kubernetes Compute implements the optional deployment diagnostics contract. OCC
-authorizes the specific Agent and Agent revision, then the Driver reads the owned
-runtime Pods through the Kubernetes apiserver Pod proxy. The private runtime
-endpoint returns generic checks for the requested Agent revision ID. Compute
-rejects responses larger than 65,536 bytes or containing more than 32 checks. The API needs
-Pod `get`/`list` and `pods/proxy` `get` permission in each runtime namespace.
-Both roles are read in the tenant namespace for a single cluster. The two-cluster
-profile reads dedicated Gateways in its control-cluster Gateway namespace. The chart adds these read permissions to the
-unbound tenant API and Gateway observer roles; operators retain control of their
+For optional deployment diagnostics, OCC authorizes the exact Agent and revision. Compute reads
+owned runtime Pods through the Kubernetes apiserver Pod proxy. The private endpoint
+returns checks for that revision; Compute rejects responses over 65,536 bytes or 32
+checks. The API needs Pod `get`/`list` and `pods/proxy` `get` in each runtime
+namespace. Single-cluster reads use the tenant namespace; the two-cluster profile reads
+dedicated Gateways in the control-cluster Gateway namespace. The chart adds these
+permissions to unbound tenant API and Gateway observer roles; operators control their
 namespace-local bindings.
 Missing Pods or unavailable private endpoints report unknown diagnostic checks
 instead of mutating deployment status. The Agent container currently returns no
@@ -149,52 +143,45 @@ model turn.
 
 ### Sandbox provisioning
 
-With OpenShell sandboxing, composition adapts `SandboxDriver.ensureNamespace`
-to OCC Namespace lifecycle hooks. Compute resolves the exact backing namespace
-and selected Kubernetes client without calling Sandbox. The hook applies approved
-namespace-scoped OpenShell labels and NetworkPolicy resources, checks OpenShell
-gateway readiness, and creates or adopts the Namespace Workspace. Harness
-provisioning and cleanup follow the [SandboxDriver lifecycle](sandbox.md#admission-and-lifecycle):
-Agent revision cleanup runs even when Compute's ordinary Harness Deployment is absent,
-and a failed provider Namespace cleanup keeps the Kubernetes namespace.
-Provider-owned Harness removal stays with the provider, so Compute needs no
-Sandbox custom-resource permissions.
-OpenShell workloads retain restricted tenant Pod Security Admission without an
-OCE-configured exemption. OCE leaves runtime selection to Kubernetes and the
-independently managed provider; see [admission requirements](openshell-sandbox.md#kubernetes-and-admission-requirements).
+Composition adapts OpenShell `SandboxDriver.ensureNamespace` to OCC Namespace lifecycle
+hooks. Compute resolves the exact backing namespace and selected Kubernetes client without
+calling Sandbox. The hook applies approved namespace-scoped labels and NetworkPolicies,
+checks OpenShell gateway readiness, and creates or adopts the Namespace Workspace.
+The [SandboxDriver lifecycle](sandbox.md#admission-and-lifecycle) requires Agent revision
+cleanup even without Compute's ordinary Harness Deployment. Failed provider Namespace
+cleanup keeps the Kubernetes namespace. The provider removes its Harness; Compute
+needs no Sandbox custom-resource permissions.
+OpenShell workloads use restricted tenant Pod Security Admission without an OCE
+exemption. Kubernetes and the independent provider select the runtime; see
+[admission requirements](openshell-sandbox.md#kubernetes-and-admission-requirements).
 
-A provider-owned dedicated Harness is ready only when exactly one live Pod in
-the resolved namespace carries the Agent ID, Agent revision ID, and `agent` workload-role
-labels used by the active Service selector, plus all supplied Harness
-requirement labels, and reports `Ready=True`. Zero candidates, multiple live
-candidates (including one Ready and one unready), or a single unready candidate
-leave preparation at `ready: false`. For a staged credential revision, Compute
-can report `preparedForCredentialActivation` after preparing an idle target and fresh launch inputs.
-Worker selects the revision and authorizes the source before activation starts
-the Harness. The authenticated Gateway operator route is available during preparation
-for node enrollment; Compute publishes user chat and delegated browser routes only after the Harness is serving and
-the node is ready. Staged managed-credential replacement is unsupported. Other
-unready revisions cannot activate. Pods with a valid
-deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or
-role do not count.
+A provider-owned dedicated Harness is ready only with exactly one live Pod in the
+resolved namespace. It must match the active Service selector's Agent ID, revision
+ID, and `agent` role, all supplied Harness requirement labels, and `Ready=True`.
+Zero or multiple live candidates, or one unready candidate, return `ready: false`.
+For staged credentials, Compute can report `preparedForCredentialActivation` after
+preparing an idle target and fresh launch inputs. The worker selects the revision
+and authorizes the source before activation starts the Harness. The authenticated
+Gateway operator route supports node enrollment during preparation. User chat and
+delegated browser routes appear only after the Harness serves and the node is ready.
+Staged managed-credential replacement is unsupported; other unready revisions cannot
+activate. Pods with a valid deletion timestamp, another namespace, Agent ID, revision ID, or role
+do not count.
 
 Malformed or incomplete Pod lists, invalid identities or conditions, duplicate
-condition types, contradictory Harness labels, and pagination with more results
-are errors. Missing optional status or conditions means not ready. Preparation
-errors run workload cleanup hooks; activation errors precede routing changes.
-Cancelled observations cannot report ready. Checks establish workload readiness
-and label uniqueness, not Sandbox IDs, Pod UIDs, guest authentication or runtime
-generation fencing.
+condition types, contradictory Harness labels, and additional pages are errors.
+Missing optional status or conditions means not ready. Preparation errors run cleanup
+hooks; activation errors precede routing changes. Cancelled observations cannot report
+ready. Checks prove readiness and label uniqueness, not Sandbox IDs, Pod UIDs, guest
+authentication, or runtime generation fencing.
 
 ### Selected-driver lifecycle hooks
 
-The Driver invokes selected non-Compute lifecycle hooks around Namespace
-preparation and workload startup or teardown. Hooks receive the operation's
-cancellation signal; failed revocation blocks resource teardown.
-The [ComputeDriver contract](compute.md#optional-selected-driver-hooks) owns the
-hook ordering and environment restrictions, and the
-[lifecycle-hook flow](../../flows/compute-driver-lifecycle-hooks.md) traces the
-implementation.
+The Driver invokes selected non-Compute hooks around Namespace preparation and
+workload startup or teardown. Hooks receive the operation's cancellation signal;
+failed revocation blocks teardown. See the [ComputeDriver contract](compute.md#optional-selected-driver-hooks)
+for ordering and environment restrictions, and the [lifecycle-hook flow](../../flows/compute-driver-lifecycle-hooks.md)
+for implementation.
 
 ## Configuration
 
@@ -235,11 +222,12 @@ automations:
       egressCidrs: [192.0.2.10/32]
 ```
 
-Supply up to 64 records. Each `url` must be unique, normalized HTTPS without
-credentials, query, fragment or wildcard. Each `egressCidrs` needs 1–64
-unique translated destination addresses: IPv4 `/32` or IPv6 `/128`, not subnets.
-Compute permits TCP to those addresses on the URL's port (default 443) for the
-qualified embedded revision's Gateway. Replace the example IP.
+Supply at most 64 records with unique normalized HTTPS `url` values and no
+credentials, query, fragment, or wildcard. `egressCidrs` must contain 1–64 unique
+translated IPv4 `/32` or IPv6 `/128` destinations; subnets are not permitted.
+Compute permits the qualified embedded revision's Gateway TCP to those destinations on
+the URL port (default 443).
+Replace the example IP.
 
 Optional `caBundle` supplies public PEM CA trust; all bundles together must fit
 65,536 bytes. Never include private keys. Compute projects trust and verifies deployed endpoint

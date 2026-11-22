@@ -241,11 +241,14 @@ See [authorization](../authorization.md) and [Harness execution](../harness-exec
 
 ### Admission and lifecycle
 
-Startup validates Sandbox facets. Namespace and workload removal share one cleanup operation. Drivers have no initializer or destructor.
+Startup validates Sandbox facets. Namespace and workload removal share one cleanup
+operation; Drivers have no initializer or destructor. Dedicated native OpenClaw
+requires `provisionHarness` and all three containment facets. Other dedicated Harnesses
+can use fewer facets or omit the Sandbox.
 
-Dedicated native OpenClaw requires `provisionHarness` and all three containment facets. Other dedicated Harnesses may use fewer facets or omit the Sandbox.
-
-An optional positive `maintenanceIntervalMs` schedules active-revision checks and requires `provisionHarness`. During those checks, `existingHarnessOnly` requires the provider to report a missing Harness without recreating it.
+A positive optional `maintenanceIntervalMs` requires `provisionHarness` and schedules
+checks of the selected revision. During checks, `existingHarnessOnly` requires the
+provider to report a missing Harness without recreating it.
 
 ```mermaid
 sequenceDiagram
@@ -283,11 +286,10 @@ sequenceDiagram
     end
 ```
 
-The revision stores the selected `sandboxDriverId`. Before routing traffic,
-Compute checks that the workload's revision ID matches the requested revision.
-Namespace setup, provisioning, and cleanup must be safe to repeat.
-Run revision cleanup even when the Pod is already absent. The Sandbox removes
-any workload it owns. Namespace cleanup follows revision cleanup.
+The revision stores `sandboxDriverId`. Before routing traffic, Compute checks that
+the workload matches the requested revision ID. Namespace setup, provisioning, and
+cleanup must be safe to repeat. Run revision cleanup even if the Pod is absent; the Sandbox removes its own
+workloads. Namespace cleanup follows.
 
 - If the Driver cannot run this revision, throw
   [`SandboxRevisionUnsupportedError`](../../../packages/occ/src/errors.ts).
@@ -302,8 +304,7 @@ any workload it owns. Namespace cleanup follows revision cleanup.
 
 ## Configuration
 
-Sandbox selection is optional. When selecting one, set these fields under
-`drivers.sandbox` in the Installation startup YAML:
+For an optional Sandbox, set `drivers.sandbox` in Installation startup YAML:
 
 | Setting         | Type   | Requirement | Value, default, and constraints                                                                                                        |
 | --------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
@@ -311,17 +312,15 @@ Sandbox selection is optional. When selecting one, set these fields under
 | `configuration` | object | Required    | Settings validated by the selected implementation. No default; use `{}` only if its schema permits it.                                 |
 | `package`       | string | Optional    | Installed Driver package name. Omit for bundled OpenShell; see [package selection](selection.md#package-identity-and-factory-exports). |
 
-The base interface defines no common fields inside `configuration`; see the
-[OpenShell settings](openshell-sandbox.md#configuration) for that implementation.
-Both API and worker load these settings at startup; changes require a restart.
-See [configuration validation and discovery](selection.md#configuration-definitions-and-discovery).
+The base interface defines no common `configuration` fields; see
+[OpenShell settings](openshell-sandbox.md#configuration). API and worker load settings
+at startup; restart both after changes. See [configuration validation and discovery](selection.md#configuration-definitions-and-discovery).
 
-Per-Agent network additions use the `sandbox-network-policy` configuration
-contribution when the selected Driver declares network policy support. The
-[SandboxPolicy resource](../sandbox-policies.md) owns those settings and their
-application. Admission saves the policy used by a deployment; changing startup
-defaults does not rewrite that saved policy. See [network policy operations](#optional-network-policy-operations)
-for admission and live-update behavior.
+When the Driver declares network policy support, per-Agent additions use the
+`sandbox-network-policy` contribution. [SandboxPolicy](../sandbox-policies.md) owns
+these settings and their application. Admission saves the deployment policy;
+changed startup defaults do not rewrite it. See [network policy operations](#optional-network-policy-operations)
+for admission and live updates.
 
 Compute supplies [provisioning inputs](#provisioning-inputs), including workload
 identity and credential references. Operators do not configure those method
