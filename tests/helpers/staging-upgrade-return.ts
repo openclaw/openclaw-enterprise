@@ -438,6 +438,28 @@ export async function measureUpgradeAvailability<T>(
     const duration = cadence.start === undefined ? 0 : (cadence.finish ?? through) - cadence.start;
     const scheduledSlots = Math.floor(duration / nominalIntervalMs) + 1;
     const probedSlots = samples.filter(({ scheduledSlot }) => scheduledSlot !== null).length;
+    let successful = 0;
+    let unsuccessfulBeforeFirstSuccess: number | null = null;
+    let unsuccessfulAfterLastSuccess: number | null = null;
+    let previousSuccessfulFinish: number | undefined;
+    let maxSuccessfulResponseIntervalMs: number | null = null;
+    for (const [index, sample] of samples.entries()) {
+      if (sample.outcome !== "ok") {
+        continue;
+      }
+      const finish = sample.startOffsetMs + sample.elapsedMs;
+      if (previousSuccessfulFinish === undefined) {
+        unsuccessfulBeforeFirstSuccess = index;
+      } else {
+        maxSuccessfulResponseIntervalMs = Math.max(
+          maxSuccessfulResponseIntervalMs ?? 0,
+          finish - previousSuccessfulFinish,
+        );
+      }
+      previousSuccessfulFinish = finish;
+      unsuccessfulAfterLastSuccess = samples.length - index - 1;
+      successful++;
+    }
     return {
       schemaVersion: 2,
       requestTimeoutMs: 5_000,
@@ -449,6 +471,16 @@ export async function measureUpgradeAvailability<T>(
       throughOffsetMs: through - origin,
       maxStartGapMs,
       tailGapMs: previousStart === undefined ? 0 : through - previousStart,
+      responseSummary: {
+        successful,
+        unsuccessful: samples.length - successful,
+        unsuccessfulBeforeFirstSuccess,
+        unsuccessfulAfterLastSuccess,
+        maxSuccessfulResponseIntervalMs:
+          maxSuccessfulResponseIntervalMs === null
+            ? null
+            : Math.round(maxSuccessfulResponseIntervalMs),
+      },
       cadence:
         cadence.start === undefined
           ? null
