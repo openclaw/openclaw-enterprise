@@ -41,9 +41,9 @@ const NAMESPACE_ACTIONS = {
  * Default users create Agents in the Namespace named default and own what they create. With
  * `namespaceCreate`, they can also create Namespaces.
  */
-export function defaultUsersIAM(
-  { namespaceCreate = false }: { namespaceCreate?: boolean } = {},
-): StartupIAMConfiguration {
+export function defaultUsersIAM({
+  namespaceCreate = false,
+}: { namespaceCreate?: boolean } = {}): StartupIAMConfiguration {
   return {
     roles: [
       {
