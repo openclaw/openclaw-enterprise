@@ -234,6 +234,7 @@ export async function startDispatchProvider({
         callId: call.call_id,
         type: call.type,
         name: call.name,
+        namespace: call.namespace,
       });
       return response(body.model, call);
     }

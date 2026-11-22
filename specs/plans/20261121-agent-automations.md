@@ -30,6 +30,11 @@ runtime qualification; both packaged Harnesses must pass before release readines
 Keep creator operate, management ownership, CSRF, native normalization/deletion,
 retained history, CAS and UNKNOWN_OUTCOME semantics intact.
 
+**Publication and merge hold:** the API currently admits enabled schedules on the
+eligible pinned runtime. Admission is not gated on completing AC3's managed MCP
+and account-backed native app proof. This implementation is not release-ready;
+no new eligibility shortcut or admission gate was added.
+
 ## Owners and touchpoints
 
 | Owner                      | Implementation                                                                                                                        |
@@ -62,16 +67,16 @@ retained history, CAS and UNKNOWN_OUTCOME semantics intact.
 
 ## Verification
 
-| Required outcome                                             | Current result                                                                                                                                                                                                 |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Human admission, UUIDs and final authority                   | P1 admin-demotion and P2 invalid-ID regressions reproduced and fixed at `e22a860f1c`; native suite 2 passed, PostgreSQL 1 passed, actual admission case 1 passed                                               |
-| Ownership, audit and cleanup                                 | Real PostgreSQL reservation/binding/cleanup atomicity, binding race and deletion-worker sibling preservation passed                                                                                            |
-| Model-only add/update contract                               | Implemented after RFC submission; real native CRUD verifies explicit empty writes/readback, forged-cap refusal and unsupported-cap activation refusal                                                          |
-| Real model-only execution in both Harnesses                  | Final genuine run at `71f8ae5cb5`: 17 passed, 0 failed, 0 skipped; both packaged Harnesses verified one-shots, recurring responses, retained history, policy widening and Gateway replacement                  |
-| No model tools, including native Codex/code/app/MCP surfaces | Both Harnesses observed empty Gateway inventories, no transcript calls and no file effects; Codex also recorded zero dynamic tools. Complete AC3 remains subject to combined dispatch and source evidence      |
-| One-shot deletion and retained history                       | Both Harnesses verified native deletion and retained history before and after replacement at `71f8ae5cb5`                                                                                                      |
-| CAS, uncertainty and container replacement                   | Genuine native fixture passes without model calls; OCC storage/Compute remain fixtures, not production placement proof                                                                                         |
-| Independent review                                           | Alternate app reviews found no actionable core issue at `1b8ceb379d` or QA issue at `925a4976f7` and `e4b0d4c9ed`; final diff review pending. Canonical CLI remains blocked by authentication without a report |
+| Required outcome                           | Current result                                                                             |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Human admission, UUIDs and final authority | Reproduced P1/P2 fixed at `e22a860f1c`; native HTTP, PostgreSQL and admission cases passed |
+| Ownership, audit and cleanup               | PostgreSQL atomicity, binding races and Agent-deletion cleanup passed                      |
+| Model-only add/update contract             | Native CRUD confirmed explicit empty caps and unsupported-cap refusals                     |
+| Real model execution in both Harnesses     | Final genuine QA at `71f8ae5cb5`: 17 passed, 0 failed, 0 skipped                           |
+| Complete no-tools contract                 | Partial; see AC3 and the supplemental controls below                                       |
+| One-shot deletion and retained history     | Passed before and after replacement in both Harnesses                                      |
+| CAS, uncertainty and replacement           | Native fault-proxy and retained-storage cases passed; see AC4 limits                       |
+| Independent review                         | Alternate source/evidence reviews passed; canonical attempt produced no report             |
 
 Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
 [PostgreSQL setup](../../docs/testing/postgresql.md) and
@@ -81,23 +86,21 @@ its runtime assertions cover observed behavior. Native metadata limits remain ex
 
 ### Revised RFC acceptance audit
 
-| Criterion                       | Established                                                                                                                                                                           | Remaining                                                                                     |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| AC1: Model-only execution       | Real one-shot response, native deletion and retained history in both Harnesses, before and after replacement                                                                          | Complete no-tool qualification is assessed under AC3                                          |
-| AC2: Lifecycle and persistence  | Safe management, native CAS, paused state and native identity/history through deployed replacement                                                                                    | No additional OCC process/database restart claim                                              |
-| AC3: No tools and authorization | Human boundary and policy widening checks; genuine empty inventories/no calls; supplemental file/shell/code, Gateway delegation and local messaging refusals with independent effects | Native app/MCP and native Codex collaboration controls remain unproved; no complete AC3 claim |
-| AC4: Recovery                   | Native lost replies, CAS races and post-commit audit/revision failures without replay                                                                                                 | No additional production fault-injection claim                                                |
-| AC5: Durable audit and cleanup  | PostgreSQL invariants, atomic audit, binding and cleanup/deletion cases                                                                                                               | No persistence changes after the verified broker core                                         |
+| Criterion                       | Established                                                                                                                                                                           | Remaining                                                                         |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| AC1: Model-only execution       | Real one-shot response, native deletion and retained history in both Harnesses, before and after replacement                                                                          | Complete no-tool qualification is assessed under AC3                              |
+| AC2: Lifecycle and persistence  | Safe management, native CAS, paused state and native identity/history through deployed replacement                                                                                    | No additional OCC process/database restart claim                                  |
+| AC3: No tools and authorization | Human boundary and policy widening checks; genuine empty inventories/no calls; supplemental file/shell/code, Gateway delegation and local messaging refusals with independent effects | Managed MCP and account-backed native apps remain unproved; no complete AC3 claim |
+| AC4: Recovery                   | Native lost replies, CAS races and post-commit audit/revision failures without replay                                                                                                 | No additional production fault-injection claim                                    |
+| AC5: Durable audit and cleanup  | PostgreSQL invariants, atomic audit, binding and cleanup/deletion cases                                                                                                               | No persistence changes after the verified broker core                             |
 
-The first model credential returned `401 invalid_api_key`. Both Harnesses accepted
-an authorized replacement through `OCC_TEST_QA_OPENAI_KEY_FILE` at `925a4976f7`.
-The temporary protected file was removed after the successful final genuine run.
+Genuine QA used an authorized file through `OCC_TEST_QA_OPENAI_KEY_FILE`;
+the file was removed after the final run. Earlier credential failures remain
+in the delivery history.
 
-The normal CLI reports workload-identity login. Its documented login help has no
-same-identity workload refresh command. The canonical review's authentication
-failure does not establish whether that identity is rejected or unavailable in
-review isolation. Restore the existing host identity integration before retrying;
-no token extraction, manual refresh or provider fallback was attempted.
+The canonical attempt returned `reviewer_unavailable`, `report_produced:false`
+after authentication failed. No subsequent canonical report exists. No token
+extraction, manual refresh, provider or host fallback occurred.
 
 ## Delivery record
 
@@ -223,11 +226,43 @@ no token extraction, manual refresh or provider fallback was attempted.
   Broader local AC3 controls continue without real credentials or external posts.
 
 - The expanded supplemental suite passed 6 tests with zero failures or skips.
+  Its tested working tree above `e822a0fba6` was frozen unchanged at
+  `58af95933208d0fd858f0656aaf15d0b7d83350e`: an independent reviewer verified all
+  nine archived source files, patch sections, checksums, results and image inputs.
+  This was source and artifact validation, not an independent runtime rerun.
+  Command: `node --test tests/integration/automation-model-only-dispatch.test.ts`,
+  using the actual `prepareRuntimeImageSmoke` environment.
+  Source image: `localhost/oce-agent-automations/runtime@sha256:ef6e896d0e68c9cde7d49b2c16d4b0eab38c30e18c4b51ba21944d55d6eebc01`.
+  Both imported roles used `localhost/openclaw-ci-image-openclaw-ci-local-1c553965cbce/runtime-smoke@sha256:98f2a92879164f2ad7c011d74506bfeaee3763bdd5f15d734987b1cbd0ceaafb`.
+  Tested patch SHA-256: `01b15f896821df94a1352080144a3f1b9a6f5f967a808d3527529b2ddc308e47`.
   Both Harnesses completed real Gateway child sessions and sent one positive
   message to a disposable local Slack collector. Scheduled empty-cap calls were
   refused; exact native database labels and sink counts proved no negative effect.
   This remains synthetic-provider proof. Native Codex collaboration is a separate
   pending control; managed MCP and account-backed apps are not covered.
+
+- Manual routed native collaboration passed: ordinary OCC chat created a completed
+  child; the human-session/CSRF automation returned a correlated unsupported-call
+  refusal with no child. Compute rendered the relay. A public-CA-only trust image
+  preserved native package/executable fingerprints. This synthetic-provider proof
+  is manual, not unchanged-image or CI proof. The retained caller is
+  `routed-native-control-stage.mjs::deployAndProbe` in `routed-native-setup.mjs`.
+  The marker-count oracle was corrected to use native parent/child relations;
+  fresh read-only verification passed without model replay. Original failed-oracle
+  evidence remains. HTTP attribution is source-backed; live audit confirms
+  service chat and human automation admission/binding/success.
+
+  Recheck retained state assertions only (no model/runtime replay):
+
+  ```sh
+  node tests/fixtures/automation-model-only-native-collaboration-scenario.mjs \
+    /path/to/routed-control-result.json /path/to/native-state-readback-final.json
+  ```
+
+- Managed MCP setup verified OpenShell 0.1.8 images, then the Agent Sandbox
+  controller download failed with a registry-CDN connection reset. No exact
+  cache/archive was available; the owned cluster was removed. Local discovery
+  separately refused private DNS (400). No MCP call was qualified.
 
 ## Manual Notes
 
