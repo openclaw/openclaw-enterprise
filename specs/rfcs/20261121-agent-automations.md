@@ -16,33 +16,29 @@ author: kevinlin-openai
 ## Decision and scope
 
 OpenClaw Control Plane (OCC) brokers six HTTP operations for timed Agent turns.
-An operator can schedule the same **Agent-shared, preapproved static Model Context
-Protocol (MCP) operations** that the deployed Agent can perform unattended. OCC
-owns caller authorization, creator records, binding identity and audit. OpenClaw
-owns job definitions, scheduling, execution and history.
-
-OCC derives a finite cap of exact native tool names from deployed provisioning
-and Gateway policy. The client supplies the schedule and prompt. A qualified
-Agent with no eligible operations uses `[]` for model-only execution. Unknown
-qualification or ambiguous bindings refuse admission.
+Operators can schedule **Agent-shared, preapproved static Model Context Protocol
+(MCP) operations** available to the deployed Agent unattended. OCC owns
+authorization, creator records, binding identity and audit; OpenClaw owns job
+definitions, scheduling, execution and history. OCC derives a finite exact-name
+cap from deployed provisioning and Gateway policy. Clients supply schedule and
+prompt. A qualified Agent with no eligible operations uses `[]` for model-only
+execution; unknown qualification or ambiguous bindings refuse admission.
 
 ## Execution authority
 
 The human needs exact-Agent `operate` to create the job. Creation authorizes
-standing use of the Agent's shared workload authority. The native administrative
-connection can create a trusted operator job. This design grants it only the
-admitted MCP operations. It never captures the creator's personal account,
-requester session, delegated user credential or approval. The ordinary Agent and
+standing use of the Agent's shared workload authority through a trusted native
+operator job limited to admitted MCP operations. It captures no creator account,
+requester session, delegated credential or approval. The ordinary Agent and
 scheduled turn must use the same server endpoint, tools, permitted provider
-actions, workload credential identity and standing approval. An operation that
-needs an interactive approval or a requester-specific grant is ineligible.
-Approve actions separately.
-The provider or its adapter must enforce the same action restrictions on both paths.
+actions, workload credential identity and standing approval. Interactive approval or requester-specific grants are
+ineligible; approve actions separately. The provider or adapter enforces the same action
+restrictions on both paths.
 
-Creator access loss removes management and history access, not the Agent's
-standing delegation. An Agent administrator can disable or remove the job.
-Controller configuration alone cannot revoke running cron; retire the job or deny
-at the MCP service. An issued call can complete.
+Creator access loss removes management/history access, but not standing
+delegation. Agent administrators can disable or remove jobs. Controller
+configuration cannot revoke running cron; retire the job or deny at the MCP
+service. Issued calls can complete.
 
 <a id="unresolved-execution-authority"></a>
 
@@ -57,6 +53,13 @@ Reject patterns, collisions, missing evidence, personal or interactive grants an
 utility names `resources_list`, `resources_read`, `prompts_list`, `prompts_get`
 (case-insensitive). Bind approval to Namespace, Agent and revision.
 
+For fresh embedded native state, Compute renders schema-valid configuration with
+server-owned `meta.lastTouchedVersion` matching the exact reviewed native
+image/source version; reject caller-owned or conflicting `meta`. This prevents
+stock compat inference and suppresses configured-plugin release bookkeeping/restamp.
+Doctor and missing-plugin repair still run. Requalify each pin. Existing
+persisted compat remains unqualified; never write directly to native databases.
+
 Embedded corroborates through `sessions.list` and
 [`tools.effective`](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/tools-effective.ts#L474)
 from an existing ordinary same-Agent session. Exclude cron, subagent, system,
@@ -64,12 +67,19 @@ dock, foreign and unknown scopes. Refuse missing or exhausted evidence, session
 denials, mismatched MCP descriptors and stale catalogs. Check `plugins.inspect`
 and `tools.catalog` for origins/collisions. Never guess keys or create turns.
 
-Dedicated uses immutable, operator-attested anonymous Agent server/filter,
-Gateway and main allow lists, and bound identity, endpoint, images, revision, plugin and launcher. Check live route/boot and `plugins.inspect`/`tools.catalog` over the complete source namespace after server include and native allocation. Refuse suffix ambiguity, core, plugin or node collisions,
-dynamic exclusions and the reserved dedicated `mcp__` prefix (case-insensitive). Apply the finite native cron cap. Do not read
-`sessions.list`, `tools.effective`, `sessions.get` or history, or inherit
-chat-session-specific denials. Packaged merge proof, not creation, establishes ordinary and scheduled identity,
-source and cap parity.
+Dedicated ordinary Standard deployment requires reviewer exactly `user`, no
+`auto_review`, and an enabled native Codex `networkProxy` in `limited` mode with finite domain
+decisions. Preserve denies; refuse dangerous, local-binding or socket overrides.
+Bind the canonical full reviewer and proxy descriptors to the grant. Each
+approved MCP server retains `codex.defaultToolsApprovalMode: "approve"`.
+Use immutable operator-attested Agent server/filter, Gateway/main allow lists,
+identity, endpoint, images, revision, plugin and launcher. Verify live route/boot
+and `plugins.inspect`/`tools.catalog` across the complete allocated source
+namespace. Refuse suffix ambiguity, core/plugin/node collisions, dynamic
+exclusions and reserved `mcp__` names (case-insensitive). Apply the finite native
+cron cap. Do not read `sessions.list`, `tools.effective`, `sessions.get` or
+history, or inherit chat denials. Packaged proof establishes ordinary/scheduled
+identity, source and cap parity.
 
 For a nonempty cap, bind the sole canonical `agents.entries.main.identity.name`
 exactly. Embedded may use identity alone; dedicated also requires exact
@@ -85,8 +95,8 @@ and optional public PEM `caBundle`. Require an exact normalized HTTPS URL
 and exact host addresses (/32 or /128). Refuse stdio, wildcard destinations,
 credentials, private keys and redirects to unapproved origins. Attest identical anonymous actions.
 
-The Driver derives the TCP port from the URL (default 443). Add only the listed
-IP/port pairs to the Gateway and, for dedicated Codex, Agent NetworkPolicies.
+Derive the TCP port from the URL (default 443). Add only listed IP/port pairs
+to Gateway and dedicated Codex Agent NetworkPolicies.
 Retain default-deny egress and unrelated required workload routes. Validate TLS
 hostname and chain. Project the public CA only into the relevant workload:
 merge it with required Gateway Node trust via `NODE_EXTRA_CA_CERTS` and with
@@ -101,14 +111,14 @@ require origin checks in addition to tool names.
 ## Goals and non-goals
 
 Support one-shot, interval and cron schedules, CRUD, pause/resume, native
-normalization and history. Immediate execution, new result
-destinations, scripts, event triggers, service-principal HTTP access, Console
-controls and CLI commands are outside this proposal. Scheduler housekeeping and failure notices can occur.
+normalization and history. Exclude immediate execution, new result destinations,
+scripts, event triggers, service-principal HTTP access, Console controls and CLI
+commands. Scheduler housekeeping and failure notices can occur.
 
 ## Authorization and interface
 
 All paths start with `/namespaces/{namespaceId}/agents/{agentId}/automations`.
-Public automation IDs are UUIDs; they are distinct from native job IDs.
+Public automation UUIDs differ from native job IDs.
 
 | Method and path  | Request                                 | Result                                      |
 | ---------------- | --------------------------------------- | ------------------------------------------- |
@@ -124,20 +134,18 @@ does not substitute. Management and history require creator `operate` or
 exact-Agent `administer`. Reuse these IAM actions and the Agent resource kind.
 Service keys are refused. Mutations retain existing CSRF and Origin checks.
 
-Authorize before native access or resource disclosure. Foreign and absent
-ownership records return indistinguishable 404 responses. Filter by the final
+Authorize before native access or disclosure; foreign and absent ownership
+records both return 404. Filter by the final
 authority decision before public pagination, totals and snapshot hashes; losing
-administration must not expose a previously loaded all-creator view. Malformed
-UUIDs are 400 input errors, not database errors.
+administration must not expose a previously loaded all-creator view. Malformed UUIDs return 400.
 
 The collection defaults to the job view. `view=pending` selects pending
 reservations from OCC records without native access, including when the runtime
 is unavailable. Each pending entry has `id`, `status: "pending"`, `createdAt` and
-a server-issued `configRevision: "reservation:<id>"`; it has no native name or
-schedule. `offset`, `limit`, `total`, `nextOffset` and `snapshotRevision` apply
+server-issued `configRevision: "reservation:<id>"`, without native name or schedule. `offset`, `limit`, `total`, `nextOffset` and `snapshotRevision` apply
 to the selected, authorized view. The job view returns `pendingReservations: []`;
-the pending view returns `jobs: []`. To cancel an unbound reservation, send its
-revision in `expectedConfigRevision` to the existing DELETE path.
+the pending view returns `jobs: []`. Cancel an unbound reservation through DELETE with that revision in
+`expectedConfigRevision`.
 
 Bodies are closed. Clients cannot select native Agent IDs, creators, tool grants,
 RPC methods, native scopes, credentials or delivery targets. PATCH can edit the
@@ -157,8 +165,8 @@ payload with the requested prompt and explicit `toolsAllow`, and
 interval anchors and cron staggering, in reads and subsequent edits. Persist the immutable ceiling and binding identities
 with the OCC reservation. Reassert the permitted cap on update. Additions to
 the Agent policy never expand an existing job. All captured operations must
-remain present with the same binding identity. A missing alias does not prove
-safe withdrawal: a core/plugin tool or wrapper could reuse its name. Therefore
+remain present with the same binding identity. A missing alias cannot prove safe withdrawal: another tool or wrapper could
+reuse its name. Therefore
 narrowing, removal, remapping or unverifiable binding blocks enablement and
 successor admission/startup while any active, paused or uncertain ownership
 record retains the grant. Delete or retire affected jobs, deploy the narrower
@@ -171,9 +179,8 @@ admission audit atomically. Supply `occ-automation:<OCC UUID>` as the native
 declaration key and create disabled. OpenClaw allocates the native ID. Bind it
 durably once before a separate update enables the job if requested.
 
-Creator/target fields are immutable; a native ID cannot be rebound or shared by
-two records for one Agent. Store no prompt, credential value, duplicate definition or
-second scheduler. Agent deletion removes its ownership rows. Native job deletion
+Creator/target fields are immutable; native IDs cannot be rebound or shared
+within an Agent. Store no prompt, credential, duplicate definition or scheduler. Agent deletion removes its ownership rows. Native job deletion
 retains them so the same creator/admin boundary authorizes history afterward.
 Native history expiry still applies, and a deleted job that never ran returns 404.
 
@@ -302,6 +309,6 @@ stop a running scheduler.
 ## Delivery status
 
 The [current reference](../../docs/reference/agent-automations.md) owns supported
-behavior. Merge requires genuine permitted and forbidden HTTPS checks on both
-packaged Harnesses; synthetic bridge diagnostics do not qualify. The
+behavior. Merge requires same-head genuine permitted and forbidden HTTPS checks
+on both packaged Harnesses; synthetic bridge diagnostics do not qualify. The
 [implementation plan](../plans/20261121-agent-automations.md) records evidence and gaps.
