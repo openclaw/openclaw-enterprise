@@ -37,6 +37,7 @@ const execFileAsync = promisify(execFile);
 
 async function reportingFixture(t: TestContext, lane: "failure" | "progress") {
   const root = await createRunnerFixture(t);
+  await writeFile(join(root, "package.json"), JSON.stringify({ type: "module" }));
   const file = `tests/integration/${lane}.test.ts`;
   await copyFile(
     new URL(`../fixtures/ci-runner-openshell-${lane}-child.ts`, import.meta.url),
