@@ -2253,31 +2253,37 @@ test(
             version: currentPolicy.version + 1,
             repositoryNetworkPolicy: [],
           };
-          await db.app.query(
-            "UPDATE occ.sandbox_policies SET version=$1,document=$2 WHERE agent_id=$3",
-            [savedPolicy.version, savedPolicy, original.agent_id],
-          );
-          await assert.rejects(
-            insert(
-              {
-                ...spec,
-                execution_admission: {
-                  ...spec.execution_admission,
-                  repositoryNetworkPolicyVersion: 1,
-                },
-                sandbox_policy: {
-                  version: savedPolicy.version,
-                  repositoryNetworkPolicy: {
-                    version: 1,
-                    grants: [],
-                    identity: '{"version":1,"grants":[]}',
+          // Keep this refused write probe from changing the later upgrade's policy fixture.
+          await db.app.query("BEGIN");
+          try {
+            await db.app.query(
+              "UPDATE occ.sandbox_policies SET version=$1,document=$2 WHERE agent_id=$3",
+              [savedPolicy.version, savedPolicy, original.agent_id],
+            );
+            await assert.rejects(
+              insert(
+                {
+                  ...spec,
+                  execution_admission: {
+                    ...spec.execution_admission,
+                    repositoryNetworkPolicyVersion: 1,
+                  },
+                  sandbox_policy: {
+                    version: savedPolicy.version,
+                    repositoryNetworkPolicy: {
+                      version: 1,
+                      grants: [],
+                      identity: '{"version":1,"grants":[]}',
+                    },
                   },
                 },
-              },
-              4,
-            ),
-            { code: "23514", constraint: "agent_revisions_execution_admission" },
-          );
+                4,
+              ),
+              { code: "23514", constraint: "agent_revisions_execution_admission" },
+            );
+          } finally {
+            await db.app.query("ROLLBACK");
+          }
         }
         if (prefix === 88) {
           // Preserve populated standalone v8 snapshots that already passed the 0088 check.
