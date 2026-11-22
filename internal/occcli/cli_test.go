@@ -103,10 +103,7 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 	defer server.Close()
 
 	directory := t.TempDir()
-	keyFile := filepath.Join(directory, "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	replacement := filepath.Join(directory, "replacement.json")
 	secrets := `{"secrets":{"api_key":{"kind":"secret","namespaceId":"ns_00000000-0000-4000-8000-000000000001","id":"sec_00000000-0000-4000-8000-000000000002"}}}`
 	if err := os.WriteFile(replacement, []byte(secrets), 0o600); err != nil {
@@ -124,9 +121,7 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 		{[]string{"agent", "credential-withdrawal", "get", "agt_00000000-0000-4000-8000-000000000001", "cs_00000000-0000-4000-8000-000000000001"}, call{http.MethodGet, "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001/withdrawal", ""}},
 	} {
 		calls = nil
-		command := New(io.Discard, io.Discard)
-		command.SetArgs(append(test.args, "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001"))
-		if err := command.Execute(); err != nil {
+		if _, _, err := runOCCWithArgs(append(test.args, "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001")...); err != nil {
 			t.Fatalf("%v: %v", test.args, err)
 		}
 		if len(calls) != 1 || calls[0] != test.want {
@@ -135,14 +130,12 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 	}
 
 	calls = nil
-	command := New(io.Discard, io.Discard)
-	command.SetArgs([]string{
+	_, _, err := runOCCWithArgs(
 		"credential-source", "update", "cs_00000000-0000-4000-8000-000000000001", "--file=",
 		"--url", server.URL,
 		"--service-key-file", keyFile,
 		"--namespace", "ns_00000000-0000-4000-8000-000000000001",
-	})
-	err := command.Execute()
+	)
 	if err == nil || !strings.Contains(err.Error(), "--file must name a JSON document") {
 		t.Fatalf("explicit empty --file error = %v", err)
 	}
@@ -1021,35 +1014,31 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
-	var out, errOut strings.Builder
-	command := New(&out, &errOut)
-	command.SetArgs([]string{"agent", "stop", "agt_00000000-0000-4000-8000-000000000001", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001"})
-	if err := command.Execute(); err != nil {
+	out, errOut, err := runOCCWithArgs("agent", "stop", "agt_00000000-0000-4000-8000-000000000001", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"GET /namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001", "POST /namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/stop"}; !slices.Equal(requests, want) {
 		t.Fatalf("requests = %v, want %v", requests, want)
 	}
-	if !strings.Contains(out.String(), "stopped-agent") {
-		t.Fatalf("stdout = %q", out.String())
+	if !strings.Contains(out, "stopped-agent") {
+		t.Fatalf("stdout = %q", out)
 	}
-	if want := "notice: stop requested; run \"occ --namespace ns_00000000-0000-4000-8000-000000000001 agent deploy agt_00000000-0000-4000-8000-000000000001\" to start the Agent again\n"; errOut.String() != want {
-		t.Fatalf("stderr = %q, want %q", errOut.String(), want)
+	wantNotice := "notice: stop requested; run \"occ --namespace ns_00000000-0000-4000-8000-000000000001 agent deploy agt_00000000-0000-4000-8000-000000000001\" to start the Agent again\n"
+	if errOut != wantNotice {
+		t.Fatalf("stderr = %q, want %q", errOut, wantNotice)
 	}
 	// Structured output stays machine-readable: the notice goes to stderr only.
-	out.Reset()
-	errOut.Reset()
-	command = New(&out, &errOut)
-	command.SetArgs([]string{"agent", "stop", "agt_00000000-0000-4000-8000-000000000001", "-o", "json", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001"})
-	if err := command.Execute(); err != nil {
+	out, errOut, err = runOCCWithArgs("agent", "stop", "agt_00000000-0000-4000-8000-000000000001", "-o", "json", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001")
+	if err != nil {
 		t.Fatal(err)
 	}
 	var decoded map[string]any
-	if err := json.Unmarshal([]byte(out.String()), &decoded); err != nil || decoded["id"] != "agt_00000000-0000-4000-8000-000000000001" {
-		t.Fatalf("json stdout = %q, %v", out.String(), err)
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil || decoded["id"] != "agt_00000000-0000-4000-8000-000000000001" {
+		t.Fatalf("json stdout = %q, %v", out, err)
 	}
-	if want := "notice: stop requested; run \"occ --namespace ns_00000000-0000-4000-8000-000000000001 agent deploy agt_00000000-0000-4000-8000-000000000001\" to start the Agent again\n"; errOut.String() != want {
-		t.Fatalf("json stderr = %q, want %q", errOut.String(), want)
+	if errOut != wantNotice {
+		t.Fatalf("json stderr = %q, want %q", errOut, wantNotice)
 	}
 	stop, _, err := New(io.Discard, io.Discard).Find([]string{"agent", "stop"})
 	if err != nil || !strings.Contains(stop.Long, `run "occ agent deploy ID" to start the Agent again`) {
@@ -1058,36 +1047,31 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 }
 
 func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *testing.T) {
+	const namespace = "ns_00000000-0000-4000-8000-000000000001"
+	const listRequest = "GET /namespaces/" + namespace + "/credential-sources"
+	const getRequest = listRequest + "/cs_00000000-0000-4000-8000-000000000001"
 	source := `{"id":"cs_00000000-0000-4000-8000-000000000001","name":"openai","type":"openai","state":"ready"`
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources":
-			// The list API returns metadata only, never a live status.
-			_, _ = io.WriteString(w, `{"data":[`+source+`}],"meta":{"requestId":"req_1"}}`)
-		case "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001":
-			_, _ = io.WriteString(w, `{"data":`+source+`,"status":{"state":"ready"}},"meta":{"requestId":"req_2"}}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	responses := map[string]string{
+		listRequest: `raw:200 {"data":[` + source + `}],"meta":{"requestId":"req_1"}}`,
+		getRequest:  `raw:200 {"data":` + source + `,"status":{"state":"ready"}},"meta":{"requestId":"req_2"}}`,
+	}
 	for _, test := range []struct {
-		args []string
-		rows [][]string
+		args    []string
+		request string
+		rows    [][]string
 	}{
-		{[]string{"list"}, [][]string{{"ID", "NAME", "TYPE", "STATE"}, {"cs_00000000-0000-4000-8000-000000000001", "openai", "openai", "ready"}}},
-		{[]string{"get", "cs_00000000-0000-4000-8000-000000000001"}, [][]string{{"ID", "NAME", "TYPE", "STATE", "GATEWAY", "STATUS"}, {"cs_00000000-0000-4000-8000-000000000001", "openai", "openai", "ready", "ready"}}},
+		{[]string{"list"}, listRequest, [][]string{{"ID", "NAME", "TYPE", "STATE"}, {"cs_00000000-0000-4000-8000-000000000001", "openai", "openai", "ready"}}},
+		{[]string{"get", "cs_00000000-0000-4000-8000-000000000001"}, getRequest, [][]string{{"ID", "NAME", "TYPE", "STATE", "GATEWAY", "STATUS"}, {"cs_00000000-0000-4000-8000-000000000001", "openai", "openai", "ready", "ready"}}},
 	} {
-		var out strings.Builder
-		command := New(&out, io.Discard)
-		command.SetArgs(append(append([]string{"credential-source"}, test.args...), "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001"))
-		if err := command.Execute(); err != nil {
+		out, requests, err := runOCC(t, responses, append([]string{"--namespace", namespace, "credential-source"}, test.args...)...)
+		if err != nil {
 			t.Fatalf("%v: %v", test.args, err)
 		}
+		if !slices.Equal(requests, []string{test.request}) {
+			t.Fatalf("%v: requests = %v, want [%s]", test.args, requests, test.request)
+		}
 		var got [][]string
-		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 			got = append(got, strings.Fields(line))
 		}
 		if !reflect.DeepEqual(got, test.rows) {
@@ -1097,30 +1081,25 @@ func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *tes
 }
 
 func TestCredentialSourceDetailTableShowsTheRefreshStateWhenReported(t *testing.T) {
+	const namespace = "ns_00000000-0000-4000-8000-000000000001"
+	const listRequest = "GET /namespaces/" + namespace + "/credential-sources"
+	const getRequest = listRequest + "/cs_00000000-0000-4000-8000-000000000001"
 	source := `{"id":"cs_00000000-0000-4000-8000-000000000001","name":"openai","type":"oauth2-refresh-token","state":"ready","status":{"state":"ready","refresh":{"state":"failed","failureCode":"token_rejected"}}}`
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources":
-			_, _ = io.WriteString(w, `{"data":[{"id":"cs_00000000-0000-4000-8000-000000000001","name":"openai","type":"oauth2-refresh-token","state":"ready"}],"meta":{"requestId":"req_1"}}`)
-		case "/namespaces/ns_00000000-0000-4000-8000-000000000001/credential-sources/cs_00000000-0000-4000-8000-000000000001":
-			_, _ = io.WriteString(w, `{"data":`+source+`,"meta":{"requestId":"req_2"}}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
-	args := []string{"credential-source", "get", "cs_00000000-0000-4000-8000-000000000001", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001"}
+	responses := map[string]string{
+		listRequest: `raw:200 {"data":[{"id":"cs_00000000-0000-4000-8000-000000000001","name":"openai","type":"oauth2-refresh-token","state":"ready"}],"meta":{"requestId":"req_1"}}`,
+		getRequest:  `raw:200 {"data":` + source + `,"meta":{"requestId":"req_2"}}`,
+	}
+	args := []string{"--namespace", namespace, "credential-source", "get", "cs_00000000-0000-4000-8000-000000000001"}
 
-	var table strings.Builder
-	command := New(&table, io.Discard)
-	command.SetArgs(args)
-	if err := command.Execute(); err != nil {
+	table, requests, err := runOCC(t, responses, args...)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if !slices.Equal(requests, []string{getRequest}) {
+		t.Fatalf("table requests = %v, want [%s]", requests, getRequest)
+	}
 	var got [][]string
-	for _, line := range strings.Split(strings.TrimSpace(table.String()), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(table), "\n") {
 		got = append(got, strings.Fields(line))
 	}
 	want := [][]string{
@@ -1131,18 +1110,19 @@ func TestCredentialSourceDetailTableShowsTheRefreshStateWhenReported(t *testing.
 		t.Fatalf("table = %#v, want %#v", got, want)
 	}
 
-	var structured strings.Builder
-	command = New(&structured, io.Discard)
-	command.SetArgs(append([]string{"-o", "json"}, args...))
-	if err := command.Execute(); err != nil {
+	structured, requests, err := runOCC(t, responses, append([]string{"-o", "json"}, args...)...)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if !slices.Equal(requests, []string{getRequest}) {
+		t.Fatalf("JSON requests = %v, want [%s]", requests, getRequest)
+	}
 	var decoded map[string]any
-	if err := json.Unmarshal([]byte(structured.String()), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(structured), &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := decoded["refreshStatus"]; ok {
-		t.Fatalf("json gained a table-only key: %s", structured.String())
+		t.Fatalf("json gained a table-only key: %s", structured)
 	}
 	status, _ := decoded["status"].(map[string]any)
 	refresh, _ := status["refresh"].(map[string]any)
@@ -1150,14 +1130,15 @@ func TestCredentialSourceDetailTableShowsTheRefreshStateWhenReported(t *testing.
 		t.Fatalf("json status = %#v", decoded["status"])
 	}
 
-	var list strings.Builder
-	command = New(&list, io.Discard)
-	command.SetArgs([]string{"credential-source", "list", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_00000000-0000-4000-8000-000000000001"})
-	if err := command.Execute(); err != nil {
+	list, requests, err := runOCC(t, responses, "--namespace", namespace, "credential-source", "list")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(list.String(), "REFRESH") || strings.Contains(list.String(), "failed") {
-		t.Fatalf("list table = %q", list.String())
+	if !slices.Equal(requests, []string{listRequest}) {
+		t.Fatalf("list requests = %v, want [%s]", requests, listRequest)
+	}
+	if strings.Contains(list, "REFRESH") || strings.Contains(list, "failed") {
+		t.Fatalf("list table = %q", list)
 	}
 }
 
@@ -1360,10 +1341,8 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 		{[]string{"agent", "runtime", "agt_00000000-0000-4000-8000-000000000001", "--service-key-file="}, "--service-key-file must name a bootstrap or service-key response file"},
 	} {
 		requests = 0
-		command := New(io.Discard, io.Discard)
 		// Connection flags come first so a test's own explicit empty value wins.
-		command.SetArgs(append(slices.Clone(connection), test.args...))
-		err := command.Execute()
+		_, _, err := runOCCWithArgs(append(slices.Clone(connection), test.args...)...)
 		if err == nil || err.Error() != test.want {
 			t.Errorf("%v: error = %v, want %q", test.args, err, test.want)
 		}
@@ -1377,9 +1356,8 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 
 	// --ca-bundle= is the exception: it clears OCC_CA_BUNDLE, and the request is sent.
 	requests = 0
-	command := New(io.Discard, io.Discard)
-	command.SetArgs(append(slices.Clone(connection), "agent", "runtime", "agt_00000000-0000-4000-8000-000000000001", "--revision", "rev_00000000-0000-4000-8000-000000000001", "--ca-bundle="))
-	if err := command.Execute(); err == nil || requests != 1 {
+	_, _, err := runOCCWithArgs(append(slices.Clone(connection), "agent", "runtime", "agt_00000000-0000-4000-8000-000000000001", "--revision", "rev_00000000-0000-4000-8000-000000000001", "--ca-bundle=")...)
+	if err == nil || requests != 1 {
 		t.Fatalf("--ca-bundle=: error = %v after %d requests, want the server's error after 1", err, requests)
 	}
 }
@@ -1418,9 +1396,7 @@ func TestAgentPolicyFlagsAreCheckedBeforeAnyRequest(t *testing.T) {
 		{[]string{"agent", "policy", "recommendations", "agt_00000000-0000-4000-8000-000000000001", "--revision", "deploy-1"}, notRevision},
 	} {
 		requests = 0
-		command := New(io.Discard, io.Discard)
-		command.SetArgs(append(slices.Clone(connection), test.args...))
-		if err := command.Execute(); err == nil || err.Error() != test.want {
+		if _, _, err := runOCCWithArgs(append(slices.Clone(connection), test.args...)...); err == nil || err.Error() != test.want {
 			t.Errorf("%v: error = %v, want %q", test.args, err, test.want)
 		}
 		if requests != 0 {
@@ -1428,32 +1404,27 @@ func TestAgentPolicyFlagsAreCheckedBeforeAnyRequest(t *testing.T) {
 		}
 	}
 	requests = 0
-	command := New(io.Discard, io.Discard)
-	command.SetArgs(append(slices.Clone(connection), "agent", "policy", "get", "agt_00000000-0000-4000-8000-000000000001", "--facet", "networking"))
-	if err := command.Execute(); err == nil || requests != 1 {
+	_, _, err := runOCCWithArgs(append(slices.Clone(connection), "agent", "policy", "get", "agt_00000000-0000-4000-8000-000000000001", "--facet", "networking")...)
+	if err == nil || requests != 1 {
 		t.Fatalf("--facet=networking: error = %v after %d requests, want the server error after 1", err, requests)
 	}
 }
 
 // The real client must retain policy diagnostics through the ordinary CLI error path.
 func TestPolicyUpdatePrintsConfigurationDetails(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPut || request.URL.Path != "/namespaces/"+testNamespaceID+"/agents/"+testAgentID+"/sandbox-policy/networking" {
 			t.Errorf("unexpected policy request: %s %s", request.Method, request.URL.Path)
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(http.StatusConflict)
 		fmt.Fprint(writer, `{"error":{"code":"RESOURCE_CONFLICT","message":"The requested network policy exceeds the Installation delegation ceiling.","details":[{"path":"/additions/0","code":"OUTSIDE_CEILING","message":"The grant exceeds the Installation delegation ceiling."},{"path":"/additions/1","code":"INVALID_VALUE","message":"invalid \u001b[31mvalue","providerPayload":"must-not-print"},{"path":"/additions/2","code":"INVALID_VALUE","message":"invalid \u007fvalue"},{"path":"/additions/3","code":"INVALID_VALUE","message":"invalid \u009bvalue"}]},"meta":{}}`)
-	}))
-	defer server.Close()
-	key := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	})
 	file := filepath.Join(t.TempDir(), "policy.json")
 	if err := os.WriteFile(file, []byte(`{"expectedVersion":1,"additions":[]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	command := New(io.Discard, io.Discard)
-	command.SetArgs([]string{"--url", server.URL, "--service-key-file", key, "--namespace", testNamespaceID, "agent", "policy", "update", testAgentID, "--file", file})
-	err := command.Execute()
+	_, _, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "policy", "update", testAgentID, "--file", file)
 	if err == nil {
 		t.Fatal("policy rejection was not returned")
 	}
