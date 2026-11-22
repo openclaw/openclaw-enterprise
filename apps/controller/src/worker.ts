@@ -1744,7 +1744,9 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
-    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers, this.state);
+    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers, this.state, {
+      bindSourceUpdatePlacement: false,
+    });
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {

@@ -94,7 +94,7 @@ This example covers dedicated OpenClaw. Codex requires a separate Configuration;
 
 5. Send `POST /namespaces/:namespaceId/agents/:agentId/deploy`. OCC checks the Source and policy before queuing deployment. Compute waits for applied network policy and credential delivery, and Worker checks Source authorization again before activation.
 
-The [implementation status](../credential-sources.md#implementation-status) lists gaps in guided creation, provider coverage, replacement, updates, withdrawal, and enforcement qualification. The [lifecycle flow](../../flows/credential-source-lifecycle.md) explains the current implementation.
+The [implementation status](../credential-sources.md#implementation-status) lists gaps in guided creation, provider coverage, replacement, recovery, withdrawal, and enforcement qualification. The [lifecycle flow](../../flows/credential-source-lifecycle.md) explains the current implementation.
 
 ## Read and list sources
 
@@ -102,7 +102,7 @@ Exact GET requires `credential_source:read`; list requires Namespace `read` and 
 
 ## Update a source
 
-Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset; `config: {}` removes it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. Repeating the same preset while replacing the credential is allowed when the Source is selected only in a draft. See [implementation status](../credential-sources.md#implementation-status) for active delivery updates.
+Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset; `config: {}` removes it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. Repeating the same preset while replacing the credential does not change policy. Credential replacement is allowed while an active Agent revision uses the Source. After TokenService commits the replacement, it notifies the selected Credential Proxy. The native Proxy updates an existing Provider; it does not create one if none exists. If delivery fails, PATCH returns `503 DEPENDENCY_UNAVAILABLE`; the Source remains ready and the replacement stays in custody. See the [lifecycle flow](../../flows/credential-source-lifecycle.md#deliver-source-updates) for execution.
 
 ## Delete a source
 

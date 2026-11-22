@@ -32,6 +32,7 @@ import {
 } from "./credential-source-metadata.ts";
 import {
   CredentialSourceConfigError,
+  CredentialDeliveryFailedError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
   DriverSelectionError,
@@ -300,33 +301,6 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "Change the provider preset separately from credential material or lifecycle settings.",
         );
       }
-      if (changesCredential) {
-        for (const agent of await state.agents.listAgents(ref.namespaceId)) {
-          if (agent.activeRevisionId === undefined) {
-            continue;
-          }
-          const revision = await state.revisions.findRevision(
-            ref.namespaceId,
-            agent.id,
-            agent.activeRevisionId,
-          );
-          if (
-            revision?.executionAdmission.version === 8 &&
-            revision.executionAdmission.mode === "standalone" &&
-            revision.credentialDeployment?.bindings.some(
-              ({ sourceRef }) =>
-                sourceRef.kind === "credential_source" &&
-                sourceRef.namespaceId === ref.namespaceId &&
-                sourceRef.id === source.id,
-            )
-          ) {
-            // TODO(source update delivery): allow this after notification and retry can update an active staged revision.
-            throw new ResourceStateConflictError(
-              "Credential updates for an active staged revision require supported delivery notification and retry. Stop the Agent before updating this source.",
-            );
-          }
-        }
-      }
       if (
         presetChanges &&
         (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
@@ -402,9 +376,18 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       return credentialSourceMetadata(updated);
     } catch (error) {
       try {
-        await dependencies.transactions.transact((state) =>
-          state.audit.append(failureAudit("CREDENTIAL_SOURCE_UPDATE_FAILED")),
-        );
+        await dependencies.transactions.transact(async (state) => {
+          if (error instanceof CredentialDeliveryFailedError) {
+            await state.audit.append(completedAudit());
+          }
+          await state.audit.append(
+            failureAudit(
+              error instanceof CredentialDeliveryFailedError
+                ? "CREDENTIAL_DELIVERY_FAILED"
+                : "CREDENTIAL_SOURCE_UPDATE_FAILED",
+            ),
+          );
+        });
       } catch {
         // Preserve the original failure when audit storage is unavailable.
       }

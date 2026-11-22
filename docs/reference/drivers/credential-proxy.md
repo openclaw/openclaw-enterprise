@@ -30,9 +30,9 @@ exports `CredentialProxyDriver`, `LegacyEgressProxyDriver`, `DriverRegistration`
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
 The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines both contracts.
 
-OCC currently requires delivery and Sandbox in one registration; independent composition is planned. Worker and Compute use `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` for an Agent revision. Optional `notifyCredentialUpdated` receives a Source notification and credential resolver, without a revision.
+OCC registers Sandbox with delivery; independent composition is planned. Worker and Compute call `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` by revision. Optional [`notifyCredentialUpdated`](../../flows/credential-source-lifecycle.md#deliver-source-updates) takes a Source and resolver without a revision.
 
-The OpenShell Proxy creates missing Providers from OCC TokenService material and reuses owned Providers unchanged. It attaches Providers to Sandboxes and checks policy, delivered version, and supervisor readiness. After failed attachment or binding cleanup, Proxy attempts to delete its Provider and profile, retaining shared copies when OpenShell refuses deletion. Stop retains the Source and IAM grants. See [implementation status](../credential-sources.md#implementation-status).
+OpenShell deployment attaches new or retained Providers; only creation resolves TokenService material. Source replacement updates existing Providers and verifies serving receipts; absence creates nothing. Failed push retains custody. Cleanup attempts to delete owned Providers and profiles, retaining shared copies on native refusal. Stop retains the Source and IAM grants. Retry and live rotation qualification remain pending; [implementation status](../credential-sources.md#implementation-status) lists enforcement limits.
 
 ## Legacy protected egress
 
