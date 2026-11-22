@@ -87,7 +87,7 @@ drivers:
         # See [Namespace isolation](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
         namespace:
           quota:
-            pods: "10"
+            pods: "20"
           containerDefaults:
             requests:
               cpu: 100m

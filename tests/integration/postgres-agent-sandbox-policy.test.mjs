@@ -14,6 +14,7 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   editStoredRepositoryGrants,
+  rejectStaleRepositoryPolicySave,
   verifyScopedDeploymentTransition,
   verifyChannelPolicyHandoff,
   verifyDeploymentAuthorityAfterWait,
@@ -1193,3 +1194,18 @@ for (const boundary of /** @type {const} */ (["channel", "admission"])) {
     },
   );
 }
+
+test(
+  "PostgreSQL rejects scoped SandboxPolicy saves after IAM revocation during an advisory lock wait",
+  requiresPostgres,
+  async (t) => {
+    const label = "repository-policy-lock";
+    const fixture = await createPolicyApp(t, false, {
+      poolOptions: {
+        application_name: label,
+        options: "-c default_transaction_isolation=repeatable\\ read",
+      },
+    });
+    await rejectStaleRepositoryPolicySave(t, fixture, label);
+  },
+);

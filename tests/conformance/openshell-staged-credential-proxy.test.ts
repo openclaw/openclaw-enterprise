@@ -18,7 +18,10 @@ import type {
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { bindWireServer } from "./openshell-gateway-wire-fixture.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
-import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import {
+  DependencyUnavailableError,
+  SandboxGatewayUnauthorizedError,
+} from "../../packages/occ/src/errors.ts";
 
 type Wire = Record<string, unknown>;
 type Handler = (request: Wire) => Wire | undefined;
@@ -91,6 +94,26 @@ function record(value: unknown): Wire {
   return value as Wire;
 }
 
+function sourcePolicyFrom(effective: Wire): Wire {
+  const source = structuredClone(effective);
+  for (const rule of Object.values(record(source.network_policies))) {
+    for (const endpoint of record(rule).endpoints as Wire[]) {
+      // OpenShell stamps this field when it composes the effective policy.
+      Reflect.deleteProperty(endpoint, "provider_credentialed");
+    }
+  }
+  return source;
+}
+
+function policyUsesProvider(policy: unknown, provider: string): boolean {
+  const networks = record(policy).network_policies;
+  return Object.values(record(networks)).some((rule) =>
+    (record(rule).endpoints as Wire[]).some(
+      (endpoint) => record(endpoint.credential_binding ?? {}).provider === provider,
+    ),
+  );
+}
+
 async function fixture(t: TestContext) {
   const sandbox = {
     metadata: {
@@ -98,10 +121,15 @@ async function fixture(t: TestContext) {
       name: "held-sandbox",
       workspace: namespace.name,
       resource_version: "5",
-      labels,
-      annotations,
+      labels: { ...labels } as Record<string, string>,
+      annotations: { ...annotations } as Record<string, string>,
     },
-    spec: { providers: [] as string[], provider_attachment_epoch: "" },
+    spec: {
+      providers: [] as string[],
+      provider_attachment_epoch: "",
+      policy: undefined as Wire | undefined,
+    },
+    status: {} as Wire,
   };
   const state = {
     profile: undefined as Wire | undefined,
@@ -109,7 +137,17 @@ async function fixture(t: TestContext) {
     creates: [] as Wire[],
     updates: [] as Wire[],
     attaches: [] as Wire[],
+    detaches: [] as Wire[],
     sandboxReads: 0,
+    sandboxPresent: true,
+    workspaceDenied: false,
+    sandboxReadMode: "normal" as "normal" | "unavailable-after-detach",
+    detachMode: "normal" as "normal" | "permission-denied",
+    forbiddenMutations: [] as string[],
+    config: undefined as Wire | undefined,
+    policyStatus: undefined as Wire | undefined,
+    providerStatus: undefined as Wire | undefined,
+    statusReads: [] as Wire[],
     createMode: "normal" as "normal" | "stale-winner",
     attachMode: "normal" as
       | "normal"
@@ -128,6 +166,12 @@ async function fixture(t: TestContext) {
   const methods: Record<string, Handler> = {
     GetSandbox: () => {
       state.sandboxReads++;
+      if (state.sandboxReadMode === "unavailable-after-detach" && state.detaches.length > 0) {
+        throw Object.assign(new Error("Gateway unavailable"), { code: grpc.status.UNAVAILABLE });
+      }
+      if (!state.sandboxPresent || state.workspaceDenied) {
+        return undefined;
+      }
       if (state.detachOnNextSandboxRead) {
         sandbox.spec.providers = [];
         sandbox.metadata.resource_version = "7";
@@ -135,25 +179,96 @@ async function fixture(t: TestContext) {
       }
       return { sandbox };
     },
-    GetWorkspace: () => ({
-      workspace: {
-        metadata: {
-          id: "workspace-id",
-          name: namespace.name,
-          labels: {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise",
-            "openclaw.dev/namespace-id": namespace.id,
+    GetWorkspace: () => {
+      if (state.workspaceDenied) {
+        throw Object.assign(new Error("Workspace role denied"), {
+          code: grpc.status.PERMISSION_DENIED,
+        });
+      }
+      return {
+        workspace: {
+          metadata: {
+            id: "workspace-id",
+            name: namespace.name,
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/namespace-id": namespace.id,
+            },
           },
         },
-      },
-    }),
+      };
+    },
     GetProvider: () => {
       if (state.attachMode === "detach-race" && state.attaches.length > 0) {
         state.detachOnNextSandboxRead = true;
       }
       return state.provider && { provider: state.provider };
     },
+    DetachSandboxProvider: (input) => {
+      state.detaches.push(input);
+      if (state.detachMode === "permission-denied") {
+        throw Object.assign(new Error("upstream-private-detail"), {
+          code: grpc.status.PERMISSION_DENIED,
+        });
+      }
+      const provider = String(input.provider);
+      if (
+        (sandbox.spec.policy && policyUsesProvider(sandbox.spec.policy, provider)) ||
+        (state.config?.policy && policyUsesProvider(state.config.policy, provider))
+      ) {
+        throw Object.assign(new Error("Provider is still referenced by policy"), {
+          code: grpc.status.FAILED_PRECONDITION,
+        });
+      }
+      const detached = sandbox.spec.providers.includes(provider);
+      sandbox.spec.providers = sandbox.spec.providers.filter((name) => name !== provider);
+      const mutationId = randomUUID();
+      if (detached) {
+        sandbox.metadata.resource_version = String(BigInt(sandbox.metadata.resource_version) + 1n);
+        sandbox.spec.provider_attachment_epoch = mutationId;
+      }
+      return {
+        detached,
+        receipt: {
+          receipt_id: randomUUID(),
+          mutation_id: mutationId,
+          kind: "PROVIDER_MUTATION_KIND_DETACH",
+          workspace: namespace.name,
+          provider,
+          desired: {
+            sandbox_id: sandbox.metadata.id,
+            sandbox: sandbox.metadata.name,
+            attachment_epoch: sandbox.spec.provider_attachment_epoch,
+            provider_env_revision: String(state.config?.provider_env_revision ?? "1"),
+            config_revision: String(state.config?.config_revision ?? "1"),
+            policy_hash: String(state.config?.policy_hash ?? "b".repeat(64)),
+          },
+          persisted_time: { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 },
+        },
+      };
+    },
+    DeleteProvider: () => {
+      state.forbiddenMutations.push("DeleteProvider");
+      assert.fail("target cleanup must not delete a shared Provider");
+    },
     GetProviderProfile: () => state.profile && { profile: state.profile },
+    GetSandboxConfig: () => state.config,
+    GetSandboxPolicyStatus: () => state.policyStatus,
+    GetSandboxProviderStatus: (input) => {
+      state.statusReads.push(input);
+      if (!state.providerStatus) {
+        return undefined;
+      }
+      // A provider-only query creates a new Gateway-owned OBSERVE receipt.
+      const receiptId = randomUUID();
+      const receipt = record(state.providerStatus.receipt);
+      receipt.receipt_id = receiptId;
+      receipt.mutation_id = receiptId;
+      if (state.providerStatus.operation) {
+        record(state.providerStatus.operation).operation_id = receiptId;
+      }
+      return { status: state.providerStatus };
+    },
     ImportProviderProfiles: (input) => {
       const profiles = input.profiles as Wire[];
       state.profile = {
@@ -187,7 +302,7 @@ async function fixture(t: TestContext) {
     },
     UpdateProvider: (input) => {
       state.updates.push(input);
-      return state.provider && { provider: state.provider };
+      assert.fail("deployment must not update a shared Provider");
     },
     AttachSandboxProvider: (input) => {
       state.attaches.push(input);
@@ -316,25 +431,28 @@ async function fixture(t: TestContext) {
   const selectedSandbox = {
     id: "sandbox",
     implementation: "openshell",
-    harnessResource: () => ({
+    harnessResource: ({ revision }: { revision: { agentId: string; id: string } }) => ({
       namespaceName: namespace.name,
       resourceName: sandbox.metadata.name,
-      agentId: configuration.targetRef.agentId,
-      revisionId: configuration.targetRef.revisionId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
     }),
   } as unknown as SandboxDriver;
   const backend = {
     id: "backend",
     client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient: client }),
   } as unknown as Backend<OpenShellGateway>;
-  const proxy = new OpenShellCredentialProxyDriver({
-    id: selectedSandbox.id,
-    implementation: selectedSandbox.implementation,
-    backend,
-    sandbox: selectedSandbox,
-  });
-  // This is a direct Driver contract test; the published Agent workflow does not admit
-  // TokenService credential delivery into a revision yet.
+  const createProxy = (tokenServiceImplementation: string) =>
+    new OpenShellCredentialProxyDriver({
+      id: selectedSandbox.id,
+      implementation: selectedSandbox.implementation,
+      backend,
+      sandbox: selectedSandbox,
+      tokenServiceImplementation,
+    });
+  const proxy = createProxy("occ/token-service");
+  // Exercise the admitted runtime provider key separately from the catalog ModelProvider ID.
+  // This controlled Gateway fixture does not qualify a real Agent or native enforcement.
   const revision = completeSandboxRevision({
     namespaceId: namespace.id,
     agentId: configuration.targetRef.agentId,
@@ -347,7 +465,19 @@ async function fixture(t: TestContext) {
     revision: {
       ...revision,
       configurationId: configuration.configurationId,
-      harness: { ...revision.harness, modelProviderId: binding.consumer.providerId },
+      executionAdmission: { version: 8, mode: "standalone" },
+      harness: { ...revision.harness, modelProviderId: "mp_catalog" },
+      credentialDeployment: {
+        driver: {
+          id: selectedSandbox.id,
+          implementation: "openshell",
+          configurationId: "a".repeat(64),
+        },
+        proxyDriverId: proxy.id,
+        networkAccessPolicy: { allowed: [request] },
+        bindings: [binding],
+        injectionPolicies: [injection],
+      },
     },
     signal: t.signal,
   } satisfies CredentialDeploymentContext;
@@ -366,19 +496,150 @@ async function fixture(t: TestContext) {
       injectionPolicies: [injection],
       ...overrides,
     });
+  const observeServing = () => {
+    assert.ok(state.provider);
+    const provider = state.provider;
+    const policyVersion = 7;
+    const policyHash = "b".repeat(64);
+    const configRevision = "11";
+    const providerEnvRevision = "12";
+    const instanceId = "f1d7e6c5-1b2a-4c3d-8e9f-102938475610";
+    const processId = "f1d7e6c5-1b2a-4c3d-8e9f-102938475611";
+    const networkId = "f1d7e6c5-1b2a-4c3d-8e9f-102938475613";
+    const time = { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 };
+    const endpoint = {
+      host: request.host,
+      ports: [443],
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+      credential_binding: { provider: provider.metadata.name },
+      provider_credentialed: true,
+    };
+    // This is controlled Gateway state installed by the Sandbox owner, not a Proxy policy write.
+    const rule = { name: "model", binaries: [{ path: request.binary }], endpoints: [endpoint] };
+    const policy = { version: 1, network_policies: { model: rule } };
+    sandbox.spec.policy = sourcePolicyFrom(policy);
+    sandbox.status = {
+      configuration_activated: true,
+      main_process_instance_id: networkId,
+      configuration_admission: {
+        instance_id: instanceId,
+        state: 2,
+        policy_version: policyVersion,
+        policy_hash: policyHash,
+        config_revision: configRevision,
+        provider_env_revision: providerEnvRevision,
+      },
+    };
+    state.config = {
+      policy,
+      version: policyVersion,
+      policy_hash: policyHash,
+      config_revision: configRevision,
+      provider_env_revision: providerEnvRevision,
+      provider_attachment_epoch: sandbox.spec.provider_attachment_epoch,
+      configuration_admitted: true,
+      configuration_instance_id: instanceId,
+      policy_source: 1,
+      policy_validation_failure_mode: "fail_closed",
+      workspace: namespace.name,
+    };
+    state.policyStatus = {
+      revision: {
+        version: policyVersion,
+        status: "POLICY_STATUS_LOADED",
+        policy_hash: "a".repeat(64),
+        policy: sourcePolicyFrom(policy),
+      },
+      active_version: policyVersion,
+    };
+    const receiptId = randomUUID();
+    const desired = {
+      sandbox_id: sandbox.metadata.id,
+      sandbox: sandbox.metadata.name,
+      attachment_epoch: sandbox.spec.provider_attachment_epoch,
+      provider_id: provider.metadata.id,
+      provider_resource_version: provider.metadata.resource_version,
+      provider_env_revision: providerEnvRevision,
+      config_revision: configRevision,
+      policy_hash: policyHash,
+    };
+    // Stock proto3 omits the zero-valued reason from both observation and READY status.
+    const observed = {
+      session_id: "f1d7e6c5-1b2a-4c3d-8e9f-102938475612",
+      sequence: "1",
+      attachment_epoch: sandbox.spec.provider_attachment_epoch,
+      provider_env_revision: providerEnvRevision,
+      config_revision: configRevision,
+      policy_hash: policyHash,
+      credentials_installed: true,
+      policy_active: true,
+      launch_environment_installed: true,
+      process_instance_id: processId,
+    };
+    state.providerStatus = {
+      state: "PROVIDER_READINESS_STATE_READY",
+      receipt: {
+        receipt_id: receiptId,
+        mutation_id: receiptId,
+        kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+        workspace: namespace.name,
+        provider: provider.metadata.name,
+        desired,
+        persisted_time: time,
+      },
+      operation: { operation_id: receiptId, state: 2, outcome: 1, completed_time: time },
+      observed,
+      network_instance_id: networkId,
+      observed_time: time,
+      evaluated_time: time,
+    };
+    return { endpoint, rule, policy, desired, observed };
+  };
+  const removeCredentialRoute = () => {
+    // Simulate the canonical Sandbox owner applying the next source/effective policy revision.
+    const revision = record(state.policyStatus!.revision);
+    for (const policy of [sandbox.spec.policy, state.config!.policy, revision.policy]) {
+      Reflect.deleteProperty(record(record(policy).network_policies), "model");
+    }
+    const version = Number(state.config!.version) + 1;
+    const configRevision = String(BigInt(String(state.config!.config_revision)) + 1n);
+    const envRevision = String(BigInt(String(state.config!.provider_env_revision)) + 1n);
+    const effectiveHash = "c".repeat(64);
+    sandbox.metadata.resource_version = String(BigInt(sandbox.metadata.resource_version) + 1n);
+    Object.assign(state.config!, {
+      version,
+      config_revision: configRevision,
+      provider_env_revision: envRevision,
+      policy_hash: effectiveHash,
+    });
+    Object.assign(revision, { version, policy_hash: "d".repeat(64) });
+    state.policyStatus!.active_version = version;
+    Object.assign(record(sandbox.status.configuration_admission), {
+      policy_version: version,
+      config_revision: configRevision,
+      provider_env_revision: envRevision,
+      policy_hash: effectiveHash,
+    });
+    state.providerStatus = undefined;
+  };
   return {
     client,
     proxy,
+    createProxy,
     context,
     sandbox,
     state,
     suppliedBinding,
     configure,
+    observeServing,
+    removeCredentialRoute,
     resolutions: () => resolutions,
   };
 }
 
-test("staged OpenShell Proxy transfers once, attaches with CAS, and reuses without resolving", async (t) => {
+test("staged OpenShell Proxy accepts OCC TokenService and reuses its Provider without resolving again", async (t) => {
   const f = await fixture(t);
   const first = await f.configure();
   assert.deepEqual(first, {
@@ -405,6 +666,101 @@ test("staged OpenShell Proxy transfers once, attaches with CAS, and reuses witho
   assert.equal(f.resolutions(), 1);
   assert.equal(f.state.creates.length, 1);
   assert.equal(f.state.attaches.length, 1);
+  assert.equal(f.state.updates.length, 0);
+});
+
+test("staged OpenShell Proxy rejects an unsupported TokenService before resolving or mutating the Gateway", async (t) => {
+  const f = await fixture(t);
+  assert.throws(() => f.createProxy("openshell/token-service"), {
+    message: "Native credential delivery requires the OCC TokenService implementation.",
+  });
+});
+
+test("staged OpenShell Proxy reuses a retained Provider for the next deployment without resolving or updating it", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.observeServing();
+  assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), { state: "ready" });
+  const originalProvider = structuredClone(f.state.provider!);
+
+  // The Sandbox owner removes the old policy rule before target cleanup clears the last binding.
+  f.removeCredentialRoute();
+  await f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef });
+  assert.deepEqual(f.sandbox.spec.providers, []);
+  const nextConfiguration = {
+    targetRef: {
+      ...configuration.targetRef,
+      revisionId: "revision-2",
+      sandboxId: "f1d7e6c5-1b2a-4c3d-8e9f-102938475620",
+    },
+    configurationId: "configuration-2",
+  };
+  const nextContext = {
+    ...f.context,
+    revision: {
+      ...f.context.revision,
+      id: nextConfiguration.targetRef.revisionId,
+      revision: 2,
+      configurationId: nextConfiguration.configurationId,
+      configurationGeneration: 2,
+      servicePrincipalId: "sp_revision_2",
+    },
+  } satisfies CredentialDeploymentContext;
+  Object.assign(f.sandbox.metadata, {
+    id: nextConfiguration.targetRef.sandboxId,
+    name: "next-held-sandbox",
+    resource_version: "5",
+  });
+  f.sandbox.metadata.labels["openclaw.dev/revision"] = nextConfiguration.targetRef.revisionId;
+  f.sandbox.metadata.annotations["openclaw.dev/revision-id"] =
+    nextConfiguration.targetRef.revisionId;
+  f.sandbox.metadata.annotations["openclaw.dev/configuration-id"] =
+    nextConfiguration.configurationId;
+  f.sandbox.spec.provider_attachment_epoch = "";
+  f.sandbox.spec.policy = undefined;
+  f.sandbox.status = {};
+  f.state.config = undefined;
+  f.state.policyStatus = undefined;
+  f.state.providerStatus = undefined;
+
+  await f.proxy.configureDeployment(nextContext, {
+    ...nextConfiguration,
+    bindings: [
+      {
+        binding,
+        resolveCredential: async () => {
+          assert.fail("an existing Provider must not resolve Source material");
+        },
+      },
+    ],
+    injectionPolicies: [injection],
+  });
+  assert.equal(f.resolutions(), 1);
+  assert.equal(f.state.creates.length, 1);
+  assert.equal(f.state.updates.length, 0);
+  assert.deepEqual(f.state.provider, originalProvider);
+  assert.deepEqual(f.sandbox.spec.providers, [originalProvider.metadata.name]);
+
+  // The new target is not ready until its supervisor installs the admitted Provider environment.
+  const evidence = f.observeServing();
+  f.state.config!.provider_env_revision = "13";
+  record(f.sandbox.status.configuration_admission).provider_env_revision = "13";
+  evidence.desired.provider_env_revision = "13";
+  f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_PENDING";
+  f.state.providerStatus!.reason = "PROVIDER_READINESS_REASON_SNAPSHOT_MISMATCH";
+  const readyOperation = f.state.providerStatus!.operation;
+  Reflect.deleteProperty(f.state.providerStatus!, "operation");
+  assert.deepEqual(await f.proxy.getDeploymentStatus(nextContext, nextConfiguration), {
+    state: "pending",
+  });
+  assert.equal(evidence.desired.provider_resource_version, "7");
+  evidence.observed.provider_env_revision = "13";
+  f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_READY";
+  f.state.providerStatus!.operation = readyOperation;
+  Reflect.deleteProperty(f.state.providerStatus!, "reason");
+  assert.deepEqual(await f.proxy.getDeploymentStatus(nextContext, nextConfiguration), {
+    state: "ready",
+  });
 });
 
 test("staged OpenShell Proxy rejects the wrong target before source resolution", async (t) => {
@@ -486,6 +842,22 @@ test("staged OpenShell Proxy validates direct deployment policy and binding inpu
   );
   await assert.rejects(
     f.configure({ injectionPolicies: [{ ...injection, bindingRef: "other-binding" }] }),
+    DependencyUnavailableError,
+  );
+  await assert.rejects(
+    f.configure({
+      injectionPolicies: [
+        {
+          ...injection,
+          allowedRequests: [
+            {
+              ...request,
+              requestPolicy: { type: "http", method: "POST", path: "/v1/chat/completions" },
+            },
+          ],
+        },
+      ],
+    }),
     DependencyUnavailableError,
   );
   assert.equal(f.resolutions(), 0);
@@ -627,33 +999,257 @@ test("staged OpenShell Proxy refuses a stale concurrent first-use winner without
   assert.equal(f.state.updates.length, 0);
 });
 
-test("staged OpenShell Proxy fails closed after attachment because executable authority is unqualified", async (t) => {
+test("staged OpenShell Proxy observes the final Gateway configuration and serving Provider", async (t) => {
   const f = await fixture(t);
   await f.configure();
-  const readsBeforeStatus = f.state.sandboxReads;
-  assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), {
-    state: "failed",
-    code: "NATIVE_EXECUTABLE_AUTHORITY_UNQUALIFIED",
-  });
-  assert.equal(f.state.sandboxReads, readsBeforeStatus);
+  f.observeServing();
+  const status = () => f.proxy.getDeploymentStatus(f.context, configuration);
+  assert.deepEqual(await status(), { state: "ready" });
+  assert.equal(f.state.statusReads[0]?.sandbox, f.sandbox.metadata.name);
+  assert.equal(f.state.statusReads[0]?.provider, f.state.provider!.metadata.name);
+  assert.equal(record(f.state.statusReads[0]?.workspace_scope).workspace, namespace.name);
+  // Provider-only status asks the Gateway for a current OBSERVE receipt. The Gateway may
+  // persist that receipt; this does not claim that the upstream RPC is write-free.
+  assert.equal(f.state.statusReads[0]?.receipt_id, undefined);
+
+  f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_PENDING";
+  f.state.providerStatus!.reason = "PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR";
+  for (const key of [
+    "operation",
+    "observed",
+    "network_instance_id",
+    "observed_time",
+    "evaluated_time",
+  ]) {
+    Reflect.deleteProperty(f.state.providerStatus!, key);
+  }
+  assert.deepEqual(await status(), { state: "pending" });
+  f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_FAILED";
+  f.state.providerStatus!.reason = "PROVIDER_READINESS_REASON_CREDENTIAL_INSTALL_FAILED";
+  assert.equal((await status()).state, "failed");
+
+  // Status may read evidence, but it must not resolve material, repair, or reattach a Provider.
+  assert.equal(f.resolutions(), 1);
+  assert.equal(f.state.creates.length, 1);
+  assert.equal(f.state.attaches.length, 1);
+  assert.equal(f.state.updates.length, 0);
 });
 
-test("staged OpenShell Proxy refuses target-bound removal and safely cleans up unbound staging", async (t) => {
+test("staged OpenShell Proxy refuses a loaded policy outside the admitted request", async (t) => {
   const f = await fixture(t);
-  await assert.rejects(
-    f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef }),
-    { name: "DependencyUnavailableError", message: /target-bound credential withdrawal/ },
+  await f.configure();
+  type Evidence = ReturnType<typeof f.observeServing>;
+  const scenarios: readonly {
+    name: string;
+    change: (evidence: Evidence) => void;
+  }[] = [
+    {
+      name: "wrong destination",
+      change: ({ endpoint }) => {
+        endpoint.host = "other.example.test";
+      },
+    },
+    {
+      name: "wrong port",
+      change: ({ endpoint }) => {
+        endpoint.ports = [8443];
+      },
+    },
+    {
+      name: "wrong binary",
+      change: ({ rule }) => {
+        rule.binaries[0]!.path = "/usr/bin/other";
+      },
+    },
+    {
+      name: "wrong method",
+      change: ({ endpoint }) => {
+        endpoint.rules[0]!.allow.method = "GET";
+      },
+    },
+    {
+      name: "wrong path",
+      change: ({ endpoint }) => {
+        endpoint.rules[0]!.allow.path = "/v1/models";
+      },
+    },
+    {
+      name: "missing credential binding",
+      change: ({ endpoint }) => {
+        Reflect.deleteProperty(endpoint, "credential_binding");
+        Reflect.deleteProperty(endpoint, "provider_credentialed");
+      },
+    },
+    {
+      name: "uninspected route with an unsupported overlapping selector",
+      change: ({ policy }) => {
+        record(policy.network_policies).overlap = {
+          name: "overlap",
+          binaries: [{ path: request.binary }],
+          endpoints: [{ host: "api.*.com", ports: [443] }],
+        };
+      },
+    },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const evidence = f.observeServing();
+      scenario.change(evidence);
+      // The Gateway and supervisor consistently report this different policy as loaded;
+      // rejection must come from checking its content against the admitted request.
+      const changedHash = "c".repeat(64);
+      f.state.config!.policy_hash = changedHash;
+      const revision = record(f.state.policyStatus!.revision);
+      revision.policy_hash = "d".repeat(64);
+      revision.policy = sourcePolicyFrom(evidence.policy);
+      f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
+      record(f.sandbox.status.configuration_admission).policy_hash = changedHash;
+      evidence.desired.policy_hash = changedHash;
+      evidence.observed.policy_hash = changedHash;
+      assert.equal((await f.proxy.getDeploymentStatus(f.context, configuration)).state, "failed");
+    });
+  }
+  await t.test("policy not loaded", async () => {
+    f.observeServing();
+    record(f.state.policyStatus!.revision).status = "POLICY_STATUS_PENDING";
+    assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), {
+      state: "pending",
+    });
+  });
+  await t.test("policy history not found", async () => {
+    f.observeServing();
+    f.state.policyStatus = undefined;
+    assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), {
+      state: "pending",
+    });
+  });
+  await t.test(
+    "missing last-delivered Source version still permits exact binding cleanup",
+    async () => {
+      // The Gateway can serve a Provider without OCC's custom delivery-version marker.
+      f.state.provider!.metadata.resource_version = "8";
+      f.state.provider!.config = {};
+      f.observeServing();
+      assert.notEqual((await f.proxy.getDeploymentStatus(f.context, configuration)).state, "ready");
+      const provider = structuredClone(f.state.provider);
+      f.removeCredentialRoute();
+      await f.proxy.removeDeployment(f.context, {
+        targetRef: configuration.targetRef,
+        bindingRefs: [binding.bindingRef],
+      });
+      assert.equal(f.state.detaches.length, 1);
+      assert.equal(f.state.detaches[0]?.provider, provider!.metadata.name);
+      assert.deepEqual(f.sandbox.spec.providers, []);
+      assert.deepEqual(f.state.provider, provider);
+      assert.deepEqual(f.state.forbiddenMutations, []);
+    },
   );
+  assert.equal(f.resolutions(), 1);
+  assert.equal(f.state.updates.length, 0);
+});
+
+test("staged OpenShell Proxy detaches a target binding without deleting its shared Provider", async (t) => {
+  const f = await fixture(t);
   const unboundDeployment = {
     namespaceId: configuration.targetRef.namespaceId,
     agentId: configuration.targetRef.agentId,
     revisionId: configuration.targetRef.revisionId,
   };
   await f.proxy.removeDeployment(f.context, { unboundDeployment });
-  // Neither branch may resolve credential material or change a target until coordinated cleanup exists.
   assert.equal(f.resolutions(), 0);
   assert.equal(f.state.sandboxReads, 0);
-  assert.equal(f.state.creates.length, 0);
-  assert.equal(f.state.attaches.length, 0);
+
+  await f.configure();
+  f.observeServing();
+  assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), { state: "ready" });
+  const provider = structuredClone(f.state.provider);
+  const remove = () =>
+    f.proxy.removeDeployment(f.context, {
+      targetRef: configuration.targetRef,
+      bindingRefs: [binding.bindingRef],
+    });
+
+  // Stock Gateway refuses detach while the current policy still binds this Provider.
+  await assert.rejects(remove(), DependencyUnavailableError);
+  assert.equal(f.state.detaches.length, 1);
+  assert.deepEqual(f.sandbox.spec.providers, [provider!.metadata.name]);
+
+  // A different target must be refused before another Workspace/name mutation.
+  f.sandbox.metadata.id = "f1d7e6c5-1b2a-4c3d-8e9f-102938475603";
+  await assert.rejects(remove(), DependencyUnavailableError);
+  assert.equal(f.state.detaches.length, 1);
+  f.sandbox.metadata.id = configuration.targetRef.sandboxId;
+
+  f.removeCredentialRoute();
+  // A same-name Provider outside this Namespace is not this binding's cleanup target.
+  const currentProvider = f.state.provider!;
+  currentProvider.metadata.labels["openclaw.dev/namespace-id"] = "namespace-foreign";
+  currentProvider.metadata.resource_version = String(
+    BigInt(currentProvider.metadata.resource_version) + 1n,
+  );
+  const detachesBeforeOwnershipRefusal = f.state.detaches.length;
+  await assert.rejects(remove(), DependencyUnavailableError);
+  assert.equal(f.state.detaches.length, detachesBeforeOwnershipRefusal);
+  currentProvider.metadata.labels["openclaw.dev/namespace-id"] = namespace.id;
+  currentProvider.metadata.resource_version = String(
+    BigInt(currentProvider.metadata.resource_version) + 1n,
+  );
+  const restoredProvider = structuredClone(currentProvider);
+
+  const permanentGatewayRefusal = (error: unknown) => {
+    assert.ok(error instanceof SandboxGatewayUnauthorizedError);
+    assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+    assert.equal(error.transient, false);
+    assert.doesNotMatch(String(error), /upstream-private-detail/);
+    return true;
+  };
+  // Stock Gateway hides an attached Sandbox behind NOT_FOUND after Workspace role loss.
+  // GetWorkspace still returns PERMISSION_DENIED, so cleanup cannot report the binding removed.
+  const detachesBeforeHiddenRoleLoss = f.state.detaches.length;
+  f.state.workspaceDenied = true;
+  await assert.rejects(remove(), permanentGatewayRefusal);
+  assert.equal(f.state.detaches.length, detachesBeforeHiddenRoleLoss);
+  assert.deepEqual(f.sandbox.spec.providers, [provider!.metadata.name]);
+  f.state.workspaceDenied = false;
+
+  f.state.detachMode = "permission-denied";
+  await assert.rejects(remove(), permanentGatewayRefusal);
+  assert.deepEqual(f.sandbox.spec.providers, [provider!.metadata.name]);
+  f.state.detachMode = "normal";
+
+  await remove();
+  assert.equal(f.state.detaches.length, 3);
+  const detached = f.state.detaches[2]!;
+  assert.equal(record(detached.workspace_scope).workspace, namespace.name);
+  assert.equal(detached.sandbox, f.sandbox.metadata.name);
+  assert.equal(detached.provider, provider!.metadata.name);
+  assert.equal(detached.expected_resource_version, undefined);
+  assert.match(String(detached.request_id), /^[0-9a-f-]{36}$/);
+  assert.equal(f.state.statusReads.length, 1);
+  assert.deepEqual(f.sandbox.spec.providers, []);
+
+  // Repeating cleanup for an absent binding or target must not mutate the shared Source copy.
+  await remove();
+  assert.deepEqual(f.state.provider, restoredProvider);
+  f.state.sandboxPresent = false;
+  await remove();
+
+  assert.equal(f.resolutions(), 1);
+  assert.equal(f.state.detaches.length, 3);
+  assert.deepEqual(f.state.forbiddenMutations, []);
   assert.equal(f.state.updates.length, 0);
+});
+
+test("staged OpenShell Proxy reports failure when target membership cannot be confirmed", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.state.sandboxReadMode = "unavailable-after-detach";
+  await assert.rejects(
+    f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef }),
+    DependencyUnavailableError,
+  );
+  assert.equal(f.state.detaches.length, 1);
+  assert.deepEqual(f.sandbox.spec.providers, []);
+  assert.equal(f.state.provider?.config.oce_source_version, "source-v1");
+  assert.deepEqual(f.state.forbiddenMutations, []);
 });

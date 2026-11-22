@@ -3,7 +3,7 @@ import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mj
 import pg from "pg";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
@@ -18,8 +18,8 @@ import {
   type SandboxPolicySnapshot,
 } from "../../packages/contracts/src/index.ts";
 import {
+  AuthorizationDeniedError,
   InMemoryPlatformState,
-  PersistedStateInvalidError,
   ScopeViolationError,
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
@@ -180,11 +180,10 @@ export async function verifyMemoryRepositoryPolicyPersistence(): Promise<void> {
   assert.deepEqual(created.sandboxPolicy?.repositoryNetworkPolicy, denyAll);
 
   const protectedRevision = protectedSuccessor(scoped, installation.id);
-  await assert.rejects(createRevision(protectedRevision), {
-    name: ScopeViolationError.name,
-    message: /Repository network policy requires unprotected execution/,
-  });
-  assert.equal(await readRevision(protectedRevision.id), undefined);
+  const createdProtected = await createRevision(protectedRevision);
+  assert.deepEqual(await readRevision(protectedRevision.id), createdProtected);
+  assert.deepEqual(createdProtected.sandboxPolicy?.repositoryNetworkPolicy, denyAll);
+  assert.deepEqual(createdProtected.egressPlan, protectedRevision.egressPlan);
 }
 
 export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<void> {
@@ -351,11 +350,6 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   const installation = await state.loadInstallation();
   assert.ok(installation);
   const protectedRevision = protectedSuccessor(scopedUnprotectedRevision, installation.id);
-  await assert.rejects(createRevision(protectedRevision), {
-    name: ScopeViolationError.name,
-    message: /Repository network policy requires unprotected execution/,
-  });
-  assert.equal(await readRevision(protectedRevision.id), undefined);
 
   const scope = { sandbox_driver_id: baseSnapshot.driverId, sandbox_policy: scoped.sandboxPolicy };
   const protectedSpec: Record<string, unknown> = {
@@ -396,18 +390,22 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
     }),
     { code: "23514", constraint: "agent_revisions_execution_admission" },
   );
-  // A valid future row passes the database constraints but remains unreadable
-  // to this State adapter until Worker can enforce scoped protected execution.
-  const result = await insertStoredRevision(protectedRevision, {
-    ...protectedSpec,
-    execution_admission: { ...protectedRevision.executionAdmission, ...marker },
+  // Protected admission preserves the egress plan and both storage reader markers.
+  await createRevision(protectedRevision);
+  const storedProtected = await readStoredSpec(protectedRevision.id);
+  assert.deepEqual(storedProtected.execution_admission, {
+    ...protectedRevision.executionAdmission,
+    ...marker,
   });
-  assert.equal(result.rowCount, 1);
-  await assert.rejects(readRevision(protectedRevision.id), (error: unknown) => {
-    assert.ok(error instanceof PersistedStateInvalidError);
-    assert.match(error.message, /Persisted AgentRevision execution admission/);
-    return true;
-  });
+  assert.equal(
+    storedProtected.harness_auth.protectedExecutionVersion,
+    protectedRevision.executionAdmission.version,
+  );
+  assert.deepEqual(storedProtected.egress_plan, protectedRevision.egressPlan);
+  const protectedRead = await readRevision(protectedRevision.id);
+  assert.deepEqual(protectedRead?.executionAdmission, protectedRevision.executionAdmission);
+  assert.deepEqual(protectedRead?.egressPlan, protectedRevision.egressPlan);
+  assert.deepEqual(protectedRead?.sandboxPolicy?.repositoryNetworkPolicy, admitted);
 
   const denyAll = { ...desired, version: desired.version + 1, repositoryNetworkPolicy: [] };
   // The user can withdraw existing grants even after losing the Sandbox Driver.
@@ -587,6 +585,7 @@ export async function editStoredRepositoryGrants(
   assert.deepEqual(observed.policy, preserved);
   assert.equal(observed.repositoryNetworkPolicySaveSupported, true);
   assert.deepEqual(observed.defaults, revision.sandboxPolicy.defaults);
+  assert.equal(observed.protectedExecution, false);
   assert.equal(observed.defaultsRevisionId, id);
   assert.equal(observed.deployedPolicyVersion, preserved.version);
   const apply = await inject("POST", path + "/apply", {
@@ -637,6 +636,118 @@ export async function editStoredRepositoryGrants(
   const forbidden = await inject("PUT", path, { ...withdrawal, expectedVersion: cleared.version });
   assert.equal(forbidden.statusCode, 403, forbidden.body);
   assert.deepEqual(await stored(), cleared);
+}
+
+export async function rejectStaleRepositoryPolicySave(
+  t: TestContext,
+  fixture: PolicyApp,
+  label: string,
+): Promise<void> {
+  const { pool, inject, controller, principal } = fixture;
+  const {
+    rows: [settings],
+  } = await pool.query<{ isolation: string }>(
+    "SELECT current_setting('default_transaction_isolation') AS isolation",
+  );
+  assert.equal(settings?.isolation, "repeatable read");
+
+  for (const route of ["HTTP PUT", "direct OCC"] as const) {
+    await t.test(route, async (caseContext) => {
+      const { namespace, agent, path, seed, stored } = await policyEditor(fixture);
+      const original = await seed();
+      const save = async () => {
+        if (route === "HTTP PUT") {
+          const reply = await inject("PUT", path, {
+            expectedVersion: original.version,
+            additions: [],
+            repositoryNetworkPolicy: [],
+          });
+          if (reply.statusCode === 403) {
+            assert.equal(reply.json().error.code, "FORBIDDEN");
+          }
+          return reply.statusCode;
+        }
+        try {
+          await controller.updateAgentSandboxPolicy(
+            principal.id,
+            namespace.id,
+            agent.id,
+            "networking",
+            original.version,
+            [],
+            [],
+          );
+          return 200;
+        } catch (error) {
+          if (error instanceof AuthorizationDeniedError) {
+            assert.deepEqual(error.authorization, {
+              action: "update",
+              resource: { kind: "sandbox_policy", id: original.id, namespaceId: namespace.id },
+            });
+            return 403;
+          }
+          throw error;
+        }
+      };
+      const auditCount = async () => {
+        const { rows } = await pool.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM occ.audit_events
+           WHERE namespace_id=$1 AND resource_kind='sandbox_policy'
+             AND resource_id=$2 AND outcome='success'`,
+          [namespace.id, original.id],
+        );
+        return rows[0]!.count;
+      };
+      const beforeAudit = await auditCount();
+      const writer = await pool.connect();
+      let pending: ReturnType<typeof save> | undefined;
+      try {
+        await writer.query("BEGIN");
+        const {
+          rows: [blocker],
+        } = await writer.query<{ pid: number }>(
+          "SELECT pg_backend_pid() AS pid, pg_advisory_xact_lock(hashtextextended($1, 0))",
+          ["occ:iam-configuration"],
+        );
+        assert.ok(blocker);
+
+        // A request blocked behind a real IAM writer must see the committed restriction.
+        pending = save();
+        void pending.catch(() => {});
+        await waitUntil("the scoped save waits for the IAM configuration writer", async () => {
+          const result = await pool.query(
+            `SELECT 1 FROM pg_locks locks JOIN pg_stat_activity activity USING (pid)
+             WHERE locks.locktype='advisory' AND NOT locks.granted
+               AND activity.application_name=$1 AND $2=ANY(pg_blocking_pids(locks.pid))`,
+            [label, blocker.pid],
+          );
+          return result.rowCount === 1;
+        });
+        await writer.query(
+          `INSERT INTO occ.iam_restrictions
+           (id, namespace_id, action, resource_kind, resource_id, effect)
+           VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+          [`restriction-${randomUUID()}`, namespace.id, original.id],
+        );
+        await writer.query("COMMIT");
+      } catch (error) {
+        await writer.query("ROLLBACK");
+        throw error;
+      } finally {
+        writer.release();
+      }
+
+      const outcome = await pending;
+      const observed = await stored();
+      const afterAudit = await auditCount();
+      caseContext.diagnostic(
+        `${route}: outcome=${outcome}, persisted version ${original.version} → ${observed.version}, success audits added=${afterAudit - beforeAudit}`,
+      );
+      assert.equal(outcome, 403);
+      assert.deepEqual(observed, original);
+      assert.equal(afterAudit, beforeAudit);
+    });
+  }
 }
 
 export async function verifyScopedDeploymentTransition(

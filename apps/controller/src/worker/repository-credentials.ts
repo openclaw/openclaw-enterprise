@@ -1,3 +1,4 @@
+import type { NativeRepositoryWithdrawalSession } from "../drivers/repo/github/access/prepared-repository-git.ts";
 import { sameBinding } from "../drivers/repo/access/grant-identity.ts";
 import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
@@ -114,6 +115,13 @@ export interface RepositoryCleanupOutcome {
   readonly cause?: string;
 }
 
+type NativeRepositoryWithdrawal =
+  | { readonly state: "pending" | "unsafe" }
+  | {
+      readonly state: "disposed";
+      readonly sessions: readonly NativeRepositoryWithdrawalSession[];
+    };
+
 const CLEANUP_CAUSE = /^[A-Z][A-Z0-9_]{0,63}$/u;
 
 /** A loggable code for a cleanup failure, never provider text. */
@@ -146,6 +154,81 @@ export class RepositoryCredentialLifecycle {
 
   constructor(dependencies: Dependencies) {
     this.dependencies = dependencies;
+  }
+
+  selectsFiniteNativeWithdrawal(revision: Revision): boolean {
+    const snapshot = revision.repositoryCredentials;
+    const sender = this.dependencies.nativeSender;
+    return (
+      revision.executionAdmission.mode === "unprotected" &&
+      revision.sandboxDriverId === undefined &&
+      snapshot !== undefined &&
+      snapshot.standingApprovalId === undefined &&
+      snapshot.bindings.length > 0 &&
+      snapshot.bindings.every(({ profile }) => profile === "git-write") &&
+      sender?.durableBrokerReceipts === true &&
+      sender.id === snapshot.driver.id &&
+      sender.implementation === snapshot.driver.implementation
+    );
+  }
+
+  /** Read the exact broker generations once the Worker has proved the durable removal fence. */
+  async observeFiniteNativeWithdrawal(revision: Revision): Promise<NativeRepositoryWithdrawal> {
+    const snapshot = revision.repositoryCredentials;
+    if (!snapshot || !this.selectsFiniteNativeWithdrawal(revision)) {
+      return { state: "unsafe" };
+    }
+    return this.dependencies.state.read(async ({ repositorySessions }) => {
+      const attempts = await repositorySessions.listRevisionAttempts(revisionOwner(revision));
+      const bindings = new Map(
+        snapshot.bindings.map((binding) => [binding.repositoryRef, binding]),
+      );
+      const disposedBindings = new Set<string>();
+      const sessions: NativeRepositoryWithdrawalSession[] = [];
+      for (const attempt of attempts) {
+        const binding = bindings.get(attempt.repositoryRef);
+        if (
+          attempt.brokerProtocol !== 3 ||
+          attempt.liveRevisionId !== revision.id ||
+          !isDeepStrictEqual(attempt.cleanupContext.driver, snapshot.driver) ||
+          !binding ||
+          !isDeepStrictEqual(attempt.cleanupContext.binding, binding) ||
+          (attempt.phase !== "closing" && attempt.phase !== "disposed")
+        ) {
+          return { state: "unsafe" };
+        }
+        if (attempt.phase !== "disposed") {
+          continue;
+        }
+        const receipt = await repositorySessions.findBrokerReceipt(attempt.admissionId);
+        if (
+          receipt?.state !== "disposed" ||
+          receipt.admissionId !== attempt.admissionId ||
+          !receipt.sessionId ||
+          receipt.sessionId !== attempt.sessionId ||
+          !receipt.generation ||
+          receipt.deadlineWallMs === undefined ||
+          receipt.deadlineWallMs > attempt.deadlineWallMs
+        ) {
+          return { state: "unsafe" };
+        }
+        disposedBindings.add(attempt.repositoryRef);
+        sessions.push({
+          admissionId: receipt.admissionId,
+          sessionId: receipt.sessionId,
+          generation: receipt.generation,
+        });
+      }
+      if (attempts.length === 0) {
+        return { state: "unsafe" };
+      }
+      if (sessions.length !== attempts.length) {
+        return { state: "pending" };
+      }
+      return disposedBindings.size === bindings.size
+        ? { state: "disposed", sessions }
+        : { state: "unsafe" };
+    });
   }
 
   validate(revision: Revision): number | undefined {

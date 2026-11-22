@@ -100,10 +100,16 @@ of the Installation.
 
 See `proof.json` for completed checks and timings and `return-progress.json` for
 the last phase started. Both are in the private evidence directory reported by
-the test. The forward upgrade records authenticated HTTPS `GET /installation`
-samples before, during, and after the upgrade, including a failed upgrade. Each
-request has a five-second deadline. Requests run serially on a nominal one-second
-cadence during the upgrade, with at least one second between actual starts.
+the test.
+
+The test samples authenticated HTTPS `GET /installation` before, during, and after
+the forward upgrade and the return to the previous version, including when either
+action fails. The return window starts before the candidate writers stop and covers
+archive restoration, the migration compatibility check, and Helm rollback through
+Installation verification. The anonymous-access and saved Agent checks run
+separately after the return window. Each request has a five-second deadline. During
+each action, requests run serially on a nominal one-second cadence, with at least
+one second between actual starts.
 Slow requests, evidence writes, and late timer wakes can leave slots unprobed;
 the sampler does not replay those slots. The evidence includes timestamps,
 request durations, received HTTP status even for invalid response bodies,
@@ -125,11 +131,12 @@ Response bodies and credentials are omitted. If recording fails, the test report
 the write failure alongside any upgrade failure, preserving the upgrade as the
 primary cause.
 
-Each completed observation also updates `forward-api-availability.json` in that
-same directory by atomic replacement. If the runner stops, this file retains the
+Each completed observation also updates the corresponding
+`forward-api-availability.json` or `return-api-availability.json` file in the
+private evidence directory by atomic replacement. If the runner stops, this file retains the
 last saved observations. `upgradeSucceeded: null` means the action has not been
 recorded as finished; do not infer success or recovery from an incomplete file.
-A final boolean records whether the upgrade action succeeded, independently of
+A final boolean records whether the measured action succeeded, independently of
 the observed HTTP results. Process interruption does not add an `after` sample.
 This protects completed writes against process termination, not host or disk loss.
 
@@ -137,7 +144,7 @@ In receipt version 2, `nominalIntervalMs` replaces the old sleep interval
 (`intervalAfterResponseMs` is null). Compare `cadence.probedSlots` with
 `cadence.scheduledSlots` to see how many one-second opportunities received a
 completed first attempt. `unprobedSlots` counts the remainder. Slot 0 begins
-when the helper invokes the upgrade. Each `during` sample records the slot
+when the helper invokes the action. Each `during` sample records the slot
 in which it started and its delay within that slot. Boundary reads have no slot.
 An HTTP error or timeout still counts as a probe.
 
@@ -147,9 +154,14 @@ the interval between starts. `maxStartGapMs` includes the boundary reads.
 All offsets use the same monotonic clock. Wall-clock timestamps support log
 correlation.
 
+For each window, count unsuccessful observations and report the largest interval
+between successive successful responses. Estimate each finish offset with
+`startOffsetMs + elapsedMs`. Durations are rounded to milliseconds. With fewer
+than two successes, the interval is unknown. Report failures before the first success or after the last separately.
+
 An interrupted receipt covers completed observations through `throughOffsetMs`.
 An open slot can still receive a probe. On settlement, `cadence.endOffsetMs`
-records when the helper observed the upgrade finish, including an exact slot
+records when the helper observed the action finish, including an exact slot
 boundary. The last in-flight request and the final read can finish later.
 The final file write and time after the last response are outside coverage.
 
@@ -210,7 +222,7 @@ In the fresh `run_dir` from the lane command, retain each available receipt befo
 the test never reached has no receipt. An interrupted phase can leave a partial one.
 
 ```sh
-for receipt in forward-api-availability.json runtime-api-availability.json controller-api-endpoints.json; do
+for receipt in forward-api-availability.json return-api-availability.json runtime-api-availability.json controller-api-endpoints.json; do
   for source in "$run_dir"/oce-production-tui-*/"$receipt"; do
     if [ -f "$source" ]; then
       install -m 600 "$source" "$run_dir/$receipt" || exit 1
