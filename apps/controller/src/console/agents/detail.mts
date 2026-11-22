@@ -888,8 +888,7 @@ export async function renderAgentDetail(
   // The Agent as last read; Stop and finished deployments update it in place.
   let currentAgent = agent;
   let currentRuntimeState = agent.desiredRuntimeState;
-  // Counts the Agent states applied to the page, so a reread can tell whether a newer one
-  // landed while it was in flight (finding 2998).
+  // Counts applied Agent states and foreground serving changes that supersede older reads.
   let agentUpdates = 0;
   // When the last Agent state was applied, on the document's performance clock.
   let agentUpdatedAt = Number.NEGATIVE_INFINITY;
@@ -1100,48 +1099,75 @@ export async function renderAgentDetail(
   const liveServingNote = element("p", { className: "stat-help" });
   // A failed deployment that probably left nothing serving (see renderLatestDeployment).
   let mayBeOfflineAfterFailure = false;
-  // The Sandbox Driver's record of the current version's Sandbox, read once per serving state
-  // (finding 2152). Nothing restarts a lost Sandbox, so Live serving says so and names the next
-  // step. A status that cannot be read is unknown, never lost.
+  // Read the Sandbox Driver's record on entry, on a serving change and on admitted refocus.
+  // Nothing restarts a lost Sandbox, so Live serving names the next step when it observes loss.
   let harnessRead: { revisionId: string; status: AgentHarnessStatusRead | null } | null = null;
-  let harnessReads = 0;
   // The current version the read in flight or answered is for, or null when none is wanted.
   let harnessRequested: string | null = null;
+  let harnessAbort: AbortController | undefined;
+  let servingProjectionPending = false;
   // Only a running Agent's dedicated current version has a Sandbox to read. The version's own
   // mode decides once the version list shows it; the Agent's saved mode can differ from it.
   // The note line is reserved from the first paint (console.css), so the answer moves nothing.
   const harnessExpected = () =>
     !deleting &&
+    !servingProjectionPending &&
     currentRuntimeState === "running" &&
     Boolean(currentRevisionId) &&
     (visibleRevisions.find((revision) => revision.id === currentRevisionId)?.harness?.mode ??
       currentAgent.executionMode) === "dedicated";
-  function syncHarnessRead() {
+  function syncHarnessRead(recheck?: ForegroundAgentRecheck) {
     const wanted = harnessExpected() ? (currentRevisionId ?? null) : null;
-    if (wanted === harnessRequested) {
+    if (wanted === harnessRequested && (!recheck || wanted === null)) {
       return;
     }
-    // A stop, a new current version or a deletion drops any answer for the old state.
-    const read = ++harnessReads;
+    // Retire an obsolete observation before its response can reach the shared client.
+    harnessAbort?.abort();
     harnessRequested = wanted;
     harnessRead = null;
     if (wanted === null) {
+      harnessAbort = undefined;
       return;
     }
-    void request(`${path}/harness-status`)
-      .then(
-        (status) => status as AgentHarnessStatusRead,
-        () => null,
-      )
-      .then((status) => {
-        if (read !== harnessReads || !context.isCurrent() || deleting) {
-          return;
+    const abort = new AbortController();
+    harnessAbort = abort;
+    const isCurrent = () =>
+      harnessAbort === abort &&
+      wanted === currentRevisionId &&
+      harnessExpected() &&
+      context.isCurrent() &&
+      (recheck?.isCurrent() ?? true);
+    const finish = (status: AgentHarnessStatusRead | null) => {
+      harnessRead = { revisionId: wanted, status };
+      renderLiveServing();
+    };
+    if (recheck) {
+      renderLiveServing();
+    }
+    return request(`${path}/harness-status`, { signal: abort.signal }).then(
+      (answer) => {
+        if (isCurrent()) {
+          const status = answer as AgentHarnessStatusRead | null;
+          // Activation can happen after the Agent read and before OCC looks up the Sandbox.
+          finish(status?.status === "observed" && status.revisionId !== wanted ? null : status);
         }
-        // A read that failed is kept as null: the note then says the status is unknown.
-        harnessRead = { revisionId: wanted, status };
-        renderLiveServing();
-      });
+      },
+      (error: unknown) => {
+        if (isCurrent()) {
+          const { status } = requestFailure(error);
+          if (recheck && (status === 401 || status === 403 || status === 404)) {
+            throw error;
+          }
+          finish(null);
+        }
+      },
+    );
   }
+  function enterDeletionView(options?: { focus?: boolean }) {
+    harnessAbort?.abort();
+    showDeleting(options);
+  }
+
   function renderLiveServing() {
     syncHarnessRead();
     const expected = harnessExpected();
@@ -1356,7 +1382,7 @@ export async function renderAgentDetail(
     context,
     path,
     agent,
-    showDeleting,
+    enterDeletionView,
     (next) => updateCurrentAgent(next, latestRevisionResult, viewedSnapshot),
     callerPermissionsRead.then((permissions) => permissions?.operate),
     // A refusal records how many rereads had started, so an answer read before it, such as a
@@ -1367,7 +1393,7 @@ export async function renderAgentDetail(
     context,
     path,
     agent,
-    showDeleting,
+    enterDeletionView,
     callerPermissionsRead.then((permissions) => permissions?.delete),
     () => permissionsRereads,
     (afterReads) =>
@@ -2394,7 +2420,7 @@ export async function renderAgentDetail(
       return;
     }
     if (freshAgent.status === "deleting") {
-      showDeleting();
+      enterDeletionView();
       return;
     }
     agentUpdates += 1;
@@ -2413,6 +2439,7 @@ export async function renderAgentDetail(
     currentAgent = freshAgent;
     stopPanel.updateAgent(freshAgent);
     if (servingChanged) {
+      servingProjectionPending = false;
       renderLiveServing();
       retainedTabs.clear();
       if (mountedTab) {
@@ -2523,9 +2550,29 @@ export async function renderAgentDetail(
   // 3000). The recheck's answer now updates the page as a poll's does, under the same guards,
   // without a second read.
   context.onRechecked?.((recheck) => {
-    if (context.isCurrent() && !deleting) {
-      void rereadServing(recheck).catch(() => {});
+    if (!recheck.isCurrent() || deleting || agentUpdatedAt > recheck.readStartedAt) {
+      return;
     }
+    const fresh = agentForPage(recheck.agent);
+    const servingUnchanged =
+      fresh.status === "active" &&
+      fresh.activeRevisionId === currentRevisionId &&
+      fresh.desiredRuntimeState === currentRuntimeState;
+    if (!servingUnchanged || servingProjectionPending) {
+      // Admission has newer lifecycle evidence than the rendered summary. Retire the old
+      // Sandbox now, even if the extra version list needed to update that summary fails.
+      agentUpdates += 1;
+      servingProjectionPending = !servingUnchanged;
+      if (servingProjectionPending) {
+        renderLiveServing();
+      }
+    }
+    if (servingUnchanged && harnessExpected()) {
+      return syncHarnessRead(recheck);
+    }
+    // The lifecycle projection can need an extra version list. It remains best effort
+    // after admission and can neither hold admission open nor report a Sandbox refusal.
+    void rereadServing(recheck).catch(() => {});
   });
   async function runningVersion() {
     servingReread ??= rereadServing()
