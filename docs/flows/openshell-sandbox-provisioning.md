@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-22
+last_updated_session: authoring-run/88a02f98-14c3-4a30-af11-58217411a763
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -277,18 +277,18 @@ For [Sandbox startup refusals](../reference/drivers/openshell-sandbox/harness-pr
 `describePrepareRevisionFailure` passes the code and stage to `worker.compute-prepare-failed`.
 
 `sandboxLaunchSpec` sends [sizing](../reference/drivers/openshell-sandbox.md#configuration)
-in `template.resources`; `template.driver_config` retains mounts.
+in `template.resources` and mounts in `template.driver_config`.
 Sandbox and preparation omit RuntimeClass and PSA exemptions. Adoption normalizes
-both Structs. Even on `ALREADY_EXISTS`, it requires matching Workspace, labels,
-annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
+both Structs and requires matching Workspace, labels, annotations and spec, even
+on `ALREADY_EXISTS`. Stopped or deleting Sandboxes are ineligible. Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
-`APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure
-ends after confirmed deletion through `withdrawHarnessExposure`, adoption or
-recreation with `workspaceNodeEnrolled`.
+`APP_SERVER_PORT` exposure. Only Codex returns its URL. A retained native exposure closes after
+[`withdrawHarnessExposure`](../../apps/controller/src/worker/harness-exposure-sweep.ts)
+confirms withdrawal, or after adoption or recreation with `workspaceNodeEnrolled`.
 
-After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
-require the recorded release acknowledgment and authenticated WebSocket. Other
-non-`200` responses stay pending or refuse enrollment without an upgrade.
+HTTP `400` or `404` requires a recorded release acknowledgment and authenticated
+WebSocket in `observeHeldRepositoryGitPreview` and `enrollHarness`. Other
+non-`200` responses stay pending or refuse enrollment without upgrading.
 
 The Backend reuses clients and retries setup. Cancellation follows
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline.
@@ -332,10 +332,10 @@ and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider ho
 without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
 `harnessHome` and Compute-owned relay URL/auth. Egress permits only the provider
 peer/port; the direct Agent Service stays inactive without a Harness route.
-For dedicated replacements the worker stops earlier runtimes before preparing the candidate.
-`apps/controller/src/worker.ts:finalizeRevision` publishes the active selection before
-activation rechecks the Harness. Permanent activation refusal fails deployment without
-reverting that selection, replacing the Gateway or retiring the predecessor.
+Dedicated replacement stops earlier runtimes before candidate preparation.
+`apps/controller/src/worker.ts:finalizeRevision` publishes selection before the
+activation check. Permanent activation refusal fails deployment and keeps the
+selection, Gateway, and predecessor.
 Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`.
 Native OpenClaw enrolls outbound into its admitted workspace.
 
@@ -419,6 +419,8 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 10:40: Link the exposure sweep. (authoring-run/88a02f98-14c3-4a30-af11-58217411a763 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 08:09: Serialize sizing. (01a1f50f-138b-756e-be12-ada2880622e2 - 6967d8e4dea2b4c5bb769c8697e7d4cfd046c55a)

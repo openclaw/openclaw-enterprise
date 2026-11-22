@@ -98,8 +98,8 @@ Focused jobs verify SHA and ordered PR parents. QA materializes only the
 [selected credential](../testing/ci/qa-advisory.md#trigger).
 
 [Scheduled admission](../testing/ci/full-integration.md#trigger) checks `github.sha`,
-cadence and receipts under lock. Cooldown skips coverage.
-`readUnmarkedClock` skips targeted or audited cleaned acceptance work.
+cadence and receipts under lock. Cooldown skips coverage lookup.
+`readUnmarkedClock` skips explicitly targeted live work.
 Scheduled GETs share one 502/503/504 retry. `Retry-After` or zero quota suppresses it.
 “Scheduled preflight diagnostic” shows stage and allowlisted HTTP codes.
 Reruns require [fresh approved dispatch](../testing/ci/configuration.md#environments)
