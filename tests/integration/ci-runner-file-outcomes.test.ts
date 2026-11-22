@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { isOpenShellInstallerFile } from "../../scripts/ci/openshell-full-integration.ts";
+import { nativeProofFailureStage } from "../../scripts/ci/runner-reporter-output.ts";
 import {
   createRunnerFixture,
   laneArgs,
@@ -349,20 +350,20 @@ test(
       'await import("./local-first-agent-real.test.mjs");\n',
     );
     const nativeDeclaration = join(root, "tests/integration/local-first-agent-real.test.mjs");
-    const nativeFailureSource = (stage: string, failSibling = false) => `
+    await writeFile(
+      nativeDeclaration,
+      `
 import test from "node:test";
-function proofError(failureStage) {
-  return Object.assign(new Error("::warning::private-proof-canary"), {
+function reportFailure(failureStage) {
+  throw Object.assign(new Error("::warning::private-proof-canary"), {
     openclawCiDiagnostic: { kind: "native-first-agent-proof", failureStage },
   });
 }
 test(${JSON.stringify(parentCase)}, async (t) => {
-  if (${failSibling}) {
-    await t.test("sibling proof", () => { throw proofError("exec-proof"); });
-  }
-  await t.test(${JSON.stringify(nativeCase)}, () => { throw proofError(${JSON.stringify(stage)}); });
-});`;
-    await writeFile(nativeDeclaration, nativeFailureSource("model-outcome"));
+  await t.test("sibling proof", () => reportFailure("exec-proof"));
+  await t.test(${JSON.stringify(nativeCase)}, () => reportFailure("model-outcome"));
+});`,
+    );
     const installerResults = join(root, "results/split-installers.json");
     const installerSplit = await runRunnerAsync(
       laneArgs(root, "openshell-installers", "state/split-installers.jsonl", installerResults),
@@ -371,7 +372,6 @@ test(${JSON.stringify(parentCase)}, async (t) => {
     assert.ifError(installerSplit.error);
     assert.equal(installerSplit.status, 1, installerSplit.stderr);
     const installerSummary = await readSummary(installerResults);
-    const installerCommands = [...unknownOrdinalCommands, `${splitHint} 2.`];
     assert.equal(installerSummary.exitCode, 1);
     assert.deepEqual(
       installerSummary.files.map(({ path, status }) => [path, status]),
@@ -384,56 +384,40 @@ test(${JSON.stringify(parentCase)}, async (t) => {
     assert.equal(installerOutcome.nodeExitCode, 1);
     assert.deepEqual(installerOutcome.cleanup, { status: "passed" });
     assert.deepEqual(
-      installerOutcome.tests.map(({ name, status }) => [name, status]),
+      installerOutcome.tests.map(({ name, status, error }) => [name, status, error?.diagnostic]),
       [
-        [nativeCase, "failed"],
-        [parentCase, "failed"],
+        [
+          "sibling proof",
+          "failed",
+          { kind: "native-first-agent-proof", failureStage: "exec-proof" },
+        ],
+        [nativeCase, "failed", { kind: "native-first-agent-proof", failureStage: "model-outcome" }],
+        [parentCase, "failed", undefined],
       ],
     );
-    assert.deepEqual(installerOutcome.tests[0]?.error?.diagnostic, {
-      kind: "native-first-agent-proof",
-      failureStage: "model-outcome",
-    });
     assert.deepEqual(commands(installerSplit.stderr), [
-      ...installerCommands,
+      ...unknownOrdinalCommands,
+      `${splitHint} 2.`,
       "::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage model-outcome.",
     ]);
 
-    // A sibling can carry a valid projection while the expected child has only
-    // a malformed stage. The reporter retains the sibling's diagnostic, but the
-    // first-file notice must derive its evidence from the expected child.
-    await writeFile(
-      nativeDeclaration,
-      nativeFailureSource("model-outcome\n::warning::private-stage-canary", true),
-    );
-    const siblingResults = join(root, "results/split-installers-sibling.json");
-    const siblingSplit = await runRunnerAsync(
-      laneArgs(
-        root,
-        "openshell-installers",
-        "state/split-installers-sibling.jsonl",
-        siblingResults,
-      ),
-      splitEnv,
-    );
-    assert.ifError(siblingSplit.error);
-    assert.equal(siblingSplit.status, 1, siblingSplit.stderr);
-    const siblingOutcome = (await readSummary(siblingResults)).files.find(
-      ({ path }) => path === installerFailure.path,
-    );
-    assert.ok(siblingOutcome);
-    assert.deepEqual(siblingOutcome.cleanup, { status: "passed" });
-    assert.deepEqual(
-      siblingOutcome.tests.find(({ name }) => name === "sibling proof")?.error?.diagnostic,
+    // The same real sibling remains first. Removing or corrupting the named
+    // case's normalized stage must suppress the hint, never select exec-proof.
+    for (const diagnostic of [
+      undefined,
       {
         kind: "native-first-agent-proof",
-        failureStage: "exec-proof",
+        failureStage: "model-outcome\n::warning::private-stage-canary",
       },
-    );
-    const malformed = siblingOutcome.tests.find(({ name }) => name === nativeCase);
-    assert.equal(malformed?.status, "failed");
-    assert.equal(malformed.error?.diagnostic, undefined);
-    assert.deepEqual(commands(siblingSplit.stderr), installerCommands);
+    ]) {
+      assert.equal(
+        nativeProofFailureStage([
+          installerOutcome.tests[0]!,
+          { name: nativeCase, error: { diagnostic } },
+        ]),
+        undefined,
+      );
+    }
 
     await writeFile(join(root, first), passingCase);
     const greenSplit = await runRunnerAsync(

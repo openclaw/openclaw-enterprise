@@ -11,6 +11,10 @@ import {
 } from "./runner-failure-diagnostics.ts";
 import { absoluteInputPath, issue, repoRelativePath } from "./runner-inputs.ts";
 import { isRecord } from "./records.ts";
+import { nativeFirstAgentProofDiagnostic } from "./reporter.ts";
+
+// Only the split failure notice consumes this value; symbols stay out of result JSON.
+export const nativeProofCaseFailed = Symbol("failed declared native redeployment case");
 
 const nativeRedeploymentCase =
   "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution";
@@ -54,7 +58,7 @@ export type FileEvidence = {
   measurements: unknown[];
   unfinishedStage?: "installation" | "replacement" | undefined;
   openShellReplacement?: OpenShellReplacement | undefined;
-  nativeFirstAgentProofStage?: unknown;
+  [nativeProofCaseFailed]?: true;
   testRunExercised: boolean;
   tests: TestCase[];
   skippedSuites: { name: unknown; source: SuiteSource | undefined }[];
@@ -489,11 +493,7 @@ export function readFileEvidence(
       terminal.data.nesting === 1 &&
       terminal.data.file === join(root, "tests/integration/local-first-agent-real.test.mjs")
     ) {
-      const test = evidence.tests.find(({ name }) => name === nativeRedeploymentCase);
-      const diagnostic = optionalReporterField(test?.error, "diagnostic");
-      if (isRecord(diagnostic) && diagnostic.kind === "native-first-agent-proof") {
-        evidence.nativeFirstAgentProofStage = diagnostic.failureStage;
-      }
+      evidence[nativeProofCaseFailed] = true;
     }
   }
   // A skipped describe() never registers its tests, so only its suite event shows the skip.
@@ -506,6 +506,16 @@ export function readFileEvidence(
         data.name !== absolutePath,
     )
     .map(({ data }) => ({ name: data.name, source: suiteSource(root, data) }));
+}
+
+// Read the redacted error on the named case. A sibling may report a different
+// native proof failure, so scanning the file for any usable diagnostic is unsafe.
+export function nativeProofFailureStage(tests: readonly { name: unknown; error?: unknown }[]) {
+  const test = tests.find(({ name }) => name === nativeRedeploymentCase);
+  const diagnostic = optionalReporterField(test?.error, "diagnostic");
+  return isRecord(diagnostic) && diagnostic.kind === "native-first-agent-proof"
+    ? nativeFirstAgentProofDiagnostic(diagnostic.failureStage, undefined)?.failureStage
+    : undefined;
 }
 
 export function validateExpectedTests(
