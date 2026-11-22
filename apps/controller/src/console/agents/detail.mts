@@ -1764,11 +1764,16 @@ export async function renderAgentDetail(
     },
   );
   headerActions.append(nativeAdmin.launch, nativeAdmin.unavailable);
+  // Recovery can remember a new denial, as can visiting the draft and coming Back.
+  let updateSnapshotAccess: (() => void) | undefined;
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,
     isDeleting: () => deleting,
-    refresh: renderLatestDeployment,
+    refresh: () => {
+      renderLatestDeployment();
+      updateSnapshotAccess?.();
+    },
     versionLink,
   });
   const overviewStatus = element(
@@ -1928,6 +1933,7 @@ export async function renderAgentDetail(
   }
   // A page restored for Back mounts at its old scroll position.
   context.onResume?.(() => {
+    updateSnapshotAccess?.();
     const linked = takeLinkedVersionView(linkedKey());
     if (linked && !deleting) {
       openVersionDetail({ deploy: linked.deploy, edit: linked.edit });
@@ -3185,10 +3191,9 @@ export async function renderAgentDetail(
     applyDraftAccess();
   });
 
+  const draftPath = `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`;
   const snapshotPath =
-    selected === "draft"
-      ? `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`
-      : `${path}/revisions/${encodeURIComponent(selected)}`;
+    selected === "draft" ? draftPath : `${path}/revisions/${encodeURIComponent(selected)}`;
 
   // A version this tab's Deploy created that the newest page of versions leaves out is one the
   // caller may not read: the list returns only readable versions, newest first, and it is newer
@@ -5962,7 +5967,29 @@ export async function renderAgentDetail(
         );
       }
       let currentConfigurationEntry: HTMLButtonElement | null = null;
+      let snapshotHeading: HTMLElement | null = null;
       if (!draft) {
+        const draftLinks = element(
+          "div",
+          { className: "agent-toolbar-actions" },
+          versionLink("Draft credentials", "draft", "credentials"),
+          versionLink("Draft repositories", "draft", "repositories"),
+        );
+        // A URL without a revision can show a different active version on Back.
+        for (const link of draftLinks.querySelectorAll("a")) {
+          link.dataset.returnFocusHref = `${link.href}#${selected}`;
+        }
+        const canReadDraft = () =>
+          callerPermissions?.configurationRead === true &&
+          !agent.configurationReadError &&
+          !context.deniedReads?.has(draftPath);
+        draftLinks.hidden = !canReadDraft();
+        snapshotHeading = element(
+          "div",
+          { className: "agent-version-heading" },
+          element("h2", {}, "Configuration snapshot"),
+          draftLinks,
+        );
         // A caller who may not edit the Configuration opens the draft to read it; the entry does
         // not offer an editor it has none of (finding 2436).
         const entryLabel = () =>
@@ -5978,18 +6005,24 @@ export async function renderAgentDetail(
           };
           context.navigate(target("draft", "configuration"));
         });
-        followConfigurationAccess(() => {
+        updateSnapshotAccess = () => {
           if (context.isCurrent() && entry.isConnected) {
             entry.textContent = entryLabel();
+            const hideLinks = !canReadDraft();
+            if (hideLinks && draftLinks.contains(document.activeElement)) {
+              tabControls.get("configuration")?.focus();
+            }
+            draftLinks.hidden = hideLinks;
           }
-        });
+        };
+        followConfigurationAccess(updateSnapshotAccess);
         currentConfigurationEntry = entry;
       }
       content.append(
         element(
           "section",
           { className: "agent-card" },
-          element("h2", {}, draft ? "Configuration draft" : "Configuration snapshot"),
+          snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
           repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)

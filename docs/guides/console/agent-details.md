@@ -128,8 +128,9 @@ while it started. See [Agent logs](../topics/agent-logs.md).
 The Console cannot roll back or deploy an old version again. See
 [Agent revisions](../topics/agent-revisions.md) for the lifecycle.
 
-Select **Open draft** to open the current saved settings. Edit and save
-Configuration, plugin selections, channel settings, or credentials.
+Select **Open draft** to open the current saved settings. If you can read the Configuration,
+select **Draft credentials** or **Draft repositories** in the snapshot to open that tab.
+Edit and save Configuration, plugin selections, channel settings, or credentials.
 **Prepare this version**, above the tabs, checks off saved settings and
 credentials and holds **Deploy new version** with its status. A model credential
 the last deployment rejected keeps the credentials step open: deploying again
