@@ -2239,12 +2239,12 @@ async function loadPage({
     }
     // Move focus to the Agent's heading only if the opening heading still owns it.
     focusAgentResult = document.activeElement === pendingAgentHeading;
+    // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
+    // replacing the shell briefly leaves it on the body again.
+    const restoreFocus = document.activeElement === document.body ? refocused : null;
     if (unchanged && retainedView && retainedState) {
       stopLoadingTimer();
       forgetRetainedView(taken);
-      // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
-      // replacing the shell briefly leaves it on the body again.
-      const restoreFocus = document.activeElement === document.body ? refocused : null;
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       shell = restoredShell;
       // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
@@ -2812,14 +2812,24 @@ async function loadPage({
       const rebuiltView = shell.view;
       restoreRefocus = () => namespaceRefocus?.restore(rebuiltView, { rebuilt: true });
     } else if (current.feature === "secrets" && selectedNamespace !== null) {
+      // Only carry the reader's filter into freshly admitted rows for the same owner and route.
+      const previous =
+        retained && reuseView && selectedNamespace === current.namespace && !linkedSecretId
+          ? retainedView?.snapshot
+          : undefined;
       renderSecrets({
         ...agentContext,
+        searchQuery: previous?.querySelector<HTMLInputElement>("#secret-search")?.value ?? "",
         namespaceId: selectedNamespace,
         items,
         sorted,
         permissions: firstPermissions,
         openSecretId: linkedSecretId,
       });
+      if (previous) {
+        const rebuiltView = shell.view;
+        restoreRefocus = () => restoreFocus?.restore(rebuiltView, { rebuilt: true });
+      }
       // Shown (its dialog opened or the unlisted note), so a later load does not reopen it.
       linkedSecret = null;
     } else if (current.feature === "backends") {
