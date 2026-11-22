@@ -2,7 +2,6 @@ import { authenticatedHeaders } from "../../helpers/auth-session.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { createRequire } from "node:module";
@@ -21,11 +20,18 @@ import { createConsoleAppFixture } from "../../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../../helpers/development.ts";
 import { createHarnessConfiguration } from "../../helpers/harness-configuration.mjs";
 import type { PlatformStateStore } from "../../../packages/occ/src/index.ts";
-import { grantRole } from "../../helpers/iam-grants.ts";
 import { runDocker } from "../../helpers/runtime-image-docker.ts";
 import { waitForContainerReady } from "../../helpers/runtime-image-gateway-observations.ts";
 import { GatewayClient } from "../../../apps/controller/tests/fixtures/plugin-approval-client.ts";
 import { cpuScaledImageTimeoutMs } from "../../helpers/image-smoke-timeout.ts";
+import pg from "pg";
+import { PostgresPlatformState } from "../../../packages/occ/src/index.ts";
+import {
+  createControllerWorker,
+  type ControllerWorker,
+} from "../../../apps/controller/src/worker.ts";
+import { createBackendWorkerDrivers } from "../../helpers/postgres-backend-state.mjs";
+import { waitFor } from "../../helpers/wait-for.ts";
 
 // Use the SDK's installed WebSocket transport for a transparent, test-owned fault proxy.
 // No fixture generates native RPC replies: every successful reply comes from OpenClaw.
@@ -61,7 +67,11 @@ assert.ok(endpoint && keyPath && certPath && tlsKeyPath);
 const apiKey = await readFile(keyPath, "utf8");
 const nativeContainer = process.env.OCC_AUTOMATION_PROOF_NATIVE_CONTAINER;
 const replacementArgumentsPath = process.env.OCC_AUTOMATION_PROOF_REPLACEMENT_ARGS;
-assert.ok(nativeContainer && replacementArgumentsPath);
+const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+assert.ok(nativeContainer && replacementArgumentsPath && databaseUrl);
+const platformPool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
+const platformState = new PostgresPlatformState(platformPool);
+let worker: ControllerWorker | undefined;
 const replacementArguments: unknown = JSON.parse(await readFile(replacementArgumentsPath, "utf8"));
 assert.ok(
   Array.isArray(replacementArguments) &&
@@ -225,6 +235,23 @@ class FaultAudit extends InMemoryAuditSink {
   }
 }
 const auditSink = new FaultAudit();
+async function inspectRuntimeContainer() {
+  const execute = promisify(execFile);
+  const result = await execute("docker", [
+    "inspect",
+    "--format",
+    '{"id":{{json .Id}},"image":{{json .Config.Image}},"imageId":{{json .Image}},"hostname":{{json .Config.Hostname}},"running":{{json .State.Running}}}',
+    nativeContainer,
+  ]);
+  return JSON.parse(result.stdout) as {
+    id: string;
+    image: string;
+    imageId: string;
+    hostname: string;
+    running: boolean;
+  };
+}
+
 const compute = createReadyComputeDriver("automation-native-probe", {
   implementation: "native-protocol-proof",
   supportsGatewayManagedMode: undefined,
@@ -232,20 +259,57 @@ const compute = createReadyComputeDriver("automation-native-probe", {
   getGatewayEndpoint: () => `wss://127.0.0.1:${address.port}`,
   async getRuntimeImages() {
     const execute = promisify(execFile);
-    const container = JSON.parse((await execute("docker", ["inspect", nativeContainer])).stdout)[0];
-    const image = JSON.parse(
-      (await execute("docker", ["image", "inspect", container.Image])).stdout,
-    )[0];
+    const container = await inspectRuntimeContainer();
+    const result = await execute("docker", [
+      "image",
+      "inspect",
+      "--format",
+      "{{json .Config.Labels}}",
+      container.imageId,
+    ]);
+    const labels = JSON.parse(result.stdout) as Record<string, string> | null;
     return [
       {
         workload: nativeContainer,
         container: "gateway",
-        image: container.Config.Image,
-        imageId: container.Image,
-        commit: image.Config.Labels?.["org.opencontainers.image.revision"] || null,
-        openclawCommit: image.Config.Labels?.["org.openclaw.image.revision"] || null,
+        image: container.image,
+        imageId: container.imageId,
+        commit: labels?.["org.opencontainers.image.revision"] || null,
+        openclawCommit: labels?.["org.openclaw.image.revision"] || null,
       },
     ];
+  },
+  async evaluateAgentAutomationPolicy() {
+    return { grant: { tools: [] }, bindings: [] };
+  },
+  async openAgentAutomationTransport() {
+    const selected = await inspectRuntimeContainer();
+    if (!selected.running || !selected.hostname) {
+      return undefined;
+    }
+    let closed = false;
+    return {
+      url: `wss://127.0.0.1:${address.port}`,
+      expectedHostname: selected.hostname,
+      async assertCurrent() {
+        if (closed) {
+          return false;
+        }
+        const current = await inspectRuntimeContainer().catch(() => undefined);
+        if (
+          !current?.running ||
+          current.id !== selected.id ||
+          current.hostname !== selected.hostname
+        ) {
+          closed = true;
+          return false;
+        }
+        return true;
+      },
+      async close() {
+        closed = true;
+      },
+    };
   },
 });
 const publicOrigin = "https://console.oce.example.test";
@@ -255,7 +319,9 @@ const ownershipReleased = Promise.withResolvers<void>();
 
 try {
   const f = await createConsoleAppFixture(scope, {
-    provisionedPeople: [],
+    provisionedPeople: ["automation-other-creator"],
+    state: platformState,
+    recordOperations: true,
     wrapState: (state: PlatformStateStore): PlatformStateStore => ({
       async read(work) {
         let captured = false;
@@ -295,7 +361,17 @@ try {
     nativeAdminGatewayApiKey: async () => apiKey,
     agentAutomations: createAgentAutomationsAccess(compute, keyPath),
   });
+  platformState.setBootstrapNativeIAM(f.policy);
   await f.bootstrap("Native automation protocol");
+  worker = createControllerWorker({
+    pool: new pg.Pool({ connectionString: databaseUrl, max: 6 }),
+    drivers: createBackendWorkerDrivers(compute, [], {
+      secretDriver: f.controller.selectedDriver("secret"),
+    }),
+    pollIntervalMs: 15,
+    emit() {},
+  });
+  await worker.start();
   const namespace = await f.createNamespace("Automations", { ready: true });
   const values = createHarnessConfiguration("openclaw", "gpt-4.1");
   const agent = await f.createAgent(namespace.id, "Automation Agent", values);
@@ -309,8 +385,17 @@ try {
       domain: "agents.oce.example.test",
     }),
   );
-  let revision = await f.deployAgent(namespace.id, agent.id);
-  await f.activateRevision(namespace.id, agent.id, revision.id);
+  async function deployAndWait() {
+    const deployed = await f.deployAgent(namespace.id, agent.id);
+    await waitFor("the real deployment reconcile work to succeed", async () => {
+      const work = await platformState.read((unit) =>
+        unit.operations.findWork(`agent_revision:${deployed.id}:reconcile`),
+      );
+      return work?.state === "succeeded" ? true : undefined;
+    });
+    return deployed;
+  }
+  let revision = await deployAndWait();
   const base = `/namespaces/${namespace.id}/agents/${agent.id}/automations`;
   const administrator = await f.signIn();
   async function request(
@@ -443,7 +528,8 @@ try {
       "definite native rejection must discard the unbound reservation",
     );
   }
-  assert.equal(auditSink.events.filter((event) => event.action.endsWith(".discarded")).length, 3);
+  const durableAudit = await platformState.transact((unit) => unit.audit.list());
+  assert.equal(durableAudit.filter((event) => event.action.endsWith(".discarded")).length, 3);
   async function create(value: AgentAutomationCreateInput) {
     const response = await request("POST", base, { body: value });
     assert.equal(response.status, 201, JSON.stringify(response.body));
@@ -570,18 +656,26 @@ try {
   );
 
   // A different human can operate the Agent but cannot see or remove this creator's record.
-  const guest = await f.createAccountWithPolicy(
-    "automation-other-creator",
-    (principal: { id: string }) => {
-      grantRole(f.policy, principal.id, {
-        id: `role-${randomUUID()}`,
-        bindingId: `binding-${randomUUID()}`,
-        namespaceId: namespace.id,
-        permissions: { agent: ["operate"] },
-        resource: { kind: "agent", id: agent.id },
-      });
+  const guest = f.provisionedAccounts[0];
+  assert.ok(guest);
+  const iam = `/namespaces/${namespace.id}/iam`;
+  const operatorRole = await request("POST", `${iam}/roles`, {
+    body: {
+      name: "Automation operator",
+      permissions: [{ action: "operate", resourceKind: "agent" }],
     },
-  );
+  });
+  assert.equal(operatorRole.status, 201);
+  const operatorBinding = await request("POST", `${iam}/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: guest.principal.id,
+      roleId: operatorRole.data.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+    },
+  });
+  assert.equal(operatorBinding.status, 201);
   const guestSession = await f.signIn(guest.credentials);
   assert.equal((await request("GET", `${base}/${job.id}`, { session: guestSession })).status, 404);
   assert.equal(
@@ -601,7 +695,6 @@ try {
 
   // Grant and revoke administration through real HTTP IAM operations while a
   // list holds its all-creator result. Demotion must not disclose that stale view.
-  const iam = `/namespaces/${namespace.id}/iam`;
   const role = await request("POST", `${iam}/roles`, {
     body: {
       name: "Automation race administrator",
@@ -699,8 +792,7 @@ try {
 
   // Change the OCC revision after a real native pause commit and before its reply.
   afterUpdate = async () => {
-    const next = await f.deployAgent(namespace.id, agent.id);
-    await f.activateRevision(namespace.id, agent.id, next.id, revision.id);
+    const next = await deployAndWait();
     revision = next;
   };
   const beforeRevision = nativeUpdates;
@@ -762,8 +854,7 @@ try {
   });
   observer = await openObserver();
   assert.equal((await observer.request<{ enabled: boolean }>("cron.status", {})).enabled, true);
-  const replacementRevision = await f.deployAgent(namespace.id, agent.id);
-  await f.activateRevision(namespace.id, agent.id, replacementRevision.id, revision.id);
+  const replacementRevision = await deployAndWait();
   revision = replacementRevision;
   assert.notEqual(revision.id, previousRevisionId);
   const retained = await request("GET", `${base}/${job.id}`);
@@ -876,6 +967,7 @@ try {
   assert.ok(auditSink.events.filter((event) => event.action.endsWith(".unknown")).length >= 3);
   assert.equal(JSON.stringify(auditSink.events).includes(input.prompt), false);
 } finally {
+  await worker?.stop();
   for (const cleanup of cleanups) {
     await cleanup();
   }
@@ -886,6 +978,7 @@ try {
   await new Promise<void>((resolve, reject) =>
     proxy.close((error) => (error ? reject(error) : resolve())),
   );
+  await platformPool.end();
 }
 process.stdout.write(
   "OCC_AUTOMATION_PROTOCOL_PROOF " +
@@ -904,7 +997,7 @@ process.stdout.write(
       concurrentNativeCas: true,
       physicalGatewayReplacement: true,
       pausedJobRetained: true,
-      ownershipStorage: "in-memory",
+      ownershipStorage: "postgresql",
       modelExecution: false,
     }) +
     "\n",

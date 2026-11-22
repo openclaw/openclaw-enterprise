@@ -345,6 +345,10 @@ test(
         });
         await mkdir(join(directory, "client-home"), { recursive: true });
         if (index === 0) {
+          assert.ok(
+            process.env.OCC_TEST_DATABASE_URL,
+            "The automation proof requires a migrated disposable PostgreSQL database.",
+          );
           await t.test(
             "OCC automations preserve ownership across real native replies and indeterminate mutations",
             async () => {
@@ -362,6 +366,7 @@ test(
                     OCC_AUTOMATION_PROOF_REPLACEMENT_ARGS: join(directory, "gateway-run.json"),
                     OCC_AUTOMATION_PROOF_CERT: join(directory, "cert.pem"),
                     OCC_AUTOMATION_PROOF_TLS_KEY: join(directory, "key.pem"),
+                    OCC_TEST_DATABASE_URL: process.env.OCC_TEST_DATABASE_URL,
                   },
                   timeout: 180_000,
                 },
@@ -391,7 +396,7 @@ test(
                   concurrentNativeCas: true,
                   physicalGatewayReplacement: true,
                   pausedJobRetained: true,
-                  ownershipStorage: "in-memory",
+                  ownershipStorage: "postgresql",
                   modelExecution: false,
                 },
               );

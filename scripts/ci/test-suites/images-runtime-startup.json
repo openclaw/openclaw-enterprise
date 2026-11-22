@@ -12,6 +12,7 @@
   "optionalEnv": ["OCC_TEST_STAGING_CODEX_VERSION", "OCC_TEST_PRODUCTION_IMAGE"],
   "prepare": {
     "requiresPreparedStateForFile": true,
+    "postgres": true,
     "codexSeccomp": true,
     "defaultEnv": {
       "OCC_TEST_WORKSPACE_ENVOY_IMAGE": "docker.io/envoyproxy/envoy:distroless-v1.36.6@sha256:947974108bb93df64469fedaa0ab7191cdf86c608217d6ff9b497c4e96ff1069"
