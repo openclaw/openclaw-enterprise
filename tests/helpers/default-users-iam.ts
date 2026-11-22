@@ -1,3 +1,17 @@
+import type { PermissionAction, ResourceKind } from "../../packages/contracts/src/index.ts";
+import type { InstallationIAMConfiguration } from "../../packages/occ/src/index.ts";
+
+type StartupIAMConfiguration = {
+  roles: { id: string; permissions: string[] }[];
+  defaultUserGroups: string[];
+  ownerRole: string;
+  roleBindings: {
+    group: string;
+    role: string;
+    scope: "installation" | { namespace: string };
+  }[];
+};
+
 // The Installation `iam` configuration of the Default users design (RFC-0026), as an operator
 // writes it in the startup file, and its parsed form for an OpenClawController option.
 
@@ -21,13 +35,15 @@ const NAMESPACE_ACTIONS = {
   secret: ["create", "read", "update", "delete", "operate"],
   credential_source: ["create", "read", "update", "delete", "operate"],
   namespace: ["read", "delete"],
-};
+} satisfies Partial<Record<ResourceKind, readonly PermissionAction[]>>;
 
 /**
  * Default users create Agents in the Namespace named default and own what they create. With
  * `namespaceCreate`, they can also create Namespaces.
  */
-export function defaultUsersIAM({ namespaceCreate = false } = {}) {
+export function defaultUsersIAM(
+  { namespaceCreate = false }: { namespaceCreate?: boolean } = {},
+): StartupIAMConfiguration {
   return {
     roles: [
       {
@@ -54,21 +70,23 @@ export function defaultUsersIAM({ namespaceCreate = false } = {}) {
     roleBindings: [
       { group: "default-user", role: "agent_creator", scope: { namespace: "default" } },
       ...(namespaceCreate
-        ? [{ group: "default-user", role: "namespace_creator", scope: "installation" }]
+        ? [{ group: "default-user", role: "namespace_creator", scope: "installation" as const }]
         : []),
     ],
   };
 }
 
 /** The `iamConfiguration` controller option for a startup-file `iam` value. */
-export function controllerIAMConfiguration(iam) {
+export function controllerIAMConfiguration(
+  iam: StartupIAMConfiguration,
+): InstallationIAMConfiguration {
   return {
     ...iam,
     roles: iam.roles.map((role) => ({
       id: role.id,
       permissions: role.permissions.map((permission) => {
         const [resourceKind, action] = permission.split(":");
-        return { action, resourceKind };
+        return { action: action as PermissionAction, resourceKind: resourceKind as ResourceKind };
       }),
     })),
   };
