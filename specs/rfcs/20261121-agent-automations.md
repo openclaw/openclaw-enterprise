@@ -98,8 +98,11 @@ attest identical anonymous actions.
 Compute renders a server-owned opaque Gateway loopback route and exact mapping
 bound to the original HTTPS target, revision, grant and CA; public source remains
 original. A Gateway Node supervisor listens before Doctor/native startup, forwards
-only to that target with verified TLS, enforces strict method, route and headers
-with bounded streaming, and refuses all 3xx without Location or replay. Expose no
+only to that target with verified TLS. Before each upstream request, resolve the
+approved hostname and refuse addresses outside admitted exact endpoint CIDRs;
+separate model443 egress makes NetworkPolicy alone insufficient. Enforce strict
+method, route and headers with bounded streaming, and refuse all 3xx without
+Location or replay. Expose no
 generic URL/CONNECT, auth or cookie forwarding. Bind, fail, hold and attest the
 proxy and mapping throughout the lifecycle.
 
