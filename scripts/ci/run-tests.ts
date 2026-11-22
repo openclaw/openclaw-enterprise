@@ -73,6 +73,8 @@ import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance
 const entryURL = new URL(import.meta.url);
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", entryURL)));
 const reporterPath = fileURLToPath(new URL("./reporter.ts", entryURL));
+// Only the first-failure notice consumes this evidence. JSON omits the symbol.
+const nativeProofStage = Symbol("native first-Agent proof stage");
 
 type FileLane = Pick<RunnerLane, "name" | "env" | "requiredEnv" | "optionalEnv">;
 type Setup = <T>(step: () => T | PromiseLike<T>) => Promise<T>;
@@ -100,6 +102,7 @@ function emptyFileResult(path: string, issues: RunnerIssue[]) {
     tests,
     issues,
     cleanup: null,
+    [nativeProofStage]: undefined,
   };
 }
 
@@ -428,6 +431,7 @@ async function runFile(
     measurements,
     unfinishedStage,
     openShellReplacement,
+    nativeFirstAgentProofStage,
     testRunExercised,
   } = evidence;
   if (
@@ -549,6 +553,7 @@ async function runFile(
       ? { openShellUnfinishedStage: unfinishedStage }
       : {}),
     ...(openShellReplacement ? { openShellReplacement } : {}),
+    [nativeProofStage]: nativeFirstAgentProofStage,
     ...(case2Phase ? { case2Phase } : {}),
     ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
@@ -663,6 +668,21 @@ async function runLane(
           process.stderr.write(
             `::notice title=Test lane first failed split file hint::Split-lane file position ${index + 1}.\n`,
           );
+          if (
+            result[nativeProofStage] !== undefined &&
+            result.cleanup?.status === "passed" &&
+            result.issues.every(
+              ({ code, status }) => code === "expected-test-not-passed" && status === "failed",
+            )
+          ) {
+            const { nativeFirstAgentProofDiagnostic } = await import("./reporter.ts");
+            const proof = nativeFirstAgentProofDiagnostic(result[nativeProofStage], undefined);
+            if (proof) {
+              process.stderr.write(
+                `::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage ${proof.failureStage}.\n`,
+              );
+            }
+          }
         }
       }
       process.stderr.write(

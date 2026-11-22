@@ -12,6 +12,13 @@ import {
 import { absoluteInputPath, issue, repoRelativePath } from "./runner-inputs.ts";
 import { isRecord } from "./records.ts";
 
+const nativeRedeploymentCase =
+  "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution";
+const nativeFirstAgentWrappers = new Set([
+  "tests/integration/local-first-agent-openshell-real.test.mjs",
+  "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+]);
+
 type TerminalEvent = Parameters<typeof exercisedAssertionFailures>[1][number] & {
   data: Record<string, unknown>;
 };
@@ -47,6 +54,7 @@ export type FileEvidence = {
   measurements: unknown[];
   unfinishedStage?: "installation" | "replacement" | undefined;
   openShellReplacement?: OpenShellReplacement | undefined;
+  nativeFirstAgentProofStage?: unknown;
   testRunExercised: boolean;
   tests: TestCase[];
   skippedSuites: { name: unknown; source: SuiteSource | undefined }[];
@@ -459,6 +467,35 @@ export function readFileEvidence(
       durationMs,
     };
   });
+  if (
+    laneName === "openshell-installers" &&
+    nativeFirstAgentWrappers.has(relativePath) &&
+    expectedTests.filter((name) => name === nativeRedeploymentCase).length === 1 &&
+    output.status === 1 &&
+    !output.error &&
+    !output.signal &&
+    !rootFailure &&
+    !events.some((event) => reporterField(event, "type") === "test:interrupted")
+  ) {
+    // Both wrappers import the same declaration. Bind the normalized error to
+    // its unique nested terminal, since other cases may use the same diagnostic.
+    const [terminal, duplicate] = terminalEvents.filter(
+      ({ data }) => data.name === nativeRedeploymentCase,
+    );
+    if (
+      !duplicate &&
+      terminal?.type === "test:fail" &&
+      terminal.data.testType === "test" &&
+      terminal.data.nesting === 1 &&
+      terminal.data.file === join(root, "tests/integration/local-first-agent-real.test.mjs")
+    ) {
+      const test = evidence.tests.find(({ name }) => name === nativeRedeploymentCase);
+      const diagnostic = optionalReporterField(test?.error, "diagnostic");
+      if (isRecord(diagnostic) && diagnostic.kind === "native-first-agent-proof") {
+        evidence.nativeFirstAgentProofStage = diagnostic.failureStage;
+      }
+    }
+  }
   // A skipped describe() never registers its tests, so only its suite event shows the skip.
   evidence.skippedSuites = terminalEvents
     .filter(
