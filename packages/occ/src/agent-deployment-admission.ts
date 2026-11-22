@@ -1,13 +1,17 @@
-import { assertScopedRepositoryHistory } from "./repository-network-policy.ts";
+import { assertAgentConfiguration } from "./deployment-policy.ts";
 import { unchangedDriver, type RegisteredDriver } from "./driver-registry.ts";
 import {
+  assertSelectedRepositoryGrants,
+  assertScopedRepositoryHistory,
   admitDeploymentRepositoryPolicy,
-  unsupportedComputeRepositoryPolicy,
+} from "./repository-network-policy.ts";
+import {
+  computeRepositoryPolicyAdmission,
+  bindProtectedRepositoryPolicySandbox,
 } from "./deployment-policy.ts";
-import { freezeAgentRevision } from "@openclaw-enterprise/contracts";
 import { validateRepositoryBrokerNetworkProxy } from "./repository-policy.ts";
 import { driverOperation } from "./driver-operation.ts";
-import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
+import { deploymentSandboxPolicy, type createSandboxPolicyOperations } from "./sandbox-policy.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   assertExecutionAdmission,
@@ -96,7 +100,6 @@ import { withAgentIdentityName } from "./openclaw-roster.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { createRepositoryPolicyOperations } from "./repository-policy.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
-import type { createSandboxPolicyOperations } from "./sandbox-policy.ts";
 
 export interface FirstDeploymentGuard {
   readonly digest: string;
@@ -126,7 +129,7 @@ export interface DeploymentAdmissionDependencies {
     | "admitRepositoryCredentials"
     | "applyRepositoryStandingApproval"
     | "repositoryNetworkPolicyCeiling"
-    | "requireDeploymentRepositoryOwner"
+    | "repositoryGrantAuthority"
   >;
   readonly sandboxPolicy: Pick<
     ReturnType<typeof createSandboxPolicyOperations>,
@@ -186,11 +189,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       agent.namespaceId,
       agent.configurationId,
     );
-    if (!metadata || metadata.kind !== "agent") {
-      throw new ScopeViolationError(
-        "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
-      );
-    }
+    assertAgentConfiguration(metadata, agent.namespaceId, agent.configurationId);
     if (prepared !== undefined && metadata.generation !== prepared.configuration.generation) {
       throw new ResourceStateConflictError(
         !guarded
@@ -487,6 +486,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
 
       const computeSelection = dependencies.selection("compute");
       const sandboxSelection = dependencies.selection("sandbox");
+      const proxySelection = dependencies.selection("credential_proxy");
       let compute: ComputeDriver;
       try {
         compute = dependencies.selectedCompute();
@@ -677,7 +677,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const createdAt = dependencies.timestamp();
-      const resolvedRepositoryCredentials =
+      const admitRepository = () =>
         dependencies.repositoryPolicy.admitRepositoryCredentials(
           lockedAgent,
           compute,
@@ -685,6 +685,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           sandbox?.id,
           Date.parse(createdAt),
         );
+      const admittedRepository = admitRepository();
+      const resolvedRepositoryCredentials = admittedRepository?.credentials;
       if (resolvedRepositoryCredentials !== undefined) {
         validateRepositoryBrokerNetworkProxy(revisionHarness, admittedConfiguration, sandbox);
       }
@@ -727,13 +729,14 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           "The selected Compute cannot admit this execution mode; protected release and old-reader fencing are unavailable.",
         );
       }
-      if (
-        executionAdmission.mode === "protected" &&
-        policy?.repositoryNetworkPolicy !== undefined
-      ) {
-        throw new ResourceStateConflictError(
-          "Protected execution cannot enforce the saved repository network policy. Review the policy and execution mode before deploying.",
-        );
+      const protectedExecution = executionAdmission.mode === "protected";
+      const repositoryGrants = policy?.repositoryNetworkPolicy;
+      const protectedSandbox =
+        protectedExecution && repositoryGrants !== undefined
+          ? bindProtectedRepositoryPolicySandbox(compute, sandbox)
+          : undefined;
+      if (protectedSandbox) {
+        assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.selectedGrants);
       }
       const sandboxSnapshot = await dependencies.sandboxPolicy.admitDeploymentSnapshot(
         policy,
@@ -745,12 +748,11 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         repositoryCredentials !== undefined,
       );
       const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(
-        sandboxSnapshot,
-        policy?.repositoryNetworkPolicy,
+        () => sandboxSnapshot,
+        repositoryGrants,
         dependencies.repositoryPolicy.repositoryNetworkPolicyCeiling,
-        sandbox,
-        (grants) =>
-          dependencies.repositoryPolicy.requireDeploymentRepositoryOwner(namespace.id, grants),
+        protectedSandbox?.driver ?? sandbox,
+        () => dependencies.repositoryPolicy.repositoryGrantAuthority(namespace.id),
       );
       const revisionDraft: AgentRevision = {
         id: revisionId,
@@ -789,43 +791,48 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       ) {
         throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
       }
-      const explicitRepositoryPolicy = sandboxPolicy?.repositoryNetworkPolicy !== undefined;
+      const policyCompute =
+        sandboxPolicy?.repositoryNetworkPolicy === undefined
+          ? undefined
+          : computeRepositoryPolicyAdmission(compute, protectedSandbox);
       const assertRepositoryNetworkPolicyDrivers = () => {
-        if (!explicitRepositoryPolicy) {
-          return;
-        }
         // State locks do not freeze the process-local Driver registrations.
         if (
-          computeSelection === undefined ||
-          dependencies.selection("compute") !== computeSelection ||
-          !unchangedDriver(computeSelection) ||
-          sandboxSelection === undefined ||
-          dependencies.selection("sandbox") !== sandboxSelection ||
-          !unchangedDriver(sandboxSelection) ||
-          ownerUnchanged?.() === false
+          policyCompute &&
+          (computeSelection === undefined ||
+            dependencies.selection("compute") !== computeSelection ||
+            !unchangedDriver(computeSelection) ||
+            sandboxSelection === undefined ||
+            dependencies.selection("sandbox") !== sandboxSelection ||
+            !unchangedDriver(sandboxSelection) ||
+            (protectedSandbox &&
+              (proxySelection === undefined ||
+                dependencies.selection("credential_proxy") !== proxySelection ||
+                !unchangedDriver(proxySelection))) ||
+            !policyCompute.unchanged() ||
+            ownerUnchanged?.() === false)
         ) {
           throw new ResourceStateConflictError(
             "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying.",
           );
         }
+        if (protectedSandbox && admittedRepository) {
+          const current = admitRepository();
+          assertSelectedRepositoryGrants(repositoryGrants, current?.selectedGrants);
+          if (!isDeepStrictEqual(current?.credentials, admittedRepository.credentials)) {
+            throw new ResourceStateConflictError(
+              "The selected repository credentials changed during deployment.",
+            );
+          }
+        }
       };
-      if (explicitRepositoryPolicy) {
+      if (policyCompute) {
         assertScopedRepositoryHistory(previous);
-        if (compute.validateProtectedRepositoryNetworkPolicy === undefined) {
-          throw unsupportedComputeRepositoryPolicy();
-        }
-        try {
-          await compute.validateProtectedRepositoryNetworkPolicy(
-            freezeAgentRevision(revisionDraft),
-          );
-        } catch {
-          throw unsupportedComputeRepositoryPolicy();
-        }
-        assertRepositoryNetworkPolicyDrivers();
       }
-      const policyAdmittedRevision = explicitRepositoryPolicy
-        ? prepareComputeRevision(compute, revisionDraft)
-        : undefined;
+      const policyAdmittedRevision = await policyCompute?.admit(
+        revisionDraft,
+        assertRepositoryNetworkPolicyDrivers,
+      );
       const assertProvidersCurrent = () => {
         proxyAdmission?.assertProvidersCurrent();
         assertRepositoryNetworkPolicyDrivers();
