@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-11-22
-last_updated_session: authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576
+last_updated_session: authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb
 ---
 
 # Controller Worker Flow
@@ -247,7 +247,8 @@ with that code; other work keeps its attempt budget.
 ### 6. Persist the result and finish version activation
 
 `apps/controller/src/worker.ts:ControllerWorker.finalize`,
-`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision`,
+`apps/controller/src/worker.ts:ControllerWorker.commitRevisionTransition`,
+`apps/controller/src/worker.ts:ControllerWorker.finishPublishedRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
 
 `transactWithQueue()` renews the exact claim before atomically publishing
@@ -259,7 +260,9 @@ After preparation, `activationOrder: beforeCommit` activates before the database
 pointer changes; otherwise an implemented activation stage runs, in development
 and production, after the claim-protected compare-and-set of
 `Agent.activeRevisionId`, and the first dedicated version stays inactive until
-commit. A changed pointer causes `ACTIVE_REVISION_CHANGED` and retry.
+commit. If the comparison fails, the transaction records an
+`ACTIVE_REVISION_CHANGED` retry. The worker uses the committed result to decide
+whether to activate, stop, or finish reporting the attempt.
 
 Committing `Agent.activeRevisionId` records selection. A v5 `online-request` or
 v6 `request-hook-observed` hold for Git material leaves the original work queued
@@ -429,6 +432,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-22 10:32: Trace revision finalization through the committed result. (authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
 - 2026-11-22 09:29: Trace Read Committed for scoped deployment. (authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576 - db0227da135c6bf5e437038ec1fdbbfcc46ba548)
 - 2026-11-21 10:28: Trace scoped dispatch admission and recovery in the accompanying change. (authoring-run/3f3abf26-0aec-43e5-aa36-3aa72b38cf4a - a450dc92242a9d2e9f87da7e4fe8f8ea9dcd5e30)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
