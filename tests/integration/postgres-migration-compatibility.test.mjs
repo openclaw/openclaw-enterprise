@@ -16,6 +16,7 @@ import {
   assertLegacyAgentMigrationRefusal,
   assertLegacyControllerWorkBackfill,
   assertNativeRestartUpgrade,
+  assertPendingRegistrationGuard,
   assertPresetPolicyUpgrade,
   assertRetainedRevisionResponses,
   prepareRetainedHarnessRevisions,
@@ -692,7 +693,7 @@ const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").
 );
 
 // flag is a migration command option or undefined; refusal,
-// when set, must match the command's MIGRATION_HISTORY_UNSUPPORTED message.
+// when set, must match the command's operator message.
 /**
  * @param {{ migrationUrl: string }} db
  * @param {import("./postgres-migration-transaction-command-cases.ts").MigrationCommandMode} [mode]
@@ -764,6 +765,13 @@ async function runHistoryCommand(db, mode = "development", flag, refusal, instal
     }
     if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
       return { ok: false, code: "MIGRATION_HISTORY_PENDING" };
+    }
+    if (code === 1 && output.includes('"code":"MIGRATION_REGISTRATION_PENDING"')) {
+      assert.ok(stdout === "", "A blocked registration must not report migration success.");
+      if (refusal !== undefined) {
+        assert.ok(refusal.test(output), "Expected a safe TokenService registration diagnostic.");
+      }
+      return { ok: false, code: "MIGRATION_REGISTRATION_PENDING" };
     }
     if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_NOT_EMPTY"')) {
       assert.ok(
@@ -1433,6 +1441,12 @@ test(
       canonicalData,
       assertCompletedHistory,
     });
+
+    const managed = await historyDatabase(context, fixture, "guarded_registration", { prefix: 85 });
+    await assertPendingRegistrationGuard(managed, expected, {
+      runHistoryCommand,
+      historySnapshot,
+    });
   },
 );
 
@@ -1473,6 +1487,7 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
+      [88, "preStaticConnectionTemplates"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1831,8 +1846,9 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     for (const schemas of [false, true]) {
-      void context.test(
+      const subtest = context.test(
         `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
         async (child) => {
           const db = await historyDatabase(child, fixture, "fresh", { schemas });
@@ -1861,6 +1877,7 @@ test(
           assert.deepEqual(await historySnapshot(db), after);
         },
       );
+      subtests.push(subtest);
     }
     // Gaps: 26, 60 and 61 have no named history; 27 is covered by the rollback case.
     const histories = await coveringNewestPrefix("populated canonical", 62, [
@@ -1924,9 +1941,10 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
+      [88, "preStaticConnectionTemplates"],
     ]);
     for (const [prefix, history] of histories) {
-      void context.test(`populated canonical ${history}`, async (child) => {
+      const subtest = context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         const namespaceId = await seedCanonicalData(db, {
           preset: prefix >= 25,
@@ -2271,7 +2289,9 @@ test(
           );
         }
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -2420,6 +2440,7 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     // Prefixes 63 to 74 are not listed, so the guard starts at 75.
     for (const [prefix, history] of await coveringNewestPrefix("Provider continuation", 75, [
       [32, "backendTerminology"],
@@ -2464,8 +2485,9 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
+      [88, "preStaticConnectionTemplates"],
     ])) {
-      void context.test(history, async (child) => {
+      const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
         await installProviderCompletedHistory(db);
         // Stock Drizzle appends later canonical migrations while retaining Provider fingerprints.
@@ -2480,7 +2502,9 @@ test(
         // Approver storage appends to either continuation without rewriting existing receipts.
         await assertCompletedHistory(db, receipts);
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 
@@ -2577,6 +2601,9 @@ test(
       history: "preTokenServiceSourceOwnership",
     });
     const current = await logicalRestoreSnapshot(upgraded);
+    context.diagnostic(
+      `Upgraded restored prefix 84 via 85: ${catalogDigest(await migrationCatalog(upgraded.migrator))}`,
+    );
     assert.deepEqual(current.receipts, native.receipts);
     assert.deepEqual(current.identities, at85.identities);
     for (const flag of ["--require-current", undefined]) {
@@ -2586,6 +2613,27 @@ test(
       });
       assert.deepEqual(await logicalRestoreSnapshot(upgraded), current);
     }
+
+    // The immediately preceding completed archive must upgrade through the production command.
+    const staticPredecessor = await historyDatabase(context, fixture, "static_predecessor", {
+      prefix: 88,
+    });
+    const staticUpgrade = await restoreHistoryArchive(
+      context,
+      fixture,
+      await dumpHistoryArchive(fixture, staticPredecessor),
+    );
+    assert.deepEqual(await runHistoryCommand(staticUpgrade, "production"), {
+      ok: true,
+      history: "preStaticConnectionTemplates",
+    });
+    context.diagnostic(
+      `Upgraded restored prefix 88: ${catalogDigest(await migrationCatalog(staticUpgrade.migrator))}`,
+    );
+    assert.deepEqual(await runHistoryCommand(staticUpgrade, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
 
     // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
     const catalogRefusal = /catalog objects or effective grants differ/;
@@ -2625,6 +2673,44 @@ test(
   },
 );
 
+test(
+  "Restored published prefixes upgrade to a reviewed completed catalog",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const { entries } = JSON.parse(
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+    );
+    // A logical restore prints some constraints differently and an upgrade keeps that
+    // spelling, so each new migration must qualify upgrading every accepted restore.
+    const prefixes = [51];
+    for (let prefix = 63; prefix < entries.length; prefix += 1) {
+      prefixes.push(prefix);
+    }
+    for (const prefix of prefixes) {
+      // A subtest per prefix drops its databases before the next one is built.
+      await context.test(`restored prefix ${prefix} upgrades to completed`, async (subtest) => {
+        const previous = await historyDatabase(subtest, fixture, "previous", { prefix });
+        const restored = await restoreHistoryArchive(
+          subtest,
+          fixture,
+          await dumpHistoryArchive(fixture, previous),
+        );
+        const upgrade = await runHistoryMigration(restored, "production");
+        assert.equal(upgrade.ok, true);
+        assert.notEqual(upgrade.history, "completed");
+        subtest.diagnostic(
+          `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+        );
+        assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+          ok: true,
+          history: "completed",
+        });
+      });
+    }
+  },
+);
+
 registerPostgresMigrationCredentialLineageRefusalCase({
   requiresHistoryPostgres,
   migrationHistoryFixture,
@@ -2638,6 +2724,7 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const subtests = [];
     // Prefixes 63 to 74 are not listed, so the guard starts at 75.
     for (const [prefix, history] of await coveringNewestPrefix("rollback", 75, [
       [0, "empty"],
@@ -2690,8 +2777,9 @@ test(
       [85, "preTokenServiceSourceOwnership"],
       [86, "preRepositoryNetworkPolicy"],
       [87, "preStandaloneCredentialDeployment"],
+      [88, "preStaticConnectionTemplates"],
     ])) {
-      void context.test(`prefix ${prefix} transaction`, async (child) => {
+      const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
         if (prefix) {
           await seedCanonicalData(db, {
@@ -2717,6 +2805,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [88, "CREATE TRIGGER"],
                 [87, "ALTER TABLE"],
                 [86, "CREATE TRIGGER"],
                 [85, "ALTER TABLE"],
@@ -2748,6 +2837,10 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 88) {
+          // Abort 0089 after it has created the static version table and its current-version FK.
+          failAt =
+            "IF to_regclass('occ.static_key_template_versions') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 87) {
           // Abort 0088 after its new validator functions exist, before it replaces constraints.
           failAt =
@@ -2803,7 +2896,9 @@ test(
         });
         await assertCompletedHistory(db, before.receipts);
       });
+      subtests.push(subtest);
     }
+    await Promise.all(subtests);
   },
 );
 

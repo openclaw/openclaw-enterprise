@@ -314,11 +314,11 @@ is rejected.
 The Agent's required [harnessAuth binding](../../agents.md#harness-authentication)
 selects the model credential. API keys use the selected OCC Secret Driver's
 exact reference; account tokens use an account-owned CP source. Compute selects
-the explicit login mode during workload rendering. The combined embedded workload
-or dedicated Harness receives the selected model credential; a dedicated Gateway does not. A
-[credential source](../../credential-sources.md) binding is the exception: Compute
-renders no model Secret and hands the Credential Gateway's attachments to the
-OpenShell Sandbox instead.
+the explicit login mode during workload rendering. The embedded workload
+or dedicated Harness receives a direct credential; a dedicated Gateway does not.
+With a [Credential Source](../../credential-sources.md), Compute renders no model
+Secret. The paired Credential Proxy or legacy Gateway supplies credential delivery
+through the Sandbox.
 
 Enabled channels require [managed channel egress](channel-egress.md). Only the
 Gateway receives its assigned listener URL; Harness transport and model

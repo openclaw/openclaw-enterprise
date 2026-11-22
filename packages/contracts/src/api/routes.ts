@@ -618,7 +618,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Rename a connection template, or create a version with new approved values",
+    summary: "Rename a connection template or create a version with updated settings",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
@@ -1218,7 +1218,7 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "List connection templates the caller may connect in this Namespace",
+    summary: "List connection templates available in this Namespace",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,

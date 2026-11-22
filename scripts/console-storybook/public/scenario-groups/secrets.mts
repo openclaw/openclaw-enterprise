@@ -143,7 +143,7 @@ export function secretsScenarios({
       path: "/console/secrets",
       secretCreateNotPermitted: true,
       description:
-        "The caller's access does not include Secret creation. Create Secret is disabled and the note under the toolbar names the reason.",
+        "Create Secret is disabled. The note under the toolbar names Secret create in this Namespace and asks the caller to check their access.",
       steps: [
         "Tab to Create Secret. It takes focus and looks unavailable, a screen reader names the note as its description, and Enter, Space or a click opens nothing.",
       ],
@@ -160,7 +160,7 @@ export function secretsScenarios({
         { selector: 'dialog button[type="submit"]', click: true },
       ],
       description:
-        "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
+        "The simulated permission answer allowed creation and the simulated write refuses it. The form names the required access, clears the value, disables editing, and focuses Close.",
       steps: [
         "Tab to Secret name, Show value, Value and Create Secret. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing and the value stays masked (finding 2935).",
         "Close the dialog. The page's Create Secret looks unavailable, described by the note under the toolbar that asks to select Refresh after access changes.",
