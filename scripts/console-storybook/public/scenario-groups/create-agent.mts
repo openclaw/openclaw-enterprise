@@ -409,7 +409,7 @@ export const createAgentFormScenarios = {
     actions: form,
     secretCreateNotPermitted: true,
     description:
-      "The Namespace permission answer denies Secret creation. The API key Secret field still lists Create new Secret..., disabled with the reason, and its hint says to choose an existing Secret.",
+      "The Namespace permission answer denies Secret creation. Create new Secret... is disabled and names Secret create in this Namespace. The field also offers existing Secrets.",
     steps: [
       "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
       "Open Configure Slack. Its hints say to choose existing Slack token Secrets, with no offer to create them.",

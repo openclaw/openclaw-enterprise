@@ -39,7 +39,10 @@ import {
   SandboxWorkspaceSetupRefusedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { captureNamespaceHint } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  captureNamespaceHint,
+  withYieldingComputeStop,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
@@ -63,6 +66,7 @@ import {
   options,
   digest,
   gatewayRouting,
+  routedGatewayConfiguration,
   routedOptions,
   routedRevision,
   admitRevisionHarness,
@@ -242,6 +246,7 @@ import {
   checkDiagnosticsIngressWithoutPlugins,
   checkPreparationGatewayFailure,
   checkPreparationTimeoutAndApiStatuses,
+  checkPreparedNativeRuntimeReadback,
   checkPrivateRuntimeDiagnostics,
   checkPrivateSecretWriteApiAnswers,
   checkPrivateSecretWriteTransportFailures,
@@ -273,12 +278,20 @@ import {
 import {
   checkContainmentRetirementRetry,
   checkContainmentStopOrder,
+  checkFailedHarnessStopEndsWait,
   checkForeignWorkloadPodRefusal,
   checkGatewayDrainYield,
+  checkNativeHarnessStopsAtOnce,
+  checkOtherHarnessStopsDoNotWait,
   checkProviderStopTermination,
   checkRefusedCandidateStopOrder,
+  checkServingHarnessStopsAtOnce,
+  checkStartingHarnessStopBound,
+  checkStartingHarnessStopWaitsForServing,
+  checkStartingHarnessStopYields,
   checkStopPreservesReplacement,
   checkStopRetainsAgentStorage,
+  checkUnreadHarnessStopsAtOnce,
   lifecycleNamespaceReads,
 } from "./kubernetes-revision-stop-cases.ts";
 import {
@@ -574,6 +587,7 @@ function dedicatedFirstDeployFixture({
   sandboxDriver,
   openShellGit,
   credentialGatewayDriver,
+  credentialDeliveryRegistration,
   context,
   splitCluster = false,
   revision: revisionOverrides = {},
@@ -605,6 +619,7 @@ function dedicatedFirstDeployFixture({
       sandboxDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
       credentialGatewayDriver,
+      credentialDeliveryRegistration,
       nodeEnrollment,
     },
   );
@@ -727,6 +742,433 @@ function dedicatedFirstDeployFixture({
     },
   };
 }
+
+test("staged Compute prepares an idle target, activates the Harness, and publishes only after readiness", async () => {
+  // The real Compute path uses controlled Sandbox and Proxy Drivers; these observations do not
+  // establish native Provider readiness, Kubernetes behavior, or a real Harness execution.
+  const auth = {
+    method: "credential_source",
+    sourceId: "cs_staged_model",
+    tokenServiceInstanceId: "tokens",
+    sourceType: "static",
+  };
+  const grant = {
+    id: "model-egress",
+    binary: "/usr/local/bin/node",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const request = {
+    binary: grant.binary,
+    host: grant.host,
+    ports: grant.ports,
+    requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+  };
+  const binding = {
+    bindingRef: "model",
+    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: auth.sourceId },
+    consumer: { kind: "model", providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+  };
+  const projection = {
+    bindingRef: binding.bindingRef,
+    environment: binding.projection.environment,
+    placeholder: { kind: "runtime" },
+  };
+  const events = [];
+  let sandboxReady = false;
+  let networkReady = true;
+  let networkMatches = false;
+  let proxyReady = true;
+  let proxyFailureCode;
+  let workspaceRefused = false;
+  let started = false;
+  let provisioned = false;
+  let workloadLabels;
+  let targetRef;
+  let boundRemovalFailure;
+  let removedTarget;
+  const sandboxDriver = {
+    ...nativeSandboxIdentity(),
+    async workspaceNodePeerLabels({ revision }) {
+      return provisioned ? supervisorPeerLabels(revision.id) : undefined;
+    },
+    async provisionHarness() {
+      assert.fail("staged deployment cannot use ordinary Sandbox provisioning");
+    },
+    validateWorkspaceSetup() {},
+    async provisionStagedHarness({ revision, requirements }) {
+      events.push("provision-idle");
+      provisioned = true;
+      workloadLabels = requirements.labels;
+      targetRef = {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        sandboxId: "sandbox-1",
+      };
+      return targetRef;
+    },
+    async observeNetworkPolicy() {
+      events.push("network-status");
+      return {
+        state: networkReady ? "applied" : "pending",
+        matches: networkMatches,
+        resourceVersion: "1",
+        policyVersion: "1",
+      };
+    },
+    async applyNetworkPolicy() {
+      events.push("apply-network");
+      networkMatches = true;
+    },
+    async prepareStagedHarness(context, projections) {
+      if (started) {
+        return;
+      }
+      if (!sandboxReady) {
+        throw new ActivationPendingError(
+          "CREDENTIAL_ACTIVATION_PENDING",
+          "The idle Sandbox is still pending initial workspace setup.",
+        );
+      }
+      if (workspaceRefused) {
+        throw new SandboxWorkspaceSetupRefusedError("Initial workspace was refused.");
+      }
+      assert.ok(context.requirements.workspaceSetup);
+      events.push("workspace-setup");
+      events.push("prepare-launch");
+      assert.deepEqual(projections, [projection]);
+      assert.equal(started, false, "preparation must not start the Harness");
+    },
+    async activateStagedHarness() {
+      events.push("activate");
+      started = true;
+    },
+    async harnessStatus() {
+      // A native OpenClaw worker connects outward and never serves this inbound handshake.
+      return { state: "starting" };
+    },
+    async withdrawHarnessExposure() {
+      events.push("withdraw");
+    },
+    async cleanup() {
+      events.push("sandbox-cleanup");
+      state.providerPod = undefined;
+    },
+  };
+  const proxyDriver = {
+    id: sandboxDriver.id,
+    implementation: sandboxDriver.implementation,
+    capability: "credential_proxy_delivery",
+    async deployProxy() {
+      events.push("deploy-proxy");
+      return {};
+    },
+    async configureDeployment() {
+      assert.fail("only the Worker may configure credential bindings");
+    },
+    async getDeploymentStatus() {
+      events.push("proxy-status");
+      if (proxyFailureCode !== undefined) {
+        return { state: "failed", code: proxyFailureCode };
+      }
+      if (proxyReady) {
+        events.push("proxy-ready");
+      }
+      return { state: proxyReady ? "ready" : "pending" };
+    },
+    async removeDeployment(_context, removal) {
+      events.push("remove-bound");
+      removedTarget = removal.targetRef;
+      assert.deepEqual(removal.bindingRefs, [binding.bindingRef]);
+      if (boundRemovalFailure !== undefined) {
+        throw boundRemovalFailure;
+      }
+    },
+  };
+  const selectedOwner = {
+    ref: {
+      id: sandboxDriver.id,
+      implementation: sandboxDriver.implementation,
+      configurationId: "a".repeat(64),
+    },
+    require(capability) {
+      return capability === "sandbox" ? sandboxDriver : proxyDriver;
+    },
+  };
+  const context = {
+    harnessAuth: auth,
+    workspaceSetup: {
+      id: "setup-staged",
+      namespaceId: tenant.id,
+      agentId: "agent-staged",
+      files: { "AGENTS.md": "initial workspace" },
+      completed: false,
+    },
+    async configureCredentialDeployment(configuration) {
+      events.push("configure-proxy");
+      assert.deepEqual(configuration.targetRef, targetRef);
+      return { credentialProjections: [projection] };
+    },
+  };
+  const stagedRevision = {
+    ...nativeSandboxRevision(sandboxDriver.id),
+    agentId: context.workspaceSetup.agentId,
+    harnessAuth: auth,
+    sandboxPolicy: {
+      driverId: sandboxDriver.id,
+      implementation: sandboxDriver.implementation,
+      version: 1,
+      defaults: {},
+      additions: [grant],
+    },
+    executionAdmission: { version: 8, mode: "standalone" },
+    credentialDeployment: {
+      proxyDriverId: proxyDriver.id,
+      driver: selectedOwner.ref,
+      networkAccessPolicy: {
+        allowed: [{ binary: grant.binary, host: grant.host, ports: grant.ports }],
+      },
+      bindings: [binding],
+      injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
+    },
+  };
+  const mismatched = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: selectedOwner,
+    context,
+    revision: {
+      ...stagedRevision,
+      credentialDeployment: {
+        ...stagedRevision.credentialDeployment,
+        bindings: [{ ...binding, consumer: { kind: "model", providerId: "unselected" } }],
+      },
+    },
+  });
+  await assert.rejects(mismatched.prepare(), /staged model binding does not match/);
+
+  const replacementOwner = {
+    ...selectedOwner,
+    ref: { ...selectedOwner.ref, configurationId: "b".repeat(64) },
+  };
+  const replacement = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: replacementOwner,
+    context,
+    revision: stagedRevision,
+  });
+  await assert.rejects(
+    replacement.prepare(),
+    /admitted staged credential composition is unavailable/,
+  );
+  assert.equal(events.includes("deploy-proxy"), false);
+
+  const {
+    driver,
+    gatewayName,
+    key,
+    markReady,
+    namespace,
+    objects,
+    prepare,
+    read,
+    revision,
+    state,
+  } = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: selectedOwner,
+    context,
+    revision: stagedRevision,
+  });
+  const routedGateway = routedGatewayConfiguration();
+  revision.configuration = {
+    ...revision.configuration,
+    gateway: {
+      ...revision.configuration.gateway,
+      ...routedGateway,
+      auth: {
+        ...routedGateway.auth,
+        trustedProxy: {
+          ...routedGateway.auth.trustedProxy,
+          ...revision.configuration.gateway.auth.trustedProxy,
+        },
+      },
+      controlUi: { enabled: true, allowedOrigins: ["https://agent.example.test"] },
+    },
+  };
+  assert.ok(driver.getGatewayBrowserEndpoint(revision));
+  const chatName = `chat-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+  const createSetup = driver.nodeEnrollment.createSetup.bind(driver.nodeEnrollment);
+  driver.nodeEnrollment.createSetup = async (operatorUrl, nodeUrl, signal) => {
+    const route = objects.get(key("HTTPRoute", gatewayName));
+    assert.ok(route, "node enrollment needs the authenticated operator route");
+    assert.equal(operatorUrl, driver.getGatewayEndpoint(revision));
+    assert.equal(nodeUrl, `${operatorUrl}/node`);
+    assert.equal(route.spec.parentRefs[0].sectionName, "https");
+    assert.equal(objects.has(key("SecurityPolicy", gatewayName)), false);
+    assert.equal(
+      route.spec.rules.some((rule) =>
+        rule.matches.some(({ path }) => path.value.startsWith("/native-browser/")),
+      ),
+      false,
+    );
+    const headers = route.spec.rules[0].filters.find(
+      ({ type }) => type === "RequestHeaderModifier",
+    ).requestHeaderModifier;
+    assert.ok(
+      headers.set.some(
+        ({ name, value }) => name === "x-occ-identity" && value === "occ-workspace-files",
+      ),
+    );
+    assert.ok(
+      headers.set.some(
+        ({ name, value }) => name === "x-openclaw-scopes" && value === "operator.admin",
+      ),
+    );
+    assert.ok(
+      headers.set.some(
+        ({ name, value }) =>
+          name === "x-real-ip" && value === "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%",
+      ),
+    );
+    assert.ok(headers.remove.includes("authorization"));
+    assert.ok(headers.remove.includes("cookie"));
+    assert.equal(objects.has(key("HTTPRoute", chatName)), false);
+    events.push("node-setup-route");
+    return createSetup(operatorUrl, nodeUrl, signal);
+  };
+  assert.doesNotThrow(() => driver.validateExecutionAdmission(revision, selectedOwner));
+  assert.equal((await prepare()).ready, false);
+  assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
+  assert.equal(objects.has(key("HTTPRoute", chatName)), false);
+  markReady(gatewayName);
+
+  // Proxy and network readiness do not allow launch while the idle Sandbox cannot run setup.
+  const pendingSetup = await prepare();
+  assert.equal(pendingSetup.ready, false);
+  assert.equal(pendingSetup.pendingReason, "CREDENTIAL_ACTIVATION_PENDING");
+  assert.equal(pendingSetup.preparedForCredentialActivation, undefined);
+  assert.ok(events.includes("proxy-ready"));
+  assert.equal(events.includes("workspace-setup"), false, "the first Sandbox was pending");
+  proxyFailureCode = "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED";
+  await assert.rejects(prepare(), {
+    name: "CredentialDeploymentFailedError",
+    code: proxyFailureCode,
+  });
+  proxyFailureCode = undefined;
+  sandboxReady = true;
+  proxyReady = false;
+  assert.equal((await prepare()).ready, false);
+  networkReady = false;
+  proxyReady = true;
+  assert.equal((await prepare()).ready, false);
+  assert.equal(events.includes("prepare-launch"), false);
+  networkReady = true;
+  workspaceRefused = true;
+  assert.equal((await prepare()).runtimeFailure.code, "WORKSPACE_SETUP_REFUSED");
+  workspaceRefused = false;
+  const prepared = await prepare();
+  assert.equal(prepared.preparedForCredentialActivation, true);
+  assert.ok(events.includes("workspace-setup"), "the ready Sandbox must initialize its workspace");
+  assert.equal(started, false);
+  assert.deepEqual(events.slice(0, 4), [
+    "node-setup-route",
+    "deploy-proxy",
+    "provision-idle",
+    "configure-proxy",
+  ]);
+  assert.ok(events.indexOf("configure-proxy") < events.indexOf("network-status"));
+  assert.ok(events.indexOf("network-status") < events.indexOf("apply-network"));
+  assert.ok(events.indexOf("apply-network") < events.indexOf("proxy-ready"));
+  assert.ok(events.indexOf("apply-network") < events.lastIndexOf("prepare-launch"));
+  assert.ok(events.indexOf("workspace-setup") < events.lastIndexOf("prepare-launch"));
+  assert.ok(events.lastIndexOf("network-status") < events.lastIndexOf("prepare-launch"));
+  assert.ok(events.lastIndexOf("proxy-status") < events.lastIndexOf("prepare-launch"));
+  assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
+  assert.equal(objects.has(key("HTTPRoute", chatName)), false);
+  assert.equal(events.filter((event) => event === "provision-idle").length, 1);
+
+  // Activation starts the Harness, but cannot publish until ordinary Harness and node readiness.
+  await assert.rejects(driver.activateRevision(revision, context), {
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  assert.equal(started, true);
+  assert.ok(events.indexOf("workspace-setup") < events.indexOf("activate"));
+  assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
+  assert.equal(objects.has(key("HTTPRoute", chatName)), false);
+  state.providerPod = readyNativeHarnessPod(namespace, workloadLabels);
+  state.connected = true;
+  assert.equal(
+    read("Secret", driver.workspaceNodeName(revision)).data.enrolledRevisionId,
+    undefined,
+    "the connected node has not yet been credited to this revision",
+  );
+  await assert.rejects(driver.activateRevision(revision, context), {
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  const nodeSecret = read("Secret", driver.workspaceNodeName(revision));
+  assert.equal(
+    Buffer.from(nodeSecret.data.enrolledRevisionId ?? "", "base64").toString("utf8"),
+    revision.id,
+    "postactivation readiness must record the connected node for this revision",
+  );
+  assert.equal(objects.has(key("HTTPRoute", chatName)), false);
+  assert.equal((await prepare()).ready, false, "the Gateway must apply the node binding");
+  markReady(gatewayName);
+  state.gatewayWorkspaceNodeId = "node-1";
+  assert.equal((await prepare()).ready, true);
+  await driver.activateRevision(revision, context);
+  assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
+  assert.equal(objects.has(key("HTTPRoute", chatName)), true);
+  assert.ok(
+    objects
+      .get(key("HTTPRoute", gatewayName))
+      .spec.rules.some((rule) =>
+        rule.matches.some(({ path }) => path.value.startsWith("/native-browser/")),
+      ),
+  );
+  // The Gateway API CRD defaults HTTPRoute backend weights on reads from the API server.
+  for (const rule of objects.get(key("HTTPRoute", gatewayName)).spec.rules) {
+    for (const backend of rule.backendRefs) {
+      backend.weight = 1;
+    }
+  }
+  await prepare();
+  const reconciledOperatorRoute = objects.get(key("HTTPRoute", gatewayName));
+  const browserPath = new URL(driver.getGatewayBrowserEndpoint(revision)).pathname;
+  assert.equal(
+    reconciledOperatorRoute.metadata.annotations["openclaw.dev/agent-revision-id"],
+    revision.id,
+  );
+  for (const [type, value] of [
+    ["Exact", browserPath],
+    ["PathPrefix", `${browserPath}/`],
+  ]) {
+    assert.ok(
+      reconciledOperatorRoute.spec.rules.some((rule) =>
+        rule.matches.some(({ path }) => path.type === type && path.value === value),
+      ),
+      "reconciliation must preserve the published delegated browser route",
+    );
+  }
+
+  // Stop removes the Harness before its target-bound Proxy deployment. A real Proxy failure
+  // retains only the target ID so a later ordinary Stop can retry the removal.
+  const targetName = driver.credentialDeploymentTargetName(revision);
+  boundRemovalFailure = new Error("bound Proxy removal failed");
+  await assert.rejects(
+    withYieldingComputeStop(() => driver.stopRevision(revision)),
+    /bound Proxy removal failed/,
+  );
+  assert.equal(objects.has(key("HTTPRoute", gatewayName)), false);
+  assert.deepEqual(removedTarget, targetRef);
+  assert.equal(read("ConfigMap", targetName).data.sandboxId, targetRef.sandboxId);
+  assert.ok(events.lastIndexOf("sandbox-cleanup") < events.lastIndexOf("remove-bound"));
+  boundRemovalFailure = undefined;
+  await withYieldingComputeStop(() => driver.stopRevision(revision));
+  assert.equal(objects.has(key("ConfigMap", targetName)), false);
+});
 
 test("shared providers render OpenClaw adapters and refuse unsupported Codex protocols", async () => {
   for (const protocol of ["openai-responses", "openai-completions"]) {
@@ -5846,6 +6288,11 @@ test("native channel settings require readable Secret bindings", async () => {
 });
 
 test(
+  "Kubernetes prepared native withdrawal rereads the ready Gateway and Harness",
+  checkPreparedNativeRuntimeReadback,
+);
+
+test(
   "Kubernetes runtime diagnostics read exact private Pod status without native sends",
   checkPrivateRuntimeDiagnostics,
 );
@@ -7357,6 +7804,46 @@ test(
 test(
   "stopping a provider-owned Kubernetes revision waits for Sandbox workload termination",
   checkProviderStopTermination,
+);
+
+test(
+  "an ordinary stop lets a starting OpenShell Harness finish before its Sandbox is deleted",
+  checkStartingHarnessStopWaitsForServing,
+);
+
+test(
+  "an ordinary stop deletes an OpenShell Harness once it reports a held startup failure",
+  checkFailedHarnessStopEndsWait,
+);
+
+test(
+  "an ordinary stop deletes a serving OpenShell Harness at once",
+  checkServingHarnessStopsAtOnce,
+);
+
+test(
+  "a failed OpenShell Harness status read does not hold an ordinary stop",
+  checkUnreadHarnessStopsAtOnce,
+);
+
+test(
+  "the wait for a starting OpenShell Harness yields to due work",
+  checkStartingHarnessStopYields,
+);
+
+test(
+  "the wait for a starting OpenShell Harness ends 120 s after its first starting read",
+  checkStartingHarnessStopBound,
+);
+
+test(
+  "deleting an Agent and stopping a refused candidate do not wait for a starting Harness",
+  checkOtherHarnessStopsDoNotWait,
+);
+
+test(
+  "an ordinary stop deletes a dedicated OpenClaw worker's Sandbox without waiting for its Harness",
+  checkNativeHarnessStopsAtOnce,
 );
 
 test("stop and retirement end credential-source access through Sandbox cleanup", async () => {

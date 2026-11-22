@@ -6,10 +6,14 @@ import type {
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
 import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
 import type {
+  CredentialDeploymentConfiguration,
+  CredentialProjection,
+} from "../../credential-deployment.ts";
+import type {
   CredentialPolicyWithdrawalOptions,
   EgressInstallation,
 } from "../credential-proxy/index.ts";
-import type { Driver, SelectedDriverRegistration } from "../index.ts";
+import type { Driver, DriverRegistrationRef, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
   AgentRevision,
@@ -28,6 +32,7 @@ import type {
   ServiceAccountCredential,
 } from "../../index.ts";
 import type {
+  AdmittedRepositoryBinding,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryExecutionIdentity,
@@ -43,6 +48,7 @@ import type {
   SandboxNamespaceContext,
   SandboxHarnessObservation,
 } from "../sandbox/index.ts";
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
 export interface AgentChatCompletionsEndpoint {
@@ -57,6 +63,11 @@ export type AgentChatCompletionsResolution =
   | { readonly status: "unsupported" };
 
 export interface ComputeRevisionContext {
+  /** Worker configures the exact staged target without exposing source resolution to Compute. */
+  readonly configureCredentialDeployment?: (
+    expected: CredentialDeploymentConfiguration,
+    signal: AbortSignal,
+  ) => Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
   /** An active provider's maintenance pass may update its existing Harness only. */
   readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
@@ -125,6 +136,8 @@ export type ComputePendingReason =
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_SETUP_RETRYING"
   | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"
+  /** Staged credential activation is prepared, pending, or awaiting a confirmed startup outcome. */
+  | "CREDENTIAL_ACTIVATION_PENDING"
   /** The worker has not yet verified the Sandbox's prepared Git route (OpenShell). */
   | "REPOSITORY_GIT_ROUTE_PENDING";
 
@@ -133,6 +146,8 @@ export interface ComputeReadiness extends Scope {
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
+  /** Only v8: credentials, effective network policy, and launch inputs are ready before Harness startup. */
+  readonly preparedForCredentialActivation?: true;
   /** Only v6: select this execution for material while its launcher and user work remain held. */
   readonly heldForRepositoryGitMaterial?: true;
   readonly warnings?: readonly PluginDeploymentWarning[];
@@ -220,6 +235,22 @@ export interface ComputePreflightResult {
 export type RepositoryWorkerRestartDisposition =
   "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
 
+/** Current desired topology and exact proposed policy, when saving. */
+export interface ProtectedRepositoryNetworkPolicySaveContext {
+  readonly harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "version" | "mode">>;
+  readonly sandboxDriverId: string;
+  /** The selected registration that owns both Sandbox and Credential Proxy. */
+  readonly protectedDriver: DriverRegistrationRef;
+  readonly repositoryBindings: readonly AdmittedRepositoryBinding[];
+  /** GET can probe an explicit empty list. PUT supplies the complete proposed list for admission. */
+  readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
+  readonly harnessCredentialSource: Readonly<{
+    type: string;
+    ownerCapability: "credential_gateway" | "credential_proxy";
+    driverId: string;
+  }>;
+}
+
 export interface ComputeDriver extends Driver {
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
@@ -238,13 +269,22 @@ export interface ComputeDriver extends Driver {
   ): Promise<SandboxHarnessObservation>;
   /** Admission capability check, not release authority. Missing support fails closed. */
   validateExecutionAdmission?(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan" | "credentialDeployment">,
     /** Only the release of a revision already in durable custody can use its historical contract. */
     source?: SelectedDriverRegistration | "stored",
   ): void;
   /**
-   * Side-effect-free check that Compute preserves the explicit repository policy boundary
-   * on the selected execution topology. Throw or reject for an unsupported topology.
+   * Confirm support for protected repository policies on the selected topology with inspected
+   * transport. When supplied, admit the exact proposed policy. Use only local Driver state.
+   * Only an affirmative result admits a save. Release still requires frozen revision admission.
+   */
+  admitsProtectedRepositoryNetworkPolicySave?(
+    context: ProtectedRepositoryNetworkPolicySaveContext,
+  ): true | false;
+  /**
+   * Side-effect-free placement check on a frozen revision, including protected runtime inputs.
+   * During deployment admission OCC also invokes the selected Sandbox's independent frozen
+   * policy validator. Throw or reject for an unsupported topology.
    */
   validateProtectedRepositoryNetworkPolicy?(
     context: ProtectedRepositoryNetworkPolicyContext,

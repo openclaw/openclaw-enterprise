@@ -1,6 +1,10 @@
 import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
+import type {
+  CredentialDeploymentTarget,
+  CredentialProjection,
+} from "../../credential-deployment.ts";
 import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
 import type { Driver } from "../index.ts";
 import type {
@@ -23,20 +27,7 @@ import type {
   SandboxPolicySnapshot,
 } from "../../sandbox-policy.ts";
 
-export type ProtectedRepositoryNetworkPolicyContext = Readonly<
-  Pick<
-    AgentRevision,
-    | "namespaceId"
-    | "executionAdmission"
-    | "egressPlan"
-    | "repositoryCredentials"
-    | "harness"
-    | "sandboxDriverId"
-    | "sandboxPolicy"
-    | "harnessAuth"
-    | "credentialSources"
-  >
->;
+export type ProtectedRepositoryNetworkPolicyContext = Readonly<AgentRevision>;
 
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
 
@@ -266,6 +257,10 @@ export interface SandboxDriver extends Driver {
     policy: RepositoryNetworkPolicy,
     network: SandboxPolicySnapshot,
   ): SandboxPolicySnapshot["defaults"];
+  /** Revalidate effective policy and the current credential scope on the frozen revision. */
+  validateProtectedRepositoryNetworkPolicy?(
+    revision: ProtectedRepositoryNetworkPolicyContext,
+  ): void;
   /**
    * Side-effect-free admission for protected, dedicated Codex repository execution.
    * A normal network-policy result cannot acknowledge this purpose. The result names
@@ -319,6 +314,17 @@ export interface SandboxDriver extends Driver {
     harness: Readonly<RevisionHarnessDescriptor>,
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
+  /** Provision the revision's Sandbox without starting its credential-using Harness. */
+  provisionStagedHarness?(context: SandboxHarnessContext): Promise<CredentialDeploymentTarget>;
+  /** Prepare a fresh launch after the revision's network and credential route are ready. */
+  prepareStagedHarness?(
+    context: SandboxHarnessContext,
+    projections: readonly CredentialProjection[],
+  ): Promise<void>;
+  /** Start the prepared Harness during authorized revision activation. */
+  activateStagedHarness?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
   /** The launcher stays held while the Driver observes its request challenge.
    * A denial observed here can select material, never release work. */

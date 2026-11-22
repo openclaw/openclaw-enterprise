@@ -21,6 +21,7 @@ import {
   AuthorizationDeniedError,
   ChannelCredentialError,
   DependencyUnavailableError,
+  RepositoryPolicyDeploymentConflict,
   ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
@@ -29,7 +30,6 @@ import {
 } from "./errors.ts";
 import type { DeployAgentInput } from "./deployment-authorization.ts";
 import { unchangedDriver, type DriverRegistry } from "./driver-registry.ts";
-import { RepositoryPolicyDeploymentConflict } from "./repository-network-policy.ts";
 import { exactNamespace, lockNamespace } from "./resource-scope.ts";
 
 type DeploymentConfigurationMetadata = Readonly<
