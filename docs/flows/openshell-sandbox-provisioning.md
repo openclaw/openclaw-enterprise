@@ -182,15 +182,11 @@ OpenShell blocks nested bubblewrap; model readiness does not prove shell executi
 `codexLaunchEntrypoint` selects by revision, authentication, protection and workspace node.
 Existing revisions retain encoding; new PAT/workspace setup children are packed on first use.
 
-For a [PAT source](../reference/drivers/openshell-credential-gateway.md#source-type-catalog),
-`prepareHarnessAuth` selects native login. Startup verifies login using a placeholder in private `auth.json`.
+`prepareHarnessAuth` selects native [PAT login](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+with a placeholder in private `auth.json`. PAT and new unprotected source-backed
+OAuth revisions share [HTTPS recovery checks](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
+Terminal HTTPS 401/403 leaves the Harness unready (`AUTHENTICATION_FAILED`).
 
-New unprotected source-backed OAuth revisions use
-`openshell-codex-oauth-launch:v1:`. The PAT and new OAuth programs use
-`openShellPatRecovery` to check the upgrade refusal, an HTTPS fallback advisory
-from the same thread, a nonempty answer, tool-free turn completion, and exit
-status 0. A terminal HTTPS 401 or 403 leaves the Harness unready with
-`AUTHENTICATION_FAILED`.
 `requireModelSourceDestination` checks immutable `config.authorized_base_url` before binding
 the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
 URL plus `/**`, preserving `/api/v1` prefixes. `attachForRevision` translates native
