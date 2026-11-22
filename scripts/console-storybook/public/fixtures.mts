@@ -95,6 +95,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     expiredSession?: boolean;
     pendingGoogleAttempt?: boolean;
     emptyNamespaces?: boolean;
+    additionalNamespaceNames?: readonly string[];
     emptyBackends?: boolean;
     harnessGrantMissing?: boolean;
     oidcEnabled?: boolean;
@@ -255,6 +256,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             createdAt,
           },
         ];
+  for (const name of scenario.additionalNamespaceNames ?? []) {
+    namespaces.push({ id: nextId("ns"), name, status: "ready", createdAt });
+  }
   if (scenario.navigationAgentLookupMismatch) {
     namespaces.push({
       id: lookupSiblingNamespaceId,

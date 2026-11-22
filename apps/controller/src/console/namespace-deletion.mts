@@ -57,15 +57,21 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   let requestId: string | undefined;
   const remove = button(resourceActionIcon("delete"), () => openConfirmation(), {
     className: "icon-button",
+    "data-refocus-key": `${namespace.id} namespace-delete`,
+    "data-refocus-fallback": `${namespace.id} namespace-name`,
     title: "Delete Namespace",
     "aria-label": `Delete ${namespace.name}`,
   });
   const refresh = button("Refresh status", () => void readStatus(), {
     tone: "ghost",
     size: "sm",
+    "data-refocus-key": `${namespace.id} namespace-delete-refresh`,
+    "data-refocus-fallback": `${namespace.id} namespace-name`,
     "aria-label": `Refresh ${namespace.name} deletion status`,
   });
   const retry = button("Request deletion again", () => openConfirmation(), {
+    "data-refocus-key": `${namespace.id} namespace-delete-retry`,
+    "data-refocus-fallback": `${namespace.id} namespace-name`,
     tone: "link",
     size: "sm",
   });
