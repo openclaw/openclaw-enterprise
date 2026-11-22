@@ -1,3 +1,4 @@
+import { randomBytes, randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -8,7 +9,8 @@ import { loadDispatchScenario } from "./automation-model-only-dispatch-scenarios
 
 const execute = promisify(execFile);
 const input = JSON.parse(readFileSync("/fixture/input.json", "utf8"));
-const { harness, dummyCredential, gatewayPassword, transportToken, nonce } = input;
+const { harness, dummyCredential, transportToken, nonce } = input;
+const gatewayPassword = randomBytes(32).toString("base64url");
 const workspace = harness === "codex" ? "/home/node/workspace" : "/home/node/.openclaw/workspace";
 mkdirSync(workspace, { recursive: true });
 const scenario = await loadDispatchScenario(input.scenario, { nonce, harness, workspace });
@@ -104,7 +106,7 @@ try {
     },
     90000,
   );
-  const parentSessionKey = `agent:main:dispatch-positive-${nonce}`;
+  const parentSessionKey = `agent:main:dispatch-positive-${randomUUID()}`;
   const positive = await fetch("http://127.0.0.1:18800/v1/chat/completions", {
     method: "POST",
     headers: {

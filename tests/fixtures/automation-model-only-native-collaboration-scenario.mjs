@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+} from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { zstdDecompressSync } from "node:zlib";
@@ -204,8 +213,31 @@ export function observeNativeState({ nonce }) {
         continue;
       }
       assert.ok(++filesScanned <= 1000, "native rollout scan count exceeded");
-      assert.ok(statSync(file).size <= 8388608, "native rollout exceeds bounded reader");
-      const bytes = readFileSync(file);
+      const descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+      let bytes;
+      try {
+        const limit = 8388608;
+        const observed = fstatSync(descriptor);
+        assert.ok(
+          observed.isFile() && observed.size <= limit,
+          "native rollout exceeds bounded reader",
+        );
+        const chunks = [];
+        let total = 0;
+        for (;;) {
+          const chunk = Buffer.allocUnsafe(Math.min(65536, limit - total + 1));
+          const length = readSync(descriptor, chunk, 0, chunk.length, null);
+          if (length === 0) {
+            break;
+          }
+          total += length;
+          assert.ok(total <= limit, "native rollout exceeds bounded reader");
+          chunks.push(chunk.subarray(0, length));
+        }
+        bytes = Buffer.concat(chunks, total);
+      } finally {
+        closeSync(descriptor);
+      }
       const text = (
         file.endsWith(".zst") ? zstdDecompressSync(bytes, { maxOutputLength: 8388608 }) : bytes
       ).toString("utf8");

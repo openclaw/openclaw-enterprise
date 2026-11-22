@@ -120,7 +120,6 @@ export async function prepareDispatchInputs(
     scenarioEnvironment: scenarioModule?.module.environment?.({ nonce }) ?? {},
     fixtureFiles,
     dummyCredential: `synthetic-api-key-${randomUUID()}`,
-    gatewayPassword: `synthetic-gateway-${randomUUID()}`,
     transportToken: `synthetic-transport-${randomUUID()}`,
     gatewayEntrypoint: nodeProgramArguments(GATEWAY_RUNTIME_ENTRYPOINT),
     agentEntrypoint: nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT),
