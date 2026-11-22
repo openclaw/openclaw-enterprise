@@ -18,7 +18,6 @@ import type {
   LoggingLevel,
   PluginDeploymentWarning,
   RuntimeFailureEvidence,
-  SecretEnvironmentProjection,
 } from "../../packages/contracts/src/index.ts";
 import { admitRevisionHarness as admitHarnessFixture } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { items, kubernetesOptions, record } from "./plugin-compute-fixtures.ts";
@@ -173,10 +172,7 @@ interface KubernetesFixtureMethods {
     loggingLevel: LoggingLevel;
     configuration?: GatewayConfiguration;
     embedded?: boolean;
-    workloadServicePrincipalId?: string;
     harnessAuth?: PreparedAuth;
-    enabledChannels?: readonly { egress: "https-proxy" }[];
-    secretEnvironment?: readonly SecretEnvironmentProjection[];
     pluginRuntime?: { name: string; runtime: PluginRuntimeSpec };
     pluginWarnings?: readonly PluginDeploymentWarning[];
   }): KubernetesObject;
