@@ -189,6 +189,7 @@ export function renderSecrets(
     sorted(items: readonly SecretSummary[]): SecretSummary[];
     pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
     permissions?: Static<typeof NamespaceCallerPermissionsResponse>["data"] | null;
+    searchQuery: string;
     // A listed Secret to open, from the `secret` parameter an Agent page's link sets.
     openSecretId?: string | null;
   },
@@ -202,9 +203,11 @@ export function renderSecrets(
   const search = element("input", {
     type: "search",
     id: "secret-search",
+    "data-refocus-key": "secret-search",
     placeholder: "Search by name or ID",
     "aria-label": "Search Secrets",
   });
+  search.value = context.searchQuery;
   const list = element("div");
   const create = button("Create Secret", () => editValue(), { tone: "primary" });
   const ready = context.namespace?.status === "ready";
@@ -324,7 +327,11 @@ export function renderSecrets(
               element(
                 "p",
                 { className: "resource-name" },
-                button(item.name, () => void openDetail(item), { tone: "link" }),
+                button(item.name, () => void openDetail(item), {
+                  tone: "link",
+                  "data-refocus-key": item.id,
+                  "data-refocus-fallback": "secret-search",
+                }),
               ),
               element("span", { className: "resource-id" }, item.id),
             ),

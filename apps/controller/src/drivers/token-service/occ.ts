@@ -1,29 +1,29 @@
 import { randomUUID } from "node:crypto";
 
-import { SecretValue } from "@openclaw-enterprise/contracts";
+import { isName, SecretValue } from "@openclaw-enterprise/contracts";
 import type {
+  AccessBinding,
   CredentialRefreshStatus,
+  CredentialSource,
   CredentialSourceReference,
   ErrorDetail,
   InstallationSecretRef,
   InstallationSecretStore,
   JSONSchema,
-  RegisteredTokenServiceSource,
   ResolvedCredential,
   SourceLifecycleConfig,
   SourceRefreshOperation,
   SourceRegistrationInput,
   SourceUpdate,
   TokenServiceDriver,
-  TokenServiceRegistration,
   TokenServiceSourceInstance,
 } from "@openclaw-enterprise/contracts";
 import {
   ResourceStateConflictError,
   ScopeViolationError,
-  TokenServiceRegistrationRefusedError,
   TokenServiceSourceInputError,
 } from "@openclaw-enterprise/occ";
+import type { PlatformStateStore } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import { withoutMutationDeadline } from "../../admission/mutation-deadline.ts";
@@ -89,12 +89,14 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   private readonly installationId: string;
   private readonly store: InstallationSecretStore;
   private readonly tokenServiceInstanceId: string;
+  private readonly state: PlatformStateStore;
 
   constructor(
     id: string,
     installationId: string,
     store: InstallationSecretStore,
     tokenServiceInstanceId: string,
+    state: PlatformStateStore,
   ) {
     if (!isNonEmptyString(tokenServiceInstanceId)) {
       throw new ResourceStateConflictError("The TokenService instance identity is unavailable.");
@@ -103,6 +105,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     this.installationId = installationId;
     this.store = store;
     this.tokenServiceInstanceId = tokenServiceInstanceId;
+    this.state = state;
   }
 
   private ownedRef(source: TokenServiceSourceInstance): CredentialSourceReference {
@@ -120,14 +123,15 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     return ref;
   }
 
-  private registeredRef(source: RegisteredTokenServiceSource): CredentialSourceReference {
-    const ref = this.ownedRef(source);
-    if (Object.keys(source.registration).length !== 0) {
-      throw new ResourceStateConflictError(
-        "This registration does not belong to the OCC TokenService.",
-      );
+  private ownedSource(found: CredentialSource | undefined): CredentialSource | undefined {
+    if (
+      found !== undefined &&
+      (found.ownerCapability !== "token_service" ||
+        found.tokenServiceInstanceId !== this.tokenServiceInstanceId)
+    ) {
+      throw new ResourceStateConflictError("This source belongs to another TokenService instance.");
     }
-    return ref;
+    return found;
   }
 
   private storageRef(ref: CredentialSourceReference): InstallationSecretRef {
@@ -143,52 +147,93 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     };
   }
 
-  async registerSource(
+  async createSource(
     input: SourceRegistrationInput,
     signal: AbortSignal,
-  ): Promise<TokenServiceRegistration> {
+  ): Promise<CredentialSource> {
     signal.throwIfAborted();
-    let ref: CredentialSourceReference;
-    let stored: string;
-    try {
-      ref = this.ownedRef(input);
-      checkLifecycle(input.lifecycleConfig);
-      stored = encodeCredential(input.secret);
-    } catch (error) {
-      if (error instanceof ScopeViolationError || error instanceof ResourceStateConflictError) {
-        throw new TokenServiceRegistrationRefusedError(error.message);
-      }
-      throw error;
+    if (!isNonEmptyString(input.namespaceId) || !isName(input.name)) {
+      throw new ScopeViolationError("The credential source identity is invalid.");
     }
-    await withComputeAbortSignal(signal, () => this.store.create(this.storageRef(ref), stored));
-    signal.throwIfAborted();
-    return {};
+    checkLifecycle(input.lifecycleConfig);
+    const stored = encodeCredential(input.secret);
+    const id = `cs_${randomUUID()}`;
+    const ref: CredentialSourceReference = {
+      kind: "credential_source",
+      namespaceId: input.namespaceId,
+      id,
+    };
+    return this.state.transact(async ({ namespaces, credentialSources }) => {
+      const namespace = await namespaces.lockNamespace(input.namespaceId);
+      if (namespace?.status !== "ready") {
+        throw new ResourceStateConflictError("The credential source Namespace is not ready.");
+      }
+      const source = await credentialSources.createCredentialSource({
+        id,
+        namespaceId: input.namespaceId,
+        name: input.name,
+        type: input.lifecycleConfig.type,
+        ownerCapability: "token_service",
+        tokenServiceInstanceId: this.tokenServiceInstanceId,
+        state: "ready",
+        config: input.config,
+        secrets: {},
+        createdAt: new Date().toISOString(),
+      });
+      await withComputeAbortSignal(signal, () => this.store.create(this.storageRef(ref), stored));
+      signal.throwIfAborted();
+      return source;
+    });
   }
 
   async updateSource(
-    source: RegisteredTokenServiceSource,
+    source: TokenServiceSourceInstance,
     update: SourceUpdate,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<CredentialSource> {
     signal.throwIfAborted();
-    const ref = this.registeredRef(source);
+    const ref = this.ownedRef(source);
     if (update.lifecycleConfig) {
       checkLifecycle(update.lifecycleConfig);
     }
-    await withComputeAbortSignal(signal, () =>
-      update.secret
-        ? this.store.update(this.storageRef(ref), encodeCredential(update.secret))
-        : this.store.withValue(this.storageRef(ref), async () => undefined),
-    );
-    signal.throwIfAborted();
+    return this.state.transact(async ({ namespaces, credentialSources }) => {
+      const namespace = await namespaces.lockNamespace(ref.namespaceId);
+      if (namespace?.status !== "ready") {
+        throw new ResourceStateConflictError("The credential source Namespace is not ready.");
+      }
+      const found = this.ownedSource(
+        await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
+      );
+      if (found?.state !== "ready") {
+        throw new ResourceStateConflictError("The credential source is unavailable.");
+      }
+      if (update.secret) {
+        const stored = encodeCredential(update.secret);
+        await withComputeAbortSignal(signal, () => this.store.update(this.storageRef(ref), stored));
+      } else if (update.lifecycleConfig) {
+        await withComputeAbortSignal(signal, () =>
+          this.store.withValue(this.storageRef(ref), async () => undefined),
+        );
+      }
+      signal.throwIfAborted();
+      return found;
+    });
   }
 
   async resolveCredential(
-    source: RegisteredTokenServiceSource,
+    source: TokenServiceSourceInstance,
     signal: AbortSignal,
   ): Promise<ResolvedCredential> {
     signal.throwIfAborted();
-    const ref = this.registeredRef(source);
+    const ref = this.ownedRef(source);
+    const found = this.ownedSource(
+      await this.state.read(({ credentialSources }) =>
+        credentialSources.findCredentialSource(ref.namespaceId, ref.id),
+      ),
+    );
+    if (found?.state !== "ready") {
+      throw new ResourceStateConflictError("The credential source is unavailable.");
+    }
     const resolved = await withComputeAbortSignal(signal, () =>
       this.store.withValue(this.storageRef(ref), async (value) => decodeCredential(value)),
     );
@@ -197,11 +242,19 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   }
 
   async forceRefresh(
-    source: RegisteredTokenServiceSource<CredentialSourceReference>,
+    source: TokenServiceSourceInstance<CredentialSourceReference>,
     signal: AbortSignal,
   ): Promise<SourceRefreshOperation> {
     signal.throwIfAborted();
-    this.registeredRef(source);
+    const ref = this.ownedRef(source);
+    const found = this.ownedSource(
+      await this.state.read(({ credentialSources }) =>
+        credentialSources.findCredentialSource(ref.namespaceId, ref.id),
+      ),
+    );
+    if (found?.state !== "ready") {
+      throw new ResourceStateConflictError("The credential source is unavailable.");
+    }
     throw new ResourceStateConflictError(
       "A static credential cannot be refreshed; update the source.",
     );
@@ -212,37 +265,64 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     signal: AbortSignal,
   ): Promise<CredentialRefreshStatus> {
     signal.throwIfAborted();
-    this.ownedRef(operation);
+    const ref = this.ownedRef(operation);
+    const found = this.ownedSource(
+      await this.state.read(({ credentialSources }) =>
+        credentialSources.findCredentialSource(ref.namespaceId, ref.id),
+      ),
+    );
+    if (found?.state !== "ready") {
+      throw new ResourceStateConflictError("The credential source is unavailable.");
+    }
     throw new ResourceStateConflictError("A static credential has no refresh operation.");
   }
 
   async removeSource(
-    source: TokenServiceSourceInstance & { readonly registration?: TokenServiceRegistration },
+    source: TokenServiceSourceInstance,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<readonly AccessBinding[]> {
     signal.throwIfAborted();
-    const ref = source.registration
-      ? this.registeredRef({ ...source, registration: source.registration })
-      : this.ownedRef(source);
-    const stored = this.storageRef(ref);
-    // Erase material before deletion; an installation Secret may remain terminating under a finalizer.
-    await withoutMutationDeadline(() =>
-      withComputeAbortSignal(signal, async () => {
-        const tombstone = JSON.stringify({ removed: true });
-        try {
-          await this.store.update(stored, tombstone);
-        } catch (updateError) {
-          signal.throwIfAborted();
+    const ref = this.ownedRef(source);
+    return this.state.transact(async ({ namespaces, credentialSources, iamPolicy }) => {
+      if (!(await namespaces.lockNamespace(ref.namespaceId))) {
+        throw new ResourceStateConflictError("The credential source Namespace is unavailable.");
+      }
+      const found = this.ownedSource(
+        await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
+      );
+      if (found?.state !== "deleting") {
+        throw new ResourceStateConflictError("The credential source is not retiring.");
+      }
+      if (await credentialSources.findBlockingReference(ref.namespaceId, ref.id)) {
+        throw new ResourceStateConflictError("The credential source is still referenced.");
+      }
+      const stored = this.storageRef(ref);
+      // Erase material before deletion; an installation Secret may remain terminating under a finalizer.
+      await withoutMutationDeadline(() =>
+        withComputeAbortSignal(signal, async () => {
+          const tombstone = JSON.stringify({ removed: true });
           try {
-            await this.store.create(stored, tombstone);
-          } catch {
-            throw updateError;
+            await this.store.update(stored, tombstone);
+          } catch (updateError) {
+            signal.throwIfAborted();
+            try {
+              await this.store.create(stored, tombstone);
+            } catch {
+              throw updateError;
+            }
           }
-        }
-        signal.throwIfAborted();
-        await this.store.delete(stored);
-      }),
-    );
-    signal.throwIfAborted();
+          signal.throwIfAborted();
+          await this.store.delete(stored);
+        }),
+      );
+      signal.throwIfAborted();
+      const removedBindings = (await iamPolicy.listAccessBindings(ref.namespaceId)).filter(
+        (binding) => binding.resourceKind === "credential_source" && binding.resourceId === ref.id,
+      );
+      if (!(await credentialSources.deleteCredentialSource(ref.namespaceId, ref.id))) {
+        throw new ResourceStateConflictError("The credential source changed during deletion.");
+      }
+      return Object.freeze(removedBindings);
+    });
   }
 }

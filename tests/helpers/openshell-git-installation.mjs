@@ -34,6 +34,7 @@ import {
   assertStockSupervisorImport,
   stockSupervisorConfig,
   stockSupervisorManifest,
+  waitForStockSupervisor,
 } from "./openshell-stock-supervisor-image.ts";
 import { stopProcess } from "./stop-process.mjs";
 
@@ -250,6 +251,15 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       "this fixture qualifies stock OpenShell",
     );
   }
+  onSetupStep?.("read stock Supervisor pin");
+  // Bind the chart from the installed CLI to the pinned stock Supervisor version.
+  const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
+  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
+  const stockVersion = parent.match(
+    /^ghcr\.io\/nvidia\/openshell\/supervisor:(\d+\.\d+\.\d+)@sha256:[a-f0-9]{64}$/,
+  )?.[1];
+  assert.ok(stockVersion, "expected a digest-pinned stock OpenShell supervisor image");
+  const expectedChart = `helm-chart-${stockVersion}.tgz`;
   const cleanup = [];
   const stackCleanup = [];
   const measurement = (event, data) => {
@@ -291,6 +301,16 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   assert.equal(state.containerEngine, "docker");
   assert.match(state.cluster, /^occ-dev-first-agent-[a-f0-9]{12}$/);
   assert.match(state.dockerHost, /^unix:\/\//);
+  const chartDirectory = join(stack.directory, "openshell/chart");
+  const charts = (await readdir(chartDirectory)).filter((name) =>
+    /^helm-chart-.*\.tgz$/.test(name),
+  );
+  assert.deepEqual(
+    charts,
+    [expectedChart],
+    "expected only the stock Gateway chart packaged by occ dev",
+  );
+  const chart = join(chartDirectory, expectedChart);
   const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   // The CI reporter retains only the closed identity/digest/counter projection
@@ -665,13 +685,6 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   // Local Setup imported the stock platform image. Bind the selected containerd
   // manifest to the config of the independently digest-pinned stock image before
   // accepting either manifest- or config-form CRI image IDs.
-  onSetupStep?.("read stock Supervisor pin");
-  const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
-  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
-  assert.match(
-    parent,
-    /^ghcr\.io\/nvidia\/openshell\/supervisor:\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/,
-  );
   onSetupStep?.("verify stock Supervisor import");
   const image = gatewayValues.supervisor.image;
   assert.equal(image.registry, "docker.io");
@@ -753,12 +766,6 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   ];
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
-  const chartDirectory = join(stack.directory, "openshell/chart");
-  const charts = (await readdir(chartDirectory)).filter((name) =>
-    /^helm-chart-.*\.tgz$/.test(name),
-  );
-  assert.equal(charts.length, 1, "expected the Gateway chart packaged by occ dev");
-  const chart = join(chartDirectory, charts[0]);
   await command(
     "helm",
     [
@@ -881,30 +888,23 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       "the workload must have exactly one matching supervisor Pod",
     );
     const pod = supervisors[0];
-    assert.equal(pod.metadata.annotations?.["openshell.ai/sandbox-id"], sandboxId);
-    assert.ok(
-      pod.metadata.ownerReferences?.some(
-        (owner) => owner.kind === "Sandbox" && owner.uid === resource.metadata.uid,
-      ),
-      "the supervisor must belong to the selected Sandbox resource",
-    );
     const container = pod.spec.containers.find(({ name }) => name === "supervisor");
-    const status = pod.status.containerStatuses?.find(({ name }) => name === "supervisor");
-    assert.ok(
-      container && status?.ready && status.state.running,
-      "the supervisor must be running and ready",
-    );
-    assert.equal(
-      container.image,
-      supervisor.reference,
-      "the supervisor must select the verified stock image",
-    );
-    // CRI implementations report either the manifest or image-config digest.
-    // Both digests were verified against the pinned stock image.
-    const runningDigest = status.imageID.match(/sha256:[a-f0-9]{64}$/)?.[0];
-    assert.ok(
-      [supervisor.image.digest, supervisor.configDigest].includes(runningDigest),
-      "the running supervisor image must match the verified stock image",
+    const status = await waitForStockSupervisor(
+      pod,
+      async (signal) =>
+        JSON.parse(
+          await kube(["get", "pod", pod.metadata.name, "-n", sandboxNamespace, "-o", "json"], {
+            signal,
+          }),
+        ),
+      {
+        sandboxId,
+        sandboxUid: resource.metadata.uid,
+        image: supervisor.reference,
+        // CRI implementations report either the verified manifest or image-config digest.
+        digests: [supervisor.image.digest, supervisor.configDigest],
+      },
+      t.signal,
     );
 
     // The selected Sandbox determines the expected stock generation, independently of its Pod mount.

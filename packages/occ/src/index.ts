@@ -115,6 +115,7 @@ export type { OperationRefusalHintCode } from "./deployment-work-status.ts";
 export {
   ActivationFailedError,
   ComputePreparationFailedError,
+  CredentialDeploymentFailedError,
   RepositoryExecutionRequiresRedeployError,
   ActivationPendingError,
   agentEntryMessage,
@@ -195,12 +196,12 @@ export {
   ProtectedExecutionNetworkPolicyError,
   SandboxNetworkPolicyConflictError,
   SandboxRevisionUnsupportedError,
+  SandboxPodQuotaExceededError,
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
   RepositorySessionWithdrawnError,
   ScopeViolationError,
   TokenServiceSourceInputError,
-  TokenServiceRegistrationRefusedError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
   ServiceAccountCredentialSecretExistsError,
@@ -412,6 +413,7 @@ export type {
 } from "./auth-persistence/schema-auth-boundary-v1.ts";
 export type { RuntimeLogReadGrant, RuntimeLogReadAdmission } from "./agent-runtime-observations.ts";
 export type { ControllerOptions, ReconciliationOperation } from "./controller-composition.ts";
+export type { ModelCredentialPreset } from "./agent-deployment-admission.ts";
 export type { LookupChannelDirectoryInput } from "./setup-discovery.ts";
 export type {
   CreateCredentialSourceInput,
@@ -420,3 +422,5 @@ export type {
 } from "./credential-source-operations.ts";
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
+
+export { hasOnlyScopedRepositoryRevisions } from "./repository-network-policy.ts";
