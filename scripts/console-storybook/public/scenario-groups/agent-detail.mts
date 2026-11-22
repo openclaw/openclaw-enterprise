@@ -567,7 +567,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=access`,
         actions: shareExistingPerson,
         description:
-          "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
+          "The sharing acknowledgment explains that removing the Agent grant leaves the separate Namespace discovery grant in place. Other grants may still provide access.",
       },
       agentSharingHoldsNavigation: {
         group: "Pages/Agent detail",
