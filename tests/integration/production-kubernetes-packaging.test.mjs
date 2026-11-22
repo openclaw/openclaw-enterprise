@@ -425,7 +425,6 @@ function tenantApiRules() {
       resources: ["pods/proxy"],
       verbs: ["get"],
     },
-    ...automationTransportRules,
     ...runtimeLogRules,
   ];
 }
@@ -1790,6 +1789,21 @@ test(
     assert.ok(!bindings.has(tenantApiRole.metadata.name));
     assert.ok(tenant.rules.some(({ resources }) => resources.includes("configmaps")));
     assert.deepEqual(tenantApiRole.rules, tenantApiRules());
+    // Automation reads must stay separate because development can bind tenant-api globally.
+    const automationObserver = findResource(
+      objects,
+      "ClusterRole",
+      "oce-openclaw-tenant-automation-observer",
+    );
+    assert.deepEqual(automationObserver.rules, automationTransportRules);
+    assert.equal(
+      objects.some(
+        ({ kind, roleRef }) =>
+          ["RoleBinding", "ClusterRoleBinding"].includes(kind) &&
+          roleRef?.name === automationObserver.metadata.name,
+      ),
+      false,
+    );
     // Only the unbound tenant-worker role can list owned gateway claims and reconcile claims.
     assert.deepEqual(
       tenant.rules.filter(({ resources }) => resources.includes("persistentvolumeclaims")),
@@ -3227,14 +3241,7 @@ test(
         verbs: ["get", "create", "patch", "delete"],
       },
     );
-    assert.deepEqual(
-      tenantApi.rules.filter(({ resources }) =>
-        resources.some((resource) =>
-          ["services", "httproutes", "endpointslices", "networkpolicies"].includes(resource),
-        ),
-      ),
-      automationTransportRules,
-    );
+    assert.ok(!tenantApi.rules.some(({ resources }) => resources.includes("httproutes")));
     assert.equal(
       configured.some(({ kind }) => kind === "ConfigMap"),
       false,

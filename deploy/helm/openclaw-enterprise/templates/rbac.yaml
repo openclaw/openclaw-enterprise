@@ -132,6 +132,21 @@ rules:
   - apiGroups: [""]
     resources: [pods/proxy]
     verbs: [get]
+  {{- if .Values.agentRuntimeLogs.enabled }}
+  # Runtime log reads: OCC re-checks revision ownership of every named Pod.
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-openclaw-tenant-automation-observer
+rules:
   # Verify the revision-owned automation route, endpoint, and egress policy.
   - apiGroups: [""]
     resources: [services]
@@ -145,15 +160,6 @@ rules:
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
     verbs: [get]
-  {{- if .Values.agentRuntimeLogs.enabled }}
-  # Runtime log reads: OCC re-checks revision ownership of every named Pod.
-  - apiGroups: [""]
-    resources: [pods/log]
-    verbs: [get]
-  - apiGroups: [""]
-    resources: [events]
-    verbs: [get, list]
-  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
