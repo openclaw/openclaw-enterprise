@@ -25,10 +25,12 @@ async function stalledPreparation(
   {
     conditions,
     quota,
+    quotaFailure,
     stop,
   }: {
     conditions: readonly Record<string, unknown>[];
     quota?: { readonly status: unknown };
+    quotaFailure?: unknown;
     stop?: Error;
   },
 ) {
@@ -87,6 +89,9 @@ async function stalledPreparation(
     assert.equal(typeof name, "string");
     quotaReads.push(name);
     assert.equal(target.metadata?.namespace, context.namespace.name);
+    if (quotaFailure !== undefined) {
+      throw quotaFailure;
+    }
     assert.ok(currentQuota !== undefined);
     return structuredClone(currentQuota) as unknown as KubernetesObject;
   };
@@ -173,5 +178,24 @@ export function registerSandboxDriverPreparerQuotaCases(
     assert.equal(staged.deploymentReads(), 3, "the loop kept waiting");
     assert.deepEqual(staged.quotaReads, [QUOTA]);
     assert.equal(staged.deletions(), 1);
+  });
+
+  test("OpenShell keeps waiting when the named Pod quota cannot be read", async () => {
+    const stop = new Error("still polling");
+    const staged = await stalledPreparation(orphanedNativePreparation, {
+      conditions: [failedCreate(quotaRefusal("agent", 3, 3))],
+      quotaFailure: { code: 403, body: { reason: "Forbidden" } },
+      stop,
+    });
+    // A refused read proves nothing about the quota: no quota error, no read error, and the
+    // loop polls again (the second Deployment read) instead of stopping early.
+    await assert.rejects(
+      staged.driver.provisionHarness({ ...staged.context, requirements: staged.requirements }),
+      (error) => error === stop,
+    );
+    assert.equal(staged.deploymentReads(), 3, "the loop kept waiting");
+    assert.deepEqual(staged.quotaReads, [QUOTA]);
+    assert.equal(staged.deletions(), 1);
+    assert.equal(staged.sandboxCreates(), 0);
   });
 }
