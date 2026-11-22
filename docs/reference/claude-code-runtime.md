@@ -37,6 +37,11 @@ and WebFetch. File, shell and web fetch work therefore follows `tools.deny`,
 `tools.allow`, the tool profile and their `byProvider` entries. A side question
 runs with no Claude Code tools.
 
+OpenClaw's system prompt replaces Claude Code's own. Each turn's `TMPDIR`,
+`TMP` and `TEMP` point at `.openclaw/tmp` in the session's or Agent's
+workspace. The default workspace, `/home/node/.openclaw/workspace`, is mounted
+writable from the Agent's private gateway state claim.
+
 ## Web search
 
 Claude Code's native WebSearch tool stays on by default. The search runs at
@@ -64,7 +69,7 @@ Claude Code reads its admin-managed settings from `/etc/claude-code`. These
 settings carry the endpoint, the credential and the settings in
 [Telemetry and model pins](#telemetry-and-model-pins). OpenClaw's backend scrubs
 `ANTHROPIC_*` and `CLAUDE_CODE_*` variables from the child's environment and
-selects only user settings. Managed settings outrank every other tier, and so do
+selects at most user settings. Managed settings outrank every other tier, and so do
 remote managed settings: an API key or a stored sign-in makes a session eligible
 for them, and when the fetch fails Claude Code applies its cached copy from its
 configuration directory (`CLAUDE_CONFIG_DIR`). No supported setting turns that

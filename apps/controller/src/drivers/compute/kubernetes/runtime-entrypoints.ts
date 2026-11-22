@@ -2568,9 +2568,15 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 // Claude Code is the embedded Gateway's agent runtime when the admitted Configuration
 // selects the claude-cli model policy. OpenClaw's backend scrubs ANTHROPIC_* and
 // CLAUDE_CODE_* auth from the child's environment and runs agent turns with
-// --setting-sources user. Claude Code always reads its admin-managed settings in
-// /etc/claude-code. Those outrank every other tier (their hooks run even under OpenClaw's
-// flag-level disableAllHooks and receive the credential), and so do remote managed
+// --setting-sources user, or with no setting sources on the turns whose tools it mediates.
+// On those turns Claude Code gets OpenClaw's tools through its tool bridge, filtered by
+// tool policy, in place of the native file, shell and web fetch tools; native WebSearch
+// stays unless policy denies web_search or tools.web.search turns it off. OpenClaw's
+// system prompt replaces Claude Code's own, and TMPDIR, TMP and TEMP point at the
+// workspace's .openclaw/tmp, on the Gateway state claim. Claude Code always reads its
+// admin-managed settings in /etc/claude-code. Those outrank every other tier (their
+// hooks run even under OpenClaw's flag-level disableAllHooks and receive the
+// credential), and so do remote managed
 // settings: an API key or a stored sign-in makes the session eligible for them, and when
 // the fetch fails (offline, refused, or a custom endpoint that does not serve them)
 // Claude Code applies its cached copy from the configuration directory. So the model's
