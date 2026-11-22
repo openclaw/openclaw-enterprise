@@ -1,11 +1,12 @@
 import type { Static } from "typebox";
 
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
+import type { DeploymentPolicy } from "./deployment-policy.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
   RepositoryWorkerRestartDisposition,
 } from "./drivers/compute/index.ts";
-import type { DriverCapability } from "./drivers/index.ts";
+import type { DriverCapability, DriverRegistrationRef } from "./drivers/index.ts";
 import type {
   ExecutionAdmission,
   ProtectedEgressSource,
@@ -672,8 +673,21 @@ export type CredentialSourceSnapshot = {
   readonly sourceId: string;
   readonly sourceType: string;
 } & (
-  | { readonly credentialGatewayId: string; readonly credentialProxyId?: never }
-  | { readonly credentialProxyId: string; readonly credentialGatewayId?: never }
+  | {
+      readonly credentialGatewayId: string;
+      readonly credentialProxyId?: never;
+      readonly tokenServiceInstanceId?: never;
+    }
+  | {
+      readonly credentialProxyId: string;
+      readonly credentialGatewayId?: never;
+      readonly tokenServiceInstanceId?: never;
+    }
+  | {
+      readonly tokenServiceInstanceId: string;
+      readonly credentialGatewayId?: never;
+      readonly credentialProxyId?: never;
+    }
 );
 
 /** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
@@ -686,15 +700,23 @@ export function credentialSourceMatchesSnapshot(
   }
   switch (source.ownerCapability) {
     case "token_service":
-      // A saved account has no runnable sender until a consumer receives its own binding.
-      return false;
+      return (
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === undefined &&
+        source.tokenServiceInstanceId !== undefined &&
+        snapshot.tokenServiceInstanceId === source.tokenServiceInstanceId
+      );
     case "credential_gateway":
       return (
-        snapshot.credentialProxyId === undefined && snapshot.credentialGatewayId === source.driverId
+        snapshot.tokenServiceInstanceId === undefined &&
+        snapshot.credentialProxyId === undefined &&
+        snapshot.credentialGatewayId === source.driverId
       );
     case "credential_proxy":
       return (
-        snapshot.credentialGatewayId === undefined && snapshot.credentialProxyId === source.driverId
+        snapshot.tokenServiceInstanceId === undefined &&
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === source.driverId
       );
     default:
       return false;
@@ -746,21 +768,36 @@ export type HarnessAuthSnapshot =
         readonly credentialIssued: boolean;
       };
     }
-  | {
+  | ({
       readonly method: "credential_source";
       readonly sourceId: string;
-      readonly credentialGatewayId: string;
       readonly sourceType: string;
-      readonly loginMode: CredentialSourceLoginMode;
-    };
+    } & (
+      | {
+          readonly credentialGatewayId: string;
+          readonly loginMode: CredentialSourceLoginMode;
+          readonly tokenServiceInstanceId?: never;
+        }
+      | {
+          readonly tokenServiceInstanceId: string;
+          readonly credentialGatewayId?: never;
+          readonly loginMode?: never;
+        }
+    ));
 
 /** Authoritative delivery references, resolved again at dispatch; never secret values. */
 export type ResolvedHarnessAuth =
   | (Extract<HarnessAuthSnapshot, { source: SecretReference }> & {
       readonly backendRef: SecretBackendRef;
     })
-  | (Extract<HarnessAuthSnapshot, { method: "credential_source" }> & {
+  | (Extract<HarnessAuthSnapshot, { method: "credential_source"; credentialGatewayId: string }> & {
       readonly source: Readonly<CredentialSource>;
+    })
+  | (Extract<
+      HarnessAuthSnapshot,
+      { method: "credential_source"; tokenServiceInstanceId: string }
+    > & {
+      readonly source?: never;
     })
   | Extract<HarnessAuthSnapshot, { source: ServiceAccountReference } | { method: "runtime" }>;
 
@@ -1178,6 +1215,11 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
 export interface AgentRevision extends Scope {
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
+  /** Immutable staged credential and network authority for this revision's selected Proxy. */
+  readonly credentialDeployment?: DeploymentPolicy & {
+    readonly driver: DriverRegistrationRef;
+    readonly proxyDriverId: string;
+  };
   readonly id: string;
   readonly namespaceId: string;
   readonly agentId: string;
@@ -1255,6 +1297,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     ...(revision.egressPlan === undefined
       ? {}
       : { egressPlan: immutableCopy(revision.egressPlan) }),
+    ...(revision.credentialDeployment === undefined
+      ? {}
+      : { credentialDeployment: immutableCopy(revision.credentialDeployment) }),
     configuration: immutableCopy(revision.configuration),
     ...(revision.sandboxPolicy === undefined
       ? {}
@@ -1802,12 +1847,6 @@ export type {
   PluginDeploymentDescription,
   PluginDeploymentContract,
 } from "./drivers/plugin/deployment.ts";
-
-export type {
-  HarnessStartupObservation,
-  HarnessStartupRef,
-  SandboxDeploymentContract,
-} from "./drivers/sandbox/deployment.ts";
 
 export type { AgentAutomationOwnership, AgentAutomationToolGrant } from "./agent-automations.ts";
 

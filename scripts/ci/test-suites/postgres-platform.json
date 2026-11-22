@@ -204,7 +204,7 @@
     {
       "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
       "expectedTests": [
-        "public managed Source enrollment sanitizes custody and reaches authorized Agent binding and staged delivery refusal"
+        "public managed Source enrollment preserves custody and admits an authorized staged Agent"
       ]
     },
     {

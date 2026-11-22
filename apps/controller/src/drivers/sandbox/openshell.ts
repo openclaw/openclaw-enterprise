@@ -10,6 +10,11 @@ import {
 } from "./openshell-namespace-gateway.ts";
 import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
+  STAGED_HARNESS_ACTIVATE,
+  STAGED_HARNESS_PREPARE,
+  stagedHarnessSupervisor,
+} from "./openshell-staged-harness.ts";
+import {
   openShellRepositoryAccess,
   type OpenShellGitPolicyOverlap,
   type OpenShellGitRuntime,
@@ -92,6 +97,7 @@ import {
 } from "@kubernetes/client-node";
 import {
   ActivationFailedError,
+  ActivationPendingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
   DependencyUnavailableError,
@@ -110,6 +116,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
   AgentRevision,
+  CredentialDeploymentTarget,
+  CredentialProjection,
   EgressInstallation,
   ProxyPlan,
   Backend,
@@ -639,10 +647,15 @@ function environment(
   return result;
 }
 
+/** The status read uses only the Harness port of its requirements, so a stop needs no others. */
+export type OpenShellHarnessStatusContext = Omit<SandboxHarnessStatusContext, "requirements"> & {
+  readonly requirements: Pick<HarnessWorkloadRequirements, "environment">;
+};
+
 // Served by a Codex Harness wrapper that holds a startup failure (runtime-entrypoints.ts).
 const HARNESS_RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
 
-function harnessPort(requirements: HarnessWorkloadRequirements): number {
+function harnessPort(requirements: Pick<HarnessWorkloadRequirements, "environment">): number {
   const entry = requirements.environment.find(
     (candidate) => candidate.name === APP_SERVER_PORT_ENVIRONMENT,
   );
@@ -2481,6 +2494,144 @@ function sandboxLaunchSpec(
   };
 }
 
+/** Compile the admitted native credential route into the Sandbox-owned network policy. */
+function stagedCredentialPolicies(
+  policy: Readonly<Record<string, unknown>>,
+  revision: Readonly<AgentRevision>,
+  snapshot: SandboxPolicySnapshot,
+): {
+  readonly idle: Readonly<Record<string, unknown>>;
+  readonly admitted: Readonly<Record<string, unknown>>;
+} {
+  const deployment = revision.credentialDeployment;
+  const binding = deployment?.bindings[0];
+  const injection = deployment?.injectionPolicies[0];
+  const request = injection?.allowedRequests[0];
+  const port = request?.ports[0]?.from;
+  if (
+    !deployment ||
+    deployment.bindings.length !== 1 ||
+    deployment.injectionPolicies.length !== 1 ||
+    !binding ||
+    !injection ||
+    injection.bindingRef !== binding.bindingRef ||
+    injection.allowedRequests.length !== 1 ||
+    !request ||
+    request.requestPolicy?.type !== "http" ||
+    request.ports.length !== 1 ||
+    !port ||
+    request.ports[0]?.to !== port
+  ) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The staged native credential route is unsupported.",
+    );
+  }
+  const grants = snapshot.additions.filter(
+    (grant) =>
+      grant.binary === request.binary &&
+      grant.host.toLowerCase() === request.host.toLowerCase() &&
+      grant.ports.some(({ from, to }) => from <= port && port <= to),
+  );
+  if (grants.length !== 1) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The staged native credential route has no exact network grant.",
+    );
+  }
+  const networks = asRecord(policy.network_policies);
+  const defaults = asRecord(snapshot.defaults);
+  if (!networks || !defaults) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The staged native network policy is unavailable.",
+    );
+  }
+  const withoutCredentialRoute = (value: unknown): unknown => {
+    const rule = asRecord(value);
+    if (!rule || !Array.isArray(rule.endpoints)) {
+      return value;
+    }
+    const endpoints = rule.endpoints.flatMap((value) => {
+      const endpoint = asRecord(value);
+      if (
+        typeof endpoint?.host !== "string" ||
+        endpoint.host.toLowerCase() !== request.host.toLowerCase() ||
+        !Array.isArray(endpoint.ports) ||
+        !endpoint.ports.includes(port)
+      ) {
+        return [value];
+      }
+      const ports = endpoint.ports.filter((selected) => selected !== port);
+      return ports.length === 0 ? [] : [{ ...endpoint, ports }];
+    });
+    return endpoints.length === 0 ? undefined : { ...rule, endpoints };
+  };
+  const desiredDefaults: Record<string, unknown> = {};
+  for (const [name, rule] of Object.entries(defaults)) {
+    const desired = withoutCredentialRoute(rule);
+    if (
+      !sameOpenShellPolicy(networks[name], rule) &&
+      !sameOpenShellPolicy(networks[name], desired)
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "The staged Sandbox defaults differ from the admitted revision.",
+      );
+    }
+    if (desired !== undefined) {
+      desiredDefaults[name] = desired;
+    }
+  }
+  const extraPrefix = "oce-staged-extra-";
+  const trusted = Object.fromEntries(
+    Object.entries(networks).filter(
+      ([name]) =>
+        !name.startsWith(AGENT_POLICY_PREFIX) &&
+        !name.startsWith(extraPrefix) &&
+        !Object.hasOwn(defaults, name),
+    ),
+  );
+  const additions: Record<string, unknown> = openShellAgentNetworkRules(snapshot.additions);
+  const name = `${AGENT_POLICY_PREFIX}${grants[0]!.id}`;
+  const ordinary = asRecord(additions[name]);
+  const endpoint = asRecord(Array.isArray(ordinary?.endpoints) ? ordinary.endpoints[0] : undefined);
+  const extraPorts = Array.isArray(endpoint?.ports)
+    ? endpoint.ports.filter((selected) => selected !== port)
+    : [];
+  if (extraPorts.length > 0) {
+    const extraName = `${extraPrefix}${sha256Hex(name, 12)}`;
+    if (Object.hasOwn(defaults, extraName) || Object.hasOwn(additions, extraName)) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "The staged network rule name conflicts with an admitted rule.",
+      );
+    }
+    additions[extraName] = {
+      ...ordinary,
+      name: extraName,
+      endpoints: [{ ...endpoint, ports: extraPorts }],
+    };
+  }
+  delete additions[name];
+  const idleNetworks = { ...trusted, ...desiredDefaults, ...additions };
+  const credentialRule = {
+    name,
+    binaries: [{ path: request.binary }],
+    endpoints: [
+      {
+        host: request.host,
+        ports: [port],
+        protocol: "rest",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        rules: [
+          { allow: { method: request.requestPolicy.method, path: request.requestPolicy.path } },
+        ],
+        credential_binding: { provider: openShellProviderName(binding.sourceRef.id) },
+      },
+    ],
+  };
+  return {
+    idle: { ...policy, network_policies: idleNetworks },
+    admitted: { ...policy, network_policies: { ...idleNetworks, [name]: credentialRule } },
+  };
+}
+
 function validateOptions(options: OpenShellSandboxDriverOptions): void {
   configurationObject(options, "OpenShell configuration");
   configurationObject(options.gateway, "OpenShell gateway configuration");
@@ -3460,6 +3611,117 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   async provisionHarness(context: SandboxHarnessContext): Promise<SandboxResourceRef> {
+    return this.provisionSandboxHarness(context, false);
+  }
+
+  async provisionStagedHarness(
+    context: SandboxHarnessContext,
+  ): Promise<CredentialDeploymentTarget> {
+    this.requireStagedRevision(context);
+    const ref = await this.provisionSandboxHarness(context, true);
+    const observed = await this.gatewayClientForNamespace(ref.namespaceName).getSandbox(
+      { workspace: workspaceName(context.namespace), name: ref.resourceName },
+      context.signal,
+    );
+    if (!observed?.id || observed.annotations["openclaw.dev/revision-id"] !== context.revision.id) {
+      throw new OpenShellSandboxConfigurationFailure("The staged Sandbox target is unavailable.");
+    }
+    return {
+      namespaceId: context.namespace.id,
+      agentId: context.revision.agentId,
+      revisionId: context.revision.id,
+      sandboxId: observed.id,
+    };
+  }
+
+  async prepareStagedHarness(
+    context: SandboxHarnessContext,
+    projections: readonly CredentialProjection[],
+  ): Promise<void> {
+    this.requireStagedRevision(context);
+    const bindings = context.revision.credentialDeployment!.bindings;
+    if (
+      projections.length !== bindings.length ||
+      new Set(projections.map(({ bindingRef }) => bindingRef)).size !== projections.length ||
+      projections.some((projection) => {
+        const binding = bindings.find(({ bindingRef }) => bindingRef === projection.bindingRef);
+        return (
+          binding === undefined ||
+          binding.projection.environment !== projection.environment ||
+          !/^[A-Z][A-Z0-9_]*$/.test(projection.environment) ||
+          (projection.placeholder.kind === "proxy" &&
+            !isNonEmptyString(projection.placeholder.value))
+        );
+      })
+    ) {
+      throw new OpenShellSandboxConfigurationFailure("The staged Harness projections are invalid.");
+    }
+    const ref = this.sandboxRef(context);
+    const client = this.gatewayClientForNamespace(ref.namespaceName);
+    if (!(await this.initializeWorkspace(context, ref, client))) {
+      throw new ActivationPendingError(
+        "CREDENTIAL_ACTIVATION_PENDING",
+        "The staged Sandbox is not ready for initial workspace setup.",
+      );
+    }
+    const exit = await client.execSandbox(
+      {
+        workspace: workspaceName(context.namespace),
+        sandbox: ref.resourceName,
+        command: ["/usr/local/bin/node", "-e", STAGED_HARNESS_PREPARE],
+        environment: { HOME: this.harnessHome },
+        stdin: JSON.stringify(projections),
+        timeoutSeconds: 30,
+      },
+      context.signal,
+    );
+    if (exit !== 0) {
+      throw new OpenShellSandboxConfigurationFailure("The staged Harness preparation failed.");
+    }
+  }
+
+  async activateStagedHarness(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<void> {
+    this.requireStagedRevision(context);
+    const ref = this.sandboxRef(context);
+    // TODO: ExecSandbox selects by name and can reach a same-name replacement. Remove when
+    // OpenShell supports atomic Sandbox identity preconditions: https://github.com/ai-openshell/openshell/issues/5872
+    const exit = await this.gatewayClientForNamespace(ref.namespaceName).execSandbox(
+      {
+        workspace: workspaceName(context.namespace),
+        sandbox: ref.resourceName,
+        command: ["/usr/local/bin/node", "-e", STAGED_HARNESS_ACTIVATE],
+        environment: { HOME: this.harnessHome },
+        stdin: "",
+        timeoutSeconds: 30,
+      },
+      context.signal,
+    );
+    if (exit !== 0) {
+      throw new OpenShellSandboxConfigurationFailure("The staged Harness activation failed.");
+    }
+  }
+
+  private requireStagedRevision(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): void {
+    if (
+      context.namespace.id !== context.revision.namespaceId ||
+      context.revision.sandboxDriverId !== this.id ||
+      context.revision.executionAdmission.mode !== "standalone" ||
+      context.revision.credentialDeployment === undefined ||
+      context.revision.sandboxPolicy === undefined ||
+      context.revision.harness.mode !== "dedicated"
+    ) {
+      throw new OpenShellSandboxConfigurationFailure("The staged Harness revision is invalid.");
+    }
+  }
+
+  private async provisionSandboxHarness(
+    context: SandboxHarnessContext,
+    staged: boolean,
+  ): Promise<SandboxResourceRef> {
     assertNoRepositoryEnrollment(context, this.openShellGit);
     this.requireLegacyIntegration("provision a Harness");
     if (!isDeepStrictEqual(context.requirements.proxyWiring?.plan, context.revision.egressPlan)) {
@@ -3619,36 +3881,69 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       "openclaw.dev/namespace-id": context.revision.namespaceId,
       "openclaw.dev/agent-id": context.revision.agentId,
       "openclaw.dev/revision-id": context.revision.id,
+      ...(staged ? { "openclaw.dev/configuration-id": context.revision.configurationId } : {}),
       ...this.gitScopeAnnotations(context.revision),
     };
     const selector = { name: sandbox.resourceName, workspace };
-    const create = {
-      ...selector,
-      labels: context.requirements.labels,
-      annotations,
-      spec: this.harnessSpec(
-        context,
+    const providerEnvironment = new Set([
+      WORKSPACE_NODE_SETUP_ENVIRONMENT,
+      WORKSPACE_NODE_CA_ENVIRONMENT,
+      managedCredentialEnvironment,
+      ...(!codex
+        ? managedInstalls.flatMap(({ credentials }) =>
+            Object.values(credentials).map((slot) => slot.delivery.env),
+          )
+        : []),
+      ...(context.requirements.loginMode === "chatgptAuthTokens" ? ["CODEX_ACCESS_TOKEN"] : []),
+      ...Object.keys(runtimeCredentialMaterial.credentials),
+      ...(git ? ["GITHUB_TOKEN"] : []),
+    ]);
+    const launchSpec = this.harnessSpec(
+      context,
+      runtimeProvider,
+      providerEnvironment,
+      runtimeCredentialMaterial.binding,
+      egressPolicy,
+      plugin,
+      mcpPolicies,
+    );
+    let spec = launchSpec;
+    if (staged) {
+      const { workspaceSetup: _workspaceSetup, ...requirements } = context.requirements;
+      const supervisorSpec = this.harnessSpec(
+        {
+          ...context,
+          requirements: {
+            ...requirements,
+            loginMode: "api_key",
+            command: [
+              ...RUNTIME_WRAPPER_COMMAND,
+              ...nodeProgramArguments(stagedHarnessSupervisor(launchSpec.command)),
+            ],
+          },
+        },
         runtimeProvider,
-        new Set([
-          WORKSPACE_NODE_SETUP_ENVIRONMENT,
-          WORKSPACE_NODE_CA_ENVIRONMENT,
-          managedCredentialEnvironment,
-          ...(!codex
-            ? managedInstalls.flatMap(({ credentials }) =>
-                Object.values(credentials).map((slot) => slot.delivery.env),
-              )
-            : []),
-          // Only the attached provider supplies its identity-bound credential alias.
-          // A static placeholder would survive withdrawal and shadow its absence.
-          ...(context.requirements.loginMode === "chatgptAuthTokens" ? ["CODEX_ACCESS_TOKEN"] : []),
-          ...Object.keys(runtimeCredentialMaterial.credentials),
-          ...(git ? ["GITHUB_TOKEN"] : []),
-        ]),
+        providerEnvironment,
         runtimeCredentialMaterial.binding,
         egressPolicy,
         plugin,
         mcpPolicies,
-      ),
+      );
+      spec = {
+        ...supervisorSpec,
+        policy: stagedCredentialPolicies(
+          supervisorSpec.policy,
+          context.revision,
+          context.revision.sandboxPolicy!,
+        ).idle as typeof supervisorSpec.policy,
+        restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
+      };
+    }
+    const create = {
+      ...selector,
+      labels: context.requirements.labels,
+      annotations,
+      spec,
       serviceExposures,
     };
     // Check the final composition against the independently validated setup binding,
@@ -3732,7 +4027,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       mcpPolicies,
     );
     await checkEffectivePolicy();
-    await this.initializeWorkspace(context, reconciled, client);
+    if (!staged) {
+      await this.initializeWorkspace(context, reconciled, client);
+    }
     return reconciled;
   }
 
@@ -4317,10 +4614,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     context: SandboxHarnessContext,
     sandbox: SandboxResourceRef,
     client: OpenShellGatewayClient,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const setup = context.requirements.workspaceSetup;
     if (setup === undefined) {
-      return;
+      return true;
     }
     const workspace = workspaceName(context.namespace);
     const current = await client.getSandbox(
@@ -4333,7 +4630,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // setup: this pass read or created the Sandbox a moment ago, so it is a flap within one
     // pass, nothing is recorded as gone, and the next pass's create fails closed.
     if (current?.phase !== "SANDBOX_PHASE_READY" && current?.phase !== 2) {
-      return;
+      return false;
     }
     let exit: number;
     try {
@@ -4414,6 +4711,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OPENSHELL_WORKSPACE_INITIALIZATION_FAILED",
       );
     }
+    return true;
   }
 
   async harnessEndpoint(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint> {
@@ -4442,6 +4740,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
+    return this.readHarnessStatus(context);
+  }
+
+  /** The same read with only the Harness port of the requirements, as a stop knows them. */
+  async readHarnessStatus(context: OpenShellHarnessStatusContext): Promise<SandboxHarnessStatus> {
     context.signal.throwIfAborted();
     if (context.revision.harness.id === "openclaw" && context.workspaceNodeEnrolled === true) {
       // The exposure is withdrawn with enrollment, and nothing of Compute's listens there.
@@ -4526,7 +4829,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * dedicated OpenClaw worker has one because Compute asked for it. Anything else fails closed.
    */
   private async exactHarnessService(
-    context: SandboxHarnessContext,
+    context: OpenShellHarnessStatusContext | SandboxHarnessContext,
     operation: string,
   ): Promise<{
     readonly client: OpenShellGatewayClient;
@@ -4923,7 +5226,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Policy status is unavailable.");
     }
     const baseline = await this.networkPolicyBaseline(client, request, sandbox, context.signal);
-    const candidate = openShellPolicyCandidate(baseline, snapshot);
+    const staged =
+      context.revision.executionAdmission.mode === "standalone" &&
+      context.revision.credentialDeployment !== undefined;
+    const candidate = staged
+      ? stagedCredentialPolicies(baseline, context.revision, snapshot).admitted
+      : openShellPolicyCandidate(baseline, snapshot);
     const status = await client.getPolicyStatus(request, context.signal);
     const matches = sameOpenShellPolicy(status.policy, candidate);
     const state =
@@ -4970,7 +5278,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Live policy application is unsupported.");
     }
     const baseline = await this.networkPolicyBaseline(client, request, sandbox, context.signal);
-    const candidate = openShellPolicyCandidate(baseline, input.snapshot);
+    const staged =
+      context.revision.executionAdmission.mode === "standalone" &&
+      context.revision.credentialDeployment !== undefined;
+    const candidate = staged
+      ? stagedCredentialPolicies(baseline, context.revision, input.snapshot).admitted
+      : openShellPolicyCandidate(baseline, input.snapshot);
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);
@@ -5010,7 +5323,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ...request,
         policy: candidate,
         expectedResourceVersion: input.expectedProviderVersion,
-        requestId: input.operationId,
+        requestId:
+          staged && input.operationId === context.revision.id
+            ? revisionUuid(input.operationId)
+            : input.operationId,
       },
       context.signal,
     );

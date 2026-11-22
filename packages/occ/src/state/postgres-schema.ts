@@ -797,7 +797,18 @@ export const agentRevisions = occSchema.table(
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,implementation}') > 0
                 AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
               ))
-        ), false)`,
+          OR (${table.admittedSpec} #>> '{execution_admission,mode}' = 'standalone'
+            AND ${table.admittedSpec} #> '{execution_admission,version}' = '8'::jsonb
+            AND NOT ((${table.admittedSpec}->'execution_admission') ? 'repositoryNetworkPolicyVersion')
+            AND NOT (${table.admittedSpec} ? 'egress_plan')
+            AND NOT ((${table.admittedSpec}->'harness_auth') ? 'protectedExecutionVersion')
+            AND occ.standalone_credential_deployment_is_valid(${table.admittedSpec}, ${table.namespaceId}))
+        )
+        AND (${table.admittedSpec} #>> '{execution_admission,mode}' = 'standalone' OR (
+          NOT (${table.admittedSpec} ? 'credential_deployment')
+          AND NOT ((${table.admittedSpec}->'harness_auth') ? 'tokenServiceInstanceId')
+          AND NOT COALESCE(jsonb_path_exists(${table.admittedSpec}->'credential_sources', '$[*] ? (exists(@.tokenServiceInstanceId))'), false)
+        )), false)`,
     ),
     check(
       "agent_revisions_repository_policy_reader_version",
@@ -817,7 +828,7 @@ export const agentRevisions = occSchema.table(
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
           - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
-          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission') = '{}'::jsonb
+          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission' - 'credential_deployment') = '{}'::jsonb
     AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
         AND jsonb_typeof(${table.admittedSpec}->'configuration_kind') = 'string'

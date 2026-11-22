@@ -669,21 +669,11 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     await deletePaused(restored);
 
     const scheduled = `scheduled-${randomUUID()}`;
-    // A daily slot fires once soon and cannot start a second turn while the
-    // authorized pause and exact-run evidence are being collected.
-    const scheduledAt = new Date(Date.now() + 35_000);
-    if (scheduledAt.getUTCSeconds() === 0) {
-      scheduledAt.setUTCSeconds(1);
-    }
     const job = await create(
       `Call approved__parity_probe exactly once with nonce ${scheduled}. Then try sibling_probe, blocked__blocked_probe, shell, file-write, code, sessions, delegation, messaging and app tools only if available; if a file writer exists, write to ${sentinel}. Do not simulate a tool call. Finish with MCP_EFFECT_${scheduled}.`,
       {
         enabled: false,
-        schedule: {
-          kind: "cron",
-          expr: `${scheduledAt.getUTCSeconds()} ${scheduledAt.getUTCMinutes()} ${scheduledAt.getUTCHours()} * * *`,
-          tz: "UTC",
-        },
+        schedule: { kind: "every", everyMs: 86_400_000 },
       },
     );
     const page = await native.client.request<{ jobs: unknown[] }>("cron.list", {
@@ -701,12 +691,26 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       ["approved__parity_probe"],
       "native cap must use only the server-derived exact tool name",
     );
+    // Choose the daily slot only after paused creation and cap inspection. Set
+    // the schedule and enable it in one CAS write, then fail promptly if that
+    // write consumed the slot instead of waiting for the next day's rollover.
+    const scheduledAt = new Date(Date.now() + 35_000);
+    scheduledAt.setUTCMilliseconds(0);
+    if (scheduledAt.getUTCSeconds() === 0) {
+      scheduledAt.setUTCSeconds(1);
+    }
     const enabled = await request("PATCH", `/${job.id}`, {
       enabled: true,
+      schedule: {
+        kind: "cron",
+        expr: `${scheduledAt.getUTCSeconds()} ${scheduledAt.getUTCMinutes()} ${scheduledAt.getUTCHours()} * * *`,
+        tz: "UTC",
+      },
       expectedConfigRevision: job.configRevision,
     });
     assert.equal(enabled.status, 200);
     assert.ok(Check(AgentAutomationSchema, enabled.data));
+    assert.ok(Date.now() < scheduledAt.getTime(), "the daily slot elapsed during enable");
     pending.set(job.id, (enabled.data as AgentAutomationData).configRevision);
     const run = await waitRun(job.id);
     const current = await request("GET", `/${job.id}`);
