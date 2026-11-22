@@ -597,9 +597,13 @@ function renderSlackBindings(state: ChannelState) {
 // The next step a channel Secret save names once the Agent's access to them is confirmed.
 const DELIVER_ON_DEPLOY = " Deploy the new version to deliver them.";
 // A member's deploy writes the Agent's grants on the Secrets this save bound (RFC-0040), when the
-// IAM Driver can write them.
-const MEMBER_DELIVER_ON_DEPLOY =
-  " Deploying the new version delivers them and gives this Agent operate on them.";
+// IAM Driver can write them. A member who may not deploy this Agent is told who can.
+const MEMBER_DELIVER_ON_DEPLOY: Record<DeployGrant, string> = {
+  grants: " Deploying the new version delivers them and gives this Agent operate on them.",
+  denied:
+    " Ask someone who may deploy this Agent and operate them to deploy the new version, which delivers them and gives this Agent operate on them.",
+  none: DELIVER_ON_DEPLOY,
+};
 
 // Why the channel Secrets are read-only: the caller may not update the Configuration, or may not
 // operate a Secret that a save keeps bound, which each Configuration save also needs (finding
@@ -992,7 +996,7 @@ export function createChannelSecretsPanel({
     if (grantRecheck || state.checkingGrants || pendingSecretGrants().length) {
       return saved;
     }
-    return `${saved}${canGrant || deploy() === "none" ? DELIVER_ON_DEPLOY : MEMBER_DELIVER_ON_DEPLOY}`;
+    return `${saved}${canGrant ? DELIVER_ON_DEPLOY : MEMBER_DELIVER_ON_DEPLOY[deploy()]}`;
   }
 
   function renderChannelForm(error: HTMLElement) {

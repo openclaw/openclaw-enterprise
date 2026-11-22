@@ -8,6 +8,8 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-19 00:40: Grant warnings and member saves offer the deploy only when `deployGrantsSources` says it writes the grant. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - 6a10ce5dc6665051ae57eae8982c6a2f203659db)
 - 2026-11-18 22:40: Grant warnings name who can grant access when the reader may neither retry nor deploy. (authoring-run/f86b341d-b08f-47f4-80ff-a375893c8e05 - cfbec6564415e928e74062b91ab00f19656b6a86)
 - 2026-11-17 05:44: Deploys write credential grants; no grant outcome holds Deploy. (authoring-run/08b481d4-4a5e-4aed-b768-352a6716323c - 28afb11d68da12a17148895883235d074b9bb46f)
 - 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)

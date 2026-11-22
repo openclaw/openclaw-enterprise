@@ -44,6 +44,7 @@ import {
   isMaskedSecretValue,
   login,
   MEMBER_WRITE,
+  memberWriteWithout,
   nativeValues,
   newPage,
   nextFrames,
@@ -1010,48 +1011,67 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
 // This fixture's Native IAM reads its own policy store, so OCC writes no grant at deploy and the
 // Agent permission answer says so (deployGrantsSources: false). A member's harness Secret save
 // then sends no grant either, and its saved notice says the deploy checks the Agent's access and
-// names the administrator, instead of saying the deploy grants it.
-test("Where deploy writes no grant, a member's harness Secret save names the administrator", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("No grant harness", { ready: true });
-  const replacementSecret = await fixture.createSecret(
-    namespace.id,
-    "No grant harness Secret",
-    "hidden-no-grant-harness",
-  );
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "No Grant Harness Agent",
-    nativeValues("no-grant-harness"),
-  );
-  const writer = await fixture.createNamespaceMember("no-grant-write", namespace.id, MEMBER_WRITE);
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
-    writer.credentials,
-  );
-  await page.getByRole("heading", { name: agent.name }).waitFor();
-  await selectSecret(page, "API key Secret", replacementSecret);
-  const save = page.getByRole("button", { name: "Save authentication source" });
-  await save.click();
-  const expected = `Authentication source saved. ${credentialGrantedAtDeploy(
-    "the selected Secret",
-    "Secret operate on it",
-    false,
-  )}`;
-  const notice = page.getByRole("status").filter({ hasText: expected });
-  await notice.waitFor();
-  assert.equal(await notice.textContent(), expected);
-  assert.deepEqual(
-    requests.filter(({ path }) => path.includes("/iam/")),
-    [],
-  );
-  await waitForEnabled(save);
-});
+// names the administrator, instead of saying the deploy grants it. A member whose Role lacks Agent
+// deploy, where the deploy does write the grant, is told who can deploy the Agent or grant it.
+for (const { deploy, title } of [
+  {
+    deploy: "none",
+    title: "Where deploy writes no grant, a member's harness Secret save names the administrator",
+  },
+  {
+    deploy: "denied",
+    title: "A member who may not deploy is told who can deploy or grant the harness Secret",
+  },
+] as const) {
+  test(title, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Harness grant ${deploy}`, { ready: true });
+    const replacementSecret = await fixture.createSecret(
+      namespace.id,
+      `Harness grant ${deploy} Secret`,
+      `hidden-harness-grant-${deploy}`,
+    );
+    const agent = await fixture.createAgent(
+      namespace.id,
+      `Harness Grant ${deploy} Agent`,
+      nativeValues(`harness-grant-${deploy}`),
+    );
+    const writer = await fixture.createNamespaceMember(
+      `harness-grant-${deploy}`,
+      namespace.id,
+      deploy === "denied" ? memberWriteWithout(["deploy", "agent"]) : MEMBER_WRITE,
+    );
+    const { page } = await newPage(t, fixture);
+    if (deploy === "denied") {
+      await answerDeployGrantsSources(page);
+    }
+    const requests = apiRequests(page, fixture.origin);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+      writer.credentials,
+    );
+    await page.getByRole("heading", { name: agent.name }).waitFor();
+    await selectSecret(page, "API key Secret", replacementSecret);
+    const save = page.getByRole("button", { name: "Save authentication source" });
+    await save.click();
+    const expected = `Authentication source saved. ${credentialGrantedAtDeploy(
+      "the selected Secret",
+      "Secret operate on it",
+      deploy,
+    )}`;
+    const notice = page.getByRole("status").filter({ hasText: expected });
+    await notice.waitFor();
+    assert.equal(await notice.textContent(), expected);
+    assert.deepEqual(
+      requests.filter(({ path }) => path.includes("/iam/")),
+      [],
+    );
+    await waitForEnabled(save);
+  });
+}
 
 // Granting the Agent its authentication Secret writes IAM policy, which needs Installation
 // administration. A member's save sends no IAM request, whether or not an administrator already

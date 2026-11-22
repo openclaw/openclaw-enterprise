@@ -5403,7 +5403,7 @@ export async function renderAgentDetail(
                 ? `Channels saved. ${credentialGrantedAtDeploy(
                     "the selected Slack Secrets",
                     "Secret operate on them",
-                    deployGrant(callerPermissions) !== "none",
+                    deployGrant(callerPermissions),
                   )}`
                 : "Channels saved.",
             focus,
@@ -5807,7 +5807,7 @@ export async function renderAgentDetail(
                   credential.kind === "credential_source"
                     ? "credential source operate on it"
                     : "Secret operate on it",
-                  deployGrant(callerPermissions) !== "none",
+                  deployGrant(callerPermissions),
                 )}`,
                 focus: "Save authentication source",
               });

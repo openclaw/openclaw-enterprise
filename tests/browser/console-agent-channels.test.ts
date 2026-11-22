@@ -28,6 +28,7 @@ import {
   holdRequests,
   login,
   MEMBER_WRITE,
+  memberWriteWithout,
   nativeValues,
   newPage,
   nextFrames,
@@ -123,6 +124,11 @@ const MEMBER_DRAWER_SAVED_NO_DEPLOY_GRANT =
   "Channels saved. Deploying checks that this Agent can use the selected Slack Secrets. If it cannot, ask an Installation administrator to give the Agent Secret operate on them.";
 const MEMBER_CREDENTIALS_SAVED_NO_DEPLOY_GRANT =
   "Channel Secret bindings saved. Deploy the new version to deliver them.";
+// A member whose Role lacks Agent deploy, where the deploy writes the grant, is told who can deploy.
+const MEMBER_DRAWER_SAVED_DEPLOY_DENIED =
+  "Channels saved. Ask someone who may deploy this Agent and operate the selected Slack Secrets to deploy it, or ask an Installation administrator to give the Agent Secret operate on them.";
+const MEMBER_CREDENTIALS_SAVED_DEPLOY_DENIED =
+  "Channel Secret bindings saved. Ask someone who may deploy this Agent and operate them to deploy the new version, which delivers them and gives this Agent operate on them.";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -1680,10 +1686,21 @@ describe("Agent channels", { concurrency: 3 }, () => {
 
   // The same Installation, for a member: a Slack token saved from the drawer or from Credentials
   // sends no grant, and the save says the deploy checks the Agent's access and names the
-  // administrator, instead of saying the deploy grants it.
-  for (const entry of ["drawer", "credentials"]) {
-    test(`Where deploy writes no grant, a member's Slack token saved from ${entry} names the administrator`, async (t) => {
-      const { fixture, namespace } = await readyNamespace(t, `No grant member ${entry}`);
+  // administrator, instead of saying the deploy grants it. A member whose Role lacks Agent deploy,
+  // where the deploy does write the grant, is told who can deploy instead; neither save says this
+  // member's deploy grants it.
+  for (const [deploy, entry] of [
+    ["none", "drawer"],
+    ["none", "credentials"],
+    ["denied", "drawer"],
+    ["denied", "credentials"],
+  ] as const) {
+    const title =
+      deploy === "none"
+        ? `Where deploy writes no grant, a member's Slack token saved from ${entry} names the administrator`
+        : `A member who may not deploy is told who can, after a Slack token saved from ${entry}`;
+    test(title, async (t) => {
+      const { fixture, namespace } = await readyNamespace(t, `No grant member ${deploy} ${entry}`);
       const appSecret: unknown = await fixture.createSecret(
         namespace.id,
         "No grant app token",
@@ -1705,10 +1722,13 @@ describe("Agent channels", { concurrency: 3 }, () => {
       const writer: unknown = await fixture.createNamespaceMember(
         "no-grant-member",
         namespace.id,
-        MEMBER_WRITE,
+        deploy === "denied" ? memberWriteWithout(["deploy", "agent"]) : MEMBER_WRITE,
       );
       assertRecord(writer);
       const { page } = await newPage(t, fixture, { browser });
+      if (deploy === "denied") {
+        await answerDeployGrantsSources(page);
+      }
       const requests = apiRequests(page, fixture.origin);
       await login(
         page,
@@ -1729,16 +1749,28 @@ describe("Agent channels", { concurrency: 3 }, () => {
         await selectSecret(dialog, "Slack app token", appSecret);
         await dialog.getByRole("button", { name: "Save configuration", exact: true }).click();
         await dialog.waitFor({ state: "hidden" });
-        await page.getByText(MEMBER_DRAWER_SAVED_NO_DEPLOY_GRANT, { exact: true }).waitFor();
+        await page
+          .getByText(
+            deploy === "none"
+              ? MEMBER_DRAWER_SAVED_NO_DEPLOY_GRANT
+              : MEMBER_DRAWER_SAVED_DEPLOY_DENIED,
+            { exact: true },
+          )
+          .waitFor();
       } else {
         await selectSecret(page, "Slack app token", appSecret);
         await page.getByRole("button", { name: "Save channel Secrets" }).click();
         await page
           .locator(".channel-secrets")
-          .getByText(MEMBER_CREDENTIALS_SAVED_NO_DEPLOY_GRANT, { exact: true })
+          .getByText(
+            deploy === "none"
+              ? MEMBER_CREDENTIALS_SAVED_NO_DEPLOY_GRANT
+              : MEMBER_CREDENTIALS_SAVED_DEPLOY_DENIED,
+            { exact: true },
+          )
           .waitFor();
       }
-      await expectNoText(page, /gives this Agent operate|Deploying grants/);
+      await expectNoText(page, /Deploying gives this Agent operate|Deploying grants/);
       assert.deepEqual(
         requests.filter(({ path }) => path.includes("/iam/")),
         [],

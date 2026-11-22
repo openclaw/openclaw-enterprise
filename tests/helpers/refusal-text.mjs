@@ -102,12 +102,15 @@ export const notIncluded = (task, grant) =>
   `Your access does not include ${task}. ${askForGrant(grant)}`;
 // A member's console sends no credential grant: the member's deploy writes it (RFC-0040), so a
 // saved source says that (finding D748). `credential` names it, such as "the selected Secret".
-// Where the deploy writes no grant (deployGrantsSources: false), the save names the administrator
-// who can give the Agent `grant`, such as "Secret operate on it".
-export const credentialGrantedAtDeploy = (credential, grant = "", grants = true) =>
-  grants
-    ? `Deploying gives this Agent operate on ${credential}.`
-    : `Deploying checks that this Agent can use ${credential}. If it cannot, ask an Installation administrator to give the Agent ${grant}.`;
+// A member who may not deploy the Agent ("denied") is told who can deploy it or grant `grant`, such
+// as "Secret operate on it". Where the deploy writes no grant (deployGrantsSources: false, "none"),
+// the save names the administrator who can give the Agent `grant`.
+export const credentialGrantedAtDeploy = (credential, grant = "", deploy = "grants") =>
+  ({
+    grants: `Deploying gives this Agent operate on ${credential}.`,
+    denied: `Ask someone who may deploy this Agent and operate ${credential} to deploy it, or ask an Installation administrator to give the Agent ${grant}.`,
+    none: `Deploying checks that this Agent can use ${credential}. If it cannot, ask an Installation administrator to give the Agent ${grant}.`,
+  })[deploy];
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
 export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(

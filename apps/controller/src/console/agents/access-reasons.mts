@@ -1,3 +1,5 @@
+import type { DeployGrant } from "./credentials.mjs";
+
 // The one place that words who grants access and what to ask for (findings 2539, 2578). People
 // receive exact-resource grants through Namespace IAM policy, which only Installation
 // administration may write (findings 1920, 2259, 2260). Reasons that request such a grant use
@@ -179,12 +181,18 @@ export const deployUnreadableSecretsReason = (count: number) =>
 // a member's console sends no grant. The member's deploy writes the Agent's operate grant on each
 // source it uses that the member may operate (RFC-0040), so a member's save says that instead of
 // naming an administrator (finding D748). Deploy names a bound Secret the member may not operate.
-// When the IAM Driver cannot write that grant, the deploy only checks the Agent's access, so the
-// save names the administrator who can grant it.
-export const credentialGrantedAtDeploy = (credential: string, grant: string, grants: boolean) =>
-  grants
-    ? `Deploying gives this Agent operate on ${credential}.`
-    : `Deploying checks that this Agent can use ${credential}. If it cannot, ${ASK_INSTALLATION_ADMINISTRATOR} to give the Agent ${grant}.`;
+// A member who may not deploy this Agent is told who can: someone who may deploy it and operate
+// the credential, or an administrator who grants it directly. When the IAM Driver cannot write
+// that grant, the deploy only checks the Agent's access, so the save names the administrator.
+const CREDENTIAL_AT_DEPLOY: Record<DeployGrant, (credential: string, grant: string) => string> = {
+  grants: (credential) => `Deploying gives this Agent operate on ${credential}.`,
+  denied: (credential, grant) =>
+    `Ask someone who may deploy this Agent and operate ${credential} to deploy it, or ${ASK_INSTALLATION_ADMINISTRATOR} to give the Agent ${grant}.`,
+  none: (credential, grant) =>
+    `Deploying checks that this Agent can use ${credential}. If it cannot, ${ASK_INSTALLATION_ADMINISTRATOR} to give the Agent ${grant}.`,
+};
+export const credentialGrantedAtDeploy = (credential: string, grant: string, deploy: DeployGrant) =>
+  CREDENTIAL_AT_DEPLOY[deploy](credential, grant);
 
 // The network policy and its suggestions authorize Agent read and SandboxPolicy read on the
 // Agent's own policy; previews and saves authorize Agent manage_policy and SandboxPolicy update.

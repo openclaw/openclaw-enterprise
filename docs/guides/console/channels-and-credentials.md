@@ -96,7 +96,9 @@ When a member saves the source, the binding saves, but the member's session
 sends no grant. The form stays editable and says that deploying gives the Agent
 `operate` on the Secret: the deploy writes that grant for each source you can
 `operate`, as [Default users](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
-describes. **Deploy new version** stays available. When an administrator opens Credentials, the tab reads Namespace IAM and says
+describes. If your access does not include deploying this Agent, the form says to
+ask someone who may deploy it and `operate` the Secret, or an Installation
+administrator. **Deploy new version** stays available. When an administrator opens Credentials, the tab reads Namespace IAM and says
 when that grant is missing. **Deploy new version** stays available, because the deploy writes the grant.
 When your access no longer includes updating this Agent, the warning offers only the deploy.
 When it includes neither updating nor deploying this Agent, the warning says to ask an

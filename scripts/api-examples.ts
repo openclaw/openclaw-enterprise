@@ -664,6 +664,7 @@ export const responseExamples = {
     configurationUpdate: true,
     delete: true,
     deploy: true,
+    deployGrantsSources: true,
     operate: true,
     readLogs: true,
     sandboxPolicyRead: true,

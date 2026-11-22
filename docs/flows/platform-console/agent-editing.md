@@ -250,8 +250,8 @@ grant leaves Configuration saved and offers **Retry Secret access**; a timeout o
 unknown. A deploy writes each missing grant the deployer can `operate` (`grantDeployedAgentSources`),
 so no grant outcome holds Deploy. `deployGrant` reads the permission answer's `deploy` and
 `deployGrantsSources`: a warning offers the deploy only when it writes the grant, and otherwise
-only the reader's other steps, or who can grant access. A member's session sends no grant, as
-the save message says. An administrator's console reads every bound Secret's grant, with Slack on
+only the reader's other steps, or who can grant access. A member's session sends no grant; its
+save message (`credentialGrantedAtDeploy`) follows the same answer. An administrator's console reads every bound Secret's grant, with Slack on
 or off, and a save or Retry during one reads again before naming Deploy. With
 Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018),
 whose success names the granted access. A Retry carries no Secret choices into **Reload draft** (3021).
@@ -280,7 +280,7 @@ or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
 
 Grant failure preserves saved authentication and freezes controls. `credentials.mjs:grantWarning`
-names the outcome; members send no grant, get no retry, and are told their deploy writes it. **Retry credential access**
+names the outcome; members send no grant, get no retry, and are told whether their deploy writes it. **Retry credential access**
 rechecks identity and bindings before granting. Uncertain PATCH requires **Reload authentication
 source**. Until **Retry credential access** or **Reload authentication source** loads the saved
 source into the page, deployment is held, across navigation; the grant itself holds nothing.
@@ -357,15 +357,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-22 13:30: Name who can deploy or grant in member saves. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - c1f1d87d57cb84b727abd4c4b2417da090b77230)
 - 2026-11-22 08:58: Link snapshots to draft tabs. (authoring-run/ec03baba-cadf-4c59-9194-3a93a3c4763b - f3996c521e94d8bf18ff9018069c699dda6913c6)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-19 00:40: Grant warnings and member saves offer the deploy only when `deployGrantsSources` says it writes the grant. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - 6a10ce5dc6665051ae57eae8982c6a2f203659db)
-- 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
-
-- 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
-- 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
-- 2026-11-05 01:51: Guard pending-save history. (authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746 - 516ee6d87dea5326df70e647b17e2a141392cd0c)
-- 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
-- 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
