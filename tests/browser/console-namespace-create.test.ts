@@ -386,7 +386,7 @@ test("a created Namespace omitted for a create-only caller is unavailable to vie
 for (const closeOnRetry of [false, true]) {
   test(
     closeOnRetry
-      ? "closing a Namespace confirmation during the read does not replace a newer dialog"
+      ? "closing a Namespace confirmation during an access retry lets the creator reopen after reload"
       : "confirmed Namespace creation can check access again without creating twice",
     async (t) => {
       const fixture = await createConsoleAppFixture(t);
@@ -430,7 +430,7 @@ for (const closeOnRetry of [false, true]) {
         (request) => request.url() === collectionUrl && request.method() === "GET",
       );
       await submitCreate(page, namespaceName);
-      assert.equal((await posted).status(), 201);
+      assert.equal((await posted).status(), 201, "initial Namespace creation succeeds");
       await unavailable.requested;
       const dialog = page.getByRole("dialog", { name: "Namespace created", exact: true });
       await dialog
@@ -447,8 +447,15 @@ for (const closeOnRetry of [false, true]) {
         const cdp = await page.context().newCDPSession(page);
         try {
           await cdp.send("Emulation.setVirtualTimePolicy", { policy: "advance", budget: 15_001 });
-          assert.match((await timedOut).failure()?.errorText ?? "", /ERR_ABORTED/);
-          assert.equal(await originalRequest.response(), null);
+          assert.match(
+            (await timedOut).failure()?.errorText ?? "",
+            /ERR_ABORTED/,
+            "the initial access check times out",
+          );
+          assert.ok(
+            (await originalRequest.response()) === null,
+            "the initial access check received no browser response",
+          );
         } finally {
           await cdp.detach();
         }
@@ -460,12 +467,20 @@ for (const closeOnRetry of [false, true]) {
       }
       const retry = dialog.getByRole("button", { name: "Check access again" });
       await retry.waitFor({ timeout: 5_000 });
-      assert.equal(await dialog.getByRole("button", { name: "Open Agents" }).count(), 0);
+      assert.equal(
+        await dialog.getByRole("button", { name: "Open Agents" }).count(),
+        0,
+        "the unconfirmed Namespace offers no Agent shortcut",
+      );
       await dialog
         .getByRole("status")
         .filter({ hasText: "Access could not be confirmed." })
         .waitFor();
-      assert.equal(await retry.evaluate((node) => node === node.ownerDocument.activeElement), true);
+      assert.equal(
+        await retry.evaluate((node) => node === node.ownerDocument.activeElement),
+        true,
+        "the unconfirmed Namespace focuses Check access again",
+      );
       const created = (await readNamespaces(fixture)).find((item) => item.name === namespaceName);
       assert.ok(created);
       if (!closeOnRetry) {
@@ -523,31 +538,74 @@ for (const closeOnRetry of [false, true]) {
       );
       await retry.click();
       const response = await read.requested;
-      assert.equal(response?.status(), 200);
-      assert.equal(await retry.isDisabled(), true);
+      assert.equal(response?.status(), 200, "the controller answers the held access retry");
+      assert.equal(await retry.isDisabled(), true, "Check access again is disabled while pending");
       const retryRequests = requests.slice(beforeRetry);
-      assert.deepEqual(retryRequests, [{ method: "GET", path: "/namespaces", body: null }]);
+      assert.deepEqual(
+        retryRequests,
+        [{ method: "GET", path: "/namespaces", body: null }],
+        "the access retry sends one read and no creation write",
+      );
       if (closeOnRetry) {
-        const originalRequest = await retryRequest;
-        const aborted = page.waitForEvent("requestfailed", {
-          predicate: (request) => request === originalRequest,
-        });
-        await page.keyboard.press("Escape");
+        const pendingRetry = await retryRequest;
+        const previousOpener = await page
+          .getByRole("button", { name: "Create Namespace", exact: true, includeHidden: true })
+          .elementHandle();
+        const beforeClose = requests.length;
+        await Promise.all([
+          page
+            .waitForEvent("requestfailed", { predicate: (request) => request === pendingRetry })
+            .then(async (request) => {
+              assert.match(
+                request.failure()?.errorText ?? "",
+                /ERR_ABORTED/,
+                "the pending access retry ends with browser cancellation",
+              );
+              assert.ok(
+                (await request.response()) === null,
+                "the pending access retry received no browser response",
+              );
+            }),
+          page
+            .waitForRequest(
+              (request) =>
+                request.url() === collectionUrl &&
+                request.method() === "GET" &&
+                request !== pendingRetry,
+            )
+            .then(async (request) => {
+              const answer = await request.response();
+              assert.ok(answer, "the close-triggered Namespace reload received an HTTP response");
+              assert.equal(answer.status(), 200, "the close-triggered Namespace reload succeeds");
+            }),
+          page.keyboard.press("Escape"),
+        ]);
         await dialog.waitFor({ state: "detached" });
-        assert.match((await aborted).failure()?.errorText ?? "", /ERR_ABORTED/);
+        read.release();
+
+        // Escape can restore focus to the old opener before the list render replaces it.
+        await page.waitForFunction((button) => !button.isConnected, previousOpener, {
+          timeout: 5_000,
+        });
+        await previousOpener.dispose();
         await focusReturnsToOpener(page);
+        assert.equal(
+          pathRequests(requests.slice(beforeClose), "GET", "/namespaces").length,
+          1,
+          "closing the confirmation through the replacement render sends one Namespace list GET",
+        );
         const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
         await opener.click();
         const form = page.getByRole("dialog", { name: "Create Namespace", exact: true });
         const name = form.getByLabel("Namespace name");
         await name.fill("A different team");
-        read.release();
-        assert.equal(await name.inputValue(), "A different team");
+        assert.equal(await name.inputValue(), "A different team", "the new form keeps its name");
         assert.equal(
           await name.evaluate((node) => node === node.ownerDocument.activeElement),
           true,
+          "the new form keeps focus on its name field",
         );
-        assert.equal(await dialog.count(), 0);
+        assert.equal(await dialog.count(), 0, "the closed confirmation stays absent");
       } else {
         await retryRequest;
         const listed = isCollectionResponse("GET");
@@ -566,7 +624,7 @@ for (const closeOnRetry of [false, true]) {
         await openAgents.click();
         await page.waitForURL(new RegExp(`/console/agents\\?namespace=${created.id}`));
       }
-      assert.equal(creates(requests).length, 1);
+      assert.equal(creates(requests).length, 1, "the browser sends exactly one Namespace POST");
     },
   );
 }
