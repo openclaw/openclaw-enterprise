@@ -4,6 +4,7 @@ import { Check } from "typebox/value";
 import {
   AgentAutomationSchema,
   AgentAutomationRunsPageSchema,
+  ERROR_CODES,
   type AgentAutomationCreateInput,
   type AgentAutomationData,
 } from "../../packages/contracts/src/index.ts";
@@ -68,10 +69,14 @@ export async function verifyQaAgentAutomations(
     selectedHeaders: Record<string, string> = headers,
   ) {
     const result = await request(method, suffix, body, selectedHeaders);
+    const errorCode =
+      method === "POST"
+        ? ERROR_CODES.find((code) => code === asRecord(result.envelope?.error)?.code)
+        : undefined;
     assert.equal(
       result.status,
       expected,
-      `Automation ${method} returned ${result.status}; expected ${expected}`,
+      `Automation ${method} returned ${result.status}; expected ${expected}${errorCode ? `; code ${errorCode}` : ""}`,
     );
     return result.envelope?.data;
   }

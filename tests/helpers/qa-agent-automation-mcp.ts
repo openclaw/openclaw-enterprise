@@ -7,6 +7,7 @@ import { Check } from "typebox/value";
 import {
   AgentAutomationSchema,
   AgentAutomationRunsPageSchema,
+  ERROR_CODES,
   type AgentAutomationData,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -110,7 +111,8 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
       timeout: 40_000,
     });
     const envelope = response.text ? asRecord(JSON.parse(response.text)) : undefined;
-    return { status: response.response.status, data: envelope?.data };
+    const errorCode = ERROR_CODES.find((code) => code === asRecord(envelope?.error)?.code);
+    return { status: response.response.status, data: envelope?.data, errorCode };
   }
   async function roleFiles(action: "precheck" | "read" | "cleanup") {
     const all: Call[] = [];
@@ -235,7 +237,11 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
   }
   async function create(prompt: string, overrides: Record<string, unknown> = {}) {
     const response = await request("POST", "", { ...input(prompt), ...overrides });
-    assert.equal(response.status, 201, "OCC must admit a discovered, approved MCP grant");
+    assert.equal(
+      response.status,
+      201,
+      `OCC must admit a discovered, approved MCP grant; HTTP ${response.status}${response.errorCode ? `; code ${response.errorCode}` : ""}`,
+    );
     assert.ok(Check(AgentAutomationSchema, response.data));
     const job = response.data as AgentAutomationData;
     pending.set(job.id, job.configRevision);
