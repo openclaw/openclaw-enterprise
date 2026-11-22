@@ -678,18 +678,16 @@ async function assertTokensAbsentFromWorkload(
 }
 
 function patchTokenSecret(fixture: GitInstallation, value: string) {
-  return fixture.kube(
-    [
-      "patch",
-      "secret",
-      "git-fixture-token",
-      "-n",
-      fixture.platform,
-      "--type=merge",
-      "--patch-file=/dev/stdin",
-    ],
-    { input: JSON.stringify({ stringData: { token: value } }) },
-  );
+  // The same apply path the fixture used to create the Secret; the value travels on stdin only.
+  return fixture.kube(["apply", "-f", "-"], {
+    input: JSON.stringify({
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: { name: "git-fixture-token", namespace: fixture.platform },
+      type: "Opaque",
+      stringData: { token: value },
+    }),
+  });
 }
 
 /**
