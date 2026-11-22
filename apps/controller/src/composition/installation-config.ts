@@ -3,6 +3,7 @@ import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
 import { supportsOpenShellModelCredentialDeployment } from "./openshell-model-admission.ts";
+import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
   openShellProxyConfiguration,
@@ -294,6 +295,26 @@ export interface InstallationRuntimeDrivers {
     backendId: string;
   }>;
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
+}
+
+/** Bind Source retirement to the concrete selected Proxy and its Sandbox placement. */
+export function credentialSourceDeliveryBinding(
+  drivers: InstallationRuntimeDrivers | undefined,
+): ControllerOptions["credentialSourceDelivery"] {
+  if (!drivers?.credentialDeliveryRegistration) {
+    return undefined;
+  }
+  return async (proxy, namespace, source, signal) => {
+    const compute = drivers.computeDriver;
+    if (!(proxy instanceof OpenShellCredentialProxyDriver) || !compute.resolveSandboxNamespace) {
+      throw new DependencyUnavailableError(
+        "The selected credential delivery Proxy cannot retire this Source.",
+      );
+    }
+    const placed = await compute.resolveSandboxNamespace(namespace);
+    signal.throwIfAborted();
+    await proxy.retireSource(placed, source, signal);
+  };
 }
 
 /**
@@ -1571,8 +1592,6 @@ async function composeInstallationConfiguration(
     pairedSandbox: SandboxDriver,
     tokenServiceImplementation: string,
   ): Promise<CredentialProxyDriver> => {
-    const { OpenShellCredentialProxyDriver } =
-      await import("../drivers/credential-proxy/openshell.ts");
     return new OpenShellCredentialProxyDriver({
       id: pairedSandbox.id,
       implementation: pairedSandbox.implementation,

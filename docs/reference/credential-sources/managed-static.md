@@ -42,11 +42,17 @@ when TokenService is unavailable. Record state does not prove live credential
 readiness.
 
 DELETE requires exact `credential_source:delete` and refuses a referenced
-Source with `409`. TokenService retires the Source and its credential. DELETE
-returns `204` after Source removal and completion audit. An uncertain removal can
-leave a `deleting` Source for retry. If removal succeeds but completion audit
-fails, the Source is gone. A retry returns `403` if removing the Source also
+Source with `409`. If a Credential Proxy is selected, it first retires its owned
+delivery copy and profile. On failure, DELETE returns `503`, the Source stays
+`deleting`, and TokenService keeps the credential for a retry. TokenService then
+retires the Source and credential. DELETE returns `204` after Source removal and
+completion audit. An uncertain removal can leave a `deleting` Source for retry.
+If removal succeeds but completion audit fails, the Source is gone. A retry returns `403` if removing the Source also
 removed the caller's delete authority, or `404` if the caller remains authorized.
+
+If an Installation restarts without the Credential Proxy selected, Source deletion
+follows the no-Proxy path. A native Provider copy retained from the earlier Proxy
+selection can remain after the Source is deleted.
 
 An authorized Agent draft can bind the Source for Harness authentication.
 Deployment can admit the approved model route when the selected Sandbox and

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-22
-last_updated_session: 01a1ec21-b384-7472-887f-945ae0ab16fc
+last_updated_session: authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc
 ---
 
 # Credential source lifecycle flow
@@ -75,17 +75,17 @@ The native Proxy compares the binding and injection policy with the frozen v8 ad
 
 Native status checks the loaded source policy and effective enforced route, configuration admission, attached Provider identity and resource version, and the supervisor's matching credential, policy, environment, and serving observation. The Gateway creates an internal `OBSERVE` receipt for this status query. The Provider's Source version identifies the last delivered material; status does not independently query TokenService or detect a later missed push. The [Proxy reference](../reference/drivers/credential-proxy.md) records the temporary executable and Bearer deviations.
 
-For a surviving target, the Sandbox owner must first remove the credential-binding rule from its policy. OpenShell rejects detach while a policy still references the Provider. `removeDeployment` then detaches only this revision's Provider binding and confirms membership is absent. A missing target requires confirmed Workspace access and a second Sandbox read, since OpenShell also hides unauthorized Sandboxes as not found. An absent binding is already clean; the Provider delivery copy and TokenService Source remain intact. Stop and failure still need this coordinated order. Attach, detach, and Exec address a Sandbox by name rather than an atomic identity precondition, so concurrent name reuse can affect a replacement ([#5794](https://github.com/ai-openshell/openshell/issues/5794), [#5872](https://github.com/ai-openshell/openshell/issues/5872)).
+For a surviving target, the Sandbox owner must first remove the credential-binding rule from its policy. OpenShell rejects detach while a policy still references the Provider. `removeDeployment` then detaches only this revision's Provider binding and confirms membership is absent. A missing target requires confirmed Workspace access and a second Sandbox read, since OpenShell also hides unauthorized Sandboxes as not found. After detach or confirmed Sandbox removal, the Proxy attempts to delete its owned Provider and profile. OpenShell refuses Provider deletion while another Sandbox is attached; the Proxy treats that failed precondition as shared use and retains the copy. If no Sandbox remains attached, native deletion removes the copy. If attaching a prepared Provider fails, the Proxy also attempts cleanup. Stop retains the TokenService Source, so a later deployment can recreate the copy. Attach, detach, and Exec address a Sandbox by name rather than an atomic identity precondition, so concurrent name reuse can affect a replacement ([#5794](https://github.com/ai-openshell/openshell/issues/5794), [#5872](https://github.com/ai-openshell/openshell/issues/5872)).
 
 ### 5. Retire a source
 
 `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
-DELETE requires exact `credential_source:delete` and rejects blocking Agent, revision, deployment, provisioning, or withdrawal references. Active staged Source withdrawal returns `409` before recording withdrawal state or work. OCC commits `deleting` and retirement intent, then calls TokenService without holding a transaction. TokenService independently removes custody, the Source, and its IAM bindings. OCC records completion separately. Uncertain removal can leave `deleting` for retry; if removal committed, a later audit failure cannot restore the Source.
+DELETE requires exact `credential_source:delete` and rejects blocking Agent, revision, deployment, provisioning, or withdrawal references. Active staged Source withdrawal returns `409` before recording withdrawal state or work. OCC commits `deleting` and retirement intent, then retires any copy through the selected Proxy before TokenService removes the Source and custody. See the [custody flow](token-service-static-custody.md#4-retire-the-source) for ordering and failure handling.
 
 ## Debugging and Verification
 
-Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It covers real Fastify routes, PostgreSQL, Native IAM, TokenService custody, sanitized reads, update and denial audit, retirement, Source POST, and staged Agent admission. The [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts) covers the pointer and activation authorization with controlled Compute. Kubernetes transport is simulated; these tests do not prove native delivery or a model turn. The [custody flow](token-service-static-custody.md#debugging-and-verification) owns detailed Source verification.
+Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It covers real Fastify routes, PostgreSQL, Native IAM, TokenService custody, Source operations, and staged Agent admission. Its Agent Stop case calls the supported route and dispatches the resulting work through Worker to the selected Compute and OpenShell Proxy, with controlled Kubernetes and gRPC transports. The [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts) covers the pointer and activation authorization with controlled Compute. These tests do not prove live Kubernetes or OpenShell operation, native delivery, or a model turn. The [custody flow](token-service-static-custody.md#debugging-and-verification) owns detailed Source verification.
 
 ## Related docs
 
@@ -99,6 +99,8 @@ Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 12:28: Describe native Provider cleanup after failed attachment and Agent teardown. (authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc - 802c9adb9)
 
 - 2026-11-22 11:54: Restore first-use-only Provider delivery and update the Worker resolver source pointer. (01a1ec21-b384-7472-887f-945ae0ab16fc - 2c2c13373)
 - 2026-11-22 08:39: Bind native delivery to the selected OCC TokenService implementation before Gateway access. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - f3a2121af)

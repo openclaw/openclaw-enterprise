@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ComputeCleanupFailedError } from "../../apps/controller/src/drivers/compute/cleanup-failure.ts";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -76,6 +77,15 @@ const configuration = {
   },
   configurationId: "configuration-1",
 } as const;
+const secondConfiguration = {
+  targetRef: {
+    namespaceId: namespace.id,
+    agentId: "agent-2",
+    revisionId: "revision-2",
+    sandboxId: "f1d7e6c5-1b2a-4c3d-8e9f-102938475620",
+  },
+  configurationId: "configuration-2",
+} as const;
 const labels = {
   "app.kubernetes.io/managed-by": "openclaw-enterprise",
   "openclaw.dev/namespace": namespace.id,
@@ -131,6 +141,7 @@ async function fixture(t: TestContext) {
     },
     status: {} as Wire,
   };
+  const sandboxes = [sandbox];
   const state = {
     profile: undefined as Wire | undefined,
     provider: undefined as Provider | undefined,
@@ -138,12 +149,14 @@ async function fixture(t: TestContext) {
     updates: [] as Wire[],
     attaches: [] as Wire[],
     detaches: [] as Wire[],
+    deletes: [] as Wire[],
+    profileDeletes: [] as Wire[],
     sandboxReads: 0,
     sandboxPresent: true,
     workspaceDenied: false,
     sandboxReadMode: "normal" as "normal" | "unavailable-after-detach",
     detachMode: "normal" as "normal" | "permission-denied",
-    forbiddenMutations: [] as string[],
+    deleteMode: "normal" as "normal" | "unavailable" | "other-precondition",
     config: undefined as Wire | undefined,
     policyStatus: undefined as Wire | undefined,
     providerStatus: undefined as Wire | undefined,
@@ -163,21 +176,27 @@ async function fixture(t: TestContext) {
       | "detach-race",
     detachOnNextSandboxRead: false,
   };
+  const liveSandbox = (name: string) =>
+    sandboxes.find(
+      (candidate) =>
+        candidate.metadata.name === name && (candidate !== sandbox || state.sandboxPresent),
+    );
   const methods: Record<string, Handler> = {
-    GetSandbox: () => {
+    GetSandbox: (input) => {
       state.sandboxReads++;
       if (state.sandboxReadMode === "unavailable-after-detach" && state.detaches.length > 0) {
         throw Object.assign(new Error("Gateway unavailable"), { code: grpc.status.UNAVAILABLE });
       }
-      if (!state.sandboxPresent || state.workspaceDenied) {
+      const target = liveSandbox(String(input.name));
+      if (!target || state.workspaceDenied) {
         return undefined;
       }
       if (state.detachOnNextSandboxRead) {
-        sandbox.spec.providers = [];
-        sandbox.metadata.resource_version = "7";
+        target.spec.providers = [];
+        target.metadata.resource_version = "7";
         state.detachOnNextSandboxRead = false;
       }
-      return { sandbox };
+      return { sandbox: target };
     },
     GetWorkspace: () => {
       if (state.workspaceDenied) {
@@ -211,21 +230,25 @@ async function fixture(t: TestContext) {
           code: grpc.status.PERMISSION_DENIED,
         });
       }
+      const target = liveSandbox(String(input.sandbox));
+      assert.ok(target);
       const provider = String(input.provider);
       if (
-        (sandbox.spec.policy && policyUsesProvider(sandbox.spec.policy, provider)) ||
-        (state.config?.policy && policyUsesProvider(state.config.policy, provider))
+        (target.spec.policy && policyUsesProvider(target.spec.policy, provider)) ||
+        (target === sandbox &&
+          state.config?.policy &&
+          policyUsesProvider(state.config.policy, provider))
       ) {
         throw Object.assign(new Error("Provider is still referenced by policy"), {
           code: grpc.status.FAILED_PRECONDITION,
         });
       }
-      const detached = sandbox.spec.providers.includes(provider);
-      sandbox.spec.providers = sandbox.spec.providers.filter((name) => name !== provider);
+      const detached = target.spec.providers.includes(provider);
+      target.spec.providers = target.spec.providers.filter((name) => name !== provider);
       const mutationId = randomUUID();
       if (detached) {
-        sandbox.metadata.resource_version = String(BigInt(sandbox.metadata.resource_version) + 1n);
-        sandbox.spec.provider_attachment_epoch = mutationId;
+        target.metadata.resource_version = String(BigInt(target.metadata.resource_version) + 1n);
+        target.spec.provider_attachment_epoch = mutationId;
       }
       return {
         detached,
@@ -236,9 +259,9 @@ async function fixture(t: TestContext) {
           workspace: namespace.name,
           provider,
           desired: {
-            sandbox_id: sandbox.metadata.id,
-            sandbox: sandbox.metadata.name,
-            attachment_epoch: sandbox.spec.provider_attachment_epoch,
+            sandbox_id: target.metadata.id,
+            sandbox: target.metadata.name,
+            attachment_epoch: target.spec.provider_attachment_epoch,
             provider_env_revision: String(state.config?.provider_env_revision ?? "1"),
             config_revision: String(state.config?.config_revision ?? "1"),
             policy_hash: String(state.config?.policy_hash ?? "b".repeat(64)),
@@ -247,9 +270,43 @@ async function fixture(t: TestContext) {
         },
       };
     },
-    DeleteProvider: () => {
-      state.forbiddenMutations.push("DeleteProvider");
-      assert.fail("target cleanup must not delete a shared Provider");
+    DeleteProvider: (input) => {
+      state.deletes.push(input);
+      if (state.deleteMode === "unavailable") {
+        throw Object.assign(new Error("Gateway unavailable"), { code: grpc.status.UNAVAILABLE });
+      }
+      if (state.deleteMode === "other-precondition") {
+        throw Object.assign(new Error("Workspace mutation is unavailable"), {
+          code: grpc.status.FAILED_PRECONDITION,
+        });
+      }
+      const name = String(input.name);
+      const using = sandboxes
+        .filter(
+          (target) => liveSandbox(target.metadata.name) && target.spec.providers.includes(name),
+        )
+        .map((target) => target.metadata.name)
+        .sort();
+      if (using.length) {
+        // Stock OpenShell rejects deletion under its Workspace mutation guard while any Sandbox
+        // still references the Provider. This controlled transport reproduces that native boundary.
+        throw Object.assign(
+          new Error(`provider '${name}' is attached to sandbox(es): ${using.join(", ")}`),
+          {
+            code: grpc.status.FAILED_PRECONDITION,
+          },
+        );
+      }
+      assert.equal(state.provider?.metadata.name, name);
+      state.provider = undefined;
+      return { outcome: "DELETION_OUTCOME_COMPLETED" };
+    },
+    DeleteProviderProfile: (input) => {
+      state.profileDeletes.push(input);
+      assert.equal(state.provider, undefined);
+      assert.equal(state.profile?.id, input.id);
+      state.profile = undefined;
+      return { outcome: "DELETION_OUTCOME_COMPLETED" };
     },
     GetProviderProfile: () => state.profile && { profile: state.profile },
     GetSandboxConfig: () => state.config,
@@ -284,7 +341,7 @@ async function fixture(t: TestContext) {
       state.provider = {
         metadata: {
           ...metadata,
-          id: "f1d7e6c5-1b2a-4c3d-8e9f-102938475602",
+          id: state.creates.length === 1 ? "f1d7e6c5-1b2a-4c3d-8e9f-102938475602" : randomUUID(),
           name: String(metadata.name),
           workspace: namespace.name,
           resource_version: "7",
@@ -318,14 +375,16 @@ async function fixture(t: TestContext) {
               : "upstream-private-detail",
         });
       }
+      const target = liveSandbox(String(input.sandbox));
+      assert.ok(target);
       if (state.attachMode === "cas-race") {
-        sandbox.metadata.resource_version = "6";
+        target.metadata.resource_version = "6";
       }
       if (state.attachMode === "incarnation-race") {
         // Native attach resolves the name again, so a new ID can have the same version.
-        sandbox.metadata.id = "f1d7e6c5-1b2a-4c3d-8e9f-102938475603";
+        target.metadata.id = "f1d7e6c5-1b2a-4c3d-8e9f-102938475603";
       }
-      if (input.expected_resource_version !== sandbox.metadata.resource_version) {
+      if (input.expected_resource_version !== target.metadata.resource_version) {
         throw Object.assign(new Error("resource version changed"), {
           code: grpc.status.ABORTED,
         });
@@ -335,9 +394,9 @@ async function fixture(t: TestContext) {
       const providerId = state.provider.metadata.id;
       const providerResourceVersion = state.provider.metadata.resource_version;
       const mutationId = randomUUID();
-      sandbox.spec.providers.push(provider);
-      sandbox.spec.provider_attachment_epoch = mutationId;
-      sandbox.metadata.resource_version = "6";
+      target.spec.providers.push(provider);
+      target.spec.provider_attachment_epoch = mutationId;
+      target.metadata.resource_version = String(BigInt(target.metadata.resource_version) + 1n);
       if (state.attachMode === "provider-race") {
         state.provider.metadata.resource_version = "8";
       }
@@ -348,8 +407,8 @@ async function fixture(t: TestContext) {
         workspace: namespace.name,
         kind: "PROVIDER_MUTATION_KIND_ATTACH",
         desired: {
-          sandbox_id: sandbox.metadata.id,
-          sandbox: sandbox.metadata.name,
+          sandbox_id: target.metadata.id,
+          sandbox: target.metadata.name,
           attachment_epoch:
             state.attachMode === "receipt-epoch-mismatch" ? randomUUID() : mutationId,
           provider_id:
@@ -364,7 +423,7 @@ async function fixture(t: TestContext) {
         },
       };
       return {
-        sandbox,
+        sandbox: target,
         attached: true,
         ...(state.attachMode === "missing-receipt" ? {} : { receipt }),
       };
@@ -433,7 +492,12 @@ async function fixture(t: TestContext) {
     implementation: "openshell",
     harnessResource: ({ revision }: { revision: { agentId: string; id: string } }) => ({
       namespaceName: namespace.name,
-      resourceName: sandbox.metadata.name,
+      resourceName:
+        sandboxes.find(
+          (candidate) =>
+            candidate.metadata.annotations["openclaw.dev/agent-id"] === revision.agentId &&
+            candidate.metadata.annotations["openclaw.dev/revision-id"] === revision.id,
+        )?.metadata.name ?? sandbox.metadata.name,
       agentId: revision.agentId,
       revisionId: revision.id,
     }),
@@ -630,6 +694,7 @@ async function fixture(t: TestContext) {
     createProxy,
     context,
     sandbox,
+    sandboxes,
     state,
     suppliedBinding,
     configure,
@@ -637,6 +702,38 @@ async function fixture(t: TestContext) {
     removeCredentialRoute,
     resolutions: () => resolutions,
   };
+}
+
+function addSecondSandboxTarget(f: Awaited<ReturnType<typeof fixture>>) {
+  const target = secondConfiguration;
+  const sandbox = structuredClone(f.sandbox);
+  Object.assign(sandbox.metadata, {
+    id: target.targetRef.sandboxId,
+    name: "second-held-sandbox",
+    resource_version: "5",
+  });
+  Object.assign(sandbox.metadata.labels, {
+    "openclaw.dev/agent": target.targetRef.agentId,
+    "openclaw.dev/revision": target.targetRef.revisionId,
+  });
+  Object.assign(sandbox.metadata.annotations, {
+    "openclaw.dev/agent-id": target.targetRef.agentId,
+    "openclaw.dev/revision-id": target.targetRef.revisionId,
+    "openclaw.dev/configuration-id": target.configurationId,
+  });
+  sandbox.spec.providers = [];
+  sandbox.spec.provider_attachment_epoch = "";
+  f.sandboxes.push(sandbox);
+  const context = {
+    ...f.context,
+    revision: {
+      ...f.context.revision,
+      agentId: target.targetRef.agentId,
+      id: target.targetRef.revisionId,
+      configurationId: target.configurationId,
+    },
+  } satisfies CredentialDeploymentContext;
+  return { sandbox, context };
 }
 
 test("staged OpenShell Proxy accepts OCC TokenService and reuses its Provider without resolving again", async (t) => {
@@ -676,7 +773,7 @@ test("staged OpenShell Proxy rejects an unsupported TokenService before resolvin
   });
 });
 
-test("staged OpenShell Proxy reuses a retained Provider for the next deployment without resolving or updating it", async (t) => {
+test("staged OpenShell Proxy creates a fresh Provider for the next deployment after last detach", async (t) => {
   const f = await fixture(t);
   await f.configure();
   f.observeServing();
@@ -687,6 +784,7 @@ test("staged OpenShell Proxy reuses a retained Provider for the next deployment 
   f.removeCredentialRoute();
   await f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef });
   assert.deepEqual(f.sandbox.spec.providers, []);
+  assert.equal(f.state.provider, undefined);
   const nextConfiguration = {
     targetRef: {
       ...configuration.targetRef,
@@ -725,20 +823,19 @@ test("staged OpenShell Proxy reuses a retained Provider for the next deployment 
 
   await f.proxy.configureDeployment(nextContext, {
     ...nextConfiguration,
-    bindings: [
-      {
-        binding,
-        resolveCredential: async () => {
-          assert.fail("an existing Provider must not resolve Source material");
-        },
-      },
-    ],
+    bindings: [f.suppliedBinding],
     injectionPolicies: [injection],
   });
-  assert.equal(f.resolutions(), 1);
-  assert.equal(f.state.creates.length, 1);
+  assert.equal(f.resolutions(), 2);
+  assert.equal(f.state.creates.length, 2);
   assert.equal(f.state.updates.length, 0);
-  assert.deepEqual(f.state.provider, originalProvider);
+  const recreated = await f.client.getProvider(
+    namespace.name,
+    originalProvider.metadata.name,
+    t.signal,
+  );
+  assert.ok(recreated);
+  assert.notEqual(recreated.id, originalProvider.metadata.id);
   assert.deepEqual(f.sandbox.spec.providers, [originalProvider.metadata.name]);
 
   // The new target is not ready until its supervisor installs the admitted Provider environment.
@@ -903,6 +1000,10 @@ test("staged OpenShell Proxy refuses attachment and Provider races", async (t) =
       await assert.rejects(f.configure(), DependencyUnavailableError);
       assert.equal(f.state.attaches[0]?.expected_resource_version, "5");
       assert.equal(f.resolutions(), 1);
+      if (mode === "cas-race") {
+        assert.equal(f.state.provider, undefined);
+        assert.equal(f.state.profile, undefined);
+      }
       if (mode === "receipt-provider-id-mismatch") {
         assert.equal(f.state.provider?.metadata.id, "f1d7e6c5-1b2a-4c3d-8e9f-102938475602");
         assert.equal(f.state.provider?.metadata.resource_version, "7");
@@ -951,7 +1052,7 @@ test("staged OpenShell Proxy preserves typed admission refusals without exposing
           f.client.attachSandboxProvider(
             namespace.name,
             f.sandbox.metadata.name,
-            f.state.provider!.metadata.name,
+            String(f.state.attaches[0]!.provider),
             child.signal,
             {
               expectedResourceVersion: f.sandbox.metadata.resource_version,
@@ -1140,15 +1241,15 @@ test("staged OpenShell Proxy refuses a loaded policy outside the admitted reques
       assert.equal(f.state.detaches.length, 1);
       assert.equal(f.state.detaches[0]?.provider, provider!.metadata.name);
       assert.deepEqual(f.sandbox.spec.providers, []);
-      assert.deepEqual(f.state.provider, provider);
-      assert.deepEqual(f.state.forbiddenMutations, []);
+      assert.equal(f.state.provider, undefined);
+      assert.equal(f.state.profile, undefined);
     },
   );
   assert.equal(f.resolutions(), 1);
   assert.equal(f.state.updates.length, 0);
 });
 
-test("staged OpenShell Proxy detaches a target binding without deleting its shared Provider", async (t) => {
+test("staged OpenShell Proxy removes the last target binding and its delivery copy", async (t) => {
   const f = await fixture(t);
   const unboundDeployment = {
     namespaceId: configuration.targetRef.namespaceId,
@@ -1194,7 +1295,6 @@ test("staged OpenShell Proxy detaches a target binding without deleting its shar
   currentProvider.metadata.resource_version = String(
     BigInt(currentProvider.metadata.resource_version) + 1n,
   );
-  const restoredProvider = structuredClone(currentProvider);
 
   const permanentGatewayRefusal = (error: unknown) => {
     assert.ok(error instanceof SandboxGatewayUnauthorizedError);
@@ -1228,16 +1328,116 @@ test("staged OpenShell Proxy detaches a target binding without deleting its shar
   assert.equal(f.state.statusReads.length, 1);
   assert.deepEqual(f.sandbox.spec.providers, []);
 
-  // Repeating cleanup for an absent binding or target must not mutate the shared Source copy.
+  assert.equal(f.state.provider, undefined);
+  assert.equal(f.state.profile, undefined);
+  // Repeating cleanup for an absent binding or target does not resolve or recreate the copy.
   await remove();
-  assert.deepEqual(f.state.provider, restoredProvider);
   f.state.sandboxPresent = false;
   await remove();
 
   assert.equal(f.resolutions(), 1);
   assert.equal(f.state.detaches.length, 3);
-  assert.deepEqual(f.state.forbiddenMutations, []);
+  assert.equal(f.state.deletes.length, 1);
+  assert.equal(f.state.profileDeletes.length, 1);
   assert.equal(f.state.updates.length, 0);
+});
+
+test("staged OpenShell Proxy retains a shared copy until the last Sandbox unbinds", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  const original = structuredClone(f.state.provider!);
+  const { sandbox: second, context: secondContext } = addSecondSandboxTarget(f);
+  await f.proxy.configureDeployment(secondContext, {
+    ...secondConfiguration,
+    bindings: [f.suppliedBinding],
+    injectionPolicies: [injection],
+  });
+  assert.equal(f.state.creates.length, 1);
+  assert.deepEqual(second.spec.providers, [original.metadata.name]);
+
+  // The native deletion guard preserves the same Provider and the other Sandbox's attachment.
+  await f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef });
+  assert.deepEqual(f.sandbox.spec.providers, []);
+  assert.deepEqual(second.spec.providers, [original.metadata.name]);
+  assert.deepEqual(f.state.provider, original);
+  assert.ok(f.state.profile);
+  assert.equal(f.state.profileDeletes.length, 0);
+  await assert.rejects(f.proxy.retireSource(namespace, binding.sourceRef, t.signal), {
+    code: grpc.status.FAILED_PRECONDITION,
+    details: `provider '${original.metadata.name}' is attached to sandbox(es): ${second.metadata.name}`,
+  });
+  assert.deepEqual(second.spec.providers, [original.metadata.name]);
+
+  await f.proxy.removeDeployment(secondContext, { targetRef: secondConfiguration.targetRef });
+  assert.deepEqual(second.spec.providers, []);
+  assert.equal(f.state.provider, undefined);
+  assert.equal(f.state.profile, undefined);
+});
+
+test("failed native attachment retains a Provider still used by another Sandbox", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  const provider = structuredClone(f.state.provider!);
+  const second = addSecondSandboxTarget(f);
+  f.state.attachMode = "cas-race";
+  await assert.rejects(
+    f.proxy.configureDeployment(second.context, {
+      ...secondConfiguration,
+      bindings: [f.suppliedBinding],
+      injectionPolicies: [injection],
+    }),
+    DependencyUnavailableError,
+  );
+  assert.equal(f.state.deletes.length, 1);
+  assert.deepEqual(f.state.provider, provider);
+  assert.deepEqual(f.sandbox.spec.providers, [provider.metadata.name]);
+  assert.deepEqual(second.sandbox.spec.providers, []);
+  assert.equal(f.state.profileDeletes.length, 0);
+});
+
+test("failed native attachment reports unconfirmed cleanup and retains the copy", async (t) => {
+  const f = await fixture(t);
+  f.state.attachMode = "cas-race";
+  f.state.deleteMode = "unavailable";
+  await assert.rejects(f.configure(), (error: unknown) => {
+    assert.ok(error instanceof ComputeCleanupFailedError);
+    assert.ok(error.primary instanceof DependencyUnavailableError);
+    assert.equal(error.cleanupFailures.length, 1);
+    assert.ok(error.cleanupFailures[0] instanceof Error);
+    return true;
+  });
+  assert.deepEqual(f.sandbox.spec.providers, []);
+  assert.ok(f.state.provider);
+  assert.ok(f.state.profile);
+
+  assert.equal(f.resolutions(), 1);
+});
+
+test("Source retirement refuses a mixed-owned Provider before deleting native resources", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.state.provider!.metadata.labels["openclaw.dev/token-service"] = "native";
+  await assert.rejects(
+    f.proxy.retireSource(namespace, binding.sourceRef, t.signal),
+    DependencyUnavailableError,
+  );
+  assert.equal(f.state.deletes.length, 0);
+  assert.equal(f.state.profileDeletes.length, 0);
+  assert.ok(f.state.provider);
+});
+
+test("deployment cleanup does not swallow an unrelated native failed precondition", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.state.deleteMode = "other-precondition";
+  await assert.rejects(
+    f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef }),
+    DependencyUnavailableError,
+  );
+  assert.deepEqual(f.sandbox.spec.providers, []);
+  assert.ok(f.state.provider);
+  assert.ok(f.state.profile);
+  assert.equal(f.state.profileDeletes.length, 0);
 });
 
 test("staged OpenShell Proxy reports failure when target membership cannot be confirmed", async (t) => {
@@ -1251,5 +1451,5 @@ test("staged OpenShell Proxy reports failure when target membership cannot be co
   assert.equal(f.state.detaches.length, 1);
   assert.deepEqual(f.sandbox.spec.providers, []);
   assert.equal(f.state.provider?.config.oce_source_version, "source-v1");
-  assert.deepEqual(f.state.forbiddenMutations, []);
+  assert.deepEqual(f.state.deletes, []);
 });

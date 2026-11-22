@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+
+import { status } from "@grpc/grpc-js";
 import type {
   DeploymentCredentialBinding,
   CredentialInjectionPolicy,
@@ -6,6 +8,7 @@ import type {
   CredentialDeploymentRef,
   DeploymentRequestMatch,
   CredentialDeploymentContext,
+  CredentialSourceReference,
   ResolvedCredential,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
@@ -28,6 +31,7 @@ import {
   openShellNetworkRouteMayOverlap,
   sameOpenShellPolicy,
 } from "../sandbox/openshell-policy.ts";
+import { statusCode } from "../sandbox/openshell-gateway-errors.ts";
 
 const NAMESPACE_ID = "openclaw.dev/namespace-id";
 const DELIVERY_OWNER = "openclaw.dev/credential-proxy-delivery";
@@ -56,6 +60,15 @@ function refuse(): never {
   throw new OpenShellCredentialDeliveryRefusedError();
 }
 
+function deliveryOwnership(source: CredentialSourceReference): Record<string, string> {
+  return {
+    [MANAGED_BY_LABEL]: MANAGED_BY,
+    [SOURCE_ID_LABEL]: source.id,
+    [NAMESPACE_ID]: source.namespaceId,
+    [DELIVERY_OWNER]: STATIC_DELIVERY,
+  };
+}
+
 function profileFor(binding: DeploymentCredentialBinding): OpenShellProviderProfile {
   if (
     binding.consumer.kind !== "model" ||
@@ -82,12 +95,7 @@ function profileFor(binding: DeploymentCredentialBinding): OpenShellProviderProf
     endpoints: [],
     binaries: [],
     inferenceCapable: false,
-    annotations: {
-      [MANAGED_BY_LABEL]: MANAGED_BY,
-      [SOURCE_ID_LABEL]: binding.sourceRef.id,
-      [NAMESPACE_ID]: binding.sourceRef.namespaceId,
-      [DELIVERY_OWNER]: STATIC_DELIVERY,
-    },
+    annotations: deliveryOwnership(binding.sourceRef),
   };
 }
 
@@ -126,16 +134,16 @@ function checkProfile(
 
 function ownsDeliveryProvider(
   provider: OpenShellProviderResponse | undefined,
-  binding: DeploymentCredentialBinding,
+  source: CredentialSourceReference,
   workspace: string,
 ): provider is OpenShellProviderResponse {
   return (
     !!provider &&
-    provider.name === openShellProviderName(binding.sourceRef.id) &&
+    provider.name === openShellProviderName(source.id) &&
     provider.workspace === workspace &&
     provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
-    provider.labels[SOURCE_ID_LABEL] === binding.sourceRef.id &&
-    provider.labels[NAMESPACE_ID] === binding.sourceRef.namespaceId &&
+    provider.labels[SOURCE_ID_LABEL] === source.id &&
+    provider.labels[NAMESPACE_ID] === source.namespaceId &&
     provider.labels[DELIVERY_OWNER] === STATIC_DELIVERY &&
     provider.labels[TOKEN_SERVICE_OWNER] === undefined
   );
@@ -151,7 +159,7 @@ function checkProvider(
   const version = provider?.config[SOURCE_VERSION];
   // Native TokenService sources can use the same source-derived name. Mixed ownership is unsafe.
   if (
-    !ownsDeliveryProvider(provider, binding, workspace) ||
+    !ownsDeliveryProvider(provider, binding.sourceRef, workspace) ||
     provider.type !== openShellProviderName(binding.sourceRef.id) ||
     provider.profileWorkspace !== workspace ||
     !provider.id ||
@@ -184,10 +192,71 @@ export async function readOwnedOpenShellPushedProvider(input: {
     openShellProviderName(input.binding.sourceRef.id),
     input.signal,
   );
-  if (!ownsDeliveryProvider(provider, input.binding, input.workspace)) {
+  if (!ownsDeliveryProvider(provider, input.binding.sourceRef, input.workspace)) {
     refuse();
   }
   return provider;
+}
+
+/** Retire only the Proxy-owned copy and profile; OpenShell refuses a Provider still in use. */
+export async function retireOccTokenServiceProviderCopy(input: {
+  readonly client: Pick<
+    OpenShellGatewayClient,
+    | "getWorkspace"
+    | "getProvider"
+    | "getProviderProfile"
+    | "deleteProvider"
+    | "deleteProviderProfile"
+  >;
+  readonly workspace: string;
+  readonly source: CredentialSourceReference;
+  readonly signal: AbortSignal;
+  readonly retainIfAttached?: boolean;
+}): Promise<void> {
+  const { client, workspace, source, signal } = input;
+  const owner = await client.getWorkspace(workspace, signal);
+  if (!owner) {
+    return;
+  }
+  if (
+    owner.name !== workspace ||
+    !owner.id ||
+    owner.labels[MANAGED_BY_LABEL] !== MANAGED_BY ||
+    owner.labels[NAMESPACE_ID] !== source.namespaceId
+  ) {
+    refuse();
+  }
+  const name = openShellProviderName(source.id);
+  const provider = await client.getProvider(workspace, name, signal);
+  const profile = await client.getProviderProfile(workspace, name, signal);
+  if (
+    (provider && !ownsDeliveryProvider(provider, source, workspace)) ||
+    (profile &&
+      (profile.id !== name || !isDeepStrictEqual(profile.annotations, deliveryOwnership(source))))
+  ) {
+    refuse();
+  }
+  if (provider) {
+    try {
+      await client.deleteProvider(workspace, name, signal);
+    } catch (error) {
+      const details = asRecord(error)?.details;
+      const attached = `provider '${name}' is attached to sandbox(es): `;
+      if (
+        input.retainIfAttached &&
+        statusCode(error) === status.FAILED_PRECONDITION &&
+        typeof details === "string" &&
+        details.startsWith(attached) &&
+        details.slice(attached.length).trim().length > 0
+      ) {
+        return;
+      }
+      throw error;
+    }
+  }
+  if (profile) {
+    await client.deleteProviderProfile(workspace, name, signal);
+  }
 }
 
 /** Reuse the Proxy's Provider copy, or initialize it from an authorized OCC TokenService Source. */
@@ -258,12 +327,7 @@ export async function prepareOccTokenServiceProviderCopy(input: {
     workspace,
     name: profile.id,
     type: profile.id,
-    labels: {
-      [MANAGED_BY_LABEL]: MANAGED_BY,
-      [SOURCE_ID_LABEL]: binding.sourceRef.id,
-      [NAMESPACE_ID]: input.namespaceId,
-      [DELIVERY_OWNER]: STATIC_DELIVERY,
-    },
+    labels: deliveryOwnership(binding.sourceRef),
     credentials: { [binding.projection.environment]: resolved.credential },
     config: { [SOURCE_VERSION]: resolved.version },
     ...(resolved.expiresAt && {
