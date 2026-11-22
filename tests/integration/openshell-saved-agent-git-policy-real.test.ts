@@ -773,16 +773,35 @@ async function refuseClassicToken(
   const patchedAt = Date.now();
   await patchTokenSecret(fixture, credential.classic);
   let logs = "";
-  const refused = await observeUntil(
-    "TOKEN_CLASSIC_REFUSED_LOGGED",
-    t.signal,
-    async () => {
-      logs = await workerLogs();
-      const found = refusals(logs);
-      return found.length > 0 ? found : undefined;
-    },
-    Math.max(0, observeUntilMs - Date.now()),
-  );
+  const waitMs = Math.max(0, observeUntilMs - Date.now());
+  let refused: ReturnType<typeof refusals>;
+  try {
+    refused = await observeUntil(
+      "TOKEN_CLASSIC_REFUSED_LOGGED",
+      t.signal,
+      async () => {
+        logs = await workerLogs();
+        const found = refusals(logs);
+        return found.length > 0 ? found : undefined;
+      },
+      waitMs,
+    );
+  } catch (error) {
+    // Without a refusal line, say how long the Worker had and what its log carries instead.
+    t.diagnostic(
+      JSON.stringify({
+        event: "saved-git-token-classic-refusal-missing",
+        waitedSeconds: Math.round((Date.now() - patchedAt) / 1000),
+        waitBudgetSeconds: Math.round(waitMs / 1000),
+        workerLogLines: logs.split("\n").length,
+        workerCodes: [
+          ...new Set(logs.match(/PREPARED_GITHUB_[A-Z_]+|OPENSHELL_GIT_[A-Z_]+/gu) ?? []),
+        ],
+        providerRevisionChanged: (await providerRevision()) !== revisionBefore,
+      }),
+    );
+    throw error;
+  }
   const loggedSeconds = (Date.now() - patchedAt) / 1000;
   const revisionAtRefusal = await providerRevision();
   const repository = "https://github.com/fixture/a.git";
@@ -1768,11 +1787,16 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
     !app,
   );
   assert.ok(successor && successorProvider && replacementIndex !== undefined);
-  assert.notEqual(
-    permissive.index,
-    originalIndex,
-    "restricted deployment must issue its own credential",
-  );
+  if (app) {
+    assert.notEqual(
+      permissive.index,
+      originalIndex,
+      "restricted deployment must issue its own credential",
+    );
+  } else {
+    // Every deployment lends the one Secret value: nothing is issued per deployment.
+    assert.equal(permissive.index, originalIndex, "TOKEN_RESTRICTED_SAME_CREDENTIAL");
+  }
   // [] withdraws desired authority, but this Driver cannot launch deny-all.
   // An unrelated save that omits the field must retain the explicit list.
   const beforeClear = await readPolicy();
