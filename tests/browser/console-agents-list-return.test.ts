@@ -1285,9 +1285,9 @@ void test("The Agents list fits labelled rows on split desktops and phones and s
   }
 });
 
-// A name the browser cannot wrap sets the desktop table's width unless it is marked to break
-// anywhere (finding 1955). Each row is a break point Chromium was measured to use (finding 1982),
-// and the test measures it again: each name is marked exactly when the longest run the browser
+// The marker caps the desktop width of long unbroken names at the ID width (finding 1955).
+// Each case exercises a break point Chromium was measured to use (finding 1982).
+// The test measures it again: each name is marked exactly when the longest run the browser
 // keeps on one line (spaces aside) has 21 or more characters. A hyphen-minus between ASCII digits is
 // a break ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is
 // not, nor is a hyphen-minus before most other digits or a dash that starts a word. A run of em dashes breaks only at its
