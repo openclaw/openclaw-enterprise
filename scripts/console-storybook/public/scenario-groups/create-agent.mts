@@ -462,9 +462,9 @@ export const createAgentFormScenarios = {
     description:
       "The Configuration saves and the Agent save is refused because the administrator lacks Secret operate.",
     steps: [
-      "Read the refusal, the Secret operate requirement, and the saved Configuration ID.",
+      "Read the refusal for the selected model Secret and the saved Configuration ID.",
       "Select Cancel and read what remains saved. Dismiss the confirmation to keep the draft.",
-      "Select Create Agent again. The fixture now allows the Agent save and reuses the Configuration.",
+      "Select Create Agent again to simulate a retry after an access change. The Agent save reuses the Configuration.",
     ],
   },
   createRepositoryNotConfigured: {

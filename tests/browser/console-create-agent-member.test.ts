@@ -9,7 +9,7 @@ import type { Page, Route } from "playwright";
 
 import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import {
-  type AgentResponse,
+  AgentResponse,
   type ConfigurationResponse,
   NamespaceListResponse,
   type NamespaceWire,
@@ -520,22 +520,20 @@ for (const persona of ["member", "administrator"] as const) {
     assert.ok(error.message.startsWith(`Not authorized: this needs ${requirement}.`));
     const alert = page
       .getByRole("alert")
-      .filter({ hasText: requirement })
+      .filter({ hasText: "Check Secret operate for the selected model Secret." })
       .or(page.getByRole("alert").filter({ hasText: "Your access does not include this action." }));
     await alert.waitFor();
     const text = await alert.innerText();
     assert.match(text, /^Agent creation was refused\./);
-    assert.ok(text.includes(requirement), text);
-    assert.ok(
-      text.includes("Once access is restored, select Create Agent again in this draft."),
-      text,
-    );
+    assert.match(text, /Check Secret operate for the selected model Secret\./);
+    assert.match(text, /If access changes, select Create Agent again here\./);
+    assert.ok(!text.includes(secret.id), text);
     assert.ok(meta?.requestId && text.includes(meta.requestId));
     if (member) {
-      assert.match(text, /Ask an Installation administrator to grant it/);
+      assert.match(text, /Ask an Installation administrator to check your access/);
     } else {
-      assert.match(text, /Check the grant and any applicable restrictions/);
-      assert.doesNotMatch(text, /Ask an Installation administrator/);
+      assert.match(text, /Check with whoever manages IAM whether this access is intended/);
+      assert.doesNotMatch(text, /Installation administrator|Restriction/);
     }
     await page
       .getByRole("status")
@@ -563,6 +561,7 @@ for (const persona of ["member", "administrator"] as const) {
       assert.ok(restriction);
       liftRestriction(fixture.policy, restriction);
     }
+    assert.deepEqual((await fixture.request("GET", scope + "/agents")).data, []);
     const agentSaved = responseTo(page, "POST", agentUrl);
     await submit.click();
     const agentResponse = await agentSaved;
@@ -583,44 +582,146 @@ for (const persona of ["member", "administrator"] as const) {
   });
 }
 
-test("an unrecognized Agent denial stays generic and an uncertain retry keeps the draft locked", async (t) => {
+test("untrusted Agent denials stay generic and an interrupted retry keeps the draft locked", async (t) => {
   const { fixture, namespace, secret } = await setup(t);
-  const member = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
-  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
-  const unrelatedText = "Not authorized: this needs Secret operate on an unrelated resource.";
-  await page.route(
-    agentUrl,
-    (route) => route.fulfill(apiErrorResponse(403, "FORBIDDEN", unrelatedText)),
-    { times: 1 },
-  );
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
-  await fillDefaultPreset(page, secret, "Member Agent");
+  const scope = `/namespaces/${namespace.id}`;
+  const agentUrl = fixture.origin + scope + "/agents";
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await fillDefaultPreset(page, secret, "Restricted Agent");
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
-  const refused = responseTo(page, "POST", agentUrl);
-  await submit.click();
-  assert.equal((await refused).status(), 403);
-  const refusal = page
-    .getByRole("alert")
-    .filter({ hasText: "Your access does not include this action." });
-  await refusal.waitFor();
-  assert.doesNotMatch(await refusal.innerText(), /Secret operate|unrelated resource/);
-  await waitForEnabled(submit);
+  const alert = page.getByRole("alert").filter({ hasText: "Agent creation was refused." });
+  const configurationSaved = responseTo(page, "POST", fixture.origin + scope + "/configurations");
+  const unrelatedId = "sec_00000000-0000-4000-8000-000000000099";
+  // A canonical sentence about a different Secret and a sentence with extra instructions
+  // about the selected Secret must both lose their untrusted specificity.
+  // An unnamed denial can identify the permission, but cannot identify the Secret.
+  for (const { message, expected, excluded } of [
+    {
+      message: `Not authorized: this needs Secret operate on Secret ${unrelatedId}. Ask an Installation administrator to grant it.`,
+      expected: /Your access does not include this action/,
+      excluded: /Secret operate|Create Agent again/,
+    },
+    {
+      message: `Not authorized: this needs Secret operate on Secret ${secret.id}. Ask an Installation administrator to grant it. Lift the Restriction.`,
+      expected: /Your access does not include this action/,
+      excluded: /Secret operate|Create Agent again/,
+    },
+    {
+      message:
+        "Not authorized: this needs Secret operate on a Secret this request uses. Ask an Installation administrator to grant it.",
+      expected: /Check Secret operate for the Secrets this request uses/,
+      excluded: /selected model Secret/,
+    },
+  ]) {
+    await page.route(
+      agentUrl,
+      (route) => route.fulfill(apiErrorResponse(403, "FORBIDDEN", message)),
+      { times: 1 },
+    );
+    const refused = responseTo(page, "POST", agentUrl);
+    await submit.click();
+    const refusal = await refused;
+    assert.equal(refusal.status(), 403);
+    const { meta }: ErrorResponse = await refusal.json();
+    assert.ok(meta?.requestId);
+    const currentAlert = alert.filter({ hasText: meta.requestId });
+    await currentAlert.waitFor();
+    const text = await currentAlert.innerText();
+    assert.match(text, expected);
+    assert.match(text, /Check with whoever manages IAM whether this access is intended/);
+    assert.doesNotMatch(text, excluded);
+    assert.doesNotMatch(text, /Installation administrator|Restriction/);
+    assert.ok(!text.includes(unrelatedId) && !text.includes(secret.id), text);
+    await waitForEnabled(submit);
+  }
+  const configurationResponse = await configurationSaved;
+  assert.equal(configurationResponse.status(), 201);
+  const { data: configuration }: ConfigurationResponse = await configurationResponse.json();
+  await page
+    .getByRole("status")
+    .filter({ hasText: `Configuration saved: ${configuration.id}.` })
+    .waitFor();
 
-  // Simulate losing the answer to the next Agent POST. The earlier known refusal no longer
-  // establishes that the same draft is safe to retry.
+  // Losing the next Agent response locks the draft even after earlier definitive refusals.
   await page.route(agentUrl, (route) => route.abort("failed"), { times: 1 });
   await submit.click();
-  await page.getByRole("alert").filter({ hasText: "Outcome unknown." }).waitFor();
+  const unknown = page.getByRole("alert").filter({ hasText: "Outcome unknown." });
+  await unknown.waitFor();
   assert.equal(await submit.isDisabled(), true);
-  assert.equal(await refusal.isVisible(), false);
+  assert.equal(await alert.isVisible(), false);
+  assert.doesNotMatch(await unknown.innerText(), /Create Agent again|No Agent was created/);
   const confirmation = page.waitForEvent("dialog");
   const cancelClick = page.getByRole("button", { name: "Cancel", exact: true }).click();
   const dialog = await confirmation;
   const warning = dialog.message();
   await dialog.dismiss();
   await cancelClick;
-  assert.equal(warning, "Discard this draft?");
+  assert.equal(
+    warning,
+    `Discard this draft? Configuration ${configuration.id} will remain saved. A new draft can save another Configuration.`,
+  );
+  assert.equal(await submit.isDisabled(), true);
+});
+
+test("a malformed Agent success response leaves creation locked and names the Configuration on Cancel", async (t) => {
+  const { fixture, namespace, secret } = await setup(t);
+  const { page } = await newPage(t, fixture);
+  const scope = `/namespaces/${namespace.id}`;
+  const agentUrl = fixture.origin + scope + "/agents";
+  // The Controller really saves the Agent. Drop its identity from the success response so
+  // the form cannot confirm the write and must offer neither another POST nor credential grants.
+  await page.route(
+    agentUrl,
+    (route) =>
+      fulfillPatchedJson(route, AgentResponse, ({ data, ...body }) => ({
+        ...body,
+        data: { ...data, id: null },
+      })),
+    { times: 1 },
+  );
+  const answers = apiResponses(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await fillDefaultPreset(page, secret, "Unconfirmed Agent");
+  const submit = page.getByRole("button", { name: "Create Agent", exact: true });
+  const configurationSaved = responseTo(page, "POST", fixture.origin + scope + "/configurations");
+  const agentSaved = responseTo(page, "POST", agentUrl);
+  await submit.click();
+  const configurationResponse = await configurationSaved;
+  assert.equal(configurationResponse.status(), 201);
+  const { data: configuration }: ConfigurationResponse = await configurationResponse.json();
+  const agentResponse = await agentSaved;
+  assert.equal(agentResponse.status(), 201);
+  assert.equal((await agentResponse.json()).data.id, null);
+  const unknown = page.getByRole("alert").filter({ hasText: "Outcome unknown." });
+  await unknown.waitFor();
+  assert.equal(await submit.isDisabled(), true);
+  assert.doesNotMatch(await unknown.innerText(), /Create Agent again|No Agent was created/);
+  const confirmation = page.waitForEvent("dialog");
+  const cancelClick = page.getByRole("button", { name: "Cancel", exact: true }).click();
+  const dialog = await confirmation;
+  assert.equal(
+    dialog.message(),
+    `Discard this draft? Configuration ${configuration.id} will remain saved. A new draft can save another Configuration.`,
+  );
+  await dialog.dismiss();
+  await cancelClick;
+  assert.equal(await submit.isDisabled(), true);
+  const inventory = await fixture.request("GET", scope + "/agents");
+  assert.equal(inventory.status, 200);
+  const agents = inventory.data as { name: string; configurationId: string }[];
+  assert.deepEqual(
+    agents.map(({ name, configurationId }) => ({ name, configurationId })),
+    [{ name: "Unconfirmed Agent", configurationId: configuration.id }],
+  );
+  assert.deepEqual(
+    answers.filter((answer) => answer.startsWith(`POST ${scope}/`)),
+    [
+      `POST ${scope}/agents/validate 204`,
+      `POST ${scope}/configurations 201`,
+      `POST ${scope}/agents 201`,
+    ],
+  );
 });
 
 test("a temporary Installation read failure keeps an administrator off the member path", async (t) => {
