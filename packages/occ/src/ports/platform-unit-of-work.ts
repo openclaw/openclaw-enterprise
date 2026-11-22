@@ -180,7 +180,6 @@ export function bindPlatformUnitOfWork(
       "createCredentialSource",
       "markCredentialSourceDeleting",
       "markCredentialSourceReady",
-      "setCredentialSourceRegistrationDispatch",
       "updateCredentialSourceConfig",
       "replaceCredentialSourceSecrets",
       "recordEgressInstallation",

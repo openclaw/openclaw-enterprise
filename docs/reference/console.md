@@ -256,6 +256,8 @@ the [workspace file API](agents.md#workspace-files), within its 16 KiB UTF-8 and
 Loading requires Agent `read`; saving requires `operate`. The last writer wins.
 Reload replaces unsaved edits. The editor uses LF: loading a CRLF file does not
 enable Save or rewrite it, and saving an edit writes LF.
+When you reopen a draft, the editor warns if the file changed since editing began.
+Matching the latest file contents clears the warning and disables Save.
 
 A failed write keeps the editor contents. An unknown outcome disables Save until
 Reload confirms the file or its absence. Review what loaded, or enter new content

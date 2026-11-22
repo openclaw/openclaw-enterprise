@@ -19,7 +19,8 @@ Results gate neither merge nor publication.
 | Trigger                                            | Jobs selected                                                                     |
 | -------------------------------------------------- | --------------------------------------------------------------------------------- |
 | Schedule on `main`, every 6 hours at minute 17 UTC | All four groups                                                                   |
-| Manual run of `qa-advisory.yml` on `main`          | All four groups                                                                   |
+| Manual on `main` with blank `test_file` or `all`   | All four groups                                                                   |
+| Manual on `main` with an exact `test_file`         | Jobs that run that file                                                           |
 | Eligible PR with `full-qa`                         | All four groups                                                                   |
 | Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                            |
 | Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                                  |
@@ -27,15 +28,14 @@ Results gate neither merge nor publication.
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, native Agent browser and all OpenShell jobs; no local installation job |
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
-are ineligible. Narrow labels select their union. `full-qa` runs `console-secrets` for Codex,
-`agent-audit` in Compose, and `http-chat` and `agent-automations` for both presets and placements.
-The Compose job checks
-native redeployment and required-worker execution on Kubernetes workloads.
+are ineligible. Narrow labels select their union. `full-qa` runs Codex
+`console-secrets`, Compose `agent-audit`, and `http-chat` and `agent-automations`
+in both presets and placements. Compose checks native redeployment and required
+workers on Kubernetes.
 
-PR runs test the merge commit. New commits replace opted-in runs. Unrelated
-labels leave runs unchanged. Remove labels before pushing unreviewed code to
-stop future selection. Active runs continue. Eligible main pushes finish
-independently. Authors triage regressions.
+New commits replace opted-in merge-commit runs. Unrelated labels leave runs
+unchanged. Remove QA labels before pushing unreviewed code. Active runs and
+eligible main pushes finish independently. Authors triage regressions.
 [Verify PR source before labeling](configuration.md#verify-pr-source-before-labeling).
 
 Keycloak needs no model credential and allows 180 minutes; OpenClaw allows 120.
@@ -146,15 +146,14 @@ must belong to the logical run returned by the Gateway. Codex can finish that ru
 on a new native turn after an internal retry.
 The check sends each authenticated nonce prompt once.
 
-The runner requires the selected files' credentials, expected tests, and cleanup.
-Local installation also uses one runner per manifest file: input and network-policy
-refusals, Kubernetes and Compose profiles, and Keycloak sign-in and recovery.
-The six original installation cases remain required.
-A failed job does not cancel its peers. Hosted preparation builds first-Agent
-images from the current checkout using read-only caches. Local Setup then creates
+The runner requires credentials, expected tests, and cleanup. Local installation
+uses one runner per manifest file and requires the six original cases: input and
+network-policy refusals, Kubernetes and Compose profiles, and Keycloak sign-in
+and recovery. Peer jobs continue after a failure. Hosted preparation builds
+first-Agent images from the checkout with read-only caches. Local Setup creates
 and cleans up each installation without duplicate clusters. See
-[OpenShell CI preparation and timing](openshell-execution.md) for image selection,
-runner requirements, and interpretation of setup and model-execution timings.
+[OpenShell CI preparation and timing](openshell-execution.md) for images, runner
+requirements, and setup and model-execution timings.
 
 [Full Integration](full-integration.md) can also run this suite with
 `lane=openshell` or `lane=all`; that workflow runs the same files serially.
@@ -165,11 +164,13 @@ included in advisory coverage.
 
 ## Execution
 
-To run the same coverage as the schedule, configure the
-[hosted credentials](configuration.md#environments), then start the workflow:
+Configure [hosted credentials](configuration.md#environments). Set `test_file`
+to an exact catalog path. Invalid or ambiguous paths stop selection. Omit
+`test_file` or use `all` for the full advisory.
 
 ```sh
-gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
+gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main \
+  -f test_file=tests/integration/harness-topology-k3d-routing-real.test.mjs
 ```
 
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)

@@ -30,7 +30,7 @@
     "tests/integration/repository-credentials-control.test.ts",
     "tests/integration/repository-credential-operator-recovery.test.ts",
     "tests/integration/repository-receipt-observation.test.ts",
-    "tests/integration/codex-plugin-startup-reads.test.mjs",
+    "tests/integration/codex-plugin-startup-reads.test.ts",
     "tests/integration/codex-plugin-preparation.test.ts",
     "tests/integration/container-release.test.ts",
     "tests/integration/password-sign-in-audit.test.ts",
@@ -772,7 +772,7 @@
       "path": "tests/integration/repository-runtime-materialization.test.ts"
     },
     {
-      "path": "tests/integration/codex-plugin-startup-reads.test.mjs"
+      "path": "tests/integration/codex-plugin-startup-reads.test.ts"
     },
     {
       "path": "tests/integration/codex-plugin-preparation.test.ts",
@@ -897,6 +897,13 @@
     },
     {
       "path": "tests/integration/openshell-full-integration.test.ts"
+    },
+    {
+      "path": "tests/integration/openshell-stock-destination-ca.test.ts",
+      "expectedTests": [
+        "OpenShell destination CA fixture accepts a single CA and refuses a substituted ConfigMap",
+        "OpenShell stock Supervisor fixture refuses a substituted imported image"
+      ]
     },
     {
       "path": "tests/integration/oidc-provider.test.ts"

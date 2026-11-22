@@ -43,7 +43,14 @@ import {
   presetSecretsPath,
   readyForm,
 } from "./create-agent-form-data.mts";
-import { calendarPlugin, pluginCapabilities, pluginSetup } from "./plugin-scenario-data.mts";
+import {
+  calendarPlugin,
+  pluginCapabilities,
+  pluginDetailIdentityRefusal,
+  pluginDiscoveryAgentDeleting,
+  pluginDiscoveryConflict,
+  pluginSetup,
+} from "./plugin-scenario-data.mts";
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
 import { secretsScenarios } from "./scenario-groups/secrets.mts";
 import { connectionTemplateScenarios } from "./scenario-groups/connection-templates.mts";
@@ -60,10 +67,16 @@ type AuthoredRule = Omit<FixtureRule, "data"> &
     | { data?: never }
     | { suffix: "/native-admin"; data: { status: "unavailable" } }
     | {
+        suffix: "/plugins/capabilities";
+        data: NonNullable<PluginFieldsOptions["capabilities"]> & {
+          discoveryCredential: "none" | "required";
+        };
+      }
+    | {
         suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions";
         data: PermissionSnapshot;
       }
-    | { suffix: "/SOUL.md"; data: WorkspaceFileResponse["data"] }
+    | { suffix: "/SOUL.md" | "/workspace/files/AGENTS.md"; data: WorkspaceFileResponse["data"] }
   );
 type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
   Parameters<typeof configurationValues>[0] & {
@@ -96,6 +109,8 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     emptyNamespaces?: boolean;
     emptyBackends?: boolean;
     namespaceName?: string;
+    navigationAgentHistory?: true;
+    navigationAgentLookupMismatch?: true;
     namespaceStatus?: NamespaceStatus;
     namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
     candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
@@ -110,6 +125,8 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
   };
 
+const deletionRetryDeniedAgentPath =
+  "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001";
 const draft =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=draft";
 const revision =
@@ -118,6 +135,18 @@ const currentVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000006";
 const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
+const unscopedHistoricalAgentLink = {
+  path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?revision=rev_00000000-0000-4000-8000-000000000006&tab=deployment",
+  namespaceName: "Z history holder",
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+} as const;
+const defaultNamespaceAgentMiss = {
+  method: "GET",
+  path: "/namespaces/ns_00000000-0000-4000-8000-000000000002/agents/agt_00000000-0000-4000-8000-000000000001",
+  status: 404,
+  code: "NOT_FOUND",
+} as const;
 // A SOUL.md long enough to scroll; its first line names the version that serves it.
 const soulVersion = (version: string) =>
   `# SOUL.md served by ${version}\n\n` +
@@ -253,6 +282,8 @@ const agentDetailScenarios = createAgentDetailScenarios({
   currentVersion,
   candidateVersion,
 });
+
+const slackMcpTools = agentDetailScenarios.configuration.slackMcpTools;
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
 const authoredScenarios = {
@@ -391,6 +422,44 @@ const authoredScenarios = {
       "Use Tab to focus Namespaces, then Enter. After loading, its heading has focus and the next Tab reaches Refresh. Back and Forward focus the destination heading while retaining loaded content.",
       "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
+    ],
+  } satisfies LocalScenario,
+  navigationAgentHistory: {
+    group: "Pages/Navigation",
+    name: "Return to an interrupted Agent link",
+    ...unscopedHistoricalAgentLink,
+    navigationAgentHistory: true,
+    rules: [defaultNamespaceAgentMiss],
+    description:
+      "A shared Agent link has no Namespace. Leave while the Console looks in another Namespace, then use Back to reopen the linked version and Deployment tab. API responses are simulated.",
+    steps: [
+      "Wait for Looking for this Agent in your other Namespaces. Before the lookup finishes, choose ← Agents.",
+      "Wait for the delayed read to finish. The Agents list stays open.",
+      "Use browser Back. Research assistant opens in Z history holder with version 6 and Deployment selected. Check This version’s deployment record.",
+      "Use Forward. The same Agents list returns. Reset story to repeat.",
+    ],
+  } satisfies LocalScenario,
+  navigationAgentLookupMismatch: {
+    ...unscopedHistoricalAgentLink,
+    group: "Pages/Navigation",
+    name: "Recover from a mismatched Agent lookup",
+    navigationAgentLookupMismatch: true,
+    rules: [
+      defaultNamespaceAgentMiss,
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        once: true,
+      },
+    ],
+    description:
+      "A shared Agent link has no Namespace. In this simulation, the holder’s first read fails and a sibling Namespace returns the holder’s Agent.",
+    steps: [
+      "Open the preview in its own tab. Check Agent not in this Namespace, with A history default selected and no namespace parameter in the URL.",
+      "Choose Switch Namespace. Focus moves to the Namespace selector. Leave A history default selected.",
+      "Choose Refresh in the Console. Research assistant opens in Z history holder, with version 6 and Deployment selected. Check This version’s deployment record.",
     ],
   } satisfies LocalScenario,
   navigationSlowRecheck: {
@@ -949,6 +1018,103 @@ const authoredScenarios = {
   ...credentialsOAuthScenarios({ draft }),
   ...createAgentOutcomeScenarios,
   ...agentDetailScenarios.configuration,
+  slackMcpTools: {
+    ...slackMcpTools,
+    steps: [
+      "Open Slack, select Slack search connection (simulated), and choose Load tools for Slack.",
+      "After the refusal, verify the request ID and Recheck access. Activate Recheck access with the keyboard. Verify it disappears and Load plugins receives focus.",
+      "Choose Load plugins, reopen Slack, and choose Load tools for Slack. Check that slack_search_public appears.",
+      "Choose Done and expand Plugin selections JSON to confirm the selected account remains in the draft.",
+    ],
+  } satisfies LocalScenario,
+  slackMcpAccountRecovery: {
+    ...slackMcpTools,
+    name: "Recover a Slack account after access is restored",
+    description: "Recover a managed Slack account that is temporarily ineligible for discovery.",
+    rules: [
+      ...slackMcpTools.rules,
+      {
+        suffix: "/plugins/capabilities",
+        method: "GET",
+        skip: 1,
+        once: true,
+        data: {
+          ...slackMcpTools.pluginCapabilities,
+          discoveryCredential: slackMcpTools.pluginDiscoveryCredential,
+          credentialSlots: slackMcpTools.pluginCapabilities.credentialSlots.map((slot) => ({
+            ...slot,
+            sources: [],
+          })),
+        },
+      },
+    ],
+    steps: [
+      "Open Slack, select Slack search connection (simulated), and choose Load tools for Slack.",
+      "After the permission error, choose Recheck access, then Load plugins. Reopen Slack and check that no account is eligible.",
+      "Activate Recheck accounts with the keyboard. Verify Load plugins receives focus and the catalog is empty.",
+      "Choose Load plugins, reopen Slack, and choose Load tools for Slack. Check that slack_search_public appears.",
+    ],
+  } satisfies LocalScenario,
+  pluginsDetailIdentityRefused: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin details for a different plugin",
+    agentPlugins: {},
+    pluginDiscovery: pluginDetailIdentityRefusal,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Project tracker"]', click: true },
+    ],
+    description: "Project tracker and Calendar share a locator that returns Calendar's details.",
+    steps: [
+      "Check that Project tracker stays selected and each plugin appears once. Read the error, find Retry tools for Project tracker, and check that Add Project tracker is disabled.",
+      "Select Calendar. Its details show List events, and Add Calendar is available.",
+    ],
+    gap: "Catalog responses and the saved Agent are simulated.",
+  } satisfies LocalScenario,
+  pluginsCatalogConflict: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin catalog changed while loading",
+    agentPlugins: {},
+    actions: pluginDiscoveryConflict.actions,
+    rules: [pluginDiscoveryConflict.catalogRule],
+    description: "Reload the available plugins after the saved Agent's catalog read is refused.",
+    steps: [
+      "Wait for List events and enabled Add Calendar. Choose Load plugins to simulate the catalog conflict.",
+      "Check that the message points to Load plugins and shows a request ID. Calendar is no longer listed, so its old Add action cannot be reopened.",
+      "Choose Load plugins again, then open Calendar. Wait for List events and enabled Add Calendar.",
+      "Choose Done. Check that Plugin selections JSON contains only the unsaved Project tracker selection and that Save plugin selections is still available.",
+    ],
+    gap: "The saved Agent and catalog responses are simulated.",
+  } satisfies LocalScenario,
+  pluginsDetailsConflict: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin details changed while loading",
+    agentPlugins: {},
+    actions: pluginDiscoveryConflict.actions,
+    rules: [pluginDiscoveryConflict.detailsRule],
+    description: "Retry tool discovery for Calendar after the first details read is refused.",
+    steps: [
+      "Check that Calendar stays selected and Add Calendar is disabled. The message points to Retry tools and shows a request ID.",
+      "Choose Retry tools for Calendar. List events appears, the error clears, and Add Calendar becomes available.",
+      "Choose Done. Check that Plugin selections JSON contains only the unsaved Project tracker selection and that Save plugin selections is still available.",
+    ],
+    gap: "The saved Agent and tool details are simulated.",
+  } satisfies LocalScenario,
+  pluginsAgentDeleting: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin discovery during Agent deletion",
+    agentPlugins: {},
+    actions: pluginDiscoveryConflict.actions,
+    rules: [pluginDiscoveryAgentDeleting],
+    description: "A catalog refresh finds that the saved Agent is being deleted.",
+    steps: [
+      "Wait for List events and enabled Add Calendar. Choose Load plugins to simulate the deletion refusal.",
+      "Check that Calendar and its tools disappear. In Available and Configured, read the deletion message and request ID. Load plugins is disabled, and Recheck access is absent.",
+      "Choose Done. Check that Plugin selections JSON still contains the unsaved Project tracker selection.",
+    ],
+    gap: "The saved Agent and deletion response are simulated.",
+  } satisfies LocalScenario,
   ...pluginApproverScenarios(draft),
   ...agentDetailScenarios.versions,
   agentsLongName: {
@@ -1460,9 +1626,20 @@ const authoredScenarios = {
     name: "Keep unsaved files",
     path: `${revision}&tab=workspace`,
     deployed: true,
+    // The first read precedes another writer’s change. Later reads and saves use the live fixture.
+    workspaceFiles: { "AGENTS.md": "Updated guidance" },
+    rules: [
+      {
+        suffix: "/workspace/files/AGENTS.md",
+        method: "GET",
+        once: true,
+        data: { name: "AGENTS.md", content: "Previous guidance" },
+      },
+    ],
     actions: [
       {
         selector: '[id="workspace-AGENTS.md"]',
+        matches: "Previous guidance",
         value: "# Unsaved guidance\nKeep these edits while navigating.\n",
       },
     ],
@@ -1470,7 +1647,9 @@ const authoredScenarios = {
     steps: [
       "Choose User context and clear its text. Switch between Instructions and User context; check the Unsaved indicators and role descriptions. On a phone use Workspace file.",
       "Switch to Configuration and back to Workspace files; the selected file and unsaved contents remain.",
-      "Open Namespaces, return with Back, then save AGENTS.md and reload USER.md.",
+      "Open Namespaces and return with Back. Instructions still contains the unsaved guidance, and AGENTS.md warns that it changed since editing started.",
+      "Type Previous guidance in Instructions. Open Namespaces and return with Back again. Check that the warning stays visible and Save is enabled.",
+      "Type Updated guidance to match the current file. The warning clears and Save is disabled. Edit and save AGENTS.md, then reload USER.md.",
     ],
     gap: "Simulated files; no live Agent gateway.",
   } satisfies LocalScenario,
@@ -1805,6 +1984,44 @@ const authoredScenarios = {
     actions: [click("Request deletion again")],
     description:
       "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and separate cleanup commands stay collapsed until opened.",
+  } satisfies LocalScenario,
+  deletionRetryDenied: {
+    group: "Components/Deletion",
+    name: "Repeat deletion grant denied after status refresh",
+    path: draft,
+    deleting: true,
+    rules: [
+      { path: `${deletionRetryDeniedAgentPath}/permissions`, method: "GET", skip: 1, status: 503 },
+      {
+        path: deletionRetryDeniedAgentPath,
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs Agent delete on Agent agt_00000000-0000-4000-8000-000000000001. Ask an Installation administrator to grant it.",
+        once: true,
+      },
+      {
+        path: deletionRetryDeniedAgentPath,
+        method: "GET",
+        skip: 1,
+        delayMs: 1300,
+      },
+    ],
+    actions: [
+      click("Request deletion again"),
+      { selector: ".agent-delete-dialog button.danger", click: true },
+      { selector: "#agent-deletion-refusal" },
+      click("Refresh deletion status"),
+      { text: "Refresh deletion status" },
+    ],
+    description:
+      "Refresh confirms the Agent is deleting but cannot verify the delete grant. The refusal remains and retry stays unavailable.",
+    steps: [
+      "Tab to Request deletion again. It remains unavailable and is described by the refusal; the Request ID remains visible. Enter, Space or a click sends no deletion request.",
+      "In a live Console, after an administrator restores Agent delete, use Refresh deletion status or reload the Agent page to verify permission before retrying.",
+    ],
+    gap: "The fixture simulates a refused DELETE and a failed permission recheck. It does not change IAM grants or demonstrate real grant recovery.",
   } satisfies LocalScenario,
   deletionRetryAccessEnded: {
     group: "Components/Deletion",

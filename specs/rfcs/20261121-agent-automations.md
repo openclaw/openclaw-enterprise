@@ -1,5 +1,5 @@
 ---
-status: Proposed
+status: Accepted
 implementation_status: Partially implemented
 author: kevinlin-openai
 ---
@@ -8,7 +8,7 @@ author: kevinlin-openai
 
 - **ID:** RFC-20261121-agent-automations
 - **Created:** 2026-11-21
-- **Last updated:** 2026-11-21
+- **Last updated:** 2026-11-22
 - **RFC PR:** [#6850](https://github.com/openclaw/openclaw-enterprise/pull/6850)
 - **Implementation plan:** [Broker implementation](../plans/20261121-agent-automations.md)
 - **Related:** [Native administration](../../docs/reference/agent-native-admin.md), [Gateway managed mode](../../docs/reference/agents/gateway-managed-mode.md), [runtime pin](../../deploy/runtime/openclaw-source.json)
@@ -42,23 +42,37 @@ The provider or its adapter must enforce the same action restrictions on both pa
 
 An existing job retains the Agent's delegation after its creator loses access.
 The creator then loses management and history access unless separately authorized.
-An Agent administrator can disable or remove the job. Withdrawing an operation or
-its workload credential blocks future calls. A call already issued can complete.
+An Agent administrator can disable or remove the job. Withdrawal requires
+deleting or retiring the job, or denial by the MCP service. Changing controller
+configuration alone does not revoke running native cron. A call already issued
+can complete.
 
 <a id="unresolved-execution-authority"></a>
 
 ## Select eligible tools
 
-The component that provisions the runtime must attest the effective bindings
-for its Driver, Harness and packaged version. Select only enabled, static MCP
-servers with explicitly provisioned, nonempty literal include lists. Resolve
-each exact name against the authenticated server catalog and the deployed
-Gateway policy. Record the native name, underlying server and original MCP
-tool name, stable endpoint and workload credential reference/identity, permitted
-actions and standing approval identity. Refuse wildcard or pattern grants,
-ambiguous names, missing identity evidence and tools outside either policy.
-Bind all entries to the exact Namespace, Agent and provisioning revision.
-Keep credential values out of this record. A rotated secret for the same authorized workload identity can qualify after revalidation.
+The provisioning Driver checks the Agent's standing approval, explicit nonempty
+literal include filter and deployed Gateway policy before discovery. Match the
+catalog's native alias, raw tool, server, endpoint, permitted actions and
+anonymous identity. Reject patterns, collisions, missing evidence and personal
+or interactive grants. Bind the approved operations and approval identity to
+the exact Namespace, Agent and revision. Store no credential values.
+
+Use read-only `sessions.list` for the selected native `agentId`, with explicit
+row, page, response-size and time limits enforced by the adapter. Exclude cron,
+subagent, system and dock sessions; omit global and unknown scope. Select an
+existing ordinary session whose returned ownership and provenance identify the
+same Agent. Refuse missing or ambiguous scope and exhausted limits. Never guess
+a session key or create a synthetic turn to obtain an inventory.
+
+Use the persisted session key and native Agent ID with
+[`tools.effective`](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/tools-effective.ts#L474).
+Verify the returned Agent and each entry's `source: "mcp"`, `id`, `mcpServer`
+and `mcpToolName`. Refuse session-denied entries and stale catalogs. Use bounded
+`tools.catalog` and `plugins.inspect` on supported versions to detect native
+name conflicts and verify loaded plugin origins. Require evidence for every
+check. Apply time, page, row and byte limits to qualification RPCs. A session
+inventory cannot grant personal authority.
 
 For a nonempty cap the effective Code Mode and tool search must both be off.
 Exclude native shell, files, code execution, delegation, messaging, dynamic
@@ -68,14 +82,24 @@ OpenClaw Harness and ordinary dedicated Codex Harness independently. Current
 managed MCP Sandbox and Codex app topologies cannot supply this contract.
 Ordinary chat and native administration keep their existing policies.
 
-Upstream [operator execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
+Both Harnesses accept only operator-attested anonymous HTTPS. Each Compute
+`automations.trustedAnonymousMcpEndpoints` entry has `url`, `egressCidrs`
+and optional public PEM `caBundle`. Require an exact normalized HTTPS URL
+and exact host addresses (/32 or /128). Refuse stdio, wildcard destinations,
+credentials, private keys and redirects to unapproved origins. The operator attests identical anonymous actions from both workloads.
+
+The Driver derives the TCP port from the URL (default 443). Add only the listed
+IP/port pairs to the Gateway and, for dedicated Codex, Agent NetworkPolicies.
+Retain default-deny egress and unrelated required workload routes. Validate TLS
+hostname and chain. Project the public CA only into the relevant workload:
+merge it with required Gateway Node trust via `NODE_EXTRA_CA_CERTS` and with
+dedicated Codex PEM trust via `CODEX_CA_CERTIFICATE`. These roots affect workload-wide TLS trust. Keep model credentials out of the dedicated
+Gateway. Refuse a topology that cannot enforce these boundaries.
+
+Native administrators and chat remain trusted writers outside OCC. OCC does
+not adopt native jobs. The pinned [operator execution context](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/cron/execution-context.ts#L322)
 and [Codex native tool construction](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/extensions/codex/src/app-server/dynamic-tool-build.ts#L523)
-make an unchecked list of tool names insufficient. The proposal retains
-model-only scheduling for Agents with no eligible MCP operations. A generic
-tool picker would grant authority without proving the endpoint, identity or
-action. Native jobs outside the OCC inventory remain under native administration.
-Trusted native writers can change jobs outside OCC. This RFC covers OCC-managed
-writes and policy changes on supported deployments.
+require origin checks in addition to tool names.
 
 ## Goals and non-goals
 
@@ -116,21 +140,24 @@ name, prompt, schedule and enabled state. Stale native revisions return 409.
 
 ## Native contract and ownership
 
-Resolve the selected running Agent revision through its existing Compute Driver
-and private endpoint. Verify runtime provenance, native access, administrative
-transport, required methods and an unambiguous server-selected native Agent.
-Typed native calls are limited to `cron.add`, `cron.list`, `cron.get`,
-`cron.update`, `cron.remove` and `cron.runs`; this ceiling belongs to OCC, not to
-the underlying native credential.
+Require the selected Driver's instance-pinned transport, native administrative
+access, required methods and an unambiguous server-selected native Agent.
+OCC invokes only `cron.add`, `cron.list`, `cron.get`, `cron.update`,
+`cron.remove` and `cron.runs`, plus bounded qualification reads and `system.info` for peer identity.
+Keep the administrative credential private.
 
 Creation maps to `sessionTarget: "isolated"`, `wakeMode: "now"`, an `agentTurn`
 payload with the requested prompt and explicit `toolsAllow`, and
 `delivery.mode: "none"`. Preserve native schedule normalization, including generated
 interval anchors and cron staggering, in reads and subsequent edits. Persist the immutable ceiling and binding identities
 with the OCC reservation. Reassert the permitted cap on update. Additions to
-the Agent policy never expand an existing job. If a selected binding is
-withdrawn, remapped or cannot be verified, refuse enablement and prevent that
-binding from executing. An empty MCP include filter can mean unrestricted access. Disable or omit that server when its permitted set is empty.
+the Agent policy never expand an existing job. All captured operations must
+remain present with the same binding identity. A missing alias does not prove
+safe withdrawal: a core/plugin tool or wrapper could reuse its name. Therefore
+narrowing, removal, remapping or unverifiable binding blocks enablement and
+successor admission/startup while any active, paused or uncertain ownership
+record retains the grant. Delete or retire affected jobs, deploy the narrower
+policy, then create new jobs. Do not automatically shrink a persisted cap. An empty MCP include filter can mean unrestricted access. Disable or omit that server when its permitted set is empty.
 Never serialize an empty include list as a restriction.
 
 Before native create, reserve a public OCC UUID with its exact Namespace, Agent,
@@ -183,25 +210,41 @@ with reservation. Existing rows without trusted binding evidence are eligible
 only for their proven model-only ceiling. Never infer a tool-bearing grant by
 scanning an existing job or current catalog.
 
-Extend the runtime-facing Driver contract to report qualified bindings and to
-apply or verify enforcement **before native scheduler startup**, including
-catch-up. OCC compares opaque binding identities and calls the selected Driver.
-The Driver and Harness own MCP catalog lookup, credential and action checks,
-native tool mapping and runtime-specific controls. OCC core must contain no
-vendor-specific rules. Submit this RFC before implementing the covered Driver
-contract changes.
+Optional Compute operation `openAgentAutomationTransport(revision, qualification | undefined)`
+returns a private connection to the verified instance. Creation, edits and
+re-enablement require current qualification of the guarded launcher/version,
+effective policy and trust. Redeploy a missing guard. After withdrawal,
+`undefined` permits disable, delete and history under existing authorization.
 
-Bind admission and enablement to the selected running Agent revision. Serialize
-these writes with the deployment decision or refuse them while a pending
-successor can change the bindings. The worker must check every bound job against
-the intersection of its original cap and the successor's effective policy before starting or resuming its scheduler.
-Keep the scheduler stopped on refusal or failure. Apply the same gate to restart,
-rollback and crash recovery before overdue jobs can run. A completed check of the
-old Gateway cannot authorize the replacement. Native CAS protects the job
-definition. It cannot detect remapping the same tool name to a new endpoint,
-credential or action. Check the saved binding identity and current deployed
-policy before use. The runtime must stop new calls as soon as an effective
-grant or credential is withdrawn.
+For every revision, including model-only, Compute provisions a Service and
+private operator HTTPRoute using existing Envoy authentication, trusted headers,
+scopes and NetworkPolicy. No new RBAC or public operation. Select the exact
+Namespace, Agent and revision. Before and after handshake, require nonempty
+ready EndpointSlices whose ready targetRef UIDs all match the sole live revision
+Gateway Pod UID. Before mutation, call bounded `system.info` on that authenticated
+WebSocket. Require its reported hostname to equal the checked Pod's name.
+Retain hello `server.bootId` as process identity and recheck Pod UID, container
+ID and image. Refuse mismatches or rollover. Pin that socket through eligibility
+read and mutation; close without reconnect or replay. A possibly sent write
+returns `UNKNOWN_OUTCOME` on loss. Exclude the Agent-wide chat route. Retain
+revision routes until retirement, then delete them. Submit before implementation.
+
+Before **every** native Gateway process spawn, including supervisor respawn
+and kubelet container restart, the launcher verifies the effective plugin
+allowlist, plugin origins and package digests against the approved image. Reject
+native tracked installs, mutable global extension roots, unapproved plugins,
+digest mismatches and Node startup switches or module-loading overrides outside
+the qualified allowlist. Check the effective node/tool switches for the selected
+Harness. Fail before plugin loading, scheduler startup or catch-up.
+
+Serialize job admission and enablement with deployment or refuse while a pending
+successor could change bindings. Before start, rollback or recovery, the worker
+checks that every grant (including paused and uncertain reservations) remains a
+subset of the successor's eligible operations with identical bindings. Additional
+eligible operations never widen a saved cap. Keep the scheduler stopped if any
+check fails. A same-revision restart retains its standing grant and repeats the
+local origin check. Worker observation alone cannot stop a running scheduler.
+Retire the job or deny at the service to withdraw a running grant.
 
 ## Qualification and acceptance
 
@@ -215,26 +258,40 @@ grant or credential is withdrawn.
   refusals and absence of provider effects. Attempt native shell/file actions,
   delegation, messaging, app tools and discovery. Verify the effective tool
   surface and absence of effects. A personal credential or an interactive
-  approval requirement cannot qualify. Check explicit model-only execution with
-  no eligible operations, and refusal of Code Mode/tool search on a nonempty cap.
+  approval requirement cannot qualify. Verify refusal before discovery for invalid
+  provisioning, and reject foreign, cron, unknown or absent ordinary sessions,
+  mismatched MCP identities and exhausted discovery limits. Check explicit
+  model-only execution with no eligible operations, and refusal of Code Mode/tool
+  search on a nonempty cap.
 - **AC3. Ownership and persistence.** Verify CSRF/Origin, service-key refusal,
   exact-Agent create and creator/admin management, UUID validation and native
   history after deletion. Demote the creator and verify the job still uses the
   shared Agent identity. An administrator can stop it. Pause, resume, edit
   and delete with native CAS. Preserve cap, binding, identity, paused state
-  and retained history across supported Gateway and Agent revision replacement.
-- **AC4. Policy and recovery.** Narrow a literal filter, withdraw a credential,
-  and remap the same alias to another server or principal. Race enablement with
-  a pending revision. Restart with an overdue job and roll back to another
-  revision. Verify no newly forbidden call starts, no widened grant is stored,
-  and an already issued call is distinguished from a new call. Prove a later
-  catalog or policy addition cannot widen the job. Check concurrent native CAS,
-  lost replies, failed audit and revision changes without duplicate dispatch.
+  and retained history across compatible Gateway and Agent revision replacement.
+- **AC4. Policy and recovery.** Narrow a literal filter, remove a trusted endpoint,
+  and remap the same alias to another server or principal. With active, paused
+  and uncertain records, verify successor admission/startup refuses each change.
+  Delete or retire affected jobs before deploying the narrower policy and
+  recreating them. Race enablement with a pending revision; recover an overdue
+  job through OCC-managed replacement and roll back. Prove startup refusal precedes catch-up and later additions
+  cannot widen a cap. Distinguish the running-Gateway withdrawal limit and
+  already issued calls. Check native CAS, lost replies, failed audit and revision
+  changes without duplicate dispatch.
 - **AC5. Durable records.** Verify PostgreSQL reservation, binding and audit
   atomicity, failed-create cleanup racing with binding, Agent deletion with
   sibling retention, and history access after deletion. Use the actual packaged
   Harnesses and real endpoint, credential, model and database evidence for
-  their relevant criteria. A native CRUD fixture alone cannot qualify execution.
+  their relevant criteria.
+
+- **AC6. Runtime and egress.** On both Harnesses, prove TLS with the projected CA
+  and rejection of an untrusted certificate, wrong hostname, sibling IP and
+  port. On dedicated Codex verify credential isolation. Reject an old launcher,
+  stale Pod/container evidence, mutable plugin origin, changed digest and
+  unsupported Node switch. Repeat after native respawn and container restart
+  with an overdue job. Race RPC admission with old and new Pods during
+  cutover. Verify the checked instance receives the mutation or the request
+  fails, and that the other instance receives no mutation.
 
 ## Delivery status
 

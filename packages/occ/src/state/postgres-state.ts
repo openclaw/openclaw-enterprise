@@ -61,7 +61,6 @@ import type {
   AgentRevision,
   AuditEvent,
   CredentialSource,
-  TokenServiceRegistration,
   Group,
   GroupMembership,
   Identity,
@@ -619,7 +618,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
-  cs.token_service_instance_id, cs.registration, cs.registration_dispatched_at,
+  cs.token_service_instance_id,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -699,12 +698,6 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
           ...(row.token_service_instance_id == null
             ? {}
             : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
-          ...(row.registration == null
-            ? {}
-            : { registration: jsonObject(row.registration) as TokenServiceRegistration }),
-          ...(row.registration_dispatched_at == null
-            ? {}
-            : { registrationDispatchedAt: timestamp(row, "registration_dispatched_at") }),
         }
       : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
@@ -3233,32 +3226,30 @@ export class PostgresPlatformState implements PlatformStateStore {
             "Credential source Secret inputs must reference exact Secrets.",
           );
         }
-        await client.query(
-          `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, registration, registration_dispatched_at)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12::jsonb, $13)`,
-          [
-            source.id,
-            source.namespaceId,
-            source.name,
-            source.type,
-            JSON.stringify(source.config),
-            source.driverId ?? null,
-            source.state,
-            source.createdAt,
-            source.egress === undefined ? null : JSON.stringify(source.egress),
-            source.ownerCapability,
-            source.ownerCapability === "token_service"
-              ? (source.tokenServiceInstanceId ?? null)
-              : null,
-            source.ownerCapability === "token_service" && source.registration !== undefined
-              ? JSON.stringify(source.registration)
-              : null,
-            source.ownerCapability === "token_service"
-              ? (source.registrationDispatchedAt ?? null)
-              : null,
-          ],
-        );
+        try {
+          await client.query(
+            `INSERT INTO occ.credential_sources
+             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11)`,
+            [
+              source.id,
+              source.namespaceId,
+              source.name,
+              source.type,
+              JSON.stringify(source.config),
+              source.driverId ?? null,
+              source.state,
+              source.createdAt,
+              source.egress === undefined ? null : JSON.stringify(source.egress),
+              source.ownerCapability,
+              source.ownerCapability === "token_service"
+                ? (source.tokenServiceInstanceId ?? null)
+                : null,
+            ],
+          );
+        } catch (error) {
+          throw databaseError(error);
+        }
         if (secretInputs.length > 0) {
           await client.query(
             `INSERT INTO occ.credential_source_secrets
@@ -3311,25 +3302,6 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         return findCredentialSource(namespaceId, credentialSourceId);
       },
-      setCredentialSourceRegistrationDispatch: async (
-        namespaceId,
-        credentialSourceId,
-        dispatchedAt,
-      ) => {
-        const result = await client.query(
-          `UPDATE occ.credential_sources SET registration_dispatched_at=$3
-          WHERE namespace_id=$1 AND id=$2 AND token_service_instance_id IS NOT NULL AND registration IS NULL AND state=$4
-            AND (($3::timestamptz IS NULL AND registration_dispatched_at IS NOT NULL)
-              OR ($3::timestamptz IS NOT NULL AND registration_dispatched_at IS NULL))`,
-          [
-            namespaceId,
-            credentialSourceId,
-            dispatchedAt ?? null,
-            dispatchedAt === undefined ? "deleting" : "registering",
-          ],
-        );
-        return result.rowCount === 1;
-      },
       updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
         const result = await client.query(
           "UPDATE occ.credential_sources SET config=$3::jsonb WHERE namespace_id=$1 AND id=$2 AND state='ready' AND token_service_instance_id IS NOT NULL",
@@ -3339,18 +3311,13 @@ export class PostgresPlatformState implements PlatformStateStore {
           ? findCredentialSource(namespaceId, credentialSourceId)
           : undefined;
       },
-      markCredentialSourceReady: async (namespaceId, credentialSourceId, registration, config) => {
+      markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
         const updated = await client.query(
-          `UPDATE occ.credential_sources AS cs SET state = 'ready', registration=$3::jsonb, config=COALESCE($4::jsonb,cs.config)
+          `UPDATE occ.credential_sources AS cs SET state = 'ready'
            FROM occ.namespaces AS n
            WHERE cs.namespace_id = $1 AND cs.id = $2 AND cs.state = 'registering'
              AND n.id = cs.namespace_id AND n.deleted_at IS NULL`,
-          [
-            namespaceId,
-            credentialSourceId,
-            registration === undefined ? null : JSON.stringify(registration),
-            config === undefined ? null : JSON.stringify(config),
-          ],
+          [namespaceId, credentialSourceId],
         );
         return updated.rowCount === 1
           ? findCredentialSource(namespaceId, credentialSourceId)

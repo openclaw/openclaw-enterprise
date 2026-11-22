@@ -25,7 +25,11 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
-import { isAgentPermissionSummary, type AgentRecheckHandler } from "./agents/detail.mjs";
+import {
+  isAgentPermissionSummary,
+  matchesAgentIdentity,
+  type AgentRecheckHandler,
+} from "./agents/detail.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
@@ -2038,8 +2042,10 @@ async function loadPage({
         namespaces[0]
       )?.id ??
       null;
-    replaceUrl(pageUrl(current.target));
     const selectedNamespace = namespaceId;
+    const unscopedAgentId = current.namespace === null ? current.agentId : null;
+    // Record the history position while keeping the Agent's Namespace provisional.
+    replaceUrl(pageUrl(current.target, unscopedAgentId ? null : selectedNamespace));
     const namespacePath =
       selectedNamespace === null ? null : `/namespaces/${encodeURIComponent(selectedNamespace)}`;
     const scopedNamespaceUnavailable =
@@ -2107,6 +2113,9 @@ async function loadPage({
       }
       if (!lifetime.isCurrent(active)) {
         return;
+      }
+      if (unscopedAgentId && matchesAgentIdentity(firstAgent, unscopedAgentId, selectedNamespace)) {
+        replaceUrl(pageUrl(current.target, selectedNamespace));
       }
     }
     if (permissionsRead) {
@@ -3008,9 +3017,9 @@ async function locateAgentNamespace(agentId: string, excluded: string | null) {
       request(`/namespaces/${encodeURIComponent(item.id)}/agents/${encodeURIComponent(agentId)}`),
     ),
   );
-  const found = probed.filter((_, index) => {
+  const found = probed.filter(({ id }, index) => {
     const result = results[index];
-    return result?.status === "fulfilled" && responseFields(result.value).id === agentId;
+    return result?.status === "fulfilled" && matchesAgentIdentity(result.value, agentId, id);
   });
   if (found.length === 1 && found[0]) {
     return { namespaceId: found[0].id, complete: true };

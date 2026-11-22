@@ -90,7 +90,6 @@ import type {
   ConnectionTemplate,
   CredentialSourceReference,
   SourceRegistrationInput,
-  SourceProviderPresetId,
   CredentialSourceMetadata,
   CredentialSourceStatus,
   CredentialWithdrawalStatus,
@@ -1215,9 +1214,8 @@ export class OpenClawController {
   async createManagedCredentialSource(
     principalId: string,
     namespaceId: string,
-    input: Omit<SourceRegistrationInput, "sourceRef" | "tokenServiceInstanceId"> & {
-      readonly name: string;
-      readonly providerPreset?: SourceProviderPresetId;
+    input: Omit<SourceRegistrationInput, "namespaceId" | "config"> & {
+      readonly providerPreset?: string;
     },
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
@@ -1242,18 +1240,6 @@ export class OpenClawController {
       input,
       audit,
       failureAudit,
-    );
-  }
-
-  async authorizeCredentialSourceWrite(
-    principalId: string,
-    namespaceId: string,
-    credentialSourceId?: string,
-  ): Promise<void> {
-    return this.composition.credentials.credentialSourceOperations.authorizeCredentialSourceWrite(
-      principalId,
-      namespaceId,
-      credentialSourceId,
     );
   }
 
@@ -1297,6 +1283,18 @@ export class OpenClawController {
     );
   }
 
+  async credentialSourceUpdateIdentity(
+    principalId: string,
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<{ readonly managed: boolean; readonly type: string }> {
+    return this.composition.credentials.credentialSourceOperations.credentialSourceUpdateIdentity(
+      principalId,
+      namespaceId,
+      credentialSourceId,
+    );
+  }
+
   async readCredentialSource(
     principalId: string,
     namespaceId: string,
@@ -1323,7 +1321,10 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     credentialSourceId: string,
-    audit?: (removedAccessBindings: readonly RemovedAccessBinding[]) => AuditEvent,
+    audit?: (
+      removedAccessBindings: readonly RemovedAccessBinding[],
+      phase?: "retirement_started",
+    ) => AuditEvent,
     connection?: typeof PENDING_CONNECTION,
   ): Promise<void> {
     return this.composition.credentials.managedCredentialSources.deleteCredentialSource(
@@ -1332,20 +1333,6 @@ export class OpenClawController {
       credentialSourceId,
       audit,
       connection,
-    );
-  }
-
-  async deleteManagedCredentialSource(
-    principalId: string,
-    namespaceId: string,
-    credentialSourceId: string,
-    audit: (removed: readonly RemovedAccessBinding[], phase?: "retirement_started") => AuditEvent,
-  ): Promise<void> {
-    return this.composition.credentials.managedCredentialSources.deleteManagedCredentialSource(
-      principalId,
-      namespaceId,
-      credentialSourceId,
-      audit,
     );
   }
 

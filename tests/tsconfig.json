@@ -344,6 +344,7 @@
     "conformance/native-admin-upgrade-audit-cases.ts",
     "conformance/native-admin-upgrade-recovery-cases.ts",
     "helpers/native-admin-postgres.ts",
+    "helpers/openshell-owner-password-session.ts",
     "integration/native-admin-http-integrity-cases.ts",
     "integration/native-admin-session-lease-cases.ts",
     "integration/native-admin-shared-session-cases.ts",

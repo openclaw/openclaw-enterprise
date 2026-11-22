@@ -236,7 +236,7 @@ export async function composePostgresDevelopment(
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
-    await installTokenServiceDriver(controller, drivers);
+    await installTokenServiceDriver(controller, drivers, state);
     controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
     if (drivers?.repositoryPolicy !== undefined) {
       const driver = drivers.repositoryPolicy;

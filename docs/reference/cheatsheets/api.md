@@ -245,8 +245,8 @@
 
 - [`listCredentialSources`](../api.md#get-namespacesnamespaceidcredentialsources): List readable credential sources without revealing credential values.
 - [`getCredentialSource`](../api.md#get-namespacesnamespaceidcredentialsourcescredentialsourceid): Get one readable credential source and its available status.
-- [`createCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsources): Register a Credential Gateway source; managed static registration is staged.
-- [`updateCredentialSource`](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid): Update a Credential Gateway source; managed updates are staged.
+- [`createCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsources): Register a credential source.
+- [`updateCredentialSource`](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid): Update a Source through its recorded owner.
 - [`rotateCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate): Force the Credential Refresh Driver to mint a new token for a refresh-type source.
 - [`deleteCredentialSource`](../api.md#delete-namespacesnamespaceidcredentialsourcescredentialsourceid): Remove an unreferenced credential source.
 

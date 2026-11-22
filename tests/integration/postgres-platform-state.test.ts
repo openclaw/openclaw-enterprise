@@ -148,39 +148,18 @@ test(
         secrets: {},
         ownerCapability: "token_service",
         tokenServiceInstanceId: selected.id,
-        state: "registering",
+        state: "ready",
         createdAt,
       }),
     );
-    const dispatchedAt = new Date().toISOString();
-    assert.equal(
-      await state.transact((unit) =>
-        unit.credentialSources.setCredentialSourceRegistrationDispatch(
-          namespaceId,
-          sourceId,
-          dispatchedAt,
-        ),
-      ),
-      true,
-    );
-    assert.equal(
-      await state.transact((unit) =>
-        unit.credentialSources.setCredentialSourceRegistrationDispatch(
-          namespaceId,
-          sourceId,
-          dispatchedAt,
-        ),
-      ),
-      false,
-    );
-    const ready = await state.transact((unit) =>
-      unit.credentialSources.markCredentialSourceReady(namespaceId, sourceId, {}),
+    const ready = await state.read((view) =>
+      view.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
     assert.equal(ready?.ownerCapability, "token_service");
-    assert.deepEqual(ready?.config, {});
-    assert.deepEqual(
-      ready?.ownerCapability === "token_service" ? ready.registration : undefined,
-      {},
+    assert.equal(ready?.state, "ready");
+    assert.equal(
+      ready?.ownerCapability === "token_service" ? ready.tokenServiceInstanceId : undefined,
+      selected.id,
     );
     await assert.rejects(
       state.transact((unit) =>
