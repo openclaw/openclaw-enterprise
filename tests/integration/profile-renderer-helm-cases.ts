@@ -280,7 +280,10 @@ export function registerHelmCases(): void {
       assert.match(output.values, /tokenSecretName: occ-repository-token\n/);
       assert.doesNotMatch(output.values, /appKeySecretName/);
       const manifests = helmTemplate(output);
-      assert.match(manifests, /name: "occ-repository-token"\n\s+items:\n\s+- key: "token"\n\s+path: token\n/);
+      assert.match(
+        manifests,
+        /name: "occ-repository-token"\n\s+items:\n\s+- key: "token"\n\s+path: token\n/,
+      );
       assert.doesNotMatch(manifests, /private-key\.pem/);
       for (const refused of [
         withoutAuthority,

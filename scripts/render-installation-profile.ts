@@ -66,8 +66,8 @@ interface RepositoryValues {
   backendId?: string;
   registryConfigMapName?: string;
   serviceConfigSecretName?: string;
-  appKeySecretName?: string;
-  tokenSecretName?: string;
+  appKeySecretName?: string | undefined;
+  tokenSecretName?: string | undefined;
   tlsSecretName?: string;
   publicCaSecretName?: string;
   serviceName?: string | undefined;
@@ -2319,7 +2319,10 @@ function buildRendered(
         description: "an IPv4 CIDR",
       }),
     } satisfies RepositoryValues;
-    if ((credentials.appKeySecretName === undefined) === (credentials.tokenSecretName === undefined)) {
+    if (
+      (credentials.appKeySecretName === undefined) ===
+      (credentials.tokenSecretName === undefined)
+    ) {
       diagnostics.errors.push(
         "repository requires exactly one of appKeySecretName and tokenSecretName.",
       );
