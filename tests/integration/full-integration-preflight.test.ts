@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -15,6 +17,7 @@ import {
   validateAcceptanceHello,
   verifyAcceptanceIdentities,
   verifyAcceptanceSource,
+  verifySlackQuarantine,
 } from "../../scripts/ci/network-proxy-acceptance.ts";
 import {
   acceptanceAuthor,
@@ -57,6 +60,77 @@ test("network proxy acceptance is limited to the approved Slack dispatch boundar
   }
   assert.doesNotThrow(() =>
     assertNetworkProxyAcceptance({ INPUT_NETWORK_PROXY_ACCEPTANCE: "false" }),
+  );
+});
+
+test("ordinary Slack refuses unresolved or unknown acceptance cleanup before fixture use", async () => {
+  const source = networkProxyAcceptance.source;
+  const provenance = { id: 42, head_branch: "main", head_sha: "a".repeat(40) };
+  const marker = {
+    name: `network-proxy-acceptance-posts-${source}`,
+    expired: false,
+    workflow_run: provenance,
+  };
+  const receipt = { version: 1, source, runId: "42", attempt: "1", cleanup: true };
+  const archive = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-S",
+      "-c",
+      "import io,sys,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('receipt.json',sys.stdin.buffer.read()); z.close(); sys.stdout.buffer.write(b.getvalue())",
+    ],
+    { input: JSON.stringify(receipt) },
+  ).stdout;
+  const cleanup = {
+    id: 123,
+    name: `network-proxy-acceptance-cleanup-${source}`,
+    expired: false,
+    workflow_run: provenance,
+    size_in_bytes: archive.length,
+    digest: `sha256:${createHash("sha256").update(archive).digest("hex")}`,
+  };
+  let markers: unknown[] = [];
+  let cleanups: unknown[] = [];
+  let run = {
+    ...provenance,
+    path: ".github/workflows/full-integration.yml",
+    event: "workflow_dispatch",
+    run_attempt: 1,
+  };
+  const read = async (url: string) => {
+    if (url.endsWith("/artifacts/123/zip")) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://fixture.blob.core.windows.net/receipt" },
+      });
+    }
+    if (url === "https://fixture.blob.core.windows.net/receipt") {
+      return new Response(archive);
+    }
+    if (url.includes("/actions/runs/")) {
+      return Response.json(run);
+    }
+    const artifacts = url.includes("name=network-proxy-acceptance-posts-") ? markers : cleanups;
+    return Response.json({ total_count: artifacts.length, artifacts });
+  };
+  await verifySlackQuarantine("reader", read);
+  markers = [marker];
+  await assert.rejects(
+    verifySlackQuarantine("reader", read),
+    /verified acceptance cleanup is missing/,
+  );
+  cleanups = [{ ...cleanup, workflow_run: { ...provenance, id: 43 } }];
+  await assert.rejects(verifySlackQuarantine("reader", read), /cleanup does not match/);
+  cleanups = [{ ...cleanup, digest: `sha256:${"0".repeat(64)}` }];
+  await assert.rejects(verifySlackQuarantine("reader", read), /digest does not match/);
+  cleanups = [cleanup];
+  await verifySlackQuarantine("reader", read);
+  run = { ...run, event: "push" };
+  await assert.rejects(verifySlackQuarantine("reader", read), /run provenance is invalid/);
+  await assert.rejects(
+    verifySlackQuarantine("reader", async () => new Response(null, { status: 503 })),
+    /HTTP 503/,
   );
 });
 

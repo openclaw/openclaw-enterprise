@@ -54,7 +54,15 @@ Subscriptions are unverified, so off-channel writes and transient between-poll
 activity are not observable. The user accepted those risks. A durable marker is
 created before write-capable credentials are used. Do not rerun or redispatch
 after the marker or an uncertain send; cleanup and the separate acceptance
-receipt must complete before releasing the fixture reservation. This mode does
+receipt must complete before releasing the fixture reservation. The ordinary Slack
+lane checks the marker before it receives fixture credentials. It fails closed
+unless the same approved run has a nonexpired, digest-verified cleanup receipt.
+An API error, incomplete inventory, missing receipt, or mismatched run keeps the
+fixture quarantined. For manual recovery, independently verify that the owned
+Gateway, cluster, and Socket Mode connection have retired. Preserve the incident
+evidence and wait until the acceptance mode expires before a maintainer manually
+removes an unresolved marker. Never remove it to retry an uncertain send or
+cancel an unrelated run. This mode does
 not merge the implementation or bypass the RFC human-review/manual-merge hold.
 See the [protected acceptance flow](../../flows/github-actions-testing/network-proxy-acceptance.md)
 for source execution and ownership.

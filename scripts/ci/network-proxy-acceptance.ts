@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
@@ -39,6 +40,147 @@ async function json(response: Response, operation: string): Promise<Record<strin
   } catch {
     throw new Error(`${operation} returned invalid metadata`);
   }
+}
+
+export async function verifySlackQuarantine(token: string, read: Reader = fetch): Promise<void> {
+  assert.ok(token, "GitHub artifact reader is required");
+  const request = async (path: string) =>
+    json(
+      await read(`https://api.github.com/repos/${networkProxyAcceptance.repository}${path}`, {
+        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      }),
+      "Slack acceptance quarantine check",
+    );
+  const artifacts = async (name: string) => {
+    const result = await request(`/actions/artifacts?name=${name}&per_page=100`);
+    assert.ok(
+      Array.isArray(result.artifacts) && result.total_count === result.artifacts.length,
+      "Slack acceptance artifact inventory is incomplete",
+    );
+    return result.artifacts as Array<Record<string, unknown>>;
+  };
+  const markerName = `network-proxy-acceptance-posts-${networkProxyAcceptance.source}`;
+  const markers = await artifacts(markerName);
+  if (markers.length === 0) {
+    return;
+  }
+  assert.equal(markers.length, 1, "Slack acceptance marker is ambiguous");
+  const marker = markers[0]!;
+  const markedRun = marker.workflow_run as Record<string, unknown> | undefined;
+  assert.ok(
+    marker.name === markerName &&
+      marker.expired === false &&
+      Number.isSafeInteger(markedRun?.id) &&
+      markedRun?.head_branch === "main" &&
+      typeof markedRun?.head_sha === "string" &&
+      /^[a-f0-9]{40}$/.test(markedRun.head_sha),
+    "Slack acceptance marker is invalid or expired",
+  );
+  const cleanupName = `network-proxy-acceptance-cleanup-${networkProxyAcceptance.source}`;
+  const cleanups = await artifacts(cleanupName);
+  assert.equal(
+    cleanups.length,
+    1,
+    "Slack fixture is quarantined: verified acceptance cleanup is missing or ambiguous",
+  );
+  const cleanup = cleanups[0]!;
+  const cleanedRun = cleanup.workflow_run as Record<string, unknown> | undefined;
+  assert.ok(
+    cleanup.name === cleanupName &&
+      cleanup.expired === false &&
+      cleanedRun?.id === markedRun.id &&
+      cleanedRun?.head_sha === markedRun.head_sha &&
+      cleanedRun?.head_branch === "main",
+    "Slack fixture is quarantined: cleanup does not match the marked run",
+  );
+  const size = cleanup.size_in_bytes;
+  const digest = cleanup.digest;
+  assert.ok(
+    Number.isSafeInteger(cleanup.id) &&
+      typeof size === "number" &&
+      size > 0 &&
+      size <= 1024 * 1024 &&
+      typeof digest === "string" &&
+      /^sha256:[a-f0-9]{64}$/.test(digest),
+    "Slack cleanup artifact identity is invalid",
+  );
+  const redirect = await read(
+    `https://api.github.com/repos/${networkProxyAcceptance.repository}/actions/artifacts/${cleanup.id}/zip`,
+    {
+      headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  assert.equal(redirect.status, 302, "Slack cleanup artifact download was not authorized");
+  const location = new URL(redirect.headers.get("location") ?? "https://invalid.invalid");
+  assert.ok(
+    location.protocol === "https:" &&
+      !location.username &&
+      !location.password &&
+      (location.hostname.endsWith(".blob.core.windows.net") ||
+        location.hostname.endsWith(".actions.githubusercontent.com")),
+    "Slack cleanup artifact redirect is invalid",
+  );
+  const archive = await read(location.href, {
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000),
+  });
+  assert.ok(archive.ok && archive.body, "Slack cleanup artifact is unavailable");
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for await (const chunk of archive.body) {
+    length += chunk.byteLength;
+    assert.ok(length <= size, "Slack cleanup artifact exceeds its authenticated size");
+    chunks.push(chunk);
+  }
+  const bytes = Buffer.concat(chunks);
+  assert.ok(
+    length === size && `sha256:${createHash("sha256").update(bytes).digest("hex")}` === digest,
+    "Slack cleanup artifact digest does not match",
+  );
+  const decoded = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-S",
+      "-c",
+      `
+import io, stat, sys, zipfile
+with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as archive:
+    entries = archive.infolist()
+    if len(entries) != 1: sys.exit(1)
+    entry = entries[0]
+    if entry.orig_filename != "receipt.json" or entry.file_size > 65536 or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) or stat.S_IFMT(entry.external_attr >> 16) not in (0, stat.S_IFREG): sys.exit(1)
+    with archive.open(entry) as member: data = member.read(65537)
+    if len(data) != entry.file_size: sys.exit(1)
+    sys.stdout.buffer.write(data)
+`,
+    ],
+    { input: bytes, encoding: "utf8", maxBuffer: 65536, timeout: 10_000 },
+  );
+  assert.ok(!decoded.error && decoded.status === 0, "Slack cleanup receipt archive is invalid");
+  const receipt = JSON.parse(decoded.stdout);
+  assert.ok(
+    receipt.version === 1 &&
+      receipt.source === networkProxyAcceptance.source &&
+      String(receipt.runId) === String(markedRun.id) &&
+      receipt.attempt === "1" &&
+      receipt.cleanup === true,
+    "Slack fixture is quarantined: authenticated cleanup receipt is invalid",
+  );
+  const run = await request(`/actions/runs/${markedRun.id}`);
+  assert.ok(
+    run.id === markedRun.id &&
+      run.path === ".github/workflows/full-integration.yml" &&
+      run.event === "workflow_dispatch" &&
+      run.head_branch === "main" &&
+      run.head_sha === markedRun.head_sha &&
+      run.run_attempt === 1,
+    "Slack fixture is quarantined: acceptance run provenance is invalid",
+  );
 }
 
 export async function verifyAcceptanceSource(token: string, read: Reader = fetch): Promise<void> {
@@ -394,6 +536,10 @@ async function main() {
         channel: networkProxyAcceptance.channel,
       }),
     );
+    return;
+  }
+  if (mode === "quarantine") {
+    await verifySlackQuarantine(process.env.GITHUB_TOKEN ?? "");
     return;
   }
   if (mode === "model") {

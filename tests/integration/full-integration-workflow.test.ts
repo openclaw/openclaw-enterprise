@@ -283,6 +283,16 @@ test("one-off proxy acceptance preserves normal Slack and scopes extra read perm
   assert.deepEqual(record(slack.concurrency), group);
   assert.deepEqual(record(acceptance.concurrency), group);
   assert.equal(slack.environment, "integration-main");
+  const slackSteps = array(slack.steps).map(record);
+  const quarantine = slackSteps.findIndex(
+    (step) => step.run === "node scripts/ci/network-proxy-acceptance.ts quarantine",
+  );
+  const lane = slackSteps.findIndex((step) => step.uses === "./.github/actions/run-ci-lane");
+  assert.ok(quarantine >= 0 && lane > quarantine);
+  assert.equal(record(slack.env).SLACK_APP_TOKEN, undefined);
+  assert.equal(record(slack.env).SLACK_BOT_TOKEN, undefined);
+  assert.equal(record(slack.env).OCC_TEST_SLACK_SENDER_BOT_TOKEN, undefined);
+  assert.equal(record(slackSteps[lane]!.env).SLACK_APP_TOKEN, "${{ secrets.SLACK_APP_TOKEN }}");
   assert.equal(acceptance.environment, "integration-main");
   assert.equal(
     acceptance.env,
@@ -349,6 +359,11 @@ test("one-off proxy acceptance preserves normal Slack and scopes extra read perm
     false,
   );
   const action = await readLaneAction("network-proxy-acceptance");
+  const clean = action.find(
+    (step) => step.name === "Persist verified cleanup for the shared Slack quarantine",
+  );
+  assert.equal(present(clean).if, "${{ always() && steps.cleanup.outcome == 'success' }}");
+  assert.equal(record(present(clean).with)["retention-days"], 90);
   const index = (name: string) => action.findIndex((step) => step.name === name);
   assert.ok(
     index("Persist the marker before any possible post") <
