@@ -28,6 +28,87 @@ import { Check } from "typebox/value";
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
 
+const gatewayContinuityReceipt = Type.Object({
+  namespaceId: Type.String(),
+  agentId: Type.String(),
+  revisionId: Type.String(),
+  runtime: Type.Object({
+    revisionId: Type.String(),
+    pods: Type.Array(
+      Type.Object({
+        role: Type.String(),
+        uid: Type.String({ minLength: 1 }),
+        phase: Type.String(),
+        containers: Type.Optional(
+          Type.Array(
+            Type.Object({
+              name: Type.String(),
+              state: Type.Optional(Type.String()),
+              restartCount: Type.Optional(Type.Unknown()),
+            }),
+          ),
+        ),
+      }),
+    ),
+  }),
+});
+
+export async function readGatewayContinuity(
+  directory: string,
+  {
+    namespaceId,
+    agentId,
+    revisionId,
+  }: { namespaceId: string; agentId: string; revisionId: string },
+) {
+  async function readGateway(phase: "before" | "after", filename: string) {
+    const label = `Agent continuity ${phase} the controller upgrade`;
+    const receipt = await readFile(join(directory, filename), "utf8")
+      .then(protectedJSON<unknown>)
+      .catch(() => {
+        throw new Error(`${label}: cannot read the receipt`);
+      });
+    assert.ok(Check(gatewayContinuityReceipt, receipt), `${label}: invalid receipt`);
+    assert.ok(
+      receipt.namespaceId === namespaceId &&
+        receipt.agentId === agentId &&
+        receipt.revisionId === revisionId &&
+        receipt.runtime.revisionId === revisionId,
+      `${label}: receipt identity does not match the selected Agent revision`,
+    );
+
+    // The upgrade CLI verifies readiness. Select the one live Gateway for comparison.
+    const gateways = receipt.runtime.pods.filter(
+      ({ role, phase }) => role === "gateway" && phase !== "Succeeded" && phase !== "Failed",
+    );
+    const [gateway] = gateways;
+    assert.ok(gateways.length === 1 && gateway, `${label}: expected exactly one live Gateway Pod`);
+    const containers = gateway.containers?.filter(({ name }) => name === "gateway");
+    const container = containers?.length === 1 ? containers[0] : undefined;
+    const count = container?.restartCount;
+    // Runtime inspection supplies a default zero when it has no container status.
+    const observed =
+      container?.state === "running" ||
+      container?.state === "waiting" ||
+      container?.state === "terminated";
+    return {
+      uid: gateway.uid,
+      restartCount:
+        observed && typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+          ? count
+          : null,
+    };
+  }
+
+  const before = await readGateway("before", "agent-continuity.json");
+  const after = await readGateway("after", "agent-continuity-after.json");
+  return {
+    podReplaced: before.uid !== after.uid,
+    gatewayRestartCountBefore: before.restartCount,
+    gatewayRestartCountAfter: after.restartCount,
+  };
+}
+
 // Both c0b09b2e and 4835e8bf ship these bytes at
 // deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs.
 const legacyRehearsalLoaderHash =
