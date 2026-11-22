@@ -20,3 +20,33 @@ launcher can install a selected plugin on first boot. A model turn also requires
 the workspace to permit the Harness permission profile, `:danger-full-access`.
 End-to-end qualification with managed plugins is pending.
 Box records denied destinations in its network policy audit.
+
+## Experimental OpenAI API key isolation
+
+By default, Codex receives the model API key. To keep that key in the trusted
+supervisor container, build the controller and [companion image](../../flows/strands-box-companion.md)
+from the same revision. Set the following fields in the Sandbox Driver configuration.
+
+```yaml
+policy:
+  network:
+    experimentalOpenAiModelCredential: true
+    endpoints:
+      - host: api.openai.com
+        ports: [443]
+```
+
+Use a dedicated Codex Harness with a workspace node, ordinary API-key authentication
+and a saved `modelProvider.baseUrl` of `https://api.openai.com/v1`. Disable managed
+plugins and standalone web search. Other endpoints, authentication modes and
+custom launch inputs are unsupported.
+
+**Every process in the Sandbox can spend the model quota.** Box checks a temporary
+bearer and injects the key only for HTTPS POST to the canonical path
+`/v1/responses`. The rule does not inspect query parameters, request bodies
+or executable identity. Callers can set other request headers. Trust the model
+provider and its responses.
+
+Stop the execution and deploy a new Agent revision to rotate the key.
+The preview provides no live withdrawal, protected Credential Source grants or
+GitHub access. Installed qualification is pending.

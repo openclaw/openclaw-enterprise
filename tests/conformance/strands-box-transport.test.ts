@@ -691,3 +691,54 @@ test(
     );
   },
 );
+
+test("the model preview launches with the Box placeholder only", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "strands-model-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "workload.json");
+  const phantom = "strands_box_" + "1".repeat(64);
+  async function launch(key: string, overrides: Record<string, unknown> = {}) {
+    await writeFile(
+      file,
+      JSON.stringify({
+        proxyOpenAiModelCredential: true,
+        command: [
+          "/bin/sh",
+          "-c",
+          'test "$OPENAI_API_KEY" = "$1" && echo started',
+          "test",
+          phantom,
+        ],
+        port: 1,
+        workspace: directory,
+        environment: {},
+        ...overrides,
+      }),
+    );
+    const child = spawn(
+      process.execPath,
+      [new URL("../../deploy/runtime/strands-box/inner.mjs", import.meta.url).pathname, file],
+      {
+        env: { OPENAI_API_KEY: key, HTTPS_PROXY: "http://127.0.0.1:1" },
+        timeout: 5000,
+      },
+    );
+    let output = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      output += chunk;
+    });
+    const [code] = await once(child, "close");
+    return { code, output };
+  }
+  assert.deepEqual(await launch(phantom), { code: 0, output: "started\n" });
+  for (const result of [
+    await launch(""),
+    await launch("invented-key"),
+    await launch(phantom, { environment: { OPENAI_API_KEY: "invented-key" } }),
+    await launch(phantom, { secretEnvironment: { OPENAI_API_KEY: "/missing-file" } }),
+  ]) {
+    assert.equal(result.code, 1);
+    assert.match(result.output, /model placeholder is missing or overridden/u);
+    assert.doesNotMatch(result.output, /started|invented-key|missing-file/u);
+  }
+});
