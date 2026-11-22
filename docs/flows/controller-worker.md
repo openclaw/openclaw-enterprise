@@ -255,12 +255,11 @@ After claim renewal, one transaction records Namespace readiness or deletion,
 lifecycle evidence, and queue completion. Provisioning can record failure.
 Deletion succeeds only after cleanup completes.
 
-With `activationOrder: beforeCommit`, the Driver activates before changing
-`Agent.activeRevisionId`. Other Drivers with activation run it after commit
-in development and production. The first dedicated revision stays inactive
-until commit. A failed compare-and-set records an `ACTIVE_REVISION_CHANGED`
-retry. The committed result tells the worker whether to activate, stop, or
-report the attempt.
+With `activationOrder: beforeCommit`, Compute activates before selection.
+Otherwise, production deactivates the first dedicated revision before selection.
+After commit, production requires activation and development calls it when
+implemented. A failed compare-and-set records an `ACTIVE_REVISION_CHANGED` retry.
+The committed result tells the worker whether to activate, stop, or report.
 
 A v5 `online-request` or v6 `request-hook-observed` hold leaves work queued until
 the selected revision is ready. The worker activates it and retires its
