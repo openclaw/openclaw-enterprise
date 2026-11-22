@@ -176,8 +176,22 @@ separate Gateway and Agent filesystems. A local synthetic provider drives the
 stock runtime without external network access. Ordinary chat must write a file;
 a scheduled empty tool cap must advertise no tools, reject the injected call,
 and leave the file absent. Codex checks shell and Code Mode dispatch separately.
-These controls do not establish app, MCP, messaging or delegation coverage and
-do not replace the [real-model QA scenario](ci/qa-advisory.md).
+Both Harnesses also check Gateway `sessions_spawn` against native child history
+and exact database label counts, and `message` against a local Slack-protocol
+collector. These controls do not establish native Codex collaboration, app or
+managed MCP coverage and do not replace the
+[real-model QA scenario](ci/qa-advisory.md).
+
+An OCE-managed MCP control needs the supported dedicated OpenClaw and
+OpenShell/Credential Gateway placement, an admitted release, a paired worker,
+the `mcp.tools.call.v1` grant, and a local collector that accepts `tools/call`.
+The existing pairing and tool-discovery fixtures do not provide that complete
+model-triggered control. A native Codex app control needs an authorized ChatGPT
+login, a selected installed app, its connected account and an observed callable
+tool ID. API-key authentication cannot install those apps. Follow
+[plugin verification](plugins.md#native-runtime-prerequisites) and
+[supported plugin boundaries](../reference/agent-plugins.md#current-support);
+these missing inputs remain coverage gaps, not proof of tool absence.
 
 For a standalone run of the default Codex version where Docker's default profile blocks
 the sandbox, obtain the reviewed manual file separately from the image export and set

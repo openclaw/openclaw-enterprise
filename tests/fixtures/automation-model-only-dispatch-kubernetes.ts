@@ -15,6 +15,7 @@ import {
   assertDispatchReport,
   dispatchEffectsScript,
   prepareDispatchInputs,
+  type DispatchProbe,
 } from "./automation-model-only-dispatch-inputs.ts";
 
 export async function runKubernetesAutomationDispatchProbe(
@@ -24,13 +25,13 @@ export async function runKubernetesAutomationDispatchProbe(
     gatewayImage,
     agentImage,
     seccompProfile,
-    probeTool,
+    probe,
   }: {
     selection: { kubeconfigPath: string; kubernetesContext: string };
     gatewayImage: string;
     agentImage: string;
     seccompProfile: string;
-    probeTool: "exec_command" | "exec";
+    probe: Exclude<DispatchProbe, "write">;
   },
 ) {
   await validateExplicitK3dLoopbackContext(selection);
@@ -79,7 +80,7 @@ export async function runKubernetesAutomationDispatchProbe(
     // Preserve certificate/input material if namespace cleanup fails.
     await rm(directory, { recursive: true, force: true });
   });
-  const input = await prepareDispatchInputs(directory, { nonce, harness: "codex", probeTool });
+  const input = await prepareDispatchInputs(directory, { nonce, harness: "codex", probe });
   const data: Record<string, string> = {};
   for (const file of [
     "ca.pem",
@@ -87,8 +88,7 @@ export async function runKubernetesAutomationDispatchProbe(
     "key.pem",
     "input.json",
     "openclaw.json",
-    "automation-model-only-dispatch-provider.mjs",
-    "automation-model-only-dispatch-runtime.mjs",
+    ...input.fixtureFiles,
   ]) {
     data[file] = await readFile(join(directory, file), "utf8");
   }
@@ -233,26 +233,28 @@ export async function runKubernetesAutomationDispatchProbe(
     }
     await delay(1500);
   }
-  assertDispatchReport(report, "codex", probeTool);
-  const effects = await kubectl(
-    "exec",
-    "-n",
-    namespace,
-    "dispatch",
-    "-c",
-    "agent",
-    "--",
-    "node",
-    "-e",
-    dispatchEffectsScript,
-    "/home/node/workspace",
-    nonce,
-  );
-  assert.deepEqual(
-    JSON.parse(effects),
-    { positiveMatches: true, negativeAbsent: true },
-    JSON.stringify(report),
-  );
+  assertDispatchReport(report, "codex", probe);
+  if (probe === "exec_command" || probe === "exec") {
+    const effects = await kubectl(
+      "exec",
+      "-n",
+      namespace,
+      "dispatch",
+      "-c",
+      "agent",
+      "--",
+      "node",
+      "-e",
+      dispatchEffectsScript,
+      "/home/node/workspace",
+      nonce,
+    );
+    assert.deepEqual(
+      JSON.parse(effects),
+      { positiveMatches: true, negativeAbsent: true },
+      JSON.stringify(report),
+    );
+  }
   await kubectl(
     "exec",
     "-n",
@@ -268,8 +270,9 @@ export async function runKubernetesAutomationDispatchProbe(
   t.diagnostic(
     JSON.stringify({
       ...report,
-      positiveFileEffect: true,
-      negativeFileAbsent: true,
+      ...(["exec_command", "exec"].includes(probe)
+        ? { positiveFileEffect: true, negativeFileAbsent: true }
+        : {}),
       gatewayImage,
       agentImage,
       placement:

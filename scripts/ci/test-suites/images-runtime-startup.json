@@ -33,7 +33,11 @@
       "path": "tests/integration/automation-model-only-dispatch.test.ts",
       "expectedTests": [
         "model-only openclaw: supplemental real dispatch rejects a synthetic provider tool call",
-        "model-only codex: supplemental real dispatch rejects a synthetic provider tool call"
+        "model-only codex: supplemental real dispatch rejects a synthetic provider tool call",
+        "model-only openclaw: supplemental delegation blocks child creation",
+        "model-only codex: supplemental delegation blocks child creation",
+        "model-only openclaw: supplemental messaging blocks a local Slack sink",
+        "model-only codex: supplemental messaging blocks a local Slack sink"
       ]
     },
     {

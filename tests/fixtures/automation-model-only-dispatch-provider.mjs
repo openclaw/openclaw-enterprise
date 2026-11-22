@@ -6,11 +6,19 @@ import { createRequire } from "node:module";
 
 // Supplemental provider only. It sends model tool requests, never tool outcomes.
 // Stock Harnesses must execute/reject them and return the correlated result.
-export async function startDispatchProvider({ harness, credential, nonce, workspace, probeTool }) {
+export async function startDispatchProvider({
+  harness,
+  credential,
+  nonce,
+  workspace,
+  probe,
+  strategy,
+}) {
   const { WebSocketServer } = createRequire("/app/node_modules/ws/package.json")("ws");
   const records = [];
   const cases = new Map();
   const callCases = new Map();
+  const callCounts = new Map();
   let selected;
   const markerFor = (phase) => `OCE_DISPATCH_${phase.toUpperCase()}_${nonce}`;
   const fileFor = (phase) => `${workspace}/occ-dispatch-${phase}-${nonce}`;
@@ -24,7 +32,7 @@ export async function startDispatchProvider({ harness, credential, nonce, worksp
   function selectTool(tools) {
     const entries = toolEntries(tools);
     const find = (name, type) => entries.find((tool) => tool.name === name && tool.type === type);
-    const tool = find(probeTool, probeTool === "exec" ? "custom" : "function");
+    const tool = find(probe, probe === "exec" ? "custom" : "function");
     assert.ok(tool, "ordinary chat must advertise a supported real write/shell tool");
     return {
       name: tool.name,
@@ -143,6 +151,11 @@ export async function startDispatchProvider({ harness, credential, nonce, worksp
     });
   }
   function events(body, transport) {
+    const auxiliary = strategy?.auxiliary?.(body);
+    if (auxiliary) {
+      records.push({ event: "scenario-auxiliary-request", transport, text: auxiliary.text });
+      return answer(body.model, auxiliary.text);
+    }
     const input = body.input ?? [];
     const outputs = input.filter((item) =>
       ["function_call_output", "custom_tool_call_output"].includes(item.type),
@@ -163,9 +176,14 @@ export async function startDispatchProvider({ harness, credential, nonce, worksp
       transport,
       tools: tools.map(({ type, name, namespace }) => ({ type, name, namespace })),
     });
+    if (cases.get(phase)?.complete) {
+      records.push({ event: "auxiliary-model-request", phase });
+      return answer(body.model, "Supplemental dispatch probe");
+    }
+    let rejected = false;
     if (output) {
       const text = JSON.stringify(output.output ?? "");
-      const rejected =
+      rejected =
         /unknown tool|tool.{0,80}(?:not found|not available|unavailable|disabled)|unsupported.{0,40}tool|unsupported call:|unrecognized.{0,40}tool|no tool/i.test(
           text,
         );
@@ -179,14 +197,45 @@ export async function startDispatchProvider({ harness, credential, nonce, worksp
           ? output.output.map((part) => part.type)
           : [typeof output.output],
       });
-      cases.set(phase, { complete: true, rejected, callId: output.call_id });
-      return answer(body.model, `DISPATCH_FINISHED_${phase}_${nonce}`);
+      if (!strategy) {
+        cases.set(phase, { complete: true, rejected, callId: output.call_id });
+        return answer(body.model, `DISPATCH_FINISHED_${phase}_${nonce}`);
+      }
     }
-    // The native runtime can request a title/summary after a completed turn and
-    // include its marker as source text. It is not another tool dispatch attempt.
-    if (cases.get(phase)?.complete) {
-      records.push({ event: "auxiliary-model-request", phase });
-      return answer(body.model, "Supplemental dispatch probe");
+    if (strategy) {
+      if (!output) {
+        assert.ok(
+          !cases.has(phase),
+          "a scenario must return correlated native output before continuing",
+        );
+      }
+      const action = strategy.plan({ phase, tools, output, body });
+      if (action.complete) {
+        assert.ok(output, "a scenario cannot complete without an actual native tool result");
+        cases.set(phase, { complete: true, rejected, callId: output.call_id });
+        records.push({ event: "scenario-completed", phase, summary: action.summary });
+        return answer(body.model, `DISPATCH_FINISHED_${phase}_${nonce}`);
+      }
+      const count = (callCounts.get(phase) ?? 0) + 1;
+      assert.ok(count <= 8, "supplemental scenario exceeded its bounded model call sequence");
+      callCounts.set(phase, count);
+      const call = {
+        ...action.call,
+        id: `tool_${randomUUID()}`,
+        call_id: `call_${phase}_${nonce}_${count}`,
+        status: "completed",
+      };
+      assert.ok(["function_call", "custom_tool_call"].includes(call.type));
+      cases.set(phase, { complete: false, callId: call.call_id });
+      callCases.set(call.call_id, phase);
+      records.push({
+        event: "tool-call-emitted",
+        phase,
+        callId: call.call_id,
+        type: call.type,
+        name: call.name,
+      });
+      return response(body.model, call);
     }
     if (phase === "positive") {
       selected ??= selectTool(body.tools);

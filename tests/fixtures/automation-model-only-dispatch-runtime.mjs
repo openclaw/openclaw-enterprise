@@ -4,22 +4,27 @@ import { promisify } from "node:util";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { startDispatchProvider } from "./automation-model-only-dispatch-provider.mjs";
+import { loadDispatchScenario } from "./automation-model-only-dispatch-scenarios.mjs";
 
 const execute = promisify(execFile);
 const input = JSON.parse(readFileSync("/fixture/input.json", "utf8"));
 const { harness, dummyCredential, gatewayPassword, transportToken, nonce } = input;
 const workspace = harness === "codex" ? "/home/node/workspace" : "/home/node/.openclaw/workspace";
 mkdirSync(workspace, { recursive: true });
+const scenario = await loadDispatchScenario(input.scenario, { nonce, harness, workspace });
+let sink;
 const provider = await startDispatchProvider({
   harness,
   credential: dummyCredential,
   nonce,
   workspace,
-  probeTool: input.probeTool,
+  probe: input.probe,
+  strategy: scenario?.strategy,
 });
 const children = [];
 const stderr = [];
 const common = {
+  ...input.scenarioEnvironment,
   PATH: process.env.PATH,
   HOME: "/home/node",
   NODE_EXTRA_CA_CERTS: "/fixture/ca.pem",
@@ -86,6 +91,7 @@ async function rpc(method, params) {
   return JSON.parse(result.stdout);
 }
 try {
+  sink = await scenario?.module.startSink?.({ nonce });
   start("gateway", input.gatewayEntrypoint, gatewayEnv);
   await until(
     "Gateway readiness",
@@ -98,12 +104,13 @@ try {
     },
     90000,
   );
+  const parentSessionKey = `agent:main:dispatch-positive-${nonce}`;
   const positive = await fetch("http://127.0.0.1:18800/v1/chat/completions", {
     method: "POST",
     headers: {
       authorization: `Bearer ${gatewayPassword}`,
       "content-type": "application/json",
-      "x-openclaw-session-key": `agent:main:dispatch-positive-${nonce}`,
+      "x-openclaw-session-key": parentSessionKey,
     },
     body: JSON.stringify({
       model: "openclaw/default",
@@ -114,7 +121,7 @@ try {
         },
       ],
     }),
-    signal: AbortSignal.timeout(60000),
+    signal: AbortSignal.timeout(scenario ? 120000 : 60000),
   });
   assert.equal(positive.status, 200, "ordinary chat must complete through the genuine runtime");
   await positive.text();
@@ -162,6 +169,26 @@ try {
     const history = await rpc("cron.runs", { id: job.id, limit: 10 });
     return history.entries?.length ? history : undefined;
   });
+  let scenarioEvidence;
+  if (scenario) {
+    assert.equal(
+      typeof scenario.module.verify,
+      "function",
+      "scenario must verify independent real effects",
+    );
+    scenarioEvidence = await scenario.module.verify({
+      rpc,
+      nonce,
+      providerRecords: provider.records,
+      parentSessionKey,
+      jobId: job.id,
+      sink,
+      until,
+      harness,
+    });
+    assert.equal(scenarioEvidence.positiveEffectVerified, true);
+    assert.equal(scenarioEvidence.negativeEffectAbsent, true);
+  }
   assert.equal(
     provider.records.some((record) => record.event === "provider-contract-failure"),
     false,
@@ -171,7 +198,8 @@ try {
     JSON.stringify({
       kind: "supplemental-dispatch-projection",
       harness,
-      probeTool: input.probeTool,
+      probe: input.probe,
+      scenarioEvidence,
       realRuntime: true,
       realProvider: false,
       positiveCorrelatedDispatchResult: true,
@@ -189,13 +217,11 @@ try {
   );
 } catch (error) {
   console.error(
-    JSON.stringify({ kind: "native-diagnostics", harness, text: stderr.join("").slice(-10000) }),
-  );
-  console.error(
     JSON.stringify({
       kind: "supplemental-dispatch-projection-failure",
       harness,
       reason: error.message,
+      nativeDiagnostics: stderr.join("").slice(-10000),
       observations: provider.records,
     }),
   );
@@ -214,5 +240,5 @@ try {
           ]),
     ),
   );
-  await provider.close();
+  await Promise.all([provider.close(), sink?.close?.()]);
 }

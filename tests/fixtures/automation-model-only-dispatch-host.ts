@@ -10,9 +10,14 @@ import {
   assertDispatchReport,
   dispatchEffectsScript,
   prepareDispatchInputs,
+  type DispatchProbe,
 } from "./automation-model-only-dispatch-inputs.ts";
 
-export async function runEmbeddedAutomationDispatchProbe(t: TestContext, image: string) {
+export async function runEmbeddedAutomationDispatchProbe(
+  t: TestContext,
+  image: string,
+  probe: DispatchProbe = "write",
+) {
   const nonce = randomUUID();
   const name = `oce-supplemental-dispatch-openclaw-${nonce}`;
   const directory = await mkdtemp(join(tmpdir(), `${name}-`));
@@ -29,7 +34,7 @@ export async function runEmbeddedAutomationDispatchProbe(t: TestContext, image: 
     // Retain mounted input if Docker cleanup fails; never hide a running container.
     await rm(directory, { recursive: true, force: true });
   });
-  await prepareDispatchInputs(directory, { nonce, harness: "openclaw", probeTool: "write" });
+  await prepareDispatchInputs(directory, { nonce, harness: "openclaw", probe });
   await runDocker([
     "run",
     "--detach",
@@ -83,21 +88,23 @@ export async function runEmbeddedAutomationDispatchProbe(t: TestContext, image: 
   } finally {
     await logs.stop();
   }
-  assertDispatchReport(report, "openclaw", "write");
-  const effects = await runDocker([
-    "exec",
-    name,
-    "node",
-    "-e",
-    dispatchEffectsScript,
-    "/home/node/.openclaw/workspace",
-    nonce,
-  ]);
-  assert.deepEqual(
-    JSON.parse(effects.stdout),
-    { positiveMatches: true, negativeAbsent: true },
-    JSON.stringify(report),
-  );
+  assertDispatchReport(report, "openclaw", probe);
+  if (probe === "write") {
+    const effects = await runDocker([
+      "exec",
+      name,
+      "node",
+      "-e",
+      dispatchEffectsScript,
+      "/home/node/.openclaw/workspace",
+      nonce,
+    ]);
+    assert.deepEqual(
+      JSON.parse(effects.stdout),
+      { positiveMatches: true, negativeAbsent: true },
+      JSON.stringify(report),
+    );
+  }
   await runDocker([
     "exec",
     name,
@@ -108,8 +115,7 @@ export async function runEmbeddedAutomationDispatchProbe(t: TestContext, image: 
   t.diagnostic(
     JSON.stringify({
       ...report,
-      positiveFileEffect: true,
-      negativeFileAbsent: true,
+      ...(probe === "write" ? { positiveFileEffect: true, negativeFileAbsent: true } : {}),
       placement: "embedded Gateway in a network-none container",
     }),
   );

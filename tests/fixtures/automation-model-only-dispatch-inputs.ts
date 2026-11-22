@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,16 +13,13 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createModelProbeCertificates } from "../helpers/runtime-model-probe-certificates.ts";
 import { execute } from "../helpers/runtime-image-docker.ts";
+import { loadDispatchScenario } from "./automation-model-only-dispatch-scenarios.mjs";
 
-export type DispatchProbeTool = "write" | "exec_command" | "exec";
+export type DispatchProbe = "write" | "exec_command" | "exec" | "delegation" | "messaging";
 
 export async function prepareDispatchInputs(
   directory: string,
-  {
-    nonce,
-    harness,
-    probeTool,
-  }: { nonce: string; harness: "openclaw" | "codex"; probeTool: DispatchProbeTool },
+  { nonce, harness, probe }: { nonce: string; harness: "openclaw" | "codex"; probe: DispatchProbe },
 ) {
   await createModelProbeCertificates({ directory, caName: `oce-dispatch-${nonce}`, run: execute });
   await rm(join(directory, "ca-key.pem"));
@@ -31,6 +28,12 @@ export async function prepareDispatchInputs(
     join(directory, "resolv.conf"),
     "nameserver 127.0.0.1\noptions timeout:1 attempts:1\n",
   );
+  const scenario = probe === "delegation" || probe === "messaging" ? probe : undefined;
+  const scenarioModule = await loadDispatchScenario(scenario, {
+    nonce,
+    harness,
+    workspace: harness === "codex" ? "/home/node/workspace" : "/home/node/.openclaw/workspace",
+  });
   const ordinary = createHarnessConfiguration(harness, "gpt-5");
   const configuration = {
     ...ordinary,
@@ -58,12 +61,17 @@ export async function prepareDispatchInputs(
   }
   await writeFile(
     join(directory, "openclaw.json"),
-    JSON.stringify(admitLoggingConfiguration(configuration, "info")),
+    JSON.stringify(
+      admitLoggingConfiguration(
+        scenarioModule?.module.configure?.(configuration, { nonce }) ?? configuration,
+        "info",
+      ),
+    ),
   );
-  for (const file of [
-    "automation-model-only-dispatch-provider.mjs",
-    "automation-model-only-dispatch-runtime.mjs",
-  ]) {
+  const fixtureFiles = (await readdir(fileURLToPath(new URL(".", import.meta.url)))).filter(
+    (file) => /^automation-model-only-(?:dispatch|delegation|messaging)-.*[.]mjs$/.test(file),
+  );
+  for (const file of fixtureFiles) {
     await writeFile(
       join(directory, file),
       await readFile(fileURLToPath(new URL(file, import.meta.url))),
@@ -77,15 +85,17 @@ export async function prepareDispatchInputs(
     "hosts",
     "resolv.conf",
     "openclaw.json",
-    "automation-model-only-dispatch-provider.mjs",
-    "automation-model-only-dispatch-runtime.mjs",
+    ...fixtureFiles,
   ]) {
     await chmod(join(directory, file), 0o644);
   }
   const payload = {
     harness,
     nonce,
-    probeTool,
+    probe,
+    scenario,
+    scenarioEnvironment: scenarioModule?.module.environment?.({ nonce }) ?? {},
+    fixtureFiles,
     dummyCredential: `synthetic-api-key-${randomUUID()}`,
     gatewayPassword: `synthetic-gateway-${randomUUID()}`,
     transportToken: `synthetic-transport-${randomUUID()}`,
@@ -109,15 +119,20 @@ console.log(JSON.stringify({positiveMatches:fs.existsSync(positive)&&fs.readFile
 export function assertDispatchReport(
   report: Record<string, unknown> | undefined,
   harness: string,
-  probeTool: DispatchProbeTool,
+  probe: DispatchProbe,
 ) {
   assert.ok(report, "supplemental dispatch report must be produced");
   assert.equal(report.kind, "supplemental-dispatch-projection", JSON.stringify(report));
   assert.equal(report.harness, harness);
-  assert.equal(report.probeTool, probeTool);
+  assert.equal(report.probe, probe);
   assert.equal(report.realProvider, false);
   assert.equal(report.positiveCorrelatedDispatchResult, true);
   assert.equal(report.negativeToolsEmpty, true);
   assert.equal(report.negativeCorrelatedRejection, true);
   assert.equal(report.nativeRunRecorded, true);
+  if (probe === "delegation" || probe === "messaging") {
+    const evidence = report.scenarioEvidence as Record<string, unknown> | undefined;
+    assert.equal(evidence?.positiveEffectVerified, true, JSON.stringify(report));
+    assert.equal(evidence?.negativeEffectAbsent, true, JSON.stringify(report));
+  }
 }
