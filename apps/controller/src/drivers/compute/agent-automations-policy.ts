@@ -56,6 +56,7 @@ const publicToolKeys = new Set([
   "codeMode",
   "toolSearch",
   "gatewayPolicy",
+  "exec",
 ]);
 const publicGatewayPolicyKeys = new Set(["allow", "actions", "automations"]);
 const nativeToolName = /^(?:\*|[A-Za-z][A-Za-z0-9_.:-]*(?:\*)?)$/u;
@@ -81,6 +82,19 @@ function publicToolPolicy(
     (tools.profile !== undefined &&
       (typeof tools.profile !== "string" ||
         !["minimal", "coding", "messaging", "full"].includes(tools.profile)))
+  ) {
+    return undefined;
+  }
+  const exec = asRecord(tools.exec);
+  const applyPatch = asRecord(exec?.applyPatch);
+  if (
+    !exec ||
+    Object.keys(exec).length !== 3 ||
+    exec.mode !== "full" ||
+    exec.strictInlineEval !== false ||
+    !applyPatch ||
+    Object.keys(applyPatch).length !== 1 ||
+    applyPatch.workspaceOnly !== true
   ) {
     return undefined;
   }
@@ -116,6 +130,7 @@ function publicToolPolicy(
     deny,
     codeMode: tools.codeMode,
     toolSearch: tools.toolSearch,
+    exec: { applyPatch: { workspaceOnly: true }, mode: "full", strictInlineEval: false },
     actions: selectedActions,
     automations:
       automations === undefined

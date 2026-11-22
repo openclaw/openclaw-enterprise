@@ -32,6 +32,7 @@ import {
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   ActivationPendingError,
+  admitGatewaySecurityDefaults,
   ConfigurationHarnessError,
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
@@ -401,6 +402,69 @@ test("Kubernetes peer Pod selectors and node selectors reject labels the API ref
       configure(configured, podLabels);
       assert.doesNotThrow(() => createKubernetesComputeDriver(configured), description);
     }
+  }
+});
+
+test("automation qualification accepts only the server-admitted exec defaults without granting exec", async () => {
+  const image = `example.test/runtime@sha256:${"a".repeat(64)}`;
+  const endpoint = { url: "https://mcp.example.test/approved", egressCidrs: ["192.0.2.10/32"] };
+  const driver = new KubernetesComputeDriver(
+    options({
+      images: { gateway: image, agent: image, requireImmutableDigest: true },
+      automations: { trustedAnonymousMcpEndpoints: [endpoint] },
+    }),
+  );
+  const draft = {
+    agents: { defaults: { model: "openai/gpt-5" } },
+    gateway: { nodes: { pluginTools: { enabled: false }, allowSkills: false } },
+    mcp: {
+      servers: {
+        qa: { transport: "streamable-http", url: endpoint.url, toolFilter: { include: ["probe"] } },
+      },
+    },
+    plugins: { allow: ["openai", "memory-core"] },
+    tools: {
+      profile: "full",
+      gatewayPolicy: { allow: ["qa__probe"] },
+      codeMode: false,
+      toolSearch: false,
+    },
+  };
+  // Deployment adds these server-owned defaults before the selected Compute evaluates the revision.
+  const configuration = admitGatewaySecurityDefaults(draft);
+  assert.deepEqual(configuration.tools.exec, {
+    applyPatch: { workspaceOnly: true },
+    mode: "full",
+    strictInlineEval: false,
+  });
+  const revision = routedRevision(driver, {
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    configuration,
+  });
+  const qualified = await driver.evaluateAgentAutomationPolicy(revision);
+  assert.deepEqual(
+    qualified?.grant.tools.map(({ name }) => name),
+    ["qa__probe"],
+  );
+  assert.match(qualified.grant.tools[0].binding, /^[a-f0-9]{64}$/u);
+
+  // An altered or extended exec policy is not the server-owned descriptor and must fail closed.
+  for (const exec of [
+    undefined,
+    { mode: "full", strictInlineEval: false },
+    { ...configuration.tools.exec, mode: "safe" },
+    { ...configuration.tools.exec, strictInlineEval: true },
+    { ...configuration.tools.exec, applyPatch: { workspaceOnly: false } },
+    { ...configuration.tools.exec, extra: true },
+    { ...configuration.tools.exec, applyPatch: { workspaceOnly: true, extra: true } },
+  ]) {
+    assert.equal(
+      await driver.evaluateAgentAutomationPolicy({
+        ...revision,
+        configuration: { ...configuration, tools: { ...configuration.tools, exec } },
+      }),
+      undefined,
+    );
   }
 });
 
