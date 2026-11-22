@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-22"
-last_updated_session: "authoring-run/c8a2f368-b5c6-464f-859b-7c81d28819ae"
+last_updated_session: "authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa"
 ---
 
 # Agent sandbox policy flow
@@ -121,12 +121,13 @@ transaction before OCC waits for the IAM configuration lock, and the
 authorization checks see revocations committed during the wait.
 
 `apps/controller/src/console/agents/sandbox-policy.mts:renderAgentSandboxPolicy`
-uses the GET hint to offer candidates from the Namespace ceiling. The versioned
-PUT checks the whole list. The Console verifies the returned Agent, Namespace,
-version and grants. Deny-all and withdrawal require confirmation. For an Agent
-with earlier unscoped deployments, create a new Agent and save its policy before
-deploying. If the active revision is unreadable, use a compatible controller and
-Worker to stop it.
+uses the GET hint and Namespace limits. Refresh updates version and limits.
+Refresh and rejected saves preserve the draft while saved grants match its
+starting list. If they change, discard the draft to edit the current list.
+PUT validates the list. The editor checks the returned Agent, Namespace,
+version and grants. Confirm deny-all and withdrawal. After an unscoped
+deployment, save policy on a new Agent before deploying. Use a compatible
+controller and Worker to stop an unreadable revision.
 
 Deployment rechecks the selected Repo scope, proxy and Driver identities across
 asynchronous validation before accessing credentials and inserting a revision.
@@ -276,6 +277,7 @@ counters, controls and empty rows.
 
 ## Changelog
 
+- 2026-11-22 13:25: Explain draft retention and recovery after a concurrent repository grant change. (authoring-run/ef83c979-c682-4429-8d7f-63340166b9fa - 19ce90f1761a9da44d9a972c42d49686732a604a)
 - 2026-11-22 10:05: Document IAM currentness during Channel handoff and deployment admission. (authoring-run/c8a2f368-b5c6-464f-859b-7c81d28819ae - 00a5b1d2edc6de425e2e9d197bb0841a02f439e8)
 
 - 2026-11-22 09:55: Document transaction isolation for explicit repository policy saves. (authoring-run/0eda0b23-705a-489b-833d-3cde8916b691 - 42f0df7230de059d4a96da27298c911e22993cab)

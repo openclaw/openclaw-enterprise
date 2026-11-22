@@ -38,6 +38,7 @@ type PolicyState =
   | "noCredential"
   | "repositoryLimits"
   | "repositoryEditor"
+  | "repositoryEditorConcurrent"
   | "repositoryRecovery"
   | "protected"
   | "withheldOne"
@@ -89,6 +90,11 @@ export function createAgentDetailPolicyScenarios({
       "policyRepositoryEditor",
       "repositoryEditor",
       "Save Agent repository access and narrow a grant",
+    ],
+    [
+      "policyRepositoryEditorConcurrent",
+      "repositoryEditorConcurrent",
+      "Reconcile concurrent repository grant changes",
     ],
     ["policyDenialsMany", "many", "Two hundred denials with batch approval"],
     ["policyRulesPopulated", "populated", "Manage ten applied network rules"],
@@ -162,6 +168,8 @@ export function createAgentDetailPolicyScenarios({
       "Multiple policy records withheld since the last refresh",
     ],
   ] satisfies [id: string, state: PolicyState, name: string][];
+  const isRepositoryEditor = (state: PolicyState) =>
+    state === "repositoryEditor" || state === "repositoryEditorConcurrent";
   return variants.map(
     ([id, state, name]) =>
       [
@@ -169,9 +177,9 @@ export function createAgentDetailPolicyScenarios({
         {
           group: "Pages/Agent detail",
           name,
-          path: `${state === "repositoryEditor" ? candidateVersion.replace(/([?&]revision=)[^&]+/, "$1draft") : candidateVersion}&tab=policy`,
-          deployed: state !== "repositoryEditor",
-          ...(state === "repositoryEditor" ? {} : { candidateDeploymentStatus: "succeeded" }),
+          path: `${isRepositoryEditor(state) ? candidateVersion.replace(/([?&]revision=)[^&]+/, "$1draft") : candidateVersion}&tab=policy`,
+          deployed: !isRepositoryEditor(state),
+          ...(isRepositoryEditor(state) ? {} : { candidateDeploymentStatus: "succeeded" }),
           policyState: state,
           ...(["many", "populated"].includes(state)
             ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
@@ -268,8 +276,20 @@ export function createAgentDetailPolicyScenarios({
                   "An Agent can propose repository access within the Namespace limits before its first deployment.",
                 steps: [
                   "Open Manage rules, select Read for example/application and Write for example/tooling, and save.",
-                  "Reopen Manage rules, change example/tooling to Read, and save again.",
+                  "Reopen Manage rules, change example/tooling to Read, and refresh. Check that Read is still selected, then save.",
+                  "Set example/application to No access and save. The story rejects the partial list. Check that the choice stays selected, then discard the repository changes.",
                   "Reload the story from its initial state and choose Deny all repositories. Confirm the empty policy remains distinct from legacy access.",
+                ],
+              }
+            : {}),
+          ...(state === "repositoryEditorConcurrent"
+            ? {
+                policyCeiling: [],
+                steps: [
+                  "Open Manage rules. Set example/application to Read and example/tooling to Write, then save.",
+                  "Reopen Manage rules and change example/tooling to Read. Save and observe the simulated version conflict.",
+                  "Refresh policy. The current grants show example/tooling only. Discard repository changes to resume editing.",
+                  "Set example/tooling to Read and save. Check that example/application still has No access.",
                 ],
               }
             : {}),

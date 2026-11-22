@@ -168,8 +168,10 @@ export function createNetworkPolicyFixture(
   let policyPolls = 0;
   let policyReads = 0;
   const repositoryEditor = scenario.policyState === "repositoryEditor";
+  let simulateRepositoryConflict = scenario.policyState === "repositoryEditorConcurrent";
+  const canEditRepositoryGrants = repositoryEditor || simulateRepositoryConflict;
   const unreadableRevision = scenario.policyState === "repositoryRecovery";
-  const repositoryLimits = scenario.policyState === "repositoryLimits" || repositoryEditor;
+  const repositoryLimits = scenario.policyState === "repositoryLimits" || canEditRepositoryGrants;
   const protectedExecution = scenario.policyState === "protected" || repositoryLimits;
   const repositoryCeiling: readonly RepositoryNetworkGrant[] = repositoryLimits
     ? [
@@ -177,7 +179,7 @@ export function createNetworkPolicyFixture(
         { repository: "example/tooling", access: "write" },
       ]
     : [];
-  const repositoryChoices = repositoryEditor
+  const repositoryChoices = canEditRepositoryGrants
     ? [...repositoryCeiling, { repository: "example/tooling", access: "read" } as const]
     : [];
   const initialAdditions =
@@ -381,7 +383,7 @@ export function createNetworkPolicyFixture(
           ? {
               repositoryNetworkPolicyCeiling: repositoryCeiling,
               repositoryNetworkPolicySaveSupported:
-                repositoryEditor || sandboxPolicy.repositoryNetworkPolicy !== undefined,
+                canEditRepositoryGrants || sandboxPolicy.repositoryNetworkPolicy !== undefined,
             }
           : {}),
         ceiling: policyCeiling,
@@ -401,7 +403,7 @@ export function createNetworkPolicyFixture(
         // (D773).
         ...(scenario.policyState === "unsupported" ||
         scenario.policyState === "protected" ||
-        repositoryEditor ||
+        canEditRepositoryGrants ||
         unreadableRevision
           ? {}
           : { defaultsRevisionId: candidateRevisionId, deployedPolicyVersion: 1 }),
@@ -475,10 +477,23 @@ export function createNetworkPolicyFixture(
           "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
         );
       }
+      const explicit = "repositoryNetworkPolicy" in body;
+      const savedGrants = sandboxPolicy.repositoryNetworkPolicy;
+      if (simulateRepositoryConflict && explicit && savedGrants?.length === 2) {
+        // Simulate a second editor removing the application grant before this save.
+        simulateRepositoryConflict = false;
+        sandboxPolicy = {
+          ...sandboxPolicy,
+          version: sandboxPolicy.version + 1,
+          repositoryNetworkPolicy: savedGrants.filter(
+            ({ repository }) => repository !== "example/application",
+          ),
+        };
+        return error(409, "RESOURCE_STATE_CONFLICT", "Reload before editing.");
+      }
       if (!("expectedVersion" in body) || body.expectedVersion !== sandboxPolicy.version) {
         return error(409, "RESOURCE_STATE_CONFLICT");
       }
-      const explicit = "repositoryNetworkPolicy" in body;
       const requested = explicit ? body.repositoryNetworkPolicy : undefined;
       if (explicit && (!Array.isArray(requested) || body.additions.length > 0)) {
         return error(409, "RESOURCE_CONFLICT");
@@ -490,8 +505,9 @@ export function createNetworkPolicyFixture(
         : undefined;
       if (
         (choices?.length === 0 &&
-          !repositoryEditor &&
+          !canEditRepositoryGrants &&
           sandboxPolicy.repositoryNetworkPolicy === undefined) ||
+        (repositoryEditor && choices?.length === 1) ||
         choices?.some((choice) => choice === undefined)
       ) {
         return error(409, "RESOURCE_CONFLICT", "Repository access is unavailable for this Agent.");

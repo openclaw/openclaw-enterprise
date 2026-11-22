@@ -290,6 +290,7 @@ export const PolicyDenials = story("policyDenials");
 export const PolicyRepositoryRecovery = story("policyRepositoryRecovery");
 export const PolicyRepositoryLimits = story("policyRepositoryLimits");
 export const PolicyRepositoryEditor = story("policyRepositoryEditor");
+export const PolicyRepositoryEditorConcurrent = story("policyRepositoryEditorConcurrent");
 export const PolicyUnicodeExecutable = story("policyUnicodeExecutable");
 export const PolicyDenialsMany = story("policyDenialsMany");
 export const PolicyRulesPopulated = story("policyRulesPopulated");

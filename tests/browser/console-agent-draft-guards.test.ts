@@ -1183,6 +1183,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   controller.registerDriver(credentialGateway);
   controller.selectDriver("credential_gateway", credentialGateway.id);
   let editsAllowed = true;
+  let allowPartialGrants = false;
   // Admission is real; the test does not start a Compute runtime.
   Object.defineProperty(compute, "requiresAgentRuntimeCredentials", { value: undefined });
   Object.assign(compute, {
@@ -1194,7 +1195,10 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
       repositoryNetworkPolicy: policy,
     }: ProtectedRepositoryNetworkPolicySaveContext) =>
       editsAllowed &&
-      (policy === undefined || repositoryBindings.length === 1 || policy.grants.length === 2),
+      (policy === undefined ||
+        allowPartialGrants ||
+        repositoryBindings.length === 1 ||
+        policy.grants.length === 2),
     validateProtectedRepositoryNetworkPolicy() {},
   } satisfies Pick<
     ComputeDriver,
@@ -1322,20 +1326,124 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   await waitForInputValue(a, "read");
   await waitForInputValue(b, "write");
   await b.selectOption("read");
+  const refresh = async () => {
+    const previousChoice = await b.elementHandle();
+    const response = responseTo(page, "GET", fixture.origin + mixedAgent.base);
+    await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+    assert.equal((await response).status(), 200);
+    // Wait for the editor rebuilt from the response before checking its proposal.
+    await previousChoice.waitForElementState("hidden");
+    await waitForInputValue(a, "read");
+    await waitForInputValue(b, "read");
+    assert.equal(await save.isEnabled(), true);
+  };
+  await refresh();
+
+  // An additions-only save advances the version without changing the saved grants.
+  const firstVersion = record((await mixedAgent.read()).policy).version;
+  const competingSave = await fixture.request("PUT", mixedAgent.base, {
+    body: { expectedVersion: firstVersion, additions: [] },
+  });
+  assert.equal(competingSave.status, 200, JSON.stringify(competingSave.body));
+  const stale = put(mixedAgent.base);
+  await save.click();
+  assert.equal((await stale).status(), 409);
+  await page.getByText(/Reload before editing/).waitFor();
+  await waitForInputValue(b, "read");
+  assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, grants);
+  await refresh();
+
   const downgrade = put(mixedAgent.base);
   await save.click();
-  assert.equal((await downgrade).status(), 200);
+  const downgraded = await downgrade;
+  assert.equal(downgraded.status(), 200);
+  assert.equal(
+    record(downgraded.request().postDataJSON()).expectedVersion,
+    record(competingSave.data).version,
+  );
   const narrowed = [app, { ...tooling, access: "read" }];
   assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, narrowed);
 
   // The general hint still supports withdrawal while the Driver rejects a new list.
   editsAllowed = false;
   await manage.click();
+  await waitForInputValue(b, "read");
+  assert.equal(await save.isEnabled(), false);
   await a.selectOption("");
   const refused = put(mixedAgent.base);
   await save.click();
   assert.equal((await refused).status(), 409);
+  await waitForInputValue(a, "");
   assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, narrowed);
+  await panel.getByRole("button", { name: "Discard repository changes", exact: true }).click();
+  await waitForInputValue(a, "read");
+  assert.equal(await save.isEnabled(), false);
+  editsAllowed = true;
+  allowPartialGrants = true;
+  // Give a second administrator a newer saved list while the editor has a draft.
+  const writeBaseline = await fixture.request("PUT", mixedAgent.base, {
+    body: {
+      expectedVersion: record((await mixedAgent.read()).policy).version,
+      additions: [],
+      repositoryNetworkPolicy: grants,
+    },
+  });
+  assert.equal(writeBaseline.status, 200, JSON.stringify(writeBaseline.body));
+  const previousChoice = await b.elementHandle();
+  const baselineRead = responseTo(page, "GET", fixture.origin + mixedAgent.base);
+  const refreshPolicy = page.getByRole("button", { name: "Refresh policy", exact: true });
+  await refreshPolicy.click();
+  assert.equal((await baselineRead).status(), 200);
+  await previousChoice.waitForElementState("hidden");
+  await waitForInputValue(b, "write");
+  await b.selectOption("read");
+
+  const removal = await fixture.request("PUT", mixedAgent.base, {
+    body: {
+      expectedVersion: record(writeBaseline.data).version,
+      additions: [],
+      repositoryNetworkPolicy: [tooling],
+    },
+  });
+  assert.equal(removal.status, 200, JSON.stringify(removal.body));
+  assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, [tooling]);
+
+  const requestsBeforeRefresh = pathRequests(requests, "PUT", mixedAgent.base).length;
+  const removalRead = responseTo(page, "GET", fixture.origin + mixedAgent.base);
+  await refreshPolicy.click();
+  assert.equal((await removalRead).status(), 200);
+  await panel.getByText(/Saved repository grants changed/).waitFor();
+  assert.equal(await save.count(), 0);
+  assert.equal(await panel.getByText(app.repository, { exact: true }).count(), 0);
+  await panel.getByText(tooling.repository, { exact: true }).waitFor();
+  assert.equal(pathRequests(requests, "PUT", mixedAgent.base).length, requestsBeforeRefresh);
+
+  await panel.getByRole("button", { name: "Discard repository changes", exact: true }).click();
+  await waitForInputValue(a, "");
+  await waitForInputValue(b, "write");
+  assert.equal(await save.isEnabled(), false);
+  await b.selectOption("read");
+  const reconciledSave = put(mixedAgent.base);
+  await save.click();
+  const reconciled = await reconciledSave;
+  assert.equal(reconciled.status(), 200, await reconciled.text());
+  const reconciledGrants = [{ ...tooling, access: "read" }];
+  assert.deepEqual(
+    record(reconciled.request().postDataJSON()).repositoryNetworkPolicy,
+    reconciledGrants,
+  );
+  assert.equal(
+    record(reconciled.request().postDataJSON()).expectedVersion,
+    record(removal.data).version,
+  );
+  assert.deepEqual(
+    record((await mixedAgent.read()).policy).repositoryNetworkPolicy,
+    reconciledGrants,
+  );
+
+  editsAllowed = false;
+  allowPartialGrants = false;
+  await manage.click();
   await panel
     .getByRole("button", { name: "Withdraw saved repository grants", exact: true })
     .click();

@@ -674,6 +674,9 @@ export function renderAgentSandboxPolicy(
   let policyReadUnavailable = false;
   // The schema editor can produce an incomplete or invalid draft. The policy owner validates it.
   let additions: unknown = [];
+  let repositoryDraft:
+    | { saved: RepositoryGrants | undefined; grants: RepositoryGrants; conflicted?: true }
+    | undefined;
   let recommendations: SandboxPolicyRecommendations["recommendations"] = [];
   let suggestionsReading = false;
   // A permission refusal is not retried from here: the same request gets the same answer.
@@ -1455,6 +1458,7 @@ export function renderAgentSandboxPolicy(
     const updated = await writePolicy(loaded.configuration, loaded.policy, "save", [], grants);
     if (current() && view) {
       view.policy = updated;
+      repositoryDraft = undefined;
       outcomeRequested = true;
       failedApplicationInspected = false;
       feedback.textContent = grants.length
@@ -1465,15 +1469,31 @@ export function renderAgentSandboxPolicy(
     }
   }
 
+  function discardRepositoryDraft() {
+    repositoryDraft = undefined;
+    renderEditor();
+    policyPanel
+      .querySelector<HTMLElement>(
+        '[aria-labelledby="sandbox-repository-policy-title"] select, [aria-labelledby="sandbox-repository-policy-title"] button',
+      )
+      ?.focus();
+  }
+
   function repositoryPolicyForm(loaded: SandboxPolicyViewWire, ceiling: RepositoryGrants) {
     const { policy } = loaded;
     const limits = new Map(ceiling.map(({ repository, access }) => [repository, access]));
-    const saved = new Map(
-      policy.repositoryNetworkPolicy?.map(({ repository, access }) => [repository, access]),
+    const saved = policy.repositoryNetworkPolicy ?? [];
+    const proposed = new Map(
+      (repositoryDraft?.grants ?? saved).map(({ repository, access }) => [repository, access]),
     );
-    const fields = [...new Set([...limits.keys(), ...saved.keys()])].map((repository) => {
+    const repositories = new Set([
+      ...limits.keys(),
+      ...saved.map(({ repository }) => repository),
+      ...proposed.keys(),
+    ]);
+    const fields = [...repositories].map((repository) => {
       const limit = limits.get(repository);
-      const selected = saved.get(repository);
+      const selected = proposed.get(repository);
       const choice = element("select", {}, element("option", { value: "" }, "No access"));
       if (limit) {
         choice.append(element("option", { value: "read" }, "Read"));
@@ -1483,17 +1503,26 @@ export function renderAgentSandboxPolicy(
       }
       if (selected && (!limit || (selected === "write" && limit === "read"))) {
         choice.append(
-          element("option", { value: selected, disabled: true }, `Saved ${selected} (unavailable)`),
+          element(
+            "option",
+            { value: selected, disabled: true },
+            `${repositoryDraft === undefined ? "Saved" : "Proposed"} ${selected} (unavailable)`,
+          ),
         );
       }
       choice.value = selected ?? "";
-      return { repository, choice, limit };
+      return { repository, choice };
     });
     const save = element(
       "button",
       { type: "submit", className: "button button--primary" },
       "Save repository policy",
     );
+    const discard = button("Discard repository changes", () => {
+      if (formIsCurrent()) {
+        discardRepositoryDraft();
+      }
+    });
     const form = element(
       "form",
       { className: "sandbox-policy-form" },
@@ -1506,46 +1535,58 @@ export function renderAgentSandboxPolicy(
         "Saving checks the complete list against the selected Drivers and the Agent’s repository access.",
       ),
       save,
+      discard,
     );
 
-    function proposedGrants() {
-      const next: RepositoryNetworkGrant[] = [];
-      for (const { repository, choice, limit } of fields) {
-        const access = choice.value;
-        if (access === "") {
-          continue;
-        }
-        if ((access === "read" && limit) || (access === "write" && limit === "write")) {
-          next.push({ repository, access });
-        } else {
-          return undefined;
-        }
-      }
-      return next.length && !sameRepositoryGrants(policy.repositoryNetworkPolicy, next)
-        ? next
-        : undefined;
-    }
-
-    const updateSave = () => {
-      save.disabled = proposedGrants() === undefined;
-    };
-    form.addEventListener("change", updateSave);
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const next = proposedGrants();
-      if (
-        next &&
+    function formIsCurrent() {
+      return (
         current() &&
         dialog.open &&
         policyPanel.contains(form) &&
         view === loaded &&
+        view.policy === policy &&
+        !repositoryDraft?.conflicted &&
         canEdit() &&
         !hasProposedChanges()
-      ) {
+      );
+    }
+    function canSave(grants: RepositoryGrants) {
+      return (
+        grants.length > 0 &&
+        grants.every(({ repository, access }) => {
+          const limit = limits.get(repository);
+          return limit === "write" || limit === access;
+        })
+      );
+    }
+    function updateActions() {
+      save.disabled = repositoryDraft === undefined || !canSave(repositoryDraft.grants);
+      discard.hidden = repositoryDraft === undefined;
+    }
+    form.addEventListener("change", () => {
+      if (!formIsCurrent()) {
+        return;
+      }
+      const grants: RepositoryNetworkGrant[] = [];
+      for (const { repository, choice } of fields) {
+        const access = choice.value;
+        if (access === "read" || access === "write") {
+          grants.push({ repository, access });
+        }
+      }
+      repositoryDraft = sameRepositoryGrants(saved, grants)
+        ? undefined
+        : { saved: policy.repositoryNetworkPolicy, grants };
+      updateActions();
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const next = repositoryDraft?.grants;
+      if (next !== undefined && formIsCurrent() && canSave(next)) {
         void mutate(() => saveRepositoryPolicy(loaded, next));
       }
     });
-    updateSave();
+    updateActions();
     return form;
   }
 
@@ -1563,6 +1604,24 @@ export function renderAgentSandboxPolicy(
       element("p", {}, summary),
     );
     const hint = (text: string) => element("p", { className: "hint" }, text);
+    if (repositoryDraft?.conflicted) {
+      if (saved?.length) {
+        panel.append(repositoryGrantList(saved));
+      }
+      panel.append(
+        element(
+          "p",
+          { role: "status" },
+          "Saved repository grants changed. Discard your draft, then make changes using the current grants.",
+        ),
+        button("Discard repository changes", () => {
+          if (current() && dialog.open && view === loaded && policyPanel.contains(panel)) {
+            discardRepositoryDraft();
+          }
+        }),
+      );
+      return panel;
+    }
     const canPropose =
       loaded.repositoryNetworkPolicySaveSupported === true &&
       loaded.protectedExecution === true &&
@@ -2314,6 +2373,12 @@ export function renderAgentSandboxPolicy(
       }
       const wasPending = view?.policy.application?.state === "pending";
       view = loaded;
+      if (
+        repositoryDraft !== undefined &&
+        !sameRepositoryGrants(repositoryDraft.saved, loaded.policy.repositoryNetworkPolicy)
+      ) {
+        repositoryDraft.conflicted = true;
+      }
       failedApplicationInspected = inspectFailure && loaded.policy.application?.state === "failed";
       if (view.capability === null && !repositoryPolicySummary(view)) {
         // The draft tab reads no logs or suggestions, so the unsupported state is shown from here too.

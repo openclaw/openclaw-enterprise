@@ -34,6 +34,9 @@ components with simulated API state; they do not prove persistence or enforcemen
   denial logs available while policy and suggestion reads show permission refusals
   without retry controls. **Sandbox policy capability unavailable** shows one
   unsupported message without fetching logs or recommendations.
+- **Reconcile concurrent repository grant changes:** after the simulated save
+  conflict, refresh the policy. Check that the panel shows the newer grants and
+  only offers discard. Discard, narrow the remaining grant, and save.
 - Inspect the existing empty, unsupported, loading, missing-credential, denied,
   and apply-rejected policy stories. After a saved change whose apply fails, the
   alert must identify the saved version.
@@ -95,8 +98,11 @@ requires creating a new Agent for scoped access.
 Open **Save Agent repository access and narrow a grant**. In **Manage rules**,
 set `example/application` to **Read** and `example/tooling` to **Write**. Save
 the repository policy. Reopen **Manage rules**, change tooling to **Read**,
-and save again. Check both saved selections. The notice gives deployment
-requirements and explains when a new Agent is required.
+and select **Refresh policy**. Verify that tooling still shows **Read**, then
+save. The notice gives deployment requirements and explains when a new Agent is
+required. Reopen **Manage rules** and set application to **No access**. The
+story rejects this partial list. Check that the selection remains, then select
+**Discard repository changes** to restore the saved choices.
 Reload the story to reset it. Choose **Deny all repositories** and confirm the
 save. Verify that a saved deny-all list replaces the legacy access summary.
 
