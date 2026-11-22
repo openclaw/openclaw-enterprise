@@ -1105,31 +1105,43 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         }
       } else if (args.includes("scale") || args.includes("patch")) {
         const component = servingComponent(args);
+        const preview = args.includes("--dry-run=server");
+        if (preview) {
+          assert.ok(args.includes("patch"));
+          assert.equal(component, "worker");
+          assert.equal(fileArg("--namespace"), "system");
+          assert.equal(fileArg("--context"), "selected");
+          assert.equal(fileArg("--output"), "jsonpath={.spec.replicas}");
+          assert.deepEqual([state.api, state.worker], [1, 1]);
+          appendFileSync(join(root, "worker-patch-previews"), "worker\n");
+        }
         if (args.includes("patch") && component === "worker" && state.denyWorkerPatch) {
           return fail(1, "Forbidden: cannot patch the worker Deployment");
         }
-        if (take("fail-scale-" + component)) {
+        if (!preview && take("fail-scale-" + component)) {
           if (take("block-failure-receipt")) {
             mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
           }
           return fail(9);
         }
-        // Simulate another actor between the helper's GET and its mutation. Keep
-        // scale support so the same scenario demonstrates the unguarded baseline.
         const identities = record((state.deploymentIdentities ??= {}), "Deployment identity table");
         const identity = record(
           (identities[component] ??= { uid: component + "-deployment-uid", resourceVersion: "1" }),
           "selected Deployment identity",
         );
-        if (component === "worker" && take("replace-worker-before-scale")) {
-          identity.uid = "replacement-worker-uid";
-          identity.resourceVersion = "2";
-          state.worker = 1;
+        if (!preview) {
+          // Apply the other actor's change only at the live patch so the case
+          // exercises a conflict even after a successful preview.
+          if (component === "worker" && take("replace-worker-before-scale")) {
+            identity.uid = "replacement-worker-uid";
+            identity.resourceVersion = "2";
+            state.worker = 1;
+          }
+          if (component === "worker" && take("edit-worker-before-scale")) {
+            identity.resourceVersion = "2";
+          }
+          save();
         }
-        if (component === "worker" && take("edit-worker-before-scale")) {
-          identity.resourceVersion = "2";
-        }
-        save();
         if (args.includes("patch")) {
           assert.equal(fileArg("--type"), "json");
           const patch: unknown = JSON.parse(readFileSync(requiredArg("--patch-file"), "utf8"));
@@ -1159,6 +1171,15 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             typeof replicas === "number" && Number.isSafeInteger(replicas) && replicas >= 0,
             "expected a nonnegative replica count",
           );
+          if (component === "worker" && state.denyWorkerAdmission) {
+            return fail(1, 'admission webhook "writer-policy.test" denied the Worker stop');
+          }
+          if (preview) {
+            if (!take("empty-worker-patch-preview")) {
+              out(String(take("nonzero-worker-patch-preview") ? state.worker : replicas));
+            }
+            return io.exit(0);
+          }
           Object.assign(identity, document.metadata);
           state[component] = replicas;
         } else {

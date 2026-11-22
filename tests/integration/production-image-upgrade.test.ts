@@ -837,6 +837,7 @@ if (result !== undefined) {
     "kubectl",
     `printf 'kubectl %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
+  *' patch deployment/openclaw-enterprise-worker '*' --dry-run=server '*) printf '0' ;;
   *' patch deployment/'*) printf 'native patch output\\n' ;;
   *' rollout status deployment/'*) printf 'native rollout output\\n' ;;
   *'exec gateway-test --container gateway -- env NODE_OPTIONS=--max-old-space-size=384 node /app/openclaw.mjs doctor --lint --json --severity-min error'*)

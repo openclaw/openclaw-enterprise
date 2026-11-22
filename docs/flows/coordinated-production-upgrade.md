@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: 2026-11-21
-last_updated_session: authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0
+updated: 2026-11-22
+last_updated_session: authoring-run/8a4cdeff-6237-46d6-ad85-7ea5bfa0c302
 ---
 
 # Production image upgrade flow
@@ -240,14 +240,13 @@ remain operator attestations.
 ### 3. Quiesce writers and run the candidate release
 
 `scripts/upgrade-production-images:quiescence_remaining` bounds shutdown.
-Validate both Deployments. Before either stop, check named patch permission for
-running workers. Refuse denial and warn on inconclusive review.
-While the worker runs, refuse inventory drift, including on resume. Restore stopped
-API access under exclusive maintenance ownership before retry.
-Skip stopped writers. Stopped workers lack prospective checks.
-Sequential patches test UID, resource version and replicas. Conflicts can leave
-the API stopped. Verify Pod absence and original Deployments at zero. Operators
-stop other writers/autoscalers and keep nodes reachable.
+Validate both Deployments. Running Workers require stable inventory through resume.
+Refuse named patch denial. Warn if inconclusive.
+After channel Stops, with both writers running, server-side Worker patch preview
+must return zero replicas. Inspect `quiescence-worker-preview.err`.
+Skip stopped writers. Live patches test UID, resource version and replicas.
+If conflicts leave the API stopped, restore access under exclusive maintenance before retry. Verify both original Deployments at zero and Pods absent.
+Keep nodes reachable and other writers/autoscalers stopped.
 Separate mode rechecks Secret identities before stopping writers and again before
 recording their stopped UIDs and generations, then exits 3. `apply_database_migration`
 requires irreversible SQL approval, a verified separate render and no Helm
@@ -257,7 +256,7 @@ Verification retries require a cleaned failed Job. Resume requires completed
 journaled verification and rechecks both Secret identities. Fence Secret edits
 because Jobs reference them by name.
 
-After quiescence, `verify_pair_nodes` runs again. Fresh `helm status` must match
+Rerun `verify_pair_nodes`. Fresh `helm status` must match
 reconciliation except for Helm v4 live `.info.resources`. A mismatch leaves
 writers stopped before protected file or Installation Secret writes. Resume can
 find candidate settings from a prior attempt.
@@ -374,6 +373,7 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-22 17:37: Preview Worker stop. (authoring-run/8a4cdeff-6237-46d6-ad85-7ea5bfa0c302 - 3eedffbaae63cdc1b006e51d49b88504462d2a5c)
 - 2026-11-21 09:16: Trace rendered mode and retry. (authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0 - f9fb2a1f6fed7afd4ba8e69737f611e55604f587)
 - 2026-11-21 03:11: Reconcile publication selection with current upgrade admission and recovery. (authoring-run/5e8acf3b-45b0-4fbd-801d-493e4787e9dc - e67cd3cd0357e002ccc62f410454649ea4bfefd9)
 
