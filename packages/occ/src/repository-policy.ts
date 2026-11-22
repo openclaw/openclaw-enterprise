@@ -850,12 +850,21 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   function namespaceRepositoryNetworkPolicyCeiling(
     namespaceId: string,
   ): RepositoryNetworkPolicyCeiling {
-    const admission = selectedStandingRepositoryAdmission();
-    const owner = admission && repositoryPermissionOwner(admission);
-    return delegatedRepositoryCeiling(
-      dependencies.repositoryNetworkPolicyCeiling,
-      repositoryGrantAuthority(namespaceId, admission?.policy, owner?.unchanged),
-    );
+    const ceiling = dependencies.repositoryNetworkPolicyCeiling;
+    if (ceiling.length === 0) {
+      return [];
+    }
+    try {
+      const admission = selectedStandingRepositoryAdmission();
+      const owner = admission && repositoryPermissionOwner(admission);
+      return delegatedRepositoryCeiling(
+        ceiling,
+        repositoryGrantAuthority(namespaceId, admission?.policy, owner?.unchanged),
+      );
+    } catch {
+      // Owner lookup can fail before projection. Keep saved grants readable for withdrawal.
+      return [];
+    }
   }
 
   return {
