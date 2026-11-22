@@ -18,6 +18,7 @@ import {
   assertCodexHeldFailure,
   assertHeldServiceHost,
   codexHeldCases,
+  codexProbeResult,
   registerOpenShellCodexReadinessCases,
 } from "./openshell-harness-codex-readiness-cases.ts";
 import {
@@ -40,10 +41,6 @@ const nodeRequire = createRequire(import.meta.url);
 const TOKEN = "fixture-transport-token";
 const serviceUrl = "http://tenant--sandbox.openshell.localhost:8080/";
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-const started = { type: "thread.started", thread_id: "thread" };
-const turnStarted = { type: "turn.started" };
-const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
-const completed = { type: "turn.completed" };
 
 registerOpenShellCodexReadinessCases(TOKEN, serviceUrl);
 
@@ -185,18 +182,12 @@ function call(handler, { method = "GET", url = "/openclaw/runtime/status", autho
 }
 
 const providerEnv = { APP_TOKEN_SHA: sha256(TOKEN) };
-const failedProbe = (message) => ({
-  status: 1,
-  stdout: [started, turnStarted, { type: "turn.failed", error: { message } }]
-    .map((event) => JSON.stringify(event))
-    .join("\n"),
-});
 
 test("a provider-owned Codex Harness serves its held startup failure only to the transport token holder", async (t) => {
   for (const [name, options, expected] of [
     ...codexHeldCases(
-      failedProbe("stream error: model unavailable"),
-      failedProbe("unexpected status 401 Unauthorized: invalid api key"),
+      codexProbeResult("stream error: model unavailable"),
+      codexProbeResult("unexpected status 401 Unauthorized: invalid api key"),
     ),
   ]) {
     await t.test(name, () => {
@@ -227,7 +218,8 @@ test("a Compute-owned Codex Harness keeps its held failure on the private status
       OPENCLAW_RUNTIME_STATUS_PORT: "18791",
       OPENCLAW_POD_UID: "pod-fixture",
     },
-    probe: failedProbe("stream error: model unavailable"),
+    probe: codexProbeResult("stream error: model unavailable"),
+    http: undefined,
   });
   assert.equal(appServerStarts, 0);
   assert.deepEqual(
@@ -240,12 +232,8 @@ test("a Compute-owned Codex Harness keeps its held failure on the private status
 test("a provider-owned Codex Harness with a working model starts the app-server and serves no status", () => {
   const { servers, appServerStarts } = runCodexEntrypoint({
     env: providerEnv,
-    probe: {
-      status: 0,
-      stdout: [started, turnStarted, assistant, completed]
-        .map((event) => JSON.stringify(event))
-        .join("\n"),
-    },
+    probe: codexProbeResult(),
+    http: undefined,
   });
   assert.equal(appServerStarts, 1);
   assert.deepEqual(
@@ -257,7 +245,7 @@ test("a provider-owned Codex Harness with a working model starts the app-server 
 test("the OpenShell client reads a held failure from the real Harness wrapper through the service host", async (t) => {
   const { servers } = runCodexEntrypoint({
     env: providerEnv,
-    probe: failedProbe("stream error: model unavailable"),
+    probe: codexProbeResult("stream error: model unavailable"),
     http: { createServer },
   });
   const held = servers.find((server) => server.real !== undefined);
@@ -275,7 +263,8 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
   await t.test("the provider-owned held failure checks the token first", () => {
     const { servers } = runCodexEntrypoint({
       env: providerEnv,
-      probe: failedProbe("stream error: model unavailable"),
+      probe: codexProbeResult("stream error: model unavailable"),
+      http: undefined,
     });
     const listening = servers.find((server) => server.listening !== undefined);
     assert.ok(listening);
@@ -307,7 +296,8 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
         OPENCLAW_RUNTIME_STATUS_PORT: "18791",
         OPENCLAW_POD_UID: "pod-fixture",
       },
-      probe: failedProbe("stream error: model unavailable"),
+      probe: codexProbeResult("stream error: model unavailable"),
+      http: undefined,
     });
     const listening = servers.find((server) => server.listening !== undefined);
     assert.ok(listening);
@@ -391,7 +381,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
   await t.test("a raw request target over HTTP leaves the held wrapper serving", async (t) => {
     const { servers } = runCodexEntrypoint({
       env: providerEnv,
-      probe: failedProbe("stream error: model unavailable"),
+      probe: codexProbeResult("stream error: model unavailable"),
       http: { createServer },
     });
     const held = servers.find((server) => server.real !== undefined);

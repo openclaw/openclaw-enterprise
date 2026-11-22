@@ -604,6 +604,26 @@ export interface CodexProcessResult {
   stderr?: string;
 }
 
+export function codexProbeResult(failure?: string): CodexProcessResult {
+  const terminalEvents =
+    failure === undefined
+      ? [
+          { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+          { type: "turn.completed" },
+        ]
+      : [{ type: "turn.failed", error: { message: failure } }];
+  return {
+    status: failure === undefined ? 0 : 1,
+    stdout: [
+      { type: "thread.started", thread_id: "thread" },
+      { type: "turn.started" },
+      ...terminalEvents,
+    ]
+      .map((event) => JSON.stringify(event))
+      .join("\n"),
+  };
+}
+
 type CodexHeldExpected = {
   check: "model-probe" | "login";
   code: "MODEL_PROBE_FAILED" | "AUTHENTICATION_FAILED" | "LOGIN_FAILED";
