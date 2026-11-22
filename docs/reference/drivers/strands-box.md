@@ -36,17 +36,25 @@ policy:
         ports: [443]
 ```
 
-Use a dedicated Codex Harness with a workspace node, ordinary API-key authentication
-and a saved `modelProvider.baseUrl` of `https://api.openai.com/v1`. Disable managed
-plugins and standalone web search. Other endpoints, authentication modes and
-custom launch inputs are unsupported.
+Use a dedicated Codex Harness with a workspace node and ordinary API-key
+authentication. Set [`drivers.compute.configuration.runtime.modelProvider`](kubernetes-compute/model-provider.md)
+to protocol `openai-responses` and base URL `https://api.openai.com/v1` before
+deploying the revision. Disable managed plugins and standalone web search.
+Other endpoints, authentication modes and custom launch inputs are unsupported.
 
-**Every process in the Sandbox can spend the model quota.** Box checks a temporary
-bearer and injects the key only for HTTPS POST to the canonical path
-`/v1/responses`. The rule does not inspect query parameters, request bodies
-or executable identity. Callers can set other request headers. Trust the model
-provider and its responses.
+**Every process in the Sandbox can use everything the key permits on the Responses
+endpoint.** Box checks the temporary bearer and substitutes the key only on
+HTTPS POST to the canonical path `/v1/responses`. The caller controls the
+query, body and other headers, including applicable organization and project
+headers. It can select models, spend quota and ask the provider to use tools
+or send data to remote MCP servers. Trust the provider and its responses.
 
-Stop the execution and deploy a new Agent revision to rotate the key.
-The preview provides no live withdrawal, protected Credential Source grants or
-GitHub access. Installed qualification is pending.
+Use an application-specific key in a dedicated project. Verify the effective
+project and organization, restrict endpoint, model and data access, and set
+enforced limits where available. Configure alerts and name an operator who
+can revoke the key. Alerts alone do not cap spending.
+
+To rotate the key, stop the execution, verify it can no longer serve requests,
+revoke and replace the key, then deploy a new Agent revision. The preview
+provides no live withdrawal, protected Credential Source grants or GitHub
+access. Installed qualification is pending.
