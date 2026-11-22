@@ -247,75 +247,129 @@ export function registerPostgresMigrationTransactionCommandCases({
   test(
     "Cancelling the production migration process releases its database session",
     requiresHistoryPostgres,
-    async (context) => {
-      const fixture = await migrationHistoryFixture();
-      const db = await historyDatabase(context, fixture, "cancel");
-      const url = new URL(db.migrationUrl);
+    (context) => checkCancellation(context, "advisory"),
+  );
+
+  test(
+    "Cancelling the production migration during blocked DDL preserves history",
+    requiresHistoryPostgres,
+    (context) => checkCancellation(context, "ddl"),
+  );
+
+  async function checkCancellation(context: TestContext, lock: "advisory" | "ddl") {
+    const ddl = lock === "ddl";
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(
+      context,
+      fixture,
+      `cancel_${lock}`,
+      ddl ? { prefix: 88 } : undefined,
+    );
+    const before = ddl ? await historySnapshot(db) : undefined;
+    if (ddl) {
+      // Migration 0089 must wait to alter this table after starting its transaction.
+      await db.app.query("BEGIN READ ONLY");
+      await db.app.query("SELECT 1 FROM occ.connection_templates LIMIT 1");
+    } else {
       await db.migrator.query("SELECT pg_advisory_lock(1868785005, 1835624306)");
-      // Hold the real migration lock until the command has a waiting PostgreSQL session.
-      const child = spawn(process.execPath, selectedImageMigrationEntry, {
-        stdio: "ignore",
-        env: { ...process.env, NODE_ENV: "production", OCC_MIGRATION_DATABASE_URL: url.toString() },
-      });
-      const exited = once(child, "exit");
-      const sessions = async () =>
-        (
-          await db.migrator.query(
-            "SELECT wait_event_type FROM pg_stat_activity WHERE datname = current_database() AND application_name LIKE $1",
-            ["oce-migration-%"],
-          )
-        ).rows;
-      async function until(predicate: () => Promise<boolean>, timeout: number) {
-        const deadline = Date.now() + timeout;
-        do {
-          if (await predicate()) {
-            return true;
-          }
-          await delay(25);
-        } while (Date.now() < deadline);
-        return false;
-      }
-      let exitTimer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        assert.equal(
-          await until(
-            async () =>
-              (await sessions()).some(({ wait_event_type }) => wait_event_type === "Lock"),
-            15_000,
-          ),
-          true,
-          "migration did not wait for the advisory lock",
-        );
-        child.kill("SIGTERM");
+    }
+    const child = spawn(process.execPath, selectedImageMigrationEntry, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, NODE_ENV: "production", OCC_MIGRATION_DATABASE_URL: db.migrationUrl },
+    });
+    const exited = once(child, "close").then(() => undefined);
+    let wroteStdout = false;
+    child.stdout.on("data", () => {
+      wroteStdout = true;
+    });
+
+    const limit = 16_384;
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk.slice(0, limit + 1 - stderr.length);
+    });
+    const sessions = async () =>
+      (
+        await db.migrator.query<{ waiting: boolean }>(
+          `SELECT EXISTS (
+               SELECT 1 FROM pg_locks l WHERE l.pid = a.pid AND NOT l.granted
+               AND CASE WHEN $1 THEN l.mode = 'AccessExclusiveLock'
+                 AND l.relation = to_regclass('occ.connection_templates')
+                 ELSE l.locktype = 'advisory' END
+             ) AS waiting FROM pg_stat_activity a
+             WHERE a.datname = current_database() AND a.application_name LIKE 'oce-migration-%'`,
+          [ddl],
+        )
+      ).rows;
+    async function until(predicate: () => Promise<boolean>, timeout: number) {
+      const deadline = Date.now() + timeout;
+      do {
+        if (await predicate()) {
+          return true;
+        }
+        await delay(25);
+      } while (Date.now() < deadline);
+      return false;
+    }
+    let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      assert.equal(
+        await until(async () => (await sessions()).some(({ waiting }) => waiting), 15_000),
+        true,
+        `migration did not wait for the ${lock} lock`,
+      );
+      assert.ok(child.kill("SIGTERM"));
+      if (!ddl) {
         await delay(5);
         child.kill("SIGTERM");
-        const exitDeadline = new Promise<never>((_, reject) => {
-          exitTimer = setTimeout(
-            () => reject(new Error("migration did not exit within 10 seconds after SIGTERM")),
-            10_000,
-          );
-        });
-        const [code, signal] = await Promise.race([exited, exitDeadline]);
-        assert.equal(code, 143);
-        assert.equal(signal, null);
-        assert.equal(
-          await until(async () => (await sessions()).length === 0, 2_000),
-          true,
-          "migration session survived caller cancellation",
-        );
-      } finally {
-        clearTimeout(exitTimer);
-        try {
-          if (child.exitCode === null && child.signalCode === null) {
-            child.kill("SIGKILL");
-            await exited;
-          }
-        } finally {
-          await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
-        }
       }
-    },
-  );
+      const exitDeadline = new Promise<never>((_, reject) => {
+        exitTimer = setTimeout(
+          () => reject(new Error("migration did not exit within 10 seconds after SIGTERM")),
+          10_000,
+        );
+      });
+      await Promise.race([exited, exitDeadline]);
+      assert.equal(child.exitCode, 143);
+      assert.equal(child.signalCode, null);
+      assert.equal(wroteStdout, false, "cancelled migration wrote a stdout result");
+      assert.ok(stderr.length <= limit, "excessive cancellation output");
+      assert.ok(!stderr.includes("Unhandled 'error' event"), "unhandled client error");
+      const failed = stderr.split("\n").some((line) => {
+        try {
+          const event: unknown = JSON.parse(line);
+          return (
+            typeof event === "object" &&
+            event !== null &&
+            "event" in event &&
+            event.event === "migration.failed" &&
+            "code" in event &&
+            event.code === "MIGRATION_FAILED"
+          );
+        } catch {
+          return false;
+        }
+      });
+      assert.ok(failed, "missing structured migration failure");
+      assert.equal(
+        await until(async () => (await sessions()).length === 0, 2_000),
+        true,
+        "migration session survived caller cancellation",
+      );
+    } finally {
+      clearTimeout(exitTimer);
+      try {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+          await exited;
+        }
+      } finally {
+        if (ddl) await db.app.query("ROLLBACK");
+        else await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
+      }
+    }
+    if (ddl) assert.deepEqual(await historySnapshot(db), before);
+  }
 
   test(
     "First installation requires empty migration history under the migration lock",
