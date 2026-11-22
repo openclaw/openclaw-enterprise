@@ -2752,7 +2752,7 @@ test("a reader without update views the version draft read-only", async (t) => {
   const snapshot = page
     .locator("section.agent-card")
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
-  // Draft-only tabs open on this Agent, even for a reader. Back keeps the saved version.
+  // Draft-only tabs open on this Agent. Back returns to the saved version's shortcut.
   const snapshotUrl = page.url();
   for (const name of ["Credentials", "Repositories"]) {
     await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
@@ -2765,6 +2765,9 @@ test("a reader without update views the version draft read-only", async (t) => {
     assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
     await page.goBack();
     await page.waitForURL(snapshotUrl);
+    await link.waitFor();
+    await page.locator(settledView).waitFor();
+    assert.ok(await hasFocus(link), name);
   }
   await snapshot.getByRole("button", { name: "Open draft", exact: true }).click();
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
@@ -2818,6 +2821,7 @@ test("a reader without update views the version draft read-only", async (t) => {
   await page.locator(settledView).waitFor();
   await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
   assert.equal(await draftLinks.count(), 0);
+  assert.ok(await hasFocus(page.getByRole("heading", { level: 1 })));
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 

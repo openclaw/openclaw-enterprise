@@ -5975,6 +5975,10 @@ export async function renderAgentDetail(
           versionLink("Draft credentials", "draft", "credentials"),
           versionLink("Draft repositories", "draft", "repositories"),
         );
+        // A URL without a revision can show a different active version on Back.
+        for (const link of draftLinks.querySelectorAll("a")) {
+          link.dataset.returnFocusHref = `${link.href}#${selected}`;
+        }
         const canReadDraft = () =>
           callerPermissions?.configurationRead === true &&
           !agent.configurationReadError &&

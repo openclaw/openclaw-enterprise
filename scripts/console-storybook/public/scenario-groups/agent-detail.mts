@@ -433,7 +433,7 @@ export function createAgentDetailScenarios({
           "The permission answer denies Configuration update, so a version's Configuration tab offers Open draft instead of Edit current Configuration. The draft it opens shows the saved JSON with no editor. The API still decides.",
         steps: [
           "Find Open draft below the Configuration snapshot, and no Edit current Configuration.",
-          "Choose Draft repositories beside the snapshot heading. Check that the Repositories tab opens read-only, then go back.",
+          "Choose Draft repositories beside the snapshot heading. Check that the Repositories tab opens read-only. Use Back and check that Draft repositories has focus.",
           "Choose Open draft: the draft opens read-only, with no Edit Configuration button.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -450,7 +450,7 @@ export function createAgentDetailScenarios({
           "Choose Copy Agent ID. When the copy succeeds, “Copied” appears for two seconds. Otherwise, the entire ID is selected and “Copy selection” appears.",
           "Focus Open draft, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
           "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
-          "Beside Configuration snapshot, choose Draft credentials. Check that Credentials has focus and the draft shows the authentication source. Go back to the snapshot and try Draft repositories.",
+          "Beside Configuration snapshot, choose Draft credentials. Check that Credentials has focus and the draft shows the authentication source. Use Back and check that Draft credentials has focus on the snapshot. Repeat with Draft repositories.",
           "Choose Open draft to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
         ],
         nextStory: "authSaveHoldsNavigation",
