@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 
-import type { UpdateTokenServiceSourceBody } from "@openclaw-enterprise/contracts";
+import {
+  occApiRoutes,
+  type UpdateTokenServiceSourceBody,
+} from "../../packages/contracts/src/index.ts";
 
 import { createRouteGenerationApp } from "../../apps/controller/src/route-generation-app.ts";
 
@@ -34,41 +37,18 @@ async function publishedCredentialComponents(t: TestContext) {
   return { route, validatorCompiler, serializerCompiler, published };
 }
 
-test("published TokenService source schemas accept registration material and serialize only metadata", async (t) => {
-  const { route, validatorCompiler, serializerCompiler, published } =
-    await publishedCredentialComponents(t);
+test("published TokenService source request schemas validate managed static material and config", async (t) => {
+  const { route, validatorCompiler, published } = await publishedCredentialComponents(t);
   const writeOnlySecret = { properties: { secret: { writeOnly: true } } };
   assert.partialDeepStrictEqual(published("RegisterTokenServiceSourceBody"), writeOnlySecret);
-  assert.partialDeepStrictEqual(published("UpdateTokenServiceSourceBody"), {
-    anyOf: [writeOnlySecret, writeOnlySecret],
-  });
+  assert.partialDeepStrictEqual(published("UpdateTokenServiceSourceBody"), writeOnlySecret);
 
   const credential = { api_key: "synthetic-registration-material" };
   const refs = { api_key: { kind: "secret", namespaceId, id: `sec_${uuid}` } };
-  const source = { name: "Model access", type: "openai" };
+  const source = { name: "Model access", type: "static" };
   const config = {};
   const connectionTemplateId = `ctp_${uuid}`;
 
-  const metadata = {
-    ...source,
-    id,
-    namespaceId,
-    ref: { kind: "credential_source", namespaceId, id },
-    config,
-    connectionTemplateId,
-    state: "ready",
-    version: "v2",
-  };
-  const internal = {
-    ...metadata,
-    ownerCapability: "token_service",
-    tokenServiceInstanceId: "private-instance",
-    driverId: "model-credentials",
-    delivery: "push",
-    secret: credential,
-    secrets: refs,
-    backendRef: { key: "private" },
-  };
   // Compile the controller's registered references and the schemas at the public OpenAPI keys.
   const registered = (name: string) => ({ $ref: `${name}#` });
   for (const resolve of [registered, published]) {
@@ -77,19 +57,12 @@ test("published TokenService source schemas accept registration material and ser
       schema: resolve("RegisterTokenServiceSourceBody"),
     });
     const update = validatorCompiler({ ...route, schema: resolve("UpdateTokenServiceSourceBody") });
-    const metadataSchema = resolve("TokenServiceSourceMetadata");
-    const validMetadata = validatorCompiler({ ...route, schema: metadataSchema });
-    const serializeMetadata: (value: unknown) => string = serializerCompiler({
-      ...route,
-      schema: metadataSchema,
-    });
-
     assert.equal(register({ ...source, config, secret: credential }), true);
-    // The selected source type owns its material field names.
+    // Static custody accepts one opaque value without assigning authority to its field name.
     assert.equal(register({ ...source, secret: { "client-id": "synthetic-material" } }), true);
-    // The source attaches the template identity rather than pinning one template version.
-    assert.equal(register({ ...source, connectionTemplateId, secret: credential }), true);
-    assert.equal(register({ ...source, connectionTemplateId: "invalid" }), false);
+    // Template attachment is not part of static Source enrollment.
+    assert.equal(register({ ...source, connectionTemplateId, secret: credential }), false);
+    assert.equal(register(source), false);
     assert.equal(register({ ...source, secret: refs }), false);
     assert.equal(register({ ...source, secrets: refs }), false);
     assert.equal(register({ ...source, driverId: "chosen-owner" }), false);
@@ -99,19 +72,84 @@ test("published TokenService source schemas accept registration material and ser
       update({ config, secret: credential } satisfies UpdateTokenServiceSourceBody),
       true,
     );
-    // @ts-expect-error Both the client type and the wire contract require at least one change.
-    assert.equal(update({} satisfies UpdateTokenServiceSourceBody), false);
+    assert.equal(update({}), false);
     assert.equal(update({ secret: credential, driverId: "chosen-owner" }), false);
     assert.equal(update({ config, connectionTemplateId }), false);
 
     const invalidConfig = { "client-id": 42 };
-    assert.equal(register({ ...source, config: invalidConfig }), false);
+    assert.equal(register({ ...source, config: invalidConfig, secret: credential }), false);
     assert.equal(update({ config: invalidConfig }), false);
-    assert.equal(validMetadata({ ...metadata, config: invalidConfig }), false);
-    assert.equal(validMetadata(metadata), true);
-    assert.equal(validMetadata(internal), false);
-    // Private ownership, delivery, backend, and material fields never enter public metadata.
-    assert.deepEqual(JSON.parse(serializeMetadata(internal)), metadata);
+  }
+});
+
+test("namespace Source routes distinguish managed static material from legacy Secret references", async (t) => {
+  const { route, validatorCompiler } = await publishedCredentialComponents(t);
+  const create = occApiRoutes.find(
+    (candidate) => candidate.operationId === "createCredentialSource",
+  );
+  const update = occApiRoutes.find(
+    (candidate) => candidate.operationId === "updateCredentialSource",
+  );
+  assert.ok(create && "body" in create.schema);
+  assert.ok(update && "body" in update.schema);
+  const register = validatorCompiler({ ...route, schema: create.schema.body });
+  const patch = validatorCompiler({ ...route, method: "PATCH", schema: update.schema.body });
+  const material = { opaque: "synthetic-registration-material" };
+  const reference = { kind: "secret", namespaceId, id: `sec_${uuid}` };
+  const managed = {
+    name: "Model access",
+    type: "static",
+    secret: material,
+    config: { provider_preset: "openai" },
+  };
+  const legacy = { name: "Legacy access", type: "openai", secrets: { api_key: reference } };
+
+  assert.equal(register(managed), true);
+  assert.equal(register(legacy), true);
+  // Gateway catalogs may already offer a type named static; only raw material selects managed registration.
+  assert.equal(register({ name: managed.name, type: "static" }), true);
+  assert.equal(register({ ...managed, secrets: legacy.secrets }), false);
+  assert.equal(register({ ...managed, type: "openai" }), false);
+  assert.equal(register({ ...managed, secret: { first: "one", second: "two" } }), false);
+  assert.equal(register({ ...managed, ownerCapability: "token_service" }), false);
+  assert.equal(patch({ secret: material }), true);
+  assert.equal(patch({ config: { provider_preset: "openai" } }), true);
+  assert.equal(patch({ secrets: legacy.secrets }), true);
+  assert.equal(patch({ secret: material, secrets: legacy.secrets }), false);
+  assert.equal(patch({ secret: material, ownerCapability: "token_service" }), false);
+});
+
+test("existing Source responses serialize sanitized managed metadata for detail and list", async (t) => {
+  const { route, validatorCompiler, serializerCompiler } = await publishedCredentialComponents(t);
+  const list = occApiRoutes.find((candidate) => candidate.operationId === "listCredentialSources");
+  const get = occApiRoutes.find((candidate) => candidate.operationId === "getCredentialSource");
+  assert.ok(list && get);
+  const metadata = {
+    id,
+    namespaceId,
+    ref: { kind: "credential_source", namespaceId, id },
+    name: "Model access",
+    type: "static",
+    ownerCapability: "token_service",
+    config: { provider_preset: "openai" },
+    secrets: {},
+    state: "ready",
+  };
+  const meta = { requestId: `req_${uuid}` };
+  const privateSource = {
+    ...metadata,
+    secret: { opaque: "synthetic-material" },
+    tokenServiceInstanceId: "private-instance",
+  };
+  for (const [schema, response, internal] of [
+    [get.schema.response[200], { data: metadata, meta }, { data: privateSource, meta }],
+    [list.schema.response[200], { data: [metadata], meta }, { data: [privateSource], meta }],
+  ] as const) {
+    const validate = validatorCompiler({ ...route, schema });
+    const serialize = serializerCompiler({ ...route, schema });
+    assert.equal(validate(response), true);
+    assert.equal(validate(internal), false);
+    assert.deepEqual(JSON.parse(serialize(internal)), response);
   }
 });
 

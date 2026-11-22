@@ -11,6 +11,8 @@ const scenarioPresets = {
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
   "openshell-git-model": ["Codex"],
+  "openshell-provider-replacement": ["Codex"],
+  "openshell-git-replacement": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
   "harness-overrides": ["OpenClaw", "Codex"],
@@ -45,6 +47,8 @@ export function selectQaMatrix(env = process.env) {
         "plugin-install",
         "openshell-linear-read",
         "openshell-git-model",
+        "openshell-provider-replacement",
+        "openshell-git-replacement",
         "codex-search-config",
         "harness-overrides",
       ].includes(name),
@@ -110,6 +114,8 @@ export function selectQaMatrix(env = process.env) {
             "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
+            "openshell-provider-replacement",
+            "openshell-git-replacement",
           ].includes(scenario) && applies(scenario, value, name),
       ),
       unselected: allScenarios.filter(
@@ -125,6 +131,8 @@ export function selectQaMatrix(env = process.env) {
             "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
+            "openshell-provider-replacement",
+            "openshell-git-replacement",
           ].includes(scenario) &&
           applies(scenario, value, name) &&
           !scenarios.includes(scenario),
@@ -142,6 +150,8 @@ export function selectQaMatrix(env = process.env) {
             "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
+            "openshell-provider-replacement",
+            "openshell-git-replacement",
           ].includes(scenario) && !applies(scenario, value, name),
       ),
     })),
@@ -223,6 +233,10 @@ export function selectQaMatrix(env = process.env) {
   }
   if (oidcAgentChat) {
     requiredEnv.push(
+      "OPENCLAW_ENTERPRISE_CI_STATE",
+      "OCC_TEST_NATIVE_BASELINE_CONTROLLER_IMAGE",
+      "OCC_TEST_NATIVE_BASELINE_RUNTIME_IMAGE",
+      "OCC_TEST_NATIVE_BASELINE_SOURCE",
       "OCC_TEST_KUBERNETES_KUBECONFIG",
       "OCC_TEST_KUBERNETES_CONTEXT",
       "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
@@ -255,6 +269,16 @@ export function selectQaMatrix(env = process.env) {
   const scratchVolume = scenarios.includes("scratch-volume");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const gitReplacement = scenarios.includes("openshell-git-replacement");
+  const providerReplacement = scenarios.includes("openshell-provider-replacement");
+  if (providerReplacement || gitReplacement) {
+    assert.notEqual(installation, "compose", "Provider replacement requires Kubernetes setup");
+    requiredEnv.push(
+      "OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE",
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+    );
+  }
   const harnessOverrides = scenarios.includes("harness-overrides");
   if (harnessOverrides) {
     assert.notEqual(
@@ -281,7 +305,9 @@ export function selectQaMatrix(env = process.env) {
       pluginInstall ||
       linearRead ||
       harnessOverrides ||
-      gitModel,
+      gitModel ||
+      providerReplacement ||
+      gitReplacement,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {
@@ -356,6 +382,8 @@ export function selectQaMatrix(env = process.env) {
     nativeRestart,
     channelUpgrade,
     presets,
+    providerReplacement,
+    gitReplacement,
     cells,
     scenarios,
     requiredEnv,

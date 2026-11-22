@@ -28,13 +28,13 @@ import {
   fileConsoleApp,
 } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
+import { STOP_REQUESTED_FIRST_DEPLOYMENT } from "../helpers/refusal-text.mjs";
 import {
   LOG_TEXT_DENIED,
   RUNTIME_STATUS_DENIED,
   RUNTIME_STATUS_OPERATE_DENIED,
   RUNTIME_STATUS_VERSION_UNREADABLE,
-  STOP_REQUESTED_FIRST_DEPLOYMENT,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
@@ -64,7 +64,7 @@ import {
 } from "./console-fetch-accounting.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.ts";
 import { refocus } from "./console-refocus-helpers.ts";
-import { callbackGate, within } from "../helpers/wait-for.ts";
+import { within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type LogLine = AgentRuntimeLogChunk["lines"][number];
@@ -1964,6 +1964,31 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
   await shows(/Latest visible deployment\s+v4\s+·\s+Queued/);
 });
 
+async function holdAgentRead(
+  t: TestContext,
+  page: Page,
+  url: string,
+  read: () => Promise<unknown>,
+) {
+  const held = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
+  const [request, answer] = await Promise.all([
+    page.waitForRequest((r) => r.url() === url && r.method() === "GET"),
+    within(held.requested, "the held Agent read"),
+    read(),
+  ]);
+  assert.ok(answer);
+  return async () => {
+    const delivered = page.waitForResponse((response) => response.request() === request);
+    held.release();
+    const response = await delivered;
+    assert.equal(response.status(), 200);
+    const body = await response.body();
+    assert.ok(body.equals(await answer.body()), "the held Agent answer reached the browser");
+    const { data }: { data: AgentWire } = JSON.parse(body.toString());
+    return data;
+  };
+}
+
 // Finding 2998. Each Logs status poll rereads the Agent while the viewed version has no running
 // Pod. A reread sent before this page's own Stop and answered after it carried the running state
 // from before the Stop: the page showed "Not running" and offered Stop Agent again over "Stop
@@ -1982,27 +2007,11 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
 
   // The next poll's Agent read takes the server's answer now, while the Agent still runs, and
   // is answered only after this page's Stop.
-  let release!: () => void;
-  const released = new Promise<void>((resolve) => (release = resolve));
-  const held = callbackGate("the held Agent read");
-  let holding = true;
-  await page.route(`${fixture.origin}${agentPath}`, async (route) => {
-    if (!holding || route.request().method() !== "GET") {
-      await route.fallback();
-      return;
-    }
-    holding = false;
-    await held.run(async () => {
-      const response = await route.fetch();
-      held.resolve();
-      await released;
-      await route.fulfill({ response });
-    });
-  });
   const agentReads = await settledFetches(page, agentPath);
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  await page.clock.runFor(10_000);
-  await held.reached();
+  const release = await holdAgentRead(t, page, `${fixture.origin}${agentPath}`, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await page.clock.runFor(10_000);
+  });
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.click();
   await page
@@ -2015,7 +2024,7 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "stopped");
 
   // The pre-Stop answer lands: the page keeps the Stop it accepted.
-  release();
+  assert.equal((await release()).desiredRuntimeState, "running");
   await waitForSettledFetches(page, agentPath, agentReads + 1);
   await waitForIdleFetches(page);
   await shows(/Runtime\s+Stop requested/);
@@ -2284,7 +2293,7 @@ for (const viewport of [
 // 2998). Applied, it showed the stopped version as selected for service again.
 test("a refocus recheck's older Agent answer leaves a newer poll's state", async (t) => {
   const logs = await logsFixture(t);
-  const { agentPath, page, shows, stopElsewhere } = await openUnreadableCurrent(
+  const { agentPath, hidden, page, shows, stopElsewhere } = await openUnreadableCurrent(
     t,
     logs,
     "hidden-current-race",
@@ -2294,25 +2303,9 @@ test("a refocus recheck's older Agent answer leaves a newer poll's state", async
   await waitForIdleFetches(page);
   // The recheck's Agent read takes the server's answer now, while v2 is still selected, and is
   // answered only after the poll below.
-  let release!: () => void;
-  const released = new Promise<void>((resolve) => (release = resolve));
-  const held = callbackGate("the held Agent read");
-  let holding = true;
-  await page.route(`${logs.fixture.origin}${agentPath}`, async (route) => {
-    if (!holding || route.request().method() !== "GET") {
-      await route.fallback();
-      return;
-    }
-    holding = false;
-    await held.run(async () => {
-      const response = await route.fetch();
-      held.resolve();
-      await released;
-      await route.fulfill({ response });
-    });
-  });
-  await refocus(page);
-  await held.reached();
+  const release = await holdAgentRead(t, page, `${logs.fixture.origin}${agentPath}`, () =>
+    refocus(page),
+  );
 
   // Another session stops the Agent, and the next poll shows it.
   await stopElsewhere();
@@ -2320,7 +2313,7 @@ test("a refocus recheck's older Agent answer leaves a newer poll's state", async
   await shows(/Selected for service\s+None/);
 
   // The recheck's answer from before the stop lands: the page keeps the newer state.
-  release();
+  assert.equal((await release()).activeRevisionId, hidden.id);
   await page.locator(settledView).waitFor();
   await waitForIdleFetches(page);
   await shows(/Selected for service\s+None/);

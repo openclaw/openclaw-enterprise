@@ -5,11 +5,13 @@ import type {
   RepositoryPolicyDriver,
   RepositoryBindingRequest,
   RepositoryCredentialResolution,
+  RepositoryNetworkGrant,
   RepositoryOption,
   RepositoryOptions,
 } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
+  allowsGitHubRepositoryNetworkGrant,
   githubInstallationProfile,
   resolveGitHubRepositoryBinding,
   resolveSelectedRepositoryScope,
@@ -116,6 +118,14 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       );
     }
     return Object.freeze({ options: Object.freeze(options) });
+  }
+
+  /** Installation composition supplies this check without opening a credential session. */
+  repositoryNetworkPolicyAllows(input: {
+    readonly namespaceId: string;
+    readonly grant: RepositoryNetworkGrant;
+  }): boolean {
+    return allowsGitHubRepositoryNetworkGrant(this.#registry, input);
   }
 
   standingApprovalScope(input: {

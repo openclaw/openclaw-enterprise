@@ -1,5 +1,5 @@
 // The kind of next step each failed deployment's code leads to. The deployment status message
-// (`state/controller-work.ts`) states the step in words; clients choose their actions from this
+// (`deployment-work-status.ts`) states the step in words; clients choose their actions from this
 // table instead of parsing that text (finding 2537). The Console also serves this module
 // (`console-assets.ts`): keep it free of imports and of TypeScript syntax that type stripping
 // cannot erase.
@@ -76,6 +76,8 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     REPOSITORY_BINDING_UNAVAILABLE: "change",
     REPOSITORY_GIT_PROFILE_UNSUPPORTED: "change",
     REPOSITORY_GIT_SENDER_UNQUALIFIED: "change",
+    REPOSITORY_POLICY_HISTORY_INCOMPATIBLE: "change",
+    REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED: "change",
     REPOSITORY_PREPARED_ADMISSION_UNAVAILABLE: "change",
     REPOSITORY_RUNTIME_UNSUPPORTED: "change",
     REPOSITORY_STANDING_APPROVAL_REMOVED: "change",

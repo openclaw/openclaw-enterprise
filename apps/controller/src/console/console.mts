@@ -25,7 +25,11 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
-import { isAgentPermissionSummary, type AgentRecheckHandler } from "./agents/detail.mjs";
+import {
+  isAgentPermissionSummary,
+  matchesAgentIdentity,
+  type AgentRecheckHandler,
+} from "./agents/detail.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
@@ -105,6 +109,7 @@ interface MountedView {
   administrationReads: Map<string, AdministrationMode>;
   administrationEnded: Set<() => void>;
   rechecked: Set<AgentRecheckHandler>;
+  deferredConfigurationFocus?: { editor: HTMLTextAreaElement; cancel: AbortController };
   metaReads: Set<string>;
   resumeHandlers: Set<() => void>;
   revalidators: Set<() => Promise<unknown>>;
@@ -1028,7 +1033,9 @@ function retainMountedView(returnLink: Element | null) {
     scope: app.querySelector(".content .scope")?.textContent ?? null,
     scrollY: window.scrollY,
     returnHref:
-      returnLink instanceof HTMLAnchorElement && view.contains(returnLink) ? returnLink.href : null,
+      returnLink instanceof HTMLAnchorElement && view.contains(returnLink)
+        ? (returnLink.dataset.returnFocusHref ?? returnLink.href)
+        : null,
   });
   while (retainedViews.size > 16) {
     retainedViews.delete(retainedViews.keys().next().value!);
@@ -1191,6 +1198,22 @@ function focusInShownView() {
         return;
       }
       target.focus({ preventScroll: true });
+      if (
+        rebuilt &&
+        document.activeElement === target &&
+        target.dataset.refocusKey === key &&
+        focused instanceof HTMLInputElement &&
+        target instanceof HTMLInputElement &&
+        focused.type === "search" &&
+        target.type === "search" &&
+        target.value === focused.value
+      ) {
+        target.setSelectionRange(
+          focused.selectionStart,
+          focused.selectionEnd,
+          focused.selectionDirection ?? undefined,
+        );
+      }
       // A rebuilt row can be taller than the one it replaces: a reread that finds the Agent
       // deleting adds its badge above the row's icons. The restored icon then sat cut off at the
       // viewport's bottom with its row note below the fold (finding 2976). Keep the control's
@@ -1242,6 +1265,8 @@ function resetReads({
 }: { retainView?: boolean; returnLink?: Element | null; keepShell?: boolean } = {}) {
   const resumeDrafts = drafts.suspend();
   if (mountedViewState) {
+    mountedViewState.deferredConfigurationFocus?.cancel.abort();
+    delete mountedViewState.deferredConfigurationFocus;
     mountedViewState.resumeDrafts = resumeDrafts;
     mountedViewState.active = null;
   }
@@ -1698,7 +1723,7 @@ async function loadPage({
   }
   const active = resetReads({
     retainView: knownPrivateState,
-    // A Namespaces row link marks itself too, so Back returns focus to that row.
+    // Namespaces rows and snapshot shortcuts mark themselves for return focus too.
     returnLink:
       openingAgent || document.activeElement?.matches?.("a[data-return-focus-href]")
         ? document.activeElement
@@ -2035,8 +2060,10 @@ async function loadPage({
         namespaces[0]
       )?.id ??
       null;
-    replaceUrl(pageUrl(current.target));
     const selectedNamespace = namespaceId;
+    const unscopedAgentId = current.namespace === null ? current.agentId : null;
+    // Record the history position while keeping the Agent's Namespace provisional.
+    replaceUrl(pageUrl(current.target, unscopedAgentId ? null : selectedNamespace));
     const namespacePath =
       selectedNamespace === null ? null : `/namespaces/${encodeURIComponent(selectedNamespace)}`;
     const scopedNamespaceUnavailable =
@@ -2104,6 +2131,9 @@ async function loadPage({
       }
       if (!lifetime.isCurrent(active)) {
         return;
+      }
+      if (unscopedAgentId && matchesAgentIdentity(firstAgent, unscopedAgentId, selectedNamespace)) {
+        replaceUrl(pageUrl(current.target, selectedNamespace));
       }
     }
     if (permissionsRead) {
@@ -2191,7 +2221,7 @@ async function loadPage({
           );
         });
     }
-    // Resolve the old link in the admitted list, even if its row reads were unfinished and we
+    // Resolve the old link in the admitted view, even if its reads were unfinished and we
     // must rebuild it. Capture focus before replacing the shell, not after it falls back to body
     // (or leaves the held heading).
     if (
@@ -2683,6 +2713,8 @@ async function loadPage({
           const heading = app.querySelector<HTMLHeadingElement>(".content h1")!;
           if (focusHeading && document.activeElement !== heading) {
             heading.focus({ preventScroll: true });
+            // A rebuilt snapshot may reveal before its shortcuts are ready.
+            heldHeading = heading;
           }
           markRevealed();
           runAfterReveal();
@@ -2946,18 +2978,29 @@ async function loadPage({
       } else if (
         fromNavigation &&
         previousMountedRouteKey !== routeKey(current) &&
-        document.activeElement === document.body
+        (document.activeElement === document.body ||
+          (agentReturnHref && document.activeElement === heldHeading))
       ) {
         // A deployment being reread can receive return focus, but is not a link until it settles.
         const focusTarget =
           agentReturnHref &&
+          (!current.agentId || document.hasFocus()) &&
           Array.from(
             shell.view.querySelectorAll<HTMLElement & { href?: string }>(
               "a[href], [data-return-focus-href]",
             ),
-          ).find((item) => (item.dataset.returnFocusHref ?? item.href) === agentReturnHref);
+          ).find(
+            (item) =>
+              (item.dataset.returnFocusHref ?? item.href) === agentReturnHref &&
+              item.checkVisibility(),
+          );
+        // A rebuild started at the top. Restore the snapshot's scroll and let focus
+        // bring the shortcut into view if the page changed height.
+        if (current.agentId && focusTarget && retainedView) {
+          window.scrollTo({ top: retainedView.scrollY, left: 0 });
+        }
         (focusTarget || app.querySelector<HTMLHeadingElement>(".content h1"))?.focus({
-          preventScroll: true,
+          preventScroll: !current.agentId || !focusTarget,
         });
       }
       if (fromRefresh && document.activeElement === document.body) {
@@ -3005,9 +3048,9 @@ async function locateAgentNamespace(agentId: string, excluded: string | null) {
       request(`/namespaces/${encodeURIComponent(item.id)}/agents/${encodeURIComponent(agentId)}`),
     ),
   );
-  const found = probed.filter((_, index) => {
+  const found = probed.filter(({ id }, index) => {
     const result = results[index];
-    return result?.status === "fulfilled" && responseFields(result.value).id === agentId;
+    return result?.status === "fulfilled" && matchesAgentIdentity(result.value, agentId, id);
   });
   if (found.length === 1 && found[0]) {
     return { namespaceId: found[0].id, complete: true };
@@ -3099,6 +3142,36 @@ async function revalidateMountedAgent(current: Route) {
     (view.contains(activeElement) || pageActions?.contains(activeElement))
       ? activeElement
       : null;
+  const previousFocus = state.deferredConfigurationFocus;
+  delete state.deferredConfigurationFocus;
+  const deferredFocus =
+    activeElement === document.body && !previousFocus?.cancel.signal.aborted
+      ? previousFocus
+      : undefined;
+  let editorFocus = deferredFocus;
+  if (
+    focused instanceof HTMLTextAreaElement &&
+    focused.id === "configuration-json" &&
+    view.contains(focused) &&
+    focused.selectionStart !== focused.selectionEnd
+  ) {
+    const cancel = new AbortController();
+    editorFocus = { editor: focused, cancel };
+    // Returning to the tab can focus the same textarea as the check starts. A different
+    // control taking focus cancels restoration even if focus later falls to the body.
+    document.addEventListener(
+      "focusin",
+      (event) => {
+        if (event.target !== focused && event.target !== document.body) {
+          cancel.abort();
+        }
+      },
+      { signal: AbortSignal.any([cancel.signal, lifetime.signal]) },
+    );
+  }
+  if (previousFocus !== editorFocus) {
+    previousFocus?.cancel.abort();
+  }
   const textField =
     focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement ? focused : null;
   const selection =
@@ -3115,6 +3188,16 @@ async function revalidateMountedAgent(current: Route) {
         ? document.getElementById(focused.id)
         : null;
     if (!target?.closest(".content") || !target.checkVisibility()) {
+      // A permission recheck can hide the focused control while this Agent view is inert.
+      // If its panel is still visible, return to the tab that labels it.
+      const panel = target?.closest('[role="tabpanel"]');
+      if (panel && view.contains(panel) && panel.checkVisibility()) {
+        const tab = document.getElementById(panel.getAttribute("aria-labelledby") ?? "");
+        if (tab?.checkVisibility()) {
+          tab.focus();
+          return;
+        }
+      }
       if (afterRetry && mountedRouteKey === key) {
         app.querySelector<HTMLElement>(".content h1")?.focus({ preventScroll: true });
       }
@@ -3472,7 +3555,30 @@ async function revalidateMountedAgent(current: Route) {
       if (diagnostics) {
         diagnostics.hidden = false;
       }
-      restoreFocus();
+      if (
+        editorFocus &&
+        !editorFocus.cancel.signal.aborted &&
+        document.activeElement === document.body &&
+        // Selecting text such as the Agent ID leaves focus on the body.
+        document.getSelection()?.isCollapsed !== false &&
+        mountedViewState === state &&
+        view.querySelector("#configuration-json") === editorFocus.editor &&
+        editorFocus.editor.checkVisibility()
+      ) {
+        if (document.hidden || (editorFocus === deferredFocus && !document.hasFocus())) {
+          // A later return must confirm access again. Keep only the same editor's focus target.
+          state.deferredConfigurationFocus = editorFocus;
+        } else if (editorFocus === deferredFocus) {
+          // The textarea still owns its selection; focusing it need not restore any text or range.
+          editorFocus.editor.focus({ preventScroll: true });
+        }
+      }
+      if (!document.hidden || !editorFocus) {
+        restoreFocus();
+      }
+    }
+    if (state.deferredConfigurationFocus !== editorFocus) {
+      editorFocus?.cancel.abort();
     }
   }
 }

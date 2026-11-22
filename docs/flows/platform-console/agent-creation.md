@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-18
-last_updated_session: authoring-run/658e4f7a-f9c1-4bea-8723-f9dfe9053b2f
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Console Agent creation
@@ -196,7 +196,7 @@ no IAM request and opens the saved draft: the member's
 After a refused Installation read, **Your access** shows whether Agent `create`
 is allowed, refused, or unchecked. When allowed,
 `create.mts:loadNamespaceCapabilities` reads `GET /namespaces/:namespaceId/agent-capabilities`.
-`packages/occ/src/index.ts:getNamespaceAgentCapabilities` checks
+`packages/occ/src/installation-capabilities.ts:getNamespaceAgentCapabilities` checks
 [Agent `create` on the requested collection](../../reference/authorization.md#authorization-decisions)
 before resolving that Namespace by ID. The API returns `403` on denial and `404`
 if an authorized request names a missing Namespace. The lookup needs no
@@ -239,6 +239,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-18 10:15: Preserve authored `plugins.allow`, `plugins.deny` and an explicitly disabled native Codex entry across Harness switches, including unfinished JSON recovery. (authoring-run/658e4f7a-f9c1-4bea-8723-f9dfe9053b2f - 27aa612d2bafd819c734942d59125084a6c658eb)
 
 - 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)

@@ -11,7 +11,8 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { editStoredRepositoryGrants } from "./postgres-state-repository-network-policy-case.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
@@ -33,7 +34,8 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
   // The real Driver validates and freezes policy; this case proves HTTP/IAM/PostgreSQL admission,
   // while the OpenShell runtime lane proves enforcement and loaded-version application.
   const sandboxConfiguration = {
-    gateway: { workspaceMode: "operator" },
+    integrationMode: "legacy",
+    gateway: {},
     kubernetes: {
       serviceAccount: { mode: "gatewayConfigured" },
       sandboxDataMount: {
@@ -198,7 +200,7 @@ test(
         }
         if (scenario.protected) {
           const proxyConfiguration = { middlewareName: "integrity", authorityScope: "execution" };
-          const proxy = new OpenShellCredentialProxyDriver(proxyConfiguration, {
+          const proxy = new OpenShellLegacyEgressProxyDriver(proxyConfiguration, {
             id: sandboxDriver.id,
             sandbox: sandboxDriver,
             backend: {
@@ -1140,5 +1142,14 @@ test(
       ).rows,
       jobs.rows,
     );
+  },
+);
+
+test(
+  "Agent policy HTTP preserves and withdraws stored repository grants",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t);
+    await editStoredRepositoryGrants(fixture, fixture.grant);
   },
 );
