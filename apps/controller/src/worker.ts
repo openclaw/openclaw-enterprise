@@ -160,7 +160,9 @@ import {
 import {
   RepositoryCredentialAuthorityError,
   repositoryCleanupFailureCode,
+  type RepositoryCleanupOutcome,
   RepositoryCredentialLifecycle,
+  revisionOwner,
   StandingRepositorySessionDisposingError,
 } from "./worker/repository-credentials.ts";
 
@@ -318,6 +320,35 @@ const REFUSED_CANDIDATE_STOP_DURATION_FACTOR = 4;
 // the configured interval and at most 10 minutes.
 const REPOSITORY_CLEANUP_RECHECK_MAX_MS = 600_000;
 const REPOSITORY_CLEANUP_RECHECK_AGE_DIVISOR = 40;
+
+interface RepositoryExpiryWithdrawal {
+  readonly withdrawal: "withdrawn" | "pending" | "retire-runtime";
+  readonly denial?: RevisionDispatchResult;
+}
+
+type RepositoryCleanupEffect = RepositoryCleanupOutcome & {
+  readonly runtime?:
+    | { readonly kind: "stopped"; readonly revision: Readonly<AgentRevision> }
+    | ({
+        readonly kind: "expiry";
+        readonly revision: Readonly<AgentRevision>;
+      } & RepositoryExpiryWithdrawal);
+};
+
+interface RepositoryCleanupSettlement extends RepositoryCleanupOutcome {
+  readonly code: string;
+}
+
+function ownsActiveRepositoryRevision(
+  agent: Readonly<Agent> | undefined,
+  revision: Readonly<AgentRevision>,
+): agent is Readonly<Agent> {
+  return (
+    agent?.status === "active" &&
+    agent.activeRevisionId === revision.id &&
+    agent.servicePrincipalId === revision.servicePrincipalId
+  );
+}
 
 function repositoryCleanupRecheckMs(intervalMs: number, ageMs: number): number {
   return Math.max(
@@ -2538,18 +2569,33 @@ export class ControllerWorker {
     // Regular maintenance resumes here after expiry, without preparing or activating Git again.
     withdrawnRevision?: Readonly<AgentRevision>,
   ): Promise<void> {
-    let complete = false;
-    let completionCode: string | undefined;
-    let expiryRevision: Readonly<AgentRevision> | undefined;
-    let withdrawal: "withdrawn" | "pending" | "retire-runtime" | undefined;
-    let denial: RevisionDispatchResult | undefined;
-    let cause: string | undefined;
-    let stoppedRevision: Readonly<AgentRevision> | undefined;
     const cleanupRevisionId = withdrawnRevision?.id ?? repositoryCleanupRevisionId(claim);
     if (cleanupRevisionId === undefined) {
       await this.finalize(claim, undefined, { outcome: "permanent", code: "INVALID_TARGET" });
       return;
     }
+    const effect = await this.runRepositoryCleanupEffects(
+      claim,
+      cleanupRevisionId,
+      withdrawnRevision !== undefined,
+    );
+    const result = await this.settleRepositoryCleanup(claim, cleanupRevisionId, effect);
+    this.passOutcome = result.settled ? "success" : "pending";
+    this.reportRepositoryCleanupCause(claim, result.cause);
+    this.emit({
+      event: "worker.completed",
+      ...agentWorkLogFields(claim),
+      revisionId: cleanupRevisionId,
+      outcome: this.passOutcome,
+      code: result.code,
+    });
+  }
+
+  private async runRepositoryCleanupEffects(
+    claim: ClaimedWork,
+    cleanupRevisionId: string,
+    afterWithdrawal: boolean,
+  ): Promise<RepositoryCleanupEffect> {
     try {
       const revision = await this.state.read(async (view) => {
         if (claim.agentId === undefined) {
@@ -2557,79 +2603,71 @@ export class ControllerWorker {
         }
         return view.revisions.findRevision(claim.namespaceId, claim.agentId, cleanupRevisionId);
       });
-      if (revision !== undefined) {
-        if (withdrawnRevision !== undefined || isRepositoryExpiryCleanupWork(claim)) {
-          expiryRevision = revision;
-        }
-        const closeLiveSessions =
-          expiryRevision !== undefined || isRepositoryRuntimeRetirementWork(claim);
-        ({ settled: complete, cause } = await this.repositoryCredentials.cleanup(claim, revision, {
-          closeLiveSessions,
-        }));
-        if (closeLiveSessions) {
-          if (
-            revision.compute.id !== this.compute.id ||
-            revision.compute.implementation !== this.compute.implementation
-          ) {
-            throw new Error("COMPUTE_DRIVER_MISMATCH");
-          }
-          const resources = await this.state.read(async (view) => ({
-            namespace: await view.namespaces.findNamespace(revision.namespaceId),
-            agent: await view.agents.findAgent(revision.namespaceId, revision.agentId),
-          }));
-          if (
-            resources.namespace !== undefined &&
-            resources.agent !== undefined &&
-            this.compute.bindAgent !== undefined
-          ) {
-            await this.withClaimHeartbeat(claim, async () => {
-              await this.compute.bindAgent!({
-                namespace: resources.namespace!,
-                agent: resources.agent!,
-              });
-            });
-          }
-          // Session service outages cannot delay exact workload/material retirement.
-          if (expiryRevision !== undefined) {
-            ({ withdrawal, denial } = await this.withdrawExpiredRepositoryAccess(
-              claim,
-              revision,
-              resources,
-            ));
-            if (withdrawal === "pending") {
-              complete = false;
-              cause ??= "REPOSITORY_WITHDRAWAL_UNCONFIRMED";
-            }
-          } else {
-            await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
-            await this.retireEgressInstallation(revision);
-            stoppedRevision = revision;
-          }
-        }
-      } else {
+      if (revision === undefined) {
         const attempts = await this.state.read(async (view) =>
           (await view.repositorySessions.listNamespaceAttempts(claim.namespaceId)).filter(
             (attempt) => attempt.revisionId === cleanupRevisionId,
           ),
         );
-        ({ settled: complete, cause } = await this.repositoryCredentials.cleanupRetained(
-          claim,
-          attempts,
-        ));
+        return await this.repositoryCredentials.cleanupRetained(claim, attempts);
       }
+      const expiry = afterWithdrawal || isRepositoryExpiryCleanupWork(claim);
+      const closeLiveSessions = expiry || isRepositoryRuntimeRetirementWork(claim);
+      const cleanup = await this.repositoryCredentials.cleanup(claim, revision, {
+        closeLiveSessions,
+      });
+      if (!closeLiveSessions) {
+        return cleanup;
+      }
+      if (
+        revision.compute.id !== this.compute.id ||
+        revision.compute.implementation !== this.compute.implementation
+      ) {
+        throw new Error("COMPUTE_DRIVER_MISMATCH");
+      }
+      const resources = await this.state.read(async (view) => ({
+        namespace: await view.namespaces.findNamespace(revision.namespaceId),
+        agent: await view.agents.findAgent(revision.namespaceId, revision.agentId),
+      }));
+      const { namespace, agent } = resources;
+      if (namespace !== undefined && agent !== undefined && this.compute.bindAgent !== undefined) {
+        await this.withClaimHeartbeat(claim, async () => {
+          await this.compute.bindAgent!({ namespace, agent });
+        });
+      }
+      // Session service outages do not delay exact workload or material retirement.
+      if (expiry) {
+        const withdrawal = await this.withdrawExpiredRepositoryAccess(claim, revision, resources);
+        const runtime = { kind: "expiry", revision, ...withdrawal } as const;
+        return withdrawal.withdrawal === "pending"
+          ? { settled: false, cause: cleanup.cause ?? "REPOSITORY_WITHDRAWAL_UNCONFIRMED", runtime }
+          : { ...cleanup, runtime };
+      }
+      await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+      await this.retireEgressInstallation(revision);
+      return { ...cleanup, runtime: { kind: "stopped", revision } };
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      complete = false;
-      cause = repositoryCleanupFailureCode(error);
+      return { settled: false, cause: repositoryCleanupFailureCode(error) };
     }
-    await this.state.transactWithQueue(async (unit, queue) => {
+  }
+
+  private async settleRepositoryCleanup(
+    claim: ClaimedWork,
+    cleanupRevisionId: string,
+    effect: RepositoryCleanupEffect,
+  ): Promise<RepositoryCleanupSettlement> {
+    return this.state.transactWithQueue(async (unit, queue) => {
+      const expiry = effect.runtime?.kind === "expiry" ? effect.runtime : undefined;
+      let { settled } = effect;
       requireClaimRenewal(await queue.heartbeat(claim));
-      if (denial !== undefined) {
-        await this.appendRevisionDenial(unit, claim, denial);
+      if (expiry?.denial !== undefined) {
+        await this.appendRevisionDenial(unit, claim, expiry.denial);
       }
-      if (stoppedRevision !== undefined) {
+      if (effect.runtime?.kind === "stopped") {
+        const stoppedRevision = effect.runtime.revision;
         // Record a confirmed runtime stop even when session disposal is still pending.
         // A newer active revision and the Agent's desired run state are left intact.
         const agent = await this.lockClaimAgent(unit, claim);
@@ -2641,7 +2679,7 @@ export class ControllerWorker {
           );
         }
       }
-      if (expiryRevision !== undefined && withdrawal !== undefined) {
+      if (expiry !== undefined) {
         // Recheck the exact active owner under admission's locks after the supplier call. A
         // replacement or terminal retirement wins, including over pending. Stop keeps its
         // own supersedable runtime disposition while finite withdrawal remains fenced.
@@ -2649,30 +2687,28 @@ export class ControllerWorker {
         const owner = {
           namespaceId: claim.namespaceId,
           agentId: claim.agentId!,
-          revisionId: expiryRevision.id,
+          revisionId: expiry.revision.id,
         };
-        const expiry = await queue.repositoryExpiryState(owner);
-        const waitingForStop = expiry === "removal" && agent?.desiredRuntimeState === "stopped";
+        const expiryState = await queue.repositoryExpiryState(owner);
+        const waitingForStop =
+          expiryState === "removal" && agent?.desiredRuntimeState === "stopped";
         if (
-          withdrawal === "retire-runtime" ||
-          agent?.status !== "active" ||
-          agent.activeRevisionId !== expiryRevision.id ||
+          expiry.withdrawal === "retire-runtime" ||
+          !ownsActiveRepositoryRevision(agent, expiry.revision) ||
           (!waitingForStop && agent.desiredRuntimeState !== "running") ||
-          agent.servicePrincipalId !== expiryRevision.servicePrincipalId ||
           (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready" ||
-          expiry === "retiring"
+          expiryState === "retiring"
         ) {
           // Transfer every outstanding session and the runtime to irrevocable retirement.
           await queue.enqueueRepositoryCleanup(claim, owner, "terminal-runtime");
-          completionCode = "REPOSITORY_RUNTIME_RETIREMENT_QUEUED";
-          await queue.complete(claim, { code: completionCode });
-          complete = true;
-          return;
+          const code = "REPOSITORY_RUNTIME_RETIREMENT_QUEUED";
+          await queue.complete(claim, { code });
+          return { settled: true, code };
         }
         if (waitingForStop) {
           // Stopped intent cannot authorize retirement, including after denied Stop.
           // Keep cleanup responsible for later running intent without repeating Git effects.
-          complete = false;
+          settled = false;
         }
       }
       const attempts =
@@ -2685,20 +2721,27 @@ export class ControllerWorker {
               agentId: claim.agentId,
               revisionId: cleanupRevisionId,
             });
-      if (complete) {
-        complete =
-          expiryRevision === undefined
-            ? !attempts.some(({ phase }) => phase === "closing" || phase === "invalidated")
-            : attempts.every(({ phase }) => phase === "disposed");
+      settled &&=
+        expiry === undefined
+          ? !attempts.some(({ phase }) => phase === "closing" || phase === "invalidated")
+          : attempts.every(({ phase }) => phase === "disposed");
+      if (!settled) {
+        const cause =
+          effect.cause ??
+          (attempts.some(({ phase }) => phase === "invalidated")
+            ? "REPOSITORY_ATTEMPT_INVALIDATED"
+            : undefined);
+        const code = "REPOSITORY_CLEANUP_PENDING";
+        // A closing session keeps its disposal cadence. Other stuck cleanups slow with age.
+        const delayMs =
+          cause === undefined || attempts.some(({ phase }) => phase === "closing")
+            ? this.repositoryCleanupRetryMs
+            : repositoryCleanupRecheckMs(this.repositoryCleanupRetryMs, this.workAgeMs(claim));
+        await queue.defer(claim, { code }, { delayMs });
+        return { settled: false, code, ...(cause === undefined ? {} : { cause }) };
       }
-      if (
-        !complete &&
-        cause === undefined &&
-        attempts.some(({ phase }) => phase === "invalidated")
-      ) {
-        cause = "REPOSITORY_ATTEMPT_INVALIDATED";
-      }
-      if (complete && expiryRevision !== undefined && withdrawal === "withdrawn") {
+      if (expiry?.withdrawal === "withdrawn") {
+        const expiryRevision = expiry.revision;
         // Publish withdrawal and resume normal runtime maintenance in this same transaction.
         // A recovered expiry claim may be far older than the interrupted maintenance bucket.
         const previous = claim.idempotencyKey.startsWith(
@@ -2734,37 +2777,13 @@ export class ControllerWorker {
         // An unfinished original deployment can retain the verified runtime too, but this
         // observation proves neither activation nor workspace setup. Keep its nonactivation
         // result; only completeActivatedRevision publishes ordinary deployment success.
-        completionCode = "REPOSITORY_ACCESS_WITHDRAWN";
+        const code = "REPOSITORY_ACCESS_WITHDRAWN";
+        await queue.complete(claim, { code });
+        return { settled: true, code };
       }
-      if (complete) {
-        await queue.complete(claim, completionCode === undefined ? {} : { code: completionCode });
-      } else {
-        // A session still closing keeps the configured cadence whatever else is stuck: its
-        // disposal must not wait on an unrelated invalidated attempt. Otherwise a stuck
-        // cleanup keeps its obligation visible but slows down with age, like long readiness
-        // rechecks. The row's age spans every obligation it has carried for the revision.
-        await queue.defer(
-          claim,
-          { code: "REPOSITORY_CLEANUP_PENDING" },
-          {
-            delayMs:
-              cause === undefined || attempts.some(({ phase }) => phase === "closing")
-                ? this.repositoryCleanupRetryMs
-                : repositoryCleanupRecheckMs(this.repositoryCleanupRetryMs, this.workAgeMs(claim)),
-          },
-        );
-      }
+      await queue.complete(claim, {});
+      return { settled: true, code: "REPOSITORY_CLEANUP_COMPLETE" };
     }, this.queueOptions);
-    this.reportRepositoryCleanupCause(claim, complete ? undefined : cause);
-    this.emit({
-      event: "worker.completed",
-      ...agentWorkLogFields(claim),
-      revisionId: cleanupRevisionId,
-      outcome: complete ? "success" : "pending",
-      code: complete
-        ? (completionCode ?? "REPOSITORY_CLEANUP_COMPLETE")
-        : "REPOSITORY_CLEANUP_PENDING",
-    });
   }
 
   private async withdrawExpiredRepositoryAccess(
@@ -2774,17 +2793,9 @@ export class ControllerWorker {
       namespace,
       agent,
     }: { namespace: Readonly<Namespace> | undefined; agent: Readonly<Agent> | undefined },
-  ): Promise<{
-    withdrawal: "withdrawn" | "pending" | "retire-runtime";
-    denial?: RevisionDispatchResult;
-  }> {
+  ): Promise<RepositoryExpiryWithdrawal> {
     const compute = this.compute;
-    if (
-      namespace?.status !== "ready" ||
-      agent?.status !== "active" ||
-      agent.activeRevisionId !== revision.id ||
-      agent.servicePrincipalId !== revision.servicePrincipalId
-    ) {
+    if (namespace?.status !== "ready" || !ownsActiveRepositoryRevision(agent, revision)) {
       return { withdrawal: "pending" };
     }
 
@@ -5126,18 +5137,14 @@ export class ControllerWorker {
         claim.agentId!,
         claim.revisionId!,
       );
+      const owner = revision === undefined ? undefined : revisionOwner(revision);
       if (
         namespace?.status !== "ready" ||
         !revision?.repositoryCredentials?.standingApprovalId ||
-        agent?.status !== "active" ||
-        agent.activeRevisionId !== revision.id ||
+        !ownsActiveRepositoryRevision(agent, revision) ||
         agent.desiredRuntimeState !== "running" ||
-        agent.servicePrincipalId !== revision.servicePrincipalId ||
-        (await queue.repositoryExpiryState({
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-        })) !== undefined
+        owner === undefined ||
+        (await queue.repositoryExpiryState(owner)) !== undefined
       ) {
         return false;
       }
@@ -5169,11 +5176,6 @@ export class ControllerWorker {
           }
         }
       }
-      const owner = {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-      };
       const attempts = await unit.repositorySessions.listRevisionAttempts(owner);
       for (const attempt of attempts) {
         if (attempt.phase === "opening" || attempt.phase === "open") {

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-11-22
-last_updated_session: authoring-run/e04921d4-0e64-4748-963f-ea2bdbee1215
+last_updated_session: authoring-run/18e09cc2-273a-4950-b512-3648f405ac27
 ---
 
 # Controller Worker Flow
@@ -271,7 +271,7 @@ active candidate before effects; claim loss cannot turn plugin failure into succ
 `finalizeAgentStop()` checks the claim, Agent owner, and desired state.
 It clears `activeRevisionId` only if it points to the stopped version.
 A later deployment supersedes the stop even with that pointer. Version
-rows and runtime state remain. After commit, successful stops that were
+rows and persistent runtime state remain. After commit, successful stops that were
 not superseded and successful activations record
 [operation durations](../reference/metrics.md#shared-snapshots-and-outages).
 
@@ -316,10 +316,9 @@ minutes and at least four times the stop duration. Later passes retry the stop
 unless superseded or the refusal lifts. If it lifts after the deadline, the stop
 then publishes `CONVERGENCE_DEADLINE_EXCEEDED`.
 
-`ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
-Driver interval, including closing sessions and failed runtime retirement,
-releasing the claim without consuming retries. Obligations survive; lease loss
-aborts the pass.
+`settleRepositoryCleanup()` defers incomplete cleanup without consuming retries.
+Closing sessions keep the Driver interval. Other stalled cleanup slows with age.
+The worker uses the committed outcome for logs and metrics.
 
 Terminal rows store `reason_code` and optional `result_data`, shaped as the
 [terminal results reference](../reference/controller/reconciliation.md#terminal-results)
@@ -426,6 +425,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-22 10:47: Trace repository cleanup settlement and metrics. (authoring-run/18e09cc2-273a-4950-b512-3648f405ac27 - f31e3395fff2f025a36a31e8b7bcca31d5d45938)
 - 2026-11-22 10:30: Trace shared Agent Stop and Delete settlement. (authoring-run/e04921d4-0e64-4748-963f-ea2bdbee1215 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
 - 2026-11-22 09:29: Trace Read Committed for scoped deployment. (authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576 - db0227da135c6bf5e437038ec1fdbbfcc46ba548)
 - 2026-11-21 10:28: Trace scoped dispatch admission and recovery in the accompanying change. (authoring-run/3f3abf26-0aec-43e5-aa36-3aa72b38cf4a - a450dc92242a9d2e9f87da7e4fe8f8ea9dcd5e30)
