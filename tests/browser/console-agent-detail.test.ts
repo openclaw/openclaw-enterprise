@@ -55,6 +55,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settledView,
   settlePageRequests,
   statusTone,
   takeLayoutShifts,
@@ -2769,11 +2770,54 @@ test("a reader without update views the version draft read-only", async (t) => {
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
   assert.equal(await page.getByRole("button", { name: "Edit current Configuration" }).count(), 0);
-  // A readable version alone does not grant access to the draft.
-  revokeMemberGrant(fixture, "draft-reader", ["read", "configuration"]);
+  const draftLinks = snapshot.getByRole("link", { name: /^Draft / });
+  const permissionUrl = `${fixture.origin}${path}/permissions`;
+  await t.test("losing a snapshot shortcut on refocus preserves keyboard position", async () => {
+    const tab = page.getByRole("tab", { name: "Configuration", exact: true });
+    const navigation = page.getByRole("link", { name: "Agents", exact: true });
+    for (const moveFocus of [true, false]) {
+      await page.goto(snapshotUrl);
+      await page.locator(settledView).waitFor();
+      await draftLinks.first().focus();
+      const restore = revokeMemberGrant(fixture, "draft-reader", ["read", "configuration"]);
+      const permissions = await holdRequests(t, page, permissionUrl, {
+        once: true,
+        afterServer: true,
+      });
+      await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+      await permissions.requested;
+      // The sidebar stays active while the Controller rechecks the snapshot.
+      if (moveFocus) {
+        await navigation.focus();
+      }
+      permissions.release();
+      await page.locator(settledView).waitFor();
+      restore();
+      assert.equal(await draftLinks.count(), 0);
+      assert.ok(await hasFocus(moveFocus ? navigation : tab), moveFocus ? "sidebar" : "tab");
+    }
+  });
+
+  // A fresh grant does not clear this tab's 403 on the exact saved Configuration.
   await page.goto(snapshotUrl);
+  await draftLinks.first().waitFor();
+  const restore = revokeMemberGrant(fixture, "draft-reader", ["read", "configuration"]);
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const denied = page.waitForResponse(fixture.origin + configurationPath);
+  await draftLinks.first().click();
+  assert.equal((await denied).status(), 403);
+  await page.getByRole("heading", { name: "Configuration unavailable" }).waitFor();
+  restore();
+  const granted = page.waitForResponse(permissionUrl);
+  await page.goBack();
+  assert.equal(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await granted).json()).data
+      .configurationRead,
+    true,
+  );
+  await page.locator(settledView).waitFor();
   await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
-  assert.equal(await snapshot.getByRole("link", { name: /^Draft / }).count(), 0);
+  assert.equal(await draftLinks.count(), 0);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 

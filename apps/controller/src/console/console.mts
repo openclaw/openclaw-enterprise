@@ -3157,6 +3157,16 @@ async function revalidateMountedAgent(current: Route) {
         ? document.getElementById(focused.id)
         : null;
     if (!target?.closest(".content") || !target.checkVisibility()) {
+      // A permission recheck can hide the focused control while this Agent view is inert.
+      // If its panel is still visible, return to the tab that labels it.
+      const panel = target?.closest('[role="tabpanel"]');
+      if (panel && view.contains(panel) && panel.checkVisibility()) {
+        const tab = document.getElementById(panel.getAttribute("aria-labelledby") ?? "");
+        if (tab?.checkVisibility()) {
+          tab.focus();
+          return;
+        }
+      }
       if (afterRetry && mountedRouteKey === key) {
         app.querySelector<HTMLElement>(".content h1")?.focus({ preventScroll: true });
       }
