@@ -29,6 +29,7 @@ type CredentialScenario = Pick<
   agentPermissionSummary?: Omit<NonNullable<Parameters<typeof agentSaveGap>[0]>, "readLogs">;
   auth?: "oauth" | "runtime" | "service" | null;
   configurationChangedElsewhere?: boolean | { afterReads: number; values: Configuration["values"] };
+  agentDeployDenied?: boolean;
   deployed?: boolean;
   deployGrantsSources?: boolean;
   harnessGrantMissing?: boolean;
@@ -1001,6 +1002,28 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
         "The request log shows the Agent PATCH and no /iam/ request.",
       ],
       gap: "The permission answer is simulated. The member browser test reads the console fixture's real answer, which is false.",
+    },
+    authSecretGrantMemberDeployDenied: {
+      group: "Components/Credentials",
+      name: "Member authentication saved, member may not deploy",
+      path: `${draft}&tab=credentials`,
+      observabilityDenied: true,
+      extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+      agentDeployDenied: true,
+      actions: [
+        { selector: "#harness-auth-method", value: "codex_pat" },
+        { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+        // The picker stages its choice after reading the Secret answer; Save waits for it.
+        { text: "Secret binding staged. Save changes to apply it." },
+        click("Save authentication source"),
+      ],
+      description:
+        "A member whose Role lacks Agent deploy saves a new model Secret. The deploy would write the Agent's grant, but this member cannot run it, so the saved status names who can: someone who may deploy the Agent and operate the Secret, or an Installation administrator.",
+      steps: [
+        "Read the status: Authentication source saved. Ask someone who may deploy this Agent and operate the selected Secret to deploy it, or ask an Installation administrator to give the Agent Secret operate on it.",
+        "The request log shows the Agent PATCH and no /iam/ request.",
+      ],
+      gap: "The permission answer is simulated. The member browser test revokes Agent deploy from a real member Role.",
     },
     authSaveRefused: {
       group: "Components/Credentials",

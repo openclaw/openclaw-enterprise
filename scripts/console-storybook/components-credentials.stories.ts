@@ -187,6 +187,10 @@ export const AuthSecretGrantMemberNoDeployGrant = {
   ...story("authSecretGrantMemberNoDeployGrant"),
   name: "Member authentication saved, deploy writes no grant",
 };
+export const AuthSecretGrantMemberDeployDenied = {
+  ...story("authSecretGrantMemberDeployDenied"),
+  name: "Member authentication saved, member may not deploy",
+};
 export const AuthSecretGrantLoading = {
   ...story("authSecretGrantLoading"),
   name: "Checking model Secret access",

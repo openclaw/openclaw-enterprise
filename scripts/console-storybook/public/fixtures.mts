@@ -70,6 +70,8 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     agentPermissionSummary?: unknown;
     // False for an Installation whose deploy writes no Agent grant; the default summary says it.
     deployGrantsSources?: boolean;
+    // True for a reader whose Role lacks Agent deploy; the default summary says it.
+    agentDeployDenied?: boolean;
     nativeAdmin?: string;
     nativeAdminSessionMode?: "host-only-exchange";
     nativeAdminMode?: "admin" | "chat";
@@ -903,7 +905,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           return response(
             scenario.agentPermissionSummary ?? {
               update: allowed,
-              deploy: allowed,
+              deploy: allowed && !scenario.agentDeployDenied,
               operate: allowed,
               delete: allowed,
               administer: allowed,
