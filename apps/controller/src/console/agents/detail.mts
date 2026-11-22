@@ -463,13 +463,22 @@ function summary(
   return list;
 }
 
-function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
+function nativeDocument(values: Readonly<Record<string, unknown>>, label: string) {
   return element(
     "details",
     { className: "native-document" },
     element("summary", {}, label),
     element("pre", { tabindex: "0" }, JSON.stringify(values, null, 2)),
   );
+}
+
+function harnessDocument(values: Readonly<Record<string, unknown>>, label: string) {
+  const keys = Object.keys(values);
+  if (!keys.length) {
+    return "None";
+  }
+  const fields = keys.length === 1 ? keys[0] : `${keys.length} top-level keys`;
+  return nativeDocument(values, `${label} (${fields})`);
 }
 
 // Managed mode also keeps the Gateway tool allowlist as deployed; with it off, Gateway
@@ -5956,8 +5965,14 @@ export async function renderAgentDetail(
       if (!draft) {
         details.push(
           ["Harness", `${snapshot.harness.id} · ${snapshot.harness.version}`],
-          ["Requested Harness overrides", JSON.stringify(snapshot.harness.overrides)],
-          ["Resolved Harness settings", JSON.stringify(snapshot.harness.configuration)],
+          [
+            "Requested Harness overrides",
+            harnessDocument(snapshot.harness.overrides, "View overrides"),
+          ],
+          [
+            "Resolved Harness settings",
+            harnessDocument(snapshot.harness.configuration, "View settings"),
+          ],
           ["Compute", `${snapshot.compute.id} · ${snapshot.compute.implementation}`],
         );
       }

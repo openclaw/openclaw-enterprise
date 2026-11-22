@@ -11,8 +11,11 @@ source authorization, persistence, deployment, or inference routing.
 3. Select **Override model provider**. Enter an HTTPS endpoint ending in `/v1`,
    select Responses, and leave standalone web search off. Change the URL again;
    the requested destination must follow the field.
-4. Select **Deploy new version** directly. Inspect the admitted version's requested
-   and resolved settings and confirm they contain the submitted destination.
+4. Select **Deploy new version**. In **Configuration snapshot**, use Tab and
+   Enter to open **View overrides** and **View settings**. Confirm both JSON
+   documents show the submitted destination and wrap at phone width. When you
+   deploy with the Installation default, **Requested Harness overrides** shows
+   **None** and **View settings** still shows the resolved destination.
 5. Open **Harness deployment denied** and submit. Confirm the refusal is visible
    and no new version appears. In **Harness deployment pending**, submit and
    confirm repeat deployment is unavailable while the actual request is held.

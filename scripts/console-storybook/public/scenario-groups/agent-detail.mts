@@ -317,7 +317,8 @@ export function createAgentDetailScenarios({
         description:
           "Submit requested overrides and inspect the resolved settings after deployment.",
         steps: [
-          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy and inspect requested and resolved settings.",
+          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy.",
+          "In Configuration snapshot, expand View overrides and View settings. Compare the destinations in the two JSON documents.",
         ],
         gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
       },

@@ -3082,6 +3082,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .native-document {
   margin-top: var(--space-6);
 }
+.configuration-summary .native-document {
+  margin-top: 0;
+}
 .native-document summary {
   width: fit-content;
   cursor: pointer;
@@ -3671,6 +3674,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   }
   .configuration-summary dd {
     margin-bottom: var(--space-3);
+  }
+  .configuration-summary .native-document pre {
+    padding: var(--space-3);
+    font: var(--text-md) / var(--text-md--line-height) var(--font-mono);
   }
 }
 /* Phone: each Agent is a stacked row, its name and ID first, then each cell beside its column's
