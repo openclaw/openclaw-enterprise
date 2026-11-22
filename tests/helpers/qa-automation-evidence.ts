@@ -166,6 +166,16 @@ function program(input: object, body: string) {
   return `const input=${JSON.stringify(input)};\n${body}`;
 }
 
+function gatewayObservationProgram(input: object) {
+  return program(
+    input,
+    `let observationStage="gateway-module"; try { ${gatewayProgram} } catch (error) {
+      const category=error instanceof SyntaxError?"json":error?.code==="ERR_SQLITE_ERROR"?"sqlite":error?.code==="ERR_INVALID_ARG_TYPE"?"invalid-storage-value":"invariant";
+      process.stderr.write(JSON.stringify({evidenceUnavailable:true,stage:observationStage,category})); process.exitCode=1;
+    }`,
+  );
+}
+
 async function observe(f: Fixture, agent: Agent, role: "gateway" | "agent", body: string) {
   const result = await f.execRole(agent, role, ["node", "-e", ...nodeProgramArguments(body)]);
   const value = asRecord(JSON.parse(result.stdout));
@@ -185,18 +195,7 @@ export async function readQaAutomationRunEvidence(
   agent: Agent,
   input: { sessionKey: string; retainedSessionKey: string; sessionId: string; marker: string },
 ) {
-  const gateway = await observe(
-    f,
-    agent,
-    "gateway",
-    program(
-      input,
-      `let observationStage="gateway-module"; try { ${gatewayProgram} } catch (error) {
-        const category=error instanceof SyntaxError?"json":error?.code==="ERR_SQLITE_ERROR"?"sqlite":error?.code==="ERR_INVALID_ARG_TYPE"?"invalid-storage-value":"invariant";
-        process.stderr.write(JSON.stringify({evidenceUnavailable:true,stage:observationStage,category})); process.exitCode=1;
-      }`,
-    ),
-  );
+  const gateway = await observe(f, agent, "gateway", gatewayObservationProgram(input));
   assert.equal(gateway.reportSource, "run");
   assert.equal(gateway.promptSeen, true);
   assert.equal(gateway.answerSeen, true);
@@ -289,12 +288,7 @@ export async function readQaAutomationMcpRunEvidence(
   input: { sessionKey: string; retainedSessionKey: string; sessionId: string; marker: string },
   approved: string,
 ) {
-  const gateway = await observe(
-    f,
-    agent,
-    "gateway",
-    program(input, `let observationStage="gateway-module";${gatewayProgram}`),
-  );
+  const gateway = await observe(f, agent, "gateway", gatewayObservationProgram(input));
   assert.equal(gateway.reportSource, "run");
   assert.equal(gateway.promptSeen, true);
   assert.equal(gateway.answerSeen, true);

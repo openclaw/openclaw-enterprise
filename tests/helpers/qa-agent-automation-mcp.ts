@@ -117,7 +117,7 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
   async function roleFiles(action: "precheck" | "read" | "cleanup") {
     const all: Call[] = [];
     for (const role of roles) {
-      const script = `const fs=require('node:fs');const files=${JSON.stringify([record, sentinel, record + ".deny"])};const action=${JSON.stringify(action)};if(action==='precheck'){for(const file of files){if(fs.existsSync(file))throw Error('proof path exists');fs.writeFileSync(file,'probe',{flag:'wx'});fs.unlinkSync(file)}}if(action==='read'){if(fs.existsSync(files[1]))throw Error('forbidden shell/file effect');process.stdout.write(fs.existsSync(files[0])?fs.readFileSync(files[0],'utf8'):'')}if(action==='cleanup')for(const file of files)fs.rmSync(file,{force:true});`;
+      const script = `const fs=require('node:fs');const files=${JSON.stringify([record, sentinel, record + ".deny"])};const action=${JSON.stringify(action)};if(action==='precheck'){for(const file of files){if(fs.existsSync(file))throw Error('proof path exists');fs.writeFileSync(file,'probe',{flag:'wx'});fs.unlinkSync(file)}}if(action==='read'){if(fs.existsSync(files[1])){process.stderr.write(JSON.stringify({evidenceUnavailable:true,stage:'forbidden-sentinel-read',category:'forbidden-effect'}));process.exit(1)}process.stdout.write(fs.existsSync(files[0])?fs.readFileSync(files[0],'utf8'):'')}if(action==='cleanup')for(const file of files)fs.rmSync(file,{force:true});`;
       const output = await f.execRole(agent, role, ["node", "-e", ...nodeProgramArguments(script)]);
       if (action === "read") {
         for (const line of output.stdout.trim().split("\n").filter(Boolean)) {
@@ -700,17 +700,13 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
     });
     const entry = history.entries.map(asRecord).find((value) => value?.runId === run.runId);
     assert.ok(entry && typeof entry.sessionId === "string" && typeof entry.sessionKey === "string");
-    const transcript = await readQaAutomationMcpRunEvidence(
-      f,
-      agent,
-      {
-        sessionKey: entry.sessionKey,
-        retainedSessionKey: `agent:${nativeJob.agentId}:cron:${nativeJob.id}`,
-        sessionId: entry.sessionId,
-        marker: scheduled,
-      },
-      "approved__parity_probe",
+    const retainedSessionKey = `agent:${nativeJob.agentId}:cron:${nativeJob.id}`;
+    assert.equal(
+      entry.sessionKey,
+      `${retainedSessionKey}:run:${entry.sessionId}`,
+      "native history must identify this job's exact isolated run alias",
     );
+    // Preserve independent effect checks before the transcript observer runs.
     await roleFiles("read");
     const calls = await collect();
     assert.equal(calls.length, 2, "the sibling and second server must receive no tools/call");
@@ -746,6 +742,25 @@ export async function verifyQaAgentAutomationMcp(f: Fixture, agent: Agent): Prom
         "scheduled MCP must not inherit a broader environment",
       );
     }
+    await f.record(`automations-${agent.id}-mcp-completion`, {
+      nativeHistoryAliasVerified: true,
+      scheduledNonceVerified: true,
+      approvedServerAndToolVerified: true,
+      forbiddenPeerCallsAbsent: true,
+      forbiddenFileEffectAbsent: true,
+      sameAuthority: true,
+    });
+    const transcript = await readQaAutomationMcpRunEvidence(
+      f,
+      agent,
+      {
+        sessionKey: entry.sessionKey,
+        retainedSessionKey,
+        sessionId: entry.sessionId,
+        marker: scheduled,
+      },
+      "approved__parity_probe",
+    );
     async function denyService(value: boolean) {
       if (networkPeer) {
         await networkPeer.deny(value);
