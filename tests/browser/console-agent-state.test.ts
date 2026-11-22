@@ -4517,6 +4517,12 @@ test("Agents list row actions explain missing access and still report a refused 
     await expectActionInView(remove, width);
     await page.keyboard.press("Shift+Tab");
     await expectActionInView(stop, width);
+    assert.ok(
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+      ),
+      `${width}: unavailable actions do not widen the page`,
+    );
   }
   for (const action of [stop, remove]) {
     await expectReachableReason(page, action, bothDenied);
