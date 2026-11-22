@@ -7,7 +7,7 @@ import type {
 import type { Static } from "typebox";
 import {
   askAdministratorTo,
-  SECRET_CREATE_DENIED,
+  secretCreateDenied,
   SECRET_DELETE_DENIED,
   SECRET_LINK_UNLISTED,
   secretLinkUnlistedForAdministrator,
@@ -20,7 +20,7 @@ import {
   NAMESPACE_NOT_READY_MESSAGE,
   readFailureReason,
 } from "./agents/list.mjs";
-import { requestFailure, responseFields } from "./api-client.mjs";
+import { namedDenial, requestFailure, responseFields } from "./api-client.mjs";
 import {
   button,
   dismissOnBackdrop,
@@ -215,6 +215,7 @@ export function renderSecrets(
   // then refused after the dialog is filled in (finding 2365). Gating only: the API still
   // authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.secrets?.create === false;
+  const createDeniedReason = secretCreateDenied(context.permissions);
   const notReadyNote = ready
     ? null
     : statusBlock(
@@ -230,7 +231,7 @@ export function renderSecrets(
     ? element(
         "p",
         { className: "muted", role: "status", id: "secrets-create-denied" },
-        SECRET_CREATE_DENIED,
+        createDeniedReason,
       )
     : null;
   // An unavailable Create Secret stays in the Tab order with the note that says why (finding
@@ -246,7 +247,7 @@ export function renderSecrets(
     const note = element(
       "p",
       { className: "muted", role: "status", id: "secrets-create-refused" },
-      `${SECRET_CREATE_DENIED} Then select Refresh.`,
+      `${createDeniedReason} Then select Refresh.`,
     );
     toolbar.after(note);
     setUnavailable(create, true, note);
@@ -728,9 +729,10 @@ export function renderSecrets(
             ? "Outcome unknown. The value may have changed and cannot be read back. Close this dialog and verify credential use before deciding to submit a new replacement."
             : "Outcome unknown. The Secret may have been created. Close this dialog and Refresh the list before deciding to create another.";
         } else if (status === 403) {
-          // Create is checked on the Namespace, which no Namespace Role grants; replace is Secret
-          // update on this Secret.
-          description = replacing ? SECRET_UPDATE_DENIED : SECRET_CREATE_DENIED;
+          // The create request can name the checked access. Keep that reason when the API sends it.
+          description = replacing
+            ? SECRET_UPDATE_DENIED
+            : (namedDenial(cause) ?? createDeniedReason);
           if (!replacing) {
             showCreateRefused();
           }

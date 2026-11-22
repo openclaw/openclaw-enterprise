@@ -26,11 +26,12 @@ import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_NOT_FOUND,
-  SECRET_CREATE_DENIED,
+  SECRET_CREATE_MEMBER_DENIED,
   SECRET_NAME_CONFLICT,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
 import {
+  createDenied,
   SECRET_DELETE_DENIED,
   SECRET_LINK_UNLISTED,
   secretLinkUnlistedAdministrator,
@@ -988,7 +989,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   // Without Secret create the page never offers creation that the API would refuse after the
   // dialog is filled in (finding 2365): Create Secret is disabled and the note names why.
   const createSecret = page.getByRole("button", { name: "Create Secret", exact: true });
-  const createReason = page.getByRole("status").filter({ hasText: SECRET_CREATE_DENIED });
+  const createReason = page.getByRole("status").filter({ hasText: SECRET_CREATE_MEMBER_DENIED });
   await createReason.waitFor();
   assert.equal(await createSecret.isDisabled(), true);
   assert.equal(
@@ -1151,10 +1152,10 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       "a denied write must not reach the Secret Driver",
     );
     assert.equal(storage.valueFor(secret), storedValue);
-    await form
-      .getByRole("alert")
-      .filter({ hasText: /Your access does not include/ })
-      .waitFor();
+    const expected = creating
+      ? createDenied("Secret", namespace.id)
+      : /Your access does not include/;
+    await form.getByRole("alert").filter({ hasText: expected }).waitFor();
     assert.equal(await submit.isDisabled(), true);
     const close = form.getByRole("button", { name: "Close" });
     if (method !== "DELETE") {
@@ -1195,6 +1196,11 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await form.getByLabel("Secret name").fill("Reader cannot create this");
   await value.fill("synthetic-denied-create");
   await expectDenied("Create Secret", "POST", "create");
+  await expectReachableReason(
+    page,
+    createSecret,
+    `${SECRET_CREATE_MEMBER_DENIED} Then select Refresh.`,
+  );
 
   async function openAction(name: string) {
     await page.getByRole("button", { name: secret.name, exact: true }).click();

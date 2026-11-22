@@ -1,9 +1,9 @@
 // The one place that words who grants access and what to ask for (findings 2539, 2578). People
 // receive exact-resource grants through Namespace IAM policy, which only Installation
-// administration may write (findings 1920, 2259, 2260), so every reason sends the reader to an
-// Installation administrator, in these words. Grants use the permissions cheat sheet's words and
+// administration may write (findings 1920, 2259, 2260). Reasons that request such a grant use
+// these words. Grants use the permissions cheat sheet's words and
 // name the action the API checks for that request (docs/reference/cheatsheets/permissions.md).
-// The API's own named denials end the same way ("Ask an Installation administrator to grant it.").
+// Other refusals identify the relevant access and the next step.
 
 // The ask clause inside a sentence, such as "Refresh, or ask an Installation administrator."
 export const ASK_INSTALLATION_ADMINISTRATOR = "ask an Installation administrator";
@@ -27,33 +27,19 @@ export const notIncluded = (task: string, grant: string) =>
 export const actionRefused = (action: string, task: string, grant: string) =>
   `${action} was refused: ${notIncluded(task, grant).replace(/^Your/, "your")}`;
 
-// Create is checked on the parent (the Installation for a Namespace, otherwise the Namespace), and
-// Namespace IAM Roles cannot grant people create (docs/guides/topics/iam.md), so the reason names
-// who can create instead of a grant to ask for (findings 2496, 2508).
-const onlyAdministratorCreates = (kinds: string, where: string, step: string) =>
-  `Your access does not include creating ${kinds} ${where}. Only an Installation administrator can create ${kinds}: ask one to ${step}.`;
+// Advisory permission answers report access, not why it was refused. A caller can need a
+// different grant or be subject to a Restriction, even with Installation administration.
+type InstallationPermissions = { installation?: { administer?: boolean } } | null;
+const CHECK_ACCESS = "Check your access and whether an IAM Restriction applies.";
+const accessRequired = (task: string, access: string, permissions?: InstallationPermissions) =>
+  `${task} requires ${access}. ${permissions?.installation?.administer === false ? askAdministratorTo("check your access") : CHECK_ACCESS}`;
 
-export const AGENT_CREATE_DENIED = onlyAdministratorCreates(
-  "Agents",
-  "in this Namespace",
-  "create it and to give you access to edit and deploy it",
-);
-// An Installation administrator may still be refused Agent create: a deny Restriction overrides
-// every grant in its Namespace, administration included, and administration cannot lift it. The
-// permission answer says so when it holds Installation administer but not Agent create (finding
-// D759).
-export const AGENT_CREATE_RESTRICTED =
-  "A Restriction in this Namespace denies Agent create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the Agent in another Namespace.";
-/** Why the Namespace permission answer refuses Agent create: a Restriction, or missing access. */
-export const agentCreateDenied = (
-  permissions?: { installation?: { administer?: boolean } } | null,
-) =>
-  permissions?.installation?.administer === true ? AGENT_CREATE_RESTRICTED : AGENT_CREATE_DENIED;
-export const SECRET_CREATE_DENIED = onlyAdministratorCreates(
-  "Secrets",
-  "in this Namespace",
-  "create it and to give you Secret read and operate on it",
-);
+export const agentCreateDenied = (permissions?: InstallationPermissions) =>
+  accessRequired("Creating an Agent", "Agent create in this Namespace", permissions);
+export const AGENT_CREATE_DENIED = agentCreateDenied();
+export const secretCreateDenied = (permissions?: InstallationPermissions) =>
+  accessRequired("Creating a Secret", "Secret create in this Namespace", permissions);
+export const SECRET_CREATE_DENIED = secretCreateDenied();
 export function namespaceCreateDenied(installationAdmin: boolean | null) {
   const required = "Creating a Namespace requires Namespace create in this Installation.";
   if (installationAdmin === true) {
@@ -62,23 +48,11 @@ export function namespaceCreateDenied(installationAdmin: boolean | null) {
   if (installationAdmin === false) {
     return `${required} ${askAdministratorTo("check your access")}`;
   }
-  return `${required} Check your access and whether an IAM Restriction applies.`;
+  return `${required} ${CHECK_ACCESS}`;
 }
-// Namespace IAM Roles grant only namespace:read on the Namespace itself, so no grant lets a member
-// delete one: the reason names who can, not a grant to ask for (finding D788).
-export const NAMESPACE_DELETE_DENIED =
-  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
-// An Installation administrator refused Namespace delete is refused by a deny Restriction, which
-// administration cannot lift, as for Agent create (finding 2861).
-export const NAMESPACE_DELETE_RESTRICTED =
-  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
-/** Why the Namespace permission answer refuses delete: a Restriction, or missing access. */
-export const namespaceDeleteDenied = (
-  permissions?: { installation?: { administer?: boolean } } | null,
-) =>
-  permissions?.installation?.administer === true
-    ? NAMESPACE_DELETE_RESTRICTED
-    : NAMESPACE_DELETE_DENIED;
+export const namespaceDeleteDenied = (permissions?: InstallationPermissions) =>
+  accessRequired("Deleting this Namespace", "Namespace delete", permissions);
+export const NAMESPACE_DELETE_REFUSED = `Deletion was refused. ${CHECK_ACCESS}`;
 
 // POST /agents/{id}/stop authorizes Agent operate; DELETE /agents/{id} authorizes Agent delete.
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
@@ -176,7 +150,7 @@ export const MODEL_CREDENTIAL_REJECTED_REPLACED =
   "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential, which the next deployment uses.";
 
 // A Secret field with nothing to choose for a caller who can neither create nor read a Secret.
-export const NO_SECRETS_CREATE_DENIED = `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Or ask one for Secret read and operate on an existing Secret.`;
+export const NO_SECRETS_CREATE_DENIED = `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Using an existing Secret requires Secret read and operate on it.`;
 export const SECRET_READ_DENIED = notIncluded("reading this Secret", "Secret read on it");
 export const SECRET_UPDATE_DENIED = notIncluded(
   "replacing this Secret's value",
@@ -282,9 +256,11 @@ export const WORKSPACE_SAVE_REFUSED = actionRefused(
   "saving this Agent's workspace files",
   "Agent operate on it",
 );
-// POST /configurations authorizes Configuration create, which no Namespace Role grants, plus
-// Secret operate on each Secret it binds: only an Installation administrator can create it.
-export const CONFIGURATION_CREATE_REFUSED = `Create was refused: your access does not include creating this Agent's Configuration. That needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. ${askAdministratorTo("create this Agent")}`;
+// POST /configurations checks Configuration create and Secret operate on each bound Secret.
+export const CONFIGURATION_CREATE_REFUSED = accessRequired(
+  "Creating this Agent's Configuration",
+  "Configuration create in this Namespace and Secret operate on each Secret it binds",
+);
 // The editing setting authorizes Installation administer and Agent administer, which no Namespace
 // Role grants, so the reason names who can change it instead of a grant.
 export const POLICY_EDITING_SETTING_REFUSED =

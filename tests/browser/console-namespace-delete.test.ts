@@ -6,6 +6,7 @@ import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { restrict } from "../helpers/iam-grants.ts";
+import { namespaceDeleteDenied } from "../helpers/refusal-access.ts";
 
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
@@ -29,14 +30,10 @@ import {
 } from "./console-fetch-accounting.ts";
 import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.ts";
 
-// Finding D788. Namespace IAM Roles cannot grant Namespace delete, so a member's trash icon names
-// who can delete the Namespace instead of a grant to ask for.
 const NAMESPACE_DELETE_DENIED =
-  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
-// The same icon for an Installation administrator whom a deny Restriction keeps from deleting the
-// Namespace (finding 2861): administration cannot lift it.
-const NAMESPACE_DELETE_RESTRICTED =
-  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
+  "Deleting this Namespace requires Namespace delete. Ask an Installation administrator to check your access.";
+const NAMESPACE_DELETE_ACCESS_CHECK =
+  "Deleting this Namespace requires Namespace delete. Check your access and whether an IAM Restriction applies.";
 
 const browser = fileBrowser();
 
@@ -268,9 +265,8 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, member.credentials);
   const remove = page.getByRole("button", { name: "Delete Restricted cleanup", exact: true });
-  // No Namespace Role grants delete, so the reason names who can delete, not a grant to ask for.
-  // The icon stays in the Tab order, so a keyboard user reaches the reason, and it opens nothing
-  // (finding D788).
+  // The icon stays in the Tab order with the permission requirement (finding D788).
+  // A denied operation opens no confirmation by either keyboard or pointer.
   await page
     .getByRole("button", {
       name: "Delete Restricted cleanup",
@@ -296,14 +292,13 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   await page.waitForFunction(() => !document.querySelector("dialog[open]"));
   assert.equal((await fixture.request("GET", `/namespaces/${namespace.id}`)).data.status, "ready");
   assert.equal(await remove.isDisabled(), true);
+  await page.getByText(namespaceDeleteDenied(namespace.id), { exact: true }).waitFor();
   // The refused trash control, natively disabled while the write ran, takes focus back.
   assert.equal(await hasFocus(remove), true);
 });
 
-// Finding 2861. A deny Restriction refuses Namespace delete even to an Installation administrator,
-// and administration cannot lift it. Her permission answer shows administration without delete,
-// so the reason names the Restriction and who lifts it, not an administrator to ask: she is one.
-test("a Restriction on Namespace delete names the Restriction to an Installation administrator", async (t) => {
+// The same advisory answer can follow a missing grant or a Restriction (finding 2861).
+test("a Restriction on Namespace delete gives an Installation administrator the access check", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Held cleanup");
   restrict(fixture.policy, "delete", "namespace", { namespaceId: namespace.id });
   const { page } = await newPage(t, fixture, { browser });
@@ -311,7 +306,7 @@ test("a Restriction on Namespace delete names the Restriction to an Installation
   const remove = page.getByRole("button", {
     name: "Delete Held cleanup",
     exact: true,
-    description: NAMESPACE_DELETE_RESTRICTED,
+    description: NAMESPACE_DELETE_ACCESS_CHECK,
   });
   await remove.waitFor();
   assert.equal(await page.getByText(NAMESPACE_DELETE_DENIED, { exact: true }).count(), 0);

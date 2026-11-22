@@ -1,23 +1,23 @@
 // Independent Console and API access-refusal expectations. Keep these literals separate from product wording.
-import { askForGrant, notIncluded } from "./refusal-text.mjs";
+import { AGENT_CREATE_ACCESS_CHECK, askForGrant, notIncluded } from "./refusal-text.mjs";
 
-// A create needs the collection grant, which only Roles from the Installation configuration
-// hold: an Installation administrator creates one. `kinds` is the plural, such as "Secrets".
-export const createDenied = (kind: string, namespaceId: string, kinds = `${kind}s`): string =>
-  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
-// The same create refused by a Restriction to a caller who administers the Installation, as the
-// console's AGENT_CREATE_RESTRICTED says (finding D769). Other callers get createDenied.
+// An ordinary denial identifies the required action and scope without disclosing a cause.
+export const createDenied = (kind: string, namespaceId: string): string =>
+  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Ask an Installation administrator to check your access.`;
+// The API confirms a Restriction for a caller who administers the Installation when it has
+// evidence of that Restriction (finding D769).
 export const createRestricted = (kind: string, namespaceId: string): string =>
-  `Not authorized: a Restriction in Namespace ${namespaceId} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
+  `Not authorized: a Restriction in Namespace ${namespaceId} denies ${kind} create, even for Installation administrators. Check your access and the applicable IAM Restriction.`;
 export const NAMESPACE_CREATE_DENIED =
-  "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
+  "Not authorized: this needs Namespace create. Ask an Installation administrator to check your access.";
+export const namespaceDeleteDenied = (namespaceId: string): string =>
+  `Not authorized: this needs Namespace delete on Namespace ${namespaceId}. Ask an Installation administrator to check your access.`;
 export const INSTALLATION_ADMINISTER_DENIED =
   "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
 
-// Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
-// grant people (findings 2496, 2508).
+// The Create Agent page and Agents list identify the permission required in this Namespace.
 export const AGENT_CREATE_DENIED =
-  "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
+  "Creating an Agent requires Agent create in this Namespace. Ask an Installation administrator to check your access.";
 
 // The same refused Installation read when the Namespace permission read failed (finding 2110).
 export const AGENT_CREATE_PERMISSIONS_UNREAD =
@@ -124,16 +124,15 @@ export const WORKSPACE_SAVE_REFUSED = actionRefused(
   "saving this Agent's workspace files",
   "Agent operate on it",
 );
-// Configuration create, which only an Installation administrator holds.
+// A refused Configuration save can require checking Configuration create or Secret operate.
 export const CONFIGURATION_CREATE_REFUSED =
-  "Create was refused: your access does not include creating this Agent's Configuration. That needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator to create this Agent.";
+  "Creating this Agent's Configuration requires Configuration create in this Namespace and Secret operate on each Secret it binds. Check your access and whether an IAM Restriction applies.";
 // Repository choices for an Agent (Agent update) and for a new Agent (Agent create).
 export const REPOSITORY_CHOICES_AGENT_DENIED = notIncluded(
   "loading repository choices for this Agent",
   "Agent update on it",
 );
-export const REPOSITORY_CHOICES_CREATE_DENIED =
-  "Repository choices are not shown. Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
+export const REPOSITORY_CHOICES_CREATE_DENIED = `Repository choices are not shown. ${AGENT_CREATE_ACCESS_CHECK}`;
 
 // A Slack people or channel lookup the API refused without naming a grant.
 export const SLACK_LOOKUP_DENIED = notIncluded(

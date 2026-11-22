@@ -27,6 +27,7 @@ const pluralKind = (kind: string) => (kind.endsWith("y") ? `${kind.slice(0, -1)}
 const SHOWN_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
 const ASK = "Ask an Installation administrator to grant it.";
+const CHECK_ACCESS = "Ask an Installation administrator to check your access.";
 
 // A native admin request the caller may not make. The Agent comes from the host name, not from
 // the caller, so the text names no Agent, and an unknown host gets it too.
@@ -34,17 +35,16 @@ export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's 
 
 /**
  * The text for the caller's own denial of `action` on `resource` (finding 2534). It names the
- * grant the request checked and who grants it. The disclosure rules:
+ * action the request checked and suggests a next step. The disclosure rules:
  * - It names a resource ID only when `requested` accepts it: the request itself carried it, or the
  *   caller may already read it and the record the route's path names, such as the Agent or
  *   Configuration that binds it (findings 2594, 2614). It never names any other ID read from stored
  *   state.
  * - It never names a binding, Role, Restriction or another principal, and it reads the same
  *   whether a Restriction denied the request or no grant allowed it. One exception: a create that
- *   a Restriction denies to a caller who administers the Installation says so
- *   (`administrator_restricted`, finding D769). That caller's own permission answer already shows
- *   administration without the create, which only a Restriction causes, and the console words it
- *   the same way (AGENT_CREATE_RESTRICTED). Every other caller gets the plain text.
+ *   a Restriction denies to a caller who administers the Installation says so when there is
+ *   evidence of that Restriction (`administrator_restricted`, finding D769). Every other caller
+ *   gets the ordinary denial.
  * - It depends only on the request and the checked grant, never on whether the resource exists,
  *   so an unknown ID and one the caller cannot read get the same answer.
  * - `qualifier` adds why the grant matters here: it is checked on the Agent's current Harness
@@ -76,23 +76,18 @@ export function callerDenialMessage(
       : `${NAMED_DENIAL_PREFIX} this needs Installation ${action}. ${ASK}`;
   }
   if (action === "create") {
-    // A collection create targets its parent: the Installation for a Namespace, otherwise the
-    // Namespace. Only Roles from the Installation configuration hold a create permission, and
-    // only OCC binds them, so no grant request helps: an Installation administrator creates one,
-    // as the console's AGENT_CREATE_DENIED says (finding 2581).
-    const kinds = pluralKind(kind);
+    // A collection create targets its parent: the Installation for a Namespace and the
+    // Namespace for other kinds.
     if (resource.kind === "namespace") {
-      return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Only an Installation administrator can create ${kinds}: ask one to create it.`;
+      return `${NAMED_DENIAL_PREFIX} this needs Namespace create. ${CHECK_ACCESS}`;
     }
     const namespaceId = named(resource.namespaceId);
     if (qualifier === "administrator_restricted") {
-      // Administration cannot lift a Restriction, so the text sends the caller to whoever
-      // manages Restrictions, or to another Namespace.
       const namespace = namespaceId === undefined ? "this Namespace" : `Namespace ${namespaceId}`;
-      return `${NAMED_DENIAL_PREFIX} a Restriction in ${namespace} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
+      return `${NAMED_DENIAL_PREFIX} a Restriction in ${namespace} denies ${kind} create, even for Installation administrators. Check your access and the applicable IAM Restriction.`;
     }
     const where = namespaceId === undefined ? " in this Namespace" : ` in Namespace ${namespaceId}`;
-    return `${NAMED_DENIAL_PREFIX} this needs ${kind} create${where}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
+    return `${NAMED_DENIAL_PREFIX} this needs ${kind} create${where}. ${CHECK_ACCESS}`;
   }
   const id = named(resource.id);
   const article = /^[AEIOU]/.test(kind) ? "an" : "a";
@@ -107,7 +102,8 @@ export function callerDenialMessage(
   if (qualifier === "native_admin_off") {
     return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK} Native admin is also off on this Installation, so the grant alone would not open it.`;
   }
-  return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK}`;
+  const advice = resource.kind === "namespace" && action === "delete" ? CHECK_ACCESS : ASK;
+  return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${advice}`;
 }
 
 /** What a denial's text may use from the request that was denied. */
