@@ -692,8 +692,10 @@ function patchTokenSecret(fixture: GitInstallation, value: string) {
 
 /**
  * The Worker refuses a classic token at its next loan: its log names the code, reason and class
- * (never the value), and the Agent's Git stops working. Each outcome is its own assertion; the
- * measured times are reported before any of them can fail.
+ * (never the value), the classic value never reaches the origin, and no new delivery follows the
+ * refusal. The previous loan is not withdrawn early and lapses by itself, so Git may keep working
+ * with the previous value until then: that is measured and reported, not asserted. The
+ * observation ends before the Agent's finite Git grant does.
  */
 async function refuseClassicToken(
   t: TestContext,
@@ -701,6 +703,8 @@ async function refuseClassicToken(
   target: GitTarget,
   execute: GitExec,
   credential: Extract<JourneyCredential, { kind: "token" }>,
+  providerRevision: () => Promise<unknown>,
+  grantEndsAt: number,
 ) {
   const origin: GitOrigin = fixture.origin;
   const network = origin.network;
@@ -738,6 +742,12 @@ async function refuseClassicToken(
   valuesAbsent(baseline);
   assert.deepEqual(refusals(baseline), [], "TOKEN_NO_REFUSAL_BEFORE_CLASSIC");
 
+  // The origin knows the classic value, so a request that carried it would be counted by index.
+  const classicIndex = network.acceptStaticToken(credential.classic);
+  const requestsBefore = network.requests().length;
+  const revisionBefore = await providerRevision();
+  // Keep the last Git probe and the retirement checks inside the finite grant.
+  const observeUntilMs = grantEndsAt - 60_000;
   const patchedAt = Date.now();
   await patchTokenSecret(fixture, credential.classic);
   let logs = "";
@@ -749,54 +759,51 @@ async function refuseClassicToken(
       const found = refusals(logs);
       return found.length > 0 ? found : undefined;
     },
-    10 * 60_000,
+    Math.max(0, observeUntilMs - Date.now()),
   );
   const loggedSeconds = (Date.now() - patchedAt) / 1000;
+  const revisionAtRefusal = await providerRevision();
   const repository = "https://github.com/fixture/a.git";
   const probe = createGitAclDenialCommand(network.issuedCredentialFingerprints());
-  let attempts = 0;
-  let last: { answer: string; indices: (number | undefined)[]; requests: number } | undefined;
-  let gitFailedSeconds: number | undefined;
+  const git: { seconds: number; answer: string; indices: (number | undefined)[] }[] = [];
+  const revisions = new Set<unknown>();
   try {
-    await observeUntil(
-      "TOKEN_CLASSIC_GIT_FAILS",
-      t.signal,
-      async () => {
-        attempts += 1;
-        const before = network.requests().length;
-        const result = await execute(
-          target,
-          probe({ kind: "success" }, [
-            "sh",
-            "-c",
-            `if git ls-remote '${repository}' >/dev/null 2>&1; then echo ok; else echo failed; fi`,
-          ]),
-        );
-        const observed = network.requests().slice(before);
-        last = {
-          answer: result.stdout.toString("utf8").trim(),
-          indices: [...new Set(observed.map(({ credentialIndex }) => credentialIndex))],
-          requests: observed.length,
-        };
-        if (last.answer === "failed") {
-          gitFailedSeconds = (Date.now() - patchedAt) / 1000;
-          return true;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 10_000));
-        return undefined;
-      },
-      5 * 60_000,
-    );
+    while (Date.now() < observeUntilMs) {
+      t.signal.throwIfAborted();
+      const before = network.requests().length;
+      const result = await execute(
+        target,
+        probe({ kind: "success" }, [
+          "sh",
+          "-c",
+          `if git ls-remote '${repository}' >/dev/null 2>&1; then echo ok; else echo failed; fi`,
+        ]),
+      );
+      const observed = network.requests().slice(before);
+      git.push({
+        seconds: Math.round((Date.now() - patchedAt) / 1000),
+        answer: result.stdout.toString("utf8").trim(),
+        indices: [...new Set(observed.map(({ credentialIndex }) => credentialIndex))],
+      });
+      revisions.add(await providerRevision());
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
+    }
   } finally {
+    const firstFailure = git.find(({ answer }) => answer !== "ok");
     t.diagnostic(
       JSON.stringify({
         event: "saved-git-token-classic-refusal",
         loggedSeconds,
         refusals: refused.length,
         first: refused[0],
-        gitAttempts: attempts,
-        gitFailedSeconds,
-        lastGit: last,
+        deliveredBeforeRefusal: revisionAtRefusal !== revisionBefore,
+        deliveriesAfterRefusal: [...revisions].filter((r) => r !== revisionAtRefusal).length,
+        gitAttempts: git.length,
+        gitOk: git.filter(({ answer }) => answer === "ok").length,
+        gitFirstFailureSeconds: firstFailure?.seconds,
+        gitIndices: [...new Set(git.flatMap(({ indices }) => indices))],
+        observedSeconds: Math.round((Date.now() - patchedAt) / 1000),
+        grantEndsInSeconds: Math.round((grantEndsAt - Date.now()) / 1000),
       }),
     );
   }
@@ -809,7 +816,16 @@ async function refuseClassicToken(
     ),
     "TOKEN_CLASSIC_REFUSED_CLASS",
   );
-  assert.equal(last?.answer, "failed", "TOKEN_CLASSIC_GIT_FAILS");
+  assert.equal(
+    network
+      .requests()
+      .slice(requestsBefore)
+      .filter(({ credentialIndex }) => credentialIndex === classicIndex).length,
+    0,
+    "TOKEN_CLASSIC_ZERO_ORIGIN_REQUESTS",
+  );
+  assert.ok(git.length > 0, "TOKEN_CLASSIC_OBSERVED_WITHIN_GRANT");
+  assert.deepEqual([...revisions], [revisionAtRefusal], "TOKEN_NO_DELIVERY_AFTER_REFUSAL");
   await assertTokensAbsentFromWorkload(
     t,
     execute,
@@ -819,7 +835,15 @@ async function refuseClassicToken(
   );
 }
 
-async function savedAgentGitJourney(t: TestContext, credential: JourneyCredential) {
+/**
+ * `scope` "replace" (token only) stops after the read-write deployment: it replaces the Secret
+ * and then refuses a classic value on that one Agent, inside its own finite Git grant.
+ */
+async function savedAgentGitJourney(
+  t: TestContext,
+  credential: JourneyCredential,
+  scope: "journey" | "replace" = "journey",
+) {
   assert.ok(selected, "Select the owned Kubernetes/OpenShell installation");
   for (const setting of ["OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE"]) {
     assert.ok(
@@ -1413,10 +1437,17 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
     );
   } else {
     assert.ok(credential.kind === "token");
-    const index = original.credentialIndex;
-    const { resourceVersion, providerRevision, ...binding } = installed;
-    assert.ok(resourceVersion && binding.providerId);
-    await exerciseSavedGitAcl(t, fixture, exec, original, undefined, nativeCallbackBaseline, true);
+    if (scope === "journey") {
+      await exerciseSavedGitAcl(
+        t,
+        fixture,
+        exec,
+        original,
+        undefined,
+        nativeCallbackBaseline,
+        true,
+      );
+    }
     await assertTokensAbsentFromWorkload(
       t,
       exec,
@@ -1424,6 +1455,11 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       [credential.value],
       "read-write",
     );
+  }
+  if (credential.kind === "token" && scope === "replace") {
+    const index = original.credentialIndex;
+    const { resourceVersion, providerRevision, ...binding } = installed;
+    assert.ok(resourceVersion && binding.providerId);
     // Replace the Secret's value with a second fine-grained token, without a redeploy: the
     // Worker reads the projected file at each loan and the runtime re-reads its material on
     // every refresh tick. Measure from the patch to the rotated Provider environment.
@@ -1492,7 +1528,6 @@ git -C "$local_dir" rev-parse 'refs/heads/main^{commit}'`,
     assert.ok(updated && BigInt(updated) > BigInt(resourceVersion));
     assert.notEqual(environment, providerRevision);
     assert.equal(origin.snapshot().issued, issued, "TOKEN_REPLACEMENT_ISSUES_NOTHING");
-    lentIndex = next;
     original = { ...original, credentialIndex: next };
     assert.equal(await callbacks.read(), nativeCallbackBaseline);
     await assertTokensAbsentFromWorkload(
@@ -1502,6 +1537,28 @@ git -C "$local_dir" rev-parse 'refs/heads/main^{commit}'`,
       [credential.value, credential.replacement],
       "replaced",
     );
+    // The same Agent and grant: the Worker must refuse a classic value at its next loan.
+    await refuseClassicToken(
+      t,
+      fixture,
+      original.target,
+      exec,
+      credential,
+      async () => {
+        const box = await gatewayClient.getSandbox(
+          { workspace, name: original.target.sandboxName },
+          t.signal,
+        );
+        assert.equal(box?.id, original.target.sandboxId, "TOKEN_REFUSAL_NO_REDEPLOY");
+        return box.configurationAdmission?.provider_env_revision;
+      },
+      original.deadlineWallMs,
+    );
+    await stop(original);
+    await retire(original, installed.provider, original.credentialIndex);
+    assert.equal(await callbacks.read(), nativeCallbackBaseline);
+    t.diagnostic("Token replacement and classic refusal held on one Agent within its finite grant");
+    return;
   }
   const startPeer = async () => {
     const independent = fixture.independent;
@@ -1762,9 +1819,6 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
   );
   assert.deepEqual((await readPolicy()).policy.repositoryNetworkPolicy, []);
   await peer.prove("after-stop");
-  if (credential.kind === "token") {
-    await refuseClassicToken(t, fixture, peer.deployed.target, peer.exec, credential);
-  }
   await stop(peer.deployed);
   await retire(peer.deployed, peer.provider, peer.credentialIndex, {
     path: peer.deployed.path,
@@ -1784,8 +1838,13 @@ if (process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_ACL === "1") {
     settleBeforeFixtureTeardown((t) => savedAgentGitJourney(t, { kind: "app" })),
   );
   test(
-    "An Administrator deploys, replaces and narrows a fine-grained token source on saved OpenShell Agents",
-    { timeout: 60 * 60_000 },
+    "An Administrator deploys and narrows a fine-grained token source on saved OpenShell Agents",
+    { timeout: 45 * 60_000 },
     settleBeforeFixtureTeardown((t) => savedAgentGitJourney(t, fakeTokenCredential())),
+  );
+  test(
+    "An Administrator replaces a fine-grained token source without redeploy and the Worker refuses a classic token",
+    { timeout: 30 * 60_000 },
+    settleBeforeFixtureTeardown((t) => savedAgentGitJourney(t, fakeTokenCredential(), "replace")),
   );
 }
