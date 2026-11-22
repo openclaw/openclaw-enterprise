@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-11-22
-last_updated_session: authoring-run/18e09cc2-273a-4950-b512-3648f405ac27
+last_updated_session: authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb
 ---
 
 # Controller Worker Flow
@@ -247,26 +247,25 @@ with that code; other work keeps its attempt budget.
 ### 6. Persist the result and finish version activation
 
 `apps/controller/src/worker.ts:ControllerWorker.finalize`,
-`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision`,
+`apps/controller/src/worker.ts:ControllerWorker.commitRevisionTransition`,
+`apps/controller/src/worker.ts:ControllerWorker.finishRevisionTransition`,
 `apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
 
-`transactWithQueue()` renews the exact claim before atomically publishing
-Namespace readiness or completed deletion, lifecycle evidence and queue completion.
-Failed provisioning can transition to failed; incomplete deletion cannot publish
-successful deletion.
+After claim renewal, one transaction records Namespace readiness or deletion,
+lifecycle evidence, and queue completion. Provisioning can record failure.
+Deletion succeeds only after cleanup completes.
 
-After preparation, `activationOrder: beforeCommit` activates before the database
-pointer changes; otherwise an implemented activation stage runs, in development
-and production, after the claim-protected compare-and-set of
-`Agent.activeRevisionId`, and the first dedicated version stays inactive until
-commit. A changed pointer causes `ACTIVE_REVISION_CHANGED` and retry.
+With `activationOrder: beforeCommit`, Compute activates before selection.
+Otherwise, production deactivates the first dedicated revision before selection.
+After commit, production requires activation and development calls it when
+implemented. A failed compare-and-set records an `ACTIVE_REVISION_CHANGED` retry.
+The committed result tells the worker whether to activate, stop, or report.
 
-Committing `Agent.activeRevisionId` records selection. A v5 `online-request` or
-v6 `request-hook-observed` hold for Git material leaves the original work queued
-until that revision reports ready. The worker then activates it and retires its
+A v5 `online-request` or v6 `request-hook-observed` hold leaves work queued until
+the selected revision is ready. The worker activates it and retires its
 predecessor. In a separate transaction, `completeActivatedRevision()` rechecks
-selection and claim, appends evidence, and completes work. Retries recheck the
-active candidate before effects; claim loss cannot turn plugin failure into success.
+the claim and selection, appends evidence, and completes work. Retries recheck
+the selected revision before effects. Claim loss prevents completion.
 
 `finalizeAgentStop()` checks the claim, Agent owner, and desired state.
 It clears `activeRevisionId` only if it points to the stopped version.
@@ -426,6 +425,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 ## Changelog
 
 - 2026-11-22 10:47: Trace repository cleanup settlement and metrics. (authoring-run/18e09cc2-273a-4950-b512-3648f405ac27 - f31e3395fff2f025a36a31e8b7bcca31d5d45938)
+- 2026-11-22 10:32: Trace revision finalization through the committed result. (authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
 - 2026-11-22 10:30: Trace shared Agent Stop and Delete settlement. (authoring-run/e04921d4-0e64-4748-963f-ea2bdbee1215 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
 - 2026-11-22 09:29: Trace Read Committed for scoped deployment. (authoring-run/a23751cb-afdb-4ffa-88ca-2294ad51d576 - db0227da135c6bf5e437038ec1fdbbfcc46ba548)
 - 2026-11-21 10:28: Trace scoped dispatch admission and recovery in the accompanying change. (authoring-run/3f3abf26-0aec-43e5-aa36-3aa72b38cf4a - a450dc92242a9d2e9f87da7e4fe8f8ea9dcd5e30)

@@ -309,7 +309,6 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         input.namespaceId,
         configurationInput,
         () => new ProvisioningSecretDriverError(),
-        undefined,
         () => authorizeProvisioningRequest(principalId, input.namespaceId),
       );
       return { configurationInput, reservedAgentId };

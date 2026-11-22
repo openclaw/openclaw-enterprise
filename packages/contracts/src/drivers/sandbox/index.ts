@@ -1,3 +1,4 @@
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
 import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
@@ -255,6 +256,16 @@ export interface SandboxDriver extends Driver {
     defaults?: SandboxPolicySnapshot["defaults"],
     scope?: { readonly repositoryCredentials?: boolean },
   ): SandboxPolicySnapshot;
+  /**
+   * Side-effect-free admission of the exact ACL against the base network snapshot.
+   * Return the opaque effective policy document with inspected HTTPS, additive ENFORCE and
+   * default deny. Refuse conflicts with these requirements or protected execution.
+   * Omission refuses even an empty ACL.
+   */
+  admitRepositoryNetworkPolicy?(
+    policy: RepositoryNetworkPolicy,
+    network: SandboxPolicySnapshot,
+  ): SandboxPolicySnapshot["defaults"];
   /**
    * Side-effect-free admission for protected, dedicated Codex repository execution.
    * A normal network-policy result cannot acknowledge this purpose. The result names
