@@ -8,6 +8,7 @@ import { waitFor } from "../helpers/wait-for.ts";
 import {
   accessibleDescription,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   newPage,
@@ -611,13 +612,12 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   // The keyboard reaches each row's link; the ring is drawn inside the table's clipped corners.
   const link = list.getByRole("link", { name: provisioning.name, exact: true });
   await page.locator("[data-create-namespace]").focus();
-  for (let step = 0; step < 6; step += 1) {
-    if (await link.evaluate((node) => node === globalThis.document.activeElement)) {
-      break;
-    }
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(page.getByRole("searchbox", { name: "Search Namespaces" })), true);
+  for (let step = 0; step < 5 && !(await hasFocus(link)); step += 1) {
     await page.keyboard.press("Tab");
   }
-  assert.equal(await link.evaluate((node) => node === globalThis.document.activeElement), true);
+  assert.equal(await hasFocus(link), true);
   const row = list.getByRole("listitem").filter({ hasText: provisioning.id });
   assert.deepEqual(await style(row, "outlineStyle", "outlineOffset"), {
     outlineStyle: "solid",
@@ -647,9 +647,42 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   await page.keyboard.press("Enter");
   await page.waitForURL(`**/console/agents?namespace=${provisioning.id}`);
 
-  // A phone puts status and the labelled date below the name, beside the deletion control.
   await page.goBack();
   await list.waitFor();
+
+  const dateLabel = list.locator(".namespace-cell-created .namespace-cell-label").first();
+  await page.setViewportSize({ width: 1101, height: 844 });
+  assert.equal(await head.isVisible(), true, "column headings are visible above 1100 px");
+  assert.ok((await visibleBox(dateLabel)).width <= 1, "the date uses the column heading");
+  await page.setViewportSize({ width: 1100, height: 844 });
+  assert.equal(await head.isVisible(), false, "row labels replace column headings at 1100 px");
+  assert.ok((await visibleBox(dateLabel)).width > 1, "the date has a visible row label");
+
+  // Just above the phone breakpoint, the sidebar leaves less room for the Namespace rows.
+  await page.setViewportSize({ width: 761, height: 844 });
+  const search = page.getByRole("searchbox", { name: "Search Namespaces" });
+  await search.fill(ready.name);
+  assert.equal(await list.getByRole("listitem").count(), 1);
+  const splitLink = list.getByRole("link", { name: ready.name, exact: true });
+  assert.equal(
+    await splitLink.evaluate((node) => {
+      const text = node.ownerDocument.createRange();
+      text.selectNodeContents(node);
+      return text.getClientRects().length;
+    }),
+    1,
+    "the Namespace name fits on one line beside the sidebar",
+  );
+  assert.equal(await head.isVisible(), false, "the cramped table headings give way to row labels");
+  await list.getByRole("button", { name: `Delete ${ready.name}`, exact: true }).click();
+  const deleteDialog = page.getByRole("dialog", { name: `Delete ${ready.name}?`, exact: true });
+  await deleteDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await deleteDialog.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  assert.equal(await search.inputValue(), "");
+  await link.waitFor();
+
+  // A phone puts status and the labelled date below the name, beside the deletion control.
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await head.isVisible(), false);
   const phoneRow = list.getByRole("listitem").filter({ hasText: ready.id });
