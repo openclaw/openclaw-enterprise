@@ -1,3 +1,4 @@
+import { openShellGitNetworkDefaults } from "../sandbox/openshell-git-network-policy.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -282,16 +283,6 @@ interface EntryState {
 /** The runtime image's PATH, then the draft helper's directory. The image's own `gh` stays
  * first: the broker `gh` shim beside the helper has no repository manifest in this sandbox. */
 const OPENSHELL_GIT_DRAFT_PATH = `/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${REPOSITORY_CLIENT_BIN}`;
-const binaries = [
-  "/usr/bin/git",
-  "/usr/lib/git-core/git-remote-https",
-  "/usr/lib/git-core/git-remote-http",
-  "/usr/libexec/git-core/git-remote-https",
-  "/usr/libexec/git-core/git-remote-http",
-  "/usr/bin/curl",
-  "/usr/local/bin/node",
-  "/usr/bin/node",
-];
 const OBSERVE_TIMEOUT_MS = 5000;
 const REFRESH_INTERVAL_MS = 10_000;
 // A failed read is observed again after 1 s, doubling to this cap. A replaced OpenShell
@@ -367,11 +358,7 @@ function gitProvider(
     executionId,
     ...delivery,
     ...(observedHookPreview && { observedHookPreview }),
-    binaries: delivery.installationId
-      ? [...binaries, "/usr/bin/gh", "/usr/local/bin/gh"]
-      : binaries,
-    gitOrigin: "https://github.com",
-    apiOrigin: "https://api.github.com",
+    ...openShellGitNetworkDefaults(delivery),
   });
 }
 
