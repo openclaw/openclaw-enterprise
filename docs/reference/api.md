@@ -13756,7 +13756,7 @@ List authorized Agent automations or pending reservations
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
 
 ##### Parameters
 
@@ -13945,7 +13945,7 @@ Delete an Agent automation or cancel a pending reservation
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
 
 ##### Parameters
 
@@ -13982,7 +13982,7 @@ Read a managed Agent automation
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
 
 ##### Parameters
 
@@ -14058,7 +14058,7 @@ Update an Agent automation
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
 
 ##### Parameters
 
@@ -14158,7 +14158,7 @@ Read authorized Agent automation history
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
+| `administer` | `agent` | `requested` (instead of `operate`; creation still requires `operate`) |
 
 ##### Parameters
 

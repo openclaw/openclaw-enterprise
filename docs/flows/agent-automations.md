@@ -137,8 +137,8 @@ qualifies the static provisioning and policy. The Kubernetes implementation owns
 the exact anonymous HTTPS endpoint attestation, translated host CIDRs and optional
 public CA bundle. Stdio is ineligible. Literal raw operations map to canonical
 aliases; unsupported credentials, approval controls, transports or ambiguous names
-refuse qualification. Only ordinary Kubernetes deployment-backed dedicated Codex
-can qualify; provider-owned Sandbox, protected-egress and credential variants
+refuse qualification. For dedicated execution, only ordinary Kubernetes
+deployment-backed Codex can qualify; provider-owned Sandbox, protected-egress and credential variants
 fail closed. OCC revision admission inserts the sole main entry
 `identity.name`; the policy validates and binds its exact public value. Embedded
 OpenClaw admits an identity-only main entry. Dedicated Codex also requires the
