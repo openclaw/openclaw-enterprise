@@ -347,6 +347,7 @@ function safeScalar(key: string, value: unknown): string | number | boolean | un
       value === "POLICY_MIDDLEWARE_VALIDATION" ||
       value === "PVC_ADMISSION_LABELS" ||
       value === "CLASS_ADMISSION_LABELS" ||
+      value === "CALLER_DRIVER_CONFIG_DISABLED" ||
       value === "RESOURCE_METADATA_FORBIDDEN" ||
       value === "UNKNOWN"
       ? value
