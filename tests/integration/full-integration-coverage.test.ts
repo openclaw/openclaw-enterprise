@@ -326,7 +326,9 @@ test("full coverage receipts require real case evidence and retain approved same
     const projected = projectSkipperRunnerReceipt(damaged);
     const receipt = JSON.stringify({ ...projected, lane: skipperLane });
     assert.doesNotMatch(receipt, /private-output-canary/);
-    if (checkedReceipts.has(receipt)) continue;
+    if (checkedReceipts.has(receipt)) {
+      continue;
+    }
     checkedReceipts.add(receipt);
     await writeFile(skipperPath, receipt);
     assert.equal(clean(skipperLane).status, 0);
