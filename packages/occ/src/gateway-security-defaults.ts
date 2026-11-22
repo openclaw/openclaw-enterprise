@@ -8,8 +8,9 @@
 // (finding 3191). OCE channels accept named accounts (`channels.slack.accounts`), so the scope
 // includes the account. Without a channel there is nothing to isolate, and "main" keeps recall
 // across a browser-only Agent's conversations.
-// Telemetry is off unless the Configuration opts in: OpenClaw's own feature statistics and the
-// vendor telemetry of every agent runtime OCE configures (agentRuntimeTelemetryEnabled).
+// Telemetry is off unless the Configuration opts in. The setting governs the vendor telemetry of
+// every agent runtime OCE configures (agentRuntimeTelemetryEnabled). OpenClaw's own telemetry
+// stays off either way: every Gateway sets OPENCLAW_NO_AUTO_UPDATE, which makes OpenClaw skip it.
 // scripts/first-agent-model.ts runs this module without installed workspace packages: keep it
 // free of imports and of TypeScript syntax that type stripping cannot erase.
 
