@@ -35,6 +35,7 @@
     "tests/conformance/kubernetes-secret-driver.test.ts",
     "tests/docs/docs-site.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/external-sandbox-registration.test.ts",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
@@ -58,7 +59,7 @@
     "tests/conformance/runtime-logs-sandbox.test.ts",
     "tests/integration/device-authorization-api.test.ts",
     "tests/integration/device-authorization-denial-audit.test.ts",
-    "tests/integration/openshell-device-authorization-api.test.mjs",
+    "tests/integration/openshell-device-authorization-api.test.ts",
     "tests/integration/dependency-unavailable-log.test.ts",
     "tests/integration/git-hooks.test.ts",
     "tests/integration/profile-renderer.test.ts",
@@ -274,6 +275,13 @@
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
+    },
+    {
+      "path": "tests/conformance/external-sandbox-registration.test.ts",
+      "expectedTests": [
+        "production startup selects an installed external Sandbox package",
+        "production startup refuses malformed installed Sandbox declarations"
+      ]
     },
     {
       "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"
@@ -666,7 +674,7 @@
       "path": "tests/integration/device-authorization-denial-audit.test.ts"
     },
     {
-      "path": "tests/integration/openshell-device-authorization-api.test.mjs"
+      "path": "tests/integration/openshell-device-authorization-api.test.ts"
     },
     {
       "path": "tests/integration/dependency-unavailable-log.test.ts"

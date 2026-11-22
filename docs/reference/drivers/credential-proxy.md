@@ -34,7 +34,7 @@ exports `CredentialProxyDriver`, `LegacyEgressProxyDriver`, `DriverRegistration`
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
 The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines both contracts.
 
-`CredentialProxyDriver` temporarily uses `credential_proxy_delivery`. Its required `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` operations receive a trusted Namespace, Agent revision, and signal; they reject a mismatched deployment or target. Optional `notifyCredentialUpdated` is source-scoped and receives no revision. OpenShell supports first-use Provider delivery and target checks. Status fails closed; target-bound removal and update notification are unavailable. The regular Agent workflow does not call this capability. See the [source lifecycle flow](../../flows/credential-source-lifecycle.md#pending-native-integration) and [worker configuration amendment](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md#amendment-select-native-delivery-independently).
+The Sandbox registration exposes `credential_proxy_delivery`: `deployProxy`, `configureDeployment`, `getDeploymentStatus`, `removeDeployment`, and optional source-scoped `notifyCredentialUpdated`. OpenShell resolves OCC TokenService Sources only to create Providers and reuses owned Providers. An allowed Source change can leave a reused or preparing Provider stale until push is implemented; active bound updates return 409. Readiness checks the route, delivered Provider version, and supervisor. It detaches after policy removal. Executable rules temporarily include descendants ([#4943](https://github.com/ai-openshell/openshell/issues/4943)); placeholder substitution is not Bearer-only. Production startup remains unqualified. See the [source lifecycle flow](../../flows/credential-source-lifecycle.md#pending-native-integration).
 
 ## Legacy protected egress
 
@@ -88,7 +88,7 @@ support with `assertAvailable`. Admission can then combine repository Git with
 independently admitted routes. Reduction can remove Git while preserving the exact
 recipient and other bindings. It does not convert v5 online authorization or v6
 observed hooks to exact dispatch. Existing v3–v6 admissions keep their semantics.
-The [admission source](../../../packages/occ/src/index.ts) and
+The [admission source](../../../packages/occ/src/deployment-revision.ts) and
 [version checks](../../../packages/contracts/src/drivers/credential-proxy/index.ts) implement
 this support; they do not qualify stock OpenShell or any installed deployment.
 

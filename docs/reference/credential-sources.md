@@ -1,13 +1,10 @@
 # Credential sources
 
-A Secret holds a value, such as a GitHub App private key. A credential source
-records its Driver, configuration and Secret references in the Namespace. A
-`github-app-metadata` source names the key and repository for the read of
-`acme/widgets`.
+The selected TokenService creates and owns managed static credential sources. OCC governs source IAM, Agent bindings, and destination policy. Older Secret-backed source forms also reference Secret material; for example,
+`github-app-metadata` names the key and repository for `acme/widgets`.
 
-The Agent draft **binds** the source by ID. On deploy, OpenClaw Control Plane
-(OCC) saves the binding in an **Agent revision**. How the sender gets
-a credential depends on the source.
+The Agent draft **binds** the source by ID. For supported delivery, OpenClaw
+Control Plane (OCC) saves the binding in an **Agent revision** on deploy.
 
 | Delivery mode            | Who holds or reads the credential                                                                                                                                                                                                   |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -30,6 +27,8 @@ OpenShell is a development integration. See the
 [threat model](security/credential-proxy.md).
 
 ## Register a source
+
+For write-only enrollment and reviewed staged Agent admission through TokenService, see [managed static sources](credential-sources/managed-static.md).
 
 1. Wait for the Namespace to become `ready`.
 2. For a Secret-backed source, [create a Secret](drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and keep its `ref`.
@@ -62,7 +61,7 @@ Replace the sample IDs and Secret reference. Execution authority admits every pr
 }
 ```
 
-The `201` response includes the `cs_` source ID, binding `ref` and status. Bind the Agent to the source ID. The source retains the `sec_` reference.
+The `201` response includes the `cs_` ID and binding `ref`. Gateway registrations also report status. Secret-backed sources retain their `sec_` references.
 
 - `name` is unique within the Namespace.
 - Select an offered `type`. With a Proxy selected, fresh Gateway registration requires
@@ -77,10 +76,8 @@ The `201` response includes the `cs_` source ID, binding `ref` and status. Bind 
 - `secrets` maps catalog fields to same-Namespace Secret references. OCC rejects
   cross-Namespace references with `400` and missing Secrets with `404`.
 
-OCC rejects unknown or missing required fields and invalid configuration
-with `400 INVALID_REQUEST`, which names the field and points at `/config/<field>` or
-`/secrets/<field>`, before reading Secrets through
-the Secret Driver. OCC records `registering` before the external operation.
+Before reading Secrets, OCC rejects invalid fields or configuration with `400 INVALID_REQUEST`
+at `/config/<field>` or `/secrets/<field>`. OCC records `registering` before the external operation.
 For Gateway copies, definitive rejection triggers cleanup. An uncertain write,
 such as a timeout, leaves the source `deleting` because a copy may still
 appear. Use DELETE to finish cleanup.
@@ -105,7 +102,7 @@ status `pending` while its worker prepares the token.
 and returns only sources on which the caller has exact `read`. Lists
 do not call the gateway and omit `status`.
 
-The record's `state` is `registering`, `ready`, or `deleting`. Bind or deploy only ready sources. Delete interrupted registrations to remove any Gateway copy.
+The record's `state` is `registering`, `ready`, or `deleting`. Bind only ready sources. Delete interrupted registrations to retire owner material.
 
 ## Bind a source to an Agent
 
@@ -134,7 +131,8 @@ Cloning, pushing or creating a pull request requires a separately admitted
 
 For **source-backed Harness authentication**, set `harnessAuth` to
 `{ "method": "credential_source", "sourceId": "cs_…" }`. Choose a listed
-Gateway source whose catalog type supports Harness authentication. Naming an
+Gateway source whose catalog type supports Harness authentication, or a managed
+static Source for staged deployment. Naming an
 unlisted source, or removing it while `harnessAuth` still names it, fails after the grant checks with `400`: "The Harness credential source must be listed in the Agent's credentialSources." When replacing a binding after a Driver change,
 update `harnessAuth` if it names the old source.
 [Binding and deployment trace](../flows/credential-source-lifecycle.md#3-bind-and-admit-an-agent-revision)
@@ -147,11 +145,13 @@ update `harnessAuth` if it names the old source.
 
 While a Credential Gateway is selected, deployment and guided provisioning reject
 `api_key` and `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`.
-Guided provisioning accepts a ready model source in `harnessAuth`, records it in
+Guided provisioning accepts a ready Gateway model source in `harnessAuth`, records it in
 the Agent's `credentialSources`, and grants its service principal exact source
 `operate` access. The caller needs source `operate`; the Agent receives no
 permission on the underlying model Secret. Queued and running provisioning jobs
 keep their source referenced before the Agent exists.
+Guided provisioning rejects TokenService-owned Sources with `409` before creating work.
+Create an ordinary Agent draft, save its network grant, and deploy it instead.
 
 The Console reads the Gateway catalog from Installation or [Namespace Agent capabilities](authorization/default-users.md#create-agents-in-the-console).
 Both Dedicated Harnesses share provider and Secret controls. API-key provisioning registers the Secret first. See [Console creation](console/create-and-deploy.md).
@@ -162,29 +162,26 @@ credential source. Kubernetes [rechecks its lifecycle before release](../flows/c
 
 ## Update a source
 
+For managed static PATCH and preset restrictions, see [managed static sources](credential-sources/managed-static.md).
+
 Device-authorized sources reject PATCH with `409` before reading Secrets or
 changing refresh state. Sign in again and replace the Agent binding instead.
 
-For an ordinary static Gateway source, updating the Secret does not change the copy. To push a new
-value, send
-`PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId`. The
-caller needs exact `credential_source:update` and `secret:operate` on every
-Secret the update reads:
+To replace a static Gateway copy, send
+`PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with exact
+`credential_source:update` and `secret:operate` on every Secret read. Updating
+the Secret alone does not change the copy:
 
-- An empty body `{}` re-reads the source's current Secrets. An
-  `oauth2-refresh-token` source refuses it; see below.
+- `{}` re-reads current Secrets; `oauth2-refresh-token` refuses it (see below).
 - `{ "secrets": { "api_key": <SecretReference> } }` switches each named field to
   a replacement same-Namespace Secret. The field set stays the source type's
   catalog fields, and non-secret `config` cannot change; register a new source
   instead.
 
-A successful update returns `200` with the source and its live gateway `status`.
-Only a `ready` source can be updated. A gateway failure returns `503` and leaves
-the Secret references unchanged; once the gateway may have changed, the failure
-is audited. The gateway is updated before OCC commits, so
-if the request fails after that, repeating the same request converges. If the
-gateway no longer holds a copy (`absent`), the update also returns `503`;
-delete the source and register it again.
+Only a `ready` source can be updated. Success returns `200` with the source and
+live Gateway `status`. A Gateway failure returns `503`, preserves Secret references,
+and is audited if the Gateway might have changed. The Gateway updates before OCC
+commits, so retrying converges. If its copy is `absent`, delete and register the source again.
 
 Prepared and credential-free sources reject PATCH and rotation with `409`. Register a replacement source. For a live static source, changing the referenced Secret value affects subsequent eligible reads. Changing its reference or adopting a legacy source requires an unbound source. See [protected static inference](credential-sources/protected-inference.md#static-source-and-response-policy).
 
@@ -200,6 +197,10 @@ Updated Gateway copies reach new Harness processes only. To rotate a copied key,
 2. Run `occ credential-source update ID`, adding `--file` with replacement
    `secrets` if you created a new Secret.
 3. Redeploy each Agent that uses the source.
+
+With OpenShell, step 2
+[briefly interrupts running Agents](drivers/kubernetes-secret.md#update-and-redeploy)
+that use the source.
 
 A Secret-backed `refresh` source keeps no static value: an update replaces its refresh
 material and mints a new token, and OCC commits replacement Secret references
@@ -250,9 +251,9 @@ requires exact `delete` and returns `204`:
 
 - It returns `409 RESOURCE_CONFLICT` while an Agent draft, selected version, pending deployment, or queued/running provisioning request references the source. Wait for provisioning, remove the binding and redeploy, or delete the Agent.
 - When only a queued/running withdrawal attempt or retry series blocks it, the `409` is `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`. A withdrawal that never confirms keeps its series queued for up to about an hour, even after redeployment; the request no longer applies once the selected version drops the source. Wait for the series to finish, or delete the Agent: completed deletion drops that work.
-- With neither a Credential Gateway nor a Credential Proxy selected, deletion returns
-  `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`. Selecting a different Driver for the recorded owner returns
-  `503`. OCC keeps the source record in both cases.
+- Gateway or Proxy deletion requires its recorded owner: no selection returns
+  `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`; a different Driver returns `503`.
+  OCC retains the record.
 - OCC marks the record `deleting` before cleanup. For a Gateway copy, OCC asks the Gateway to remove it.
   A dependency failure returns `503`; an OpenShell provider ownership mismatch
   returns `404`. Both retain `deleting`. Resolve ownership drift before retrying;
@@ -262,8 +263,8 @@ requires exact `delete` and returns `204`:
   The record stays `deleting`. Retry after the time in the message, at most 72
   minutes after the attempt. A refused issue with no token does not block deletion.
   While the worker is revoking a token, deletion waits up to 25 seconds for GitHub's answer.
-- Within 70 seconds of registration, `503 DEPENDENCY_UNAVAILABLE` keeps the
-  record against late registration. `error.reason: "credential_registration_pending"`
+- For a Gateway source, `503 DEPENDENCY_UNAVAILABLE` retains the record for 70
+  seconds after registration against a late write. `error.reason: "credential_registration_pending"`
   identifies this refusal; `Retry-After` gives the remaining whole seconds.
   Wait that long before retrying the same deletion. Other `503` responses
   do not authorize an automatic retry.

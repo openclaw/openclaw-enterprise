@@ -12,7 +12,7 @@ import {
   nativeProfileSourceReceipt,
   nativeProfileUpgradeFile,
   selectsNativeProfileUpgrade,
-} from "../../scripts/ci/native-profile-upgrade.mjs";
+} from "../../scripts/ci/native-profile-upgrade.ts";
 import { initializeNativeUpgradeInstallation } from "../helpers/native-profile-upgrade-installation.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { composePostgres, fixture, immutableImage } from "../helpers/ci-prepare-fixture.ts";
@@ -30,7 +30,7 @@ type CommandEvidence = {
   modelForwarded: boolean;
   legacyOutputSettings: boolean;
   credentialInputSettings: boolean;
-  currentConfigurationChecked: boolean;
+  bootstrapConfigurationChecked: boolean;
 };
 
 function commandEvidence(text: string): CommandEvidence[] {
@@ -45,13 +45,13 @@ function commandEvidence(text: string): CommandEvidence[] {
       const modelForwarded = record?.modelForwarded;
       const legacyOutputSettings = record?.legacyOutputSettings;
       const credentialInputSettings = record?.credentialInputSettings;
-      const currentConfigurationChecked = record?.currentConfigurationChecked;
+      const bootstrapConfigurationChecked = record?.bootstrapConfigurationChecked;
       assert.ok(Array.isArray(args) && args.every((arg: unknown) => typeof arg === "string"));
       assert.ok(typeof migrator === "boolean" && typeof modelForwarded === "boolean");
       assert.ok(
         typeof legacyOutputSettings === "boolean" &&
           typeof credentialInputSettings === "boolean" &&
-          typeof currentConfigurationChecked === "boolean",
+          typeof bootstrapConfigurationChecked === "boolean",
       );
       return {
         args,
@@ -59,7 +59,7 @@ function commandEvidence(text: string): CommandEvidence[] {
         modelForwarded,
         legacyOutputSettings,
         credentialInputSettings,
-        currentConfigurationChecked,
+        bootstrapConfigurationChecked,
       };
     });
 }
@@ -73,24 +73,35 @@ export function registerNativeProfileUpgradeCases({ repositoryRoot, writeState }
     await writeFile(
       command,
       String.raw`#!${process.execPath}
-const { appendFileSync, writeFileSync } = require("node:fs");
+const assert = require("node:assert/strict");
+const { appendFileSync, readFileSync, statSync } = require("node:fs");
+const { basename, join } = require("node:path");
 const args = process.argv.slice(2);
-const legacyOutputSettings = Boolean(process.env.OCC_BOOTSTRAP_PASSWORD_FILE || process.env.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
-const credentialInputSettings = Boolean(process.env.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE || process.env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE);
-const currentConfigurationChecked = args.includes("--verify-existing");
-if (currentConfigurationChecked) {
+const migration = args.includes("-e");
+const legacyOutputSettings = args.includes("OCC_BOOTSTRAP_PASSWORD_FILE") || args.includes("OCC_BOOTSTRAP_SERVICE_KEY_FILE");
+const inputNames = ["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE", "OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"];
+const credentialInputSettings = inputNames.some((key) => args.includes(key));
+const bootstrapConfigurationChecked = args.includes("scripts/bootstrap-installation.mjs");
+if (bootstrapConfigurationChecked) {
   // Execute the current production parser, not a copied validation rule.
   const { bootstrapConfiguration } = require(${JSON.stringify(fileURLToPath(new URL("../../scripts/lib/bootstrap-configuration.ts", import.meta.url)))});
   bootstrapConfiguration("production", process.env);
 }
-appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, migrator: Boolean(process.env.OCC_MIGRATION_DATABASE_URL), modelForwarded: args.includes("OPENAI_API_KEY"), legacyOutputSettings, credentialInputSettings, currentConfigurationChecked}) + "\n");
-if (args[0] === "run" && args.includes("scripts/bootstrap-installation.mjs") && !args.includes("--verify-existing")) {
+if (credentialInputSettings) {
   const mount = args[args.indexOf("--mount") + 1];
-  const directory = mount.match(/src=([^,]+)/)[1];
-  writeFileSync(directory + "/initial-admin-password", "synthetic-generated-bootstrap-password", {mode: 0o600});
+  const directory = mount.match(/^type=bind,src=([^,]+),dst=\/bootstrap,readonly$/)?.[1];
+  assert.ok(directory);
+  for (const key of inputNames) {
+    assert.ok(args.includes(key));
+    const path = process.env[key];
+    assert.match(path, /^\/bootstrap\/[^/]+$/);
+    const file = join(directory, basename(path));
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    assert.ok(readFileSync(file, "utf8").trim().length >= 32);
+  }
 }
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, migrator: args.includes("OCC_MIGRATION_DATABASE_URL"), modelForwarded: args.includes("OPENAI_API_KEY"), legacyOutputSettings, credentialInputSettings, bootstrapConfigurationChecked}) + "\n");
 if (args[0] === "run") {
-  const migration = args.includes("-e");
   process.stdout.write(JSON.stringify(migration ? {
     event: args.includes("--require-current") ? "migration.checked" : "migration.completed",
     history: args.includes("--expect-empty") ? "empty" : "completed"
@@ -131,7 +142,9 @@ if (args[0] === "run") {
       installationName: "Upgrade fixture",
     };
     // This command fixture proves orchestration only, never database/image execution.
-    await initializeNativeUpgradeInstallation(t, options);
+    const initialized = await initializeNativeUpgradeInstallation(t, options);
+    assert.ok(initialized.credentials);
+    assert.equal(initialized.credentials.email, options.email);
     await initializeNativeUpgradeInstallation(t, {
       ...options,
       expectedInstallationId: "ins_" + randomUUID(),
@@ -143,16 +156,20 @@ if (args[0] === "run") {
       runs.map(({ migrator }) => migrator),
       [true, true, false, true, true, false],
     );
+    assert.ok(runs.every(({ legacyOutputSettings }) => !legacyOutputSettings));
     assert.deepEqual(
-      runs.map(({ legacyOutputSettings }) => legacyOutputSettings),
-      [true, true, true, false, false, false],
-      "only the frozen baseline accepts credential output-file settings",
+      runs.map(({ credentialInputSettings }) => credentialInputSettings),
+      [false, false, true, false, false, false],
+      "only the fresh baseline bootstrap receives credential input files",
     );
-    assert.ok(runs.every(({ credentialInputSettings }) => !credentialInputSettings));
     assert.deepEqual(
-      runs.map(({ currentConfigurationChecked }) => currentConfigurationChecked),
-      [false, false, false, false, false, true],
-      "candidate incumbent verification must pass the real current configuration parser",
+      runs.map(({ args }) => args.includes("--mount")),
+      [false, false, true, false, false, false],
+    );
+    assert.deepEqual(
+      runs.map(({ bootstrapConfigurationChecked }) => bootstrapConfigurationChecked),
+      [false, false, true, false, false, true],
+      "both bootstrap invocations must pass the current production configuration parser",
     );
     const initialMigration = runs[0];
     const catalogCheck = runs[1];
@@ -184,10 +201,8 @@ if (args[0] === "run") {
     assert.ok(incumbentVerification.args.includes("--verify-existing"));
     assert.ok(runs.every(({ args, modelForwarded }) => !modelForwarded && args.at(-2) !== "node"));
     assert.equal(records.filter(({ args }) => args[0] === "rm").length, 6);
-    assert.doesNotMatch(
-      JSON.stringify(records),
-      /postgresql:|synthetic-auth-secret|synthetic-generated-bootstrap-password/,
-    );
+    assert.doesNotMatch(JSON.stringify(records), /postgresql:|synthetic-auth-secret/);
+    assert.ok(!JSON.stringify(records).includes(initialized.credentials.password));
   });
 
   test("native upgrade allocates separate schema-only databases without a current migration template", async (t) => {

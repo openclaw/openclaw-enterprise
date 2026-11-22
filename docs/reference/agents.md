@@ -186,6 +186,8 @@ For dedicated Codex with a Credential Gateway, use
 [credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
 It must also be listed in `credentialSources`.
 
+Replacement involving staged managed credentials returns `409` before queuing work. After a selected launch fails, complete Stop before retrying.
+
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
 delivers them and performs no authentication or model probe, so readiness does
@@ -280,10 +282,10 @@ An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then
 clears `activeRevisionId`; version history, credentials, and persistent state
 remain. Cleanup includes failed candidate resources and interrupted predecessor
-retirement owned by the current Compute. Repeating stop is safe. On Kubernetes
-Compute, a turn cut by stop [does not resume](agents/interrupted-turns.md); SSH and
-Docker Compute have limits. To resume the Agent,
-deploy a new version; old versions cannot be restarted. See
+retirement owned by the current Compute. An unguarded retry can stop a newer
+deployment. To resume the Agent, deploy a new version. Old versions cannot be
+restarted. The new deployment may
+[continue eligible interrupted work](agents/interrupted-turns.md). See
 [stop and resume](agents/deployment.md#stop-and-resume).
 
 To avoid stopping a successor:
@@ -400,7 +402,7 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 - [IAM](authorization.md)
 - [Controller configuration](settings.md)
 - [Platform architecture](../design.md)
-- [Agent lifecycle implementation](../../packages/occ/src/index.ts)
+- [Agent controller methods](../../packages/occ/src/controller.ts)
 - [HTTP resource schemas](../../packages/contracts/src/api/resources.ts)
 - [Local testing](../testing/local.md)
 

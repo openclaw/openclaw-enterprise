@@ -24,7 +24,7 @@ import (
 // controller downloads and network-policy probes, which only a real cluster proves
 // (see dev-up-openshell-k3d-real and local-first-agent-openshell-k3d-real).
 
-const profileTestDigest = "sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4"
+const profileTestDigest = "sha256:1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5"
 
 // fakeProfileCommands puts fake binaries on PATH. Each records its arguments and
 // answers only the listed cases, so a step that issues a new command fails.
@@ -325,9 +325,9 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			// Fixed source pins guard the released default; candidate digests deliberately
 			// differ from the containerd manifests returned by the import fixture.
 			sources := []string{
-				"ghcr.io/nvidia/openshell/gateway:0.1.8@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
-				"ghcr.io/nvidia/openshell/sandbox:0.1.8@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
-				"ghcr.io/nvidia/openshell/supervisor:0.1.8@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
+				"ghcr.io/nvidia/openshell/gateway:0.1.9@sha256:1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5",
+				"ghcr.io/nvidia/openshell/sandbox:0.1.9@sha256:e57d07cd6cc1fc314b80368d6b51ec6fbf825fb62cd8f081312941180846866f",
+				"ghcr.io/nvidia/openshell/supervisor:0.1.9@sha256:f1ec231b5dbe5b6a40c33acb2ac847995aabb959a56134ef6d7d7aa4f43199d3",
 			}
 			selection := candidateOpenShellEnvironment()
 			if candidate {
@@ -409,6 +409,8 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 				"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 				"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 				"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
+				// One OCC caller serves every Namespace; OpenShell's default of 1000 admissions is too low.
+				`--set=gatewayConfig.openshell\.gateway.mutation_admission_limit_per_caller=5000`,
 				// Only in-cluster OCE components reach the gateway in this profile.
 				"--set=service.type=ClusterIP",
 			} {

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-19"
-last_updated_session: "authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8"
+updated: "2026-11-22"
+last_updated_session: "authoring-run/c8a2f368-b5c6-464f-859b-7c81d28819ae"
 ---
 
 # Agent sandbox policy flow
@@ -16,7 +16,7 @@ logs and provider recommendations.
 
 - Trigger: the console Policy denials tab or `occ agent policy` commands.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
-  `packages/occ/src/index.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
+  `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
 - Assumptions: a ready Namespace, active Agent, exact grants, enabled editing for
   mutations, and an Installation ceiling shared by API and worker.
 
@@ -45,26 +45,22 @@ Solid arrows trace source paths, not provider verification.
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
-output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
-omitted and refuses unsupported explicit formats before any request. It then
-prints the acknowledged result through
-`internal/occcli/output.go:printStructured`. A successful mutation therefore
-returns its result without a later table-format error.
+The CLI supports JSON and YAML for policy commands
+(`internal/occcli/agent_policy.go:agentPolicyCommand`). It defaults to JSON
+and rejects an unsupported format before the request. It prints the
+acknowledged result as structured output.
 
-`OpenClawController.discoverConfigurations` filters registry contributions by the
-server-selected Driver, scope, and resource-owner read authority. Installation
-inspection exposes [Driver-projected startup values](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
-Agent discovery and policy GET
-use the same descriptor with owner-generated facet action URLs and current
-availability. The registry never selects a Driver from submitted additions.
+`SetupDiscovery.discoverConfigurations` lists selected Driver contributions.
+Installation `administer` permits [startup inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
+Agent discovery requires Agent and policy `read` and shares the policy GET descriptor.
+Submitted additions cannot select a Driver.
 
 `validateAgentSandboxPolicy` checks Agent and policy authorization, editing, version,
 pending work, grant schemas and Driver rules. `networkGrantAdmissionDetails` in
 `packages/contracts/src/deployment-policy.ts` checks executables, hosts and ports against the
 Installation ceiling and Sandbox wildcard and range support. Preview writes nothing; save and deploy repeat admission.
 
-Validation errors identify failed fields and checks; stale or unauthorized requests retain resource errors.
+Validation names failed fields and checks. Stale or denied requests retain resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details without Unicode controls.
 
 Staged `validateDeploymentPolicy(policy, context)` checks source approval, reviewed requests and
@@ -73,21 +69,17 @@ receives a source-bound resolver. The proxy qualifies bindings and requests. Sta
 method, host, port and path (`null` permits any method). The Sandbox qualifies HTTP rules and exact
 MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
 
-`packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
-Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
-and checks editing, expected version, pending work, complete ceiling coverage,
-and registry-resolved Driver admission. The saved additions come from the
-admitted snapshot. While the active or next revision runs under protected
-execution (the Installation selects the Credential Proxy), additions are refused
-with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`, as are live application to a
-protected revision and a protected deploy carrying them; protected
-revisions admit no ordinary Agent policy snapshot. Protected, dedicated Codex
-repository admission can carry the Sandbox Driver's explicitly acknowledged
+`packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` checks Agent
+`manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
+and checks editing, version, pending work, ceiling and Driver admission.
+OCC saves the admitted additions. A protected active or next revision
+refuses ordinary additions with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`.
+Protected deployment and live application also refuse them. A protected,
+dedicated Codex revision can carry the Sandbox Driver's acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
-`checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
-identity, version and empty additions before runtime credential provisioning.
-That immutable snapshot remains ineligible for live apply. The policy view reports
-`protectedExecution`.
+`checkedProtectedCodexArtifactPolicy` verifies its purpose, keys, Driver,
+version and empty additions before credential provisioning. That snapshot
+cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
 
 Protected Codex repository preparation compiles the revision's qualified artifact
 snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
@@ -96,45 +88,65 @@ the final workspace enrollment rule with its validated Agent-owned setup binding
 then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
 The proxy checks the complete artifact map and bounded auxiliary rule before
 comparing the complete loaded policy.
-For an Agent with repository bindings (or a Git-bound active revision), Driver
-admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
-refuses a grant or default reaching `github.com` or a name under it, or naming an
-IP address, with a `409` naming it. Adding a binding beside such a saved grant, deploy, and provisioning refuse it too.
-With saved additions, deploy and an Agent update that leaves repository bindings
-authorize SandboxPolicy `read` first, so only a caller who may read the grant
-sees it named (findings 2151, 2881).
-`apps/controller/src/http/sandbox-policy.ts` records the
-nonsecret approved additions with their version in the same transaction.
-The required facet argument currently admits `networking` only. Other facets
-fail before network policy access. The temporary
+For saved or deployed repository bindings, admission passes `repositoryCredentials`.
+OpenShell Git refuses additions and defaults targeting `github.com`, its
+subdomains, or IP addresses. Binding, deploy, and provisioning repeat that
+check. Deploy and binding-preserving updates authorize SandboxPolicy `read`
+before naming saved additions in a refusal.
+
+`apps/controller/src/http/sandbox-policy.ts` audits the approved additions
+and version in the save transaction. The only facet is `networking`.
 `TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing` requires
-Installation and Agent administration; Guardrails will replace this switch.
+Installation and Agent administration. New Agents start with editing disabled.
 
-Both state adapters return `sandboxPolicyEditing: false` at Agent creation,
-matching the PostgreSQL column default and subsequent reads. The separately
-authorized editing operation changes this flag.
+`packages/occ/src/state/postgres-state.ts` versions saves. A trigger creates
+one policy per Agent. Constraints check revision and Agent ownership, document
+shape, immutable application identity and version transitions. Both adapters prevent removal
+of pending applications. The Worker records the expected provider version
+and settles the application as `applied` or `failed`. Deleting the Agent
+removes its policy and exact IAM access.
 
-`packages/occ/src/state/postgres-state.ts` performs versioned updates. Agent
-creation creates its one policy through a database trigger. Constraints enforce
-ownership, document shape, immutable application identity, version transitions,
-and application revision ownership. The in-memory adapter and the PostgreSQL
-update trigger reject saves that remove a pending application, including saves
-that keep the current policy version. The worker can record the expected provider
-resource version and set the same application to `applied` or `failed`.
-Agent deletion cascades policy removal and
-cleans its exact IAM access.
+The [repository policy editor](../reference/sandbox-policies.md#repository-network-policy)
+shows the saved grants and Namespace ceiling. Save the first list before
+deploying. The protected topology must admit the proposed list. Omission
+retains the list and omits it from the response. For an explicit `[]`, OCC
+checks SandboxPolicy read before checking for a saved list. A reader can
+send empty lists in both fields to withdraw grants after Driver loss.
+
+PostgreSQL saves an explicit list at Read Committed. The PUT starts that
+transaction before OCC waits for the IAM configuration lock, and the
+authorization checks see revocations committed during the wait.
+
+Deployment rechecks the selected Repo scope, proxy and Driver identities across
+asynchronous validation before accessing credentials and inserting a revision.
+Migration 0087 binds the snapshot to the exact saved policy version, grants
+and identity. Older Workers refuse its reader marker. The Worker rechecks
+the policy before dispatch. An explicit list blocks live application.
 
 ### 2. Freeze deployment or enqueue live application
 
-`packages/occ/src/index.ts:deployAgent` freezes the Driver's defaults and additions
-into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
-snapshot rather than re-reading changed defaults.
+`packages/occ/src/sandbox-policy.ts:admitDeploymentSnapshot` freezes Driver
+defaults and additions in `AgentRevision.sandboxPolicy`. The OpenShell Driver
+provisions from that snapshot.
 
-`applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
-`update` and `read` before any refusal that names saved additions, then requires
-the exact active revision and supporting Driver. When the caller supplies reviewed additions, the same transaction saves the new
-policy version, records its pending application and enqueues Agent-target work.
-Omitting additions retains the saved policy version. Neither saving nor enqueueing establishes enforcement.
+For a saved repository policy and a bound Channel Secret,
+`packages/occ/src/deployment-channels.ts:startDeploymentValidation` checks
+deployment admission before handing the Secret to the Channel provider.
+The Channel handoff and final deployment admission start PostgreSQL transactions
+at Read Committed. The policy preview reuses the Channel handoff transaction.
+The IAM reads after the lock wait see permission changes committed by the
+previous lock holder, even when the connection defaults to Repeatable Read.
+A platform dependency failure returns a retryable `503 DEPENDENCY_UNAVAILABLE`
+with bounded request diagnostics. An incompatible Compute topology or an
+unscoped revision history returns `409 RESOURCE_CONFLICT` with recovery
+instructions. Credential check failures use the Channel credential response.
+Authorization denials still return `403 FORBIDDEN`.
+
+`applyAgentSandboxPolicy` checks Agent `manage_policy` and SandboxPolicy
+`update` and `read` before disclosing saved additions. It requires the exact
+active revision and a supporting Driver. One transaction saves supplied
+changes, records the pending application and queues work. Omitting additions
+keeps the saved policy version. Provider readback confirms enforcement.
 
 ### 3. Reconcile provider effects
 
@@ -174,54 +186,40 @@ Driver projects representable native chunks into untrusted suggestions. The
 console editor submits canonical additions through the same mutation path;
 native draft approval cannot bypass OCC admission.
 
-`console/driver-configurations.mts:renderAgentDriverConfigurations` discovers
-sections and selects resource-owner controls. `console/configuration-fields.mts`
-renders schema fields and JSON fallback, with safe field/root diagnostics.
-String controls retain the complete draft. Length validation stays with the
-policy owner: JSON Schema counts Unicode code points, while HTML length
-attributes count UTF-16 code units and can truncate a valid executable path.
+`console/driver-configurations.mts:renderAgentDriverConfigurations` finds owner
+controls. `console/configuration-fields.mts` renders schema fields, JSON fallback
+and safe diagnostics. It preserves complete string drafts because JSON Schema
+counts code points and HTML counts UTF-16 units.
 `console/agents/sandbox-policy.mts:renderLogs` snapshots the displayed log window,
 filters it, and renders five denials per page initially. Selection spans pages;
 Select page changes only eligible visible rows. Follow retains up to 1,000 new
 log records without replacing inspected rows. Show newest accepts the retained
 window and removes selections for records no longer retained.
 
-`stageGrants` builds exact executable/host/port candidates, deduplicates requests,
-and skips requests already covered by saved or proposed grants. It retains the
-complete additions array and opens the schema editor or batch preview. Missing
-metadata disables prefilling. An incomplete existing draft must be corrected
-before staging more grants. `ruleList` searches and pages explicit rules five at
+`stageGrants` deduplicates exact executable/host/port candidates and excludes
+requests covered by saved or proposed grants. It preserves all additions and
+opens the schema editor or batch preview. Missing metadata prevents prefilling.
+Incomplete drafts block further staging. `ruleList` searches and pages explicit rules five at
 a time; row controls edit or remove local additions.
 
-`console/agents/sandbox-policy.mts:renderPolicy` places policy status and suggestions
-above the log. It shows three suggestions initially and expands the remaining
-candidates on request, independently of mutation authority. `openNetworkLimits`
-uses the policy view's ceiling in a separate read-only dialog. Defaults and
-version details stay in the main-page disclosure. The Network policy card also enables or disables Agent policy editing
-through the separately authorized editing operation. Mutation feedback appears in
-the card while the dialog is closed; a failed policy read retains its error and
-read recovery action. `renderEditor` manages rules without an editing toggle and
-keeps proposed rules local until preview. Its footer compares the draft with saved
-additions, including removals and restored values, to offer review, application,
-or Done. Saving a confirmed response closes the dialog and clears the completed
-selection. Review shows additions, updates, and removals from the controller-validated rules,
-with the previously saved policy available for comparison. Save sends the complete
-validated array with the reviewed policy version. Superseded preview and read responses
-cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
-cannot invalidate a newer request. A pending application re-arms polling after
-the latest read, including a response discarded after a draft edit.
-An unreadable preview retains the draft for another review. The combined request
-must return the reviewed rules, the next version of this Agent’s policy and a
-fresh pending application for the selected running revision. Starting a write
-invalidates earlier policy reads and pauses polling. If the combined response is
-lost or does not match, the Console reads the policy again. An unsuccessful
-read leaves **Refresh policy** available in the open editor. A refused request
-keeps the edit local. After admission, the provider outcome remains pending
-until confirmed. **Save for later** only saves. **Apply saved rules** requires
-a clean draft and targets the existing saved version. `loadPolicy(true)` records explicit
-inspection of a failed application. Refresh issues only the policy GET; a separate
-Retry application action invokes the existing apply descriptor after inspection.
-The action remains subject to current permissions, lifecycle, and draft guards.
+`console/agents/sandbox-policy.mts:renderPolicy` shows policy status and three
+expandable suggestions above the log, independent of mutation authority.
+`openNetworkLimits` displays the ceiling read-only. Defaults and versions remain
+on the main page. The Network policy card authorizes editing separately and
+retains feedback, read errors and recovery with the dialog closed.
+`renderEditor` keeps edits local. Review compares the validated draft with
+saved additions. Save submits the full validated array and reviewed version.
+Confirmation closes the dialog and clears the completed selection. Stale
+responses cannot overwrite drafts. Writes invalidate earlier reads and pause
+polling. A fresh read resumes polling for pending applications. Unreadable
+previews and refusals preserve edits. The combined response must contain the
+reviewed rules, next policy version and fresh pending application for the
+selected running revision. A lost or mismatched response triggers a GET.
+If it fails, **Refresh policy** remains available. Provider confirmation
+settles pending status. **Save for later** only saves. **Apply saved rules**
+targets the saved version and requires a clean draft. `loadPolicy(true)`
+records inspection before retry through the apply descriptor. Refresh only
+reads. Retry checks current permissions, lifecycle and draft.
 
 `console/agents/sandbox-policy.mts:mutate` displays rejected saves as focused
 alerts and scrolls the reason into view after rendering. Ceiling rejection
@@ -229,18 +227,15 @@ preserves the attempted additions for correction without changing saved state.
 `console/navigation.mts:createNavigation` admits the `policy` tab in login
 destinations, preserving an Agent's Policy denials link after sign-in.
 
-The console reads the policy owner even when discovery returns no descriptor. This
-read establishes an unsupported capability or a permission refusal before log and
-suggestion reads continue under their own permissions. It cannot leave those reads
-waiting for a policy request that never starts. When the caller's permission answer
-reports `sandboxPolicyRead` as `false`, the console skips the policy and suggestion
-reads and says so; an unknown answer keeps the reads. A tab opened after the answer
-settled rereads it first, so a later grant applies. A version snapshot without
-`sandboxDriverId` runs without a Sandbox, so the tab skips its log and suggestion reads
-and says no denials are recorded. A `RUNTIME_LOGS_SOURCE_UNAVAILABLE` answer shows the same.
-Then, and on the draft, which reads no log, the denial count, refresh, follow and filter
-controls and the empty denial rows are hidden. When the permission answer refuses
-the policy read, only the network policy card states it; the suggestions card is hidden.
+The console reads the policy owner even without a discovery descriptor.
+This reports unsupported capability or refusal before independently
+authorized log and suggestion reads. `sandboxPolicyRead: false` skips policy
+and suggestion reads and hides the suggestions card. The network policy card
+shows the refusal. An unknown answer keeps the reads. Reopening the tab
+refreshes permissions. A revision without `sandboxDriverId` skips log and
+suggestion reads and reports no denials, as does
+`RUNTIME_LOGS_SOURCE_UNAVAILABLE`. These states and drafts hide denial
+counters, controls and empty rows.
 
 ## Debugging and Verification
 
@@ -269,6 +264,20 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-22 10:05: Document IAM currentness during Channel handoff and deployment admission. (authoring-run/c8a2f368-b5c6-464f-859b-7c81d28819ae - 00a5b1d2edc6de425e2e9d197bb0841a02f439e8)
+
+- 2026-11-22 09:55: Document transaction isolation for explicit repository policy saves. (authoring-run/0eda0b23-705a-489b-833d-3cde8916b691 - 42f0df7230de059d4a96da27298c911e22993cab)
+
+- 2026-11-22 09:28: Document the read check for explicit empty repository lists and omission from save responses. (authoring-run/df899b2b-1188-46fb-a341-5c7068e9208a - 8d738163780171c639367dbbccd9d9bb3a0ee63c)
+
+- 2026-11-20 23:58: Document repository grant persistence and revision compatibility. (authoring-run/7cea7928-edfb-4fb5-ba4d-0d07ca245dca - 0f4a2d3d3)
+
+- 2026-11-20 16:58: Point to deployment admission and its request module. (authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc - 48e378422c0f6527682d305cac5ca3992a00c5ad)
+
+- 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
+
+- 2026-11-20 16:26: Point policy admission and live application to their Sandbox policy module. (authoring-run/f1915f3d-1425-495a-b3d9-3ed171e6cf74 - c153a2bbf59310a74974a455c11152460d486af4)
 
 - 2026-11-19 07:54: Separate credential acquisition. (authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8 - 1eb271262)
 

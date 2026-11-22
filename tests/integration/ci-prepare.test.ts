@@ -270,49 +270,30 @@ function modelImageRoleNotices(stderr: string) {
 }
 
 test("model preparation notices follow completed CLI phases", async (t) => {
-  const root = await fixture(t);
-  const fetchStub = join(root, "offline.cjs");
-  await writeFile(fetchStub, "globalThis.fetch = async () => new Response(null, { status: 404 });");
-  for (const suppliedImages of [false, true]) {
-    const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {
-      GITHUB_ACTIONS: "true",
-      GITHUB_RUN_ID: "12345",
-      GITHUB_RUN_ATTEMPT: "2",
-      GITHUB_SHA: "a".repeat(40),
-      OPENAI_API_KEY: "synthetic-model-key",
-      OCC_TEST_OPENAI_MODEL: "synthetic-model",
-      NODE_BASE_IMAGE: nodeBaseImage,
-      NODE_OPTIONS: `--require="${fetchStub}"`,
-      // The empty source directory fails validation only when an image build is requested.
-      OCC_K3D_OPENCLAW_SOURCE: root,
-      ...(suppliedImages
-        ? {
-            OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
-            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
-            OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
-          }
-        : {}),
-    });
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 1, prepared.stderr);
-    assertStderrMatch(prepared.stderr, suppliedImages ? /download failed: HTTP 404/ : /Dockerfile/);
-    assert.deepEqual(modelPreparationNotices(prepared.stderr), [
-      ["k3d-cluster-preparation", "success"],
-      ["postgres-start", "success"],
-      ...(suppliedImages
-        ? [
-            ["runtime-image-preparation", "success"],
-            ["gateway-routing", "failure"],
-          ]
-        : [
-            ["image-build-or-reuse", "failure"],
-            ["runtime-image-preparation", "failure"],
-          ]),
-    ]);
-    assert.deepEqual(modelImageRoleNotices(prepared.stderr), []);
-    assert.doesNotMatch(prepared.stderr, /^::notice title=Production Observability timing::/m);
-    await commands.cleanupSuccessfully();
-  }
+  const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {
+    GITHUB_ACTIONS: "true",
+    GITHUB_RUN_ID: "12345",
+    GITHUB_RUN_ATTEMPT: "2",
+    GITHUB_SHA: "a".repeat(40),
+    OPENAI_API_KEY: "synthetic-model-key",
+    OCC_TEST_OPENAI_MODEL: "synthetic-model",
+    NODE_BASE_IMAGE: nodeBaseImage,
+    OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+    OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+    OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+  });
+  const prepared = await commands.prepare();
+  assert.equal(prepared.status, 1, prepared.stderr);
+  // The fixture kubectl refuses the seccomp namespace, the first step after image import.
+  assertStderrMatch(prepared.stderr, /create namespace .* failed/);
+  assert.deepEqual(modelPreparationNotices(prepared.stderr), [
+    ["k3d-cluster-preparation", "success"],
+    ["postgres-start", "success"],
+    ["runtime-image-preparation", "failure"],
+  ]);
+  assert.deepEqual(modelImageRoleNotices(prepared.stderr), []);
+  assert.doesNotMatch(prepared.stderr, /^::notice title=Production Observability timing::/m);
+  await commands.cleanupSuccessfully();
 });
 
 test("model image notices time only requested builds and preserve each outcome", async (t) => {
@@ -2634,7 +2615,7 @@ if (args[0] === "pull") {
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
     };
     for (const [name, version] of tuples([
-      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.8" }],
+      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.9" }],
       [
         "candidate",
         {
