@@ -229,34 +229,45 @@ See [migration recovery](../reference/settings/operations.md#migration-history).
 
 ### Released controller compatibility
 
-Select two already-loaded, digest-pinned controller images to test their real
-API and worker in two independent disposable databases. Use the PostgreSQL fixture
-selectors above, then set these four image inputs:
+To produce a receipt for an upgrade, load the installed and candidate controller
+images locally. Use their exact digest-pinned references and full Git commits.
+Each commit must match its image’s `org.opencontainers.image.revision` label.
+Keep an image index digest even when testing a single architecture.
+
+On Linux with Docker Compose and workspace dependencies installed, set
+`ATTEMPT` to an unused absolute path inside a private directory you own.
+Run from the checkout root. The command clears the manual database selectors
+for this run so the whole file uses the PostgreSQL server the runner creates.
 
 ```sh
-OCC_TEST_RELEASED_CONTROLLER_IMAGE="$RELEASED_IMAGE" \
-OCC_TEST_RELEASED_CONTROLLER_REVISION="$RELEASED_COMMIT" \
-OCC_TEST_CANDIDATE_CONTROLLER_IMAGE="$CANDIDATE_IMAGE" \
-OCC_TEST_CANDIDATE_CONTROLLER_REVISION="$CANDIDATE_COMMIT" \
-  node --test --test-name-pattern='Released controller remains usable' \
-  tests/integration/postgres-migration-compatibility.test.mjs
+env -u OCC_MIGRATION_HISTORY_DATABASE_URL -u OCC_MIGRATION_HISTORY_CONTAINER \
+  -u OCC_MIGRATION_HISTORY_DATABASE_PREFIX \
+  OCC_TEST_RELEASED_CONTROLLER_IMAGE="${RELEASED_IMAGE:?}" \
+  OCC_TEST_RELEASED_CONTROLLER_REVISION="${RELEASED_COMMIT:?}" \
+  OCC_TEST_CANDIDATE_CONTROLLER_IMAGE="${CANDIDATE_IMAGE:?}" \
+  OCC_TEST_CANDIDATE_CONTROLLER_REVISION="${CANDIDATE_COMMIT:?}" \
+  node scripts/ci/run-tests.ts run postgres --lifecycle complete \
+  --attempt "${ATTEMPT:?}" \
+  --file tests/integration/postgres-migration-compatibility.test.mjs
 ```
 
-For native runner receipts, use the prepare/run/cleanup pattern above with lane
-`postgres`. Prepare the lane without `--file`, then supply the same four inputs
-to `node scripts/ci/run-tests.ts run postgres` with
-`--file tests/integration/postgres-migration-compatibility.test.mjs`.
-This runs the whole migration file, including both selected compatibility cases.
-Require both selected cases to pass and inspect `releasedController` and `candidateController`
-in the file result's `imageDigests`; passing ordinary migration cases alone does
-not qualify the pair. The selectors are optional and inherited only by this file.
+Require the run, both compatibility cases and cleanup to pass. Retain the
+attempt state if cleanup fails or process termination is uncertain. In
+`$ATTEMPT/result.json`, check the file’s `imageDigests.releasedController` and
+`imageDigests.candidateController`. Keep this receipt private and unchanged. For the
+[control plane upgrade](../guides/deploy/production-upgrade.md#upgrade-the-control-plane),
+pass `--controller-compatibility-results "$ATTEMPT/result.json"` with
+`--controller-image "$CANDIDATE_IMAGE"`. The upgrade checks both image digests
+before stopping writers.
 
-Each image must carry its matching `org.opencontainers.image.revision` label.
-The cases never pull images. They are registered only when at least one image or
-revision input is supplied; partial selection fails. With no inputs, ordinary
-PostgreSQL CI runs its existing cases without an extra skipped test and does not
-qualify released-image compatibility. A failed case means the image pair is not
-qualified, even when the other case passes.
+To diagnose the pair on an existing disposable PostgreSQL server, use the
+three `OCC_MIGRATION_HISTORY_*` selectors above. Omit the `env -u` options and pass
+the same four image and commit assignments to
+`node --test --test-name-pattern='Released controller remains usable' tests/integration/postgres-migration-compatibility.test.mjs`.
+This diagnostic produces no upgrade receipt. Check that both named cases pass.
+Neither case pulls controller images. Partial image inputs fail. With all four
+inputs absent, PostgreSQL CI and the diagnostic can succeed without running
+either case.
 
 The released image bootstraps and migrates a fresh database with its canonical
 commands. Its real Fastify app, password authentication, Native IAM and worker
