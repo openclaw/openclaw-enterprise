@@ -221,9 +221,9 @@ update under the [Secret delivery contract](../reference/drivers/kubernetes-secr
 [`namespaces.mts:renderNamespaces`](../guides/console/create-namespace.md) validates names.
 `OpenClawController.createNamespace` authorizes `POST /namespaces` and queues
 provisioning. `perform` audits. After 201, `namespaces.mts:confirmCreation`
-offers **Open Agents** for exact list membership, another GET for uncertainty,
-or **Done** for omissions and denials. Closing refocuses the opener. A create
-403 disables creation for that account until Refresh.
+keeps **Done** available. Exact list membership adds **Open Agents**.
+Omission or denial leaves only **Done**. Inconclusive reads allow another GET.
+Closing refocuses the opener. Create 403 disables creation account-wide until Refresh.
 
 `namespace-deletion.mts` blocks navigation and dismissal during writes. OCC
 rechecks IAM and contents (20 blocker IDs per kind). After 202, polling runs
