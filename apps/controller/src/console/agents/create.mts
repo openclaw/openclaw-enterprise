@@ -4193,8 +4193,8 @@ function renderAgentForm(
           },
         }).catch((error: unknown) => {
           if (requestFailure(error).status === 403) {
-            // A refused Configuration create names the grants it needs: one fixed text for
-            // every 403, since only an Installation administrator can create one (finding 2111).
+            // A Configuration create can be refused by the collection check or a bound Secret
+            // check. Give both requirements without guessing which check refused it.
             responseFields(error).refusal = CONFIGURATION_CREATE_REFUSED;
           }
           throw error;
