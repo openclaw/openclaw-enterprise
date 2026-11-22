@@ -35,3 +35,9 @@ Namespace control. Check each story at 1440, 1101, 1100, 1024 and 390 px.
 
 Storybook fixtures are simulated UI proof. They do not verify a live
 deployment or clipboard permissions in a real browser profile.
+
+## Compare collection rows
+
+1. Open **Pages / Agents / Latest deployment failed** at 1440 px. Read the Agent name, full ID, current version, and failed deployment. Tab to the deployment link and press Enter. Return to the list and check the focused link and its row.
+2. Open **Latest deployment failed on mobile**. Execution mode and current version share a line. The failure and row actions have the full width. Open navigation and check the selected page and each link label.
+3. Open **Pages / Credentials / OAuth connection templates**, **Pages / Secrets / Populated**, and **Pages / Namespaces / Ready and provisioning**. Tab through the rows. Check the shared heading colors and the focus indicator for each action.

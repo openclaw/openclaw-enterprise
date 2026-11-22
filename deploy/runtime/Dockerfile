@@ -236,7 +236,7 @@ RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
-# Run exactly the tests that exercise a kept carried patch; upstream CI covers the rest.
+# Verify carried patches and independent browser/profile and node identity contracts.
 # One main runner invocation for the Node test files: the runner compiles the whole
 # source tree for its workers first (about a minute), and a second invocation on
 # a fresh .artifacts directory would compile it again. Keep generated files on
@@ -250,10 +250,15 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
     src/cli/update-cli/update-command-service-drain.native.test.ts \
     src/gateway/server-methods.suspension-admission.test.ts \
+    src/gateway/server.auth.delegation.test.ts src/gateway/trusted-proxy-delegation.test.ts \
+    src/state/user-profile-delegation.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     extensions/codex/src/app-server/thread-policy.test.ts extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts \
     extensions/codex/src/app-server/config.test.ts extensions/codex/src/app-server/config-network-proxy.test.ts \
     src/node-host/runner.test.ts \
+    src/node-host/openclaw-id-transport.test.ts \
+    src/node-host/openclaw-id-enrollment.test.ts src/node-host/openclaw-id-target.test.ts \
+    src/node-host/openclaw-id-connection.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
     src/node-host/runner-lifecycle-lock.test.ts \
     src/cli/node-cli/register.test.ts \
@@ -465,6 +470,9 @@ COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
 COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
+COPY --chmod=0444 deploy/runtime/openshell-bootstrap.cjs /opt/oce/runtime/openshell-bootstrap.cjs
+# OpenShell selects the workload UID. Its private child directory stays on the workload filesystem.
+RUN install -d -m 1777 -o root -g root /opt/oce/managed
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.
 RUN mkdir -p node_modules/.bin \
@@ -506,7 +514,11 @@ RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp
   && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /tmp/additional-download-clients.json \
   && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
-RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
+RUN --mount=type=bind,source=deploy/runtime/repository-credentials/github-repository-rest/SKILL.md,target=/tmp/github-repository-rest.md \
+    /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig \
+    && skill=/etc/codex/skills/github-repository-rest \
+    && install -D -m 0444 /tmp/github-repository-rest.md "$skill/SKILL.md" \
+    && touch -d @0 "$skill/SKILL.md" "$skill"
 
 ARG OPENCLAW_COMMIT
 ARG OCC_BUILD_REVISION=""

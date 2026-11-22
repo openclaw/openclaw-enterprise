@@ -421,6 +421,7 @@ if (process.argv[3] === "down") {
 }
 if (scenario === "legacy") process.stdout.write(legacyRecord);
 else if (scenario === "controller-import") process.stdout.write(legacyRecord.replace("primary_stage=routing", "primary_stage=controller-image-import"));
+else if (scenario === "sandbox") process.stdout.write(legacyRecord.replace("primary_stage=routing", "primary_stage=codex-sandbox-preparation"));
 else if (scenario === "operation-only") process.stdout.write(legacyRecord.trimEnd() + " routing_operation=node-pod-cidr\\n");
 else if (scenario === "invalid-operation") process.stdout.write(record.replace("controller-rollout", "private-outcome-canary"));
 else if (scenario === "invalid-controller") process.stdout.write(record.replace("envoy-gateway", "private-outcome-canary"));
@@ -485,6 +486,8 @@ test("reject ambiguous or non-failure startup records", async (t) => {
   process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
   process.env.OCC_FIXTURE_STARTUP_CASE = "controller-import";
   await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
+  process.env.OCC_FIXTURE_STARTUP_CASE = "sandbox";
+  await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
 });
 `,
   );
@@ -498,6 +501,12 @@ test("reject ambiguous or non-failure startup records", async (t) => {
       {
         kind: "local-first-agent-startup-failure",
         primaryStage: "controller-image-import",
+        cleanupFailed: true,
+        parentContextDone: false,
+      },
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "codex-sandbox-preparation",
         cleanupFailed: true,
         parentContextDone: false,
       },

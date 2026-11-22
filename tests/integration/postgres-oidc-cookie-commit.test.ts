@@ -52,7 +52,7 @@ test(
     assert.ok(databaseUrl);
     function injectLocalhost(
       target: App,
-      method: string,
+      method: Parameters<typeof injectRequest>[1],
       path: string,
       options: RequestOptions = {},
     ) {

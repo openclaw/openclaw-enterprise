@@ -1,3 +1,14 @@
+import { types } from "node:util";
+import { immutableCopy } from "@openclaw-enterprise/utils";
+import type { SandboxDriver } from "./drivers/sandbox/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  RepositoryNetworkPolicyAdmissionError,
+} from "./repository-network-policy.ts";
+import type {
+  RepositoryNetworkGrant,
+  RepositoryNetworkPolicy,
+} from "./repository-network-policy.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
@@ -49,6 +60,127 @@ export interface SandboxPolicySnapshot {
   readonly version: number;
   readonly defaults: Readonly<OpenClawConfigurationDocument>;
   readonly additions: readonly SandboxNetworkGrant[];
+  readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
+}
+
+function isIntrinsicPrototype(
+  prototype: object,
+  intrinsic: ObjectConstructor | ArrayConstructor,
+): boolean {
+  if (prototype === intrinsic.prototype) {
+    return true;
+  }
+  if (types.isProxy(prototype)) {
+    return false;
+  }
+
+  // A different realm has its own built-ins. Check the constructor without invoking accessors.
+  const constructor: unknown = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
+  return (
+    typeof constructor === "function" &&
+    Function.prototype.toString.call(constructor) === Function.prototype.toString.call(intrinsic) &&
+    Object.getOwnPropertyDescriptor(constructor, "prototype")?.value === prototype
+  );
+}
+
+function isPolicyJsonValue(value: unknown, ancestors = new Set<object>()): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value !== "object" || types.isProxy(value) || ancestors.has(value)) {
+    return false;
+  }
+
+  const isArray = Array.isArray(value);
+  const prototype = Reflect.getPrototypeOf(value);
+  if (
+    (prototype === null ? isArray : !isIntrinsicPrototype(prototype, isArray ? Array : Object)) ||
+    Object.getOwnPropertySymbols(value).length > 0
+  ) {
+    return false;
+  }
+  const properties = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(
+    ([key]) => !isArray || key !== "length",
+  );
+  if (
+    isArray &&
+    (properties.length !== value.length || properties.some(([key], index) => key !== String(index)))
+  ) {
+    return false;
+  }
+
+  ancestors.add(value);
+  const valid = properties.every(
+    ([, descriptor]) =>
+      descriptor.enumerable &&
+      "value" in descriptor &&
+      isPolicyJsonValue(descriptor.value, ancestors),
+  );
+  ancestors.delete(value);
+  return valid;
+}
+
+/** Enrich a base snapshot during revision admission, before any provisioning effects. */
+export function admitSandboxRepositoryNetworkPolicy(
+  snapshot: SandboxPolicySnapshot,
+  value: unknown,
+  ceiling: unknown,
+  driver: Pick<SandboxDriver, "id" | "implementation" | "admitRepositoryNetworkPolicy"> | undefined,
+): SandboxPolicySnapshot {
+  const network = immutableCopy(snapshot);
+  if (Object.hasOwn(network, "repositoryNetworkPolicy")) {
+    throw new RepositoryNetworkPolicyAdmissionError(
+      "INVALID_VALUE",
+      "/repositoryNetworkPolicy",
+      "Use a base network snapshot without a repository network policy.",
+    );
+  }
+  const policy = admitRepositoryNetworkPolicy(value, ceiling);
+  if (policy === undefined) {
+    return network;
+  }
+  let message = "The Sandbox Driver must return an effective repository network policy document.";
+  try {
+    const admit = driver?.admitRepositoryNetworkPolicy;
+    if (
+      driver === undefined ||
+      typeof admit !== "function" ||
+      driver.id !== network.driverId ||
+      driver.implementation !== network.implementation
+    ) {
+      message = "Select a Sandbox Driver that supports repository network policy.";
+    } else {
+      const result: SandboxPolicySnapshot["defaults"] = Reflect.apply(admit, driver, [
+        policy,
+        network,
+      ]);
+      if (types.isPromise(result)) {
+        // Observe rejected native Promises across realms without reading the Driver's then method.
+        void Promise.prototype.then.call(result, undefined, () => undefined);
+      } else if (
+        result !== null &&
+        typeof result === "object" &&
+        !Array.isArray(result) &&
+        isPolicyJsonValue(result)
+      ) {
+        const defaults = immutableCopy(result);
+        // Cloning can restore a native type whose prototype the Driver replaced.
+        if (isPolicyJsonValue(defaults)) {
+          return Object.freeze({ ...network, defaults, repositoryNetworkPolicy: policy });
+        }
+      }
+    }
+  } catch {
+    // The admission error below omits Driver diagnostics.
+  }
+  throw new RepositoryNetworkPolicyAdmissionError(
+    "UNSUPPORTED_POLICY",
+    "/repositoryNetworkPolicy",
+    message,
+  );
 }
 
 /** Explicit, nonsecret acknowledgement; only its validated snapshot is persisted. */
@@ -77,6 +209,7 @@ export interface SandboxPolicy {
   readonly agentId: string;
   readonly version: number;
   readonly additions: readonly SandboxNetworkGrant[];
+  readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
   readonly application?: SandboxPolicyApplication;
   readonly applied?: {
     readonly revisionId: string;

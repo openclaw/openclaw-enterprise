@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-06
-last_updated_session: authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf
+updated: 2026-11-22
+last_updated_session: authoring-run/303eb0c9-04da-4bab-9fac-cc0dca754630
 ---
 
 # Console Agent editing and runtime requests
@@ -13,9 +13,9 @@ Related flows: [parent](../platform-console.md),
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads the exact Agent and composes the detail actions.
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads Agent detail and actions.
 - `apps/controller/src/console/agents/credentials.mts:createChannelSecretsPanel` saves channel Secret bindings.
-- `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a version after first-deployment credential setup.
+- `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment` admits first deployment after setup.
 - Actions require exact-resource permission.
 
 ## Flow
@@ -62,12 +62,14 @@ After reading the Agent, `loadDetails` settles history and snapshot independentl
 Rejected history warns beside readable drafts. Deploy stays unavailable.
 `snapshotErrorPanel` explains Configuration refusal and hides drafts. Numeric `401` returns to sign-in.
 
-Browsing: `packages/occ/src/index.ts:listAgents`, `listRevisions`,
+Browsing: `packages/occ/src/agent-queries.ts:listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing`.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns metadata
 plus `configurationReadError` on decode failure. Operational reads and queries stay strict. Unreadable drafts block editing and deployment without defaults.
 **Selected for service** uses `activeRevisionId`.
 **Viewing version** switches `revision=draft`/`revision=<id>` without activation.
+With confirmed Configuration `read`, **Draft credentials** and **Draft repositories**
+open draft tabs without copying snapshot values.
 **Load older versions** appends, keeps selection and focuses the picker after the last page.
 `deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
 
@@ -78,14 +80,13 @@ Activity and label cannot anchor scrolling (`console.css`).
 After `FIRST_ACTIVITY_WAIT_MS`, completion folds unless cleanup, warnings,
 repository access, or overview errors need attention; outcomes remain.
 
-`createDeploymentStatusPanel` polls until completion or refusal; transient errors retain
-progress. `invalidate` and `fail` clear caches and reads. `onFreshRecord` shares matching
-GETs; `show` never republishes. Refusals override success; `401` expires sessions.
-`terminalOverview` reconciles outcomes once through shared Agent/history reads, excluding
-denied records. Retry failures explicitly. `readingOverview` protects explicit reads;
-`recordGeneration` rejects stale payloads.
-**Refresh deployment** queues a full reread; **Refresh record** preserves focus, ignoring
-repeats. Refusals open details; matching errors share alerts.
+**Refresh deployment** queues the latest readable revision’s record/overview reread.
+**Refresh record** rereads the viewed revision, retaining focus and ignoring repeats.
+`createDeploymentStatusPanel` polls pending deployments/cleanup through outages.
+`show` renders results without `onFreshRecord`, which retries failed overviews on fresh matching terminal reads.
+`terminalOverview` shares Agent/history reads per outcome. `recordGeneration` rejects stale records.
+Refusals clear caches/reads, opening details. Matching errors share alerts. `401` expires sessions.
+Revision changes replace **View deployment**. Same-revision updates preserve focus.
 
 Each surface shows revision-specific `repositoryAccess.message` beside unchanged outcomes.
 Conditions reveal details without deploying. Missing guidance leaves repository health unknown.
@@ -102,25 +103,26 @@ versions retain their results.
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
 **Deploy new version** admits the saved draft's Configuration and plugins.
-**Edit current Configuration** never copies historical values. Deploy stays
-disabled when the permission answer lists a bound Secret the caller cannot
-`operate` or counts one the caller can neither `read` nor `operate`. The count
-names no Secret (D756). After deployment, versions outside the newest page
+**Edit current Configuration** never copies historical values. Missing `operate`
+on a bound Secret disables deployment. Permissions list readable Secrets lacking
+`operate` and count the rest without names (D756). After deployment, versions outside the newest page
 appear unreadable until an audited read (D758).
 
-Before saving, `parseEditor(true)` rejects numbers parsed as infinity, including
-nested `1e400`. The editor retains text, shows the error, and takes focus. Use a
-number closer to zero and retry.
+`parseEditor(true)` rejects nonfinite numbers (even nested `1e400`).
+Keep text, show the error, and focus the editor. Retry closer to zero.
 
 `detail.mts:saveConfiguration` rereads Agent and Configuration before PATCHing
-`{ values, expectedGeneration }`, preserving `secretBindings`. Changed IDs,
-stale generations, or concurrent-save conflicts require **Reload draft**. Responses must
-confirm Configuration/Namespace identity, newer generation, and submitted
-values/bindings. Reload before retrying unknown outcomes.
-Focus on **Save Configuration** moves to **Checking Configuration…**, then
-**Edit Configuration** on success unless focus moved. Conflicts retain local text. If focus moved,
-preserve focus, selection, and scroll. Otherwise, focus **Reload draft** and reveal
-the refusal.
+`{ values, expectedGeneration }`, preserving `secretBindings`. Responses must confirm
+Configuration/Namespace identity, newer generation, and submitted values/bindings.
+Reload before retrying unknown outcomes.
+
+Focused **Save Configuration** passes focus to **Checking Configuration…**.
+Success focuses **Edit Configuration** unless focus moved.
+ID/generation mismatches or stale `409` responses require **Reload draft**.
+Keep edits, focus the marked button, and reveal the alert.
+During [tab return](../platform-console.md#2-resolve-the-session-before-private-reads),
+`console.mts:revalidateMountedAgent` first reconfirms access to that inert view.
+Newer focus or selection cancels restoration and scrolling.
 
 **Enable gateway password access** and **Collaboration and safety**
 (`agents/gateway-safety.mts`) stage edits; **Cancel** discards them. Password access
@@ -133,14 +135,13 @@ Unsaved edits block deployment. Pending saves block tab and version changes.
 On blocked Back/Forward, `apps/controller/src/console/navigation.mts:traverse`
 restores the address without reloading for missing or equal markers or impossible steps.
 Overflowed markers are untracked.
-A refused write lists required grants without guessing which; a refused preflight read names read
-access, a Workspace file save Agent `operate`. Without Agent `update`, Configuration `read` or
-bound-source grants (`operate`, and `read` on a Harness ServiceAccount; the note names both),
-plugins and repository access are summaries (dropping a kept plugin edit) and authentication is
-disabled. Reads the answer refuses are skipped.
-Lacking Configuration `update` makes Configuration and channels read-only; lacking `operate` on a
-bound Secret does too, unless, for channels, each such Secret has a Slack token name; with nothing
-editable, the draft says so and, without deploy, has no checklist.
+Write refusals list required grants without guessing which failed. Preflight refusals name
+read access, Workspace saves Agent `operate`. Without Agent `update`, Configuration `read` or
+bound-source grants (the note names `operate` and Harness ServiceAccount `read`), the Console summarizes
+plugins and repositories, drops retained plugin edits, disables authentication and skips denied reads.
+Configuration and channel edits require Configuration `update` and bound Secret `operate`.
+Channels can replace bindings if all denied Secrets have Slack token names.
+Read-only drafts say so and omit the checklist without `deploy`.
 
 `agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
 `agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,
@@ -212,7 +213,7 @@ selection; redeployment applies it. See
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies Namespace,
 bindings and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
 `GET /namespaces/:namespaceId/secrets` requires Namespace read.
-`packages/occ/src/index.ts:listSecrets` filters exact Secret read without the Secret Driver.
+`packages/occ/src/secret-operations.ts:listSecrets` filters exact Secret read without the Secret Driver.
 `agents/secret-picker.mjs:createSecretReferenceField` filters names and IDs. Arrows
 navigate, Enter stages a reference, Escape restores, and Cancel discards.
 Typing stages nothing.
@@ -356,6 +357,9 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-22 21:08: Conflict focus. (authoring-run/303eb0c9-04da-4bab-9fac-cc0dca754630 - 2b01b92963bfeb8bfa0f29fe583f9523d48a78a3)
+- 2026-11-22 08:58: Link snapshots to draft tabs. (authoring-run/ec03baba-cadf-4c59-9194-3a93a3c4763b - f3996c521e94d8bf18ff9018069c699dda6913c6)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
 
 - 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)

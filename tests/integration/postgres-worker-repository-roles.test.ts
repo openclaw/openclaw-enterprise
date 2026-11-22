@@ -8,11 +8,13 @@ import type {
 import {
   isRepositoryCleanupWork,
   OpenClawController,
+  PostgresMetricsSnapshot,
   WorkClaimLostError,
 } from "../../packages/occ/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { RepositoryCredentialLifecycle } from "../../apps/controller/src/worker/repository-credentials.ts";
+import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -581,8 +583,23 @@ test(
             configuration: { registryPath: "/unused/worker-repository-registry.json" },
             drivers: { repo: repository.driver.id },
           };
-          const options = { repoDriver: repository.driver, backends: [backend] };
-          const fixture = await setup(context, options);
+          const metrics =
+            mode === "mismatched"
+              ? createOccMetrics("worker", () =>
+                  new PostgresMetricsSnapshot(fixture.observerPool).collect(),
+                )
+              : undefined;
+          const fixture = await setup(context, {
+            repoDriver: repository.driver,
+            backends: [backend],
+            metrics,
+          });
+          const successMetric =
+            /occ_reconciliation_attempts_total\{[^}]*work_kind="agent_revision"[^}]*outcome="success"[^}]*\} (\d+)(?:\n|$)/;
+          const pendingMetric =
+            /occ_reconciliation_attempts_total\{[^}]*work_kind="agent_revision"[^}]*outcome="pending"[^}]*\} [1-9]\d*(?:\n|$)/;
+          const errorMetric =
+            /occ_reconciliation_attempts_total\{[^}]*work_kind="agent_revision"[^}]*outcome="error"[^}]*\} [1-9]\d*(?:\n|$)/;
           const policy = nativeRepositoryPolicy(backend, fixture.namespace.id);
           const provisioning = context.mock.method(OpenClawController, "forInstallation");
           const events: Record<string, unknown>[] = [];
@@ -642,6 +659,7 @@ test(
             assert.deepEqual(await repositoryAttempts(fixture, candidate), [closing]);
           }
           const callsBeforeRestart = repository.calls.length;
+          let successesBeforeCleanup = 0;
           if (mode === "mismatched") {
             events.length = 0;
             await start("built-in", true);
@@ -665,6 +683,12 @@ test(
             );
             await fixture.stop();
             await fixture.work(cleanupWork, "queued");
+            // Joining the Worker waits for the metrics emitted after the claim commits.
+            assert.ok(metrics);
+            const pending = await metrics.exposition();
+            assert.match(pending, pendingMetric, "deferred cleanup must record a pending pass");
+            assert.doesNotMatch(pending, errorMetric);
+            successesBeforeCleanup = Number(pending.match(successMetric)?.[1] ?? 0);
             assert.equal(repository.calls.length, callsBeforeRestart);
             assert.deepEqual(await repositoryAttempts(fixture, candidate), [closing]);
           }
@@ -674,6 +698,15 @@ test(
           await fixture.work(cleanupWork, "succeeded");
           await fixture.work(stop, "succeeded");
           await fixture.stop();
+          if (metrics !== undefined) {
+            const completed = await metrics.exposition();
+            assert.equal(
+              Number(completed.match(successMetric)?.[1] ?? 0),
+              successesBeforeCleanup + 1,
+              "committed cleanup must add one successful revision pass",
+            );
+            assert.doesNotMatch(completed, errorMetric);
+          }
           const [disposed] = await repositoryAttempts(fixture, candidate);
           assert.equal(disposed?.phase, "disposed");
           assert.equal(disposed.brokerProtocol, 3);

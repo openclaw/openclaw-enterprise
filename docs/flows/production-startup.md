@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-18"
-last_updated_session: "authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6"
+updated: "2026-11-21"
+last_updated_session: "authoring-run/5ee5925d-a18c-4ea3-b360-a02c2ad9f162"
 ---
 
 # Production Startup Flow
@@ -80,15 +80,16 @@ Queries reconnect.
 
 ### 1. Prepare native production inputs
 
-`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` reads CRDs, controllers,
-addresses and object quota headroom. EKS binds account, ARN, endpoint and CA.
-[Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
+`scripts/diagnose-kubernetes-prerequisites.ts:diagnose`
+[checks prerequisites](../guides/deploy/prerequisite-diagnosis.md) before Helm.
+[EKS inventory](../guides/deploy/prerequisite-diagnosis.md#collect-eks-addresses)
+requires kubectl preferences opt-in and verifies account, ARN, endpoint and CA.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Keep values, Installation YAML and credential files outside the checkout. Helm
-selects images, endpoint, Secrets, selectors and egress, not credential values.
-`openclaw.validate` requires a DNS-1123 release Namespace label (maximum 63 characters).
+Keep values, Installation YAML and credentials outside the checkout. Helm
+selects images, endpoint, Secret names, placement and egress.
+`openclaw.validate` limits DNS-1123 release Namespace labels to 63 characters.
 Installation YAML selects Drivers, Backends, runtime images, projected identity,
 networking and storage.
 
@@ -136,10 +137,9 @@ and [refused values](../guides/deploy/production-upgrade-recovery.md#correct-val
 
 Helm runs `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
 (generated from `deploy/helm/src/check-installation.ts`) before migration, bootstrap
-and API rollout. The migration container evaluates `files/migrate-selected-image.cjs`,
-which validates the image's `db:migrate:production` entry and forwards mode arguments
-in the same Node process. Modes require the `NODE_ENV=production` declaration
-introduced with strict parsing. Bare legacy entries permit only unflagged apply.
+and API rollout. `files/migrate-selected-image.cjs` validates the image's
+`db:migrate:production` entry and forwards arguments in-process. Flagged modes
+require `NODE_ENV=production`. Bare legacy entries permit only unflagged apply.
 `formatStartupConfigurationFailure` and `configurationLogDetails` report
 up to 32 fields without values. When `OCC_EGRESS_AUTHORITY_PORT` or
 `OCC_OPENSHELL_GIT_PORT` is set, `requireChartListener` reports refused
@@ -161,19 +161,19 @@ Doctor reports Helm separately; write errors exit `1`.
 
 `scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-After source verification, all modes reject PostgreSQL before 17 with
-`MIGRATION_SERVER_UNSUPPORTED` before locking or catalog access
-([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
-On SIGINT/SIGTERM, a second migrator connection terminates the uniquely named
-session. Cleanup ignores repeated signals and finishes before exit. If the
-connection fails, the command reports `migration.cancellation-failed` and waits
-for migration completion.
-Under the advisory lock, the migration client verifies roles, receipts, catalogs and
-grants against native or reviewed restore digests. Unsupported history fails
-before DDL/bootstrap. After option guards, completed apply skips Drizzle only
-when `SHOW transaction_read_only` returns `off`. Drizzle otherwise retains pending
-migration and read-only refusal. `finally` releases the lock and client
-([history](../reference/settings/operations.md#migration-history)).
+After source verification, [PostgreSQL below 17](../reference/settings/operations.md#postgresql-server-compatibility)
+fails with `MIGRATION_SERVER_UNSUPPORTED` before locking or catalog access.
+On SIGINT/SIGTERM a second connection terminates the uniquely named session.
+If cancellation fails, the migrator logs `migration.cancellation-failed` and
+awaits completion. Cleanup ignores repeated signals.
+
+Under the advisory lock, the migrator verifies [history](../reference/settings/operations.md#migration-history),
+roles, catalogs and grants against native or reviewed restore digests before
+DDL or bootstrap. On 0085, check and apply refuse unfinished managed TokenService
+registrations with `MIGRATION_REGISTRATION_PENDING`.
+The SQL constraint guards later changes. After option checks, completed apply
+skips Drizzle only when `transaction_read_only` is off. Drizzle handles pending migrations
+and read-only refusals. Cleanup releases the lock and client.
 
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
 Console origin before database access, including during `--verify-existing`.
@@ -381,6 +381,12 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 16:06: Detect unfinished TokenService registrations before shutdown. (authoring-run/5ee5925d-a18c-4ea3-b360-a02c2ad9f162 - 883d6d5cf59ac4184550954f2f8d1625c24164a0)
+
+- 2026-11-19 22:27: Require EKS inventory preferences opt-in. (authoring-run/e7df3cc8-639a-48dc-818c-a5168de86ef1 - 00abb268cdd420d9eed8c3096a15d7f0cdc65934)
+
+- 2026-11-19 22:19: Trace the EKS address collection mode. (authoring-run/a5a3aec7-bb99-4933-b5a1-51dd301739ed - 0ac6f863218c79c2c4143d552a0207a24d20f604)
 
 - 2026-11-18 13:48: Recognize migration hooks (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - 62b4fb61d91580e4080fe3bd22da3e981bffb603)
 

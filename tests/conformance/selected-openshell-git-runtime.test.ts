@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   OpenShellGitRouteBlockedError,
   openShellGitRouteReadiness,
@@ -81,7 +81,7 @@ async function selectedV5(t: TestContext) {
       };
     }
   })({ endpoint: "http://127.0.0.1:1" });
-  const proxy = new OpenShellCredentialProxyDriver(
+  const proxy = new OpenShellLegacyEgressProxyDriver(
     {
       middlewareName: "oce-prepared-git",
       repositoryMiddlewareName: "oce-prepared-git",
@@ -350,8 +350,10 @@ async function heldGit(t: TestContext) {
     },
     {
       model: "openai",
-      workload: async (sandboxId) => {
-        assert.equal(sandboxId, f.sandbox.id);
+      runtime: runtimeFilesProvider,
+      policy: async () => sourcePolicy,
+      execution: async (box) => {
+        assert.equal(box.id, f.sandbox.id);
         return "original-pods";
       },
     },
@@ -457,11 +459,14 @@ async function releaseHeldGit(
   );
   assert.ok(receiptReads.some((r) => r.provider === "openai" && r.operation === "model-observe"));
   assert.equal(await lookup(), undefined, "installed material is held until launch ACK");
-  await f.runtime.releasePreview(revision.id, startupId, async () => {
-    activity.releases += 1;
-    assert.equal(preview.release, "sending");
-    assert.equal(await lookup(), undefined, "sending is not acknowledged");
-    return true;
+  await f.runtime.releasePreview(revision.id, startupId, {
+    prepare: async () => {},
+    deliver: async () => {
+      activity.releases += 1;
+      assert.equal(preview.release, "sending");
+      assert.equal(await lookup(), undefined, "sending is not acknowledged");
+      return true;
+    },
   });
   assert.equal(preview.release, "acknowledged");
   const scope = await lookup();
@@ -473,9 +478,12 @@ async function releaseHeldGit(
   assert.equal(scope.repositoryId, revision.repositoryCredentials!.bindings[0]!.grant.repositoryId);
   assert.equal(scope.pushRef, "refs/heads/review/task");
   await assert.rejects(
-    f.runtime.releasePreview(revision.id, startupId, async () => {
-      activity.releases += 1;
-      return true;
+    f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => {
+        activity.releases += 1;
+        return true;
+      },
     }),
     /Cannot release this preview startup/,
   );
@@ -685,6 +693,62 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
     return update(...args);
   };
   await releaseHeldGit(held, t);
+
+  await t.test("refuses a stale installation at the same startup and fence", async (t) => {
+    const { f, store, revision, startupId, entry, preview, reconcile } = await heldGit(t);
+    await reconcile();
+    const installed = entry.installed;
+    assert.ok(installed);
+    const fence = entry.fence;
+    const reading = deferred();
+    const resume = deferred();
+    const owns = store.owns.bind(store);
+    let pause = true;
+    store.owns = async (...args) => {
+      if (pause) {
+        pause = false;
+        reading.resolve();
+        await resume.promise;
+      }
+      return owns(...args);
+    };
+    let deliveries = 0;
+    const outcome = f.runtime
+      .releasePreview(revision.id, startupId, {
+        prepare: async () => installed.supervisorSessionId,
+        deliver: async () => {
+          deliveries++;
+          return true;
+        },
+      })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    try {
+      await Promise.race([reading.promise, outcome.then(() => assert.fail("no final fence read"))]);
+      assert.equal(store.rows.get(revision.id)?.observed?.enrollment?.release, "sending");
+
+      // Refresh the real local observation while the release waits for its store read.
+      // A supervisor control reconnect leaves the held Harness process and route fence intact.
+      const replacementSession = "replacement-control-session";
+      assert.notEqual(installed.supervisorSessionId, replacementSession);
+      f.supervisor.supervisorSessionId = replacementSession;
+      await reconcile();
+      assert.equal(entry.installed?.supervisorSessionId, replacementSession);
+      assert.equal(preview.hook?.startupId, startupId);
+      assert.equal(entry.fence, fence);
+      assert.equal(store.rows.get(revision.id)?.fence, fence);
+    } finally {
+      resume.resolve();
+      await outcome;
+    }
+    assert.equal(deliveries, 0, "a stale installation must not reach the launcher");
+    const refusal = await outcome;
+    assert.ok(refusal instanceof Error);
+    assert.match(refusal.message, /The preview release was not acknowledged/);
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+  });
 });
 test("bundled live Git refuses historical v5 installation scope before any effect", async (t) => {
   const { revision: selected } = await selectedV5(t);
@@ -1291,28 +1355,18 @@ test("selected v5 refuses unproven aggregate lag and an independently changed Gi
   }
 });
 
-test("selected v5 never reuses the held proof across a changed supervisor session", async (t) => {
-  const { f, entry, store, revision, activity, lookup, reconcile } = await heldReleased(t);
-  const originalSession = f.supervisor.supervisorSessionId;
-  assert.equal(entry.supervisor?.supervisorSessionId, originalSession);
-  assert.equal((await lookup())?.executionId, revision.id);
+test("selected v5 rechecks a reconnected supervisor session without rotating credentials", async (t) => {
+  const { f, entry, store, revision, activity, lookup, reconcile, preview } = await heldReleased(t);
   const before = { ...activity };
+  const startup = preview.hook;
   f.supervisor.supervisorSessionId = "replacement-control-session";
-  assert.equal(await lookup(), undefined);
+  assert.equal(await lookup(), undefined, "requests cannot adopt a changed observation");
   await reconcile();
-  assert.deepEqual(f.runtime.route(revision.id), {
-    state: "blocked",
-    reason: "supervisor_replaced",
-  });
-  assert.equal(store.rows.get(revision.id)?.blocked, "supervisor_replaced");
-  assert.equal(f.denials().at(-1)?.reason, "route_blocked");
-  f.supervisor.supervisorSessionId = originalSession;
-  await reconcile();
-  assert.equal(
-    await lookup(),
-    undefined,
-    "a past witnessed session cannot reopen the closed route",
-  );
+  assert.deepEqual(f.runtime.route(revision.id), { state: "installed" });
+  assert.equal(entry.supervisor?.supervisorSessionId, "replacement-control-session");
+  assert.equal(store.rows.get(revision.id)?.blocked, undefined);
+  assert.equal((await lookup())?.executionId, revision.id);
+  assert.deepEqual(preview.hook, startup, "the Harness process itself has not restarted");
   assert.deepEqual(activity, before);
 });
 
@@ -1538,7 +1592,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       assert.deepEqual(row.generation, originalRow.generation);
       assert.deepEqual(row.material, originalRow.material);
     };
-    const owner = { model: "openai", workload: async () => "original-pods" };
+    const owner = entry.continuity!;
     let detach: { requestId: string; resourceVersion: string; epoch?: string } | undefined;
     let intents = 0;
     let sends = 0;
@@ -1824,7 +1878,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
           expiry,
           saved,
           client,
-          { ...owner, workload: async () => undefined },
+          { ...owner, execution: async () => undefined },
           t.signal,
           async () => assert.fail("unconfirmed launch must fail before profile validation"),
           (outcome, check, failure) => negative.push({ outcome, check, failure }),
@@ -1834,11 +1888,25 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       assert.deepEqual(negative, [
         {
           outcome: "retire-runtime",
-          check: "original-launch-and-pods",
+          check: "original-launch-and-execution",
           failure: "launch_workload_unconfirmed",
         },
       ]);
     }
+    const negative: string[] = [];
+    assert.equal(
+      await subtractExpiredOpenShellGit(
+        expiry,
+        saved,
+        client,
+        { ...owner, execution: async () => "replacement-execution" },
+        t.signal,
+        async () => assert.fail("replacement launch must fail before profile validation"),
+        (outcome, check) => negative.push(outcome + ":" + check),
+      ),
+      "retire-runtime",
+    );
+    assert.deepEqual(negative, ["retire-runtime:original-launch-and-execution"]);
     assert.equal(intents, 0);
     assert.equal(sends, 0);
     const cleanup = (runtime = f.runtime, observer = owner) => {
@@ -1880,7 +1948,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       await cleanup(
         f.runtime,
         fault === "replacement Pod"
-          ? { ...owner, workload: async () => "replacement-pods" }
+          ? { ...owner, execution: async () => "replacement-execution" }
           : owner,
       ),
       first,
@@ -2162,7 +2230,7 @@ for (const outcome of [
   "local withdrawal",
   "durable withdrawal",
   "replacement holder",
-  "same-name Sandbox restart",
+  "Sandbox identity replaced",
 ] as const) {
   test(`selected v5 late second update: ${outcome}`, async (t) => {
     const {
@@ -2289,9 +2357,9 @@ for (const outcome of [
         assert.notEqual(row.workerInstance, before.workerInstance);
         assert.equal(row.blocked, "worker_replaced");
         moved = { fence: row.fence, workerInstance: row.workerInstance };
-      } else if (outcome === "same-name Sandbox restart") {
-        f.sandbox.restartCount = 1;
+      } else if (outcome === "Sandbox identity replaced") {
         assert.equal(entry.sandboxId, f.sandbox.id);
+        f.sandbox.id = "replacement-sandbox-id";
         assert.equal(entry.binding.sandbox, f.sandbox.name);
       }
     } finally {
@@ -2307,7 +2375,7 @@ for (const outcome of [
     assert.equal(preview.recipient, recipient);
     assert.equal(entry.retainedLaunchHash, launchHash);
     assert.deepEqual(entry.authorization, authorization);
-    if (outcome === "same-name Sandbox restart") {
+    if (outcome === "Sandbox identity replaced") {
       assert.ok(acceptedVersion);
       assert.equal(entry.binding.resourceVersion, acceptedVersion);
       assert.equal(after.blocked, "execution_replaced");
@@ -2363,7 +2431,7 @@ for (const outcome of [
     assert.equal((await lookup()) !== undefined, outcome === "accepted");
     assert.deepEqual(
       f.errors().map(({ code, reason }) => [code, reason]),
-      outcome === "same-name Sandbox restart"
+      outcome === "Sandbox identity replaced"
         ? [["OPENSHELL_GIT_RECONCILIATION_REQUIRED", "execution_replaced"]]
         : [],
     );
@@ -2471,12 +2539,10 @@ for (const state of [
           time.mock.restore();
         }
       } else {
-        assert.equal(
-          await f.runtime.observeHeldPreview(revision.id, randomUUID(), t.signal, async () => {
-            assert.fail("a replacement startup must not challenge again");
-          }),
-          undefined,
-        );
+        // A different Sandbox is a terminal identity change, even though automatic
+        // Harness recovery inside the original Sandbox is supported.
+        f.sandbox.id = "replacement-sandbox-id";
+        await reconcile();
       }
       assert.ok(firstCommit, "actual runtime must request closure");
       assert.equal(await firstCommit, committed ? "confirmed" : undefined);
@@ -3143,4 +3209,89 @@ test("Git preparation refuses broad or noncanonical workspace trust before provi
     );
     assert.equal(f.calls.providerWrites, 0);
   }
+});
+for (const scope of ["revision", "Namespace"] as const) {
+  test(`Protected Git sends no release after same-turn ${scope} withdrawal`, async (t) => {
+    const { f, revision, startupId, reconcile } = await heldGit(t);
+    await reconcile();
+    assert.equal(f.runtime.route(revision.id).state, "installed");
+
+    const signing = deferred();
+    const signed = deferred();
+    let posts = 0;
+    const release = f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      {
+        prepare: () => {
+          signing.resolve();
+          return signed.promise;
+        },
+        deliver: async () => {
+          posts++;
+          return true;
+        },
+      },
+      t.signal,
+    );
+    const outcome = release.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await Promise.race([signing.promise, outcome.then(() => assert.fail("signing did not start"))]);
+
+    // Wake the signing continuation first. Withdrawal in the same turn must
+    // already be visible when that continuation decides whether to send.
+    signed.resolve();
+    if (scope === "revision") {
+      f.runtime.withdraw(revision.id);
+    } else {
+      f.runtime.withdrawNamespace(revision.namespaceId);
+    }
+    const refusal = await outcome;
+    assert.equal(posts, 0);
+    assert.ok(refusal instanceof Error);
+    assert.match(refusal.message, /Cannot release this preview startup/);
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+    assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "withdrawn" });
+  });
+}
+
+test("a signing failure holds the same launcher for a fresh protected Git release", async (t) => {
+  const { f, revision, startupId, reconcile, lookup } = await heldGit(t);
+  await reconcile();
+  await assert.rejects(
+    f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {
+        throw new Error("recipient evidence expired");
+      },
+      deliver: async () => assert.fail("an unsigned release cannot be sent"),
+    }),
+    /recipient evidence expired/,
+  );
+  assert.equal(await lookup(), undefined);
+  await f.runtime.releasePreview(revision.id, startupId, {
+    prepare: async () => startupId,
+    deliver: async (id) => id === startupId,
+  });
+  assert.equal((await lookup())?.executionId, revision.id);
+});
+
+test("a second Worker withdrawing Git during signing prevents the launcher POST", async (t) => {
+  const { f, store, revision, startupId, reconcile } = await heldGit(t);
+  await reconcile();
+  let posts = 0;
+  await assert.rejects(
+    f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {
+        await store.withdraw({ revisionId: revision.id });
+      },
+      deliver: async () => {
+        posts++;
+        return true;
+      },
+    }),
+    { message: /OpenShell Git route was closed by another worker/ },
+  );
+  assert.equal(posts, 0);
 });

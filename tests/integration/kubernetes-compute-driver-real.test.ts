@@ -29,27 +29,31 @@ import {
   gatewayName,
   harnessWorkspaceClaimName,
   revisionName,
-  assertReadyGateway as readyGateway,
-  assertHarnessWorkspaceClaim as workspaceClaim,
-  assertAgentServiceEndpointCount,
   createDriver as createFixtureDriver,
-  workloadPod as findWorkloadPod,
-  probe as runProbe,
-  assertDeniedTraffic,
-  assertExplicitNetworkProfile,
   authorized,
   createScopedController as provisionScopedController,
 } from "../helpers/kubernetes-compute-real.mjs";
+import {
+  namedPodIp,
+  workloadPod,
+  type WorkloadPod,
+  probe,
+  assertDeniedTraffic,
+  assertExplicitNetworkProfile,
+} from "../helpers/kubernetes-compute-network.ts";
+import {
+  assertResourceUid,
+  assertReadyGateway,
+  assertHarnessWorkspaceClaim,
+  assertHarnessWorkspaceMounts,
+  assertAgentServiceEndpointCount,
+} from "../helpers/kubernetes-compute-observations.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type Metadata = InstanceType<KubernetesSdk["V1ObjectMeta"]> & { name: string; uid: string };
 type KubernetesResource = { metadata: Metadata };
-type Pod = KubernetesResource & {
-  spec: InstanceType<KubernetesSdk["V1PodSpec"]>;
-  status: InstanceType<KubernetesSdk["V1PodStatus"]> & { podIP: string };
-};
 type Deployment = KubernetesResource & {
-  spec: { template: { metadata?: Metadata; spec: Pod["spec"] } };
+  spec: { template: { metadata?: Metadata; spec: InstanceType<KubernetesSdk["V1PodSpec"]> } };
   status: InstanceType<KubernetesSdk["V1DeploymentStatus"]>;
 };
 type ResourceByKind = {
@@ -60,7 +64,6 @@ type ResourceByKind = {
   deployment: Deployment;
   secret: KubernetesResource & { data: Record<string, string> };
   serviceaccount: KubernetesResource & InstanceType<KubernetesSdk["V1ServiceAccount"]>;
-  pod: Pod;
 };
 type FixtureRevision = AgentRevision & {
   configuration: { agents: { defaults: { model: string } } };
@@ -79,25 +82,11 @@ const resources: <K extends string>(
   kind: K,
   namespace: string,
 ) => Promise<(K extends "deployments" ? Deployment : KubernetesResource)[]> = listResources;
-const workloadPod: (namespace: string, selector: string) => Promise<Pod | undefined> =
-  findWorkloadPod;
 const waitFor: <T>(
   description: string,
   operation: () => T | false | undefined | Promise<T | false | undefined>,
   timeoutMs?: number,
 ) => Promise<T> = waitForFixture;
-const assertReadyGateway: (
-  placement: string,
-  agentId: string,
-  namespaceId: string,
-  candidate?: AgentRevision,
-) => Promise<Deployment> = readyGateway;
-const assertHarnessWorkspaceClaim: (
-  placement: string,
-  namespaceId: string,
-  agentId: string,
-  expectedUid?: string,
-) => Promise<KubernetesResource> = workspaceClaim;
 const namespace = createNamespace as (label: string) => Namespace;
 const revision = createFixtureRevision as (
   driver: KubernetesComputeDriver,
@@ -119,13 +108,6 @@ const createScopedController = provisionScopedController as (
   tenantRole: string;
 }>;
 const revisionContext: (candidate: AgentRevision) => RevisionContext = fixtureRevisionContext;
-const probe: (
-  namespace: string,
-  pod: string,
-  operation: "http" | "dns" | "token",
-  target: string,
-  port?: number,
-) => Promise<string> = runProbe;
 
 test(
   "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion",
@@ -436,6 +418,7 @@ test(
         candidate,
       );
       const identityKey = `${candidate.namespaceId}:${candidate.agentId}`;
+      assertResourceUid(gateway, "the gateway Deployment");
       if (gatewayIdentities.has(identityKey)) {
         assert.notEqual(
           gateway.metadata.uid,
@@ -445,7 +428,8 @@ test(
       } else {
         gatewayIdentities.set(identityKey, gateway.metadata.uid);
       }
-      const deployment = await resource("deployment", revisionName(candidate), placement);
+      const workloadName = revisionName(candidate);
+      const deployment = await resource("deployment", workloadName, placement);
       const harnessClaim = await assertHarnessWorkspaceClaim(
         placement,
         candidate.namespaceId,
@@ -453,20 +437,11 @@ test(
         sharedWorkspaceIdentities.get(identityKey),
       );
       sharedWorkspaceIdentities.set(identityKey, harnessClaim.metadata.uid);
-      assert.equal(
-        gateway.spec.template.spec.volumes?.some(
-          ({ persistentVolumeClaim }) =>
-            persistentVolumeClaim?.claimName === harnessClaim.metadata.name,
-        ),
-        false,
-        "Gateway must not mount the Harness workspace claim",
-      );
-      assert.deepEqual(
-        deployment.spec.template.spec.volumes?.find(({ name }) => name === "openclaw-workspace"),
-        {
-          name: "openclaw-workspace",
-          persistentVolumeClaim: { claimName: harnessClaim.metadata.name },
-        },
+      assertHarnessWorkspaceMounts(
+        gateway,
+        deployment,
+        workloadName,
+        harnessWorkspaceClaimName(candidate.agentId),
       );
       assert.equal(deployment.spec.template.spec.serviceAccountName, agentName(candidate.agentId));
       assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
@@ -615,7 +590,7 @@ test(
       gatewayTargets[0],
       `app.kubernetes.io/name=${gatewayName(primaryAgent)}`,
     );
-    const platformProbe = await resource("pod", "platform-probe", platformNamespace);
+    const platformProbeIp = await namedPodIp(platformNamespace, "platform-probe");
     assert.ok(firstPod && siblingPod && foreignPod && gatewayPod);
     await assertExplicitNetworkProfile(context, owned[0], firstPod);
 
@@ -667,7 +642,7 @@ test(
       owned[0],
       firstPod.metadata.name,
       "tcp",
-      platformProbe.status.podIP,
+      platformProbeIp,
       8080,
     );
     await assertDeniedTraffic(
@@ -737,11 +712,16 @@ test(
         true,
         "the controller needs exact-target access to canonical and delivered Secrets",
       );
-      const workloads: ReadonlyArray<readonly [string, Pod]> = [
+      const workloads: ReadonlyArray<readonly [string, WorkloadPod]> = [
         [owned[0], firstPod],
         [gatewayTargets[0], gatewayPod],
       ];
       for (const [podNamespace, pod] of workloads) {
+        assert.ok(
+          typeof pod.spec.serviceAccountName === "string" &&
+            pod.spec.serviceAccountName.trim().length > 0,
+          "workload must report its actual ServiceAccount before authorization is checked",
+        );
         assert.equal(
           await authorized(
             target,

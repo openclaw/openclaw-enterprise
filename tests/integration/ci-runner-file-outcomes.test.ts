@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { isOpenShellInstallerFile } from "../../scripts/ci/openshell-full-integration.ts";
+import { nativeProofFailureStage } from "../../scripts/ci/runner-reporter-output.ts";
 import {
   createRunnerFixture,
   laneArgs,
@@ -44,7 +45,7 @@ interface RunSummary {
     };
     cleanup: { status: string };
     fileFailure?: unknown;
-    tests: { name: string; status: string; error?: { message?: string } }[];
+    tests: { name: string; status: string; error?: { message?: string; diagnostic?: unknown } }[];
   }[];
 }
 
@@ -196,10 +197,10 @@ test(
       lanes: { sample: { files, fileConcurrency: 2, parallelFiles: [first, second] } },
       groups: {},
     });
-    await writeFile(
-      join(root, second),
-      'import test from "node:test";\ntest("private-case-canary", () => { throw new Error("::warning::private-message-canary"); });\n',
-    );
+    const failingCase =
+      'import test from "node:test";\ntest("private-case-canary", () => { throw new Error("::warning::private-message-canary"); });\n';
+    const passingCase = 'import test from "node:test";\ntest("passing case", () => {});\n';
+    await writeFile(join(root, second), failingCase);
     // Hold manifest file 1 open so file 2 fails first and reports while the lane is live.
     const release = join(root, "release");
     await writeFile(
@@ -269,10 +270,7 @@ test(
     assert.equal(focused.status, 1);
     assert.deepEqual(commands(focused.stderr), [failureCommand, `${ordinalHint} UNKNOWN.`]);
 
-    await writeFile(
-      join(root, second),
-      'import test from "node:test";\ntest("passing case", () => {});\n',
-    );
+    await writeFile(join(root, second), passingCase);
     const green = await runRunnerAsync(
       [...laneArgs(root, "sample", "state/green.jsonl", "results/green.json"), "--file", second],
       env,
@@ -281,24 +279,39 @@ test(
     assert.equal(green.status, 0, green.stderr);
     assert.deepEqual(commands(green.stderr), []);
 
-    // Reuse the released failing file after all installers: the split moves it to policy slot 1.
+    // The first policy file follows all five installers in the original manifest.
     const canonical = JSON.parse(
       await readFile(
         new URL("../../scripts/ci/test-suites/openshell.json", import.meta.url),
         "utf8",
       ),
-    ) as { files: { path: string }[] };
+    ) as { files: { path: string; expectedTests?: string[] }[] };
+    const installerFailure = canonical.files.find(
+      ({ path }) => path === "tests/integration/local-first-agent-openshell-real.test.mjs",
+    );
+    assert.ok(installerFailure?.expectedTests);
+    const [parentCase, nativeCase] = installerFailure.expectedTests;
+    assert.ok(parentCase && nativeCase);
     const installers = canonical.files
       .filter(({ path }) => isOpenShellInstallerFile(path))
-      .map(({ path }) => ({ path }));
+      .map((file) =>
+        file === installerFailure
+          ? { path: file.path, expectedTests: file.expectedTests }
+          : { path: file.path },
+      );
     await writeRunnerManifest(root, {
       lanes: { openshell: { files: [...installers, { path: first }] } },
       groups: { full: ["openshell"] },
     });
+    const splitEnv = { ...env, OCC_CI_SUITE_VIEW: "full-integration" };
+    const splitHint =
+      "::notice title=Test lane first failed split file hint::Split-lane file position";
+    const unknownOrdinalCommands = [failureCommand, `${ordinalHint} UNKNOWN.`];
+    await writeFile(join(root, first), failingCase);
     const splitResults = join(root, "results/split.json");
     const split = await runRunnerAsync(
       laneArgs(root, "openshell-policy", "state/split.jsonl", splitResults),
-      { ...env, OCC_CI_SUITE_VIEW: "full-integration" },
+      splitEnv,
     );
     assert.ifError(split.error);
     assert.equal(split.status, 1, split.stderr);
@@ -307,7 +320,113 @@ test(
     const failedPolicy = onlyFile(splitSummary);
     assert.equal(failedPolicy.path, first);
     assert.equal(failedPolicy.cleanup.status, "passed");
-    assert.deepEqual(commands(split.stderr), [failureCommand, `${ordinalHint} UNKNOWN.`]);
+    assert.deepEqual(commands(split.stderr), [...unknownOrdinalCommands, `${splitHint} 1.`]);
+
+    // Even selecting the only policy file explicitly is a focused run.
+    const focusedSplit = await runRunnerAsync(
+      [
+        ...laneArgs(
+          root,
+          "openshell-policy",
+          "state/split-focused.jsonl",
+          "results/split-focused.json",
+        ),
+        "--file",
+        first,
+      ],
+      splitEnv,
+    );
+    assert.ifError(focusedSplit.error);
+    assert.equal(focusedSplit.status, 1, focusedSplit.stderr);
+    assert.deepEqual(commands(focusedSplit.stderr), unknownOrdinalCommands);
+
+    for (const { path } of installers) {
+      await writeFile(join(root, path), passingCase);
+    }
+    // The wrapper imports the declaration just as the Compose installer does, so
+    // Node reports the actual declaration as the nested terminal's source.
+    await writeFile(
+      join(root, installerFailure.path),
+      'await import("./local-first-agent-real.test.mjs");\n',
+    );
+    const nativeDeclaration = join(root, "tests/integration/local-first-agent-real.test.mjs");
+    await writeFile(
+      nativeDeclaration,
+      `
+import test from "node:test";
+function reportFailure(failureStage) {
+  throw Object.assign(new Error("::warning::private-proof-canary"), {
+    openclawCiDiagnostic: { kind: "native-first-agent-proof", failureStage },
+  });
+}
+test(${JSON.stringify(parentCase)}, async (t) => {
+  await t.test("sibling proof", () => reportFailure("exec-proof"));
+  await t.test(${JSON.stringify(nativeCase)}, () => reportFailure("model-outcome"));
+});`,
+    );
+    const installerResults = join(root, "results/split-installers.json");
+    const installerSplit = await runRunnerAsync(
+      laneArgs(root, "openshell-installers", "state/split-installers.jsonl", installerResults),
+      splitEnv,
+    );
+    assert.ifError(installerSplit.error);
+    assert.equal(installerSplit.status, 1, installerSplit.stderr);
+    const installerSummary = await readSummary(installerResults);
+    assert.equal(installerSummary.exitCode, 1);
+    assert.deepEqual(
+      installerSummary.files.map(({ path, status }) => [path, status]),
+      installers.map(({ path }) => [path, path === installerFailure.path ? "failed" : "passed"]),
+    );
+    const installerOutcome = installerSummary.files.find(
+      ({ path }) => path === installerFailure.path,
+    );
+    assert.ok(installerOutcome);
+    assert.equal(installerOutcome.nodeExitCode, 1);
+    assert.deepEqual(installerOutcome.cleanup, { status: "passed" });
+    assert.deepEqual(
+      installerOutcome.tests.map(({ name, status, error }) => [name, status, error?.diagnostic]),
+      [
+        [
+          "sibling proof",
+          "failed",
+          { kind: "native-first-agent-proof", failureStage: "exec-proof" },
+        ],
+        [nativeCase, "failed", { kind: "native-first-agent-proof", failureStage: "model-outcome" }],
+        [parentCase, "failed", undefined],
+      ],
+    );
+    assert.deepEqual(commands(installerSplit.stderr), [
+      ...unknownOrdinalCommands,
+      `${splitHint} 2.`,
+      "::notice title=Native first-Agent proof failure::The registered native redeployment case reported a failure at proof stage model-outcome.",
+    ]);
+
+    // The same real sibling remains first. Removing or corrupting the named
+    // case's normalized stage must suppress the hint, never select exec-proof.
+    for (const diagnostic of [
+      undefined,
+      {
+        kind: "native-first-agent-proof",
+        failureStage: "model-outcome\n::warning::private-stage-canary",
+      },
+    ]) {
+      assert.equal(
+        nativeProofFailureStage([
+          installerOutcome.tests[0]!,
+          { name: nativeCase, error: { diagnostic } },
+        ]),
+        undefined,
+      );
+    }
+
+    await writeFile(join(root, first), passingCase);
+    const greenSplit = await runRunnerAsync(
+      laneArgs(root, "openshell-policy", "state/split-green.jsonl", "results/split-green.json"),
+      splitEnv,
+    );
+    assert.ifError(greenSplit.error);
+    assert.equal(greenSplit.status, 0, greenSplit.stderr);
+    assert.deepEqual(commands(greenSplit.stderr), []);
   },
 );
 
