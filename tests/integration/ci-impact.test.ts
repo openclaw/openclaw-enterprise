@@ -3086,7 +3086,6 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
   const unindexed = "tests/helpers/unindexed.mjs";
   const initial = suiteFiles(policy, { "typed-full": [fullTypedRoot], unrelated: [unrelatedRoot] });
   const changed = {
-    [owned]: "export const value = 1;\n",
     [unowned]: "export const value = 1;\n",
     [helper]: "export const value = 1;\n",
     [security]: "export const value = 1;\n",
@@ -3097,6 +3096,7 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
   const f = await fixture(
     t,
     ({ put }) => {
+      put(owned, "export const value = 1;\n");
       for (const [file, content] of Object.entries(changed)) {
         put(file, content + "\n");
       }
@@ -3119,7 +3119,30 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
         'import "../helpers/unindexed.mjs";\n',
     },
   );
-  const { put } = repository(f.repo);
+  const { git, put } = repository(f.repo);
+  const reportAdvisory = async (event: "pull_request" | "push", tested: string) => {
+    const result = await run(
+      process.execPath,
+      [join(repositoryRoot, "scripts/ci/test-graph-advisory.ts")],
+      {
+        cwd: f.repo,
+        env: {
+          ...process.env,
+          GITHUB_EVENT_NAME: event,
+          GITHUB_EVENT_PATH: f.eventPath,
+          GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+          GITHUB_REF: "refs/heads/main",
+          GITHUB_SHA: tested,
+          GITHUB_RUN_ID: "17",
+          GITHUB_RUN_ATTEMPT: "2",
+          GITHUB_WORKFLOW_SHA: tested,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    return jsonRecord(result.stdout);
+  };
   const versioned = [
     owned,
     unowned,
@@ -3148,25 +3171,7 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
         referencedMap: [[3, 1], [4, 2], [7, 4], [8, 3], [9, 5], [13, 6], ...bridgeEdge],
       }),
     );
-    const result = await run(
-      process.execPath,
-      [join(repositoryRoot, "scripts/ci/test-graph-advisory.ts")],
-      {
-        cwd: f.repo,
-        env: {
-          ...process.env,
-          GITHUB_EVENT_NAME: "pull_request",
-          GITHUB_EVENT_PATH: f.eventPath,
-          GITHUB_SHA: f.tested,
-          GITHUB_RUN_ID: "17",
-          GITHUB_RUN_ATTEMPT: "2",
-          GITHUB_WORKFLOW_SHA: f.tested,
-        },
-      },
-    );
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stderr, "");
-    const advisory = jsonRecord(result.stdout);
+    const advisory = await reportAdvisory("pull_request", f.tested);
     assert.deepEqual(advisory.run, { id: "17", attempt: "2", workflow: f.tested });
     assert.equal(record(advisory.source).tested, f.tested);
     const hints = record(advisory.hints);
@@ -3189,6 +3194,31 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
       hints.fullOnlyCompiler,
       includeBridge ? ["openshell", "typed-full"] : ["typed-full"],
     );
+  }
+
+  const unsupported = "tests/helpers/unsupported.ts";
+  const controls = {
+    deletion: () => git("rm", unknown),
+    rename: () => git("mv", unknown, unsupported),
+    executable: () => {
+      put(unsupported);
+      chmodSync(join(f.repo, unsupported), 0o755);
+    },
+    symlink: () => symlinkSync("owned.ts", join(f.repo, unsupported)),
+    unsafePath: () => put("tests/helpers/unsafe path.ts"),
+  };
+  for (const [name, change] of Object.entries(controls)) {
+    await git("checkout", "--detach", f.tested);
+    await change();
+    await git("add", "--", "tests");
+    await git("commit", "-qm", name);
+    const tested = await git("rev-parse", "HEAD");
+    f.writeEvent({ before: f.base, after: tested });
+    const advisory = await reportAdvisory("push", tested);
+    assert.ok(textArray(advisory.fallback).includes("unsupported_diff"), name);
+    assert.equal(advisory.omissions, 0, name);
+    const hints = record(advisory.hints);
+    assert.deepEqual([hints.direct, hints.compiler, hints.staticFixture], [[], [], []], name);
   }
 });
 

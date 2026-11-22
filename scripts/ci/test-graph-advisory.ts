@@ -105,12 +105,12 @@ function changedPaths({ base, tested }: { base: string; tested: string }) {
   const paths: string[] = [];
   for (let i = 0; i < fields.length; i += 2) {
     const [status, file] = [fields[i], fields[i + 1]];
-    if (
-      !status ||
-      !/^:100644 100644 [a-f0-9]{40} [a-f0-9]{40} M$/.test(status) ||
-      !file ||
-      !isSafePath(file)
-    ) {
+    if (!status || !file || !isSafePath(file)) {
+      return undefined;
+    }
+    const modification = /^:100644 100644 [a-f0-9]{40} [a-f0-9]{40} M$/.test(status);
+    const addition = /^:000000 100644 0{40} [a-f0-9]{40} A$/.test(status);
+    if (!modification && !addition) {
       return undefined;
     }
     paths.push(file);
