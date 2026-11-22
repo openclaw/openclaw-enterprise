@@ -3677,8 +3677,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
           return false;
         }
         try {
-          return isDeepStrictEqual(await observe(), initial);
+          const current = await observe();
+          if (closed || !isDeepStrictEqual(current, initial)) {
+            closed = true;
+            return false;
+          }
+          return true;
         } catch {
+          closed = true;
           return false;
         }
       },

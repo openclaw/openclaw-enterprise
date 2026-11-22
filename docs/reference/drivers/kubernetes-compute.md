@@ -14,7 +14,7 @@ kind: reference/driver/impl
 
 ## Overview
 
-This implementation follows the [ComputeDriver contract](compute.md).
+Implements the [ComputeDriver contract](compute.md).
 
 Kubernetes Compute provisions or adopts one namespace per tenant and creates each
 Agent’s gateway. Dedicated Gateways and Harnesses use separate Pods, identities
@@ -23,11 +23,10 @@ places dedicated Harnesses in a second cluster;
 [cloud and complete runtime acceptance remain pending](../../testing/kubernetes.md#two-cluster-validation).
 
 New managed namespaces use `oce-` plus 15 hexadecimal characters of the Namespace
-ID’s SHA-256 digest, which fits OpenShell pre.5 Workspace names. Earlier
-`oce-<slug>-<hash12>` namespaces require the exact tenant label, matching
-`namespace-id` annotation and OpenClaw manager label; the Driver never creates
-this form. Wrong names or duplicate tenant claims fail closed. Adopted namespaces
-keep their names; OpenShell rejects names exceeding its Workspace limit.
+ID’s SHA-256 digest. Legacy `oce-<slug>-<hash12>` names require exact tenant and
+OpenClaw manager labels plus the `namespace-id` annotation; the Driver never
+creates them. Wrong names or duplicate claims fail closed. Adoption retains names;
+OpenShell rejects names exceeding its Workspace limit.
 
 OpenShell integrations ([operator](openshell-sandbox.md) or experimental
 [managed](kubernetes-openshell-compute.md)) own dedicated Codex and native
@@ -206,6 +205,7 @@ settings inside `drivers.compute.configuration`:
 | `network`                     | object | Required    | DNS, gateway port, proxy trust, and permitted peers.               |
 | `servicePrincipalCredentials` | object | Required    | Explicit workload-identity projection policy.                      |
 | `runtime`                     | object | Optional    | Required in production; omission selects the verification runtime. |
+| `automations`                 | object | Optional    | [MCP endpoint attestation](#automation-mcp-endpoints).             |
 | `gatewayRouting`              | object | Conditional | Dedicated Harnesses with `runtime` need this and node enrollment.  |
 | `executionCluster`            | object | Optional    | Experimental second cluster; omitted by default.                   |
 
@@ -214,6 +214,37 @@ settings inside `drivers.compute.configuration`:
 
 See [authentication](kubernetes-compute/configuration.md#authentication) and
 [images and resources](kubernetes-compute/configuration.md#images-and-resources).
+
+### Automation MCP endpoints
+
+Set `drivers.compute.configuration.automations.trustedAnonymousMcpEndpoints` to
+attest anonymous Agent-shared HTTPS authority for the
+[static MCP automation pilot](../agent-automations.md). Both exclude
+stdio and credentialed MCP. Omission admits none.
+
+```yaml
+automations:
+  trustedAnonymousMcpEndpoints:
+    - url: https://mcp.example.com/mcp
+      egressCidrs: [192.0.2.10/32]
+```
+
+Supply up to 64 records. Each `url` must be unique, normalized HTTPS without
+credentials, query, fragment or wildcard. Each `egressCidrs` needs 1–64
+unique translated destination addresses: IPv4 `/32` or IPv6 `/128`, not subnets.
+Compute permits TCP to those addresses on the URL's port (default 443) for the
+qualified revision's Gateway and dedicated Agent. Replace the example IP.
+
+Optional `caBundle` supplies public PEM CA trust; all bundles together must fit
+65,536 bytes. Never include private keys. Compute projects trust and verifies deployed endpoint
+assets before admission. Bindings capture endpoint, egress and CA identity.
+
+Revision-owned Services/operator HTTPRoutes retain Envoy authentication. Before
+cron requests, Compute and the broker verify the selected Pod/container,
+EndpointSlice targets and same-socket Gateway identity; no Agent-wide fallback.
+Revision cleanup removes these resources. [Qualification and retirement](../agent-automations.md#execution-qualification)
+remain required. Attestation removal does not stop running cron; disable/delete
+jobs or deny service-side calls. MCP qualification remains pending.
 
 ## Limits
 

@@ -11,96 +11,87 @@ rfc: ../rfcs/20261121-agent-automations.md
 - **Authority:** [Agent automations RFC](../rfcs/20261121-agent-automations.md), PR #6850
 - **Source baseline:** `c9c925bac8a8865e568e239f814c4356e6ace183`
 
-## Outcome and scope
+## Outcome and status
 
-Implement the submitted RFC's model-only decision: six OCC operations with fixed
-native `payload.toolsAllow: []`, no scheduled tools, GitHub reports or connectors.
-The scheduled model receives no callable code, shell/file, dynamic, subagent,
-messaging, app or MCP tools. Scheduler/model/bootstrap/history processing and
-configured failure alerts are outside that claim.
+Implement the [submitted Driver contract](https://github.com/openclaw/openclaw-enterprise/pull/6850/commits/849eca56e1f68336fb394065db1495f02d96565f)
+for embedded OpenClaw and ordinary dedicated Codex. Both must qualify Agent-shared
+static MCP operations over operator-attested anonymous HTTPS. Keep the six OCC
+operations, exact-Agent human `operate` for creation, creator/admin management,
+CSRF, native normalization, deletion and history, revision checks and
+`UNKNOWN_OUTCOME`. Clients cannot select tools. No eligible operations yields
+an explicit empty cap. Managed MCP Sandbox, stdio and Codex apps are outside scope.
 
-Trust ordinary chat and native administrators. The guarantee covers OCC-managed
-writes while those trusted writers leave jobs unchanged; it is not tamper-resistant
-sole-writer enforcement. No upstream changes, global chat restrictions, native
-import or reconciliation are authorized.
+**Qualification is incomplete.** The historical checkpoints below establish broker
+behavior and empty-cap results on their named revisions. They do not qualify the
+approved MCP path. Keep the implementation publication and merge hold until
+both packaged Harnesses pass on the final candidate.
 
-The current implementation replaces the tool-bearing path with fixed-empty-cap
-add/update and readback eligibility. Implemented behavior remains under real
-runtime qualification; both packaged Harnesses must pass before release readiness.
-Keep creator operate, management ownership, CSRF, native normalization/deletion,
-retained history, CAS and UNKNOWN_OUTCOME semantics intact.
+## Implementation and proof owners
 
-**Publication and merge hold:** the API currently admits enabled schedules on the
-eligible pinned runtime. Admission is not gated on completing AC3's managed MCP
-and account-backed native app proof. This implementation is not release-ready;
-no new eligibility shortcut or admission gate was added.
+1. **Compute and Harness.** Qualify the runtime through optional
+   `openAgentAutomationTransport(revision, qualification | undefined)` in the
+   [Compute contract](../../packages/contracts/src/drivers/compute/index.ts).
+   Require current launcher, policy and trust evidence for create, edit and
+   re-enable. Redeploy a missing guard. Withdrawal permits authorized disable,
+   delete and history. Provision a revision-owned Service and private operator
+   HTTPRoute through existing Envoy trust for every revision until retirement.
+   Before and after handshake, require all ready EndpointSlice targets to name
+   the sole live revision Gateway Pod UID. Refuse empty targets. On that socket,
+   verify bounded `system.info` hostname against Pod name, retain hello
+   `server.bootId`, and recheck UID, container ID and image before mutation.
+   Pin the socket through read and write. On rollover, close without reconnect
+   or replay. Before each Gateway spawn, supervisor respawn or container restart,
+   the launcher checks plugin allowlist, origins, package digests and effective
+   Node/tool switches. Reject tracked installs, mutable extension roots and
+   unqualified overrides before loading plugins or starting scheduler catch-up.
+2. **Kubernetes networking.** Validate each approved URL, exact /32 or /128
+   destinations and optional public PEM CA. Grant only the URL port and approved
+   IPs from the relevant workloads. Keep default-deny and TLS hostname verification.
+   Project Gateway Node and dedicated Codex CA trust within the workload. Keep
+   model credentials out of the dedicated Gateway.
+3. **Gateway adapter and OCC.** Match bounded plugin, catalog and effective
+   ordinary-session evidence to explicit literal provisioning, approval and
+   Gateway policy. Disable Code Mode and discovery for nonempty caps. Persist the
+   immutable cap and binding identity atomically in the PostgreSQL reservation.
+   Deployment admission and the worker must verify all saved grants, including
+   paused jobs and uncertain reservations, remain a subset of the successor's
+   eligible bindings with unchanged identities before startup or catch-up.
+   Never shrink a saved grant silently. Creator demotion leaves the standing
+   grant intact. Retire the job or deny at the service to withdraw a running
+   grant. A call already issued can finish.
+4. **Verification.** Extend the real `agent-automations` QA scenario on both
+   Harnesses. Compare an ordinary Agent call with a scheduled allowed call at
+   the anonymous service. Verify denied sibling, server and action attempts,
+   TLS/egress failures, and absence of native shell/file, delegation, discovery
+   and app effects. Exercise changed origin/digest, pre-guard deployment,
+   respawn, stale Pod identity and overdue catch-up. Race old and new Pods during
+   cutover and verify the other instance receives no mutation. Extend the PostgreSQL
+   ownership and worker suites for immutable bindings, concurrent replacement
+   and pending successors. Retain existing native CAS, lost-reply and history
+   regressions. Capture actual tool catalogs, runtime identities, provider
+   receipts and refusal evidence without secrets. Fixtures alone cannot qualify
+   the pilot.
 
-## Owners and touchpoints
-
-| Owner                      | Implementation                                                                                                                        |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| HTTP contract              | `packages/contracts/src/api/agent-automations.ts`, `api/routes.ts` and generated OpenAPI                                              |
-| Agent ownership and policy | `packages/occ/src/agent-automations.ts`, controller composition and facade                                                            |
-| Durable state              | New automation ownership repository, in-memory adapter, PostgreSQL adapter, schema and migration                                      |
-| Native protocol            | `apps/controller/src/gateway/agent-automations-client.ts`, composed with the existing Compute endpoint and private Gateway credential |
-| HTTP lifecycle             | `apps/controller/src/http/agent-automations.ts`, existing session, CSRF, audit and error handling                                     |
-| Integration                | Real HTTP admission case, PostgreSQL ownership tests and the regular Agent QA workflow                                                |
-
-## Ordered implementation
-
-1. Submit the revised model-only RFC on PR #6850 through its verified author/head
-   branch, with a normal push. Preserve the existing path, history and Manual Notes.
-2. Fix native add to use explicit `toolsAllow: []`. Preserve/reassert it in relevant
-   native updates. Admit no client-selected tool policy, wildcard, alias, default
-   or automatic grant. Define unsupported native shapes without importing them.
-3. Preserve authorization, UUID validation, final-mode filtering, immutable
-   ownership, atomic admission/binding/cleanup audit, and safe recovery. Retain
-   all uncertainty after sent writes and do not replay mutations automatically.
-4. Extend the regular real Agent QA scenario for both packaged Harnesses: positive
-   model-only one-shot/history, no-tool capability/effect evidence, Agent policy
-   changes, paused-state/revision replacement and native normalization. Keep the
-   exact live prerequisites; unavailable credentials are a proof gap, not a mock.
-5. Update owning reference, guide, flow, generated API where affected, and QA
-   registration/documentation. Keep ordinary chat and native administration unchanged.
-6. Run proportional checks and independent review on the frozen final candidate.
-   Do not open an implementation PR or claim release readiness before qualification.
+The [automation flow](../../docs/flows/agent-automations.md) owns the runtime
+sequence. The [API reference](../../docs/reference/agent-automations.md),
+[Compute interface](../../docs/reference/drivers/compute.md) and
+[Kubernetes Driver reference](../../docs/reference/drivers/kubernetes-compute.md)
+own their respective contracts. Use the existing [Kubernetes QA](../../docs/testing/kubernetes.md)
+and [PostgreSQL procedures](../../docs/testing/postgresql.md). Recheck the final
+candidate before claiming release readiness.
 
 ## Verification
 
-| Required outcome                           | Current result                                                                             |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| Human admission, UUIDs and final authority | Reproduced P1/P2 fixed at `e22a860f1c`; native HTTP, PostgreSQL and admission cases passed |
-| Ownership, audit and cleanup               | PostgreSQL atomicity, binding races and Agent-deletion cleanup passed                      |
-| Model-only add/update contract             | Native CRUD confirmed explicit empty caps and unsupported-cap refusals                     |
-| Real model execution in both Harnesses     | Final genuine QA at `71f8ae5cb5`: 17 passed, 0 failed, 0 skipped                           |
-| Complete no-tools contract                 | Partial; see AC3 and the supplemental controls below                                       |
-| One-shot deletion and retained history     | Passed before and after replacement in both Harnesses                                      |
-| CAS, uncertainty and replacement           | Native fault-proxy and retained-storage cases passed; see AC4 limits                       |
-| Independent review                         | Alternate source/evidence reviews passed; canonical attempt produced no report             |
+<a id="revised-rfc-acceptance-audit"></a>
 
-Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
-[PostgreSQL setup](../../docs/testing/postgresql.md) and
-[real-runtime procedures](../../docs/testing/kubernetes.md). The existing
-`agent-automations` scenario is registered in the QA matrix and advisory lane;
-its runtime assertions cover observed behavior. Native metadata limits remain explicit; full AC3 requires a combined evidence assessment.
-
-### Revised RFC acceptance audit
-
-| Criterion                       | Established                                                                                                                                                                           | Remaining                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| AC1: Model-only execution       | Real one-shot response, native deletion and retained history in both Harnesses, before and after replacement                                                                          | Complete no-tool qualification is assessed under AC3                              |
-| AC2: Lifecycle and persistence  | Safe management, native CAS, paused state and native identity/history through deployed replacement                                                                                    | No additional OCC process/database restart claim                                  |
-| AC3: No tools and authorization | Human boundary and policy widening checks; genuine empty inventories/no calls; supplemental file/shell/code, Gateway delegation and local messaging refusals with independent effects | Managed MCP and account-backed native apps remain unproved; no complete AC3 claim |
-| AC4: Recovery                   | Native lost replies, CAS races and post-commit audit/revision failures without replay                                                                                                 | No additional production fault-injection claim                                    |
-| AC5: Durable audit and cleanup  | PostgreSQL invariants, atomic audit, binding and cleanup/deletion cases                                                                                                               | No persistence changes after the verified broker core                             |
-
-Genuine QA used an authorized file through `OCC_TEST_QA_OPENAI_KEY_FILE`;
-the file was removed after the final run. Earlier credential failures remain
-in the delivery history.
-
-The canonical attempt returned `reviewer_unavailable`, `report_produced:false`
-after authentication failed. No subsequent canonical report exists. No token
-extraction, manual refresh, provider or host fallback occurred.
+At `e22a860f1c` the corrected HTTP and PostgreSQL admission regressions passed.
+At `71f8ae5cb5` genuine model-only QA passed 17 cases without skips. The
+native fixture also checked empty-cap add/update and rejection of unsupported
+caps. Those checks did not establish complete no-tools enforcement,
+OCC/database restart, or production fault injection. The canonical reviewer
+returned `reviewer_unavailable` with `report_produced:false`; alternate
+source/evidence reviews passed. The authorized model-key file was removed.
+Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4 for the new qualification.
 
 ## Delivery record
 
@@ -270,6 +261,8 @@ extraction, manual refresh, provider or host fallback occurred.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22: Track the submitted anonymous HTTPS MCP and guarded-launcher requirements. Both packaged Harnesses still require qualification.
 
 - 2026-11-21: User selects model-only automations with fixed empty tool cap and an explicit trusted-writer boundary; replace the earlier approved-tools/non-owner execution criteria.
 - 2026-11-21: Fix the independent review findings with reproduced HTTP/IAM and PostgreSQL regressions; correct the earlier five-test suite attribution.

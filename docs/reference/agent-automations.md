@@ -1,31 +1,88 @@
 # Agent automations
 
-The OpenClaw Control Plane (OCC) automation broker creates and manages model-only
-scheduled Agent turns. OCC owns human authorization and creator records; OpenClaw
-owns scheduling, model execution and retained run history. Use the
-[scheduling guide](../guides/agent-automations.md) for HTTP operations.
+The OpenClaw Control Plane (OCC) automation broker derives a ceiling of Agent-shared,
+preapproved static Model Context Protocol (MCP) operations for scheduled turns. A qualified Agent with no eligible operations receives an
+explicit empty ceiling, `[]`, for model-only execution. OCC owns authorization,
+creator records and the saved grant; OpenClaw owns scheduling, execution and
+history. Use the [scheduling guide](../guides/agent-automations.md) for HTTP operations.
+
+The approved-MCP pilot is under qualification. Its implementation and earlier
+model-only results do not establish MCP execution safety on every supported
+Harness. See [verification status](#verification-status).
 
 ## Execution qualification
 
-OCC fixes native `payload.toolsAllow: []` on add and every update. Clients cannot
-supply a tool policy. The scheduled model must receive no callable shell/file,
-code, dynamic, subagent/delegation, messaging, app or MCP tools. Scheduled GitHub
-reports and connector actions are outside this feature.
+The selected runtime owner must qualify the deployed Agent's standing authority.
+A raw native filter is not an authorization grant. Eligible operations must have:
 
-This no-tools contract does not cover scheduler, model, runtime/bootstrap or
-history processing, or configured failure alerts. Ordinary chat and native
-administration remain unchanged and trusted. They can alter native jobs outside
-OCC; the guarantee applies to OCC-managed writes while those writers leave the
-jobs unchanged. There is no tamper-resistant sole-writer claim, import or
-background reconciliation.
+- An enabled static MCP server with a nonempty, finite list of exact raw operations.
+- Unambiguous canonical runtime aliases allowed by the Agent's Gateway tool policy
+  and confirmed by effective native tool evidence.
+- The same endpoint, workload credential identity, permitted provider actions and
+  standing approval as ordinary unattended Agent execution.
 
-The native adapter admits only isolated Agent turns with explicit empty caps,
-no automatic/default-tool flag, no trigger and no result delivery. It rejects
-unsupported readback before activation or editing. Runtime provenance and native
-CAS still apply. This implementation is under qualification: fixed `[]` and
-native CRUD tests are not proof that both packaged Harnesses expose no model
-tools. See [verification status](#verification-status) and the
-[submitted model-only contract](../../specs/rfcs/20261121-agent-automations.md).
+The Kubernetes pilot supports explicitly trusted anonymous HTTPS MCP endpoints
+for embedded OpenClaw and dedicated Codex. Stdio and general credential-bearing
+MCP are not qualified. An
+Installation administrator supplies the exact endpoint attestation through
+[`automations.trustedAnonymousMcpEndpoints`](drivers/kubernetes-compute.md#automation-mcp-endpoints).
+This is an operator trust decision, not permission inferred from an Agent's raw filter.
+
+OCC saves the exact tool ceiling and opaque binding fingerprints. It stores no
+credential values in this record. Clients cannot supply a ceiling, native aliases,
+credentials or approval decisions. A tool that needs interactive approval or
+requester-specific authority is ineligible. Approval of a tool does not approve
+every action its arguments can request.
+
+Approval settings belong to their runtime owner. The dedicated Codex pilot
+requires the MCP server's `codex.defaultToolsApprovalMode: "approve"` for native
+unattended approval. An OpenClaw MCP approval filter is a different control;
+interactive approval cannot qualify. Neither setting grants additional operations
+or provider actions. The [Plugin Driver's app approval mapping](drivers/plugin-bundled.md#native-mappings-and-limits)
+is a separate contract, outside this pilot.
+
+For a nonempty MCP grant, Code Mode and tool search must already be off. OCC
+refuses an incompatible configuration; automation admission does not turn these
+features off for ordinary chat. Native shell/file tools, code, discovery,
+delegation, messaging and apps are outside the tool-bearing pilot. Current managed
+MCP Sandbox and native app topologies do not supply its qualification contract.
+
+Native writes carry an explicit `payload.toolsAllow`, including `[]` for a
+model-only job. The adapter refuses automatic/default-tool flags, triggers,
+non-isolated payloads and result delivery. It verifies eligibility and the native
+revision from the same read before mutation. Unknown qualification, ambiguous
+bindings or unsupported native state refuse admission rather than becoming an
+implicit grant.
+
+An empty MCP `toolFilter.include` can mean **all tools**. It is not an empty grant
+or a revocation operation. When no operations remain, the supported policy
+lifecycle must disable or omit the server; never replace its include list with
+`[]` to restrict it.
+
+The nonempty-grant pilot also requires immutable runtime image references and a
+restricted native plugin namespace. Channel entries, selected managed/native
+plugins and local plugin load paths are not qualified. Only the pinned core plugin
+IDs verified not to add MCP declarations are admitted. Agent/model overrides must
+not re-enable Code Mode or tool search. `gateway.nodes.pluginTools.enabled` and
+`gateway.nodes.allowSkills` must be `false`; environment overrides, Secret bindings
+and repository credentials are not qualified.
+
+The deployed Gateway must use the version-bound, controller-rendered plugin-origin
+guard and endpoint network/trust assets. Verification requires a read-only root
+filesystem with no mounts replacing `/app`. The guard rechecks disabled Code Mode,
+tool search and node plugin/skill controls, including Agent/model overrides. It
+checks writable plugin discovery roots and installed-plugin state before each native Gateway spawn, including
+respawns and container startup. Unsafe or unrecognized origins prevent startup.
+Admission also checks `plugins.inspect` and `tools.catalog` for bundled provenance
+and alias collisions, then corroborates MCP bindings with bounded `sessions.list`
+and `tools.effective` reads. These checks do not grant authority or continuously
+monitor a running process.
+
+These limits govern model-requested tools. Scheduler housekeeping, bootstrap,
+history processing and configured failure alerts can still occur. Ordinary chat
+and native administration retain their existing policies and remain trusted.
+Native writers can change jobs outside OCC. There is no native-edit import,
+automatic adoption or tamper-resistant sole-writer guarantee.
 
 ## Ownership and authority
 
@@ -38,10 +95,15 @@ ownership records return the same 404 response.
 Native edits, imports and reconciliation are outside the supported workflow.
 Native jobs without an OCC ownership record are not exposed through this API.
 
-Human creator identity controls management access and does not supply personal
-credentials to inference. Model requests use the selected Agent runtime
-authentication. Revoking `operate` removes management access; existing jobs remain
-until disabled/deleted or the Agent is stopped.
+Creation delegates the Agent's already-approved shared workload authority. It does
+not capture the creator's personal account, provider credentials, session or
+approval. The ceiling is relative to that Agent authority, not the creator's
+personal provider permissions. Model requests use the Agent's runtime authentication.
+
+Revoking the creator's `operate` removes management and history access unless
+another grant permits it; it does not cancel existing jobs. An Agent administrator
+can manage those jobs. A provider call already issued can complete after access
+or configuration changes.
 
 ## Requests and responses
 
@@ -87,7 +149,9 @@ another request's changes blindly.
 ## Persistence and history
 
 OCC reserves a new UUID and its creator, exact Namespace, Agent and native Agent
-before native create. The reservation and admission audit commit together.
+before native create. Under the Namespace and Agent locks, OCC rechecks the
+selected revision and its qualified authority, then commits the immutable tool
+grant, binding snapshot and admission audit with the reservation.
 OpenClaw chooses the native job ID. OCC creates disabled using its unique
 declaration key, binds the returned native ID durably, then enables the job if
 requested. A native ID cannot be rebound or shared by two records for the Agent.
@@ -113,6 +177,50 @@ History returns run IDs, start/finish timestamps, execution and completion statu
 delivery status, and available summary/error fields. Native payloads and history
 content are excluded from OCC mutation audit.
 
+## Policy changes and retained grants
+
+Policy additions do not expand an existing automation. Admission and deployment
+compare its saved grant with the selected runtime owner's qualified authority.
+The captured grant must remain a subset of the successor's qualified operations,
+with each captured binding unchanged. Unrelated operation additions can be
+compatible, but cannot enlarge an existing job. Removing a captured operation,
+even to narrow the Agent's policy, blocks the successor until the affected grant
+is retired. Reusing its name for another endpoint, workload identity, action scope
+or standing approval is also refused. Runtime image identity is part of the binding,
+so an image change can require retiring and recreating affected automations.
+Paused jobs and unresolved creation records retain their grants. Stopping an Agent does not retire those records.
+
+Deployment admission and the worker recheck retained grants before a successor
+can run. OCC-managed preparation, recovery and maintenance repeat that check. A kubelet
+restart of the same immutable live revision has no new controller callback and
+can run native cron catch-up under its captured standing grant. A policy change is
+refused when an unretired automation depends on a binding the successor no longer
+preserves. Review the
+[replacement boundary](agents/planned-replacement.md) before changing deployment inputs.
+
+Grant retirement is separate from history retention. After a confirmed native
+DELETE, OCC retires the grant and records that transition atomically with audit.
+For a bound job already deleted by the native scheduler, an authorized DELETE
+can retire the grant after definite native absence, while returning 404. A 404
+alone does not establish retirement: foreign and absent records have the same
+public response. Retired rows retain their immutable grant and native identity
+for history, but no longer constrain successors. Pausing, a lost reply or an
+unconfirmed absence does not release a grant.
+
+To narrow a captured grant, delete and retire the affected automation, deploy the
+narrower Agent policy, then create a new automation. Retirement preserves history;
+it does not authorize reusing the old job with new authority.
+
+Removing an endpoint from the Installation attestation blocks new eligibility and
+startup qualification. It does not stop an already-running native scheduler.
+Disable or delete jobs to stop future scheduling. For immediate denial of further
+provider calls, use service-side denial; an in-flight call can still complete.
+
+Do not overwrite a shared Secret to work around a binding refusal. A stable
+Secret reference does not prove an unchanged workload identity or action scope.
+General credentialed MCP and same-reference Secret rotation do not satisfy this
+pilot's qualification. Secret APIs do not retire automation grants.
+
 ## Runtime and failure boundaries
 
 Both Installation and Agent native access must be enabled. OCC requires a running
@@ -123,14 +231,37 @@ needs management-protocol proof before admission is extended. This pin does not
 qualify scheduled execution. Missing provenance or
 an unsupported source is refused before native cron dispatch.
 
+Compute opens a transport bound to the selected running Gateway instance. The
+Kubernetes implementation uses a revision-specific Service and operator HTTPRoute
+through existing Envoy authentication and filters. It verifies the sole live Pod,
+container/image identity and EndpointSlice targets. The broker validates
+`system.info` hostname against the expected Pod name on the handshake WebSocket.
+It checks that the handshake boot ID and reported process-instance ID are bounded,
+nonempty strings and that PID is positive; it does not compare those IDs with a
+previously known process. Mutations require that captured identity and an unchanged
+handshake boot ID. It rechecks the Pod/container instance before requests.
+A closed connection is not reconnected or replayed. The Agent-wide route is not
+an automation transport. Revision cleanup removes its route and Service.
+
+Missing policy qualification permits only inventory, inspection, history,
+disable-only updates and deletion under existing authorization and native-shape
+checks. It never permits creation, other edits or re-enablement. Recovery still
+requires the instance-bound transport and supported runtime provenance; it does
+not fall back to another route.
+
 The private connection must grant native administration, advertise all six cron
-methods and identify one unambiguous native Agent. OCC's typed adapter enforces
-the six-method surface; the underlying native credential has broader authority
+methods and identify one unambiguous native Agent. The native inspection methods
+listed under [execution qualification](#execution-qualification) are private
+qualification reads, not public operations or new mutation authority. OCC's typed adapter enforces the six cron
+operations; the underlying native credential has broader authority
 and never reaches the caller. Browser chat scopes are unchanged.
 
 A stopped, replacing or unavailable runtime returns `503 DEPENDENCY_UNAVAILABLE`.
-Missing automation transport returns `503 AUTOMATIONS_UNQUALIFIED`. Unsupported
-native job shapes cannot be enabled or edited.
+Missing automation transport returns `503 AUTOMATIONS_UNQUALIFIED`. Updates and
+explicit re-enablement also require current qualification of the captured grant.
+After policy withdrawal, disable-only PATCH, DELETE and history remain available,
+subject to their normal authorization, transport and native-shape checks.
+Unsupported native job shapes cannot be enabled or edited.
 Invalid requests return 400; human/Agent denials return 403; absent or hidden jobs
 return 404; conflicts and unsupported job shapes return 409.
 
@@ -144,23 +275,15 @@ native effect, and a lost HTTP response can also lose its recovery reference.
 
 ## Verification status
 
-The refusal and ownership checks exercise the real HTTP application, session and
-Native IAM boundaries. PostgreSQL coverage checks durable ownership, immutable
-application-role access, atomic reservation/audit rollback and ownership cleanup
-through the Agent deletion worker. These checks do not prove native model execution.
+The [implementation plan](../../specs/plans/20261121-agent-automations.md) records
+results and remaining acceptance gates. Earlier model-only management, execution
+and empty-cap refusal results remain historical evidence for that narrower
+contract. They do not qualify a nonempty MCP grant, shared credential identity,
+action restrictions, standing approval or policy-change handling.
 
-The native protocol case in `tests/integration/workspace-files-native.test.ts`
-uses a real Gateway with a transparent fault proxy and in-memory OCC persistence.
-It checks CRUD, owner filtering, concurrent native CAS, lost replies, post-commit
-audit failure and revision fencing. It also replaces the real Gateway container
-on retained native storage and verifies the paused job, native ID and OCC ownership
-record remain unchanged, without recreating or enabling the job. No model runs.
-OCC storage and Compute remain fixtures; this is not PostgreSQL-backed OCC restart
-or production Kubernetes cutover proof.
-
-The `agent-automations` [QA scenario](../testing/ci/qa-advisory.md) exercises the
-regular deployed Agent workflow for model-only one-shots, tool-absence evidence,
-retained history and replacement. Those cases are not qualified merely by being
-implemented. Actual model/tool-policy, one-shot history and production-runtime results
-remain recorded in the [implementation plan](../../specs/plans/20261121-agent-automations.md).
-See the [source-backed flow](../flows/agent-automations.md) for implementation order.
+The approved-MCP path needs real positive calls and independent provider-side
+effects, followed by denied calls after narrowing or withdrawal, for each selected
+Harness and packaged version. Source filters, rendered configuration and passing
+fixture tests do not substitute for that proof. Testing setup and evidence belong
+in the [runtime testing guide](../testing/docker.md); the
+[source-backed flow](../flows/agent-automations.md) describes implementation order.

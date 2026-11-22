@@ -78,7 +78,11 @@ See [per-Agent policies](../sandbox-policies.md).
 
 ### `agent_automations`
 
-Retains creator and native-job ownership for the [automation broker](../agent-automations.md), including after job deletion. Rows end with Agent deletion; a proven failed create can discard its unbound reservation atomically with audit.
+Retains creator, native-job ownership and the immutable tool grant for the
+[automation broker](../agent-automations.md), including after job deletion.
+Retirement releases the grant's deployment constraint while retaining history
+ownership. Rows end with Agent deletion; a proven failed create can discard its
+unbound reservation atomically with audit.
 
 - `id`
 - `namespace_id`
@@ -86,6 +90,8 @@ Retains creator and native-job ownership for the [automation broker](../agent-au
 - `creator_principal_id`
 - `native_agent_id`
 - `native_job_id` (bound once)
+- `tool_grant` (immutable exact names and opaque authority-binding fingerprints)
+- `retired_at` (set once after confirmed native removal/absence; null keeps the grant active)
 - `created_at`
 
 ### `agent_revisions`

@@ -178,9 +178,9 @@ a scheduled empty tool cap must advertise no tools, reject the injected call,
 and leave the file absent. Codex checks shell and Code Mode dispatch separately.
 Both Harnesses also check Gateway `sessions_spawn` against native child history
 and exact database label counts, and `message` against a local Slack-protocol
-collector. These controls do not establish native Codex collaboration, app or
-managed MCP coverage and do not replace the
-[real-model QA scenario](ci/qa-advisory.md).
+collector. These empty-cap controls do not establish native Codex collaboration, app or
+managed MCP coverage. They do not replace the
+[anonymous HTTPS MCP QA scenario](#verify-automation-mcp-parity).
 
 An OCE-managed MCP control needs the supported dedicated OpenClaw and
 OpenShell/Credential Gateway placement, an admitted release, a paired worker,
@@ -202,6 +202,40 @@ historical Codex version.
 
 The controller check expects an unreachable database; it does
 not prove connectivity. Runtime checks do not prove a model turn or Slack delivery.
+
+### Verify automation MCP parity
+
+Select `OCC_TEST_QA_INSTALLATION=kubernetes`, `OCC_TEST_QA_PRESET=all`, and
+`OCC_TEST_QA_SCENARIOS=agent-automations`. Follow the
+[local QA setup](ci/qa-advisory.md#local-inputs) for source-built images, authorized
+model credentials and a runner that supports the Codex sandbox. The scenario
+runs the existing empty-cap checks, then the
+[HTTPS MCP helper](../../tests/helpers/qa-agent-automation-mcp.ts) for each Harness.
+It needs no MCP account. Stdio and credentialed MCP are outside this pilot.
+
+The fixture creates an anonymous HTTPS peer and temporarily supplies exact
+`automations.trustedAnonymousMcpEndpoints` records through Installation
+configuration. Each record contains the endpoint URL, the peer Pod's translated
+IPv4 `/32` or IPv6 `/128` egress destination, and its public PEM CA bundle.
+The fixture checks the rendered network policies and removes its peer resources
+and restores Installation configuration during cleanup. Never put a CA signing
+key in an endpoint record. See the [endpoint contract](../reference/drivers/kubernetes-compute.md#automation-mcp-endpoints).
+
+The assertions compare ordinary and scheduled `tools/call` requests at the peer,
+check the captured native cap and run transcripts, and require
+no sibling-operation, second-server or file-write effect. They also exercise
+service denial, missing or changed endpoint records, replacement of the deployed
+guard binding, and refusal of unsupported tool sources. A paused automation keeps
+its immutable grant: incompatible narrowing or binding changes must remain blocked
+until the automation is deleted and its grant is retired. See
+[grant retirement](../reference/agent-automations.md#policy-changes-and-retained-grants).
+
+Genuine HTTPS MCP qualification remains pending. Historical model-only results
+and the earlier ordinary stdio smoke do not qualify this scenario. Record the
+final tested source, image digests, both Harness outcomes, collector evidence and
+cleanup. Pod metadata or a guard label alone does not prove that the broker's
+connection reached that runtime instance; destination verification also remains
+part of the pending qualification.
 
 ### Build images from the checkout
 

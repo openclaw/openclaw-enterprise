@@ -20,3 +20,25 @@ Replacement closes earlier credential sessions and stops every earlier revision,
 including failed candidates, before preparing its successor. A failed stop blocks
 the successor. Repeated stops must confirm release while preserving workspace data.
 This policy can cause downtime; recovery deploys a newer revision.
+
+## Automation grants
+
+A successor must preserve every unretired automation's captured operations and
+binding identities. Deployment admission checks the proposed revision under the
+Namespace and Agent locks; the worker repeats the check before binding or
+preparing a runtime. Paused jobs and uncertain creation records still constrain
+the successor. OCC-managed startup/recovery cannot use an earlier successful check
+to admit a changed binding. A kubelet restart of the same immutable live revision does not
+call the controller again; it can run native catch-up under its captured grant.
+
+Adding an unrelated operation does not enlarge an existing job. Removing a
+captured operation, changing its endpoint or identity, or widening its action or
+approval authority blocks replacement. Delete and retire the affected automation
+first, deploy the narrower policy, then recreate scheduling if needed. Retirement
+keeps authorized history; pausing does not release the grant. See
+[automation policy changes](../agent-automations.md#policy-changes-and-retained-grants)
+for confirmed deletion, absent jobs and uncertain outcomes.
+
+Changing the Installation's endpoint attestation alone does not stop running
+native cron. Disable/delete jobs to stop future scheduling; service-side denial
+blocks further provider calls, while an in-flight call can complete.

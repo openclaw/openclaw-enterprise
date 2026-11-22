@@ -222,8 +222,28 @@ export function createNativeAgentAutomationsAccess(
         ) {
           throw new AutomationGatewayError("unavailable");
         }
-        await assertCurrent();
-        if (!(await transport.assertCurrent())) {
+        let transportCurrent = false;
+        try {
+          transportCurrent = await transport.assertCurrent();
+        } catch {
+          // A failed observation invalidates this connection, even if a later read could succeed.
+        }
+        if (!transportCurrent) {
+          await close();
+          throw new AutomationGatewayError("unavailable");
+        }
+        try {
+          await assertCurrent();
+        } catch (error) {
+          await close();
+          throw error;
+        }
+        if (
+          closed ||
+          signal.aborted ||
+          Date.now() >= deadline.getTime() ||
+          (mutation && (!processIdentity || processIdentity.bootId !== hello.server.bootId))
+        ) {
           throw new AutomationGatewayError("unavailable");
         }
         let sent = false;
@@ -524,6 +544,9 @@ export function createNativeAgentAutomationsAccess(
                 await request("tools.effective", { agentId: nativeAgentId, sessionKey: row.key }),
               );
             } catch {
+              if (closed || signal.aborted || Date.now() >= deadline.getTime()) {
+                throw new AutomationGatewayError("unavailable");
+              }
               continue;
             }
             if (inventory?.agentId !== nativeAgentId || !Array.isArray(inventory.groups)) {

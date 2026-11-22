@@ -61,6 +61,8 @@ kind: reference/driver
   - [`retireExpiredRepositoryAccess`](#method-retire-expired-repository-access)
   - [`rejectedExecutionWithdrawal`](#method-rejected-execution-withdrawal)
   - [`observeRevision`](#method-observe-revision)
+  - [`evaluateAgentAutomationPolicy`](#method-evaluate-agent-automation-policy)
+  - [`openAgentAutomationTransport`](#method-open-agent-automation-transport)
   - [`getRuntimeImages`](#method-get-runtime-images)
   - [`discoverHarnessModels`](#method-discover-harness-models)
   - [`diagnoseAgentDeployment`](#method-diagnose-agent-deployment)
@@ -140,6 +142,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-retire-expired-repository-access"></a>`retireExpiredRepositoryAccess`                                  | Optional    | For expiry or committed standing/finite withdrawal, report `withdrawn` only after verifying revoked Git and the same independently authorized, ready inference runtime; otherwise `pending` or `retire-runtime`. Without this method, expiry retires the runtime except for `policyReductionVersion: 2` egress plans, which use policy reduction.         |
 | <a id="method-rejected-execution-withdrawal"></a>`rejectedExecutionWithdrawal`                                       | Optional    | After release is refused, select a callback to withdraw a previously admitted grant. The worker runs it under the active revision's claim. With no callback, the refusal stands.                                                                                                                                                                          |
 | <a id="method-observe-revision"></a>`observeRevision`                                                                | Optional    | Read Harness state for an unverified repository execution. Failure yields `unknown`. This cannot establish Git execution identity.                                                                                                                                                                                                                        |
+| <a id="method-evaluate-agent-automation-policy"></a>`evaluateAgentAutomationPolicy`                                  | Optional    | Return a grant and MCP bindings without side effects; `undefined` refuses qualification, `grant.tools: []` permits model-only. [Contract](../agent-automations.md#execution-qualification).                                                                                                                                                               |
+| <a id="method-open-agent-automation-transport"></a>`openAgentAutomationTransport`                                    | Optional    | Return an instance-bound transport with recheck/close; undefined qualification permits only conservative recovery.                                                                                                                                                                                                                                        |
 | <a id="method-get-runtime-images"></a>`getRuntimeImages`                                                             | Optional    | Report revision-owned containers, excluding separate Sandbox Driver workloads. Return full lowercase 40-character Git SHAs for known commits and `null` for unknown image IDs or commits; never infer commits from tags. OCC returns entries without validation. Without a selected revision it reports `undeployed`; without this method, `unsupported`. |
 | <a id="method-discover-harness-models"></a>`discoverHarnessModels`                                                   | Optional    | Accept `authMethod`, `provider`, and `apiKey`. Return native model IDs and names. Never persist the credential. If discovery is unavailable, enter the model ID manually.                                                                                                                                                                                 |
 | <a id="method-diagnose-agent-deployment"></a>`diagnoseAgentDeployment`                                               | Optional    | Return current checks for one revision. Without support, OCC reports dependency unavailable.                                                                                                                                                                                                                                                              |
@@ -196,15 +200,15 @@ belongs to the [Credential Refresh Driver](credential-refresh.md#device-authoriz
 
 An ordinary `ready: false` keeps preparation pending. Return a
 [`pendingReason`](../agents/deployment.md#pending-deployment-progress) if known.
-The worker rejects another revision's readiness result. For a held startup
-failure, return validated `runtimeFailure` evidence for this revision:
+The worker rejects foreign readiness results. For held startup
+failures, return validated revision-specific `runtimeFailure`:
 `component`, `check`, `checkedAt`, `code`, and an optional
 [`cause`](../agents/deployment.md#model-check-failure-cause). Omit credentials,
 provider messages, and untrusted observations. The [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-explains which failures end deployment immediately, such as
+explains terminal failures, such as
 [`crash-loop`](kubernetes-compute.md#troubleshooting), and which wait until its deadline.
 
-Throw `ComputePreparationFailedError` for terminal initialization failure.
+Throw `ComputePreparationFailedError` for terminal initialization failures.
 The worker records the failed deployment and queues `stopRevision` for that
 candidate in one transaction. After restart it resumes cleanup.
 
@@ -214,10 +218,9 @@ candidate in one transaction. After restart it resumes cleanup.
 
 ### Runtime reads and logging
 
-Diagnostics read the requested revision without changing its deployment or running
-another model probe. OCC accepts up to 32 checks and validates timestamps and
-state. With platform logging, OCC applies its [Harness logging policy](../harness-execution.md#runtime-logging).
-The Driver rechecks workload ownership before each read. For a cluster `403`,
+Diagnostics read revisions without deployment changes or model probes. OCC validates
+timestamps and state for up to 32 checks. With platform logging, OCC applies its [Harness logging policy](../harness-execution.md#runtime-logging).
+The Driver rechecks ownership before each read. For a cluster `403`,
 raise `RuntimeLogsForbiddenByClusterError`. OCC redacts
 and limits each response to 512 KiB. A Driver-managed collector must supply its own
 access control, redaction, and delivery guarantees. With Driver-owned logging, OCC preserves
@@ -330,7 +333,7 @@ runtime is ready. The worker records warnings on successful deployment. See
 
 ## Configuration
 
-Select Compute under `drivers.compute` in Installation startup YAML. Restart API and worker after changes.
+Set `drivers.compute` in Installation YAML; restart API and worker after changes.
 
 | Setting         | Type   | Requirement | Value, default, and constraints                                  |
 | --------------- | ------ | ----------- | ---------------------------------------------------------------- |
