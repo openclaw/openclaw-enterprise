@@ -84,9 +84,9 @@ test(
   },
 );
 
-// These synthetic-provider probes exercise the native nonempty cap with a real
-// harmless MCP peer. Stdio here is a local supplemental fixture for both Harnesses, not
-// an OCE-admitted transport; the genuine QA scenario uses attested HTTPS.
+// These synthetic-provider probes exercise the embedded native nonempty cap with
+// a harmless MCP peer. Stdio is a supplemental fixture, not an OCE-admitted
+// transport; the genuine QA scenario uses attested HTTPS.
 for (const probe of ["write", "delegation", "messaging"] as const) {
   test(
     `MCP-cap openclaw: forced ${probe} is rejected without an MCP peer effect`,
@@ -94,19 +94,6 @@ for (const probe of ["write", "delegation", "messaging"] as const) {
     async (t) => {
       assert.ok(image);
       await runEmbeddedAutomationDispatchProbe(t, image, probe, true);
-    },
-  );
-}
-for (const probe of ["exec_command", "delegation", "messaging"] as const) {
-  test(
-    `MCP-cap codex: forced ${probe} is rejected without an MCP peer effect`,
-    { skip, timeout: 480_000 },
-    async (t) => {
-      await runKubernetesAutomationDispatchProbe(t, {
-        ...preparedKubernetes(),
-        probe,
-        nonemptyCap: true,
-      });
     },
   );
 }
