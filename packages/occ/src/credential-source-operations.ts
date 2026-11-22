@@ -16,6 +16,7 @@ import {
   type Namespace,
   type OAuthConnectionStatus,
   type ResourceRef,
+  type SavedConnection,
   type SecretDriver,
   type SecretReference,
   type TokenService,
@@ -895,7 +896,11 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       }
       // Commit the new retry schedule and its audit even when no token was minted.
       assertRefreshMinted(refresh);
-      return credentialSourceMetadata(source, { state: "ready", refresh });
+      return credentialSourceMetadata(
+        source,
+        { state: "ready", refresh },
+        await savedConnectionForSource(source),
+      );
     }
     return rotation;
   }
@@ -970,6 +975,18 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     });
   }
 
+  async function savedConnectionForSource(
+    source: Readonly<CredentialSource>,
+  ): Promise<Readonly<SavedConnection> | undefined> {
+    if (source.ownerCapability !== "token_service" || source.type !== "oauth2-refresh-token") {
+      return undefined;
+    }
+    const saved = await dependencies.transactions.read((state) =>
+      state.savedConnections.findSavedConnection(source.namespaceId, source.id),
+    );
+    return saved?.revocationRequestedBy === undefined ? saved : undefined;
+  }
+
   async function readCredentialSource(
     principalId: string,
     namespaceId: string,
@@ -994,14 +1011,18 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       return { namespace: exact, source: found };
     });
     if (isManagedTokenServiceSource(source)) {
-      return credentialSourceMetadata(source);
+      const association = await dependencies.transactions.read((state) =>
+        state.credentialSources.findStaticConnectionTemplate(namespaceId, source.id),
+      );
+      return credentialSourceMetadata(source, undefined, association);
     }
     if (source.ownerCapability === "token_service") {
       const refresh = await dependencies.readConnectionStatus(namespaceId, source.id);
-      return credentialSourceMetadata(source, {
-        state: source.state === "ready" ? refresh.state : "pending",
-        refresh,
-      });
+      return credentialSourceMetadata(
+        source,
+        { state: source.state === "ready" ? refresh.state : "pending", refresh },
+        await savedConnectionForSource(source),
+      );
     }
     if (source.egress !== undefined) {
       try {
@@ -1061,7 +1082,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     const catalog = await dependencies.transactions.read((state) =>
       state.credentialSources.listCredentialSources(namespace.id),
     );
-    const readable: Readonly<CredentialSourceMetadata>[] = [];
+    const readable: Readonly<CredentialSource>[] = [];
     for (const source of catalog) {
       if (
         await dependencies.authority.canRead(principalId, {
@@ -1070,10 +1091,37 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
           namespaceId: namespace.id,
         })
       ) {
-        readable.push(credentialSourceMetadata(source));
+        readable.push(source);
       }
     }
-    return Object.freeze(readable);
+    const saved = readable.some(
+      (source) =>
+        source.ownerCapability === "token_service" && source.type === "oauth2-refresh-token",
+    )
+      ? await dependencies.transactions.read((state) =>
+          state.savedConnections.listNamespaceConnections(namespace.id),
+        )
+      : [];
+    const staticAssociations = readable.some(isManagedTokenServiceSource)
+      ? await dependencies.transactions.read((state) =>
+          state.credentialSources.listStaticConnectionTemplates(namespace.id),
+        )
+      : [];
+    const staticBySource = new Map(
+      staticAssociations.map((association) => [association.credentialSourceId, association]),
+    );
+    const bySource = new Map(
+      saved.map((connection) => [connection.credentialSourceId, connection]),
+    );
+    return Object.freeze(
+      readable.map((source) =>
+        credentialSourceMetadata(
+          source,
+          undefined,
+          staticBySource.get(source.id) ?? bySource.get(source.id),
+        ),
+      ),
+    );
   }
 
   async function authorizedCredentialSource(

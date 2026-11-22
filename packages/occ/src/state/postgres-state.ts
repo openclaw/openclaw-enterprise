@@ -18,6 +18,7 @@ import type {
 } from "../ports/agents.ts";
 import type {
   CredentialSourceRepository,
+  StaticCredentialSourceTemplate,
   StoredCredentialWithdrawal,
 } from "../ports/credential-sources.ts";
 import type { PredecessorReplacement } from "../ports/agent-reads.ts";
@@ -681,6 +682,21 @@ function credentialWithdrawalFromRow(row: PostgresRow): Readonly<StoredCredentia
     ...(lastReason === undefined ? {} : { lastReason }),
     ...(lastAttemptAt === undefined ? {} : { lastAttemptAt }),
   });
+}
+
+function staticCredentialSourceTemplateFromRow(
+  row: PostgresRow,
+): Readonly<StaticCredentialSourceTemplate> {
+  const version = row.connection_template_version;
+  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+    throw new PersistedStateInvalidError("Persisted static Source Template version is invalid.");
+  }
+  return {
+    namespaceId: text(row, "namespace_id"),
+    credentialSourceId: text(row, "credential_source_id"),
+    connectionTemplateId: text(row, "connection_template_id"),
+    connectionTemplateVersion: version,
+  };
 }
 
 function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
@@ -3043,6 +3059,33 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
 
     const credentialSources: CredentialSourceRepository = {
+      findStaticConnectionTemplate: async (namespaceId, credentialSourceId) => {
+        const rows = decodeQueryRows(
+          await client.query(
+            `SELECT namespace_id, credential_source_id, connection_template_id, connection_template_version FROM occ.static_credential_source_templates WHERE namespace_id=$1 AND credential_source_id=$2`,
+            [namespaceId, credentialSourceId],
+          ),
+        );
+        return rows[0] === undefined ? undefined : staticCredentialSourceTemplateFromRow(rows[0]);
+      },
+      listStaticConnectionTemplates: async (namespaceId) =>
+        decodeQueryRows(
+          await client.query(
+            `SELECT namespace_id, credential_source_id, connection_template_id, connection_template_version FROM occ.static_credential_source_templates WHERE namespace_id=$1 ORDER BY credential_source_id`,
+            [namespaceId],
+          ),
+        ).map(staticCredentialSourceTemplateFromRow),
+      associateStaticConnectionTemplate: async (association) => {
+        await client.query(
+          `INSERT INTO occ.static_credential_source_templates (namespace_id,credential_source_id,connection_template_id,connection_template_version) VALUES ($1,$2,$3,$4)`,
+          [
+            association.namespaceId,
+            association.credentialSourceId,
+            association.connectionTemplateId,
+            association.connectionTemplateVersion,
+          ],
+        );
+      },
       isEgressMaterialRejected: async (evidence) => {
         const found = await client.query(
           "SELECT 1 FROM occ.egress_rejected_material WHERE namespace_id = $1 AND secret_driver_id = $2 AND material_id = $3 AND material_version = $4",

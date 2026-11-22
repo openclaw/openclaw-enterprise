@@ -151,6 +151,7 @@ export function bindPlatformUnitOfWork(
     ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
       ...platformReadMethods.credentialSources,
+      "associateStaticConnectionTemplate",
       "lockCredentialSource",
       "createCredentialSource",
       "markCredentialSourceDeleting",

@@ -1,4 +1,7 @@
-import { admitRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
+import {
+  admitRepositoryNetworkPolicy,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+} from "@openclaw-enterprise/contracts";
 import type {
   WorkspaceSetupRepository,
   SandboxPolicyRepository,
@@ -22,6 +25,7 @@ import type {
 } from "../ports/connection-templates.ts";
 import type {
   StoredCredentialWithdrawal,
+  StaticCredentialSourceTemplate,
   CredentialSourceReadRepository,
   CredentialSourceRepository,
 } from "../ports/credential-sources.ts";
@@ -651,6 +655,7 @@ interface PlatformSnapshot {
   readonly authenticationStates: Map<string, AuthenticationState>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
+  readonly staticCredentialSourceTemplates: Map<string, Readonly<StaticCredentialSourceTemplate>>;
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
@@ -821,6 +826,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
     credentialWithdrawals: copyStoredMap(snapshot.credentialWithdrawals),
     credentialSources: copyStoredMap(snapshot.credentialSources),
+    staticCredentialSourceTemplates: new Map(snapshot.staticCredentialSourceTemplates),
     serviceAccounts: copyStoredMap(snapshot.serviceAccounts),
     agents: copyStoredMap(snapshot.agents),
     predecessorReplacements: copyStoredMap(snapshot.predecessorReplacements),
@@ -1637,6 +1643,9 @@ function repositories(
         return false;
       }
       if (
+        [...snapshot.staticCredentialSourceTemplates.values()].some(
+          (association) => association.connectionTemplateId === templateId,
+        ) ||
         [...snapshot.savedConnections.values()].some(
           (connection) => connection.connectionTemplateId === templateId,
         ) ||
@@ -2275,6 +2284,33 @@ function repositories(
       original,
     );
   const credentialSources: CredentialSourceRepository = {
+    findStaticConnectionTemplate: async (namespaceId, credentialSourceId) =>
+      snapshot.staticCredentialSourceTemplates.get(agentKey(namespaceId, credentialSourceId)),
+    listStaticConnectionTemplates: async (namespaceId) =>
+      [...snapshot.staticCredentialSourceTemplates.values()].filter(
+        (association) => association.namespaceId === namespaceId,
+      ),
+    associateStaticConnectionTemplate: async (association) => {
+      const key = agentKey(association.namespaceId, association.credentialSourceId);
+      const source = snapshot.credentialSources.get(key);
+      const template = snapshot.connectionTemplates.get(association.connectionTemplateId);
+      const version = snapshot.connectionTemplateVersions.get(
+        versionKey(association.connectionTemplateId, association.connectionTemplateVersion),
+      );
+      if (
+        snapshot.staticCredentialSourceTemplates.has(key) ||
+        source?.ownerCapability !== "token_service" ||
+        !source.tokenServiceInstanceId ||
+        source.type !== "static" ||
+        Object.hasOwn(source.config, SOURCE_PROVIDER_PRESET_CONFIG_KEY) ||
+        !template ||
+        (template.namespaceId !== undefined && template.namespaceId !== association.namespaceId) ||
+        version?.mode !== "static_bearer"
+      ) {
+        throw new ResourceStateConflictError("The static Source Template association is invalid.");
+      }
+      snapshot.staticCredentialSourceTemplates.set(key, immutableCopy(association));
+    },
     listCredentialPolicyReductions: async (namespaceId, revisionId) =>
       [...snapshot.credentialPolicyReductions.values()].filter(
         ({ request }) =>
@@ -2582,6 +2618,14 @@ function repositories(
       ) {
         return undefined;
       }
+      if (
+        Object.hasOwn(config, SOURCE_PROVIDER_PRESET_CONFIG_KEY) &&
+        snapshot.staticCredentialSourceTemplates.has(agentKey(namespaceId, credentialSourceId))
+      ) {
+        throw new ResourceStateConflictError(
+          "A Connection Template Source cannot use a model provider preset.",
+        );
+      }
       const saved = immutableCopy({ ...current, config });
       assertCredentialSource(saved);
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
@@ -2662,6 +2706,7 @@ function repositories(
       }
       const key = agentKey(namespaceId, credentialSourceId);
       snapshot.credentialSources.delete(key);
+      snapshot.staticCredentialSourceTemplates.delete(key);
       snapshot.connectionTokenCustody.delete(key);
       snapshot.savedConnections.delete(key);
       for (const [id, state] of snapshot.authenticationStates) {
@@ -4224,6 +4269,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     authenticationStates: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),
+    staticCredentialSourceTemplates: new Map(),
     credentialPolicyReductions: new Map(),
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),

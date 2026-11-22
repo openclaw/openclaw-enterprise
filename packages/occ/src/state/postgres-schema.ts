@@ -2579,6 +2579,33 @@ export const staticKeyTemplateVersions = occSchema.table(
   ],
 );
 
+export const staticCredentialSourceTemplates = occSchema.table(
+  "static_credential_source_templates",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    connectionTemplateId: text("connection_template_id").notNull(),
+    connectionTemplateVersion: integer("connection_template_version").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
+    foreignKey({
+      name: "static_credential_source_templates_source",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
+    foreignKey({
+      name: "static_credential_source_templates_version",
+      columns: [table.connectionTemplateId, table.connectionTemplateVersion],
+      foreignColumns: [staticKeyTemplateVersions.templateId, staticKeyTemplateVersions.version],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+  ],
+);
+
 export const oauthConnectionTemplateVersions = occSchema.table(
   "oauth_connection_template_versions",
   {

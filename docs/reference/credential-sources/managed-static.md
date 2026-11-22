@@ -15,6 +15,8 @@ In a ready Namespace, send `POST /namespaces/:namespaceId/credential-sources` wi
 }
 ```
 
+To associate a Source with a Connection Template, supply both `connectionTemplateId` and the positive integer `connectionTemplateVersion` in the same POST. OCC checks create authority first, then accepts only the approved current `static_bearer` version available Installation-wide or in the same Namespace. An incomplete or malformed pair returns `400`; an unavailable or foreign Template returns `404`; a different mode or version returns `409`. OCC rejects the selection before TokenService takes custody. Omit both fields for a template-free Source, including the Harness provider-preset example above. A Template-associated Source cannot also use `config.provider_preset`; POST or PATCH returns `409` before changing custody or configuration.
+
 `secret` is write-only and accepts one nonempty credential. Its field name does not grant destination authority. The optional `config.provider_preset` associates the Source with an approved provider; without it the Source cannot authorize a model destination. The response contains sanitized metadata, `ownerCapability: "token_service"`, and `secrets: {}`. OCC does not store a Namespace Secret reference or return the credential.
 
 If the private-store write cannot be confirmed, registration can fail while leaving orphaned material. A failure after TokenService commits can leave a Source without its creator IAM grant. The private store cannot list orphaned material. See the [custody flow](../../flows/token-service-static-custody.md) for failure handling.
@@ -98,7 +100,7 @@ The [implementation status](../credential-sources.md#implementation-status) list
 
 ## Read and list sources
 
-Exact GET requires `credential_source:read`; list requires Namespace `read` and filters each Source by exact `read`. Responses do not resolve credentials or expose the TokenService instance or Driver ID. GET and list read the catalog and remain available when TokenService is unavailable.
+Exact GET requires `credential_source:read`; list requires Namespace `read` and filters each Source by exact `read`. Responses do not resolve credentials or expose the TokenService instance or Driver ID. GET and list read the catalog and remain available when TokenService is unavailable. POST, PATCH, GET, and list return the exact selected Template ID and version when a static association exists. Advancing the Template does not change that pair. PATCH cannot change the association.
 
 ## Update a source
 

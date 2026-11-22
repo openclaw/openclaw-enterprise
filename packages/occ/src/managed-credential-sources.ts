@@ -50,6 +50,16 @@ import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
+export type CreateManagedCredentialSourceInput = Omit<
+  SourceRegistrationInput,
+  "namespaceId" | "config"
+> & {
+  readonly providerPreset?: string;
+} & (
+    | { readonly connectionTemplateId: string; readonly connectionTemplateVersion: number }
+    | { readonly connectionTemplateId?: never; readonly connectionTemplateVersion?: never }
+  );
+
 export type UpdateManagedCredentialSourceInput =
   | (SourceUpdate & { readonly providerPreset?: SourceProviderPresetId | null })
   | {
@@ -163,9 +173,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
   async function createManagedCredentialSource(
     principalId: string,
     namespaceId: string,
-    input: Omit<SourceRegistrationInput, "namespaceId" | "config"> & {
-      readonly providerPreset?: string;
-    },
+    input: CreateManagedCredentialSourceInput,
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
     dependencies.transactions.requireIndependentMutation("Credential source creation");
@@ -188,6 +196,32 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           SOURCE_PROVIDER_PRESET_CONFIG_KEY,
           "Choose an approved credential source provider preset.",
         );
+      }
+      if (input.connectionTemplateId !== undefined && input.providerPreset !== undefined) {
+        throw new ResourceStateConflictError(
+          "A Connection Template Source cannot use a model provider preset.",
+        );
+      }
+      if (input.connectionTemplateId !== undefined) {
+        const template = await state.connectionTemplates.findConnectionTemplate(
+          input.connectionTemplateId,
+        );
+        if (
+          !template ||
+          (template.namespaceId !== undefined && template.namespaceId !== namespaceId)
+        ) {
+          throw new ScopeViolationError(
+            "The Connection Template is unavailable in this Namespace.",
+          );
+        }
+        if (
+          template.current.mode !== "static_bearer" ||
+          template.current.version !== input.connectionTemplateVersion
+        ) {
+          throw new ResourceStateConflictError(
+            "Choose the approved current static Bearer Connection Template version.",
+          );
+        }
       }
       const owner = ownedTokenServiceDriver();
       await state.audit.append(audit(collection, "registration_started"));
@@ -227,6 +261,18 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
     }
     return dependencies.transactions.transact(async (state) => {
       const ref = credentialSourceRef(created);
+      const association =
+        input.connectionTemplateId === undefined
+          ? undefined
+          : {
+              namespaceId,
+              credentialSourceId: created.id,
+              connectionTemplateId: input.connectionTemplateId,
+              connectionTemplateVersion: input.connectionTemplateVersion,
+            };
+      if (association !== undefined) {
+        await state.credentialSources.associateStaticConnectionTemplate(association);
+      }
       await dependencies.iamPolicy.bindCreator(state, principalId, ref);
       const completed = audit(ref);
       await state.audit.append(
@@ -237,7 +283,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
               details: { ...completed.details, providerPreset: input.providerPreset },
             },
       );
-      return credentialSourceMetadata(created);
+      return credentialSourceMetadata(created, undefined, association);
     });
   }
 
@@ -288,6 +334,15 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "This credential source cannot be updated through the selected TokenService.",
         );
       }
+      if (
+        input.providerPreset !== undefined &&
+        input.providerPreset !== null &&
+        (await state.credentialSources.findStaticConnectionTemplate(ref.namespaceId, source.id))
+      ) {
+        throw new ResourceStateConflictError(
+          "A Connection Template Source cannot use a model provider preset.",
+        );
+      }
       const presetChanges =
         input.providerPreset !== undefined &&
         (input.providerPreset ?? undefined) !== source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
@@ -304,6 +359,12 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       }
       return source;
     };
+    const metadata = async (state: PlatformUnitOfWork, source: Readonly<CredentialSource>) =>
+      credentialSourceMetadata(
+        source,
+        undefined,
+        await state.credentialSources.findStaticConnectionTemplate(source.namespaceId, source.id),
+      );
     const completedAudit = () => {
       const completed = audit(resource);
       return input.providerPreset === undefined
@@ -325,7 +386,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           throw new ResourceStateConflictError("The credential source changed during update.");
         }
         await state.audit.append(completedAudit());
-        return credentialSourceMetadata(updated);
+        return metadata(state, updated);
       });
     }
     const { source, owner } = await dependencies.transactions.transact(async (state) => {
@@ -367,8 +428,10 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "The TokenService returned an invalid credential source.",
         );
       }
-      await dependencies.transactions.transact((state) => state.audit.append(completedAudit()));
-      return credentialSourceMetadata(updated);
+      return dependencies.transactions.transact(async (state) => {
+        await state.audit.append(completedAudit());
+        return metadata(state, updated);
+      });
     } catch (error) {
       try {
         await dependencies.transactions.transact(async (state) => {

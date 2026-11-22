@@ -225,6 +225,10 @@ test(
     assert.equal(manualStart.statusCode, 201, manualStart.body);
     // A cancelled browser attempt has no outstanding gateway write. An admin can retire it immediately.
     const pendingId = manualStart.json().data.credentialSourceId;
+    const pendingSource = await inject("GET", `${base}/credential-sources/${pendingId}`);
+    assert.equal(pendingSource.statusCode, 200, pendingSource.body);
+    assert.equal(Object.hasOwn(pendingSource.json().data, "connectionTemplateId"), false);
+    assert.equal(Object.hasOwn(pendingSource.json().data, "connectionTemplateVersion"), false);
     const removed = await inject("DELETE", `${base}/credential-sources/${pendingId}`);
     assert.equal(removed.statusCode, 204, removed.body);
     const pendingSession = await pool.query(
@@ -574,6 +578,18 @@ test(
     const sourceDetails = await owner("GET", source);
     assert.equal(sourceDetails.statusCode, 200, sourceDetails.body);
     assert.equal(sourceDetails.json().data.ownerCapability, "token_service");
+    // Source discovery derives the approved Template identity from the saved account.
+    const savedAccount = accounts.json().data[0];
+    assert.equal(sourceDetails.json().data.connectionTemplateId, savedAccount.connectionTemplateId);
+    assert.equal(
+      sourceDetails.json().data.connectionTemplateVersion,
+      savedAccount.connectionTemplateVersion,
+    );
+    const sourceList = await owner("GET", `${base}/credential-sources`);
+    assert.equal(sourceList.statusCode, 200, sourceList.body);
+    const listedSource = sourceList.json().data.find((entry: { id: string }) => entry.id === id);
+    assert.equal(listedSource?.connectionTemplateId, savedAccount.connectionTemplateId);
+    assert.equal(listedSource?.connectionTemplateVersion, savedAccount.connectionTemplateVersion);
     // The saved source and its authorization must retain the Namespace consumed by the callback.
     const completedEvents = (await state.transact((unit) => unit.audit.list())).filter(
       (event) =>
@@ -599,6 +615,12 @@ test(
     assert.equal(readerAccounts.statusCode, 200, readerAccounts.body);
     assert.deepEqual(readerAccounts.json().data, []);
     assert.equal((await reader("GET", source)).statusCode, 403);
+    const hiddenSources = await reader("GET", `${base}/credential-sources`);
+    assert.equal(hiddenSources.statusCode, 200, hiddenSources.body);
+    assert.equal(
+      hiddenSources.json().data.some((entry: { id: string }) => entry.id === id),
+      false,
+    );
     assert.equal((await reader("DELETE", `${connections}/${id}`)).statusCode, 403);
     const custody = await pool.query(
       `SELECT custody.secret_ref, source.driver_id FROM occ.connection_token_custody custody
@@ -704,6 +726,22 @@ test(
       { ...mcpConfig, oauthClientId: futureRegistration.json().data.id },
     );
     assert.equal(switchRegistration.statusCode, 200, switchRegistration.body);
+    // The saved account remains pinned to its consent version when the Template advances.
+    assert.notEqual(
+      savedAccount.connectionTemplateVersion,
+      switchRegistration.json().data.current.version,
+    );
+    const pinnedSource = await owner("GET", source);
+    const pinnedList = await owner("GET", `${base}/credential-sources`);
+    assert.equal(pinnedSource.statusCode, 200, pinnedSource.body);
+    assert.equal(pinnedList.statusCode, 200, pinnedList.body);
+    const pinnedListedSource = pinnedList
+      .json()
+      .data.find((entry: { id: string }) => entry.id === id);
+    for (const projected of [pinnedSource.json().data, pinnedListedSource]) {
+      assert.equal(projected?.connectionTemplateId, savedAccount.connectionTemplateId);
+      assert.equal(projected?.connectionTemplateVersion, savedAccount.connectionTemplateVersion);
+    }
     const currentMcp = async () => {
       const result = await owner("GET", connections);
       assert.equal(result.statusCode, 200, result.body);
@@ -761,6 +799,11 @@ test(
     await setIssuedLifetime(10);
     const rotated = await inject("POST", `${source}/rotate`, undefined);
     assert.equal(rotated.statusCode, 200, rotated.body);
+    assert.equal(rotated.json().data.connectionTemplateId, savedAccount.connectionTemplateId);
+    assert.equal(
+      rotated.json().data.connectionTemplateVersion,
+      savedAccount.connectionTemplateVersion,
+    );
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
@@ -856,6 +899,18 @@ test(
     });
     const interrupted = await owner("DELETE", `${connections}/${id}`);
     assert.equal(interrupted.statusCode, 503, interrupted.body);
+    const revokingList = await owner("GET", `${base}/credential-sources`);
+    assert.equal(revokingList.statusCode, 200, revokingList.body);
+    const revokingSource = revokingList
+      .json()
+      .data.find((entry: { id: string }) => entry.id === id);
+    assert.equal(revokingSource?.state, "deleting");
+    assert.equal(Object.hasOwn(revokingSource, "connectionTemplateId"), false);
+    assert.equal(Object.hasOwn(revokingSource, "connectionTemplateVersion"), false);
+    const revokingExact = await owner("GET", source);
+    assert.equal(revokingExact.statusCode, 200, revokingExact.body);
+    assert.equal(Object.hasOwn(revokingExact.json().data, "connectionTemplateId"), false);
+    assert.equal(Object.hasOwn(revokingExact.json().data, "connectionTemplateVersion"), false);
     assert.ok(secretDriver.has(privateRef));
     // Releasing a read after OCC committed revocation must withhold the already-read bearer.
     release.resolve();

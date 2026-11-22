@@ -236,6 +236,12 @@ Records each source owner. Gateway and Proxy sources identify their Driver. Mana
 - `state`
 - `created_at`
 
+### `static_credential_source_templates`
+
+Pins one managed static Source to an immutable static Connection Template version. Source deletion removes the association; the Template version cannot be deleted while referenced.
+
+- `namespace_id`, `credential_source_id`, `connection_template_id`, `connection_template_version`
+
 ### `egress_installations`
 
 Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement

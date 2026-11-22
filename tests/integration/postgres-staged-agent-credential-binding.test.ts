@@ -179,6 +179,107 @@ test(
       details: [{ path: "/config/provider_preset", code: "INVALID_VALUE" }],
     });
     assert.deepEqual((await inject("GET", `${base}/credential-sources`)).json().data, []);
+    // Template selection is validated before the concrete TokenService takes custody.
+    const template = await inject("POST", "/connection-templates", {
+      namespaceId,
+      displayName: "Plugin API access",
+      mode: "static_bearer",
+      destinations: [{ method: "GET", host: "api.example.test", port: 443, path: "/v1/**" }],
+    });
+    assert.equal(template.statusCode, 201, template.body);
+    const templateId: string = template.json().data.id;
+    const selectedMaterial = randomUUID();
+    material.push(selectedMaterial);
+    const selectedBody = {
+      name: "Plugin Source",
+      type: "static",
+      connectionTemplateId: templateId,
+      connectionTemplateVersion: 1,
+      secret: { opaque: selectedMaterial },
+    };
+    const incomplete = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        connectionTemplateVersion: undefined,
+      }),
+    );
+    assert.equal(incomplete.statusCode, 400, incomplete.body);
+    const stale = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        connectionTemplateVersion: 2,
+      }),
+    );
+    assert.equal(stale.statusCode, 409, stale.body);
+    const mixed = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        config: { provider_preset: "openai" },
+      }),
+    );
+    assert.equal(mixed.statusCode, 409, mixed.body);
+    assert.deepEqual(
+      sourceCountsBeforeCustody,
+      [],
+      "invalid Template selection must not reach private custody",
+    );
+    const enrolled = remember(await inject("POST", `${base}/credential-sources`, selectedBody));
+    assert.equal(enrolled.statusCode, 201, enrolled.body);
+    const selectedId: string = enrolled.json().data.id;
+    const addPreset = remember(
+      await inject("PATCH", `${base}/credential-sources/${selectedId}`, {
+        config: { provider_preset: "openai" },
+      }),
+    );
+    assert.equal(addPreset.statusCode, 409, addPreset.body);
+    // The limited application role cannot bypass the same persisted policy boundary.
+    await assert.rejects(
+      pool.query("UPDATE occ.credential_sources SET config=$2::jsonb WHERE id=$1", [
+        selectedId,
+        JSON.stringify({ provider_preset: "openai" }),
+      ]),
+      { code: "23514" },
+    );
+    const advanced = await inject("PATCH", `/connection-templates/${templateId}`, {
+      mode: "static_bearer",
+      destinations: [{ method: "GET", host: "api.example.test", port: 443, path: "/v2/**" }],
+    });
+    assert.equal(advanced.statusCode, 200, advanced.body);
+    assert.equal(advanced.json().data.current.version, 2);
+    const selectedUpdate = remember(
+      await inject("PATCH", `${base}/credential-sources/${selectedId}`, {
+        secret: { opaque: selectedMaterial },
+      }),
+    );
+    assert.equal(selectedUpdate.statusCode, 200, selectedUpdate.body);
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]?.notification.sourceRef.id, selectedId);
+    assert.equal(notifications[0]?.resolved.credential, selectedMaterial);
+    const selectedRead = remember(await inject("GET", `${base}/credential-sources/${selectedId}`));
+    const selectedList = remember(await inject("GET", `${base}/credential-sources`));
+    assert.equal(selectedRead.statusCode, 200, selectedRead.body);
+    assert.equal(selectedList.statusCode, 200, selectedList.body);
+    const listed = selectedList
+      .json()
+      .data.find((entry: { id: string }) => entry.id === selectedId);
+    for (const projected of [
+      enrolled.json().data,
+      selectedUpdate.json().data,
+      selectedRead.json().data,
+      listed,
+    ]) {
+      assert.equal(projected?.connectionTemplateId, templateId);
+      assert.equal(projected?.connectionTemplateVersion, 1);
+    }
+    // The immutable version cannot be removed while a Source holds it. Source retirement
+    // still belongs to TokenService; its ordinary deletion cascades the association.
+    assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 409);
+    assert.equal(
+      (await inject("DELETE", `${base}/credential-sources/${selectedId}`)).statusCode,
+      204,
+    );
+    sourceCountsBeforeCustody.length = 0;
+    notifications.length = 0;
     // Enrollment must reach the selected concrete TokenService through the supported Source route.
     const createdSource = remember(
       await inject("POST", `${base}/credential-sources`, {
@@ -192,6 +293,15 @@ test(
     assert.deepEqual(sourceCountsBeforeCustody, [0]);
     const source = createdSource.json().data;
     const sourceId = source.id;
+    // Nor can the application role attach a Template to an existing model-preset Source.
+    await assert.rejects(
+      pool.query(
+        "INSERT INTO occ.static_credential_source_templates (namespace_id,credential_source_id,connection_template_id,connection_template_version) VALUES ($1,$2,$3,$4)",
+        [namespaceId, sourceId, templateId, 1],
+      ),
+      { code: "23514" },
+    );
+    assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 204);
     const sourceRef: CredentialSourceReference = {
       kind: "credential_source",
       namespaceId,
@@ -204,6 +314,8 @@ test(
       assert.equal(value.type, "static");
       assert.deepEqual(value.config, { provider_preset: "openai" });
       assert.deepEqual(value.secrets, {});
+      assert.equal(Object.hasOwn(value, "connectionTemplateId"), false);
+      assert.equal(Object.hasOwn(value, "connectionTemplateVersion"), false);
       for (const privateField of ["secret", "driverId", "tokenServiceInstanceId"]) {
         assert.equal(Object.hasOwn(value, privateField), false, privateField);
       }
@@ -366,7 +478,7 @@ test(
     assert.deepEqual(hiddenWithoutOwner.json().data, []);
 
     // An unauthorized creator must receive an attributable denial before OCC validates
-    // the schema-valid but unrecognized preset in the request body.
+    // the schema-valid but unavailable Template and unrecognized preset in the request body.
     const deniedEnrollmentMaterial = randomUUID();
     material.push(deniedEnrollmentMaterial);
     const deniedEnrollment = remember(
@@ -374,6 +486,8 @@ test(
         name: "Unauthorized source",
         type: "static",
         config: { provider_preset: "unknown" },
+        connectionTemplateId: `ctp_${randomUUID()}`,
+        connectionTemplateVersion: 1,
         secret: { opaque: deniedEnrollmentMaterial },
       }),
     );

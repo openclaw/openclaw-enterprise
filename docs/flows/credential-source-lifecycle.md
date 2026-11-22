@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-22
-last_updated_session: authoring-run/bdd1048e-11c2-4f1f-9021-5069535f66bf
+last_updated_session: 01a1f7eb-2091-7c21-9b03-27f01f958b69
 ---
 
 # Credential source lifecycle flow
@@ -22,7 +22,11 @@ An operator registers a credential with TokenService and selects its Source for 
 
 ```mermaid
 graph TD
-  Register["<b>TokenService</b><br/>Store credential and Source"] --> Admit["<b>OCC</b><br/>Authorize Source and save policies"]
+  Select["<b>OCC</b><br/>Authorize create and validate optional Template version"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
+  Register --> Associate["<b>OCC</b><br/>Save immutable association, creator grant, and audit"]
+  Associate --> Kind{"Template-associated Source?"}
+  Kind -->|Yes| Discover["<b>OCC</b><br/>Expose pinned Source metadata; Plugin admission remains pending"]
+  Kind -->|No, model preset| Admit["<b>OCC</b><br/>Authorize model Source and save policies"]
   Admit --> Target["<b>Compute</b><br/>Create idle Sandbox"]
   Target --> Delivery["<b>Worker and Proxy</b><br/>Authorize and prepare delivery"]
   Delivery --> Ready["<b>Compute and Sandbox</b><br/>Apply and verify policy"]
@@ -38,7 +42,9 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-OCC checks `credential_source:create` for the Namespace and calls the selected TokenService. TokenService creates the Source and stores the write-only credential in its private custody. OCC grants the creator access and records completion. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
+OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, non-static, or non-current version, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the Source and stores the write-only credential in its private custody. OCC then saves the immutable static Template association, grants the creator access, and records completion in one transaction. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
+
+Source GET and authorized list return the saved static association. For an active OAuth Source, OCC derives the exact pair from `SavedConnection`, which records the completed consent version. A later Template update changes neither pair; pending and revoking OAuth connections omit it.
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
@@ -101,6 +107,8 @@ Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-e
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 15:16: Trace static Source Template validation and immutable association, and OAuth consent projection. (01a1f7eb-2091-7c21-9b03-27f01f958b69 - e302d9e90)
 
 - 2026-11-22 14:53: Combine the credential workflow with committed Source delivery updates and controlled caller proof. (authoring-run/bdd1048e-11c2-4f1f-9021-5069535f66bf - ad9964a9b2975199780000000c6ada2a2e8b376a)
 

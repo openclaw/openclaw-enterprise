@@ -88,7 +88,6 @@ import type {
   OAuthClient,
   ConnectionTemplate,
   CredentialSourceReference,
-  SourceRegistrationInput,
   CredentialSourceMetadata,
   CredentialSourceStatus,
   CredentialWithdrawalStatus,
@@ -136,7 +135,10 @@ import { type LookupChannelDirectoryInput } from "./setup-discovery.ts";
 import { type AgentCredentialSourceInput } from "./agent-credential-withdrawal.ts";
 import { type HarnessResolver } from "./agent-harness-topology.ts";
 import type { RuntimeLogPage, RuntimeLogQuery } from "./runtime-logs/index.ts";
-import { type UpdateManagedCredentialSourceInput } from "./managed-credential-sources.ts";
+import {
+  type CreateManagedCredentialSourceInput,
+  type UpdateManagedCredentialSourceInput,
+} from "./managed-credential-sources.ts";
 
 import type { AgentAuditSelection } from "./ports/agent-audit.ts";
 import {
@@ -1150,9 +1152,7 @@ export class OpenClawController {
   async createManagedCredentialSource(
     principalId: string,
     namespaceId: string,
-    input: Omit<SourceRegistrationInput, "namespaceId" | "config"> & {
-      readonly providerPreset?: string;
-    },
+    input: CreateManagedCredentialSourceInput,
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
     return this.composition.credentials.managedCredentialSources.createManagedCredentialSource(

@@ -144,6 +144,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 88 && completedCount > 88) {
     return "preStaticConnectionTemplates";
   }
+  if (count === 89 && completedCount > 89) {
+    return "preStaticSourceTemplateAssociation";
+  }
   if (count === completedCount) {
     return "completed";
   }

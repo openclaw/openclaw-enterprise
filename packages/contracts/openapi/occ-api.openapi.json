@@ -281,7 +281,17 @@
       },
       "RegisterTokenServiceSourceBody": {
         "additionalProperties": false,
-        "description": "Register a managed static Source. OCC allocates its identity and selects the TokenService owner.",
+        "allOf": [
+          {
+            "if": { "required": ["connectionTemplateId"] },
+            "then": { "required": ["connectionTemplateVersion"] }
+          },
+          {
+            "if": { "required": ["connectionTemplateVersion"] },
+            "then": { "required": ["connectionTemplateId"] }
+          }
+        ],
+        "description": "Register a managed static Source. Supply connectionTemplateId and its positive connectionTemplateVersion together, or omit both. OCC validates the selected approved current static Template before TokenService takes custody.",
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
@@ -289,6 +299,11 @@
             "maxProperties": 32,
             "type": "object"
           },
+          "connectionTemplateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
           "name": {
             "maxLength": 200,
             "minLength": 1,
@@ -830,6 +845,11 @@
                 "maxProperties": 32,
                 "type": "object"
               },
+              "connectionTemplateId": {
+                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
               "egress": {
                 "additionalProperties": false,
                 "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
@@ -37526,6 +37546,11 @@
                             "maxProperties": 32,
                             "type": "object"
                           },
+                          "connectionTemplateId": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
                           "egress": {
                             "additionalProperties": false,
                             "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",

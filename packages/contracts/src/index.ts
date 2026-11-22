@@ -619,6 +619,8 @@ export type CredentialSource = CredentialSourceOwner & {
 };
 
 export interface CredentialSourceMetadata {
+  readonly connectionTemplateId?: string;
+  readonly connectionTemplateVersion?: number;
   readonly ownerCapability: CredentialSourceOwnerCapability;
   readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
   readonly id: string;

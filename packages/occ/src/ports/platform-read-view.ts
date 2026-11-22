@@ -74,6 +74,8 @@ export const platformReadMethods = deepFreeze({
   authenticationStates: ["findDevice"],
   secrets: ["findSecret", "listSecrets", "listReferences"],
   credentialSources: [
+    "findStaticConnectionTemplate",
+    "listStaticConnectionTemplates",
     "findEgressInstallation",
     "findRevisionEgressInstallation",
     "listCredentialPolicyReductions",
