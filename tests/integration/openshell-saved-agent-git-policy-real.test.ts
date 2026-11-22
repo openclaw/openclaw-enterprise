@@ -730,6 +730,9 @@ async function refuseClassicToken(
   const network = origin.network;
   assert.ok(network);
   const code = "PREPARED_GITHUB_TOKEN_REFUSED";
+  const workerSelector =
+    "app.kubernetes.io/instance=openclaw-enterprise,app.kubernetes.io/component=worker";
+  // The Worker's own container: the refusal is its log line, not another container's.
   const workerLogs = () =>
     fixture.kube(
       [
@@ -737,12 +740,38 @@ async function refuseClassicToken(
         "-n",
         fixture.platform,
         "-l",
-        "app.kubernetes.io/instance=openclaw-enterprise,app.kubernetes.io/component=worker",
+        workerSelector,
+        "--container=worker",
         "--tail=-1",
         "--max-log-requests=10",
       ],
       { timeout: 60_000 },
     );
+  // Restart counts only: a restarted Worker's current log starts after the restart.
+  const workerRestarts = async () =>
+    (
+      JSON.parse(
+        await fixture.kube([
+          "get",
+          "pods",
+          "-n",
+          fixture.platform,
+          "-l",
+          workerSelector,
+          "-o",
+          "json",
+        ]),
+      ) as {
+        items: { status?: { containerStatuses?: { name: string; restartCount: number }[] } }[];
+      }
+    ).items.flatMap(({ status }) =>
+      (status?.containerStatuses ?? [])
+        .filter(({ name }) => name === "worker")
+        .map(({ restartCount }) => restartCount),
+    );
+  // Any Worker line (its start-up line at the default level) shows the read reached its log.
+  const started = (logs: string) =>
+    logs.includes('"event":"worker.started"') || logs.includes('"service":"occ-worker"');
   const valuesAbsent = (logs: string) => {
     for (const value of [credential.value, credential.replacement, credential.classic]) {
       assert.ok(!logs.includes(value), "TOKEN_VALUE_NOT_LOGGED");
@@ -762,7 +791,10 @@ async function refuseClassicToken(
     });
   const baseline = await workerLogs();
   valuesAbsent(baseline);
+  // "No refusal line" is evidence only when the read returns the Worker's log at all.
+  assert.ok(started(baseline), "TOKEN_WORKER_LOG_READ");
   assert.deepEqual(refusals(baseline), [], "TOKEN_NO_REFUSAL_BEFORE_CLASSIC");
+  const restartsBefore = await workerRestarts();
 
   // The origin knows the classic value, so a request that carried it would be counted by index.
   const classicIndex = network.acceptStaticToken(credential.classic);
@@ -794,8 +826,26 @@ async function refuseClassicToken(
         waitedSeconds: Math.round((Date.now() - patchedAt) / 1000),
         waitBudgetSeconds: Math.round(waitMs / 1000),
         workerLogLines: logs.split("\n").length,
+        workerStartedLine: started(logs),
+        workerRestarts: { before: restartsBefore, now: await workerRestarts() },
         workerCodes: [
           ...new Set(logs.match(/PREPARED_GITHUB_[A-Z_]+|OPENSHELL_GIT_[A-Z_]+/gu) ?? []),
+        ],
+        // Route and error events by name, status, reason and code: fixed words, no values.
+        workerEvents: [
+          ...new Set(
+            logs.split("\n").flatMap((line) => {
+              try {
+                const event = asRecord(JSON.parse(line.slice(line.indexOf("{"))));
+                const name = String(event?.event ?? "");
+                return name.startsWith("worker.openshell-git") || name === "worker.error"
+                  ? [[name, event?.status, event?.reason, event?.code].filter(Boolean).join(" ")]
+                  : [];
+              } catch {
+                return [];
+              }
+            }),
+          ),
         ],
         providerRevisionChanged: (await providerRevision()) !== revisionBefore,
       }),
@@ -849,7 +899,11 @@ async function refuseClassicToken(
     );
   }
   valuesAbsent(logs);
-  valuesAbsent(await workerLogs());
+  const after = await workerLogs();
+  valuesAbsent(after);
+  // The route reads at every pass; the Worker reports one refused Secret file once.
+  assert.equal(refusals(after).length, 1, "TOKEN_CLASSIC_REFUSED_ONCE");
+  assert.deepEqual(await workerRestarts(), restartsBefore, "TOKEN_REFUSAL_WORKER_NOT_RESTARTED");
   assert.ok(
     refused.every(
       (event) =>

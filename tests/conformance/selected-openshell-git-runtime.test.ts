@@ -3621,6 +3621,35 @@ test("native Git stages material for the verified launcher without a Git request
   assert.equal(f.runtime.route(revision.id).state, "installed");
   assert.equal(await lookup(), undefined);
 
+  // A replaced Secret the owner refuses (a classic token) reads as unprepared material. The
+  // installed route still reads material on every later pass, where the owner reports the
+  // refusal, sends nothing new, and delivers the next lendable value without a redeploy.
+  const lendable = f.owner.readOpenShellMaterial;
+  let refusedReads = 0;
+  f.owner.readOpenShellMaterial = async () => {
+    refusedReads += 1;
+    return { absent: "unprepared" };
+  };
+  await reconcile();
+  await reconcile();
+  assert.equal(refusedReads, 2);
+  assert.equal(activity.updates, 2);
+  assert.deepEqual(f.runtime.route(revision.id), {
+    state: "pending",
+    reason: "material_unavailable",
+  });
+  f.owner.readOpenShellMaterial = lendable;
+  f.owner.material = {
+    ...f.owner.material,
+    materialVersion: randomUUID(),
+    preparationAttemptId: randomUUID(),
+    value: "controlled-version-three-token",
+  };
+  await reconcile();
+  assert.equal(activity.updates, 3);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.equal(await lookup(), undefined);
+
   const unexpectedProbe = async () => assert.fail("native Git must never send a startup probe");
   assert.equal(
     await f.runtime.observeHeldPreview(revision.id, randomUUID(), t.signal, unexpectedProbe),
@@ -3631,7 +3660,7 @@ test("native Git stages material for the verified launcher without a Git request
     undefined,
   );
   assert.equal(await lookup(), undefined);
-  assert.equal(activity.updates, 2);
+  assert.equal(activity.updates, 3);
   assert.equal(activity.probes, 0);
 });
 
