@@ -141,7 +141,10 @@ Code by its command name, also not after a chat command such as
 `/model --runtime claude-cli`. This does not stop a model's shell tool: in any
 Agent it can run the file by its full path. In a gateway that did not select
 the runtime, it then runs without the managed settings, and with only the
-credentials that the tool can already read. A binary missing from the image or not at the pinned
+credentials that the tool can already read. Claude Code then uses its own
+defaults, not the endpoint and telemetry settings on this page: it contacts its
+vendor's API host and sends nonessential traffic and telemetry, as far as the
+gateway's egress rules allow. A binary missing from the image or not at the pinned
 `OCE_CLAUDE_CODE_VERSION` also holds the gateway with `UNAVAILABLE`. Both checks
 are logged as startup phase `claude-code-runtime`.
 
