@@ -1607,6 +1607,7 @@ export type {
   AgentAutomationPolicyQualification,
   AgentAutomationTransport,
   AgentAutomationPolicyBinding,
+  ProtectedRepositoryNetworkPolicySaveContext,
   AgentChatCompletionsEndpoint,
   AgentChatCompletionsResolution,
   ComputeRevisionContext,

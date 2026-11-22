@@ -790,13 +790,11 @@ function executionAdmissionFromRow(
   try {
     const { repositoryNetworkPolicyVersion, ...admission } = stored;
     const hasReaderVersion = Object.hasOwn(stored, "repositoryNetworkPolicyVersion");
-    // Bind the storage-only marker to the policy and supported execution mode
-    // before exposing a scoped revision to Worker.
+    // Bind the storage-only marker to the policy before exposing a scoped revision to Worker.
     if (
       hasReaderVersion !== (policy !== undefined) ||
       (hasReaderVersion &&
-        (admission.mode !== "unprotected" ||
-          policy?.version !== 1 ||
+        (policy?.version !== 1 ||
           repositoryNetworkPolicyVersion !== policy.version ||
           !isDeepStrictEqual(admitRepositoryNetworkPolicy(policy.grants, policy.grants), policy)))
     ) {
@@ -4174,11 +4172,6 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         const repositoryPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
-        if (repositoryPolicy !== undefined && revision.executionAdmission.mode !== "unprotected") {
-          throw new ScopeViolationError(
-            "Repository network policy requires unprotected execution.",
-          );
-        }
         if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||

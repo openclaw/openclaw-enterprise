@@ -751,6 +751,7 @@ export function createControllerComposition(
     { record: workRecorder.record, requestAuditId: currentRequestAuditId },
   );
   const sandboxPolicyOperations = createSandboxPolicyOperations({
+    qualifyRepositoryEdit: (...args) => repositoryPolicy.qualifyRepositoryEdit(...args),
     repositoryCeiling: (namespaceId) =>
       repositoryPolicy.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
     installationId: admittedInstallation.id,
@@ -834,6 +835,9 @@ export function createControllerComposition(
   const credentialProxyCapacity: CredentialProxyCapacity = capacity.capacity;
   const backendMap: ReadonlyMap<string, BackendDefinition> = backendDefinitionMap(backends);
   const repositoryPolicy = createRepositoryPolicyOperations({
+    configurationDriver: configurationOperations.selectedDriver,
+    selectedProxyOwner: () => drivers.selectedProxyOwner(),
+    credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,
     repositoryNetworkPolicyCeiling: parseRepositoryNetworkPolicyCeiling(
       options.repositoryNetworkPolicyCeiling ?? [],
     ),
