@@ -14,11 +14,13 @@ import {
 import {
   isRepositoryRuntimeRetirementWork,
   PostgresWorkQueue,
+  WorkClaimLostError,
   type OpenClawController,
 } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { registerRevisionSnapshotCase } from "./postgres-worker-agent-revision-refusal-cases.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { deferWork, makeWorkDue } from "../helpers/postgres-worker-revision-queue.ts";
 import type {
   RevisionFixture,
   WorkIdentity,
@@ -144,6 +146,217 @@ function computeSupportingRepositoryPolicy(compute: ComputeDriver): ComputeDrive
 }
 
 export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchFixtures): void {
+  for (const variant of ["mismatched", "malformed"] as const) {
+    revisionTest(
+      `the Worker refuses a ${variant} revision work key before scoped deployment`,
+      async (fixture) => {
+        const owner = await fixture.agent(`${variant}-revision-work-key`, {
+          executionMode: "dedicated",
+        });
+        const { id: policyId, options } = await saveRepositoryPolicy(fixture, owner, []);
+        const candidate = await fixture.revision(owner, 1, options);
+        const idempotencyKey =
+          variant === "mismatched"
+            ? `agent_revision:rev_${randomUUID()}:reconcile`
+            : `agent_revision:${candidate.id}:maintenance:01`;
+        const namespaceId = fixture.namespace.id;
+        const actorId = fixture.actor.id;
+        const queue = new PostgresWorkQueue(fixture.observerPool);
+
+        // Keep the canonical deployment for the same revision as a separate control.
+        assert.equal((await deferWork(fixture.observerPool, candidate.idempotencyKey)).rowCount, 1);
+        await fixture.observerPool.query(
+          `INSERT INTO occ.iam_restrictions
+             (id, namespace_id, action, resource_kind, resource_id, effect)
+           VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+          [`restriction-${randomUUID()}`, namespaceId, policyId],
+        );
+        await queue.enqueue({
+          idempotencyKey,
+          namespaceId,
+          agentId: owner.id,
+          revisionId: candidate.id,
+          actorId,
+        });
+
+        const effects: ComputeEffect[] = [];
+        await fixture.start(
+          observeComputeEffects(computeSupportingRepositoryPolicy(fixture.compute), effects),
+        );
+        const refusal = await waitFor("the invalid Work to settle or reach Compute", async () => {
+          const work = await queue.findWork(idempotencyKey);
+          return effects.length > 0 || work?.completedAt !== undefined ? work : undefined;
+        });
+        assert.deepEqual(effects, [], "invalid work cannot bind or prepare this candidate");
+        assert.equal(refusal.state, "failed_permanent");
+        assert.equal(refusal.reasonCode, "INVALID_TARGET");
+        assert.equal(refusal.attemptCount, 1);
+        assert.equal(refusal.namespaceId, namespaceId);
+        assert.equal(refusal.agentId, owner.id);
+        assert.equal(refusal.revisionId, candidate.id);
+        assert.equal(refusal.actorId, actorId);
+        const evidence = await queue.findWorkAttempt(idempotencyKey);
+        assert.equal(evidence?.code, "INVALID_TARGET");
+        assert.equal(evidence?.candidateNotStarted, undefined);
+        assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, undefined);
+
+        const original = await queue.findWork(candidate.idempotencyKey);
+        assert.equal(original?.state, "queued");
+        assert.equal(original.attemptCount, 0);
+        assert.equal(
+          (await makeWorkDue(fixture.observerPool, candidate.idempotencyKey)).rowCount,
+          1,
+        );
+        const denied = await settledRevision(fixture, candidate);
+        assert.equal(denied.reasonCode, "AUTHORIZATION_DENIED");
+        assert.deepEqual(effects, []);
+      },
+    );
+  }
+
+  for (const settlement of ["permanent", "stale"] as const) {
+    test(
+      settlement === "permanent"
+        ? "permanent work settlement transfers repository cleanup only for the exact revision key"
+        : "stale work recovery transfers repository cleanup only for the exact revision key",
+      requiresPostgres,
+      async (context) => {
+        const repository = repositoryBoundary();
+        const fixture = await setup(context, { repoDriver: repository.driver });
+        const owner = await fixture.agent(`${settlement}-revision-key-cleanup`);
+        const revision = await fixture.revision(owner, 1, {
+          repositoryCredentials: repository.snapshot,
+        });
+        const namespaceId = fixture.namespace.id;
+        const actorId = fixture.actor.id;
+        const queue = new PostgresWorkQueue(fixture.observerPool, { maxAttempts: 1 });
+        assert.equal((await deferWork(fixture.observerPool, revision.idempotencyKey)).rowCount, 1);
+        const wrongKey = `agent_revision:rev_${randomUUID()}:reconcile`;
+        const input = {
+          idempotencyKey: wrongKey,
+          namespaceId,
+          agentId: owner.id,
+          revisionId: revision.id,
+          actorId,
+        };
+        const inserted = await queue.enqueue(input);
+        assert.deepEqual(await queue.enqueue(input), inserted);
+
+        async function settle(idempotencyKey: string) {
+          const claim = await queue.claim();
+          assert.ok(claim);
+          assert.equal(claim.idempotencyKey, idempotencyKey);
+          assert.equal(claim.revisionId, revision.id);
+          if (settlement === "permanent") {
+            await queue.fail(claim, { code: "INVALID_TARGET" });
+          } else {
+            await fixture.expireClaim({ id: revision.id, idempotencyKey }, claim.claimToken);
+            const recovered = await queue.recoverStale();
+            assert.ok(recovered.failed.some((work) => work.idempotencyKey === idempotencyKey));
+          }
+          const work = await queue.findWork(idempotencyKey);
+          assert.equal(work?.state, "failed_permanent");
+          assert.equal(
+            work.reasonCode,
+            settlement === "permanent" ? "INVALID_TARGET" : "LEASE_EXPIRED",
+          );
+        }
+
+        async function cleanupRows() {
+          const { rows } = await fixture.observerPool.query<{
+            idempotency_key: string;
+            actor_id: string;
+            agent_id: string;
+            state: string;
+          }>(
+            `SELECT idempotency_key, actor_id, agent_id, state FROM occ.controller_work
+             WHERE namespace_id = $1 AND revision_id = $2 AND idempotency_key LIKE $3`,
+            [namespaceId, revision.id, `agent_revision:${revision.id}:repository_cleanup:%`],
+          );
+          return rows;
+        }
+
+        await settle(wrongKey);
+        assert.deepEqual(await cleanupRows(), [], "a foreign key grants no cleanup authority");
+
+        assert.equal(
+          (await makeWorkDue(fixture.observerPool, revision.idempotencyKey)).rowCount,
+          1,
+        );
+        await settle(revision.idempotencyKey);
+        const cleanup = await cleanupRows();
+        assert.equal(cleanup.length, 1);
+        const [retirement] = cleanup;
+        assert.ok(retirement);
+        assert.ok(
+          isRepositoryRuntimeRetirementWork({
+            idempotencyKey: retirement.idempotency_key,
+            agentId: retirement.agent_id,
+            revisionId: revision.id,
+          }),
+        );
+        assert.equal(retirement.agent_id, owner.id);
+        assert.equal(retirement.actor_id, actorId);
+        assert.equal(retirement.state, "queued");
+      },
+    );
+  }
+
+  revisionTest(
+    "recovered revision maintenance can settle only under its replacement claim",
+    async (fixture) => {
+      const { owner, candidate } = await fixture.admitInitialRevision(
+        "revision-maintenance-key-recovery",
+      );
+      const compute: ComputeDriver = { ...fixture.compute, maintenanceIntervalMs: 3_600_000 };
+      await fixture.start(compute);
+      await fixture.work(candidate, "succeeded");
+      await fixture.stop();
+
+      const key = (await fixture.advanceMaintenance(candidate)).rows[0]?.idempotency_key;
+      assert.ok(key);
+      const maintenance = { id: candidate.id, idempotencyKey: key };
+      const queue = new PostgresWorkQueue(fixture.observerPool);
+      const expired = await queue.claim();
+      assert.ok(expired);
+      assert.equal(expired.idempotencyKey, key);
+      assert.equal(expired.actorId, fixture.actor.id);
+      assert.equal(expired.agentId, owner.id);
+      assert.equal(expired.revisionId, candidate.id);
+      await fixture.expireClaim(maintenance, expired.claimToken);
+      const recovery = await queue.recoverStale();
+      assert.equal(recovery.requeued, 1);
+      assert.equal((await makeWorkDue(fixture.observerPool, key)).rowCount, 1);
+
+      const resume = Promise.withResolvers<void>();
+      let preparing = false;
+      await fixture.start({
+        ...compute,
+        async prepareRevision(revision, deploymentContext) {
+          assert.equal(revision.id, candidate.id);
+          preparing = true;
+          await resume.promise;
+          return compute.prepareRevision(revision, deploymentContext);
+        },
+      });
+      try {
+        await waitUntil("recovered maintenance enters Compute", () => preparing);
+        const replacement = await queue.findWork(key);
+        assert.equal(replacement?.state, "claimed");
+        assert.ok(replacement.claimToken);
+        assert.notEqual(replacement.claimToken, expired.claimToken);
+        assert.equal(replacement.attemptCount, expired.attemptCount + 1);
+        assert.equal(replacement.actorId, expired.actorId);
+        await assert.rejects(queue.fail(expired, { code: "INVALID_TARGET" }), WorkClaimLostError);
+        assert.equal((await queue.findWork(key))?.claimToken, replacement.claimToken);
+      } finally {
+        resume.resolve();
+      }
+      await fixture.work(maintenance, "succeeded");
+      assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, candidate.id);
+    },
+  );
+
   revisionTest(
     "a restarted worker refuses explicit deny-all before preparing an ordinary revision",
     async (fixture) => {

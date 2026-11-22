@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-11-22
-last_updated_session: authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb
+last_updated_session: authoring-run/f17221b4-d087-4cf1-a8eb-a201b2662720
 ---
 
 # Controller Worker Flow
@@ -34,7 +34,10 @@ graph TD
     subgraph Worker["Independent controller worker"]
         C["Validate startup and attach lifecycle Drivers"] --> D["Recover expired claims and claim eligible work"]
         B --> D
-        D -->|claim saved| E["Reload exact resources and current IAM state"]
+        D -->|ordinary revision claim| V{"Canonical key for claim revision?"}
+        D -->|other claim saved| E["Reload exact resources and current IAM state"]
+        V -->|yes| E
+        V -->|no| W["Fail only the claimed work: INVALID_TARGET"]
         D -->|claim audit insert fails| D
         E --> F{"Authorized and valid?"}
         F -->|scoped deployment| S{"Dispatch fence passes?"}
@@ -97,7 +100,8 @@ failure rolls back the version, desired runtime state and queued work; an
 unknown PostgreSQL commit outcome remains unknown and is not retried.
 
 The queue records the actor, owner and target. Revision work also records the
-Agent and revision IDs; lifecycle work records the Agent and `stopped` or
+Agent and revision IDs; ordinary deployment work uses
+`agent_revision:<revisionId>:reconcile`. Lifecycle work records the Agent and `stopped` or
 `deleted` target. An idempotency key cannot change actor, owner or target. The API
 returns before Compute dispatch.
 
@@ -122,7 +126,10 @@ five logged attempts. On shutdown, interrupted claims follow lease recovery.
 `FOR UPDATE SKIP LOCKED` protects each claim. With audit enabled, PostgreSQL
 saves the claim and `controller_work.claimed` record together. The worker starts
 after commit. An insert failure leaves work queued. Each attempt has a new ID,
-even when the count repeats. The lease token stays in the queue.
+even when the count repeats. The lease token stays in the queue. Retries and
+stale-claim recovery keep the operation key. Maintenance uses
+`agent_revision:<revisionId>:maintenance:<bucket>`, where the bucket is a
+canonical nonnegative decimal integer.
 
 `health()` queries work and emits `worker.health`; `HEALTH_UNAVAILABLE` consumes
 no retries. Progress probes track passes and renewals; see
@@ -138,6 +145,13 @@ Namespace work verifies the target is still `provisioning` or `deleting`.
 A changed target completes as `SUPERSEDED_TARGET`. Otherwise `authorizeNamespace()`
 rechecks the original actor. Provisioning enforces Namespace restrictions.
 Placement into an existing Kubernetes namespace requires Installation administration.
+
+Before ordinary revision work reloads resources, `ControllerWorker.process`
+checks that its key is the exact reconcile key or a canonical maintenance key for
+the claim's revision ID. A mismatched or malformed key fails as `INVALID_TARGET`
+under the live claim before revision resource reads, IAM reauthorization, or
+deployment effects. This settles the work only; it does not publish a candidate
+observation or certify that the candidate was untouched.
 
 Version work reloads its Namespace, Agent, saved version, and selected version.
 `processRevision()` rejects mismatched owners, an unready Namespace, an invalid
@@ -315,6 +329,13 @@ minutes and at least four times the stop duration. Later passes retry the stop
 unless superseded or the refusal lifts. If it lifts after the deadline, the stop
 then publishes `CONVERGENCE_DEADLINE_EXCEEDED`.
 
+`packages/occ/src/state/postgres-work-queue.ts:transferRepositoryCleanupSql`
+filters ordinary revision rows by the same key grammar before selecting cleanup
+ownership or locking the Namespace and Agent. On permanent failure, exhausted
+retry, or stale recovery, an invalid row can settle its own work but cannot
+transfer repository cleanup for the revision in its owner tuple. Dedicated
+repository cleanup and credential-withdrawal work retain their separate paths.
+
 `settleRepositoryCleanup()` defers incomplete cleanup without consuming retries.
 Closing sessions keep the Driver interval. Other stalled cleanup slows with age.
 The worker uses the committed outcome for logs and metrics.
@@ -424,6 +445,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-22 20:25: Trace revision work key validation and cleanup transfer in the accompanying change. (authoring-run/f17221b4-d087-4cf1-a8eb-a201b2662720 - 6e87869c03b7db12a22a2ec1b13d9b1fe3e01798)
 - 2026-11-22 10:47: Trace repository cleanup settlement and metrics. (authoring-run/18e09cc2-273a-4950-b512-3648f405ac27 - f31e3395fff2f025a36a31e8b7bcca31d5d45938)
 - 2026-11-22 10:32: Trace revision finalization through the committed result. (authoring-run/07ab0ce1-dc1f-41fa-99cb-21af375ac8cb - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
 - 2026-11-22 10:30: Trace shared Agent Stop and Delete settlement. (authoring-run/e04921d4-0e64-4748-963f-ea2bdbee1215 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
