@@ -551,8 +551,9 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
     "before-admission",
     "cross-namespace",
   ]) {
+    const beforeResponse = t.mock.fn();
     const { controller, namespace, agent, bot, path, intent, work, secretDriver, providerCalls } =
-      await slackFirstDeploymentFixture();
+      await slackFirstDeploymentFixture(true, beforeResponse);
     const fixture = controller.fixture;
     const deny = () =>
       fixture.state.restrictions.push({
@@ -585,11 +586,8 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
         });
     }
     if (stage === "before-admission") {
-      const transact = fixture.platformState.transact.bind(fixture.platformState);
-      fixture.platformState.transact = (operation) => {
-        deny();
-        return transact(operation);
-      };
+      // Revoke Secret authority after the provider request and before locked admission.
+      beforeResponse.mock.mockImplementationOnce(deny);
     }
     if (stage === "cross-namespace") {
       const read = fixture.platformState.read.bind(fixture.platformState);

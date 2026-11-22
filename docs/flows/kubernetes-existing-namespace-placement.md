@@ -20,7 +20,7 @@ in place when their tenant markers and OpenClaw manager label are exact.
 - Trigger: `POST /namespaces` with optional `existingNamespace`, subsequent
   worker provisioning or deletion, and Configuration CRUD.
 - `packages/occ/src/namespace-operations.ts:createNamespace`
-- `apps/controller/src/worker.ts:ControllerWorker.authorize`
+- `apps/controller/src/worker.ts:ControllerWorker.authorizeNamespace`
 - `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.ensureNamespace`
 - Assumptions: the operator exclusively dedicates an existing, `Active`
   namespace to its tenant and prepares its external-lifecycle annotation,

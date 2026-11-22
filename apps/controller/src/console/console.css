@@ -3069,6 +3069,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: 10.5rem;
 }
 .row-action-note {
+  /* Keep the absolutely positioned description inside the scrolling table. */
+  position: relative;
   display: block;
   height: 16px;
   margin-top: var(--space-2);
@@ -3144,6 +3146,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   grid-template-columns: 160px minmax(0, 1fr);
   gap: var(--space-4) var(--space-5);
 }
+.agent-settings-summary {
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  row-gap: var(--space-3);
+}
 .configuration-summary dt {
   color: var(--muted);
 }
@@ -3153,6 +3159,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .native-document {
   margin-top: var(--space-6);
+}
+.configuration-summary .native-document {
+  margin-top: 0;
 }
 .native-document summary {
   width: fit-content;
@@ -3317,6 +3326,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .dialog--wide {
   width: min(72rem, calc(100% - 2 * var(--space-4)));
   height: min(52rem, calc(100% - 2 * var(--space-4)));
+}
+#create-namespace-description {
+  overflow-wrap: anywhere;
 }
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
@@ -3739,6 +3751,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   }
   .configuration-summary dd {
     margin-bottom: var(--space-3);
+  }
+  .configuration-summary .native-document pre {
+    padding: var(--space-3);
+    font: var(--text-md) / var(--text-md--line-height) var(--font-mono);
   }
 }
 /* Phone: each Agent is a stacked row, its name and ID first, then each cell beside its column's

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-22
-last_updated_session: authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c
+last_updated_session: authoring-run/d86bdf09-8b77-410f-8646-4feb7a9071cf
 ---
 
 # Platform console request flow
@@ -205,6 +205,11 @@ server rechecks them. `console.mjs:takeLinkedSecret` keeps a `secret` link's ID
 until the page shows it. Create and replacement wait for Namespace readiness.
 Mutations use the tracked request client and Secret API, never a Driver.
 
+`console.mts:loadPage` restores a retained Secrets query after a changed recheck or
+history return for the same session and Namespace. `secrets.mts:renderSecrets` filters
+freshly authorized rows. On refocus, `focusInShownView` restores the search selection
+or focused result by Secret ID, falling back to search. **Refresh** clears the query.
+
 `secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
 and clears it after the request, dismissal, or view retention
 (`console.mjs:clearPasswordInputs`). Pending requests block navigation and
@@ -214,12 +219,11 @@ status read after an uncertain delete; a denial never confirms removal.
 Replacement hands delivery to explicit Agent deployment or CredentialSource
 update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
 
-`apps/controller/src/console/namespaces.mts:renderNamespaces` tracks Name-rule-valid
-`POST /namespaces`; `OpenClawController.createNamespace` authorizes and queues
-provisioning; `perform` audits. Open Agents requires relisting. Closing refocuses
-the opener; 403 disables it per account across navigation until Refresh (`fromRefresh`).
-Pending writes prevent dismissal; 400s mark names; conflicts retain input.
-Inspect unconfirmed responses.
+The Controller queues provisioning. HTTP 201 triggers
+`apps/controller/src/console/namespaces.mts:confirmCreation`.
+Exact list membership enables **Open Agents**. Inconclusive reads offer another
+GET. Omissions and denials offer **Done**. Closing restores focus. A create 403
+disables creation for that account until Refresh.
 
 `namespace-deletion.mts` blocks navigation/dismissal during writes. OCC rechecks
 IAM/contents (20 blocker IDs/kind). `202`: three-second polling; `404`: remove row,
@@ -376,6 +380,12 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 11:28: Clarify Namespace list results. (authoring-run/d86bdf09-8b77-410f-8646-4feb7a9071cf - 5aa97a22d8d7d1ed8ca31a18d9892ad0313e24c6)
+
+- 2026-11-22 11:17: Trace Secrets search restoration. (authoring-run/6a1f921d-e68d-4ad9-a9b0-733f9344099e - b4bf1f79813c391977b4f58eb92e5241a8eaa8b8)
+
+- 2026-11-22 11:16: Trace the read after Namespace creation. (authoring-run/4f0bae81-577e-4c6c-b34e-daa95bc82a3c - ad54d29adb562767e830020c504302479159c578)
 
 - 2026-11-22 08:59: Trace keyboard search. (authoring-run/d7fa729b-2fe9-40b9-be53-eb2e0051e95c - f3996c521e94d8bf18ff9018069c699dda6913c6)
 

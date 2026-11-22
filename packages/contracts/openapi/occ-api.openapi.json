@@ -23383,7 +23383,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgent",
         "parameters": [
           {
@@ -23993,7 +23993,19 @@
           },
           {
             "action": "read",
-            "condition": "saved_sandbox_policy_additions",
+            "condition": "saved_sandbox_policy_for_deployment",
+            "resourceKind": "sandbox_policy",
+            "scope": "requested"
+          },
+          {
+            "action": "manage_policy",
+            "condition": "explicit_repository_network_policy",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "update",
+            "condition": "explicit_repository_network_policy",
             "resourceKind": "sandbox_policy",
             "scope": "requested"
           }
@@ -24002,7 +24014,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy-first": {
       "post": {
-        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgentFirst",
         "parameters": [
           {
@@ -24290,7 +24302,21 @@
           },
           {
             "action": "read",
-            "condition": "saved_sandbox_policy_additions",
+            "condition": "saved_sandbox_policy_for_deployment",
+            "phase": "fresh_admission",
+            "resourceKind": "sandbox_policy",
+            "scope": "requested"
+          },
+          {
+            "action": "manage_policy",
+            "condition": "explicit_repository_network_policy",
+            "phase": "fresh_admission",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "update",
+            "condition": "explicit_repository_network_policy",
             "phase": "fresh_admission",
             "resourceKind": "sandbox_policy",
             "scope": "requested"
@@ -32504,10 +32530,10 @@
                         },
                         "protectedExecution": {
                           "anyOf": [{ "type": "boolean" }, { "type": "null" }],
-                          "description": "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone."
+                          "description": "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone."
                         },
                         "repositoryNetworkPolicyCeiling": {
-                          "description": "Installation repository grants that the current repository policy owner allows for this Agent's Namespace.",
+                          "description": "Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -32531,7 +32557,7 @@
                           "type": "array"
                         },
                         "repositoryNetworkPolicySaveSupported": {
-                          "description": "Whether the state adapter can save a withdrawal of this Agent's existing repository grants.",
+                          "description": "Whether the editor can request withdrawal of a saved list or submit a first list for validation. Before the first deployment, a qualified Driver pair can evaluate a first list if the selected and delegated scopes overlap or the pair accepts an empty list. PUT validates the complete proposed list.",
                           "type": "boolean"
                         },
                         "unavailableReason": {
@@ -32768,7 +32794,7 @@
                   },
                   "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
                   "repositoryNetworkPolicy": {
-                    "description": "Omit to preserve the saved grants. Send an empty array to change an existing list to deny-all. Send empty arrays for both additions and repositoryNetworkPolicy to withdraw under protected execution or without Sandbox Driver support. This version refuses a first list and nonempty lists.",
+                    "description": "Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {

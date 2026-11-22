@@ -10,7 +10,7 @@ keeps running. Send
 `POST /namespaces/:namespaceId/agents/:agentId/credential-sources/:credentialSourceId/withdraw`.
 The caller needs `agent:operate`, and the selected version must have been
 saved with that source, as its Harness authentication or in
-`credentialSources`. The request returns `202` with the withdrawal in state `pending`.
+`credentialSources`. Withdrawal of a staged TokenService source is not supported and returns `409` before saving withdrawal state or queuing work. Other supported requests return `202` with the withdrawal in state `pending`.
 A saved version with the source that is not yet selected gets its own
 withdrawal, so it never attaches the source. A withdrawn Harness source fails
 that deployment with `CREDENTIAL_WITHDRAWN`; otherwise it becomes selected without the

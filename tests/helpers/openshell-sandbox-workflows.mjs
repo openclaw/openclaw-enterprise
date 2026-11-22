@@ -9891,7 +9891,9 @@ export function registerProviderLifecycleTest(workflow) {
           await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
         });
         if (pluginInstallOnly) {
-          await assertInstalledCodexPlugin(topology);
+          await runOpenShellStage(testContext, "plugin-check", () =>
+            assertInstalledCodexPlugin(topology),
+          );
           return;
         }
         process.stderr.write(

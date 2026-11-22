@@ -864,20 +864,17 @@ export function checkDirectPatPlacement() {
   });
   const ownership = { namespaceId: tenant.id, agentId: "direct-pat-agent" };
   for (const role of ["agent", "gateway"] as const) {
-    const workload = driver["deployment"](
-      "direct-pat",
+    const workload = driver["deployment"]({
+      name: "direct-pat",
       ownership,
-      { name: namespace, plane: "execution" },
-      { runtime: "runtime:local", workspaceSetup: options().images.gateway },
-      "direct-pat",
+      namespace: { name: namespace, plane: "execution" },
+      images: { runtime: "runtime:local", workspaceSetup: options().images.gateway },
+      serviceAccountName: "direct-pat",
       role,
-      {},
-      "info",
-      undefined,
-      false,
-      undefined,
-      role === "agent" ? prepared : undefined,
-    );
+      environment: {},
+      loggingLevel: "info",
+      harnessAuth: role === "agent" ? prepared : undefined,
+    });
     assert.equal(workload.kind, "Deployment");
     const pod = (workload.spec as Deployment["spec"])?.template.spec;
     const entries = pod?.containers[0]?.env;
