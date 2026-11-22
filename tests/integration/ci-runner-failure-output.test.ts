@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
@@ -9,6 +9,7 @@ import {
   redactOutputLine,
 } from "../../scripts/ci/failure-redaction.ts";
 import reporter from "../../scripts/ci/reporter.ts";
+import { channelEgressCase } from "../../scripts/ci/channel-egress-diagnostic.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   createRunnerFixture,
@@ -553,6 +554,54 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     "unexpected diagnostic output lines",
   );
   assert.equal(record.output.omittedLines, 0);
+});
+
+test("runner emits a finite channel egress failure stage", async (t) => {
+  const root = await createRunnerFixture(t);
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "slack-live");
+  const { file, title } = channelEgressCase;
+  const wrongFile = "tests/integration/not-channel-egress.test.ts";
+  const diagnostic = (stage: string) => ({ kind: "channel-egress", stage });
+  await Promise.all([
+    copyFile(
+      new URL("../../scripts/ci/channel-egress-diagnostic.ts", import.meta.url),
+      join(root, "scripts/ci/channel-egress-diagnostic.ts"),
+    ),
+    copyFile(
+      new URL("../fixtures/ci-runner-channel-egress-child.ts", import.meta.url),
+      join(root, file),
+    ),
+    copyFile(
+      new URL("../fixtures/ci-runner-channel-egress-neighbor.ts", import.meta.url),
+      join(root, wrongFile),
+    ),
+  ]);
+  await writeRunnerManifest(root, {
+    lanes: { "slack-live": { files: [{ path: file }, { path: wrongFile }] } },
+  });
+  const run = runRunnerSync(laneArgs(root, "slack-live", statePath, resultsPath));
+  assert.equal(run.status, 1, run.stderr);
+  const text = await readFile(resultsPath, "utf8");
+  const result: unknown = JSON.parse(text);
+  assert(isRecord(result) && Array.isArray(result.files));
+  const receipts = result.files.map((entry: unknown) => {
+    assert(isRecord(entry) && Array.isArray(entry.tests));
+    return entry.tests.flatMap((result: unknown) => {
+      assert(isRecord(result));
+      if (!isRecord(result.error) || result.error.diagnostic === undefined) {
+        return [];
+      }
+      return [{ name: result.name, status: result.status, diagnostic: result.error.diagnostic }];
+    });
+  });
+  assert.deepEqual(receipts, [
+    [
+      { name: title, status: "failed", diagnostic: diagnostic("connect-routing") },
+      { name: title, status: "failed", diagnostic: diagnostic("active-tunnel") },
+    ],
+    [],
+  ]);
+  assert.doesNotMatch(text, /fixture-unrecognized-stage|fixture-extra-field/);
 });
 
 test("replacement readiness goes only to the failed attempt diagnostic output", async (t) => {

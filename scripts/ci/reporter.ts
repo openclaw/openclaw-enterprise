@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { TestEvent } from "node:test/reporters";
 import { projectFailureDiagnostic } from "./reporter-diagnostics.ts";
+import { channelEgressCase } from "./channel-egress-diagnostic.ts";
 import { isRecord } from "./records.ts";
 import {
   boundedProgressLines,
@@ -554,6 +555,7 @@ function* interruptedOutput({ lines, omitted }: OutputTail) {
 }
 
 const nativeChildTestFile = resolve("tests/integration/harness-topology-k3d-real.test.mjs");
+const channelEgressTestFile = resolve(channelEgressCase.file);
 
 function location(
   data: ReporterEventData = {},
@@ -567,6 +569,22 @@ function location(
   const fields = failureFields(cause);
   const { file } = data;
   const fileFailure = typeof data.file === "string" && data.name === data.file;
+  let diagnosticScope: "native-child" | "channel-egress" | undefined;
+  if (failed && data.details?.type === "test" && error?.failureType === "testCodeFailure") {
+    if (
+      file === channelEgressTestFile &&
+      data.name === channelEgressCase.title &&
+      data.nesting === 0
+    ) {
+      diagnosticScope = "channel-egress";
+    } else if (
+      file === nativeChildTestFile &&
+      data.name === "native child returns its own exact answer" &&
+      data.nesting === 1
+    ) {
+      diagnosticScope = "native-child";
+    }
+  }
   const exitCode = fileFailure ? error?.exitCode : undefined;
   const signal = fileFailure ? error?.signal : undefined;
   // Only retain coordinates in the known test file, never arbitrary stack text.
@@ -639,12 +657,7 @@ function location(
             diagnostic: projectFailureDiagnostic(
               cause,
               nativeFirstAgentProofDiagnostic,
-              failed &&
-                file === nativeChildTestFile &&
-                data.name === "native child returns its own exact answer" &&
-                data.nesting === 1 &&
-                data.details?.type === "test" &&
-                error.failureType === "testCodeFailure",
+              diagnosticScope,
             ),
             ...failureText(cause, fields),
           }

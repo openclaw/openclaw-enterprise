@@ -1,6 +1,10 @@
 import { lookup } from "node:dns/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  channelEgressCase,
+  withChannelEgressStage,
+} from "../../scripts/ci/channel-egress-diagnostic.ts";
 import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { asRecord } from "../../packages/utils/src/objects.ts";
@@ -42,14 +46,14 @@ function environment(deployment: unknown) {
 
 const selected = process.env.OCC_TEST_SLACK_LIVE === "1";
 test(
-  "channel egress isolates current Driver generations and retires real Agent bindings",
+  channelEgressCase.title,
   {
     skip: selected
       ? false
       : "Select the credentialed Slack Kubernetes lane with real runtime images.",
     timeout: 1_800_000,
   },
-  async (t) => {
+  withChannelEgressStage(async (t, setStage) => {
     const { context } = boundedTeardown(t, { label: "channel egress topology cleanup" });
     assert.ok(
       process.env.SLACK_APP_TOKEN &&
@@ -181,8 +185,11 @@ test(
       assert.ok(value === undefined || typeof value === "number");
       return value as number | undefined;
     };
+    setStage("initial-model-turn");
     await assertActualModelTurn({ ...topology, harnessId: "codex" });
     t.diagnostic("A real model turn completed while channel proxy routing was enabled.");
+
+    setStage("allocation-rejection");
 
     const pauseWorker = async () => {
       await topology.stopWorkerObservation();
@@ -488,6 +495,7 @@ test(
     t.diagnostic(
       "Rejected Kubernetes allocation writes left OCC usable and started no candidate Gateway.",
     );
+    setStage("listener-capacity");
     const winner = await waitFor(
       "one candidate to activate without exceeding listener capacity",
       async () => {
@@ -548,6 +556,7 @@ test(
     );
     assert.notEqual(bindingB.policyHash, before.policyHash);
     assert.notEqual(bindingB.port, before.port);
+    setStage("connect-routing");
     const proxyFor = async (id: string) =>
       text(
         environment(await resource("deployment", `gateway-${hash(id)}`, placement)).find(
@@ -607,6 +616,7 @@ test(
         403,
       );
     }
+    setStage("dns-isolation");
     assert.deepEqual(
       await probeChannelConnect(placement, podName(peerPods[0]), proxyB, dnsName, {
         serverName: "slack.com",
@@ -653,6 +663,7 @@ test(
       403,
       "a DNS rule must not grant an IP literal",
     );
+    setStage("connect-routing");
     for (const target of [
       "127.0.0.1",
       "slack.com.attacker.invalid",
@@ -697,12 +708,14 @@ test(
       Number(before.port),
     );
 
+    setStage("active-tunnel");
     await waitFor(
       "a serving Slack tunnel on A's original generation",
       async () => ((await connectionCount(text(before.id))) ?? 0) > 0,
     );
     // Free A's slot through normal deployment, and restart with another Driver
     // generation before the SAME queued candidate retries. B's installed policy stays intact.
+    setStage("retirement-and-reuse");
     await pauseWorker();
     const values = structuredClone(record(configuration.values));
     record(record(values.channels).slack).enabled = false;
@@ -779,12 +792,14 @@ test(
       serviceIP,
       Number(reused.port),
     );
+    setStage("replacement-model-turn");
     await assertActualModelTurn({
       ...topology,
       harnessId: "codex",
       gatewayPod: updatedPods[0],
       harnessPod: updatedHarnesses[0],
     });
+    setStage("retirement-and-reuse");
     const retriedPods = await pods(loser.id, loser.revisionId, "gateway");
     assert.equal(retriedPods.length, 1);
     assert.equal(
@@ -831,5 +846,5 @@ test(
       "deletion to revoke both channel bindings",
       async () => (await bindings()).length === 0,
     );
-  },
+  }),
 );
