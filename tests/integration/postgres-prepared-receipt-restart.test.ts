@@ -23,7 +23,12 @@ import { createSystemClock } from "../../apps/controller/src/drivers/repo/access
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
 import { sessionAttempt } from "../conformance/repository-sessions.contract.ts";
-import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
+import {
+  disposeBrokerSession,
+  fixture,
+  prepare,
+  preparedGitUseSocketName,
+} from "../fixtures/prepared-repository-git.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import {
@@ -192,7 +197,9 @@ test(
     const gate = await gateApiHandshake(resources, gh.origin);
     const apiOrigin = gate.origin;
     // The original issuer and the sender pin the same API authority through this gate.
-    const issuerDir = await socketDirectory(resources, "issuer-");
+    const issuerDir = await socketDirectory(resources, "issuer-", {
+      longest: preparedGitUseSocketName,
+    });
     const owner = await f.startOwner({ controlSocket: join(issuerDir, "control.sock"), apiOrigin });
     const real = createSystemClock();
     let observedWall: number | undefined;
@@ -201,7 +208,7 @@ test(
     const config = { ...base, gateway: { ...base.gateway, controlSocket } };
     const factory = createPreparedGitHubRegistryFactory({
       registry,
-      socketPath: join(issuerDir, "prepared-git-use.sock"),
+      socketPath: join(issuerDir, preparedGitUseSocketName),
       clock,
       limits: config.limits,
       gatewayOrigin: config.gateway.publicOrigin,
