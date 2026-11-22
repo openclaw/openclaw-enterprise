@@ -23,7 +23,7 @@ const half = body.length / 2;
 // with 206; "no-range" sends it whole and ignores Range; "half" sends the
 // first half, then holds the connection open; "trickle" sends the next 4 bytes
 // each second and never finishes.
-type ServerMode = "fast" | "no-range" | "half" | "trickle" | "missing";
+type ServerMode = "fast" | "no-range" | "half" | "truncated" | "trickle" | "missing";
 interface CommandResult {
   code: string | number;
   stdout: string;
@@ -55,6 +55,11 @@ async function startServer(t: TestContext, plan: (requestNumber: number) => Serv
         "content-range": `bytes ${resumeAt}-${body.length - 1}/${body.length}`,
       });
       response.end(body.subarray(resumeAt));
+      return;
+    }
+    if (mode === "truncated") {
+      response.writeHead(200, { "content-length": body.length, connection: "close" });
+      response.end(body.subarray(0, half));
       return;
     }
     response.writeHead(200, { "content-length": body.length });
@@ -173,11 +178,12 @@ test("an attempt cut off with bytes received is retried and resumes from them", 
 
 test("a server that ignores the resume request gets a fresh download", async (t) => {
   const { url, destination, requests, ranges } = await startServer(t, (n) =>
-    n === 1 ? "half" : n === 2 ? "no-range" : "fast",
+    n === 1 ? "truncated" : n === 2 ? "no-range" : "fast",
   );
   const result = await download(url, destination, sha256, { DOWNLOAD_PINNED_MAX_TIME: "3" });
   assert.equal(result.code, 0, result.stderr);
   assert.equal(requests.length, 3);
+  assert.match(result.stderr, /curl exit 18, HTTP 200/);
   assert.match(result.stderr, /Server refused to resume at byte 8192; starting over/);
   // A 200 answer to a resume is never appended to the partial file.
   assert.deepEqual(ranges, [undefined, `bytes=${half}-`, undefined]);
