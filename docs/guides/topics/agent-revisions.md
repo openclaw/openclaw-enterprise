@@ -50,6 +50,14 @@ The commands below also use `jq`.
    If the Agent uses a provider override, using current Installation defaults
    can change its model endpoint.
 
+   When replacing an active revision, if either revision uses managed credential
+   delivery, [complete Stop](../../reference/agents/deployment.md#stop-and-resume)
+   first. Stop requires `operate` on the Agent. The OpenShell Proxy removes its
+   delivery copy after the last binding is removed; the Source remains available
+   for redeployment. Source credential rotation does not require Stop. See
+   [credential implementation status](../../reference/credential-sources.md#implementation-status)
+   for delivery recovery limits.
+
    ```bash
    occ agent deploy "$AGENT_ID" --output json
    ```

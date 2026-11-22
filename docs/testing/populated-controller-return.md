@@ -79,11 +79,6 @@ Job. Kubernetes finishes the real initialization while Helm remains pending.
 The test terminates and reaps that client, checks the committed PostgreSQL
 history with the candidate's migrator, and runs the supported
 `--resume --recover-helm --migration-history-checked --recovery-reviewed` path.
-The baseline selects an unused documentation-range directory proxy; the candidate
-clears it. Recovery must first refuse the retained egress NetworkPolicy, then
-refuse the retained API environment entry. The fixture explicitly reconciles
-those two removals with UID/resource-version guards while writers remain stopped,
-then retries the same recovery command. Product recovery performs no deletion.
 Recovery must advance exactly one revision without replacing the completed
 initializer Job or Pod or changing the committed migration history. The test
 does not edit Helm storage or disable hooks. If Helm finishes before the
@@ -154,10 +149,24 @@ the interval between starts. `maxStartGapMs` includes the boundary reads.
 All offsets use the same monotonic clock. Wall-clock timestamps support log
 correlation.
 
-For each window, count unsuccessful observations and report the largest interval
-between successive successful responses. Estimate each finish offset with
-`startOffsetMs + elapsedMs`. Durations are rounded to milliseconds. With fewer
-than two successes, the interval is unknown. Report failures before the first success or after the last separately.
+In the forward receipt, `guardedResume.startOffsetMs` marks the start of the
+resume attempt after the migration history check. It includes the fixture's
+cluster, database and release checks before the command runs.
+`guardedResume.endOffsetMs` marks when the attempt finishes, even on failure.
+A checkpoint can omit the end offset or the whole interval. Missing timing cannot establish
+whether the command ran or succeeded. Compare this interval with probe times
+to locate overlapping failures. Timing alone cannot establish their cause.
+
+For each window, use `responseSummary` to report `successful` and `unsuccessful`
+observation counts, `unsuccessfulBeforeFirstSuccess`,
+`unsuccessfulAfterLastSuccess`, and `maxSuccessfulResponseIntervalMs`. The
+before and after counts are `null` when no observation succeeded. The maximum
+interval estimates the longest gap between consecutive successful responses, in
+whole milliseconds. It is `null` with fewer than two successes.
+
+For older schema v2 receipts without `responseSummary`, use `samples`. Count
+outcomes other than `ok` as unsuccessful and estimate each successful finish
+with `startOffsetMs + elapsedMs`.
 
 An interrupted receipt covers completed observations through `throughOffsetMs`.
 An open slot can still receive a probe. On settlement, `cadence.endOffsetMs`

@@ -3407,6 +3407,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .connection-destination-table :is(th, td):nth-child(2) {
   width: 5.5rem;
 }
+.connection-destination-table--static :is(th, td):nth-child(2) {
+  width: auto;
+}
+.connection-destination-table--static :is(th, td):is(:first-child, :nth-child(3)) {
+  width: 5.5rem;
+}
 .connection-destination-table :is(th, td):last-child {
   width: 2.5rem;
   padding-inline-end: 0;
@@ -3440,6 +3446,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   .connection-destination-table td:last-child {
     width: auto;
     padding: 0;
+  }
+  .connection-destination-table--static td:is(:first-child, :nth-child(3)) {
+    width: auto;
+  }
+  .connection-destination-table--static tr {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .connection-destination-table td[data-label]::before {
     display: block;
