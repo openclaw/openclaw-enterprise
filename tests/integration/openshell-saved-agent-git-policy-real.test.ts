@@ -570,8 +570,12 @@ function tokenFingerprints(values: readonly string[]) {
 }
 
 function searchWorkloadForTokens() {
+  // This function runs alone in the guest as a `node --eval` script, so it cannot import.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const fs = require("node:fs");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const crypto = require("node:crypto");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const childProcess = require("node:child_process");
   const prints: [number, string, string][] = JSON.parse(process.argv[1] ?? "[]");
   const hit = (buffer: Buffer) =>
@@ -594,8 +598,12 @@ function searchWorkloadForTokens() {
       try {
         const buffer = fs.readFileSync(`/proc/${pid}/${kind}`);
         counts[kind] += 1;
-        if (hit(buffer)) found.add(kind);
-      } catch {}
+        if (hit(buffer)) {
+          found.add(kind);
+        }
+      } catch {
+        // The process ended or its file is not readable by the workload.
+      }
     }
   }
   try {
@@ -604,8 +612,12 @@ function searchWorkloadForTokens() {
       stdio: ["ignore", "pipe", "ignore"],
     });
     counts.gitconfig += 1;
-    if (hit(config)) found.add("gitconfig");
-  } catch {}
+    if (hit(config)) {
+      found.add("gitconfig");
+    }
+  } catch {
+    // No effective Git configuration: TOKEN_SEARCH_GIT_CONFIG reports the zero count.
+  }
   const roots = new Set(
     ["/sandbox", "/home", "/root", "/tmp", "/var/tmp", "/etc", "/run", process.env.HOME]
       .concat(process.cwd())
@@ -613,7 +625,9 @@ function searchWorkloadForTokens() {
   );
   const seen = new Set<string>();
   const walk = (path: string) => {
-    if (counts.files >= 20_000 || seen.has(path)) return;
+    if (counts.files >= 20_000 || seen.has(path)) {
+      return;
+    }
     seen.add(path);
     let stat;
     try {
@@ -628,7 +642,9 @@ function searchWorkloadForTokens() {
       } catch {
         counts.skipped += 1;
       }
-      for (const name of names) walk(path === "/" ? `/${name}` : `${path}/${name}`);
+      for (const name of names) {
+        walk(path === "/" ? `/${name}` : `${path}/${name}`);
+      }
     } else if (stat.isFile()) {
       if (stat.size > 4 * 1024 * 1024) {
         counts.skipped += 1;
@@ -638,13 +654,17 @@ function searchWorkloadForTokens() {
         const buffer = fs.readFileSync(path);
         counts.files += 1;
         counts.bytes += buffer.length;
-        if (hit(buffer)) found.add(path.startsWith("/tmp/") ? "file:/tmp" : `file:${path}`);
+        if (hit(buffer)) {
+          found.add(path.startsWith("/tmp/") ? "file:/tmp" : `file:${path}`);
+        }
       } catch {
         counts.skipped += 1;
       }
     }
   };
-  for (const root of roots) walk(root);
+  for (const root of roots) {
+    walk(root);
+  }
   process.stdout.write(JSON.stringify({ found: [...found].sort(), ...counts }));
 }
 
@@ -730,7 +750,9 @@ async function refuseClassicToken(
   };
   const refusals = (logs: string) =>
     logs.split("\n").flatMap((line) => {
-      if (!line.includes(code)) return [];
+      if (!line.includes(code)) {
+        return [];
+      }
       try {
         const event = asRecord(JSON.parse(line.slice(line.indexOf("{"))));
         return [{ code: event?.code, reason: event?.reason, tokenClass: event?.tokenClass }];
@@ -1692,15 +1714,6 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
       assert.equal(await callbacks.read(), nativeCallbackBaseline);
     };
     await prove("before");
-    if (credential.kind === "token") {
-      await assertTokensAbsentFromWorkload(
-        t,
-        peerExec,
-        deployed.target,
-        [credential.value, credential.replacement],
-        "peer",
-      );
-    }
     return {
       deployed,
       workspace: independent.workspace,
@@ -1819,6 +1832,16 @@ git -C '${fresh}' rev-parse '${ref}^{commit}'`;
   );
   assert.deepEqual((await readPolicy()).policy.repositoryNetworkPolicy, []);
   await peer.prove("after-stop");
+  if (credential.kind === "token") {
+    // On the peer's own grant: the primary's grant also carries the narrowing redeploy.
+    await assertTokensAbsentFromWorkload(
+      t,
+      peer.exec,
+      peer.deployed.target,
+      [credential.value],
+      "peer",
+    );
+  }
   await stop(peer.deployed);
   await retire(peer.deployed, peer.provider, peer.credentialIndex, {
     path: peer.deployed.path,
