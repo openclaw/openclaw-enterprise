@@ -204,7 +204,15 @@ export async function verifyQaAgentAutomations(
     });
     assert.ok((await runs(saved.id))?.runs.some((value) => value.runId === run.runId));
     pending.delete(saved.id);
-    return { id: saved.id, runId: run.runId };
+    const result = { id: saved.id, runId: run.runId };
+    await f.record(`automations-${agent.id}-${saved.id}-one-shot`, {
+      ...result,
+      revisionId: agent.revision.id,
+      modelSummaryMarkerVerified: true,
+      nativeDeletionVerified: true,
+      historyAfterDeletionVerified: true,
+    });
+    return result;
   }
   async function policy(allow: string[]) {
     const path = `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`;
@@ -278,12 +286,36 @@ export async function verifyQaAgentAutomations(
         matched && typeof matched.sessionId === "string" && typeof matched.sessionKey === "string",
         "native history must identify this completed run's exact session",
       );
+      assert.equal(typeof native.agentId, "string");
+      const retainedSessionKey = `agent:${native.agentId}:cron:${native.id}`;
+      assert.equal(
+        matched.sessionKey,
+        `${retainedSessionKey}:run:${matched.sessionId}`,
+        "native history must identify this job's exact isolated run alias",
+      );
+      await fileCheck("absent");
+      // Keep completed lifecycle/effect facts even if an evidence reader fails.
+      // The pinned runtime removes the exact-run alias after persisting its root.
+      await f.record(`automations-${agent.id}-${phase}-completion`, {
+        agentId: agent.id,
+        revisionId: agent.revision.id,
+        jobId: current.id,
+        runId: run.runId,
+        nativeJobId: native.id,
+        sessionId: matched.sessionId,
+        historySessionKey: matched.sessionKey,
+        retainedSessionKey,
+        fixedEmptyCap: true,
+        pausedAfterCompletion: current.enabled === false,
+        modelSummaryMarkerVerified: true,
+        fileAbsent: true,
+      });
       const evidence = await readQaAutomationRunEvidence(f, agent, {
         sessionKey: matched.sessionKey,
+        retainedSessionKey,
         sessionId: matched.sessionId,
         marker,
       });
-      await fileCheck("absent");
       const nativePolicy = await live;
       await f.record(`automations-${agent.id}-${phase}`, {
         agentId: agent.id,
@@ -369,6 +401,19 @@ export async function verifyQaAgentAutomations(
       403,
       { ...headers, origin: "https://other.example.test", "sec-fetch-site": "cross-site" },
     );
+    await f.record(`automations-${agent.id}-api-lifecycle`, {
+      agentId: agent.id,
+      revisionId: agent.revision.id,
+      scheduleKinds: ["at", "every", "cron"],
+      intervalAnchorNormalized: true,
+      fixedEmptyCapsVerified: true,
+      enablePauseVerified: true,
+      stalePatchAndDeleteRejected: true,
+      paginationVerified: true,
+      clientToolCapRejected: true,
+      serviceIdentityRejected: true,
+      crossOriginRejected: true,
+    });
     const one = await oneShot("Model-only one-shot before replacement");
 
     // Create the recurring record before changing Agent policy; its fixed cap must

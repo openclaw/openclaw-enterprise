@@ -32,14 +32,14 @@ retained history, CAS and UNKNOWN_OUTCOME semantics intact.
 
 ## Owners and touchpoints
 
-| Owner | Implementation |
-| --- | --- |
-| HTTP contract | `packages/contracts/src/api/agent-automations.ts`, `api/routes.ts` and generated OpenAPI |
-| Agent ownership and policy | `packages/occ/src/agent-automations.ts`, controller composition and facade |
-| Durable state | New automation ownership repository, in-memory adapter, PostgreSQL adapter, schema and migration |
-| Native protocol | `apps/controller/src/gateway/agent-automations-client.ts`, composed with the existing Compute endpoint and private Gateway credential |
-| HTTP lifecycle | `apps/controller/src/http/agent-automations.ts`, existing session, CSRF, audit and error handling |
-| Integration | Real HTTP admission case, PostgreSQL ownership tests and the regular Agent QA workflow |
+| Owner                      | Implementation                                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| HTTP contract              | `packages/contracts/src/api/agent-automations.ts`, `api/routes.ts` and generated OpenAPI                                              |
+| Agent ownership and policy | `packages/occ/src/agent-automations.ts`, controller composition and facade                                                            |
+| Durable state              | New automation ownership repository, in-memory adapter, PostgreSQL adapter, schema and migration                                      |
+| Native protocol            | `apps/controller/src/gateway/agent-automations-client.ts`, composed with the existing Compute endpoint and private Gateway credential |
+| HTTP lifecycle             | `apps/controller/src/http/agent-automations.ts`, existing session, CSRF, audit and error handling                                     |
+| Integration                | Real HTTP admission case, PostgreSQL ownership tests and the regular Agent QA workflow                                                |
 
 ## Ordered implementation
 
@@ -62,39 +62,36 @@ retained history, CAS and UNKNOWN_OUTCOME semantics intact.
 
 ## Verification
 
-| Required outcome | Current result |
-| --- | --- |
-| Human admission, UUIDs and final authority | P1 admin-demotion and P2 invalid-ID regressions reproduced and fixed at `e22a860f1c`; native suite 2 passed, PostgreSQL 1 passed, actual admission case 1 passed |
-| Ownership, audit and cleanup | Real PostgreSQL reservation/binding/cleanup atomicity, binding race and deletion-worker sibling preservation passed |
-| Model-only add/update contract | Implemented after RFC submission; real native CRUD verifies explicit empty writes/readback, forged-cap refusal and unsupported-cap activation refusal |
-| Real model-only execution in both Harnesses | Unverified; an authorized destination-broker key is now available in a private QA file, but provider acceptance has not yet been tested |
-| No model tools, including native Codex/code/app/MCP surfaces | Unverified; implement genuine runtime evidence and independent effect checks; source `[]` alone is insufficient |
-| One-shot deletion and retained history | Unverified for completed model runs; never-run deleted history correctly returns 404 |
-| CAS, uncertainty and container replacement | Genuine native fixture passes without model calls; OCC storage/Compute remain fixtures, not production placement proof |
-| Independent review | App reviewer found P1/P2 at `91654c716b`; fixes frozen at `e22a860f1c` await confirmation. Canonical CLI attempt remains an earlier authentication failure without a report |
+| Required outcome                                             | Current result                                                                                                                                                                              |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Human admission, UUIDs and final authority                   | P1 admin-demotion and P2 invalid-ID regressions reproduced and fixed at `e22a860f1c`; native suite 2 passed, PostgreSQL 1 passed, actual admission case 1 passed                            |
+| Ownership, audit and cleanup                                 | Real PostgreSQL reservation/binding/cleanup atomicity, binding race and deletion-worker sibling preservation passed                                                                         |
+| Model-only add/update contract                               | Implemented after RFC submission; real native CRUD verifies explicit empty writes/readback, forged-cap refusal and unsupported-cap activation refusal                                       |
+| Real model-only execution in both Harnesses                  | At `925a4976f7`, both packaged Harnesses passed deployment/authentication, a one-shot model response and a recurring model response; evidence collection then failed before policy widening |
+| No model tools, including native Codex/code/app/MCP surfaces | Unverified; implement genuine runtime evidence and independent effect checks; source `[]` alone is insufficient                                                                             |
+| One-shot deletion and retained history                       | Both Harnesses verified native one-shot deletion and retained completed-run history at `925a4976f7`; post-replacement proof remains pending                                                 |
+| CAS, uncertainty and container replacement                   | Genuine native fixture passes without model calls; OCC storage/Compute remain fixtures, not production placement proof                                                                      |
+| Independent review                                           | Alternate app reviews found no actionable core issue at `1b8ceb379d` or QA issue at `925a4976f7`; canonical CLI remains blocked by authentication without a report                          |
 
 Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
 [PostgreSQL setup](../../docs/testing/postgresql.md) and
 [real-runtime procedures](../../docs/testing/kubernetes.md). The existing
 `agent-automations` scenario is registered in the QA matrix and advisory lane;
-its current refusal coverage is not positive model-only acceptance.
+its final qualification stage reports incomplete evidence separately from lifecycle results.
 
 ### Revised RFC acceptance audit
 
-| Criterion | Established | Remaining |
-| --- | --- | --- |
-| AC1: Model-only execution | Historical normalization/protocol proof only | Real model-only one-shot, native deletion and retained history in both Harnesses |
-| AC2: Lifecycle and persistence | Safe management, native CAS and retained-state container replacement | Positive create/resume, empty-cap preservation and PostgreSQL-backed production replacement/history |
-| AC3: No tools and authorization | Human boundary, qualification gate, demotion protection and UUID validation | Fixed empty cap and genuine no-tool capability/effect proof in both Harnesses, including policy changes |
-| AC4: Recovery | Native lost replies, CAS races and post-commit audit/revision failures without replay | Recheck the final model-only path and production/model-dependent outcomes |
-| AC5: Durable audit and cleanup | PostgreSQL invariants, atomic audit, binding and cleanup/deletion cases | Preserve and rerun affected cases for final implementation changes |
+| Criterion                       | Established                                                                                        | Remaining                                                                                               |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| AC1: Model-only execution       | Real one-shot response, native deletion, retained history and recurring response in both Harnesses | Complete no-tool evidence and post-replacement execution                                                |
+| AC2: Lifecycle and persistence  | Safe management, native CAS and retained-state container replacement                               | Positive create/resume, empty-cap preservation and PostgreSQL-backed production replacement/history     |
+| AC3: No tools and authorization | Human boundary, qualification gate, demotion protection and UUID validation                        | Fixed empty cap and genuine no-tool capability/effect proof in both Harnesses, including policy changes |
+| AC4: Recovery                   | Native lost replies, CAS races and post-commit audit/revision failures without replay              | Recheck the final model-only path and production/model-dependent outcomes                               |
+| AC5: Durable audit and cleanup  | PostgreSQL invariants, atomic audit, binding and cleanup/deletion cases                            | Preserve and rerun affected cases for final implementation changes                                      |
 
-The original task key reached the OpenClaw Pod unchanged but returned
-`401 invalid_api_key`. A documented destination-native broker fetch subsequently
-materialized an existing model key into a new private QA file; it differs from
-the rejected task key. No Mac secret transfer or shared secret/configuration
-write occurred. Use `OCC_TEST_QA_OPENAI_KEY_FILE` for the supported QA path and
-remove that temporary file after verification. Provider acceptance remains unproved.
+The first model credential returned `401 invalid_api_key`. Both Harnesses accepted
+an authorized replacement through `OCC_TEST_QA_OPENAI_KEY_FILE` at `925a4976f7`.
+Remove the temporary protected file after verification.
 
 The normal CLI reports workload-identity login. Its documented login help has no
 same-identity workload refresh command. The canonical review's authentication

@@ -12,24 +12,36 @@ type Agent = Awaited<ReturnType<typeof createQaAgent>>;
 const gatewayProgram = String.raw`
 const { DatabaseSync } = require("node:sqlite");
 const { zstdDecompressSync } = require("node:zlib");
+observationStage="gateway-database-open";
 const db = new DatabaseSync("/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite", {readOnly:true});
 try {
   db.exec("PRAGMA busy_timeout=5000");
-  const session = db.prepare("SELECT current_session_id,entry_json FROM session_nodes WHERE session_key=?").get(input.sessionKey);
+  // Native cron removes the exact-run alias after base persistence; its stable
+  // owner keeps the transcript. Never follow a different session generation.
+  observationStage="gateway-session-owner-read";
+  const session = db.prepare("SELECT current_session_id,entry_json FROM session_nodes WHERE session_key=?").get(input.retainedSessionKey);
+  observationStage="gateway-session-owner-identity";
   if (!session || session.current_session_id !== input.sessionId) throw new Error("exact session unavailable");
+  observationStage="gateway-report-read";
   const hasSnapshots = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_entry_snapshots'").get();
-  const snapshot = hasSnapshots ? db.prepare("SELECT value_json FROM session_entry_snapshots WHERE session_key=? AND field='systemPromptReport'").get(input.sessionKey) : undefined;
+  const snapshot = hasSnapshots ? db.prepare("SELECT value_json FROM session_entry_snapshots WHERE session_key=? AND field='systemPromptReport'").get(input.retainedSessionKey) : undefined;
   const report = snapshot ? JSON.parse(snapshot.value_json) : JSON.parse(session.entry_json).systemPromptReport;
+  observationStage="gateway-report-provenance";
   if (report?.source !== "run" || report.sessionId !== input.sessionId || !Array.isArray(report.tools?.entries)) throw new Error("run-owned tool report unavailable");
+  observationStage="gateway-tool-inventory";
   const direct = report.tools.entries.map(t => t.name);
   const deferred = report.tools.deferred?.entries ?? [];
   if (!direct.every(n => typeof n === "string") || !Array.isArray(deferred)) throw new Error("invalid tool inventory");
+  observationStage="gateway-transcript-read";
   const rows = db.prepare("SELECT event_json,event_zstd,event_utf8_bytes FROM transcript_events WHERE session_id=? ORDER BY seq").all(input.sessionId);
   if (rows.length > 20000) throw new Error("transcript exceeds proof limit");
   let promptSeen=false, answerSeen=false, toolCalls=0, toolResults=0;
   for (const row of rows) {
+    observationStage="gateway-transcript-decode";
     const text = row.event_json ?? zstdDecompressSync(row.event_zstd, {maxOutputLength:8388608}).toString("utf8");
+    observationStage="gateway-transcript-integrity";
     if (row.event_utf8_bytes != null && Buffer.byteLength(text)!==row.event_utf8_bytes) throw new Error("transcript length mismatch");
+    observationStage="gateway-transcript-parse";
     const event = JSON.parse(text);
     const message = event.type === "message" ? event.message : undefined;
     if (!message) continue;
@@ -40,7 +52,7 @@ try {
     toolCalls += blocks.filter(b=>["toolCall","tool_use","function_call","custom_tool_call"].includes(b.type)).length;
     if (message.role === "toolResult" || message.role === "tool") toolResults++;
   }
-  console.log(JSON.stringify({sessionId:input.sessionId, reportSource:report.source,
+  console.log(JSON.stringify({sessionId:input.sessionId, historySessionKey:input.sessionKey, retainedSessionKey:input.retainedSessionKey, reportSource:report.source,
     directToolNames:direct, deferredToolCount:deferred.length, promptSeen,answerSeen,toolCalls,toolResults}));
 } finally { db.close(); }
 `;
@@ -171,7 +183,7 @@ export function startQaCodexToolObservation(f: Fixture, agent: Agent, marker: st
 export async function readQaAutomationRunEvidence(
   f: Fixture,
   agent: Agent,
-  input: { sessionKey: string; sessionId: string; marker: string },
+  input: { sessionKey: string; retainedSessionKey: string; sessionId: string; marker: string },
 ) {
   const gateway = await observe(
     f,
@@ -179,7 +191,10 @@ export async function readQaAutomationRunEvidence(
     "gateway",
     program(
       input,
-      `try { ${gatewayProgram} } catch { process.stderr.write("Native automation session evidence unavailable."); process.exitCode=1; }`,
+      `let observationStage="gateway-module"; try { ${gatewayProgram} } catch (error) {
+        const category=error instanceof SyntaxError?"json":error?.code==="ERR_SQLITE_ERROR"?"sqlite":error?.code==="ERR_INVALID_ARG_TYPE"?"invalid-storage-value":"invariant";
+        process.stderr.write(JSON.stringify({evidenceUnavailable:true,stage:observationStage,category})); process.exitCode=1;
+      }`,
     ),
   );
   assert.equal(gateway.reportSource, "run");
