@@ -242,6 +242,15 @@ export function createAgentCredentialAccess({
         throw new ScopeViolationError("The credential source is unavailable.");
       }
       compute.validateHarnessCredentialSources?.(harness, [source]);
+      if (isManagedTokenServiceSource(source)) {
+        requireTokenServiceOwner(source.tokenServiceInstanceId);
+        snapshots.push({
+          sourceId,
+          tokenServiceInstanceId: source.tokenServiceInstanceId,
+          sourceType: source.type,
+        });
+        continue;
+      }
       const owner = sourceDrivers.credentialSourceOwner(source);
       if (owner.kind === "proxy") {
         if (!offersProtectedType(source.type)) {

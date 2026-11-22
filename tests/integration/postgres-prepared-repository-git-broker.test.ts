@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { request, Agent, type RequestOptions } from "node:https";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   createServer as createHttpServer,
   type IncomingMessage,
@@ -11,7 +11,7 @@ import { createNativeClientMaterial } from "../fixtures/repository-credentials/c
 import { connect, createServer as createTcpServer } from "node:net";
 import { readFile, writeFile } from "node:fs/promises";
 import { buffer } from "node:stream/consumers";
-import test, { type TestContext } from "node:test";
+import test, { after, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { setTimeout as delay } from "node:timers/promises";
@@ -43,6 +43,31 @@ import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/ac
 import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
 import type { RefusalRecord } from "../../apps/controller/src/drivers/repo/access/transport/agent.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
+import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
+import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import {
+  backendDefinition,
+  createAccessTokenServiceAccount,
+  createBackendWorkerDrivers,
+  poolWithOneBackendBindingReadFault,
+  seedBackendBinding,
+} from "../helpers/postgres-backend-state.mjs";
+import type {
+  BackendDefinition,
+  ComputeDriver,
+  RepositoryCredentialRuntimeBinding,
+} from "../../packages/contracts/src/index.ts";
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
+import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { removeAccessBindings } from "../helpers/postgres-worker-revision-support.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type BrokerInput = Parameters<
   NonNullable<NonNullable<Parameters<typeof fixture>[1]>["openBroker"]>
@@ -267,6 +292,910 @@ function refusedOnceBy(
       ...b.identity,
     },
   ]);
+}
+
+const { setup: setupNativeWithdrawal, cleanup: cleanupNativeWithdrawal } =
+  createWorkerRevisionFixtures(import.meta.url);
+after(cleanupNativeWithdrawal);
+
+function discoverNativeBearer(
+  port: number,
+  ca: Buffer,
+  bearer: string,
+): Promise<number | undefined> {
+  return nativeBrokerStatus(
+    port,
+    ca,
+    bearer,
+    "/fixture/repository.git/info/refs?service=git-upload-pack",
+  );
+}
+
+function nativeBrokerStatus(
+  port: number,
+  ca: Buffer,
+  bearer: string,
+  path: string,
+  { method = "GET", headers, body }: BrokerRequest = {},
+): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const outgoing = request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path,
+        method,
+        ca,
+        agent: false,
+        timeout: 8000,
+        headers: {
+          host: "credentials.example.test",
+          authorization: `Basic ${Buffer.from(`gateway-session:${bearer}`).toString("base64")}`,
+          ...headers,
+        },
+      },
+      (incoming) => {
+        incoming.resume();
+        incoming.once("error", reject);
+        incoming.once("end", () => resolve(incoming.statusCode));
+      },
+    );
+    outgoing.once("timeout", () => outgoing.destroy(new Error("Git discovery timed out")));
+    outgoing.once("error", reject);
+    outgoing.end(body);
+  });
+}
+
+for (const outcome of [
+  "settled",
+  "unconfirmed revocation",
+  "runtime observation is unavailable",
+  "runtime remains unready",
+  "runtime observer is missing",
+  "custody read recovers",
+  "unexpected custody family",
+  "settled draft-capable transport",
+  "unsettled draft receipt",
+  "draft provider reply lost",
+  "unissued draft-capable transport",
+  "stored execution admission incompatible",
+  "model account changes",
+  "model account binding revoked",
+  "model account lookup fault cannot mask lost actor authority",
+  "model account Backend missing",
+  "model account binding revoked after custody read",
+  "model account final IAM fault with revoked binding",
+  "model account final read recovers",
+  "model Secret unavailable",
+] as const) {
+  test(
+    `finite native Git binding removal: ${outcome}`,
+    { ...requiresPostgres, timeout: 65_000 },
+    async (t) => {
+      const backendId = "github-fixture";
+      const driverId = "repository-credentials";
+      const modelProvider = outcome.startsWith("model account") ? backendDefinition() : undefined;
+      const modelBackends = modelProvider === undefined ? [] : [modelProvider];
+      const gitBackend: BackendDefinition = {
+        id: backendId,
+        type: "github",
+        configuration: { registryPath: "/unused/controlled-registry.json" },
+        drivers: { repo: driverId },
+      };
+      const f = await setupNativeWithdrawal(t, { backends: [...modelBackends, gitBackend] });
+      const lostDraftReply = outcome === "draft provider reply lost";
+      const draftMustRetire = lostDraftReply || outcome === "unsettled draft receipt";
+      const transientRuntime = outcome === "runtime observation is unavailable";
+      const persistentRuntime = outcome === "runtime remains unready";
+      const modelBindingRevokedAfterCustody =
+        outcome === "model account binding revoked after custody read";
+      const draftTransport =
+        outcome === "settled draft-capable transport" ||
+        transientRuntime ||
+        persistentRuntime ||
+        draftMustRetire ||
+        outcome === "unissued draft-capable transport";
+      const withoutFamily = outcome === "unissued draft-capable transport";
+      const clock = createControlledClock();
+      const startedWall = clock.wallNow();
+      const git = await startRegistryCredentialServiceFixture(t, {
+        namespaceId: f.namespace.id,
+        backendId,
+        repositories: [
+          {
+            repositoryRef: "repo-a",
+            repository: "fixture/repository",
+            repositoryId: "73",
+            ...(draftTransport && { transport: "git-and-draft-pr", pullRequestBase: "main" }),
+          },
+        ],
+        autoOpen: false,
+        clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
+        gateway: { listen: "127.0.0.1:0" },
+      });
+      const socket = git.config.gateway.controlSocket;
+      const driver = new GitHubRepositoryPolicy({ driverId, backendId }, git.registry, {
+        sessionDurationSeconds: 60,
+      });
+      const sender = new GitHubNativeRepositorySender(
+        {
+          id: git.backendId,
+          client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
+          drivers: { repo: driver.id },
+        },
+        { publicCa: git.tls.ca },
+      );
+      const receipts = await startRepositoryReceiptServer({
+        state: f.state,
+        controlSocket: socket,
+        driverId: driver.id,
+        implementation: driver.implementation,
+        backendId: git.backendId,
+      });
+      t.after(() => receipts.close());
+      const subject = git.byRef.get("repo-a")!;
+      const provider = subject.github;
+      const keyDirectory = await temporaryDirectory(t, "native-withdrawal-owner-");
+      const privateKeyPath = join(keyDirectory, "app.pem");
+      const custodyKeyPath = join(keyDirectory, "custody");
+      await writeFile(
+        privateKeyPath,
+        provider.privateKey.export({ type: "pkcs8", format: "pem" }),
+        { mode: 0o600 },
+      );
+      await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
+      const issuer = new URL(provider.origin);
+      assert.equal(issuer.hostname, "127.0.0.1");
+      const prepared = await startPreparedGitHubGitOwner({
+        registry: git.registry,
+        pool: f.observerPool,
+        driverId,
+        backendId,
+        implementation: driver.implementation,
+        privateKeyPath,
+        custodyKeyPath,
+        controlSocket: socket,
+        apiOrigin: issuer.origin,
+        ca: git.tls.ca,
+        startWorker: false,
+        repositoryGitCustody: { kind: "native-broker" },
+      });
+      t.after(() => prepared.close());
+      f.controller.registerDriver(driver);
+      f.controller.selectDriver("repo", driver.id);
+      const modelAccount =
+        modelProvider === undefined
+          ? undefined
+          : await createAccessTokenServiceAccount(f.state, f.namespace.id, "native-model");
+      if (modelAccount !== undefined) {
+        await seedBackendBinding(f.observerPool, modelAccount);
+      }
+      const owner = await f.agent("finite-native-withdrawal", {
+        executionMode: "dedicated",
+        ...(modelAccount &&
+          modelProvider && {
+            serviceAccountId: modelAccount.id,
+            backendId: modelProvider.id,
+          }),
+      });
+      const selections = [{ repositoryRef: "repo-a", profile: "git-write" }];
+      await f.controller.updateAgent(f.actor.id, {
+        namespaceId: f.namespace.id,
+        agentId: owner.id,
+        configurationId: owner.configurationId,
+        repositoryBindings: selections,
+      });
+      const binding = driver.resolve({
+        namespaceId: f.namespace.id,
+        bindings: selections,
+      }).bindings;
+      const disposableDeployer =
+        outcome === "model account lookup fault cannot mask lost actor authority"
+          ? "deployer-" + randomUUID()
+          : undefined;
+      if (disposableDeployer) {
+        await f.copyActorGrants(disposableDeployer);
+      }
+      const candidate = await f.revision(owner, 1, {
+        ...(disposableDeployer && { actorId: disposableDeployer }),
+        repositoryCredentials: {
+          driver: { id: driver.id, implementation: driver.implementation },
+          deadlineWallMs: Date.now() + 55_000,
+          bindings: binding,
+        },
+      });
+      const deliveries: Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>[] = [];
+      const stops: string[] = [];
+      let preparations = 0;
+      let runtimeObservations = 0;
+      let runtimeStatus: "running" | "unknown" | "timeout" = "running";
+      let failFinalModelRead = false;
+      let failedFinalModelReads = 0;
+      let failFinalIamRead = false;
+      let failedFinalIamReads = 0;
+      let checkIncompatibleAdmission = false;
+      const incompatibleCompute =
+        outcome === "stored execution admission incompatible"
+          ? createTestKubernetesComputeDriver(f.compute.id, {
+              protectedDriver: protectedRepositoryGitRelease(() =>
+                assert.fail("stored admission cannot call repository access"),
+              ).owner,
+            })
+          : undefined;
+      const revokeModelBinding = async () => {
+        assert.ok(modelAccount);
+        const binding = await f.observerPool.query(
+          "UPDATE occ.service_account_driver_bindings SET external_credential_id=NULL WHERE namespace_id=$1 AND service_account_id=$2",
+          [f.namespace.id, modelAccount.id],
+        );
+        assert.equal(binding.rowCount, 1);
+      };
+      const compute: ComputeDriver = {
+        ...f.compute,
+        validateExecutionAdmission(revision, source) {
+          if (checkIncompatibleAdmission) {
+            assert.ok(incompatibleCompute);
+            incompatibleCompute.validateExecutionAdmission(revision, source);
+          }
+        },
+        validateRepositoryCredentials(harness, sandboxDriverId) {
+          assert.equal(harness.mode, "dedicated");
+          assert.equal(sandboxDriverId, undefined);
+        },
+        async prepareRevision(revision, context) {
+          preparations++;
+          const delivery = context?.repositoryCredentials?.find((value) => value.kind === "new");
+          if (delivery) {
+            deliveries.push(delivery);
+          }
+          return f.compute.prepareRevision(revision, context);
+        },
+        // The native removal must use its prepared custodian.
+        async retireExpiredRepositoryAccess() {
+          return "retire-runtime";
+        },
+        async observeRevision(revision) {
+          assert.equal(revision.id, candidate.id);
+          runtimeObservations++;
+          if (runtimeStatus === "timeout") {
+            throw new DOMException("Controlled Kubernetes status read timeout", "TimeoutError");
+          }
+          return { state: runtimeStatus };
+        },
+        async stopRevision(revision) {
+          stops.push(revision.id);
+          return f.compute.stopRevision(revision);
+        },
+      };
+      const statuses: Readonly<Record<string, unknown>>[] = [];
+      const observeNativeRepositoryWithdrawal = prepared.observeNativeWithdrawal;
+      assert.ok(observeNativeRepositoryWithdrawal);
+      let failCustodyRead = false;
+      let failedCustodyReads = 0;
+      const configured = createBackendWorkerDrivers(compute, modelBackends);
+      let omitModelSecret = false;
+      let modelSecretMisses = 0;
+      const auth = candidate.harnessAuth;
+      // Active references protect this Secret from deletion. Inject a successful
+      // empty result at its exact storage read to exercise the authoritative miss.
+      const modelReadPool: Parameters<typeof createControllerWorker>[0]["pool"] = {
+        end: () => f.workerPool.end(),
+        query: (sql, values) =>
+          f.workerPool.query(sql, values === undefined ? undefined : [...values]),
+        async connect() {
+          const client = await f.workerPool.connect();
+          return {
+            release: (discard) => client.release(discard),
+            async query(sql, values) {
+              if (failFinalIamRead && sql.includes("FROM occ.iam_identities) v")) {
+                failFinalIamRead = false;
+                failedFinalIamReads++;
+                return client.query("SELECT 1 / 0");
+              }
+              if (
+                failFinalModelRead &&
+                sql.includes("FROM occ.service_account_driver_bindings AS b") &&
+                values?.[0] === f.namespace.id &&
+                values[1] === modelAccount?.id
+              ) {
+                failFinalModelRead = false;
+                failedFinalModelReads++;
+                if (outcome === "model account lookup fault cannot mask lost actor authority") {
+                  // Exercise a PostgreSQL statement failure that aborts its read transaction.
+                  return client.query("SELECT 1 / 0");
+                }
+                throw Object.assign(new Error("controlled connection loss reading model binding"), {
+                  code: "08006",
+                });
+              }
+              const result = await client.query(
+                sql,
+                values === undefined ? undefined : [...values],
+              );
+              if (
+                omitModelSecret &&
+                "source" in auth &&
+                auth.source.kind === "secret" &&
+                sql.includes("FROM occ.secrets AS s") &&
+                values?.[0] === auth.source.namespaceId &&
+                values[1] === auth.source.id
+              ) {
+                assert.equal(result.rowCount, 1);
+                modelSecretMisses++;
+                return { ...result, rows: [], rowCount: 0 };
+              }
+              return result;
+            },
+          };
+        },
+      };
+      const startWorker = async (
+        pool: Parameters<typeof createControllerWorker>[0]["pool"] = f.workerPool,
+        driverConfiguration = configured,
+      ) => {
+        const worker = createControllerWorker({
+          pool,
+          pollIntervalMs: 15,
+          leaseDurationMs: 5_000,
+          maxAttempts: 12,
+          drivers: {
+            ...driverConfiguration,
+            secretDriver: f.secretDriver,
+            repositoryPolicy: driver,
+            nativeRepositorySender: sender,
+          },
+          async observeNativeRepositoryWithdrawal(revision, sessions) {
+            if (failCustodyRead) {
+              failCustodyRead = false;
+              failedCustodyReads++;
+              throw Object.assign(new Error("controlled connection loss reading custody"), {
+                code: "08006",
+              });
+            }
+            const result = await observeNativeRepositoryWithdrawal(revision, sessions);
+            if (result === "disposed") {
+              if (
+                modelBindingRevokedAfterCustody ||
+                outcome === "model account final IAM fault with revoked binding"
+              ) {
+                // Commit model revocation after custody observation and before the locked decision.
+                await revokeModelBinding();
+                failFinalIamRead = outcome === "model account final IAM fault with revoked binding";
+              }
+              if (outcome === "model account final read recovers" && failedFinalModelReads === 0) {
+                failFinalModelRead = true;
+              }
+            }
+            return result;
+          },
+          emit: (event) => {
+            if (event.event === "worker.completed") {
+              statuses.push(event);
+            }
+          },
+        });
+        f.database.workers.add(worker);
+        await worker.start();
+        return worker;
+      };
+      let worker = await startWorker(
+        outcome === "model Secret unavailable" ||
+          outcome === "model account final read recovers" ||
+          outcome === "model account final IAM fault with revoked binding" ||
+          outcome === "model account lookup fault cannot mask lost actor authority"
+          ? modelReadPool
+          : f.workerPool,
+      );
+      t.after(() => worker.stop());
+      await f.work(candidate, "succeeded");
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+      assert.equal(deliveries.length, 1, "runtime gets one admitted broker bearer");
+      const admit = deliveries[0]!;
+      if (!withoutFamily) {
+        await prepared.maintain();
+      }
+      assert.equal(
+        provider.issuesOfTokens.length,
+        withoutFamily ? 0 : 1,
+        "only the prepared owner can issue a provider token",
+      );
+      const origin = subject.git;
+      const initial = origin.traffic().requests;
+      const draftPath = "/repos/" + subject.repository + "/pulls";
+      const draft = () =>
+        nativeBrokerStatus(git.listeners.address.port, git.tls.ca, admit.files.bearer, draftPath, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer " + admit.files.bearer,
+            "content-type": "application/json",
+            "x-oce-operation-id": randomUUID(),
+          },
+          body: JSON.stringify({
+            title: "Fixture review",
+            head: "agent-repo-a",
+            base: "main",
+            body: "Finite binding witness",
+            draft: true,
+          }),
+        });
+      if (!draftTransport) {
+        assert.equal(
+          await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+          200,
+        );
+        assert.equal(origin.traffic().requests, initial + 1);
+      }
+      const issuedDraft = draftTransport && !withoutFamily;
+      const hold = issuedDraft ? origin.holdNextFetch({ beforeHeaders: true }) : undefined;
+      const held =
+        hold &&
+        nativeBrokerStatus(
+          git.listeners.address.port,
+          git.tls.ca,
+          admit.files.bearer,
+          "/" + subject.repository + ".git/git-upload-pack",
+          {
+            method: "POST",
+            headers: {
+              "git-protocol": "version=2",
+              "content-type": "application/x-git-upload-pack-request",
+            },
+            body: "0014command=ls-refs\n00010000",
+          },
+        ).catch((error: unknown) => error);
+      if (hold) {
+        t.after(() => hold.release());
+        await Promise.race([
+          hold.observed,
+          held?.then(() => assert.fail("the admitted upload never reached the held origin")),
+          delay(5000).then(() => assert.fail("the admitted upload did not start")),
+        ]);
+        if (lostDraftReply) {
+          provider.disconnectAfterMutation("POST", draftPath);
+        }
+        assert.equal(await draft(), lostDraftReply ? 409 : 201);
+        assert.equal(provider.pulls.size, 1);
+      }
+      const preparationsBeforeRemoval = preparations;
+      const removed = await f.controller.updateAgent(f.actor.id, {
+        namespaceId: owner.namespaceId,
+        agentId: owner.id,
+        configurationId: owner.configurationId,
+        repositoryBindings: [],
+      });
+      assert.equal(removed.activeRevisionId, candidate.id);
+      if (hold) {
+        hold.release();
+        await held;
+      }
+      const key = repositoryRemovalWorkKey(candidate.id);
+      const readWork = async () =>
+        (
+          await f.observerPool.query(
+            "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key=$1",
+            [key],
+          )
+        ).rows[0];
+      const first = await waitFor(
+        "exact finite removal first disposition",
+        async () => {
+          const row = await readWork();
+          const last = statuses.find(({ workId }) => workId === key);
+          return row?.state === "queued" && last
+            ? last
+            : row?.state === "succeeded"
+              ? { code: row.reason_code }
+              : undefined;
+        },
+        10000,
+      );
+      const receipt = await f.state.read((view) =>
+        view.repositorySessions.findBrokerReceiptBySession(admit.sessionId),
+      );
+      assert.ok(receipt);
+      assert.equal(receipt.state, "disposed");
+      assert.ok(receipt.generation);
+      assert.equal(
+        await observeNativeRepositoryWithdrawal(candidate, [
+          {
+            admissionId: receipt.admissionId,
+            sessionId: admit.sessionId,
+            generation: randomUUID(),
+          },
+        ]),
+        "unsafe",
+        "the prepared owner refuses proof from another broker generation",
+      );
+      assert.equal(
+        await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+        401,
+      );
+      assert.equal(
+        origin.traffic().requests,
+        initial + (withoutFamily ? 0 : 1),
+        "fresh old-bearer request never reaches Git origin",
+      );
+      if (withoutFamily) {
+        const readback = await f.observerPool.query(
+          `SELECT source#>>'{grant,profile}' AS profile,
+                  (SELECT custody FROM occ.prepared_github_attempts WHERE source_id=f.source_id) AS custody
+           FROM occ.prepared_github_families f WHERE source_id=$1`,
+          ["repository-git:" + receipt.admissionId],
+        );
+        assert.deepEqual(readback.rows, []);
+        assert.equal(first.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor(
+          "terminal work to stop the exact draft-capable revision",
+          async () =>
+            (await f.currentAgent(owner))?.activeRevisionId === undefined ? true : undefined,
+          10_000,
+        );
+        assert.deepEqual(stops, [candidate.id]);
+        assert.equal(runtimeObservations, 0);
+        assert.equal(deliveries.length, 1);
+        return;
+      }
+      assert.equal(
+        first.code,
+        "REPOSITORY_CLEANUP_PENDING",
+        "broker disposal alone cannot certify provider settlement",
+      );
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+      assert.deepEqual(stops, []);
+      assert.equal(runtimeObservations, 0);
+      // Re-adding the desired binding cannot restore the old revision's admission or its bearer.
+      await f.controller.updateAgent(f.actor.id, {
+        namespaceId: owner.namespaceId,
+        agentId: owner.id,
+        configurationId: owner.configurationId,
+        repositoryBindings: selections,
+      });
+      const runCleanupPass = async () => {
+        const beforeRetry = statuses.length;
+        assert.equal(
+          (
+            await f.observerPool.query(
+              "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE idempotency_key=$1 AND state='queued'",
+              [key],
+            )
+          ).rowCount,
+          1,
+        );
+        return waitFor(
+          "the same finite cleanup claim to publish its outcome",
+          async () => statuses.slice(beforeRetry).find(({ workId }) => workId === key),
+          10_000,
+        );
+      };
+      if (issuedDraft) {
+        const apiCalls = provider.trace.filter(
+          ({ method, target }) => method === "POST" && target === draftPath,
+        ).length;
+        assert.equal(apiCalls, 1);
+        assert.equal(
+          await draft(),
+          401,
+          "removal refuses even a syntactically valid draft before its origin",
+        );
+        assert.equal(
+          provider.trace.filter(({ method, target }) => method === "POST" && target === draftPath)
+            .length,
+          apiCalls,
+        );
+        const readback = await f.observerPool.query(
+          "SELECT outcome, settled_at IS NOT NULL AS settled FROM occ.prepared_repository_draft_pulls WHERE admission_id=$1",
+          [receipt.admissionId],
+        );
+        assert.deepEqual(readback.rows, [
+          { outcome: lostDraftReply ? "outcome_unknown" : "created", settled: true },
+        ]);
+        if (outcome === "unsettled draft receipt") {
+          // A broker crash after the provider reply can leave the original authorization
+          // committed with no final receipt. Reproduce that exact persisted boundary.
+          const unresolved = await f.observerPool.query(
+            "UPDATE occ.prepared_repository_draft_pulls SET outcome='outcome_unknown', projection=NULL, settled_at=NULL WHERE admission_id=$1",
+            [receipt.admissionId],
+          );
+          assert.equal(unresolved.rowCount, 1);
+        }
+      }
+      if (outcome === "stored execution admission incompatible") {
+        // The replacement configuration admits a protected pair. The stock validator
+        // consequently refuses a saved unprotected native repository revision.
+        checkIncompatibleAdmission = true;
+        const retirement = await runCleanupPass();
+        assert.equal(retirement.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor(
+          "terminal work to stop the incompatible revision",
+          async () =>
+            (await f.currentAgent(owner))?.activeRevisionId === undefined ? true : undefined,
+          10_000,
+        );
+        assert.deepEqual(stops, [candidate.id]);
+        assert.equal(runtimeObservations, 0);
+        assert.equal(deliveries.length, 1);
+        return;
+      }
+      if (
+        outcome.startsWith("model ") &&
+        !modelBindingRevokedAfterCustody &&
+        outcome !== "model account final IAM fault with revoked binding" &&
+        outcome !== "model account final read recovers"
+      ) {
+        // Leave the issuer unconfirmed after the first fenced cleanup pass.
+        if (outcome === "model account changes") {
+          assert.ok(modelAccount);
+          await worker.stop();
+          worker = await startWorker(poolWithOneBackendBindingReadFault(f.createWorkerPool()));
+          const interrupted = await runCleanupPass();
+          assert.equal(interrupted.code, "REPOSITORY_CLEANUP_PENDING");
+          assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+          assert.deepEqual(stops, []);
+          assert.ok(
+            (
+              await f.state.transact((unit) =>
+                unit.serviceAccounts.updateCredential(f.namespace.id, modelAccount.id, {
+                  kind: "access_token",
+                  secretRef: { name: `rotated-model-${randomUUID()}`, key: "token" },
+                }),
+              )
+            )?.credential,
+          );
+        } else if (outcome === "model account binding revoked") {
+          await revokeModelBinding();
+        } else if (outcome === "model account lookup fault cannot mask lost actor authority") {
+          const original = await f.state.read((view) => view.operations.findWork(key));
+          assert.ok(original);
+          assert.equal(original.actorId, disposableDeployer);
+          const revoked = await removeAccessBindings(f, original.actorId);
+          assert.ok(revoked.rowCount && revoked.rowCount > 0);
+          const refusal = await new NativeIAMDriver(f.state).authorize({
+            principalId: original.actorId,
+            action: "deploy",
+            resource: { kind: "agent", namespaceId: owner.namespaceId, id: owner.id },
+          });
+          assert.equal(refusal.allowed, false, "Native IAM denies the exact recorded deployer");
+          failFinalModelRead = true;
+        } else if (outcome === "model account Backend missing") {
+          await worker.stop();
+          worker = await startWorker(f.createWorkerPool(), createBackendWorkerDrivers(compute, []));
+        } else {
+          omitModelSecret = true;
+        }
+        const retirement = await runCleanupPass();
+        assert.equal(retirement.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor(
+          "terminal work to stop the exact original revision",
+          async () =>
+            (await f.currentAgent(owner))?.activeRevisionId === undefined ? true : undefined,
+          10_000,
+        );
+        assert.deepEqual(stops, [candidate.id]);
+        assert.equal(runtimeObservations, 0);
+        if (outcome === "model Secret unavailable") {
+          assert.equal(modelSecretMisses, 1);
+        }
+        if (outcome === "model account lookup fault cannot mask lost actor authority") {
+          assert.equal(failedFinalModelReads, 1);
+        }
+        assert.equal(
+          await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+          401,
+        );
+        assert.equal(origin.traffic().requests, initial + 1);
+        assert.equal(subject.github.issuesOfTokens.length, 1);
+        assert.equal(
+          subject.github.trace.filter(
+            ({ method, target }) => method === "DELETE" && target === "/installation/token",
+          ).length,
+          0,
+        );
+        assert.equal(deliveries.length, 1);
+        return;
+      }
+      if (outcome === "unconfirmed revocation") {
+        subject.github.disconnectAfterMutation("DELETE", "/installation/token");
+        await assert.rejects(prepared.maintain(), { message: "provider-unavailable" });
+      } else {
+        await prepared.maintain();
+      }
+      assert.equal(
+        subject.github.trace.filter(
+          ({ method, target }) => method === "DELETE" && target === "/installation/token",
+        ).length,
+        1,
+      );
+      const { rows } = await f.observerPool.query(
+        "SELECT custody FROM occ.prepared_github_attempts WHERE source_id=$1",
+        ["repository-git:" + receipt.admissionId],
+      );
+      assert.deepEqual(rows, [
+        { custody: outcome === "unconfirmed revocation" ? "unknown" : "revoked" },
+      ]);
+      if (outcome === "settled" || outcome === "runtime observer is missing") {
+        // Recover the cleanup from durable receipts on a replacement Worker.
+        await worker.stop();
+        if (outcome === "runtime observer is missing") {
+          const withoutObserver = { ...compute };
+          delete withoutObserver.observeRevision;
+          worker = await startWorker(
+            f.createWorkerPool(),
+            createBackendWorkerDrivers(withoutObserver, modelBackends),
+          );
+        } else {
+          worker = await startWorker(f.createWorkerPool());
+        }
+      }
+      if (outcome === "unexpected custody family") {
+        // The metadata family shape accepts unrelated source fields. An extra family
+        // correlated to this admission must not disappear behind its canonical key.
+        const additionalId = `unexpected-family-${randomUUID()}`;
+        const extra = await f.observerPool.query(
+          `INSERT INTO occ.prepared_github_families(source_id, source, issuer, admission)
+           SELECT $2, source || jsonb_build_object('adoption','prepared',
+             'key', jsonb_build_object('source', jsonb_build_object('id',$2::text)),
+             'grant', source->'grant' || '{"profile":"metadata-read"}'::jsonb),
+             '{"backendRef":{}}'::jsonb, admission || jsonb_build_object('familyId',$2::text)
+           FROM occ.prepared_github_families WHERE source_id=$1`,
+          ["repository-git:" + receipt.admissionId, additionalId],
+        );
+        assert.equal(extra.rowCount, 1);
+      }
+      if (outcome === "custody read recovers") {
+        failCustodyRead = true;
+        const deferred = await runCleanupPass();
+        assert.equal(deferred.code, "REPOSITORY_CLEANUP_PENDING");
+        assert.equal(failedCustodyReads, 1);
+        assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+        assert.deepEqual(stops, []);
+        assert.equal(runtimeObservations, 0);
+        await prepared.maintain();
+      }
+      if (transientRuntime || persistentRuntime) {
+        const beforeGit = origin.traffic();
+        const beforeProvider = provider.trace.length;
+        for (const status of [
+          persistentRuntime ? "unknown" : "timeout",
+          "unknown",
+          "unknown",
+        ] as const) {
+          runtimeStatus = status;
+          assert.equal((await runCleanupPass()).code, "REPOSITORY_CLEANUP_PENDING");
+          assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+          assert.deepEqual(stops, []);
+        }
+        assert.equal(runtimeObservations, 3);
+        assert.equal(
+          await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+          401,
+        );
+        assert.equal(await draft(), 401);
+        assert.deepEqual(origin.traffic(), beforeGit);
+        assert.equal(provider.trace.length, beforeProvider);
+        assert.equal(preparations, preparationsBeforeRemoval);
+        if (persistentRuntime) {
+          assert.equal((await readWork()).state, "queued");
+          return;
+        }
+        runtimeStatus = "running";
+      }
+      const cleanup = runCleanupPass();
+      if (outcome === "model account final read recovers") {
+        // Settled custody is insufficient when the locked authority read fails.
+        // The lease must permit a safe retry without minting a credential or stopping the Agent.
+        await waitFor(
+          "the locked model read to fail after the custody observation",
+          async () => (failedFinalModelReads === 1 ? true : undefined),
+          4_000,
+        );
+        const work = await f.state.read((view) => view.operations.findWork(key));
+        assert.equal(work?.state, "claimed");
+        assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+        assert.deepEqual(stops, []);
+      }
+      const completion = await cleanup;
+      assert.equal(
+        await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+        401,
+      );
+      assert.equal(origin.traffic().requests, initial + 1);
+      assert.equal(subject.github.issuesOfTokens.length, 1);
+      if (issuedDraft) {
+        assert.equal(await draft(), 401);
+        assert.equal(
+          provider.trace.filter(({ method, target }) => method === "POST" && target === draftPath)
+            .length,
+          1,
+        );
+      }
+      if (
+        outcome === "unexpected custody family" ||
+        outcome === "runtime observer is missing" ||
+        draftMustRetire ||
+        modelBindingRevokedAfterCustody ||
+        outcome === "model account final IAM fault with revoked binding"
+      ) {
+        assert.equal(completion.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor(
+          "terminal work to stop the exact original revision",
+          async () =>
+            (await f.currentAgent(owner))?.activeRevisionId === undefined ? true : undefined,
+          10_000,
+        );
+        assert.deepEqual(stops, [candidate.id]);
+        if (outcome === "model account final IAM fault with revoked binding") {
+          assert.equal(failedFinalIamReads, 1);
+        }
+      } else {
+        assert.equal(
+          completion.code,
+          outcome === "unconfirmed revocation"
+            ? "REPOSITORY_CLEANUP_PENDING"
+            : "REPOSITORY_ACCESS_WITHDRAWN",
+        );
+        assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+        assert.deepEqual(stops, []);
+      }
+      assert.equal(
+        subject.github.trace.filter(
+          ({ method, target }) => method === "DELETE" && target === "/installation/token",
+        ).length,
+        1,
+        "cleanup observation cannot replay provider revocation",
+      );
+      if (outcome === "settled" || transientRuntime) {
+        const gitAtWithdrawal = origin.traffic();
+        const providerAtWithdrawal = provider.trace.length;
+        for (const status of transientRuntime
+          ? (["timeout", "unknown", "running"] as const)
+          : (["running"] as const)) {
+          runtimeStatus = status;
+          const beforeMaintenance = statuses.length;
+          const due = await f.advanceMaintenance(candidate);
+          assert.equal(due.rowCount, 1);
+          const observed = await waitFor(
+            "ordinary maintenance to supervise the same revision without Git",
+            async () =>
+              statuses
+                .slice(beforeMaintenance)
+                .find(({ workId }) => workId === due.rows[0]?.idempotency_key),
+            10_000,
+          );
+          assert.equal(
+            observed.code,
+            status === "running" ? "REPOSITORY_ACCESS_WITHDRAWN" : "REPOSITORY_CLEANUP_PENDING",
+          );
+          assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+          assert.deepEqual(stops, []);
+        }
+        if (transientRuntime) {
+          assert.equal(runtimeObservations, 7);
+          assert.equal(
+            await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
+            401,
+          );
+          assert.equal(await draft(), 401);
+          assert.deepEqual(origin.traffic(), gitAtWithdrawal);
+          assert.equal(provider.trace.length, providerAtWithdrawal);
+        }
+      } else if (outcome === "unconfirmed revocation") {
+        await prepared.maintain();
+        assert.equal(
+          subject.github.trace.filter(
+            ({ method, target }) => method === "DELETE" && target === "/installation/token",
+          ).length,
+          1,
+          "the owner did not replay a lost revocation acknowledgement",
+        );
+      }
+      assert.equal(
+        deliveries.length,
+        1,
+        "withdrawal does not prepare or deliver another credential",
+      );
+      assert.equal(preparations, preparationsBeforeRemoval);
+    },
+  );
 }
 
 async function withdrawRepositoryBinding(

@@ -1319,7 +1319,7 @@ p {
 }
 /* Namespace rows are list items; each cell names itself for a screen reader. */
 .namespace-table {
-  --namespace-columns: minmax(0, 1fr) 8rem 11rem 10rem;
+  --namespace-columns: minmax(0, 1fr) 8rem 13rem 10rem;
 }
 .namespace-table-head,
 .namespace-row {
@@ -1413,13 +1413,8 @@ p {
   clip-path: inset(50%);
   white-space: nowrap;
 }
+/* Stack Namespace rows when the sidebar leaves too little room for four columns. */
 @media (max-width: 1100px) {
-  .namespace-table {
-    --namespace-columns: minmax(0, 1fr) 7rem 9rem 8rem;
-  }
-}
-/* Phone: the badge sits beside the name and Created goes underneath, labelled. */
-@media (max-width: 760px) {
   .namespace-table-head {
     display: none;
   }
@@ -2823,6 +2818,13 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   flex-wrap: wrap;
   margin-top: var(--space-5);
 }
+.namespace-search {
+  justify-content: flex-start;
+}
+.namespace-search > input[type="search"] {
+  flex: 1 1 190px;
+  min-width: 0;
+}
 .namespace-toolbar {
   display: flex;
   align-items: center;
@@ -3327,6 +3329,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: min(72rem, calc(100% - 2 * var(--space-4)));
   height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
+#create-namespace-description {
+  overflow-wrap: anywhere;
+}
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
 }
@@ -3402,6 +3407,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .connection-destination-table :is(th, td):nth-child(2) {
   width: 5.5rem;
 }
+.connection-destination-table--static :is(th, td):nth-child(2) {
+  width: auto;
+}
+.connection-destination-table--static :is(th, td):is(:first-child, :nth-child(3)) {
+  width: 5.5rem;
+}
 .connection-destination-table :is(th, td):last-child {
   width: 2.5rem;
   padding-inline-end: 0;
@@ -3435,6 +3446,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   .connection-destination-table td:last-child {
     width: auto;
     padding: 0;
+  }
+  .connection-destination-table--static td:is(:first-child, :nth-child(3)) {
+    width: auto;
+  }
+  .connection-destination-table--static tr {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .connection-destination-table td[data-label]::before {
     display: block;

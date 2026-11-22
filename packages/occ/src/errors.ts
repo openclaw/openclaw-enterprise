@@ -190,6 +190,14 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   }
 }
 
+/** Credential custody committed, but the selected Proxy did not acknowledge delivery. */
+export class CredentialDeliveryFailedError extends DependencyUnavailableError {
+  constructor() {
+    super("The credential source was updated, but credential delivery failed.");
+    this.name = "CredentialDeliveryFailedError";
+  }
+}
+
 /** The caller cannot determine whether the storage transaction committed. */
 export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
   constructor() {
@@ -697,6 +705,22 @@ export class ResourceStateConflictError extends ResourceConflictError {
   }
 }
 
+/** The Channel preview can relay these fixed deployment recovery instructions. */
+export class RepositoryPolicyDeploymentConflict extends ResourceStateConflictError {
+  constructor(reason: "unscoped_history" | "incompatible_compute") {
+    if (reason === "unscoped_history") {
+      super(
+        "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
+      );
+    } else {
+      super(
+        "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
+        [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+      );
+    }
+  }
+}
+
 /**
  * A Sandbox Driver refuses a network policy rule it names, such as a grant beside its
  * repository route. OCC returns the message; the policy worker fails the application at once.
@@ -1146,6 +1170,7 @@ export class KubernetesSecretWriteForbiddenError extends DependencyUnavailableEr
 
 /** A step of dedicated activation that completes by itself once a workload catches up. */
 export type ActivationPendingCode =
+  | "CREDENTIAL_ACTIVATION_PENDING"
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_NODE_BINDING_PENDING"
   | "REPOSITORY_GIT_MATERIAL_PENDING"
@@ -1213,6 +1238,17 @@ export class ComputePreparationFailedError extends Error {
     if (evidence !== undefined) {
       this.evidence = evidence;
     }
+  }
+}
+
+/** The selected Credential Proxy confirmed this deployment cannot become ready. */
+export class CredentialDeploymentFailedError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super("The Credential Proxy refused the staged deployment.");
+    this.name = "CredentialDeploymentFailedError";
+    this.code = code;
   }
 }
 

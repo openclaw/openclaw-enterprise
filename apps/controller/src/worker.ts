@@ -5,8 +5,15 @@ import {
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
+  isSourceProviderPresetId,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
-import type { LegacyEgressProxyDriver } from "@openclaw-enterprise/contracts";
+import type {
+  CredentialDeploymentContext,
+  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
+} from "@openclaw-enterprise/contracts";
+import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
 import { installationDriverConfigurations } from "./composition/installation-config.ts";
 import {
@@ -31,6 +38,9 @@ import type {
   AgentRevision,
   AgentRevisionMetadata,
   CredentialSource,
+  CredentialDeploymentConfiguration,
+  CredentialProjection,
+  ResolvedCredential,
   AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
@@ -73,6 +83,7 @@ import {
   ActivationFailedError,
   ComputePreparationFailedError,
   ActivationPendingError,
+  CredentialDeploymentFailedError,
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   AuditAppendUnavailableError,
@@ -124,9 +135,14 @@ import {
   validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
+import { installTokenServiceDriver } from "./composition/token-service.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
-import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/access/prepared-repository-git.ts";
+import { ConfigurationFailure as ComputeConfigurationFailure } from "./drivers/compute/configuration-failure.ts";
+import type {
+  NativeRepositoryWithdrawalSession,
+  PreparedRepositoryGitMaterialState,
+} from "./drivers/repo/github/access/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
   captureNamespaceHint,
@@ -140,6 +156,8 @@ import { DeploymentTimings } from "./worker/deployment-timing.ts";
 import { HarnessExposureSweep } from "./worker/harness-exposure-sweep.ts";
 import {
   createRevisionCredentialResolver,
+  resolveRevisionCredentialSource,
+  resolveRevisionHarnessAuth,
   revisionHarnessSourceId,
   revisionSecretBindings,
   UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT,
@@ -217,6 +235,11 @@ export interface ControllerWorkerOptions {
   readonly repositoryGitMaterial?: (
     revisionId: string,
   ) => Promise<PreparedRepositoryGitMaterialState>;
+  /** The selected native prepared Git owner observes terminal custody for the exact sessions. */
+  readonly observeNativeRepositoryWithdrawal?: (
+    revision: Readonly<AgentRevision>,
+    sessions: readonly NativeRepositoryWithdrawalSession[],
+  ) => Promise<"disposed" | "pending" | "unsafe">;
 }
 
 type Observation = NamespaceEnsureResult | NamespaceDeleteResult;
@@ -240,6 +263,7 @@ const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
   WORKSPACE_SETUP_RETRYING: "WORKSPACE_SETUP_RETRYING",
   HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
+  CREDENTIAL_ACTIVATION_PENDING: "CREDENTIAL_ACTIVATION_PENDING",
   REPOSITORY_GIT_ROUTE_PENDING: "REPOSITORY_GIT_ROUTE_PENDING",
 });
 const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
@@ -323,6 +347,7 @@ const REPOSITORY_CLEANUP_RECHECK_AGE_DIVISOR = 40;
 interface RepositoryExpiryWithdrawal {
   readonly withdrawal: "withdrawn" | "pending" | "retire-runtime";
   readonly denial?: RevisionDispatchResult;
+  readonly nativeRemoval?: true;
 }
 
 type RepositoryCleanupEffect = RepositoryCleanupOutcome & {
@@ -681,6 +706,15 @@ interface RevisionDispatchResult extends DispatchResult {
   readonly supersededBy?: Readonly<AgentRevision>;
   readonly expectedActiveRevisionId?: string;
   readonly context?: ComputeRevisionContext;
+}
+
+class CredentialDeploymentAuthorizationError extends Error {
+  readonly denial: RevisionDispatchResult;
+
+  constructor(denial: RevisionDispatchResult) {
+    super("The staged Agent revision is no longer authorized.");
+    this.denial = denial;
+  }
 }
 
 type RevisionTransition =
@@ -1119,7 +1153,28 @@ function validObservation(value: unknown, namespaceId: string, target: "ready" |
     : typeof observation.namespaceDeleted === "boolean";
 }
 
-function validRevisionObservation(value: unknown, revision: Readonly<AgentRevision>): boolean {
+function credentialActivationPending(
+  observation: Readonly<ComputeReadiness>,
+  revision: Readonly<AgentRevision>,
+  compute: ComputeDriver,
+): boolean {
+  return (
+    revision.executionAdmission.version === 8 &&
+    revision.executionAdmission.mode === "standalone" &&
+    revision.credentialDeployment !== undefined &&
+    compute.activationOrder !== "beforeCommit" &&
+    typeof compute.activateRevision === "function" &&
+    !observation.ready &&
+    observation.pendingReason === "CREDENTIAL_ACTIVATION_PENDING" &&
+    observation.runtimeFailure === undefined
+  );
+}
+
+function validRevisionObservation(
+  value: unknown,
+  revision: Readonly<AgentRevision>,
+  compute: ComputeDriver,
+): boolean {
   if (typeof value !== "object" || value === null || Object.hasOwn(value, "installationId")) {
     return false;
   }
@@ -1127,6 +1182,13 @@ function validRevisionObservation(value: unknown, revision: Readonly<AgentRevisi
   if (
     observation.warnings !== undefined &&
     computePluginWarnings(observation.warnings, revision) === undefined
+  ) {
+    return false;
+  }
+  if (
+    observation.preparedForCredentialActivation !== undefined &&
+    (observation.preparedForCredentialActivation !== true ||
+      !credentialActivationPending(value as ComputeReadiness, revision, compute))
   ) {
     return false;
   }
@@ -1317,7 +1379,11 @@ export class ControllerWorker {
   private readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly credentialDeliveryRegistration: InstalledDriver | undefined;
+  private get credentialDeploymentProxy(): CredentialProxyDriver | undefined {
+    return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
+  }
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
+  private readonly tokenServiceDrivers: InstallationRuntimeDrivers | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1340,6 +1406,7 @@ export class ControllerWorker {
   private readonly onHealthy: (() => Promise<void>) | undefined;
   private readonly onProgress: (() => Promise<void>) | undefined;
   private readonly repositoryGitMaterial: ControllerWorkerOptions["repositoryGitMaterial"];
+  private readonly observeNativeRepositoryWithdrawal: ControllerWorkerOptions["observeNativeRepositoryWithdrawal"];
   private readonly abort = new AbortController();
   private installation: Readonly<Installation> | undefined;
   private loop: Promise<void> | undefined;
@@ -1468,8 +1535,18 @@ export class ControllerWorker {
     this.protectedDriver = drivers?.protectedDriver;
     this.credentialDeliveryRegistration = drivers?.credentialDeliveryRegistration;
     this.preparedTokens = drivers?.tokenService;
+    this.tokenServiceDrivers = drivers;
     this.sandbox =
-      this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
+      this.protectedDriver?.require("sandbox") ??
+      this.credentialDeliveryRegistration?.require("sandbox") ??
+      drivers?.sandboxDriver ??
+      options.sandboxDriver;
+    if (
+      this.credentialDeliveryRegistration !== undefined &&
+      this.credentialDeliveryRegistration.require("sandbox") !== this.sandbox
+    ) {
+      throw new Error("Staged credential delivery requires the selected Sandbox owner.");
+    }
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
     this.credentialRefresh = drivers?.credentialRefreshDriver;
     this.proxyDriver =
@@ -1520,6 +1597,7 @@ export class ControllerWorker {
     this.healthClock = options.healthClock ?? (() => performance.now());
     this.onProgress = options.onProgress;
     this.repositoryGitMaterial = options.repositoryGitMaterial;
+    this.observeNativeRepositoryWithdrawal = options.observeNativeRepositoryWithdrawal;
     this.repositoryPolicy = drivers?.repositoryPolicy;
     this.repositoryAdmission = drivers?.repositoryAdmission;
     this.nativeRepositorySender = drivers?.nativeRepositorySender;
@@ -1586,9 +1664,8 @@ export class ControllerWorker {
     this.resolveRevisionSecretContext = createRevisionCredentialResolver({
       state: this.state,
       compute: this.compute,
-      secretDriverId: this.secretDriverId,
-      credentialGateway: this.credentialGateway,
-      proxyDriver: this.proxyDriver,
+      ...this.revisionHarnessCredentialDependencies,
+      credentialDeliveryRef: this.credentialDeliveryRegistration?.ref,
     });
   }
 
@@ -1667,6 +1744,9 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
+    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers, this.state, {
+      bindSourceUpdatePlacement: false,
+    });
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {
@@ -2008,6 +2088,16 @@ export class ControllerWorker {
     return this.pendingHealth;
   }
 
+  private get revisionHarnessCredentialDependencies() {
+    return {
+      secretDriverId: this.secretDriverId,
+      credentialGateway: this.credentialGateway,
+      proxyDriver: this.proxyDriver,
+      currentTokenServiceInstanceId: () =>
+        this.provisioningController?.currentTokenServiceInstanceId(),
+    };
+  }
+
   private async loadIAMState(): Promise<NativeIAMState> {
     if (this.installation === undefined) {
       throw new Error("The worker Installation is unavailable.");
@@ -2160,7 +2250,7 @@ export class ControllerWorker {
       if (!this.revisionPluginDriverAvailable(revision)) {
         throw new Error("PLUGIN_DRIVER_MISMATCH");
       }
-      validateExecutionAdmission(this.compute, revision);
+      validateExecutionAdmission(this.compute, revision, this.credentialDeliveryRegistration?.ref);
       await validateRepositoryNetworkPolicy(this.compute, revision);
     }
     signal.throwIfAborted();
@@ -2283,7 +2373,7 @@ export class ControllerWorker {
     if (!this.revisionPluginDriverAvailable(revision)) {
       throw new Error("PLUGIN_DRIVER_MISMATCH");
     }
-    validateExecutionAdmission(this.compute, revision);
+    validateExecutionAdmission(this.compute, revision, this.credentialDeliveryRegistration?.ref);
     await validateRepositoryNetworkPolicy(this.compute, revision);
     const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
@@ -2484,11 +2574,18 @@ export class ControllerWorker {
       this.repositoryCredentials.validate(revision);
     }
     await this.recheckRevokedCredentialSources(claim, revision);
+    if (revision.credentialDeployment !== undefined) {
+      prepared = {
+        ...prepared,
+        configureCredentialDeployment: (expected, signal) =>
+          this.configureCredentialDeployment(claim, revision, expected, signal),
+      };
+    }
     this.preparedThisPass = revision.id;
     let observation = await this.withRevisionDispatch(claim, revision, () =>
       this.compute.prepareRevision(revision, prepared),
     );
-    if (!validRevisionObservation(observation, revision)) {
+    if (!validRevisionObservation(observation, revision, this.compute)) {
       throw new RepositoryCredentialAuthorityError("INVALID_DRIVER_OBSERVATION");
     }
     if (observation.ready) {
@@ -2525,7 +2622,7 @@ export class ControllerWorker {
         this.compute.prepareRevision(revision, prepared),
       );
       if (
-        !validRevisionObservation(observation, revision) ||
+        !validRevisionObservation(observation, revision, this.compute) ||
         observation.repositoryCredentialMaterialMissing !== undefined
       ) {
         throw new RepositoryCredentialAuthorityError("INVALID_DRIVER_OBSERVATION");
@@ -2635,6 +2732,12 @@ export class ControllerWorker {
     return this.state.transactWithQueue(async (unit, queue) => {
       const expiry = effect.runtime?.kind === "expiry" ? effect.runtime : undefined;
       let { settled } = effect;
+      if (expiry?.nativeRemoval === true) {
+        // Configured IAM writers take this lock before Namespace and Agent.
+        await unit.installations.holdIAMConfiguration("shared");
+      }
+      const agent =
+        effect.runtime === undefined ? undefined : await this.lockClaimAgent(unit, claim);
       requireClaimRenewal(await queue.heartbeat(claim));
       if (expiry?.denial !== undefined) {
         await this.appendRevisionDenial(unit, claim, expiry.denial);
@@ -2643,7 +2746,6 @@ export class ControllerWorker {
         const stoppedRevision = effect.runtime.revision;
         // Record a confirmed runtime stop even when session disposal is still pending.
         // A newer active revision and the Agent's desired run state are left intact.
-        const agent = await this.lockClaimAgent(unit, claim);
         if (agent?.servicePrincipalId === stoppedRevision.servicePrincipalId) {
           await unit.agents.compareAndClearActiveRevision(
             claim.namespaceId,
@@ -2656,7 +2758,6 @@ export class ControllerWorker {
         // Recheck the exact active owner under admission's locks after the supplier call. A
         // replacement or terminal retirement wins, including over pending. Stop keeps its
         // own supersedable runtime disposition while finite withdrawal remains fenced.
-        const agent = await this.lockClaimAgent(unit, claim);
         const owner = {
           namespaceId: claim.namespaceId,
           agentId: claim.agentId!,
@@ -2665,13 +2766,26 @@ export class ControllerWorker {
         const expiryState = await queue.repositoryExpiryState(owner);
         const waitingForStop =
           expiryState === "removal" && agent?.desiredRuntimeState === "stopped";
-        if (
+        let retireRuntime =
           expiry.withdrawal === "retire-runtime" ||
+          (expiry.nativeRemoval === true && expiryState !== "removal") ||
           !ownsActiveRepositoryRevision(agent, expiry.revision) ||
           (!waitingForStop && agent.desiredRuntimeState !== "running") ||
           (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready" ||
-          expiryState === "retiring"
-        ) {
+          expiryState === "retiring";
+        if (!retireRuntime && expiry.nativeRemoval === true && agent !== undefined) {
+          const refusal = await this.validateRetainedModelAuthority(
+            claim,
+            agent,
+            expiry.revision,
+            unit,
+          );
+          if (refusal?.authorization !== undefined) {
+            await this.appendRevisionDenial(unit, claim, refusal);
+          }
+          retireRuntime = refusal !== undefined;
+        }
+        if (retireRuntime) {
           // Transfer every outstanding session and the runtime to irrevocable retirement.
           await queue.enqueueRepositoryCleanup(claim, owner, "terminal-runtime");
           const code = "REPOSITORY_RUNTIME_RETIREMENT_QUEUED";
@@ -2781,6 +2895,36 @@ export class ControllerWorker {
       if (expiry === undefined || expiry === "retiring") {
         return { withdrawal: "pending" };
       }
+      if (
+        expiry === "removal" &&
+        this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision)
+      ) {
+        const refusal = await this.validateRetainedModelAuthority(claim, agent, revision);
+        signal.throwIfAborted();
+        if (refusal !== undefined) {
+          return {
+            withdrawal: "retire-runtime",
+            ...(refusal.authorization === undefined ? {} : { denial: refusal }),
+          };
+        }
+        try {
+          validateExecutionAdmission(compute, revision, this.credentialDeliveryRegistration?.ref);
+        } catch (error) {
+          if (!(error instanceof ComputeConfigurationFailure)) {
+            throw error;
+          }
+          return { withdrawal: "retire-runtime" };
+        }
+        if (agent.desiredRuntimeState === "running") {
+          // Resume independent source-withdrawal work through its own queued claim.
+          await this.recoverPendingCredentialWithdrawals(claim, revision);
+        }
+        signal.throwIfAborted();
+        return {
+          withdrawal: await this.withdrawFiniteNativeRepositoryAccess(revision, signal),
+          nativeRemoval: true,
+        };
+      }
       // These facts are independent. A failed read cannot erase a definite authority loss
       // established by the other read, and mutable Gateway readiness cannot hide a withdrawal.
       const [authorization, modelWithdrawn] = await Promise.allSettled([
@@ -2858,6 +3002,124 @@ export class ControllerWorker {
         return { withdrawal: "pending" };
       }
     });
+  }
+
+  private async validateRetainedModelAuthority(
+    claim: ClaimedWork,
+    agent: Readonly<Agent>,
+    revision: Readonly<AgentRevision>,
+    unit?: PlatformUnitOfWork,
+  ): Promise<RevisionDispatchResult | undefined> {
+    const authorize = async (
+      view: PlatformReadView,
+    ): Promise<RevisionDispatchResult | undefined> => {
+      if (unit !== undefined && !(await unit.installations.holdPrincipalAccount(claim.actorId))) {
+        return { outcome: "permanent", code: "ACTOR_REVOKED" };
+      }
+      return this.authorizeRevision(claim, agent, revision, "withdraw", view);
+    };
+    const resolveModel = async (view: PlatformReadView) => {
+      const auth = revision.harnessAuth;
+      if (unit !== undefined && isServiceAccountHarnessAuth(auth)) {
+        // The credential and binding writers hold this same account row.
+        await unit.serviceAccounts.lockServiceAccount(revision.namespaceId, auth.source.id);
+      }
+      const backend = await this.resolveRevisionBackend(revision, view);
+      if (backend !== undefined) {
+        return backend;
+      }
+      const harness = await resolveRevisionHarnessAuth(
+        revision,
+        { state: this.state, ...this.revisionHarnessCredentialDependencies },
+        view,
+      );
+      return "result" in harness ? harness.result : undefined;
+    };
+    if (unit === undefined) {
+      // Independent read transactions preserve an authoritative refusal even if the
+      // other query aborts its own PostgreSQL transaction.
+      const [permission, model] = await Promise.allSettled([
+        this.state.read(authorize),
+        this.state.read(resolveModel),
+      ]);
+      const refusal =
+        (permission.status === "fulfilled" ? permission.value : undefined) ??
+        (model.status === "fulfilled" ? model.value : undefined);
+      if (refusal !== undefined) {
+        return refusal;
+      }
+      if (permission.status === "rejected") {
+        throw permission.reason;
+      }
+      if (model.status === "rejected") {
+        throw model.reason;
+      }
+      return undefined;
+    }
+
+    // Keep the existing claim and owner locks while recovering from a failed
+    // authorization statement, so a successful model refusal can still commit.
+    // A broken connection cannot roll back the savepoint and the transaction retries.
+    await this.state.queryInTransaction(unit, "SAVEPOINT retained_model_authorization");
+    const [permission] = await Promise.allSettled([authorize(unit)]);
+    if (permission.status === "rejected") {
+      await this.state.queryInTransaction(
+        unit,
+        "ROLLBACK TO SAVEPOINT retained_model_authorization",
+      );
+    }
+    await this.state.queryInTransaction(unit, "RELEASE SAVEPOINT retained_model_authorization");
+    if (permission.status === "fulfilled" && permission.value !== undefined) {
+      return permission.value;
+    }
+    const model = await resolveModel(unit);
+    if (model === undefined && permission.status === "rejected") {
+      throw permission.reason;
+    }
+    return model;
+  }
+
+  private async withdrawFiniteNativeRepositoryAccess(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<"withdrawn" | "pending" | "retire-runtime"> {
+    const observePrepared = this.observeNativeRepositoryWithdrawal;
+    if (!observePrepared || typeof this.compute.observeRevision !== "function") {
+      return "retire-runtime";
+    }
+    try {
+      // The caller already observed the irreversible removal fence. Neither receipt
+      // observation can issue a credential or reopen the original admission.
+      const broker = await this.repositoryCredentials.observeFiniteNativeWithdrawal(revision);
+      signal.throwIfAborted();
+      if (broker.state !== "disposed") {
+        return broker.state === "pending" ? "pending" : "retire-runtime";
+      }
+      const prepared = await observePrepared(revision, broker.sessions);
+      signal.throwIfAborted();
+      if (prepared !== "disposed") {
+        return prepared === "pending" ? "pending" : "retire-runtime";
+      }
+    } catch (error) {
+      if (signal.aborted || error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // The fenced claim can retry receipt reads. The final transaction still
+      // rechecks the removal, revision owner and required model credential.
+      return unrecoverableRead(error) ? "retire-runtime" : "pending";
+    }
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+    try {
+      const runtime = await this.compute.observeRevision(revision, deadline);
+      deadline.throwIfAborted();
+      return runtime?.state === "running" ? "withdrawn" : "pending";
+    } catch (error) {
+      if (signal.aborted || error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // An unavailable status read leaves the fenced claim pending.
+      return "pending";
+    }
   }
 
   /** Log a stuck cleanup's cause once per work item and cause, not on every recheck. */
@@ -4981,7 +5243,9 @@ export class ControllerWorker {
         ({ result, logFields: failureLogFields } = error.pending());
       } else {
         const dependencyFailure = revisionDependencyFailure(error);
-        if (error instanceof RepositoryCredentialAuthorityError) {
+        if (error instanceof CredentialDeploymentAuthorizationError) {
+          result = error.denial;
+        } else if (error instanceof RepositoryCredentialAuthorityError) {
           result = repositoryFailure(error);
         } else if (error instanceof ComputePreparationFailedError) {
           result = {
@@ -5002,6 +5266,7 @@ export class ControllerWorker {
           error instanceof RepositoryGitProfileUnsupportedError ||
           error instanceof SandboxRevisionUnsupportedError ||
           error instanceof CredentialSourceRevisionError ||
+          error instanceof CredentialDeploymentFailedError ||
           error instanceof ActivationFailedError ||
           // Finding 1770: Kubernetes refused a private Secret write with 403. An operator must
           // change a grant, admission policy or quota first, so no retry can succeed.
@@ -5171,7 +5436,7 @@ export class ControllerWorker {
         revision,
         existingHarnessOnly ? { ...secretContext, existingHarnessOnly: true } : secretContext,
       );
-      if (!validRevisionObservation(observation, revision)) {
+      if (!validRevisionObservation(observation, revision, compute)) {
         await this.finalizeRevision(claim, {
           outcome: "permanent",
           code: "INVALID_DRIVER_OBSERVATION",
@@ -5181,7 +5446,7 @@ export class ControllerWorker {
       resultData = pluginWarningsResultData(
         computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]),
       );
-      if (!observation.ready) {
+      if (!observation.ready && !credentialActivationPending(observation, revision, compute)) {
         await this.finalizeActiveRevision(
           claim,
           revision,
@@ -5195,9 +5460,12 @@ export class ControllerWorker {
           await this.assertRepositoryAuthority(claim, revision);
           this.repositoryCredentials.validate(revision);
         }
-        await this.withClaimHeartbeat(claim, (signal) =>
-          this.stagedRevision(claim, "activateRevision", revision, signal, context),
-        );
+        await this.withClaimHeartbeat(claim, async (signal) => {
+          if (revision.credentialDeployment !== undefined) {
+            await this.authorizedCredentialDeployment(claim, revision, signal);
+          }
+          await this.stagedRevision(claim, "activateRevision", revision, signal, context);
+        });
       }
       await this.assertRepositoryGitMaterial(claim, revision);
       await this.retireEarlierRevisions(claim, revision);
@@ -5206,6 +5474,7 @@ export class ControllerWorker {
       if (
         error instanceof WorkClaimLostError ||
         error instanceof RepositoryCredentialAuthorityError ||
+        error instanceof CredentialDeploymentAuthorizationError ||
         error instanceof RepositorySessionWithdrawnError ||
         error instanceof ComputeStopYieldedError ||
         error instanceof ComputePreparationFailedError
@@ -5216,6 +5485,7 @@ export class ControllerWorker {
       // claim's chain too: the revision cannot activate without a new one.
       if (
         error instanceof ActivationFailedError ||
+        error instanceof CredentialDeploymentFailedError ||
         error instanceof CredentialSourceRevisionError ||
         // Finding 2265: a 403 on a private Secret write fails the deployment at once here as
         // in preparation (finding 1770). A maintenance pass keeps the running revision's
@@ -5528,6 +5798,7 @@ export class ControllerWorker {
     agent: Readonly<Agent>,
     revision: Readonly<AgentRevision>,
     operation: "reconcile" | "withdraw",
+    view?: PlatformReadView,
   ): Promise<RevisionDispatchResult | undefined> {
     const denied = await this.authorizeDeploymentActor(claim, agent, revision, operation);
     if (denied !== undefined) {
@@ -5579,12 +5850,12 @@ export class ControllerWorker {
     // revision can attach. A withdrawn source, pending or revoked, never attaches again
     // (`resolveRevisionSecretContext`), so a grant removed from it must not fail maintenance
     // before maintenance re-queues the withdrawal itself.
+    const listWithdrawals = (state: PlatformReadView) =>
+      state.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id);
+    const withdrawals =
+      view === undefined ? await this.state.read(listWithdrawals) : await listWithdrawals(view);
     const withdrawnSourceIds = new Set(
-      (
-        await this.state.read((view) =>
-          view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id),
-        )
-      ).map(({ credentialSourceId }) => credentialSourceId),
+      withdrawals.map(({ credentialSourceId }) => credentialSourceId),
     );
     const sources: ResourceRef[] = revisionCredentialSourceIds(revision)
       .filter((id) => !withdrawnSourceIds.has(id))
@@ -5618,6 +5889,7 @@ export class ControllerWorker {
 
   private async resolveRevisionBackend(
     revision: Readonly<AgentRevision>,
+    view?: PlatformReadView,
   ): Promise<RevisionDispatchResult | undefined> {
     if (
       revision.backendId !== null &&
@@ -5629,13 +5901,15 @@ export class ControllerWorker {
     if (!isServiceAccountHarnessAuth(auth)) {
       return undefined;
     }
-    const { account, binding } = await this.state.read(async (view) => ({
-      account: await view.serviceAccounts.findServiceAccount(revision.namespaceId, auth.source.id),
-      binding: await view.serviceAccounts.findServiceAccountBackendBinding(
+    const loadAccount = async (state: PlatformReadView) => ({
+      account: await state.serviceAccounts.findServiceAccount(revision.namespaceId, auth.source.id),
+      binding: await state.serviceAccounts.findServiceAccountBackendBinding(
         revision.namespaceId,
         auth.source.id,
       ),
-    }));
+    });
+    const { account, binding } =
+      view === undefined ? await this.state.read(loadAccount) : await loadAccount(view);
     if (
       account === undefined ||
       account.namespaceId !== revision.namespaceId ||
@@ -5676,7 +5950,7 @@ export class ControllerWorker {
       const prepared = await this.prepareRevision(claim, revision, context);
       const observation = prepared.observation;
       context = prepared.context;
-      if (!validRevisionObservation(observation, revision)) {
+      if (!validRevisionObservation(observation, revision, this.compute)) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
       }
       const resultData = pluginWarningsResultData(
@@ -5696,7 +5970,10 @@ export class ControllerWorker {
         observation.heldForRepositoryGitMaterial === true &&
         observation.pendingReason === "REPOSITORY_GIT_ROUTE_PENDING" &&
         observation.runtimeFailure === undefined;
-      if (!observation.ready && !held) {
+      const credentialPrepared =
+        credentialActivationPending(observation, revision, this.compute) &&
+        observation.preparedForCredentialActivation === true;
+      if (!observation.ready && !held && !credentialPrepared) {
         const runtimeFailure = runtimeFailureFromObservation(observation);
         return {
           outcome: "pending",
@@ -5723,13 +6000,20 @@ export class ControllerWorker {
       } else if (
         this.mode === "production" &&
         revision.harness.mode === "dedicated" &&
-        expectedActiveRevisionId === undefined
+        expectedActiveRevisionId === undefined &&
+        !credentialPrepared
       ) {
         await this.stagedRevision(claim, "deactivateRevision", revision, signal);
       }
+      let code = "REVISION_ACTIVATED";
+      if (held) {
+        code = "REPOSITORY_GIT_ROUTE_PENDING";
+      } else if (credentialPrepared) {
+        code = "CREDENTIAL_ACTIVATION_PENDING";
+      }
       return {
         outcome: "success",
-        code: held ? "REPOSITORY_GIT_ROUTE_PENDING" : "REVISION_ACTIVATED",
+        code,
         revision,
         ...(resultData === undefined ? {} : { resultData }),
         context,
@@ -5810,6 +6094,222 @@ export class ControllerWorker {
         driver.harnessId === revision.harness.id &&
         pluginRuntimeHarnessRequirement(driver.implementation, revision.harness) === undefined,
     );
+  }
+
+  private async authorizedCredentialDeployment(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const policy = revision.credentialDeployment;
+    if (
+      !policy ||
+      revision.executionAdmission.version !== 8 ||
+      revision.executionAdmission.mode !== "standalone" ||
+      claim.namespaceId !== revision.namespaceId ||
+      claim.agentId !== revision.agentId ||
+      claim.revisionId !== revision.id ||
+      policy.proxyDriverId !== this.credentialDeploymentProxy?.id ||
+      !isDeepStrictEqual(policy.driver, this.credentialDeliveryRegistration?.ref) ||
+      revision.sandboxDriverId !== this.sandbox?.id ||
+      !this.provisioningController
+    ) {
+      throw new DependencyUnavailableError(
+        "The staged credential deployment does not match this revision.",
+      );
+    }
+    if (!(await this.renewClaim(claim))) {
+      throw new WorkClaimLostError();
+    }
+    const { namespace, agent, current, newest } = await this.state.read(async (view) => ({
+      namespace: await view.namespaces.findNamespace(revision.namespaceId),
+      agent: await view.agents.findAgent(revision.namespaceId, revision.agentId),
+      current: await view.revisions.findRevision(
+        revision.namespaceId,
+        revision.agentId,
+        revision.id,
+      ),
+      newest: (
+        await view.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId)
+      ).at(-1),
+    }));
+    if (
+      namespace?.status !== "ready" ||
+      agent?.status !== "active" ||
+      agent.desiredRuntimeState !== "running" ||
+      agent.servicePrincipalId !== revision.servicePrincipalId ||
+      newest?.id !== revision.id ||
+      current?.configurationId !== revision.configurationId ||
+      current.executionAdmission.version !== 8 ||
+      current.executionAdmission.mode !== "standalone" ||
+      !isDeepStrictEqual(current.credentialDeployment, policy)
+    ) {
+      throw new DependencyUnavailableError("The staged Agent revision is no longer current.");
+    }
+    const denied = await this.authorizeRevision(claim, agent, revision, "reconcile");
+    if (denied) {
+      throw new CredentialDeploymentAuthorizationError(denied);
+    }
+    const owner = this.provisioningController.selectedDriver("token_service");
+    const instanceId = this.provisioningController.currentTokenServiceInstanceId();
+    const sources = new Map<string, Readonly<CredentialSource>>();
+    for (const binding of policy.bindings) {
+      if (
+        binding.sourceRef.namespaceId !== revision.namespaceId ||
+        binding.sourceRef.kind !== "credential_source"
+      ) {
+        throw new DependencyUnavailableError(
+          "The staged source does not belong to the Agent Namespace.",
+        );
+      }
+      const snapshot = revisionCredentialSourceSnapshot(revision, binding.sourceRef.id);
+      if (!snapshot || snapshot.tokenServiceInstanceId !== instanceId) {
+        throw new DependencyUnavailableError(
+          "The staged source does not belong to the selected TokenService instance.",
+        );
+      }
+      const { source, withdrawal } = await resolveRevisionCredentialSource(
+        this.state,
+        revision,
+        snapshot,
+      );
+      if (
+        withdrawal ||
+        !source ||
+        source.ownerCapability !== "token_service" ||
+        source.tokenServiceInstanceId !== instanceId ||
+        source.type !== "static" ||
+        binding.consumer.kind !== "model" ||
+        !isSourceProviderPresetId(source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]) ||
+        source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== binding.consumer.providerId
+      ) {
+        throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
+      }
+      sources.set(source.id, source);
+    }
+    signal.throwIfAborted();
+    return { namespace, owner, instanceId, sources, policy };
+  }
+
+  private async configureCredentialDeployment(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    expected: CredentialDeploymentConfiguration,
+    signal: AbortSignal,
+  ) {
+    const target = expected.targetRef;
+    if (
+      target.namespaceId !== revision.namespaceId ||
+      target.agentId !== revision.agentId ||
+      target.revisionId !== revision.id ||
+      typeof target.sandboxId !== "string" ||
+      !target.sandboxId.trim() ||
+      expected.configurationId !== revision.configurationId
+    ) {
+      throw new DependencyUnavailableError("The staged target does not match this revision.");
+    }
+    const current = await this.authorizedCredentialDeployment(claim, revision, signal);
+    const proxy = this.credentialDeploymentProxy;
+    if (proxy === undefined) {
+      throw new DependencyUnavailableError(
+        "The selected Credential Proxy cannot configure a staged target.",
+      );
+    }
+    const namespace = await this.compute.resolveSandboxNamespace?.(current.namespace);
+    if (namespace === undefined || namespace.id !== revision.namespaceId) {
+      throw new DependencyUnavailableError("The staged Sandbox placement is unavailable.");
+    }
+    const resolved = new Map<string, Promise<ResolvedCredential>>();
+    let open = true;
+    const requireOpen = () => {
+      signal.throwIfAborted();
+      if (!open) {
+        throw new DependencyUnavailableError("The staged configuration operation has ended.");
+      }
+    };
+    try {
+      const result = await proxy.configureDeployment(
+        {
+          namespace,
+          revision,
+          signal,
+        } satisfies CredentialDeploymentContext,
+        {
+          ...expected,
+          injectionPolicies: current.policy.injectionPolicies,
+          bindings: current.policy.bindings.map((binding) => ({
+            binding,
+            resolveCredential: async () => {
+              requireOpen();
+              const source = current.sources.get(binding.sourceRef.id);
+              if (
+                !source ||
+                source.ownerCapability !== "token_service" ||
+                source.tokenServiceInstanceId !== current.instanceId
+              ) {
+                throw new DependencyUnavailableError(
+                  "The authorized staged source is unavailable.",
+                );
+              }
+              let value = resolved.get(binding.sourceRef.id);
+              if (!value) {
+                value = current.owner.resolveCredential(
+                  {
+                    sourceRef: binding.sourceRef,
+                    tokenServiceInstanceId: current.instanceId,
+                  },
+                  signal,
+                );
+                resolved.set(binding.sourceRef.id, value);
+              }
+              const credential = await value;
+              requireOpen();
+              return credential;
+            },
+          })),
+        },
+      );
+      if (!Array.isArray(result.credentialProjections)) {
+        throw new DependencyUnavailableError("The Credential Proxy returned invalid projections.");
+      }
+      const credentialProjections: CredentialProjection[] = result.credentialProjections.map(
+        (projection) => {
+          if (
+            !projection ||
+            typeof projection.bindingRef !== "string" ||
+            typeof projection.environment !== "string" ||
+            !projection.placeholder
+          ) {
+            throw new DependencyUnavailableError(
+              "The Credential Proxy returned an invalid projection.",
+            );
+          }
+          const placeholder = projection.placeholder;
+          if (placeholder.kind === "runtime") {
+            return {
+              bindingRef: projection.bindingRef,
+              environment: projection.environment,
+              placeholder: { kind: "runtime" },
+            };
+          }
+          if (placeholder.kind === "proxy" && typeof placeholder.value === "string") {
+            return {
+              bindingRef: projection.bindingRef,
+              environment: projection.environment,
+              placeholder: { kind: "proxy", value: placeholder.value },
+            };
+          }
+          throw new DependencyUnavailableError(
+            "The Credential Proxy returned an invalid placeholder.",
+          );
+        },
+      );
+      return { credentialProjections };
+    } finally {
+      open = false;
+      resolved.clear();
+    }
   }
 
   /** Renews the lease and re-anchors the work's age (`workAgeMs`); false once the claim is lost. */
@@ -6176,15 +6676,28 @@ export class ControllerWorker {
             await this.assertRepositoryAuthority(claim, activated);
             this.repositoryCredentials.validate(activated);
           }
-          await this.withClaimHeartbeat(claim, (signal) =>
-            this.stagedRevision(claim, "activateRevision", activated, signal, resolved.context),
-          );
+          await this.withClaimHeartbeat(claim, async (signal) => {
+            if (activated.credentialDeployment !== undefined) {
+              await this.authorizedCredentialDeployment(claim, activated, signal);
+            }
+            await this.stagedRevision(
+              claim,
+              "activateRevision",
+              activated,
+              signal,
+              resolved.context,
+            );
+          });
         }
         await this.assertRepositoryGitMaterial(claim, activated);
         await this.retireEarlierRevisions(claim, activated);
       } catch (error) {
         if (error instanceof WorkClaimLostError) {
           throw error;
+        }
+        if (error instanceof CredentialDeploymentAuthorizationError) {
+          await this.finalizeRevision(claim, error.denial);
+          return;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
           await this.finalizeRevision(
@@ -6214,7 +6727,12 @@ export class ControllerWorker {
         );
         return;
       }
-      await this.completeActivatedRevision(claim, resolved);
+      await this.completeActivatedRevision(
+        claim,
+        resolved.code === "CREDENTIAL_ACTIVATION_PENDING"
+          ? { ...resolved, code: "REVISION_ACTIVATED" }
+          : resolved,
+      );
       return;
     }
     let stopYields: number | undefined;
