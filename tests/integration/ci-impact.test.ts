@@ -2764,19 +2764,9 @@ test("legacy base output and selector failures remain honest", async (t) => {
 
 test("impact summary accepts only fixed, consistent literals", async (t) => {
   await settle([
-    ...[
-      "",
-      "unknown",
-      "docs_only\n## injected",
-      "$(touch injected)",
-      "ineligible_change",
-      "bootstrap_non_pr_event",
-      "bootstrap_event_unavailable",
-      "bootstrap_invalid_identity",
-      "bootstrap_checkout_mismatch",
-      "bootstrap_git_inspection_failed",
-      "bootstrap_policy_unavailable",
-    ].map((reason) => assertSummary(t, "success", "docs", reason, "docs", "unavailable")),
+    ...["", "unknown", "docs_only\n## injected", "$(touch injected)"].map((reason) =>
+      assertSummary(t, "success", "docs", reason, "docs", "unavailable"),
+    ),
     ...["", "unknown", "docs\n## injected", "$(touch injected)"].map((mode) =>
       assertSummary(t, "success", mode, "docs_only", "unavailable", "unavailable"),
     ),
@@ -2864,7 +2854,7 @@ test("summary accepts only mode and reason pairings", async (t) => {
       "bootstrap_git_inspection_failed",
       "bootstrap_policy_unavailable",
     ].flatMap((reason) => [
-      assertSummary(t, "success", "full", reason, "full", reason),
+      assertFullSummary(t, reason, /SECRET|change\.md|injected/),
       assertSummary(t, "success", "docs", reason, "docs", "unavailable"),
     ]),
     ...["docs_only", "unknown", "invalid_event\n## leak", "$(touch injected)", ""].map((reason) =>
@@ -2927,7 +2917,7 @@ test("real Git empty, type-change and non-UTF-8 diffs have accurate conservative
 
 test("identity failures remain distinct from malformed JSON and failed jq", async (t) => {
   const [f, shallow] = await policyFixture(t, ({ put }) => put("docs/SECRET-change.md"));
-  const check = (
+  const checkReasons = (
     selectorReason: string,
     bootstrapReason: string,
     overrides: NodeJS.ProcessEnv = {},
@@ -2935,35 +2925,21 @@ test("identity failures remain distinct from malformed JSON and failed jq", asyn
     settle([
       f.expectReason(selectorReason, overrides),
       shallow.expectReason(bootstrapReason, overrides),
-      ...[selectorReason, bootstrapReason].flatMap((reason) => [
-        assertFullSummary(t, reason, /SECRET|change\.md|injected/),
-        assertSummary(t, "success", "docs", reason, "docs", "unavailable"),
-      ]),
     ]);
-  await check("invalid_identity", "bootstrap_invalid_identity", {
+  await checkReasons("invalid_identity", "bootstrap_invalid_identity", {
     GITHUB_SHA: "invalid;$(touch injected)",
   });
   for (const key of ["base", "head"] as const) {
     const event = structuredClone(f.event);
     event.pull_request[key].sha = "invalid";
     f.writeEvent(event);
-    await check("invalid_identity", "bootstrap_invalid_identity");
+    await checkReasons("invalid_identity", "bootstrap_invalid_identity");
   }
   f.writeEvent("{");
-  await check("invalid_event", "bootstrap_event_unavailable");
+  await checkReasons("invalid_event", "bootstrap_event_unavailable");
   f.writeEvent();
   const overrides = shim(join(f.dir, "identity-jq-shim"), "jq", "#!/bin/sh\nexit 127\n");
-  await settle([
-    shallow.expectReason("bootstrap_event_unavailable", overrides),
-    assertSummary(
-      t,
-      "success",
-      "full",
-      "bootstrap_event_unavailable",
-      "full",
-      "bootstrap_event_unavailable",
-    ),
-  ]);
+  await shallow.expectReason("bootstrap_event_unavailable", overrides);
   assert.equal(existsSync(join(shallow.checkout, "injected")), false);
 });
 
