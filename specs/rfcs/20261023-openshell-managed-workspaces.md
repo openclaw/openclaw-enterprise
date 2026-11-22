@@ -105,6 +105,13 @@ and the [schema change](../../migrations/0084_revision_egress_installations.sql)
   directories and environment bindings. When the Sandbox Driver declares
   `workspaceStorage: "provider"`, Compute passes an empty `workspaceMounts` list.
   See the [Sandbox provisioning inputs](../../docs/reference/drivers/sandbox.md#provisioning-inputs).
+- The Credential Proxy contract lets an `online-request` Git recipient bind to
+  the retained Sandbox execution. In that case, it can omit both
+  `processInstanceId` and `networkInstanceId`. The Provider ID and attachment
+  epoch remain required, and the adapter checks current execution readiness
+  separately. Exact-dispatch and observed-hook recipients still require both
+  instance IDs. See the
+  [recipient contract](../../packages/contracts/src/drivers/credential-proxy/index.ts).
 
 ## Simplifications
 
@@ -133,9 +140,9 @@ OpenShell version, and Envoy route.
   OpenShell removes the Sandbox and PVC.
 - **AC-3 — Refuse unsafe replacement.** Test failed bootstrap, an unsupported
   update and a lost update acknowledgment. Verify that failed bootstrap and
-  unsupported updates block startup. After a lost acknowledgment, require
-  readback of the requested state and the resource version before starting, so
-  the worker cannot start an unverified replacement.
+  unsupported updates block startup. Verify that the update uses the observed
+  resource version as a write precondition. After a lost acknowledgment, verify
+  that the retry checks the requested workload and active policy before starting.
 - **AC-4 — Retire Git authorization.** With the
   [two-repository fixture](../../docs/testing/openshell-git-replacement.md),
   replace an Agent revision with different repository bindings. Through Envoy,
